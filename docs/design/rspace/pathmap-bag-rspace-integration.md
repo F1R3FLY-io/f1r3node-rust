@@ -373,40 +373,83 @@ it is not a fresh statistical decision from this audit.
 | [`rspace-resting-pathmap-singleton-repair-2026-08-15.tsv`](../stack-safety/measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv) | `0b601ce67` / same | Eight post-repair pairs under the same 51-sample, 99%-confidence, 5 GiB/zero-swap protocol. Singleton arms take the same direct scan: small point-estimate differences are not a new algorithmic speedup. |
 | [`rspace-retained-bag-product-2026-08-16.tsv`](../stack-safety/measurements/rspace-retained-bag-product-2026-08-16.tsv) | Final production `61accc170`; replication checkpoint `304dc13e9` | Selector-only experiments 224/225 rejected and 226/229 historically accepted; 82 samples, recorded digests, 8 GiB/zero-swap cap. Small-cardinality fixed-cost losses remain visible. Not full COMM throughput. |
 
-The files retain commands, host descriptions, resource settings, source coordinates,
-per-cell estimates and run identifiers; some also retain aggregate sample digests.
-They do not contain every raw timing, original tool-version observation or original
-preregistration record. On 2026-09-07 the STDIO experiment lookup returned
-`experiment not found` for this report's historical slug and experiments 208, 218,
-233 and 327. An unfiltered 500-row request returned 71 current-version records; a lookup of a
-listed control record succeeded. The reviewed pgmcp queries filter `valid_to IS NULL`,
-so this demonstrates unavailable current-record lookup, not deletion of historical
-data or a failed STDIO connection. No database repair, record recreation or new
-benchmark was attempted. Resolving the original provenance remains required under
-5636; summary estimates cannot reconstruct the absent raw observations.
+The committed files retain commands, host descriptions, resource settings, source
+coordinates, per-cell estimates and run identifiers. The 2026-09-07 STDIO lookup
+returned `experiment not found` for experiments 208, 218, 233 and 327; a listed
+control record remained readable. A later read-only query of the current database
+found no experiment, run, sample, hypothesis or result rows for those four IDs.
+Thus the current service cannot supply their original provenance; its
+`valid_to IS NULL` lookup filter is not the whole explanation.
 
-The follow-up recovery map (artifact 501) preserves precise lookup keys without
-presenting them as recovered samples:
+On 2026-09-29, the existing pre-v86 pgmcp backup
+`~/.local/share/pgmcp/backups/pgmcp-pre-v86-20260902T1658.dump`
+(SHA-256 `afe3e1913c42001d3eba27de7f279e1c23d1d1e87e9bc449ab295ddd4be378c0`)
+yielded original experiment, locked-hypothesis, run and sample rows for 208, 218
+and 233. The tables were streamed with `pg_restore --data-only --table=... --file=-`;
+the 9.6 GiB dump was neither copied nor restored. Every recovered run has command,
+run-plan, host, source and time metadata. All 4,868 sample values are finite, and
+replicate indexes are contiguous within each run/arm/metric/unit group.
 
-| Original record | Retained retrieval keys and limits |
+| Original experiment | Recovered primary criterion and observations | Raw sample COPY-row SHA-256 |
+|---|---|---|
+| 208 | Locked 2026-08-15: increase `comm_operations_per_second`, Welch greater, α = 0.05, Cohen's d ≥ 0.5, planned n = 51. Forty-four complete runs × 51 samples = 2,244 observations; artifact 316 and heaptrack artifact 397 are in the dump. | `5516359d6967b378b3c2f4c2941c92f2272a31cda691b35c11d5f94de4b186a2` |
+| 218 | Locked 2026-08-16: decrease singleton atomic-remove latency, Welch less with α = 0.01 and d ≥ 0.5, plus median improvement ≥ 5%, planned n = 82. Two finalized runs × 410 samples = 820 observations across five cardinalities; both original sealed run digests are present. | `d9c814f0a18b18b55f3d712b19266ab2e3d40773945bb9dcb5881f1939f2b73b` |
+| 233 | Locked 2026-08-16: decrease mean exact EPathMap match latency, Welch less with α = 0.01 and relative change ≥ 5%, planned n = 33. Three complete runs contain 656, 656 and 492 samples, totaling 1,804; original artifact 321 is present. | `f2742e97912bda5ba3fc6a68c0ddfaa1504444a9dbf5d1761e25e6e77a1acaae` |
+
+These digests cover each experiment's original PostgreSQL `COPY` sample rows, not a
+new measurement or a claim that the current pgmcp service can query them. The
+original run metadata records the benchmark command and host conditions, but the
+audit has not established every observed compiler/Cargo version or environmental
+override. The Criterion combined-metric caveat for 233 remains in force.
+
+The retained September 5 Codex session transcript replays earlier pgmcp
+call-and-response payloads for experiment 327. Its SHA-256 is
+`65baa0891877faec9aa73ec0a08681a14f590bc2fc16ce95fb8c04ead5734775`;
+the [bounded transcript extract](../stack-safety/measurements/rspace-act-lmdb-experiment-327-transcript-2026-09-29.json)
+has SHA-256
+`555566dc9cfced5b022da475588d970e664449b831406d2163e8478c3531d453`.
+The preserved `experiment_open` result locked an **observational** criterion for a
+shared-prefix, 128-byte-payload ACT/LMDB fixture at `87a9584b3`. Six successful
+`experiment_record_measurement` calls preserve 18 size-labeled scalar values:
+write throughput, lookup throughput and disk bytes for ACT and LMDB at 256,
+4,096 and 16,384 entries. The ACT and LMDB run UUIDs are
+`3dd6f37f-7709-4d2c-b3e4-97371382bcd9` and
+`d0df5abd-1471-4a0b-85d6-44dfa5dd3d6e`; each received nine values.
+Preserved artifact call-and-response payloads contain IDs 409–412 and their submitted
+content. The retrieved historical snapshot still said `measuring`, with no
+decision or sealed run digest. Its accepted disk-byte submissions carried a
+unit-mismatch warning against the experiment's throughput unit. These 18
+values are the original **pgmcp-submitted scalars**, not Criterion's ten
+per-cell raw replicates; the transcript does not establish observed compiler
+or Cargo versions. The transcript event timestamps mark the later replay, not
+the benchmark or experiment creation times. This is retained original
+call-and-response payload evidence, not a restored database export or a new
+benchmark.
+
+The earlier retrieval map (artifact 501) remains useful for cross-checking the
+backup against committed summaries:
+
+| Original record | Retrieval keys and remaining limits |
 |---|---|
 | Retained prefilter TSV | First evidence commit `609cfcab1`; 12 per-arm run UUIDs, beginning `8980971c-a0ba-41e4-8a6c-506f393f44b5`. |
 | Resting-prefix TSV | First evidence commit `ebcb899f2`; 16 run UUIDs, beginning `dd32894e-5dd8-4992-9a26-b91aff58952e`. |
 | Resting singleton-repair TSV | First evidence commit `a38d4ca8d`; 16 run UUIDs, beginning `adf842b0-7e4e-4e2e-8eac-1f8dfa9dae76`. |
-| Single-root Bag publication, experiment 218 | `rspace-bag-single-root-commit-2026-08-16.tsv`, first evidence `2acd2b603`, retains both full sealed digests and reports 410 observations per arm across five cardinalities. It does not contain raw vectors or run UUIDs. |
-| EPathMap byte-native algebra, experiment 233 | `epathmap-ac-byte-native-2026-08-16.tsv`; evidence commit `d65037977` explicitly identifies artifact 321. Preserve the invalid combined-metric disclosure after Criterion rotated its `base`; do not reconstruct original controls from that directory. |
+| Single-root Bag publication, experiment 218 | `rspace-bag-single-root-commit-2026-08-16.tsv`, first evidence `2acd2b603`, retains both sealed digests. The backup now supplies the original two run UUIDs and 820 samples. |
+| EPathMap byte-native algebra, experiment 233 | `epathmap-ac-byte-native-2026-08-16.tsv`; evidence commit `d65037977` identifies artifact 321, which is present in the backup. Preserve the invalid combined-metric disclosure after Criterion rotated its `base`; do not reconstruct controls from that directory. |
 | Later retained-product replication | `0ed2274d8` identifies experiment **229**, artifact **320**, with the retained log digest in its TSV. This is not experiment 327 or a substitute for the original run. |
-| ACT/LMDB comparison, experiment 327 | Task 5636's progress event at `2026-09-05T01:06:33.884671Z` identifies artifacts **409/410** and the comparison/codec checks. This is an agent-recorded reference, not retrieved artifact contents. |
+| ACT/LMDB comparison, experiment 327 | The September 2 dump predates this experiment. A later session transcript replays the original pgmcp payloads for the locked observational hypothesis, 18 submitted scalar values, two run UUIDs, artifact content/IDs **409–412**, and a `measuring` snapshot. The linked extract records exact source-line hashes, but its event timestamps are replay timestamps. Current pgmcp database rows, Criterion per-replicate samples, observed tool versions and a final experiment decision remain unavailable. |
 
-All 44 original UUIDs remain in the first three linked TSVs. Historical source
-declares Criterion 0.5.1 and selects `nightly-2026-02-09`; those declarations do not
-establish the actual original compiler/Cargo versions or absence of overrides.
-The bounded retained-file search found no original raw sample vectors and no
-`target/criterion` directory. Current get/list calls still fail to retrieve the
-four experiments; the timeline path requires the same current experiment lookup.
-No original data is declared deleted. Completion of this provenance obligation
-requires readable original experiment/run/artifact records or an original export;
-newly measured or synthesized data cannot recreate historical preregistration.
+All 44 original UUIDs remain in the first three linked TSVs and match the
+recovered experiment 208 runs. Historical source declares Criterion 0.5.1 and
+selects `nightly-2026-02-09`; those declarations do not establish actual compiler
+versions or absence of overrides. Current get/list calls still fail to retrieve
+the four experiments. The v2 replay archive separately passed 13 ordinary
+concurrent checks with one capture-only ignore under task 5636; that archive is
+not the remaining baseline blocker. Completion of the original provenance
+obligation still requires reconciliation of the missing Criterion replicates,
+observed tool versions and any required original database export against the
+transcript-backed submission. No original data is declared deleted, and new
+measurements cannot recreate historical preregistration.
 
 The recorded 428-test package pass belongs to the August retained-product checkpoint,
 not today's complete package. The later full-library failure and narrowly passing

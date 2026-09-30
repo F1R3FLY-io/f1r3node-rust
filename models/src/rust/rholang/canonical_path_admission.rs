@@ -13,14 +13,14 @@
 //! the enclosing segment can complete.
 
 use crate::rust::canonical_path::CanonicalTopLevelPathForm;
+#[cfg(test)]
+use crate::rust::rholang::canonical_bytes_arena::FrozenCanonicalBytes;
 use crate::rust::rholang::canonical_bytes_arena::{
     CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesArenaError, CanonicalBytesHandle,
     CanonicalLocatedByte, CanonicalSourceSlot,
 };
-#[cfg(test)]
-use crate::rust::rholang::canonical_bytes_arena::FrozenCanonicalBytes;
-use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
 use crate::rust::rholang::canonical_source_tree::SourceTreeWindow;
+use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
 use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
 
 const TERM: u8 = 0x00;
@@ -801,9 +801,7 @@ impl CanonicalPathReducer {
         state: &PersistentFocusedPath,
         available: usize,
     ) -> Option<(CanonicalPathObligationId, usize)> {
-        if state.fault.is_some()
-            || state.current.status != PathStatus::Open
-        {
+        if state.fault.is_some() || state.current.status != PathStatus::Open {
             return None;
         }
         let Frame::Obligation {
@@ -824,8 +822,11 @@ impl CanonicalPathReducer {
             .min(usize::try_from(remaining.checked_sub(1)?).unwrap_or(usize::MAX))
             .min(usize::MAX - state.stamp);
         if let Some(root) = state.owners {
-            let distance = self.owners.entries[root.0].all_boundary.end
-                .checked_sub(state.stamp as u128)?.checked_sub(1)?;
+            let distance = self.owners.entries[root.0]
+                .all_boundary
+                .end
+                .checked_sub(state.stamp as u128)?
+                .checked_sub(1)?;
             width = width.min(usize::try_from(distance).unwrap_or(usize::MAX));
         }
         (width != 0).then_some((obligation.id, width))
@@ -3160,8 +3161,9 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         }
     }
 
-    pub(crate) fn new_with_source(source: Option<SourceTreeWindow<'src>>)
-        -> Result<Self, CanonicalBytesArenaError> {
+    pub(crate) fn new_with_source(
+        source: Option<SourceTreeWindow<'src>>,
+    ) -> Result<Self, CanonicalBytesArenaError> {
         let mut topology = Self::new();
         if let Some(source) = source {
             let len = source.len();
@@ -3185,19 +3187,26 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         } else {
             available.min(usize::MAX - self.reducer.machine.stats.bulk_bytes)
         };
-        self.reducer.reusable_payload_prefix(&state, available)
+        self.reducer
+            .reusable_payload_prefix(&state, available)
             .map_or(0, |(_, width)| width)
     }
 
-    pub(crate) fn try_forward_source(&mut self, range: std::ops::Range<usize>)
-        -> Result<bool, CanonicalBytesArenaError> {
+    pub(crate) fn try_forward_source(
+        &mut self,
+        range: std::ops::Range<usize>,
+    ) -> Result<bool, CanonicalBytesArenaError> {
         if self.root_left {
             return Ok(false);
         }
-        let Some((source, len)) = self.source else { return Ok(false) };
+        let Some((source, len)) = self.source else {
+            return Ok(false);
+        };
         if range.start > range.end || range.end > len {
             return Err(CanonicalBytesArenaError::SliceOutsideSequence {
-                start: range.start, end: range.end, len,
+                start: range.start,
+                end: range.end,
+                len,
             });
         }
         let width = range.end - range.start;
@@ -3205,9 +3214,14 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
             return Ok(false);
         }
         let previous = self.current;
-        let coalesce = self.restore.last().is_some_and(|run| run.latest.state == previous.state);
+        let coalesce = self
+            .restore
+            .last()
+            .is_some_and(|run| run.latest.state == previous.state);
         if !coalesce {
-            self.restore.try_reserve(1).map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+            self.restore
+                .try_reserve(1)
+                .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
         }
         let bytes = self.arena.append_source(previous.bytes, source, range)?;
         let latest = if width == 1 {
@@ -3215,21 +3229,34 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         } else {
             CanonicalPathReducerHandle {
                 state: previous.state,
-                bytes: self.arena.slice(bytes, 0..bytes.len() - 1)
+                bytes: self
+                    .arena
+                    .slice(bytes, 0..bytes.len() - 1)
                     .expect("a positive checked append retains its strict predecessor prefix"),
             }
         };
         if coalesce {
-            self.restore.last_mut().expect("the checked history run remains present").latest = latest;
+            self.restore
+                .last_mut()
+                .expect("the checked history run remains present")
+                .latest = latest;
         } else {
             self.restore.push(CanonicalPathRestoreRun {
-                latest, first_depth: previous.bytes.len(),
+                latest,
+                first_depth: previous.bytes.len(),
             });
         }
-        self.current = CanonicalPathReducerHandle { state: previous.state, bytes };
+        self.current = CanonicalPathReducerHandle {
+            state: previous.state,
+            bytes,
+        };
         self.reducer.machine.stats.edges += width;
-        self.reducer.machine.stats.max_topology_depth =
-            self.reducer.machine.stats.max_topology_depth.max(bytes.len());
+        self.reducer.machine.stats.max_topology_depth = self
+            .reducer
+            .machine
+            .stats
+            .max_topology_depth
+            .max(bytes.len());
         #[cfg(test)]
         {
             self.reducer.machine.stats.bulk_operations += 1;
@@ -3242,8 +3269,12 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         if self.root_left {
             return 0;
         }
-        self.restore.last().and_then(|run| run.latest.bytes.len().checked_sub(run.first_depth))
-            .map_or(0, |last_offset| available.min(last_offset.saturating_add(1)))
+        self.restore
+            .last()
+            .and_then(|run| run.latest.bytes.len().checked_sub(run.first_depth))
+            .map_or(0, |last_offset| {
+                available.min(last_offset.saturating_add(1))
+            })
     }
 
     #[cfg(test)]
@@ -3265,15 +3296,21 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
 
     pub(crate) fn retained_completed_obligation(
         &mut self,
-    ) -> Result<Option<CanonicalPathCompletedObligation<SourceTreeWindow<'src>>>, CanonicalPathAdmissionError> {
-        Ok(self.reducer.completed_obligation(&self.arena, self.current)?.map(|completed| {
-            CanonicalPathCompletedObligation {
+    ) -> Result<
+        Option<CanonicalPathCompletedObligation<SourceTreeWindow<'src>>>,
+        CanonicalPathAdmissionError,
+    > {
+        Ok(self
+            .reducer
+            .completed_obligation(&self.arena, self.current)?
+            .map(|completed| CanonicalPathCompletedObligation {
                 obligation: completed.obligation,
-                payload: self.arena.retained_source_window(completed.payload)
+                payload: self
+                    .arena
+                    .retained_source_window(completed.payload)
                     .expect("completed payload is a checked historical arena span"),
                 payload_end: completed.payload_end,
-            }
-        }))
+            }))
     }
 
     pub(crate) fn edge(

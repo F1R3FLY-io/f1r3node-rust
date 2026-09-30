@@ -23,6 +23,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::num::NonZeroUsize;
 
@@ -33,7 +34,7 @@ pub mod substitution_cost;
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyIteration};
 use pathmap::PathMap;
 use prost::encoding::{encoded_len_varint, key_len};
-use rspace_plus_plus::rspace::bag::{Bag, UniqueBagError};
+use rspace_plus_plus::rspace::bag::{Bag, BagError, UniqueBagError};
 use rspace_plus_plus::rspace::pathmap_mutation::BarrierProvider;
 
 use super::canonical_path::tag as path_tag;
@@ -92,6 +93,479 @@ pub(crate) struct ProtobufParBuilder {
     occurrence_root: Option<usize>,
     locally_free: Vec<u8>,
     connective_used: bool,
+}
+
+pub(crate) struct ProtobufRootStream {
+    entries: Bag,
+    occurrences: Vec<u8>,
+    overflow_counts: BTreeMap<usize, Multiplicity>,
+    key: Vec<u8>,
+    max_key: Vec<u8>,
+    sorted_unique: bool,
+    overlay: BTreeMap<Vec<u8>, (usize, bool)>,
+    overlay_has_suffix: bool,
+    score_len: usize,
+    protobuf_len: usize,
+    protobuf_zero_count: usize,
+    singleton_stable: bool,
+}
+
+impl Default for ProtobufRootStream {
+    fn default() -> Self {
+        Self {
+            entries: Bag::new(),
+            occurrences: Vec::new(),
+            overflow_counts: BTreeMap::new(),
+            key: Vec::new(),
+            max_key: Vec::new(),
+            sorted_unique: true,
+            overlay: BTreeMap::new(),
+            overlay_has_suffix: false,
+            score_len: 0,
+            protobuf_len: 0,
+            protobuf_zero_count: 0,
+            singleton_stable: false,
+        }
+    }
+}
+
+impl ProtobufRootStream {
+    const OVERLAY_LIMIT: usize = 64;
+
+    fn convert_to_ordinals(&mut self) {
+        if !self.sorted_unique {
+            return;
+        }
+        let mut ordinal = 0u64;
+        self.entries = std::mem::take(&mut self.entries)
+            .try_reweight(|key, multiplicity| {
+                debug_assert_eq!(multiplicity, Multiplicity::ONE);
+                let index = match self.overlay.get(key) {
+                    Some(&(index, true)) => index,
+                    entry => {
+                        let index = ordinal as usize;
+                        if let Some(&(recorded, false)) = entry {
+                            debug_assert_eq!(recorded, index);
+                        }
+                        ordinal = ordinal.checked_add(1).expect("addressable root ordinal");
+                        index
+                    }
+                };
+                Ok::<_, BagError>(
+                    Multiplicity::new(u64::try_from(index + 1).expect("addressable root ordinal"))
+                        .expect("a positive ordinal is a multiplicity"),
+                )
+            })
+            .expect("ordinal cardinality fits the exact Bag counter");
+        debug_assert_eq!(
+            ordinal as usize + self.overlay.values().filter(|(_, suffix)| *suffix).count(),
+            self.occurrences.len()
+        );
+        self.overlay.clear();
+        self.overlay_has_suffix = false;
+        self.sorted_unique = false;
+    }
+
+    fn multiplicity_at(&self, index: usize) -> Multiplicity {
+        self.overflow_counts
+            .get(&index)
+            .copied()
+            .unwrap_or_else(|| {
+                Multiplicity::new(u64::from(self.occurrences[index]))
+                    .expect("a streamed root endpoint remains positive")
+            })
+    }
+
+    fn sorted_index(&self) -> Option<usize> {
+        if let Some(&(index, _)) = self.overlay.get(&self.key) {
+            return Some(index);
+        }
+        if !self.entries.contains(&self.key) {
+            return None;
+        }
+        let mut ordinal = 0usize;
+        let mut found = None;
+        let _ = self.entries.try_visit_relative_prefix(&[], |path, _| {
+            if self.overlay.get(path).is_some_and(|(_, suffix)| *suffix) {
+                return Ok::<_, ()>(());
+            }
+            if path == self.key {
+                found = Some(ordinal);
+                return Err(());
+            }
+            ordinal += 1;
+            Ok(())
+        });
+        Some(found.expect("a present sorted root endpoint has a prefix ordinal"))
+    }
+
+    fn insert_key(
+        &mut self,
+        own_score_len: usize,
+        own_wire_len: usize,
+        own_zero_count: usize,
+        canonical_path_stable: bool,
+        limit: usize,
+    ) -> bool {
+        let Some(score_len) = self
+            .score_len
+            .checked_add(own_score_len)
+            .filter(|&value| value <= limit)
+        else {
+            return false;
+        };
+        let Some(protobuf_len) = self
+            .protobuf_len
+            .checked_add(own_wire_len)
+            .filter(|&value| value <= limit)
+        else {
+            return false;
+        };
+        let Some(protobuf_zero_count) = self
+            .protobuf_zero_count
+            .checked_add(own_zero_count)
+            .filter(|&value| value <= limit)
+        else {
+            return false;
+        };
+        if self.key.len() > limit || self.key.len() > isize::MAX as usize {
+            return false;
+        }
+        let Some(proposed) = self
+            .occurrences
+            .len()
+            .checked_add(1)
+            .and_then(|value| u64::try_from(value).ok())
+            .and_then(|value| Multiplicity::new(value).ok())
+        else {
+            return false;
+        };
+        let beyond_max = self.occurrences.is_empty() || self.key > self.max_key;
+        let mut append_prefix = false;
+        let mut sorted_result = None;
+        if self.sorted_unique {
+            if !self.overlay_has_suffix && beyond_max {
+                let count = self
+                    .entries
+                    .insert_many(&self.key, Multiplicity::ONE)
+                    .expect("a fresh root endpoint fits exact Bag cardinality");
+                debug_assert_eq!(count, Multiplicity::ONE);
+                append_prefix = true;
+                sorted_result = Some((proposed, true));
+            } else {
+                let index = self.sorted_index();
+                if self.overlay.len() == Self::OVERLAY_LIMIT
+                    && !self.overlay.contains_key(&self.key)
+                {
+                    self.convert_to_ordinals();
+                } else if let Some(index) = index {
+                    self.overlay
+                        .entry(self.key.clone())
+                        .or_insert((index, false));
+                    sorted_result = Some((
+                        Multiplicity::new(u64::try_from(index + 1).expect("addressable ordinal"))
+                            .expect("positive ordinal"),
+                        false,
+                    ));
+                } else {
+                    let count = self
+                        .entries
+                        .insert_many(&self.key, Multiplicity::ONE)
+                        .expect("a fresh root endpoint fits exact Bag cardinality");
+                    debug_assert_eq!(count, Multiplicity::ONE);
+                    self.overlay
+                        .insert(self.key.clone(), (self.occurrences.len(), true));
+                    self.overlay_has_suffix = true;
+                    sorted_result = Some((proposed, true));
+                }
+            }
+        }
+        let (id, inserted) = sorted_result.unwrap_or_else(|| {
+            if beyond_max {
+                self.entries.get_or_insert_from_cursor(&self.key, proposed)
+            } else {
+                self.entries.get_or_insert(&self.key, proposed)
+            }
+            .expect("addressable unique root ordinals fit exact Bag cardinality")
+        });
+        if inserted {
+            if append_prefix || (!self.sorted_unique && beyond_max) {
+                if self.max_key.is_empty() {
+                    std::mem::swap(&mut self.max_key, &mut self.key);
+                } else {
+                    self.max_key.clear();
+                    self.max_key.extend_from_slice(&self.key);
+                }
+            }
+            self.occurrences.push(1);
+            self.singleton_stable = self.occurrences.len() == 1 && canonical_path_stable;
+        } else {
+            let index = id.get() as usize - 1;
+            let Ok(multiplicity) = self.multiplicity_at(index).checked_add(Multiplicity::ONE)
+            else {
+                return false;
+            };
+            if let Ok(small) = u8::try_from(multiplicity.get()) {
+                self.occurrences[index] = small;
+            } else {
+                self.overflow_counts.insert(index, multiplicity);
+            }
+            self.singleton_stable = false;
+        }
+        self.score_len = score_len;
+        self.protobuf_len = protobuf_len;
+        self.protobuf_zero_count = protobuf_zero_count;
+        true
+    }
+
+    pub(crate) fn try_insert_fixed_expr(&mut self, expr: &Expr, limit: usize) -> bool {
+        if !matches!(
+            expr.expr_instance.as_ref(),
+            Some(ExprInstance::GBool(_) | ExprInstance::GInt(_) | ExprInstance::GDouble(_))
+        ) {
+            return false;
+        }
+        self.key.clear();
+        self.key.extend_from_slice(&PAR_BAG_KEY_DOMAIN);
+        self.key.push(ParComponentTag::Expr.byte());
+        let header = PAR_BAG_KEY_DOMAIN.len() + 1;
+        let score_len = Expr::append_key_suffix(expr, &mut self.key);
+        let Ok(score_trailer) = u64::try_from(score_len) else {
+            return false;
+        };
+        let Some(body_start) = header
+            .checked_add(score_len)
+            .filter(|&value| value <= self.key.len())
+        else {
+            return false;
+        };
+        let body = &self.key[body_start..];
+        let prefix = InlineWireBytes::length_delimited_prefix(
+            ParComponentTag::Expr.byte().into(),
+            body.len(),
+        );
+        let Some(wire_len) = key_len(ParComponentTag::Expr.byte().into())
+            .checked_add(encoded_len_varint(body.len() as u64))
+            .and_then(|value| value.checked_add(body.len()))
+        else {
+            return false;
+        };
+        let Some(zero_count) = prefix
+            .zero_count()
+            .checked_add(body.iter().filter(|&&byte| byte == 0).count())
+        else {
+            return false;
+        };
+        self.key.extend_from_slice(&score_trailer.to_be_bytes());
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::EmitRootKey(self.key.len()));
+        self.insert_key(score_len, wire_len, zero_count, true, limit)
+    }
+
+    pub(crate) fn try_insert(
+        &mut self,
+        arena: &ParConstruction,
+        component: PlannedComponent,
+        limit: usize,
+    ) -> bool {
+        let Ok(summary) = arena.make_occurrence_node(
+            Occurrence {
+                component,
+                multiplicity: Multiplicity::ONE,
+            },
+            None,
+            None,
+        ) else {
+            return false;
+        };
+        let node = &arena.components[component.0];
+        let body_len = arena.protobuf_nodes[node.protobuf].encoded_len;
+        let Some(capacity) = PAR_BAG_KEY_DOMAIN
+            .len()
+            .checked_add(1)
+            .and_then(|value| value.checked_add(summary.score_len))
+            .and_then(|value| value.checked_add(body_len))
+            .and_then(|value| value.checked_add(std::mem::size_of::<u64>()))
+            .filter(|&value| value <= isize::MAX as usize && value <= limit)
+        else {
+            return false;
+        };
+        if u64::try_from(summary.score_len).is_err() {
+            return false;
+        }
+        arena
+            .component_key_into(component, &mut self.key)
+            .expect("preflighted root component key");
+        debug_assert_eq!(self.key.len(), capacity);
+        self.insert_key(
+            summary.score_len,
+            summary.protobuf_len,
+            summary.protobuf_zero_count,
+            node.canonical_path_stable,
+            limit,
+        )
+    }
+
+    pub(crate) fn replay(
+        mut self,
+        arena: &mut ParConstruction,
+        parent: &mut ProtobufParBuilder,
+    ) -> Result<(), ParConstructionError> {
+        self.convert_to_ordinals();
+        let mut ordered = vec![Vec::new(); self.occurrences.len()];
+        self.entries
+            .visit_prefix(&[], |key, id| ordered[id.get() as usize - 1] = key.to_vec());
+        for (index, key) in ordered.into_iter().enumerate() {
+            let multiplicity = self.multiplicity_at(index);
+            let header = PAR_BAG_KEY_DOMAIN.len() + 1;
+            let trailer = key.len() - std::mem::size_of::<u64>();
+            let score_len =
+                u64::from_be_bytes(key[trailer..].try_into().expect("score trailer")) as usize;
+            let tag = ParComponentTag::from_byte(key[PAR_BAG_KEY_DOMAIN.len()])
+                .expect("streamed canonical component tag");
+            let score = arena.score_from_encoded(&key[header..header + score_len])?;
+            let body = &key[header + score_len..trailer];
+            let protobuf = arena.protobuf_nodes.len();
+            arena.protobuf_nodes.push(ProtoNode {
+                pieces: if body.is_empty() {
+                    ProtoProgram::default()
+                } else {
+                    ProtoProgram::One(ProtoPiece::Bytes(body.to_vec().into_boxed_slice()))
+                },
+                encoded_len: body.len(),
+                zero_count: body.iter().filter(|&&byte| byte == 0).count(),
+            });
+            let component = PlannedComponent(arena.components.len());
+            arena.components.push(ComponentNode {
+                tag,
+                score,
+                protobuf,
+                canonical_path_stable: self.singleton_stable,
+                canonical_segment: None,
+                semantic_shape: ComponentSemanticShape::Opaque,
+            });
+            parent.occurrence_root =
+                arena.insert_occurrence(parent.occurrence_root, Occurrence {
+                    component,
+                    multiplicity,
+                })?;
+        }
+        Ok(())
+    }
+
+    fn validate_root_summary(
+        &self,
+        parent: &ProtobufParBuilder,
+    ) -> Result<(), ParConstructionError> {
+        1usize
+            .checked_add(10)
+            .and_then(|length| length.checked_add(self.score_len))
+            .and_then(|length| length.checked_add(10))
+            .and_then(|length| length.checked_add(1))
+            .ok_or(ParConstructionError::LengthOverflow("canonical score"))?;
+        let mut protobuf_len = self.protobuf_len;
+        if !parent.locally_free.is_empty() {
+            protobuf_len = protobuf_len
+                .checked_add(prost::encoding::bytes::encoded_len(9, &parent.locally_free))
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "Par locally-free field",
+                ))?;
+            let prefix = InlineWireBytes::length_delimited_prefix(9, parent.locally_free.len());
+            self.protobuf_zero_count
+                .checked_add(prefix.zero_count())
+                .and_then(|count| {
+                    count.checked_add(
+                        parent
+                            .locally_free
+                            .iter()
+                            .filter(|&&byte| byte == 0)
+                            .count(),
+                    )
+                })
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "Par protobuf zero-byte count",
+                ))?;
+        }
+        if parent.connective_used {
+            protobuf_len
+                .checked_add(prost::encoding::bool::encoded_len(10, &true))
+                .ok_or(ParConstructionError::LengthOverflow("Par connective flag"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        self,
+        _arena: &mut ParConstruction,
+        parent: ProtobufParBuilder,
+    ) -> Result<Par, ParConstructionError> {
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::BeginFinish);
+        self.validate_root_summary(&parent)?;
+        let singleton = self.occurrences.len() == 1 && self.multiplicity_at(0) == Multiplicity::ONE;
+        let mut accumulator = CanonicalParBagAccumulator::new();
+        let counts = &self.occurrences;
+        let overflow_counts = &self.overflow_counts;
+        let stable = self.singleton_stable;
+        let mut record = |key: &[u8], multiplicity| {
+            let trailer = key.len() - std::mem::size_of::<u64>();
+            let score_len =
+                u64::from_be_bytes(key[trailer..].try_into().expect("score trailer")) as usize;
+            accumulator
+                .record_prevalidated(multiplicity, &CanonicalKeyMetadata {
+                    tag: ParComponentTag::from_byte(key[PAR_BAG_KEY_DOMAIN.len()])
+                        .expect("streamed component tag"),
+                    body_len: trailer - PAR_BAG_KEY_DOMAIN.len() - 1 - score_len,
+                    canonical_path_stable: stable,
+                })
+                .map_err(ParConstructionError::FamilyMetrics)?;
+            Ok::<_, ParConstructionError>(())
+        };
+        let entries = if self.sorted_unique {
+            let mut entries = self.entries;
+            for (key, &(index, _)) in &self.overlay {
+                let multiplicity = overflow_counts.get(&index).copied().unwrap_or_else(|| {
+                    Multiplicity::new(u64::from(counts[index]))
+                        .expect("a streamed root endpoint remains positive")
+                });
+                if multiplicity > Multiplicity::ONE {
+                    entries.insert_many(
+                        key,
+                        Multiplicity::new(multiplicity.get() - 1)
+                            .expect("a repeated root endpoint adds positively"),
+                    )?;
+                }
+            }
+            if singleton {
+                record(&self.max_key, Multiplicity::ONE)?;
+            } else {
+                entries.try_visit_relative_prefix(&[], |key, multiplicity| {
+                    record(key, multiplicity)
+                })?;
+            }
+            entries
+        } else {
+            self.entries.try_reweight(|key, id| {
+                let index = id.get() as usize - 1;
+                let multiplicity = overflow_counts.get(&index).copied().unwrap_or_else(|| {
+                    Multiplicity::new(u64::from(counts[index]))
+                        .expect("a streamed root endpoint remains positive")
+                });
+                record(key, multiplicity)?;
+                Ok::<_, ParConstructionError>(multiplicity)
+            })?
+        };
+        let mut components = accumulator.finish(entries);
+        if singleton {
+            let tag = ParComponentTag::from_byte(self.max_key[PAR_BAG_KEY_DOMAIN.len()])
+                .expect("singleton component tag");
+            components.seed_singleton_derived_caches(tag, &self.max_key, None);
+        }
+        let result = Par::from_parts(components, parent.locally_free, parent.connective_used);
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::FinishOk);
+        Ok(result)
+    }
 }
 
 impl ProtobufParBuilder {
@@ -3699,18 +4173,18 @@ impl ParConstruction {
         )
     }
 
-    fn par_from_occurrence_root(
+    fn par_summaries(
         &mut self,
         occurrence_root: Option<usize>,
-        locally_free: Vec<u8>,
+        score_len: usize,
+        mut protobuf_len: usize,
+        mut protobuf_zero_count: usize,
+        locally_free: &Vec<u8>,
         connective_used: bool,
-    ) -> Result<PlannedPar, ParConstructionError> {
-        self.seal_occurrences(occurrence_root);
-        let distinct_len = self.occurrence_distinct_len(occurrence_root);
-        let aggregate = occurrence_root.map(|root| self.occurrence_nodes[root]);
+    ) -> Result<(PlannedScore, usize, usize), ParConstructionError> {
         let occurrence_scores = self.score_from_pieces(vec![ScorePiece::OccurrenceScores {
             root: occurrence_root,
-            encoded_len: aggregate.map_or(0, |node| node.score_len),
+            encoded_len: score_len,
         }])?;
         let connective_score = self.score_i64(i64::from(connective_used))?;
         let score = self.score_node_with_pieces(Score::PAR, vec![
@@ -3718,11 +4192,9 @@ impl ParConstruction {
             ScorePiece::Child(connective_score),
         ])?;
 
-        let mut protobuf_len = aggregate.map_or(0, |node| node.protobuf_len);
-        let mut protobuf_zero_count = aggregate.map_or(0, |node| node.protobuf_zero_count);
         if !locally_free.is_empty() {
             protobuf_len = protobuf_len
-                .checked_add(prost::encoding::bytes::encoded_len(9, &locally_free))
+                .checked_add(prost::encoding::bytes::encoded_len(9, locally_free))
                 .ok_or(ParConstructionError::LengthOverflow(
                     "Par locally-free field",
                 ))?;
@@ -3739,6 +4211,26 @@ impl ParConstruction {
                 .checked_add(prost::encoding::bool::encoded_len(10, &true))
                 .ok_or(ParConstructionError::LengthOverflow("Par connective flag"))?;
         }
+        Ok((score, protobuf_len, protobuf_zero_count))
+    }
+
+    fn par_from_occurrence_root(
+        &mut self,
+        occurrence_root: Option<usize>,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        self.seal_occurrences(occurrence_root);
+        let distinct_len = self.occurrence_distinct_len(occurrence_root);
+        let aggregate = occurrence_root.map(|root| self.occurrence_nodes[root]);
+        let (score, protobuf_len, protobuf_zero_count) = self.par_summaries(
+            occurrence_root,
+            aggregate.map_or(0, |node| node.score_len),
+            aggregate.map_or(0, |node| node.protobuf_len),
+            aggregate.map_or(0, |node| node.protobuf_zero_count),
+            &locally_free,
+            connective_used,
+        )?;
 
         let singleton_occurrence = (distinct_len == 1)
             .then(|| {
@@ -4250,8 +4742,16 @@ impl ParConstruction {
         out.reserve(capacity);
         out.extend_from_slice(&PAR_BAG_KEY_DOMAIN);
         out.push(component.tag.byte());
-        self.emit_score(component.score, out);
-        self.emit_proto(component.protobuf, out);
+        match &self.scores[component.score.0].pieces {
+            ScoreProgram::Pooled(span) => out.extend_from_slice(span.view(&self.byte_pool)),
+            _ => self.emit_score(component.score, out),
+        }
+        match &self.protobuf_nodes[component.protobuf].pieces {
+            ProtoProgram::One(ProtoPiece::PooledBytes(span)) => {
+                out.extend_from_slice(span.view(&self.byte_pool))
+            }
+            _ => self.emit_proto(component.protobuf, out),
+        }
         out.extend_from_slice(&trailer.to_be_bytes());
         debug_assert_eq!(out.len(), capacity);
         #[cfg(feature = "protobuf-projection-experiment")]

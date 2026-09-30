@@ -11,8 +11,8 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{EPathMap, Expr, Par, Var};
 use crate::rust::epathmap_trie_codec::{
-    CanonicalSnapshotKey, EPathMapMode, inspect_canonical_map_snapshot, inspect_canonical_snapshot,
-    snapshot_route_hint,
+    inspect_canonical_map_snapshot, inspect_canonical_snapshot, snapshot_route_hint,
+    CanonicalSnapshotKey, EPathMapMode,
 };
 use crate::rust::rholang::protobuf_encoder;
 

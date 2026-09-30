@@ -244,7 +244,11 @@ fn verify_executable_only_bindings(bindings: &[Binding], sources: &str, catalog:
         .iter()
         .map(|(id, _, _)| *id)
         .collect::<BTreeSet<_>>();
-    assert_eq!(ids.len(), bindings.len(), "executable-only IDs must be unique");
+    assert_eq!(
+        ids.len(),
+        bindings.len(),
+        "executable-only IDs must be unique"
+    );
 
     let targets = bindings
         .iter()
@@ -258,7 +262,7 @@ fn verify_executable_only_bindings(bindings: &[Binding], sources: &str, catalog:
 
     for (id, symbol, target) in bindings {
         assert_eq!(
-            catalog.matches(&format!("| {id} |" )).count(),
+            catalog.matches(&format!("| {id} |")).count(),
             1,
             "catalog row {id} must exist exactly once",
         );

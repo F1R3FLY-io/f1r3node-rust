@@ -15,15 +15,16 @@
 use std::fmt;
 
 use pathmap::PathMap;
+use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
 
 use super::canonical_bytes_arena::CanonicalByteProvenance;
 #[cfg(test)]
 use super::canonical_bytes_arena::CanonicalBytesArena;
 use super::canonical_path_admission::{
-    CanonicalPathObligation, CanonicalPathObligationId, CanonicalPathObligationKind,
-    CanonicalPathObligationResolution, CanonicalPathSource, CanonicalPathStreamReducer,
-    CanonicalPathSummary, CanonicalPathTopologyAdmission, CanonicalPathTransition,
-    CanonicalPathCompletedObligation, LocatedPathByte, NestedEpmMode,
+    CanonicalPathCompletedObligation, CanonicalPathObligation, CanonicalPathObligationId,
+    CanonicalPathObligationKind, CanonicalPathObligationResolution, CanonicalPathSource,
+    CanonicalPathStreamReducer, CanonicalPathSummary, CanonicalPathTopologyAdmission,
+    CanonicalPathTransition, LocatedPathByte, NestedEpmMode,
 };
 use super::canonical_score_bytes::{
     CanonicalScoreArena, CanonicalScoreArenaError, CanonicalScoreHandle,
@@ -32,16 +33,16 @@ use super::canonical_semantics::{
     self as semantics, CanonicalScoreAlgebra, ParComponentTag, PreScoredGroundScore,
     PreScoredUnforgeableScore, Score,
 };
+use super::canonical_source_tree::SourceTreeWindow;
+#[cfg(test)]
+use super::indexed_protobuf::OwnedIndexedByteRegion;
 use super::indexed_protobuf::{
     IndexedBytePosition, IndexedByteRegion, IndexedCanonicalField, IndexedCanonicalFieldCursor,
     IndexedCanonicalFieldValue, IndexedLocatedByteCursor, LocatedCanonicalProtobufError,
 };
-use super::canonical_source_tree::SourceTreeWindow;
-#[cfg(test)]
-use super::indexed_protobuf::OwnedIndexedByteRegion;
 use super::match_schema::{
-    ResolvedProtobufField, ResolvedProtobufPayload, RhoMatchFieldKind, RhoMatchPayloadKind,
-    RhoMatchProgram, resolve_protobuf_field, wire_program_by_type_id,
+    resolve_protobuf_field, wire_program_by_type_id, ResolvedProtobufField,
+    ResolvedProtobufPayload, RhoMatchFieldKind, RhoMatchPayloadKind, RhoMatchProgram,
 };
 use super::match_schema_tables::*;
 #[cfg(test)]
@@ -52,7 +53,6 @@ use crate::rust::epathmap_trie_codec::{
     EPathMapMode, IndexedCanonicalEpm1TopologyCursor, IndexedCanonicalEpm1TopologyEvent,
     TrieCodecError,
 };
-use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalProtobufAdmissionStats {
@@ -650,7 +650,8 @@ impl<'src> MessageFrame<'src> {
                                 "retained raw Par history is not a component with a body",
                             ));
                         };
-                        let SemanticSummary::Component(previous_component) = &summary.semantic else {
+                        let SemanticSummary::Component(previous_component) = &summary.semantic
+                        else {
                             return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
                                 "retained raw Par history has no component score",
                             ));
@@ -1294,8 +1295,9 @@ fn reduce_component<'src>(
         ParComponentTag::Match => reduce_component_match(frame, scores),
         ParComponentTag::Bundle => reduce_component_bundle(frame, scores),
         ParComponentTag::If => reduce_component_if(frame, scores),
-        ParComponentTag::Expr | ParComponentTag::Connective | ParComponentTag::GUnforgeable =>
-            reduce_component_specialized(frame, family),
+        ParComponentTag::Expr | ParComponentTag::Connective | ParComponentTag::GUnforgeable => {
+            reduce_component_specialized(frame, family)
+        }
     }?;
     Ok(component_summary(family, score, complete, false))
 }
@@ -1399,8 +1401,7 @@ fn reduce_component_new<'src>(
             let mut uri_scores = Vec::new();
             let mut previous_uri: Option<AdmissionRegion<'src>> = None;
             for occurrence in uris {
-                let SemanticValue::Scalar(SemanticScalar::String(uri)) = &occurrence.value
-                else {
+                let SemanticValue::Scalar(SemanticScalar::String(uri)) = &occurrence.value else {
                     return Err(frame.schema_error_at(
                         3,
                         occurrence.field_position,
@@ -2591,24 +2592,18 @@ impl<'src> FrameRequest<'src> {
         stats: &mut CanonicalProtobufAdmissionStats,
     ) -> Result<(), CanonicalProtobufAdmissionError> {
         match self {
-            Self::Message { region, program } => {
-                Self::push_message(frames, stats, region, program)
-            }
+            Self::Message { region, program } => Self::push_message(frames, stats, region, program),
             Self::Map {
                 region,
                 owner,
                 field,
                 value_type_id,
-            } => {
-                Self::push_map(frames, stats, owner, field, value_type_id, region)
-            }
+            } => Self::push_map(frames, stats, owner, field, value_type_id, region),
             Self::EPathMap {
                 region,
                 owner,
                 field,
-            } => {
-                Self::push_epathmap(frames, stats, owner, field, region)
-            }
+            } => Self::push_epathmap(frames, stats, owner, field, region),
             Self::CanonicalPath(region) => {
                 Self::push_canonical_path(frames, region);
                 Ok(())
@@ -3238,7 +3233,9 @@ fn map_step<'src>(
     }
 }
 
-fn try_epathmap_batch(frame: &mut EPathMapFrame<'_>) -> Result<bool, CanonicalProtobufAdmissionError> {
+fn try_epathmap_batch(
+    frame: &mut EPathMapFrame<'_>,
+) -> Result<bool, CanonicalProtobufAdmissionError> {
     #[cfg(test)]
     if standalone_path_admission::scalar_epm_transport() {
         return Ok(false);
@@ -3258,7 +3255,8 @@ fn try_epathmap_batch(frame: &mut EPathMapFrame<'_>) -> Result<bool, CanonicalPr
         return Ok(false);
     };
     let accepted = match direction {
-        CanonicalCompactTrieLineDirection::Forward => frame.path
+        CanonicalCompactTrieLineDirection::Forward => frame
+            .path
             .try_forward_source(prepared.source_range())
             .map_err(|_| CanonicalProtobufAdmissionError::SizeOverflow)?,
         CanonicalCompactTrieLineDirection::Unwind => frame.path.try_leave_run(width).is_some(),
@@ -3400,7 +3398,9 @@ fn first_score_difference<'src>(
 }
 
 fn increment_frame_count(count: &mut usize) -> Result<(), CanonicalProtobufAdmissionError> {
-    *count = count.checked_add(1).ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    *count = count
+        .checked_add(1)
+        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
     Ok(())
 }
 
@@ -3697,7 +3697,7 @@ mod tests {
         Bundle, Connective, ConnectiveBody, EMap, ESet, Expr, GPrivate, GUnforgeable, If,
         KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
     };
-    use crate::rust::par_bag::{PAR_BAG_KEY_DOMAIN, ParBagComponent, with_component_key};
+    use crate::rust::par_bag::{with_component_key, ParBagComponent, PAR_BAG_KEY_DOMAIN};
     use crate::rust::rhoapi_ext::EPathMap;
     use crate::rust::rholang::match_schema_tables::{
         BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
@@ -3707,9 +3707,9 @@ mod tests {
     };
     use crate::rust::rholang::protobuf_schema::ProtobufField;
     use crate::rust::rholang::schema_test_adapters::{
-        GENERATED_SCHEMA_TEST_EXTERN_COUNT, GENERATED_SCHEMA_TEST_EXTERN_NAMES,
-        GENERATED_SCHEMA_TEST_MESSAGE_COUNT, GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT,
-        GENERATED_SCHEMA_TEST_ONEOF_COUNT, explicit_default_mutants, schema_fixtures,
+        explicit_default_mutants, schema_fixtures, GENERATED_SCHEMA_TEST_EXTERN_COUNT,
+        GENERATED_SCHEMA_TEST_EXTERN_NAMES, GENERATED_SCHEMA_TEST_MESSAGE_COUNT,
+        GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT, GENERATED_SCHEMA_TEST_ONEOF_COUNT,
     };
     use crate::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
 

@@ -2736,6 +2736,226 @@ Qed.
 
 End IncrementalReachability.
 
+Module CheckedReachability.
+
+Import IncrementalReachability.
+
+Definition checked_add (limit left right : nat) : option nat :=
+  if left + right <=? limit then Some (left + right) else None.
+
+Definition checked_sub (left right : nat) : option nat :=
+  if right <=? left then Some (left - right) else None.
+
+Theorem checked_add_is_exact : forall limit left right result,
+  checked_add limit left right = Some result <->
+  result = left + right /\ left + right <= limit.
+Proof.
+  intros limit left right result. unfold checked_add.
+  destruct (left + right <=? limit) eqn:fits.
+  - apply Nat.leb_le in fits. split; intros success; [inversion success; auto|].
+    destruct success as [-> _]. reflexivity.
+  - apply Nat.leb_gt in fits. split; intros success; [discriminate|].
+    destruct success; lia.
+Qed.
+
+Theorem checked_add_refuses_exactly_above_limit : forall limit left right,
+  checked_add limit left right = None <-> limit < left + right.
+Proof.
+  intros limit left right. unfold checked_add.
+  destruct (left + right <=? limit) eqn:fits;
+    [apply Nat.leb_le in fits|apply Nat.leb_gt in fits]; split; intros; try discriminate;
+    try reflexivity; lia.
+Qed.
+
+Theorem checked_sub_is_exact : forall left right result,
+  checked_sub left right = Some result <-> result + right = left /\ right <= left.
+Proof.
+  intros left right result. unfold checked_sub.
+  destruct (right <=? left) eqn:funded.
+  - apply Nat.leb_le in funded. split.
+    + intros success; inversion success; lia.
+    + intros [exact enough]. f_equal; lia.
+  - apply Nat.leb_gt in funded. split; intros success; [discriminate|].
+    destruct success; lia.
+Qed.
+
+Theorem checked_sub_refuses_exactly_underflow : forall left right,
+  checked_sub left right = None <-> left < right.
+Proof.
+  intros left right. unfold checked_sub.
+  destruct (right <=? left) eqn:funded;
+    [apply Nat.leb_le in funded|apply Nat.leb_gt in funded]; split; intros; try discriminate;
+    try reflexivity; lia.
+Qed.
+
+Definition checked_increment (limit : nat) (state : ledger) (vertex : nat) : option ledger :=
+  if counts state vertex <? limit then Some (increment state vertex) else None.
+
+Definition checked_decrement (state : ledger) (vertex : nat) : option ledger :=
+  if 0 <? counts state vertex then Some (decrement state vertex) else None.
+
+Theorem checked_increment_refines_natural_update : forall limit state vertex next,
+  checked_increment limit state vertex = Some next <->
+  next = increment state vertex /\ counts state vertex < limit.
+Proof.
+  intros limit state vertex next. unfold checked_increment.
+  destruct (counts state vertex <? limit) eqn:fits.
+  - apply Nat.ltb_lt in fits. split; intros success; [inversion success; auto|].
+    destruct success as [-> _]; reflexivity.
+  - apply Nat.ltb_ge in fits. split; intros success; [discriminate|].
+    destruct success; lia.
+Qed.
+
+Theorem checked_increment_refuses_exactly_at_capacity : forall limit state vertex,
+  checked_increment limit state vertex = None <-> limit <= counts state vertex.
+Proof.
+  intros limit state vertex. unfold checked_increment.
+  destruct (counts state vertex <? limit) eqn:fits;
+    [apply Nat.ltb_lt in fits|apply Nat.ltb_ge in fits]; split; intros; try discriminate;
+    try reflexivity; lia.
+Qed.
+
+Theorem checked_decrement_refines_natural_update : forall state vertex next,
+  checked_decrement state vertex = Some next <->
+  next = decrement state vertex /\ 0 < counts state vertex.
+Proof.
+  intros state vertex next. unfold checked_decrement.
+  destruct (0 <? counts state vertex) eqn:funded.
+  - apply Nat.ltb_lt in funded. split; intros success; [inversion success; auto|].
+    destruct success as [-> _]; reflexivity.
+  - apply Nat.ltb_ge in funded. split; intros success; [discriminate|].
+    destruct success; lia.
+Qed.
+
+Theorem checked_decrement_refuses_exactly_zero : forall state vertex,
+  checked_decrement state vertex = None <-> counts state vertex = 0.
+Proof.
+  intros state vertex. unfold checked_decrement.
+  destruct (counts state vertex); cbn; split; intros; try discriminate; reflexivity.
+Qed.
+
+Definition bounded_counts (limit : nat) (vertices : list nat) (state : ledger) : Prop :=
+  forall vertex, In vertex vertices -> counts state vertex <= limit.
+
+Theorem checked_increment_preserves_bounded_counts : forall limit vertices state vertex next,
+  bounded_counts limit vertices state ->
+  checked_increment limit state vertex = Some next -> bounded_counts limit vertices next.
+Proof.
+  intros limit vertices state vertex next bounded success.
+  apply checked_increment_refines_natural_update in success.
+  destruct success as [-> available]. intros query member.
+  cbn [increment counts]. unfold replace.
+  destruct (Nat.eqb query vertex); [lia|apply bounded; exact member].
+Qed.
+
+Theorem checked_decrement_preserves_bounded_counts : forall limit vertices state vertex next,
+  bounded_counts limit vertices state ->
+  checked_decrement state vertex = Some next -> bounded_counts limit vertices next.
+Proof.
+  intros limit vertices state vertex next bounded success.
+  apply checked_decrement_refines_natural_update in success.
+  destruct success as [-> available]. intros query member.
+  cbn [decrement counts]. unfold replace.
+  destruct (Nat.eqb query vertex) eqn:same.
+  - apply Nat.eqb_eq in same. subst query. specialize (bounded vertex member); lia.
+  - apply bounded; exact member.
+Qed.
+
+Theorem checked_updates_preserve_coherence : forall limit state vertex,
+  coherent state ->
+  (forall next, checked_increment limit state vertex = Some next -> coherent next) /\
+  (forall next, checked_decrement state vertex = Some next -> coherent next).
+Proof.
+  intros limit state vertex agreement. split; intros next success.
+  - apply checked_increment_refines_natural_update in success. destruct success as [-> _].
+    now apply increment_preserves_coherence.
+  - apply checked_decrement_refines_natural_update in success. destruct success as [-> _].
+    now apply decrement_preserves_coherence.
+Qed.
+
+Definition inventory (vertices : list nat) (state : ledger) (weight : nat -> nat) : nat :=
+  selected_sum vertices (active state) weight.
+
+Definition activated_weight (state : ledger) (vertex : nat) (weight : nat -> nat) : nat :=
+  if counts state vertex =? 0 then weight vertex else 0.
+
+Definition deactivated_weight (state : ledger) (vertex : nat) (weight : nat -> nat) : nat :=
+  if counts state vertex =? 1 then weight vertex else 0.
+
+Theorem increment_changes_unique_inventory : forall vertices state vertex weight,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  inventory vertices (increment state vertex) weight =
+    inventory vertices state weight + activated_weight state vertex weight.
+Proof.
+  intros vertices state vertex weight unique member agreement.
+  pose proof (@selected_sum_replace_present vertices (active state) vertex true weight
+    unique member) as changed.
+  rewrite (agreement vertex) in changed.
+  unfold inventory, activated_weight. cbn [increment active].
+  destruct (counts state vertex); cbn in changed |- *; lia.
+Qed.
+
+Theorem decrement_changes_unique_inventory : forall vertices state vertex weight,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  inventory vertices state weight =
+    inventory vertices (decrement state vertex) weight + deactivated_weight state vertex weight.
+Proof.
+  intros vertices state vertex weight unique member agreement.
+  pose proof (@selected_sum_replace_present vertices (active state) vertex
+    (1 <? counts state vertex) weight unique member) as changed.
+  rewrite (agreement vertex) in changed.
+  unfold inventory, deactivated_weight. cbn [decrement active].
+  destruct (counts state vertex) as [|[|count]]; cbn in changed |- *; lia.
+Qed.
+
+Theorem deactivated_inventory_is_funded : forall vertices state vertex weight,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  deactivated_weight state vertex weight <= inventory vertices state weight.
+Proof.
+  intros vertices state vertex weight unique member agreement.
+  pose proof (@decrement_changes_unique_inventory vertices state vertex weight
+    unique member agreement). lia.
+Qed.
+
+Theorem checked_inventory_add_is_exact : forall limit vertices state vertex weight cached result,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  cached = inventory vertices state weight ->
+  checked_add limit cached (activated_weight state vertex weight) = Some result ->
+  result = inventory vertices (increment state vertex) weight /\ result <= limit.
+Proof.
+  intros limit vertices state vertex weight cached result unique member agreement exact success.
+  apply checked_add_is_exact in success.
+  pose proof (@increment_changes_unique_inventory vertices state vertex weight
+    unique member agreement). subst cached. destruct success; split; lia.
+Qed.
+
+Theorem checked_inventory_remove_is_exact : forall vertices state vertex weight cached result,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  cached = inventory vertices state weight ->
+  checked_sub cached (deactivated_weight state vertex weight) = Some result ->
+  result = inventory vertices (decrement state vertex) weight.
+Proof.
+  intros vertices state vertex weight cached result unique member agreement exact success.
+  apply checked_sub_is_exact in success.
+  pose proof (@decrement_changes_unique_inventory vertices state vertex weight
+    unique member agreement). subst cached. destruct success; lia.
+Qed.
+
+Theorem exact_inventory_removal_cannot_underflow : forall vertices state vertex weight,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  exists result,
+    checked_sub (inventory vertices state weight) (deactivated_weight state vertex weight) =
+      Some result.
+Proof.
+  intros vertices state vertex weight unique member agreement.
+  exists (inventory vertices (decrement state vertex) weight).
+  apply checked_sub_is_exact. split.
+  - symmetry. now apply decrement_changes_unique_inventory.
+  - now apply deactivated_inventory_is_funded.
+Qed.
+
+End CheckedReachability.
+
 Module CatalogAppointedPrefix.
 
 Theorem discarding_unselected_suffix_preserves_appointed_bytes :

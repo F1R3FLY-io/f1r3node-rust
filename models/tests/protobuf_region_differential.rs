@@ -29,7 +29,8 @@ fn verify_family<T: ParBagComponent>(
         #[cfg(feature = "protobuf-projection-experiment")]
         let plan = {
             use models::rust::par_construction::substitution_cost::{capture, Metric};
-            let (plan, costs) = capture(|| cut_at_par(input, program).expect("canonical component region cuts"));
+            let (plan, costs) =
+                capture(|| cut_at_par(input, program).expect("canonical component region cuts"));
             assert_eq!(costs.get(Metric::FieldVisits), plan.stats().field_visits);
             assert_eq!(costs.get(Metric::MessageNodes), plan.stats().message_nodes);
             assert_eq!(costs.get(Metric::ParCuts), plan.cuts().len());
@@ -41,8 +42,14 @@ fn verify_family<T: ParBagComponent>(
             assert_eq!(b.get(Metric::ShallowBytes), shallow.len());
             assert_eq!(c.get(Metric::CompactBytes), compact.len());
             assert_eq!(a.get(Metric::ShallowBytes) + a.get(Metric::CompactBytes), 0);
-            assert_eq!(b.get(Metric::OriginalBytes) + b.get(Metric::CompactBytes), 0);
-            assert_eq!(c.get(Metric::OriginalBytes) + c.get(Metric::ShallowBytes), 0);
+            assert_eq!(
+                b.get(Metric::OriginalBytes) + b.get(Metric::CompactBytes),
+                0
+            );
+            assert_eq!(
+                c.get(Metric::OriginalBytes) + c.get(Metric::ShallowBytes),
+                0
+            );
             plan
         };
         assert_eq!(plan.reconstructed_bytes().as_ref(), entry.payload());

@@ -29,7 +29,9 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
-use super::canonical_source_tree::{SourceTreeWindow, SourceTreeByteCursor, SourceTreeLocatedByteCursor};
+use super::canonical_source_tree::{
+    SourceTreeByteCursor, SourceTreeLocatedByteCursor, SourceTreeWindow,
+};
 
 #[cfg(test)]
 #[path = "../../../tests/support/canonical_source_cache.rs"]
@@ -103,7 +105,9 @@ impl CanonicalBytesHandle {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CanonicalBytesArenaError {
     LengthOverflow,
-    UnknownSource { slot: usize },
+    UnknownSource {
+        slot: usize,
+    },
     SliceOutsideSequence {
         start: usize,
         end: usize,
@@ -115,7 +119,9 @@ impl fmt::Display for CanonicalBytesArenaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LengthOverflow => formatter.write_str("canonical byte sequence length overflow"),
-            Self::UnknownSource { slot } => write!(formatter, "unknown canonical source slot {slot}"),
+            Self::UnknownSource { slot } => {
+                write!(formatter, "unknown canonical source slot {slot}")
+            }
             Self::SliceOutsideSequence { start, end, len } => write!(
                 formatter,
                 "canonical byte slice {start}..{end} is outside sequence length {len}"
@@ -168,8 +174,16 @@ struct SequenceNode {
 #[derive(Clone, Copy)]
 enum SequenceCursorTask {
     Span(SequenceSpan),
-    Page { page: usize, at: usize, end: usize },
-    Source { source: CanonicalSourceSlot, start: usize, end: usize },
+    Page {
+        page: usize,
+        at: usize,
+        end: usize,
+    },
+    Source {
+        source: CanonicalSourceSlot,
+        start: usize,
+        end: usize,
+    },
 }
 
 #[cfg(test)]
@@ -219,35 +233,64 @@ impl<'src, const CAPACITY: usize> PageBackedArena<'src, CAPACITY> {
 
     fn empty(&self) -> CanonicalBytesHandle { CanonicalBytesHandle { sequence: None } }
 
-    fn register_source(&mut self, root: SourceTreeWindow<'src>)
-        -> Result<CanonicalSourceSlot, CanonicalBytesArenaError> {
-        let root = root.trimmed_subview(0..root.len())
+    fn register_source(
+        &mut self,
+        root: SourceTreeWindow<'src>,
+    ) -> Result<CanonicalSourceSlot, CanonicalBytesArenaError> {
+        let root = root
+            .trimmed_subview(0..root.len())
             .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        self.sources.try_reserve(1).map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        self.sources
+            .try_reserve(1)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
         let slot = CanonicalSourceSlot(self.sources.len());
         self.sources.push(root);
         Ok(slot)
     }
 
-    fn append_source(&mut self, prefix: CanonicalBytesHandle, source: CanonicalSourceSlot,
-        range: Range<usize>) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
-        let root = self.sources.get(source.0)
+    fn append_source(
+        &mut self,
+        prefix: CanonicalBytesHandle,
+        source: CanonicalSourceSlot,
+        range: Range<usize>,
+    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
+        let root = self
+            .sources
+            .get(source.0)
             .ok_or(CanonicalBytesArenaError::UnknownSource { slot: source.0 })?;
         if range.start > range.end || range.end > root.len() {
             return Err(CanonicalBytesArenaError::SliceOutsideSequence {
-                start: range.start, end: range.end, len: root.len(),
+                start: range.start,
+                end: range.end,
+                len: root.len(),
             });
         }
         let len = range.end - range.start;
-        let total = prefix.len().checked_add(len).ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        if len == 0 { return Ok(prefix); }
-        self.nodes.try_reserve(1).map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        let total = prefix
+            .len()
+            .checked_add(len)
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        if len == 0 {
+            return Ok(prefix);
+        }
+        self.nodes
+            .try_reserve(1)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
         let id = SequenceNodeId(self.nodes.len());
         self.nodes.push(SequenceNode {
             len: total,
-            kind: SequenceNodeKind::Source { previous: prefix.sequence, source, start: range.start, len },
+            kind: SequenceNodeKind::Source {
+                previous: prefix.sequence,
+                source,
+                start: range.start,
+                len,
+            },
         });
-        Ok(Self::handle(SequenceSpan { root: id, start: 0, len: total }))
+        Ok(Self::handle(SequenceSpan {
+            root: id,
+            start: 0,
+            len: total,
+        }))
     }
 
     fn span(value: CanonicalBytesHandle) -> Option<SequenceSpan> { value.sequence }
@@ -489,7 +532,12 @@ impl<'src, const CAPACITY: usize> PageBackedArena<'src, CAPACITY> {
         let node = &self.nodes[span.root.0];
         let end = span.start + span.len;
         match node.kind {
-            SequenceNodeKind::Source { previous, source, start, len } => {
+            SequenceNodeKind::Source {
+                previous,
+                source,
+                start,
+                len,
+            } => {
                 let previous_len = previous.map_or(0, |value| value.len);
                 if end > previous_len {
                     work.push(SequenceCursorTask::Source {
@@ -561,7 +609,9 @@ impl<'src, const CAPACITY: usize> PageBackedArena<'src, CAPACITY> {
         while let Some(task) = work.pop() {
             match task {
                 SequenceCursorTask::Span(span) => self.expand(&mut work, span),
-                SequenceCursorTask::Source { .. } => panic!("the owned-only freezer cannot export source spans"),
+                SequenceCursorTask::Source { .. } => {
+                    panic!("the owned-only freezer cannot export source spans")
+                }
                 SequenceCursorTask::Page { page, at, end } => {
                     let len = end - at;
                     leaves.push(PageBackedLeaf {
@@ -633,7 +683,10 @@ struct PageBackedByteCursor<'a> {
 }
 
 impl<'a> PageBackedByteCursor<'a> {
-    fn new(arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
+    fn new(
+        arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>,
+        value: CanonicalBytesHandle,
+    ) -> Self {
         Self {
             arena,
             source: None,
@@ -657,8 +710,12 @@ impl Iterator for PageBackedByteCursor<'_> {
             match self.work.pop()? {
                 SequenceCursorTask::Span(span) => self.arena.expand(&mut self.work, span),
                 SequenceCursorTask::Source { source, start, end } => {
-                    self.source = Some(self.arena.sources[source.0].subview(start..end)
-                        .expect("source descriptor stays within its registered root").bytes());
+                    self.source = Some(
+                        self.arena.sources[source.0]
+                            .subview(start..end)
+                            .expect("source descriptor stays within its registered root")
+                            .bytes(),
+                    );
                 }
                 SequenceCursorTask::Page { page, at, end } => {
                     let byte = self.arena.byte_pages[page].bytes[at];
@@ -683,7 +740,10 @@ struct PageBackedProvenanceCursor<'a> {
 }
 
 impl<'a> PageBackedProvenanceCursor<'a> {
-    fn new(arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
+    fn new(
+        arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>,
+        value: CanonicalBytesHandle,
+    ) -> Self {
         Self {
             arena,
             source: None,
@@ -707,8 +767,12 @@ impl Iterator for PageBackedProvenanceCursor<'_> {
             match self.work.pop()? {
                 SequenceCursorTask::Span(span) => self.arena.expand(&mut self.work, span),
                 SequenceCursorTask::Source { source, start, end } => {
-                    self.source = Some(self.arena.sources[source.0].subview(start..end)
-                        .expect("source descriptor stays within its registered root").located_bytes());
+                    self.source = Some(
+                        self.arena.sources[source.0]
+                            .subview(start..end)
+                            .expect("source descriptor stays within its registered root")
+                            .located_bytes(),
+                    );
                 }
                 SequenceCursorTask::Page { page, at, end } => {
                     let provenance = self.arena.provenance_pages[page].values[at];
@@ -760,18 +824,30 @@ struct PageFrozenBytes {
 
 impl<const CAPACITY: usize> PageBackedArena<'_, CAPACITY> {
     fn freeze_owned_segment(&self, id: SequenceNodeId) -> PageFrozenBytes {
-        let SequenceNodeKind::Segment { page, page_start, used, .. } = self.nodes[id.0].kind
-            else { unreachable!("only owned segments export frozen pages") };
+        let SequenceNodeKind::Segment {
+            page,
+            page_start,
+            used,
+            ..
+        } = self.nodes[id.0].kind
+        else {
+            unreachable!("only owned segments export frozen pages")
+        };
         PageFrozenBytes {
             data: Arc::new(PageFrozenData {
                 len: used,
                 pages: vec![FrozenPagePair {
                     bytes: Arc::clone(&self.byte_pages[page]),
                     provenance: Arc::clone(&self.provenance_pages[page]),
-                }].into_boxed_slice(),
+                }]
+                .into_boxed_slice(),
                 leaves: vec![FrozenPageLeaf {
-                    page: 0, page_start, len: used, logical_start: 0,
-                }].into_boxed_slice(),
+                    page: 0,
+                    page_start,
+                    len: used,
+                    logical_start: 0,
+                }]
+                .into_boxed_slice(),
                 logical_pages: vec![0; used / BLOCK_BYTES + usize::from(used % BLOCK_BYTES != 0)]
                     .into_boxed_slice(),
             }),
@@ -1108,14 +1184,19 @@ impl<'src> CanonicalBytesArena<'src> {
         CanonicalBytesHandle { sequence: None }
     }
 
-    pub(crate) fn register_source(&mut self, root: SourceTreeWindow<'src>)
-        -> Result<CanonicalSourceSlot, CanonicalBytesArenaError> {
+    pub(crate) fn register_source(
+        &mut self,
+        root: SourceTreeWindow<'src>,
+    ) -> Result<CanonicalSourceSlot, CanonicalBytesArenaError> {
         self.backend.register_source(root)
     }
 
-    pub(crate) fn append_source(&mut self, prefix: CanonicalBytesHandle,
-        source: CanonicalSourceSlot, range: Range<usize>)
-        -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
+    pub(crate) fn append_source(
+        &mut self,
+        prefix: CanonicalBytesHandle,
+        source: CanonicalSourceSlot,
+        range: Range<usize>,
+    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
         let value = self.backend.append_source(prefix, source, range)?;
         #[cfg(test)]
         self.sync_page_stats();
@@ -1224,18 +1305,27 @@ impl<'src> CanonicalBytesArena<'src> {
         &mut self,
         value: CanonicalBytesHandle,
     ) -> Option<SourceTreeWindow<'src>> {
-        let Some(span) = value.sequence else { return Some(SourceTreeWindow::empty()); };
+        let Some(span) = value.sequence else {
+            return Some(SourceTreeWindow::empty());
+        };
         let end = span.start.checked_add(span.len)?;
-        if end > self.backend.nodes.get(span.root.0)?.len { return None; }
+        if end > self.backend.nodes.get(span.root.0)?.len {
+            return None;
+        }
         if let Some(root) = self.source_cache.get(span.root.0).and_then(Option::as_ref) {
             #[cfg(test)]
-            { self.stats.source_cache_hits += 1; }
+            {
+                self.stats.source_cache_hits += 1;
+            }
             return root.trimmed_subview(span.start..end);
         }
-        self.source_cache.resize_with(self.backend.nodes.len(), || None);
+        self.source_cache
+            .resize_with(self.backend.nodes.len(), || None);
         let mut pending = vec![(span.root, false)];
         while let Some((id, ready)) = pending.pop() {
-            if self.source_cache[id.0].is_some() { continue; }
+            if self.source_cache[id.0].is_some() {
+                continue;
+            }
             let node = &self.backend.nodes[id.0];
             let kind = node.kind;
             if !ready {
@@ -1261,39 +1351,58 @@ impl<'src> CanonicalBytesArena<'src> {
                 continue;
             }
             let root = match kind {
-                SequenceNodeKind::Source { previous, source, start, len } => {
-                    let prefix = previous.map(|previous| self.cached_source_span(previous))
+                SequenceNodeKind::Source {
+                    previous,
+                    source,
+                    start,
+                    len,
+                } => {
+                    let prefix = previous
+                        .map(|previous| self.cached_source_span(previous))
                         .unwrap_or_else(SourceTreeWindow::empty);
-                    let suffix = self.backend.sources[source.0].subview(start..start + len)
+                    let suffix = self.backend.sources[source.0]
+                        .subview(start..start + len)
                         .expect("source descriptor stays within its registered root");
-                    prefix.concat(&suffix).expect("checked descriptor length fits source concatenation")
+                    prefix
+                        .concat(&suffix)
+                        .expect("checked descriptor length fits source concatenation")
                 }
                 SequenceNodeKind::Segment { previous, .. } => {
-                    let prefix = previous.map(|previous| self.cached_source_span(previous))
+                    let prefix = previous
+                        .map(|previous| self.cached_source_span(previous))
                         .unwrap_or_else(SourceTreeWindow::empty);
                     let suffix = SourceTreeWindow::from_frozen(FrozenCanonicalBytes {
                         inner: self.backend.freeze_owned_segment(id),
                     });
                     #[cfg(test)]
-                    { self.stats.source_segment_exports += 1; }
-                    prefix.concat(&suffix).expect("checked descriptor length fits source concatenation")
+                    {
+                        self.stats.source_segment_exports += 1;
+                    }
+                    prefix
+                        .concat(&suffix)
+                        .expect("checked descriptor length fits source concatenation")
                 }
                 #[cfg(test)]
-                SequenceNodeKind::Concat { left, right } => {
-                    self.cached_source_span(left).concat(&self.cached_source_span(right))
-                        .expect("checked descriptor concat length fits source concatenation")
-                }
+                SequenceNodeKind::Concat { left, right } => self
+                    .cached_source_span(left)
+                    .concat(&self.cached_source_span(right))
+                    .expect("checked descriptor concat length fits source concatenation"),
             };
             assert_eq!(root.len(), self.backend.nodes[id.0].len);
             self.source_cache[id.0] = Some(root);
             #[cfg(test)]
-            { self.stats.source_cache_nodes += 1; }
+            {
+                self.stats.source_cache_nodes += 1;
+            }
         }
-        self.source_cache[span.root.0].as_ref()?.trimmed_subview(span.start..end)
+        self.source_cache[span.root.0]
+            .as_ref()?
+            .trimmed_subview(span.start..end)
     }
 
     fn cached_source_span(&self, span: SequenceSpan) -> SourceTreeWindow<'src> {
-        self.source_cache[span.root.0].as_ref()
+        self.source_cache[span.root.0]
+            .as_ref()
             .expect("postorder source cache retains its predecessor")
             .subview(span.start..span.start + span.len)
             .expect("historical predecessor span stays within its cached descriptor")
@@ -1330,7 +1439,10 @@ pub(crate) struct CanonicalByteCursor<'a> {
 }
 
 impl<'a> CanonicalByteCursor<'a> {
-    fn new(arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
+    fn new(
+        arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>,
+        value: CanonicalBytesHandle,
+    ) -> Self {
         Self {
             inner: PageBackedByteCursor::new(arena, value),
         }
@@ -1348,7 +1460,10 @@ struct CanonicalProvenanceCursor<'a> {
 }
 
 impl<'a> CanonicalProvenanceCursor<'a> {
-    fn new(arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
+    fn new(
+        arena: &'a PageBackedArena<'a, DEFAULT_PAGE_BYTES>,
+        value: CanonicalBytesHandle,
+    ) -> Self {
         Self {
             inner: PageBackedProvenanceCursor::new(arena, value),
         }
@@ -1427,14 +1542,17 @@ impl FrozenCanonicalByteCursor {
             return;
         }
         for index in [self.leaf, self.leaf.saturating_add(1)] {
-            if leaves.get(index).is_some_and(|leaf|
+            if leaves.get(index).is_some_and(|leaf| {
                 leaf.logical_start <= self.absolute && self.absolute < leaf.logical_end()
-            ) {
+            }) {
                 self.leaf = index;
                 return;
             }
         }
-        self.leaf = self.value.inner.leaf_at(self.absolute)
+        self.leaf = self
+            .value
+            .inner
+            .leaf_at(self.absolute)
             .expect("a frozen cursor seek lands in one content leaf");
     }
 

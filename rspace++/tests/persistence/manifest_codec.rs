@@ -1,9 +1,10 @@
-use super::support::{TEST_SEMANTIC_PROFILE_ID, empty_roots, encode, synthetic_ref};
 use proptest::prelude::*;
+
+use super::support::{TEST_SEMANTIC_PROFILE_ID, empty_roots, encode, synthetic_ref};
 use crate::rspace::persistence::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
-    CanonicalEncode, CanonicalFormatError, LegacyHistoryRoot, SemanticStateManifestV1,
-    SemanticStateManifestView, SemanticProfileId, SemanticRoots, StateVersionV1,
+    CanonicalEncode, CanonicalFormatError, LegacyHistoryRoot, SemanticProfileId, SemanticRoots,
+    SemanticStateManifestV1, SemanticStateManifestView, StateVersionV1,
 };
 
 #[test]

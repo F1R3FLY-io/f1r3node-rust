@@ -1339,7 +1339,9 @@ pub struct RhoPathV2ChannelFrames<'a> {
 impl<'a> Iterator for RhoPathV2ChannelFrames<'a> {
     type Item = &'a [u8];
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 { return None; }
+        if self.remaining == 0 {
+            return None;
+        }
         let frame = take_frame(self.encoded, &mut self.cursor).ok()?;
         self.remaining -= 1;
         Some(frame)
@@ -1351,7 +1353,8 @@ impl ExactSizeIterator for RhoPathV2ChannelFrames<'_> {}
 
 impl std::fmt::Debug for RhoPathV2ChannelFrames<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("RhoPathV2ChannelFrames")
+        formatter
+            .debug_struct("RhoPathV2ChannelFrames")
             .field("remaining", &self.remaining)
             .finish()
     }
@@ -1369,8 +1372,9 @@ impl RhoPathV2 {
         datum_structure: &[u8],
         datum_identity: &[u8],
     ) -> Vec<u8> {
-        let mut out = Vec::with_capacity(5 + channel_image.len() + datum_structure.len()
-            + datum_identity.len() + 6);
+        let mut out = Vec::with_capacity(
+            5 + channel_image.len() + datum_structure.len() + datum_identity.len() + 6,
+        );
         out.extend_from_slice(&Self::MAGIC);
         out.push(Self::DATUM_KIND);
         append_frame(&mut out, channel_image);
@@ -1421,13 +1425,17 @@ impl RhoPathV2 {
     }
 
     pub fn continuation_prefix(channels: &[&[u8]]) -> Result<Vec<u8>, RhoPathError> {
-        if channels.is_empty() { return Err(RhoPathError::EmptyChannelGroup); }
+        if channels.is_empty() {
+            return Err(RhoPathError::EmptyChannelGroup);
+        }
         let count = u64::try_from(channels.len()).map_err(|_| RhoPathError::TrailingBytes)?;
         let mut out = Vec::new();
         out.extend_from_slice(&Self::MAGIC);
         out.extend_from_slice(&[Self::CONTINUATION_KIND, Self::COLLECTION_VERSION]);
         out.extend_from_slice(&count.to_be_bytes());
-        for channel in channels { append_frame(&mut out, channel); }
+        for channel in channels {
+            append_frame(&mut out, channel);
+        }
         out.extend_from_slice(&GROUP_END);
         Ok(out)
     }
@@ -1478,7 +1486,11 @@ impl RhoPathV2 {
         if cursor != path.len() {
             return Err(RhoPathError::TrailingBytes);
         }
-        Ok(RhoPathV2ContinuationView { encoded_channels, channel_count: count, identity_frame })
+        Ok(RhoPathV2ContinuationView {
+            encoded_channels,
+            channel_count: count,
+            identity_frame,
+        })
     }
 
     pub fn parse_join(path: &[u8]) -> Result<(&[u8], &[u8]), RhoPathError> {

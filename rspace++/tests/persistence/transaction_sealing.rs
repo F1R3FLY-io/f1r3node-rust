@@ -253,10 +253,10 @@ fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not() {
     use crate::rspace::serializers::serializers::encode_joins;
     use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 
-    let groups = [
-        vec!["bridge-channel-a".to_owned(), "bridge-channel-b".to_owned()],
-        vec!["bridge-channel-b".to_owned(), "bridge-channel-a".to_owned()],
-    ];
+    let groups = [vec!["bridge-channel-a".to_owned(), "bridge-channel-b".to_owned()], vec![
+        "bridge-channel-b".to_owned(),
+        "bridge-channel-a".to_owned(),
+    ]];
     let patterns = vec!["first-pattern".to_owned(), "second-pattern".to_owned()];
     let records = ["first-body", "second-body"].map(|body| body.to_owned());
     let mut final_versions = Vec::new();
@@ -267,24 +267,30 @@ fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not() {
         let mut version = base_state(&store, 0, None);
         let mut legacy = HistoryRepositoryInstances::<String, String, String, String>::repository(
             RSpaceStateAuthority::in_memory(),
-        ).unwrap();
+        )
+        .unwrap();
         let mut joined = Vec::new();
         for index in order {
             let group = &groups[index];
             let waiting = WaitingContinuation::create(
-                group, &patterns, &records[index], false, BTreeSet::from([0]),
+                group,
+                &patterns,
+                &records[index],
+                false,
+                BTreeSet::from([0]),
             );
             let mut payload = Vec::new();
             encode_continuation_source_into(&waiting, &mut payload);
-            let source = CanonicalBlob::new(
-                CanonicalBlobKind::ContinuationSourceV1, payload,
-            ).unwrap();
+            let source =
+                CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, payload).unwrap();
             let path = RhoPathV1::collection_record_path(
                 &RhoPathV1::continuation_prefix(group),
                 &encode_continuation_identity(&waiting),
             );
             let mut batch = RSpaceMutationBatchV1::new(version).unwrap();
-            batch.record_continuation(&path, None, Some(source.object_ref())).unwrap();
+            batch
+                .record_continuation(&path, None, Some(source.object_ref()))
+                .unwrap();
             for channel in group {
                 let mut join_path = RhoPathV1::join_prefix(channel);
                 join_path.extend_from_slice(&encode_join_record(group));
@@ -292,33 +298,47 @@ fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not() {
             }
             let bytes = encode(&batch.plan().unwrap());
             let verified = VerifiedDagState::<_, TestSemanticProfile>::admit(
-                &store, version, SemanticValidationLimits::unbounded(),
-            ).unwrap();
+                &store,
+                version,
+                SemanticValidationLimits::unbounded(),
+            )
+            .unwrap();
             let mut transaction = OpenDagTransaction::new(
-                verified, MutationBatchViewV1::parse(&bytes).unwrap(),
+                verified,
+                MutationBatchViewV1::parse(&bytes).unwrap(),
                 DagTransactionLimits::UNBOUNDED,
-            ).unwrap();
-            transaction.stage_continuation_source(encode(&source).into()).unwrap();
+            )
+            .unwrap();
+            transaction
+                .stage_continuation_source(encode(&source).into())
+                .unwrap();
             let sealed = transaction.seal().unwrap();
             assert_eq!(sealed.diagnostics().semantic.changed_continuations, 1);
             assert_eq!(sealed.diagnostics().semantic.changed_joins, 2);
             for object in sealed.objects() {
-                store.put_if_absent_or_equal(
-                    object.reference(), Arc::from(object.canonical_bytes()),
-                ).unwrap();
+                store
+                    .put_if_absent_or_equal(object.reference(), Arc::from(object.canonical_bytes()))
+                    .unwrap();
             }
             version = sealed.receipt().target();
             VerifiedDagState::<_, TestSemanticProfile>::admit(
-                &store, version, SemanticValidationLimits::unbounded(),
-            ).unwrap();
+                &store,
+                version,
+                SemanticValidationLimits::unbounded(),
+            )
+            .unwrap();
 
             joined.push(group.clone());
             let mut actions = vec![HotStoreAction::Insert(InsertAction::InsertContinuations(
-                InsertContinuations { channels: group.clone(), continuations: vec![waiting.clone()] },
+                InsertContinuations {
+                    channels: group.clone(),
+                    continuations: vec![waiting.clone()],
+                },
             ))];
             actions.extend(group.iter().map(|channel| {
                 HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
-                    channel: channel.clone(), joins: joined.clone(),
+                    channel: channel.clone(),
+                    joins: joined.clone(),
                 }))
             }));
             legacy = legacy.checkpoint(actions).unwrap();
@@ -329,14 +349,20 @@ fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not() {
         }
         let reader = legacy.get_history_reader(&legacy.root()).unwrap();
         for channel in &groups[0] {
-            assert_eq!(encode_joins(&reader.base().get_joins(channel)), encode_joins(&groups.to_vec()));
+            assert_eq!(
+                encode_joins(&reader.base().get_joins(channel)),
+                encode_joins(&groups.to_vec())
+            );
         }
-        let bytes = store.get_bounded(
-            &version.manifest().digest(), version.manifest().encoded_len(),
-        ).unwrap().unwrap();
+        let bytes = store
+            .get_bounded(&version.manifest().digest(), version.manifest().encoded_len())
+            .unwrap()
+            .unwrap();
         let CanonicalObjectView::SemanticManifest(manifest) =
             CanonicalObjectView::parse(&bytes).unwrap()
-        else { unreachable!() };
+        else {
+            unreachable!()
+        };
         final_versions.push(version);
         final_roots.push(manifest.roots());
         legacy_roots.push(legacy.root());
@@ -344,10 +370,14 @@ fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not() {
     assert_eq!(final_versions[0], final_versions[1]);
     assert_eq!(final_roots[0], final_roots[1]);
     assert_ne!(legacy_roots[0], legacy_roots[1]);
-    assert_eq!(hex::encode(legacy_roots[0].bytes()),
-        "8e7af529977c2d5cb4e85c199482ccabcf5c9b83d77a90ff3dd76f9e0e8ef89b");
-    assert_eq!(hex::encode(legacy_roots[1].bytes()),
-        "384b28f6f87a7f079c4759dff7abaa1010218a4f01957d4160c934fd92fdd7f7");
+    assert_eq!(
+        hex::encode(legacy_roots[0].bytes()),
+        "8e7af529977c2d5cb4e85c199482ccabcf5c9b83d77a90ff3dd76f9e0e8ef89b"
+    );
+    assert_eq!(
+        hex::encode(legacy_roots[1].bytes()),
+        "384b28f6f87a7f079c4759dff7abaa1010218a4f01957d4160c934fd92fdd7f7"
+    );
 }
 
 #[test]
@@ -492,7 +522,10 @@ fn live_cold_journals_seal_exact_three_namespace_successor() {
     struct EmptyHistory;
     impl HistoryReaderBase<String, String, String, String> for EmptyHistory {
         fn get_data_canonical(&self, _: &String) -> Vec<Datum<String>> { Vec::new() }
-        fn get_continuations_canonical(&self, _: &[String]) -> Vec<WaitingContinuation<String, String>> {
+        fn get_continuations_canonical(
+            &self,
+            _: &[String],
+        ) -> Vec<WaitingContinuation<String, String>> {
             Vec::new()
         }
         fn get_joins_canonical(&self, _: &String) -> Vec<Vec<String>> { Vec::new() }
@@ -500,19 +533,23 @@ fn live_cold_journals_seal_exact_three_namespace_successor() {
 
     let store = CanonicalObjectStore::new();
     let base = base_state(&store, 12, None);
-    let hot = HotStoreInstances::create_from_hs_and_hr(
-        HotStoreState::default(), Box::new(EmptyHistory),
-    );
+    let hot =
+        HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), Box::new(EmptyHistory));
     let channels = vec!["channel".to_owned(), "channel".to_owned()];
     let first = WaitingContinuation::create(
-        &channels, &vec!["a".to_owned(), "b".to_owned()], &"body".to_owned(),
-        false, BTreeSet::new(),
+        &channels,
+        &vec!["a".to_owned(), "b".to_owned()],
+        &"body".to_owned(),
+        false,
+        BTreeSet::new(),
     );
     let mut source_payload = Vec::new();
     encode_continuation_source_into(&first, &mut source_payload);
-    let source = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source_payload).unwrap();
+    let source =
+        CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source_payload).unwrap();
     let mut alias = first.clone();
-    alias.source.hash = crate::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes(vec![0x55; 32]);
+    alias.source.hash =
+        crate::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes(vec![0x55; 32]);
     hot.put_datum(&channels[0], Datum::create(&channels[0], "datum".to_owned(), false));
     assert_eq!(hot.put_continuation(&channels, first), Some(true));
     assert_eq!(hot.put_continuation(&channels, alias), Some(false));
@@ -521,19 +558,30 @@ fn live_cold_journals_seal_exact_three_namespace_successor() {
     let batch = mutation_batch_from_observation(base, &observation).unwrap();
     let bytes = encode(&batch.plan().unwrap());
     let verified = VerifiedDagState::<_, TestSemanticProfile>::admit(
-        &store, base, SemanticValidationLimits::unbounded(),
-    ).unwrap();
+        &store,
+        base,
+        SemanticValidationLimits::unbounded(),
+    )
+    .unwrap();
     let mut transaction = OpenDagTransaction::new(
-        verified, MutationBatchViewV1::parse(&bytes).unwrap(), DagTransactionLimits::UNBOUNDED,
-    ).unwrap();
+        verified,
+        MutationBatchViewV1::parse(&bytes).unwrap(),
+        DagTransactionLimits::UNBOUNDED,
+    )
+    .unwrap();
     stage_pending_continuation_sources(&mut transaction, &observation.pending).unwrap();
     let sealed = transaction.seal().unwrap();
     let report = sealed.diagnostics().semantic;
     assert_eq!(report.changed_data, 1);
     assert_eq!(report.changed_continuations, 1);
     assert_eq!(report.changed_joins, 1);
-    assert!(sealed.objects().iter().any(|object|
-        object.reference() == source.object_ref() && object.canonical_bytes() == encode(&source)));
+    assert!(
+        sealed
+            .objects()
+            .iter()
+            .any(|object| object.reference() == source.object_ref() &&
+                object.canonical_bytes() == encode(&source))
+    );
     assert_eq!(sealed.receipt().base(), base);
     assert_eq!(sealed.receipt().target().generation(), base.generation() + 1);
     assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());

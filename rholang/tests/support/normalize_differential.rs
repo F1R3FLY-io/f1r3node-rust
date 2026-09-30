@@ -368,6 +368,11 @@ const STRUCTURAL: &[Case] = &[
         binds: 0,
     },
     Case {
+        label: "Bundle with mixed Bundle and If body",
+        src: "new x in { bundle+ { bundle- { *x } | if (true) { Nil } else { Nil } } }",
+        binds: 0,
+    },
+    Case {
         label: "Bundle equiv",
         src: "new x in { bundle0 { *x } }",
         binds: 0,

@@ -17,10 +17,12 @@ use super::canonical_bytes_arena::{
     CanonicalByteProvenance, CanonicalLocatedByte, FrozenCanonicalByteCursor, FrozenCanonicalBytes,
     FrozenCanonicalLocatedByteCursor,
 };
+use super::canonical_source_tree::{
+    SourceTreeByteCursor, SourceTreeLocatedByteCursor, SourceTreeWindow,
+};
 #[cfg(test)]
 use super::protobuf_cursor::ProtobufRegion;
 use super::protobuf_cursor::{CanonicalByteRange, CanonicalProtobufError, CanonicalWireType};
-use super::canonical_source_tree::{SourceTreeWindow, SourceTreeByteCursor, SourceTreeLocatedByteCursor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IndexedBytePositionKind {
@@ -126,20 +128,44 @@ impl<'a> IndexedByteRegion<'a> {
         }
     }
 
-    pub(crate) fn from_source(root: SourceTreeWindow<'a>, root_end: CanonicalByteProvenance) -> Self {
+    pub(crate) fn from_source(
+        root: SourceTreeWindow<'a>,
+        root_end: CanonicalByteProvenance,
+    ) -> Self {
         let len = root.len();
-        Self { backing: IndexedByteBacking::Composed { root, start: 0, len, root_end } }
+        Self {
+            backing: IndexedByteBacking::Composed {
+                root,
+                start: 0,
+                len,
+                root_end,
+            },
+        }
     }
 
     pub(crate) fn source_window(&self) -> Option<SourceTreeWindow<'a>> {
         match &self.backing {
-            IndexedByteBacking::Borrowed { bytes, start, len, source, absolute_start, .. } =>
-                SourceTreeWindow::from_borrowed_range(bytes, *start..start.checked_add(*len)?, *source, *absolute_start),
-            IndexedByteBacking::Frozen { root, start, len, .. } => Some(
-                SourceTreeWindow::from_frozen(root.subview(*start..start.checked_add(*len)?)?)
+            IndexedByteBacking::Borrowed {
+                bytes,
+                start,
+                len,
+                source,
+                absolute_start,
+                ..
+            } => SourceTreeWindow::from_borrowed_range(
+                bytes,
+                *start..start.checked_add(*len)?,
+                *source,
+                *absolute_start,
             ),
-            IndexedByteBacking::Composed { root, start, len, .. } =>
-                root.subview(*start..start.checked_add(*len)?),
+            IndexedByteBacking::Frozen {
+                root, start, len, ..
+            } => Some(SourceTreeWindow::from_frozen(
+                root.subview(*start..start.checked_add(*len)?)?,
+            )),
+            IndexedByteBacking::Composed {
+                root, start, len, ..
+            } => root.subview(*start..start.checked_add(*len)?),
             #[cfg(test)]
             IndexedByteBacking::Contiguous { .. } | IndexedByteBacking::Arena { .. } => None,
         }
@@ -270,8 +296,13 @@ impl<'a> IndexedByteRegion<'a> {
                 })
             }
             (IndexedByteBacking::Composed { .. }, _) | (_, IndexedByteBacking::Composed { .. }) => {
-                let root = self.source_window()?.try_coalesce(&right.source_window()?)?;
-                Some(Self::from_source(root, right.position_at(right.len())?.physical))
+                let root = self
+                    .source_window()?
+                    .try_coalesce(&right.source_window()?)?;
+                Some(Self::from_source(
+                    root,
+                    right.position_at(right.len())?.physical,
+                ))
             }
             _ => None,
         }
@@ -356,7 +387,12 @@ impl<'a> IndexedByteRegion<'a> {
                     root_end: *root_end,
                 },
             }),
-            IndexedByteBacking::Composed { root, start, root_end, .. } => Some(Self {
+            IndexedByteBacking::Composed {
+                root,
+                start,
+                root_end,
+                ..
+            } => Some(Self {
                 backing: IndexedByteBacking::Composed {
                     root: root.clone(),
                     start: start.checked_add(range.start)?,
@@ -406,7 +442,12 @@ impl<'a> IndexedByteRegion<'a> {
                 *start = 0;
                 *root_end = end;
             }
-            IndexedByteBacking::Composed { root, start, len, root_end } => {
+            IndexedByteBacking::Composed {
+                root,
+                start,
+                len,
+                root_end,
+            } => {
                 *root = root.subview(*start..start.checked_add(*len)?)?;
                 *start = 0;
                 *root_end = end;
@@ -421,7 +462,12 @@ impl<'a> IndexedByteRegion<'a> {
             return None;
         }
         let physical = match &self.backing {
-            IndexedByteBacking::Composed { root, start, root_end, .. } => {
+            IndexedByteBacking::Composed {
+                root,
+                start,
+                root_end,
+                ..
+            } => {
                 let offset = start.checked_add(logical_offset)?;
                 if offset < root.len() {
                     root.provenance_at(offset)?
@@ -519,9 +565,12 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn bytes(&self) -> IndexedByteCursor<'a> {
         let inner = match &self.backing {
-            IndexedByteBacking::Composed { root, start, len, .. } => {
-                let view = root.subview(*start..start.checked_add(*len)
-                    .expect("checked composed view end")).expect("checked composed source view");
+            IndexedByteBacking::Composed {
+                root, start, len, ..
+            } => {
+                let view = root
+                    .subview(*start..start.checked_add(*len).expect("checked composed view end"))
+                    .expect("checked composed source view");
                 IndexedByteCursorInner::Composed(view.bytes())
             }
             IndexedByteBacking::Borrowed {
@@ -568,9 +617,12 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn located_bytes(&self) -> IndexedLocatedByteCursor<'a> {
         let inner = match &self.backing {
-            IndexedByteBacking::Composed { root, start, len, .. } => {
-                let view = root.subview(*start..start.checked_add(*len)
-                    .expect("checked composed view end")).expect("checked composed source view");
+            IndexedByteBacking::Composed {
+                root, start, len, ..
+            } => {
+                let view = root
+                    .subview(*start..start.checked_add(*len).expect("checked composed view end"))
+                    .expect("checked composed source view");
                 IndexedLocatedByteCursorInner::Composed(view.located_bytes())
             }
             IndexedByteBacking::Borrowed {
@@ -671,9 +723,13 @@ impl<'a> IndexedByteRegion<'a> {
             return false;
         }
         match (&self.backing, &other.backing) {
-            (IndexedByteBacking::Composed { .. }, IndexedByteBacking::Composed { .. }) =>
-                self.source_window().expect("checked composed source window").content_eq(
-                    &other.source_window().expect("checked composed source window")
+            (IndexedByteBacking::Composed { .. }, IndexedByteBacking::Composed { .. }) => self
+                .source_window()
+                .expect("checked composed source window")
+                .content_eq(
+                    &other
+                        .source_window()
+                        .expect("checked composed source window"),
                 ),
             (
                 IndexedByteBacking::Frozen {
@@ -723,9 +779,15 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
 
     fn contiguous_range(&self, range: std::ops::Range<usize>) -> Option<&[u8]> {
         match &self.backing {
-            IndexedByteBacking::Composed { root, start, len, .. } => {
-                if range.start > range.end || range.end > *len { return None; }
-                root.contiguous_bytes(start.checked_add(range.start)?..start.checked_add(range.end)?)
+            IndexedByteBacking::Composed {
+                root, start, len, ..
+            } => {
+                if range.start > range.end || range.end > *len {
+                    return None;
+                }
+                root.contiguous_bytes(
+                    start.checked_add(range.start)?..start.checked_add(range.end)?,
+                )
             }
             IndexedByteBacking::Borrowed {
                 bytes, start, len, ..
@@ -760,8 +822,14 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
             return false;
         }
         match &self.backing {
-            IndexedByteBacking::Composed { root, start: root_start, .. } => {
-                let Some(absolute) = root_start.checked_add(start) else { return false; };
+            IndexedByteBacking::Composed {
+                root,
+                start: root_start,
+                ..
+            } => {
+                let Some(absolute) = root_start.checked_add(start) else {
+                    return false;
+                };
                 root.copy_exact(absolute, output)
             }
             IndexedByteBacking::Borrowed {
@@ -872,17 +940,21 @@ pub(crate) struct IndexedByteCursor<'a> {
 impl IndexedByteCursor<'_> {
     fn has_chunks(&self) -> bool {
         #[cfg(test)]
-        if matches!(self.inner, IndexedByteCursorInner::Arena(_)) { return false; }
+        if matches!(self.inner, IndexedByteCursorInner::Arena(_)) {
+            return false;
+        }
         true
     }
 
     fn chunk(&mut self) -> Option<&[u8]> {
         match &mut self.inner {
-            IndexedByteCursorInner::Borrowed { bytes, at } =>
-                (*at < bytes.len()).then(|| &bytes[*at..]),
+            IndexedByteCursorInner::Borrowed { bytes, at } => {
+                (*at < bytes.len()).then(|| &bytes[*at..])
+            }
             #[cfg(test)]
-            IndexedByteCursorInner::Contiguous { region, at } =>
-                (*at < region.len()).then(|| &region.as_bytes()[*at..]),
+            IndexedByteCursorInner::Contiguous { region, at } => {
+                (*at < region.len()).then(|| &region.as_bytes()[*at..])
+            }
             IndexedByteCursorInner::Frozen(cursor) => cursor.chunk(),
             IndexedByteCursorInner::Composed(cursor) => cursor.chunk(),
             #[cfg(test)]
@@ -893,18 +965,24 @@ impl IndexedByteCursor<'_> {
     fn skip_chunk_prefix(&mut self, width: usize) -> bool {
         match &mut self.inner {
             IndexedByteCursorInner::Borrowed { bytes, at } => {
-                if width > bytes.len() - *at { return false; }
+                if width > bytes.len() - *at {
+                    return false;
+                }
                 *at += width;
                 true
             }
             #[cfg(test)]
             IndexedByteCursorInner::Contiguous { region, at } => {
-                if width > region.len() - *at { return false; }
+                if width > region.len() - *at {
+                    return false;
+                }
                 *at += width;
                 true
             }
             IndexedByteCursorInner::Frozen(cursor) => {
-                if width > cursor.len() { return false; }
+                if width > cursor.len() {
+                    return false;
+                }
                 cursor.fast_forward(width);
                 true
             }
@@ -922,7 +1000,9 @@ impl IndexedByteCursor<'_> {
             let width = match (self.chunk(), other.chunk()) {
                 (Some(left), Some(right)) => {
                     let width = left.len().min(right.len());
-                    if left[..width] != right[..width] { return false; }
+                    if left[..width] != right[..width] {
+                        return false;
+                    }
                     width
                 }
                 (None, None) => return true,

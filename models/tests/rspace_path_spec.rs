@@ -36,7 +36,8 @@ fn v2_channel_field_is_the_authoritative_rci2_image() {
     assert_eq!(view.channel_image(), image.as_bytes());
     let join = rho_path_v2_join_key(&channel, b"join").unwrap();
     assert!(rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_join(&join).is_ok());
-    let continuation_prefix = rho_path_v2_continuation_prefix(std::slice::from_ref(&channel)).unwrap();
+    let continuation_prefix =
+        rho_path_v2_continuation_prefix(std::slice::from_ref(&channel)).unwrap();
     let continuation =
         rho_path_v2_continuation_key(std::slice::from_ref(&channel), b"continuation").unwrap();
     assert!(continuation.starts_with(&continuation_prefix));

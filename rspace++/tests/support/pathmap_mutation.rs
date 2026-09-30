@@ -8,6 +8,84 @@ use proptest::prelude::*;
 
 use super::*;
 
+fn assert_mutation_unwind_child(case: &str, expected_diagnostic: &str) {
+    let scratch = shared::rust::test_scratch::acquire("rspace-pathmap-mutation-unwind-");
+    let marker = scratch.path().join("verified");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rspace::pathmap_mutation::tests::pathmap_mutation_unwind_child",
+            "--nocapture",
+        ])
+        .env("RSPACE_PATHMAP_MUTATION_UNWIND_CASE", case)
+        .env("RSPACE_PATHMAP_MUTATION_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the PathMap mutation unwind child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+            assert!(failure.stderr.contains(expected_diagnostic), "{}", failure.stderr);
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the PathMap mutation unwind child did not fail: {case}")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), case.as_bytes());
+}
+
+fn mutation_unwind_marker() -> std::path::PathBuf {
+    std::env::var_os("RSPACE_PATHMAP_MUTATION_UNWIND_MARKER")
+        .expect("PathMap mutation unwind marker")
+        .into()
+}
+
+#[test]
+#[ignore = "isolated PathMap mutation unwind child"]
+fn pathmap_mutation_unwind_child() {
+    let Some(case) = std::env::var_os("RSPACE_PATHMAP_MUTATION_UNWIND_CASE") else {
+        return;
+    };
+    let case = case
+        .to_str()
+        .expect("PathMap mutation unwind case is UTF-8");
+    let mut parts = case.split(':');
+    match parts.next().unwrap() {
+        "virtual" => {
+            let index = parts.next().unwrap().parse::<usize>().unwrap();
+            assert!(parts.next().is_none());
+            run_virtual_navigation_unwind_child(index, case);
+        }
+        "phase" => {
+            let phase = match parts.next().unwrap() {
+                "Parked" => ExtensionPhase::Parked,
+                "Grafted" => ExtensionPhase::Grafted,
+                "Restored" => ExtensionPhase::Restored,
+                _ => panic!("unknown extension phase"),
+            };
+            let insert = parts.next().unwrap().parse::<bool>().unwrap();
+            assert!(parts.next().is_none());
+            run_phase_interruption_child(phase, insert, case);
+        }
+        "path" => {
+            let shared = parts.next().unwrap().parse::<bool>().unwrap();
+            assert!(parts.next().is_none());
+            run_panicking_path_child(shared, case);
+        }
+        "upstream" => {
+            let index = parts.next().unwrap().parse::<usize>().unwrap();
+            assert!(parts.next().is_none());
+            run_upstream_create_history_child(index, case);
+        }
+        _ => panic!("unknown PathMap mutation unwind case: {case}"),
+    }
+}
+
 struct StageObservation {
     interrupt: Option<ExtensionPhase>,
     events: Vec<(ExtensionPhase, Option<usize>)>,
@@ -403,7 +481,10 @@ fn native_leaf_extension_root_parent_values_compression_and_dense_siblings() {
 
 #[test]
 fn native_virtual_navigation_exit_and_unwind_never_materialize_missing_paths() {
-    for authority in [vec![], vec![3], vec![3, 9], vec![255, 254]] {
+    for (index, authority) in [vec![], vec![3], vec![3, 9], vec![255, 254]]
+        .into_iter()
+        .enumerate()
+    {
         let mut map = PathMap::new();
         {
             let mut cursor = Cursor::new(&mut map, &[], &TestDispose);
@@ -411,28 +492,56 @@ fn native_virtual_navigation_exit_and_unwind_never_materialize_missing_paths() {
             cursor.set_val(7);
         }
         let before = observe(&map);
-        for unwind in [false, true] {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut cursor = Cursor::new(&mut map, &authority, &TestDispose);
-                cursor.move_to_path(&[8, 7, 6]);
-                assert!(!cursor.path_exists());
-                assert!(!cursor.is_val());
-                assert_eq!(cursor.val(), None);
-                assert_eq!(cursor.remove_val(), None);
-                assert!(!cursor.descend_first_byte());
-                assert!(!cursor.descend_until());
-                assert!(!cursor.to_next_sibling_byte());
-                assert_eq!(cursor.path(), &[8, 7, 6]);
-                assert!(cursor.ascend_byte());
-                assert_eq!(cursor.path(), &[8, 7]);
-                if unwind {
-                    panic!("bounded cursor-exit control");
-                }
-            }));
-            assert_eq!(outcome.is_err(), unwind);
-            assert_eq!(observe(&map), before);
+        exercise_virtual_navigation(&mut map, &authority);
+        assert_eq!(observe(&map), before);
+        assert_mutation_unwind_child(&format!("virtual:{index}"), "bounded cursor-exit control");
+    }
+}
+
+fn exercise_virtual_navigation(map: &mut PathMap<u64>, authority: &[u8]) {
+    let mut cursor = Cursor::new(map, authority, &TestDispose);
+    cursor.move_to_path(&[8, 7, 6]);
+    assert!(!cursor.path_exists());
+    assert!(!cursor.is_val());
+    assert_eq!(cursor.val(), None);
+    assert_eq!(cursor.remove_val(), None);
+    assert!(!cursor.descend_first_byte());
+    assert!(!cursor.descend_until());
+    assert!(!cursor.to_next_sibling_byte());
+    assert_eq!(cursor.path(), &[8, 7, 6]);
+    assert!(cursor.ascend_byte());
+    assert_eq!(cursor.path(), &[8, 7]);
+}
+
+fn run_virtual_navigation_unwind_child(index: usize, case: &str) {
+    struct VerifyOnDrop {
+        map: PathMap<u64>,
+        before: Observation,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(observe(&self.map), self.before);
+            std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
         }
     }
+    let authorities = [vec![], vec![3], vec![3, 9], vec![255, 254]];
+    let authority = &authorities[index];
+    let mut map = PathMap::new();
+    {
+        let mut cursor = Cursor::new(&mut map, &[], &TestDispose);
+        cursor.move_to_path(&[3]);
+        cursor.set_val(7);
+    }
+    let mut verify = VerifyOnDrop {
+        before: observe(&map),
+        map,
+        case: case.to_owned(),
+        marker: mutation_unwind_marker(),
+    };
+    exercise_virtual_navigation(&mut verify.map, authority);
+    panic!("bounded cursor-exit control");
 }
 
 #[test]
@@ -732,36 +841,38 @@ fn native_leaf_extension_unique_payload_identity_and_no_clone_restore() {
 fn native_leaf_extension_phase_interruptions_preserve_exact_resident_authority() {
     for phase in [ExtensionPhase::Parked, ExtensionPhase::Grafted, ExtensionPhase::Restored] {
         for insert in [false, true] {
-            let mut fixture = TrackedFixture::new();
-            let incoming_counts = Arc::new(PayloadCounts::default());
-            let incoming = insert.then(|| TrackedPayload::new(5, &incoming_counts));
-            let scope = StageScope::new(Some(phase));
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut cursor = TrackedCursor::new_counted(
-                    &mut fixture.map,
-                    &[],
-                    &TrackedDispose,
-                    &mut fixture.count,
-                );
-                cursor.move_to_path(&[178, 0]);
-                if let Some(value) = incoming {
-                    assert!(cursor.set_val(value).is_none());
-                } else {
-                    cursor.create_path();
-                }
-            }));
-            assert!(outcome.is_err());
+            assert_mutation_unwind_child(
+                &format!("phase:{phase:?}:{insert}"),
+                "bounded native extension interruption",
+            );
+        }
+    }
+}
+
+fn run_phase_interruption_child(phase: ExtensionPhase, insert: bool, case: &str) {
+    struct VerifyOnDrop {
+        fixture: Option<TrackedFixture>,
+        incoming_counts: Arc<PayloadCounts>,
+        scope: Option<StageScope>,
+        phase: ExtensionPhase,
+        insert: bool,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            let mut fixture = self.fixture.take().unwrap();
             let mut expected_events = vec![(ExtensionPhase::Parked, Some(3))];
-            if phase != ExtensionPhase::Parked {
+            if self.phase != ExtensionPhase::Parked {
                 expected_events.push((ExtensionPhase::Grafted, Some(3)));
                 fixture.model.create(&[178, 0]);
             }
-            if phase == ExtensionPhase::Restored {
+            if self.phase == ExtensionPhase::Restored {
                 expected_events.push((ExtensionPhase::Restored, Some(4)));
             } else {
                 fixture.model.values.remove(&vec![178]);
             }
-            assert_eq!(scope.finish(), expected_events);
+            assert_eq!(self.scope.take().unwrap().finish(), expected_events);
             assert_eq!(observe_tracked(&fixture.map), fixture.model);
             assert_eq!(fixture.count, fixture.model.values.len());
             for (path, identity) in &fixture.identities {
@@ -770,20 +881,46 @@ fn native_leaf_extension_phase_interruptions_preserve_exact_resident_authority()
                 }
             }
             for (index, counts) in fixture.counts.iter().enumerate() {
-                let retired = usize::from(index == 3 && phase != ExtensionPhase::Restored);
+                let retired = usize::from(index == 3 && self.phase != ExtensionPhase::Restored);
                 assert_eq!(counts.clones.load(Ordering::SeqCst), 0);
                 assert_eq!(counts.disposals.load(Ordering::SeqCst), retired);
                 assert_eq!(counts.drops.load(Ordering::SeqCst), retired);
             }
-            assert_eq!(incoming_counts.clones.load(Ordering::SeqCst), 0);
-            assert_eq!(incoming_counts.disposals.load(Ordering::SeqCst), usize::from(insert));
-            assert_eq!(incoming_counts.drops.load(Ordering::SeqCst), usize::from(insert));
+            assert_eq!(self.incoming_counts.clones.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                self.incoming_counts.disposals.load(Ordering::SeqCst),
+                usize::from(self.insert)
+            );
+            assert_eq!(self.incoming_counts.drops.load(Ordering::SeqCst), usize::from(self.insert));
             retire_tracked(fixture.map, fixture.count);
             for counts in &fixture.counts {
                 assert_eq!(counts.disposals.load(Ordering::SeqCst), 1);
                 assert_eq!(counts.drops.load(Ordering::SeqCst), 1);
             }
+            std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
         }
+    }
+    let fixture = TrackedFixture::new();
+    let incoming_counts = Arc::new(PayloadCounts::default());
+    let incoming = insert.then(|| TrackedPayload::new(5, &incoming_counts));
+    let scope = StageScope::new(Some(phase));
+    let mut verify = VerifyOnDrop {
+        fixture: Some(fixture),
+        incoming_counts,
+        scope: Some(scope),
+        phase,
+        insert,
+        case: case.to_owned(),
+        marker: mutation_unwind_marker(),
+    };
+    let fixture = verify.fixture.as_mut().unwrap();
+    let mut cursor =
+        TrackedCursor::new_counted(&mut fixture.map, &[], &TrackedDispose, &mut fixture.count);
+    cursor.move_to_path(&[178, 0]);
+    if let Some(value) = incoming {
+        assert!(cursor.set_val(value).is_none());
+    } else {
+        cursor.create_path();
     }
 }
 
@@ -796,52 +933,86 @@ impl AsRef<[u8]> for PanickingPath {
 #[test]
 fn native_leaf_extension_guarded_incoming_value_survives_panicking_path_conversion() {
     for shared in [false, true] {
-        let resident_counts = Arc::new(PayloadCounts::default());
-        let incoming_counts = Arc::new(PayloadCounts::default());
-        let mut map =
-            GuardedPathMap::<TrackedPayload, TrackedDispose, TrackedBarrier>::new_with_barrier(
-                TrackedDispose,
-            );
-        assert!(!map.set_val_at([1], TrackedPayload::new(1, &resident_counts)));
-        assert!(map.create_path([1, 2]));
-        let before = map.compact_u64_bytes(|value| value.id);
-        let snapshot = shared.then(|| map.clone());
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            map.set_val_at(PanickingPath, TrackedPayload::new(2, &incoming_counts));
-        }));
-        assert!(outcome.is_err());
-        assert_eq!(incoming_counts.clones.load(Ordering::SeqCst), 0);
-        assert_eq!(incoming_counts.disposals.load(Ordering::SeqCst), 1);
-        assert_eq!(incoming_counts.drops.load(Ordering::SeqCst), 1);
-        assert_eq!(map.compact_u64_bytes(|value| value.id), before);
-        if let Some(snapshot) = &snapshot {
-            assert_eq!(snapshot.compact_u64_bytes(|value| value.id), before);
-        }
-        drop(map);
-        drop(snapshot);
-        let resident_instances = resident_counts.clones.load(Ordering::SeqCst) + 1;
-        assert_eq!(resident_counts.disposals.load(Ordering::SeqCst), resident_instances);
-        assert_eq!(resident_counts.drops.load(Ordering::SeqCst), resident_instances);
+        assert_mutation_unwind_child(
+            &format!("path:{shared}"),
+            "bounded AsRef path conversion interruption",
+        );
     }
+}
+
+fn run_panicking_path_child(shared: bool, case: &str) {
+    struct VerifyOnDrop {
+        map: Option<GuardedPathMap<TrackedPayload, TrackedDispose, TrackedBarrier>>,
+        snapshot: Option<GuardedPathMap<TrackedPayload, TrackedDispose, TrackedBarrier>>,
+        before: Vec<u8>,
+        resident_counts: Arc<PayloadCounts>,
+        incoming_counts: Arc<PayloadCounts>,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.incoming_counts.clones.load(Ordering::SeqCst), 0);
+            assert_eq!(self.incoming_counts.disposals.load(Ordering::SeqCst), 1);
+            assert_eq!(self.incoming_counts.drops.load(Ordering::SeqCst), 1);
+            let map = self.map.take().unwrap();
+            assert_eq!(map.compact_u64_bytes(|value| value.id), self.before);
+            if let Some(snapshot) = &self.snapshot {
+                assert_eq!(snapshot.compact_u64_bytes(|value| value.id), self.before);
+            }
+            drop(map);
+            drop(self.snapshot.take());
+            let resident_instances = self.resident_counts.clones.load(Ordering::SeqCst) + 1;
+            assert_eq!(self.resident_counts.disposals.load(Ordering::SeqCst), resident_instances);
+            assert_eq!(self.resident_counts.drops.load(Ordering::SeqCst), resident_instances);
+            std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let resident_counts = Arc::new(PayloadCounts::default());
+    let incoming_counts = Arc::new(PayloadCounts::default());
+    let mut map =
+        GuardedPathMap::<TrackedPayload, TrackedDispose, TrackedBarrier>::new_with_barrier(
+            TrackedDispose,
+        );
+    assert!(!map.set_val_at([1], TrackedPayload::new(1, &resident_counts)));
+    assert!(map.create_path([1, 2]));
+    let before = map.compact_u64_bytes(|value| value.id);
+    let snapshot = shared.then(|| map.clone());
+    let mut verify = VerifyOnDrop {
+        map: Some(map),
+        snapshot,
+        before,
+        resident_counts,
+        incoming_counts,
+        case: case.to_owned(),
+        marker: mutation_unwind_marker(),
+    };
+    verify
+        .map
+        .as_mut()
+        .unwrap()
+        .set_val_at(PanickingPath, TrackedPayload::new(2, &verify.incoming_counts));
 }
 
 #[test]
 fn pinned_pathmap_0_2_2_raw_four_operation_create_history_hits_empty_sentinel() {
-    for history in histories() {
-        let failure = std::panic::catch_unwind(|| {
-            let mut map = PathMap::<u64>::new();
-            for path in history {
-                map.create_path(path);
-            }
-        })
-        .expect_err("the pinned upstream baseline retains the four-operation defect");
-        let message = failure
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| failure.downcast_ref::<&str>().copied())
-            .expect("the pinned upstream assertion carries a string panic");
-        assert!(message.contains("Attempted to make_unique on an empty sentinel node"));
+    for index in 0..histories().len() {
+        assert_mutation_unwind_child(
+            &format!("upstream:{index}"),
+            "Attempted to make_unique on an empty sentinel node",
+        );
     }
+}
+
+fn run_upstream_create_history_child(index: usize, case: &str) {
+    let mut map = PathMap::<u64>::new();
+    let mut history = histories().into_iter().nth(index).unwrap();
+    let final_path = history.pop().unwrap();
+    for path in history {
+        map.create_path(path);
+    }
+    std::fs::write(mutation_unwind_marker(), case.as_bytes()).unwrap();
+    map.create_path(final_path);
 }
 
 #[derive(Clone, Debug)]

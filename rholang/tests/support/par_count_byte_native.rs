@@ -368,25 +368,62 @@ fn compressed_endpoint_work_is_independent_of_multiplicity() {
 #[test]
 fn unproved_par_framing_delegates_to_generated_decoder() {
     use models::rust::rholang::protobuf_decoder::decode_par;
-    for bytes in [vec![0x50, 0], vec![0x2a, 0, 0x2a, 0], vec![0x80], vec![
-        0x2a, 5,
-    ]] {
+    for (index, bytes) in unproved_par_framing_cases().into_iter().enumerate() {
         let expected = decode_par(bytes.as_slice());
-        let observed = std::panic::catch_unwind(|| encoded_count(&bytes));
         match expected {
             Ok(par) => {
-                let (actual, stats) = observed.expect("generated decoder accepts the frame");
+                let (actual, stats) = encoded_count(&bytes);
                 assert_eq!(actual, ParCount::zero().min_max_par_ref(&par));
                 if bytes == [0x50, 0] {
                     assert!(stats.decoded > 0);
                 }
             }
-            Err(_) => assert!(
-                observed.is_err(),
-                "invalid framing must not invent an interval"
-            ),
+            Err(_) => {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "rust::interpreter::matcher::par_count::byte_native_tests::unproved_par_framing_child",
+                    ])
+                    .env("PAR_COUNT_UNPROVED_FRAME_CASE", index.to_string())
+                    .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+                let outcome = shared::rust::test_process::run_child_probe(
+                    &mut command,
+                    std::time::Duration::from_secs(30),
+                )
+                .expect("run the malformed-frame child");
+                match outcome {
+                    shared::rust::test_process::ProbeOutcome::Failed(failure) => assert_eq!(
+                        failure.kind,
+                        shared::rust::test_process::ProbeFailureKind::Panicked
+                    ),
+                    shared::rust::test_process::ProbeOutcome::Passed => {
+                        panic!("invalid framing invented an interval")
+                    }
+                }
+            }
         }
     }
+}
+
+fn unproved_par_framing_cases() -> [Vec<u8>; 4] {
+    [vec![0x50, 0], vec![0x2a, 0, 0x2a, 0], vec![0x80], vec![
+        0x2a, 5,
+    ]]
+}
+
+#[test]
+#[ignore = "isolated malformed-frame child"]
+fn unproved_par_framing_child() {
+    let Ok(index) = std::env::var("PAR_COUNT_UNPROVED_FRAME_CASE") else {
+        return;
+    };
+    let index: usize = index.parse().expect("malformed-frame case index");
+    let cases = unproved_par_framing_cases();
+    let bytes = &cases[index];
+    assert!(models::rust::rholang::protobuf_decoder::decode_par(bytes.as_slice()).is_err());
+    let _ = encoded_count(bytes);
 }
 
 #[test]

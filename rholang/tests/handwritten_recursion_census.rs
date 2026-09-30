@@ -322,7 +322,7 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: SAME_NAME_OVERLOADS,
     },
     ComponentDisposition {
-        label: "models.canonical_path+models.rhoapi_ext.close_path-drive-epathmap_carrier-parse_segment_start-run_validation-validate_canonical_path-canonical_key_metadata-from_repr-from_repr_deferred_key_validation-from_repr_with_key_validation-replace_decoded_representation_deferred_key_validation-replace_decoded_representation_with-replace_trie_snapshot_deferred_key_validation",
+        label: "models.canonical_path+models.rhoapi_ext.validation-and-representation-adoption",
         members: members![
             ("models/src/rust/canonical_path.rs", "close_path", 0),
             ("models/src/rust/canonical_path.rs", "drive", 0),
@@ -330,15 +330,71 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("models/src/rust/canonical_path.rs", "parse_segment_start", 0),
             ("models/src/rust/canonical_path.rs", "run_validation", 0),
             ("models/src/rust/canonical_path.rs", "validate_canonical_path", 0),
+            ("models/src/rust/canonical_path.rs", "validate_path_with_root", 0),
             ("models/src/rust/rhoapi_ext.rs", "canonical_key_metadata", 0),
-            ("models/src/rust/rhoapi_ext.rs", "from_repr", 0),
-            ("models/src/rust/rhoapi_ext.rs", "from_repr_deferred_key_validation", 0),
-            ("models/src/rust/rhoapi_ext.rs", "from_repr_with_key_validation", 0),
+            ("models/src/rust/rhoapi_ext.rs", "from_owned_repr_with_key_validation", 0),
             ("models/src/rust/rhoapi_ext.rs", "replace_decoded_representation_deferred_key_validation", 0),
             ("models/src/rust/rhoapi_ext.rs", "replace_decoded_representation_with", 0),
+            ("models/src/rust/rhoapi_ext.rs", "replace_owned_decoded_representation_with", 0),
             ("models/src/rust/rhoapi_ext.rs", "replace_trie_snapshot_deferred_key_validation", 0),
         ],
         disposition: Disposition::Measured("canonical-path validation is an explicit frame machine and EPathMap adoption is zipper/iterator based; canonical-path and EPM1 depth gates drive this exact cross-file component"),
+    },
+    ComponentDisposition {
+        label: "models.canonical_path+models.epathmap_trie_codec+models.rhoapi_ext+rholang.reduce+rspace++.pathmap_codec-and-cursor-adapters",
+        members: members![
+            ("models/src/rust/canonical_path.rs", "encode_segment", 0),
+            ("models/src/rust/canonical_path.rs", "encode_trie_path", 0),
+            ("models/src/rust/canonical_path.rs", "encode_trie_path_with_stability", 0),
+            ("models/src/rust/canonical_path.rs", "run", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "encode_with_layout", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "from", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "from", 1),
+            ("models/src/rust/epathmap_trie_codec.rs", "from_parts", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "layout_with_certified_value_count", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "new", 1),
+            ("models/src/rust/epathmap_trie_codec.rs", "new", 4),
+            ("models/src/rust/epathmap_trie_codec.rs", "new", 5),
+            ("models/src/rust/epathmap_trie_codec.rs", "new_with_provider", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "parse_indexed_canonical_snapshot_prefix", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "parse_pending_framing", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "read_indexed_len", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "read_len", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "read_protobuf_varint", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "take", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "try_from", 0),
+            ("models/src/rust/epathmap_trie_codec.rs", "validate_canonical_act_summary", 0),
+            ("models/src/rust/rhoapi_ext.rs", "epm_layout", 0),
+            ("models/src/rust/rhoapi_ext.rs", "get_map_value", 0),
+            ("models/src/rust/rhoapi_ext.rs", "get_map_value", 1),
+            ("models/src/rust/rhoapi_ext.rs", "trie_snapshot", 0),
+            ("models/src/rust/rhoapi_ext.rs", "trie_snapshot", 1),
+            ("rholang/src/rust/interpreter/reduce.rs", "ascend", 0),
+            ("rholang/src/rust/interpreter/reduce.rs", "get", 0),
+            ("rholang/src/rust/interpreter/reduce.rs", "get_or_else", 0),
+            ("rspace++/src/rspace/bag.rs", "get_or_insert", 0),
+            ("rspace++/src/rspace/bag.rs", "get_or_insert_from_cursor", 0),
+            ("rspace++/src/rspace/guarded_pathmap.rs", "with_write_cursor", 0),
+            ("rspace++/src/rspace/pathmap_mutation.rs", "move_to_path", 0),
+            ("rspace++/src/rspace/pathmap_mutation.rs", "new", 0),
+            ("rspace++/src/rspace/pathmap_mutation.rs", "new_counted", 0),
+            ("rspace++/src/rspace/pathmap_mutation.rs", "with_authority", 0),
+        ],
+        disposition: Disposition::NotATermDepthCycle("receiver erasure joins codec constructors and parser helpers named new/from/take with Bag and PathMap cursor operations and reducer get/get_or_else; the crate dependency direction rholang -> models -> rspace++ rules out the reported cross-crate back-edge, while canonical-path encoding uses EncMachine ops and EPM1 map-value encoding uses the iterative protobuf writer, both covered by the trie escape-arm and EPM1 depth-4096 small-stack gates"),
+    },
+    ComponentDisposition {
+        label: "models.channel_image.channel_identity_from_par",
+        members: members![
+            ("models/src/rust/channel_image.rs", "from_par", 1),
+        ],
+        disposition: Disposition::NotATermDepthCycle("ChannelIdentityV2::from_par delegates to ChannelImageV2::from_par; the receiver-erased same-name call has no back-edge"),
+    },
+    ComponentDisposition {
+        label: "models.par.merge_field",
+        members: members![
+            ("models/src/rust/par.rs", "merge_field", 0),
+        ],
+        disposition: Disposition::NotATermDepthCycle("the sole same-name call is the cfg(test) protobuf_field_oracle::merge_field, not a recursive production call to the Par Message implementation"),
     },
     ComponentDisposition {
         label: "models.par.canonical_unary_bundle_terminal",
@@ -376,6 +432,14 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("models/src/rust/par_bag.rs", "with_component_key", 0),
         ],
         disposition: Disposition::NotATermDepthCycle("the scanner joins finite score-key append helpers and same-named PathMap operations; component-key traversal is iterative and no listed helper calls upward"),
+    },
+    ComponentDisposition {
+        label: "models.par_construction.finish",
+        members: members![
+            ("models/src/rust/par_construction.rs", "finish", 0),
+            ("models/src/rust/par_construction.rs", "finish", 1),
+        ],
+        disposition: Disposition::NotATermDepthCycle("the scanner joins ProtobufImportBuilder::finish and ParConstruction::finish by name; finish_epm_repr calls the latter on planned values, and neither finish method calls the other"),
     },
     ComponentDisposition {
         label: "models.par_map.connective_used",
@@ -422,6 +486,7 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         members: members![
             ("models/src/rust/rhoapi_ext.rs", "clone", 0),
             ("models/src/rust/rhoapi_ext.rs", "clone", 1),
+            ("models/src/rust/rhoapi_ext.rs", "clone", 2),
         ],
         disposition: Disposition::Measured("the generated stack-safe EPathMap/EntryTrie clone lifecycle is driven by the EPM1 depth-4096 256-KiB gate; the apparent clone cycle is same-name dispatch"),
     },
@@ -431,6 +496,15 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("models/src/rust/rhoapi_ext.rs", "contains_entry", 1),
         ],
         disposition: QUALIFIED_DELEGATION,
+    },
+    ComponentDisposition {
+        label: "models.rhoapi_ext.create_path",
+        members: members![
+            ("models/src/rust/rhoapi_ext.rs", "create_path", 0),
+            ("models/src/rust/rhoapi_ext.rs", "create_path", 1),
+            ("models/src/rust/rhoapi_ext.rs", "native_create_path", 0),
+        ],
+        disposition: Disposition::NotATermDepthCycle("EPathMap::create_path forwards to EntryTrie::create_path, which calls native_create_path and then NativePathCursor::create_path; receiver erasure invents the back-edge"),
     },
     ComponentDisposition {
         label: "models.rhoapi_ext.deserialize",
@@ -482,13 +556,6 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: QUALIFIED_DELEGATION,
     },
     ComponentDisposition {
-        label: "models.rhoapi_ext.get_map_value",
-        members: members![
-            ("models/src/rust/rhoapi_ext.rs", "get_map_value", 1),
-        ],
-        disposition: QUALIFIED_DELEGATION,
-    },
-    ComponentDisposition {
         label: "models.rhoapi_ext.insert_entry",
         members: members![
             ("models/src/rust/rhoapi_ext.rs", "insert_entry", 1),
@@ -524,9 +591,9 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: QUALIFIED_DELEGATION,
     },
     ComponentDisposition {
-        label: "models.rhoapi_ext+rholang.interpreter.reduce.join_exact_map_with_grafts-try_join-try_join_exact_zipper-graft-union",
+        label: "models.rhoapi_ext+rholang.interpreter.reduce.join_exact_with_grafts-try_join-try_join_exact_zipper-graft-union",
         members: members![
-            ("models/src/rust/rhoapi_ext.rs", "join_exact_map_with_grafts", 0),
+            ("models/src/rust/rhoapi_ext.rs", "join_exact_with_grafts", 0),
             ("models/src/rust/rhoapi_ext.rs", "try_join", 0),
             ("models/src/rust/rhoapi_ext.rs", "try_join_exact_zipper", 0),
             ("rholang/src/rust/interpreter/reduce.rs", "graft", 0),
@@ -540,6 +607,15 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("models/src/rust/rhoapi_ext.rs", "leaf_at_encoded_key", 1),
         ],
         disposition: QUALIFIED_DELEGATION,
+    },
+    ComponentDisposition {
+        label: "models.rhoapi_ext.remove_branches_at",
+        members: members![
+            ("models/src/rust/rhoapi_ext.rs", "native_remove_branches", 0),
+            ("models/src/rust/rhoapi_ext.rs", "remove_branches_at", 0),
+            ("models/src/rust/rhoapi_ext.rs", "remove_branches_at", 1),
+        ],
+        disposition: Disposition::NotATermDepthCycle("EPathMap delegates to EntryTrie and then native_remove_branches, whose remove_branches_at receiver is the external PathMap; there is no EPathMap back-edge"),
     },
     ComponentDisposition {
         label: "models.rhoapi_ext.remove_greatest_entry",
@@ -603,6 +679,20 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("models/src/rust/rholang/match_schema.rs", "next", 0),
         ],
         disposition: Disposition::Measured("RhoPathCursor::next is an explicit Vec<RhoPathStep> machine; the textual self-loop is BTreeMap::Iter::next, and the cursor gate drives depth and width 20,000"),
+    },
+    ComponentDisposition {
+        label: "models.rholang.protobuf_admission.frame_accept",
+        members: members![
+            ("models/src/rust/rholang/protobuf_admission.rs", "accept", 4),
+        ],
+        disposition: Disposition::NotATermDepthCycle("Frame::accept dispatches to distinct MessageFrame, MapFrame, EPathMapFrame, and CanonicalPathFrame accept methods; the receiver-erased self-edge does not occur at runtime"),
+    },
+    ComponentDisposition {
+        label: "models.rholang.protobuf_admission.frame_step",
+        members: members![
+            ("models/src/rust/rholang/protobuf_admission.rs", "step", 1),
+        ],
+        disposition: Disposition::NotATermDepthCycle("Frame::step dispatches to distinct per-variant step functions and CanonicalPathFrame::step; the receiver-erased self-edge does not occur at runtime"),
     },
     ComponentDisposition {
         label: "models.rholang.protobuf_schema.epathmap_try_encode_certified_egress",
@@ -675,12 +765,13 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: Disposition::NotATermDepthCycle("fixture generators recurse only to the explicit depth selected by the test caller; this is test-data construction, not production term evaluation"),
     },
     ComponentDisposition {
-        label: "node.api.rho_expr_pda.clone-clone_rho_expr",
+        label: "node.api.rho_expr_pda.clone-layout-clone_rho_expr",
         members: members![
             ("node/src/rust/api/rho_expr_pda.rs", "clone", 0),
+            ("node/src/rust/api/rho_expr_pda.rs", "clone_legacy_map_layout", 0),
             ("node/src/rust/api/rho_expr_pda.rs", "clone_rho_expr", 0),
         ],
-        disposition: Disposition::Measured("the production RhoExpr conversion/Clone PDA is driven to depth 16,384 on 256 KiB; this exact clone component is a conservative name collision"),
+        disposition: Disposition::NotATermDepthCycle("clone_rho_expr enters clone_legacy_map_layout only to copy HashMap bucket layout; during that scoped call HashMap::clone invokes RhoExpr::clone only for inert placeholders, so the guarded branch cannot reenter clone_rho_expr. The PDA later clones and installs the real children; the 16,384-level 256-KiB node depth gate exercises this path"),
     },
     ComponentDisposition {
         label: "node.effects.repl_client.new",
@@ -840,6 +931,13 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: QUALIFIED_DELEGATION,
     },
     ComponentDisposition {
+        label: "rholang.interpreter.matcher.par_count.next",
+        members: members![
+            ("rholang/src/rust/interpreter/matcher/par_count.rs", "next", 0),
+        ],
+        disposition: Disposition::NotATermDepthCycle("CountChildren::next advances stored slice, vector, or encoded child iterators; each receiver-erased next call targets an iterator rather than CountChildren"),
+    },
+    ComponentDisposition {
         label: "rholang.interpreter.matcher.spatial_matcher_pda.shares_cow_bincode_identity",
         members: members![
             ("rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs", "shares_cow_bincode_identity", 0),
@@ -911,13 +1009,6 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         label: "rholang.interpreter.reduce.expr_locally_free_ref",
         members: members![
             ("rholang/src/rust/interpreter/reduce.rs", "expr_locally_free_ref", 0),
-        ],
-        disposition: QUALIFIED_DELEGATION,
-    },
-    ComponentDisposition {
-        label: "rholang.interpreter.reduce.get_or_else",
-        members: members![
-            ("rholang/src/rust/interpreter/reduce.rs", "get_or_else", 0),
         ],
         disposition: QUALIFIED_DELEGATION,
     },
@@ -1044,6 +1135,14 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("rholang/src/rust/interpreter/system_processes.rs", "unapply", 2),
         ],
         disposition: SAME_NAME_OVERLOADS,
+    },
+    ComponentDisposition {
+        label: "rspace++.rspace.pathmap_mutation.remove_value_preserving_path-remove_val",
+        members: members![
+            ("rspace++/src/rspace/guarded_pathmap.rs", "remove_value_preserving_path", 0),
+            ("rspace++/src/rspace/pathmap_mutation.rs", "remove_val", 0),
+        ],
+        disposition: Disposition::NotATermDepthCycle("PathMapMutation::remove_val calls remove_value_preserving_path on its inner zipper; the latter calls ZipperWriting::remove_val, not PathMapMutation::remove_val"),
     },
     ComponentDisposition {
         label: "rspace++.rspace.history.history_repository_impl.reset",

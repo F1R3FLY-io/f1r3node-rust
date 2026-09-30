@@ -180,21 +180,99 @@ mod tests {
             std::thread::spawn(|| record(Event::VisitWork))
                 .join()
                 .unwrap();
-            assert!(std::panic::catch_unwind(|| capture(|| ())).is_err());
             record(Event::VisitWork);
         });
         assert_eq!(first.get(Metric::WorkSteps), 2);
         assert_eq!(capture(|| ()).1, Totals::default());
-        assert!(std::panic::catch_unwind(|| capture(|| {
-            record(Event::CopyRoot(usize::MAX));
-            record(Event::CopyRoot(1));
-        }))
-        .is_err());
+        for (case, diagnostic) in [
+            ("nested", "nested substitution cost capture"),
+            ("overflow", "substitution cost counter overflow"),
+            ("unwind", "intentional capture unwind"),
+        ] {
+            let scratch = shared::rust::test_scratch::acquire("substitution-cost-unwind-");
+            let marker = scratch.path().join("cleared");
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "rust::par_construction::substitution_cost::tests::cost_scope_refusal_child",
+                    "--nocapture",
+                ])
+                .env("SUBSTITUTION_COST_CHILD_CASE", case)
+                .env("SUBSTITUTION_COST_CHILD_MARKER", &marker)
+                .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+            let outcome = shared::rust::test_process::run_child_probe(
+                &mut command,
+                std::time::Duration::from_secs(30),
+            )
+            .expect("run the substitution cost child");
+            match outcome {
+                shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+                    assert_eq!(
+                        failure.kind,
+                        shared::rust::test_process::ProbeFailureKind::Panicked
+                    );
+                    assert!(failure.stderr.contains(diagnostic), "{}", failure.stderr);
+                }
+                shared::rust::test_process::ProbeOutcome::Passed => {
+                    panic!("the substitution cost child did not fail")
+                }
+            }
+            assert_eq!(std::fs::read(marker).unwrap(), b"cleared");
+        }
         assert_eq!(capture(|| ()).1, Totals::default());
-        assert!(
-            std::panic::catch_unwind(|| capture(|| panic!("intentional capture unwind"))).is_err()
-        );
-        assert_eq!(capture(|| ()).1, Totals::default());
+    }
+
+    #[test]
+    #[ignore = "isolated substitution cost refusal child"]
+    fn cost_scope_refusal_child() {
+        let Ok(case) = std::env::var("SUBSTITUTION_COST_CHILD_CASE") else {
+            return;
+        };
+        let marker = std::env::var_os("SUBSTITUTION_COST_CHILD_MARKER")
+            .expect("substitution cost child marker");
+        struct ScopeClearedOnDrop(std::path::PathBuf);
+        impl Drop for ScopeClearedOnDrop {
+            fn drop(&mut self) {
+                assert_eq!(ACTIVE.with(Cell::get), None);
+                std::fs::write(&self.0, b"cleared").unwrap();
+            }
+        }
+        struct OuterTotalsOnDrop;
+        impl Drop for OuterTotalsOnDrop {
+            fn drop(&mut self) {
+                let totals = ACTIVE
+                    .with(Cell::get)
+                    .expect("outer cost capture remains active");
+                assert_eq!(totals.get(Metric::WorkSteps), 1);
+                record(Event::VisitWork);
+                let totals = ACTIVE
+                    .with(Cell::get)
+                    .expect("outer cost capture remains active");
+                assert_eq!(totals.get(Metric::WorkSteps), 2);
+            }
+        }
+        let _cleared = ScopeClearedOnDrop(marker.into());
+        match case.as_str() {
+            "nested" => {
+                let _ = capture(|| {
+                    record(Event::VisitWork);
+                    let _outer = OuterTotalsOnDrop;
+                    capture(|| ());
+                });
+            }
+            "overflow" => {
+                let _ = capture(|| {
+                    record(Event::CopyRoot(usize::MAX));
+                    record(Event::CopyRoot(1));
+                });
+            }
+            "unwind" => {
+                let _ = capture(|| panic!("intentional capture unwind"));
+            }
+            _ => panic!("unknown substitution cost child case"),
+        }
     }
 
     #[test]

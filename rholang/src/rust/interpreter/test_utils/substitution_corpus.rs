@@ -44,12 +44,14 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap,
     EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent,
-    EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, If,
-    KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+    EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, GSysAuthToken,
+    GUnforgeable, If, KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    VarRef,
 };
 use models::rust::rhoapi_ext::EPathMap;
 pub use models::rust::rholang::par_children::{
@@ -664,6 +666,93 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
             locally_free: vec![0xff, 0xff, 0xff, 0xff],
             connective_used: true,
             unforgeables: vec![],
+            ..Default::default()
+        },
+        0,
+    ));
+
+    out.push(case(
+        "par/bundle-if",
+        models::par_from_default! {
+            bundles: vec![Bundle {
+                body: Some(bound_var(0)),
+                write_flag: true,
+                read_flag: false,
+            }],
+            conditionals: vec![If {
+                condition: Some(bound_var(0)),
+                if_true: Some(gint(1)),
+                if_false: Some(gint(0)),
+                locally_free: vec![0xff],
+                connective_used: false,
+            }],
+            locally_free: vec![0xff],
+            ..Default::default()
+        },
+        0,
+    ));
+    out.push(case(
+        "bundle/mixed-bundle-if-body",
+        models::par_from_default! {
+            bundles: vec![Bundle {
+                body: Some(models::par_from_default! {
+                    bundles: vec![Bundle {
+                        body: Some(bound_var(0)),
+                        write_flag: false,
+                        read_flag: true,
+                    }],
+                    conditionals: vec![If {
+                        condition: Some(gint(0)),
+                        if_true: Some(gint(1)),
+                        if_false: Some(gint(2)),
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    }],
+                    locally_free: vec![0xff],
+                    ..Default::default()
+                }),
+                write_flag: true,
+                read_flag: true,
+            }],
+            locally_free: vec![0xff],
+            ..Default::default()
+        },
+        0,
+    ));
+    out.push(case(
+        "par/connective-if",
+        models::par_from_default! {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![bound_var(0), gint(2)],
+                })),
+            }],
+            conditionals: vec![If {
+                condition: Some(bound_var(0)),
+                if_true: Some(gint(1)),
+                if_false: Some(gint(0)),
+                locally_free: vec![0xff],
+                connective_used: false,
+            }],
+            locally_free: vec![0xff],
+            connective_used: true,
+            ..Default::default()
+        },
+        0,
+    ));
+    out.push(case(
+        "par/connective-unforgeable",
+        models::par_from_default! {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![bound_var(0), gint(2)],
+                })),
+            }],
+            unforgeables: vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+            }],
+            locally_free: vec![0xff],
+            connective_used: true,
             ..Default::default()
         },
         0,

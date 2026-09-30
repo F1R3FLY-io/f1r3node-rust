@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use pathmap::zipper::Zipper;
 use proptest::prelude::*;
@@ -228,32 +228,78 @@ fn map_writer_transfer_and_replacement_keep_exact_payload_ownership() {
 
 #[test]
 fn unwinding_a_partially_built_frame_retires_its_owned_map() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let scratch = shared::rust::test_scratch::acquire("epm-owned-retirement-unwind-");
+    let marker = scratch.path().join("balanced");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rust::epathmap_trie_codec::owned_retirement_tests::partially_built_frame_unwind_child",
+            "--nocapture",
+        ])
+        .env("EPM_OWNED_RETIREMENT_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the partially built frame child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            );
+            assert!(failure.stderr.contains("injected frame failure"));
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the partially built frame child did not fail")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), b"balanced");
+}
 
+#[test]
+#[ignore = "isolated partially built frame child"]
+fn partially_built_frame_unwind_child() {
+    let Some(marker) = std::env::var_os("EPM_OWNED_RETIREMENT_MARKER") else {
+        return;
+    };
+    struct BalanceOnDrop {
+        counts: Arc<Counts>,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for BalanceOnDrop {
+        fn drop(&mut self) {
+            balanced(&self.counts);
+            std::fs::write(&self.marker, b"balanced").unwrap();
+        }
+    }
     let counts = Arc::new(Counts::default());
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let mut owner = EpmMapOwner {
-            owned: Some((
-                PathMap::new(),
-                PendingScaffold::Repeat(Tracked::new(&counts)),
-            )),
-        };
-        owner
-            .owned
-            .as_mut()
-            .unwrap()
-            .0
-            .set_val_at([], Tracked::new(&counts));
-        owner
-            .owned
-            .as_mut()
-            .unwrap()
-            .0
-            .create_path(b"unpublished/topology");
-        panic!("injected frame failure");
-    }));
-    assert!(result.is_err());
-    balanced(&counts);
+    let _balance = BalanceOnDrop {
+        counts: Arc::clone(&counts),
+        marker: marker.into(),
+    };
+    let mut owner = EpmMapOwner {
+        owned: Some((
+            PathMap::new(),
+            PendingScaffold::Repeat(Tracked::new(&counts)),
+        )),
+    };
+    owner
+        .owned
+        .as_mut()
+        .unwrap()
+        .0
+        .set_val_at([], Tracked::new(&counts));
+    owner
+        .owned
+        .as_mut()
+        .unwrap()
+        .0
+        .create_path(b"unpublished/topology");
+    panic!("injected frame failure");
 }
 
 #[test]

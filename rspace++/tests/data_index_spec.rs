@@ -1,9 +1,10 @@
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rspace_plus_plus::rspace::bag::{BagDelta, Multiplicity};
-use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
+use rspace_plus_plus::rspace::data_index::{
+    CandidatePool, DataIndexError, RSpaceDataIndex, RSpaceDataStore,
+};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::internal::{
@@ -515,6 +516,75 @@ fn channel_replacement_invalidates_only_the_target_catalog_and_keeps_old_pools_v
 
 #[test]
 fn channel_replacement_iterator_panic_preserves_data_loaded_authority_and_catalogs() {
+    let scratch = shared::rust::test_scratch::acquire("channel-replacement-iterator-unwind-");
+    let marker = scratch.path().join("preserved");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--ignored", "--exact", "channel_replacement_iterator_unwind_child", "--nocapture"])
+        .env("CHANNEL_REPLACEMENT_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the channel replacement child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+            assert!(
+                failure
+                    .stderr
+                    .contains("synthetic iterator failure after one prepared datum")
+            );
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the channel replacement child did not fail")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), b"preserved");
+}
+
+#[test]
+#[ignore = "isolated channel replacement iterator child"]
+fn channel_replacement_iterator_unwind_child() {
+    let Some(marker) = std::env::var_os("CHANNEL_REPLACEMENT_UNWIND_MARKER") else {
+        return;
+    };
+    struct VerifyOnDrop {
+        store: RSpaceDataStore<String, String>,
+        before: RSpaceDataStore<String, String>,
+        target: String,
+        sibling: String,
+        old_target_pool: CandidatePool<String>,
+        old_sibling_pool: CandidatePool<String>,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.store, self.before);
+            assert_eq!(
+                self.store
+                    .channel_pool(&self.target)
+                    .unwrap()
+                    .unwrap()
+                    .candidate(0)
+                    .unwrap()
+                    .0,
+                self.old_target_pool.candidate(0).unwrap().0
+            );
+            assert_eq!(
+                self.store
+                    .channel_pool(&self.sibling)
+                    .unwrap()
+                    .unwrap()
+                    .candidate(0)
+                    .unwrap()
+                    .0,
+                self.old_sibling_pool.candidate(0).unwrap().0
+            );
+            std::fs::write(&self.marker, b"preserved").unwrap();
+        }
+    }
     let target = "target".to_owned();
     let sibling = "sibling".to_owned();
     let old_target = datum("old-target", false, 1);
@@ -529,38 +599,21 @@ fn channel_replacement_iterator_panic_preserves_data_loaded_authority_and_catalo
     let old_target_pool = store.channel_pool(&target).unwrap().unwrap();
     let old_sibling_pool = store.channel_pool(&sibling).unwrap().unwrap();
     let before = store.clone();
-
+    let mut verify = VerifyOnDrop {
+        store,
+        before,
+        target,
+        sibling,
+        old_target_pool,
+        old_sibling_pool,
+        marker: marker.into(),
+    };
     let replacement = std::iter::once(datum("never-published", true, 3)).chain(std::iter::from_fn(
         || -> Option<Datum<String>> {
             panic!("synthetic iterator failure after one prepared datum")
         },
     ));
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let _ = store.set_channel(target.clone(), replacement);
-    }));
-
-    assert!(outcome.is_err());
-    assert_eq!(store, before);
-    assert_eq!(
-        store
-            .channel_pool(&target)
-            .unwrap()
-            .unwrap()
-            .candidate(0)
-            .unwrap()
-            .0,
-        old_target_pool.candidate(0).unwrap().0
-    );
-    assert_eq!(
-        store
-            .channel_pool(&sibling)
-            .unwrap()
-            .unwrap()
-            .candidate(0)
-            .unwrap()
-            .0,
-        old_sibling_pool.candidate(0).unwrap().0
-    );
+    let _ = verify.store.set_channel(verify.target.clone(), replacement);
 }
 
 #[test]

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 13e7a3cd2939fa5bee5c186d767902f3b672e144891fd6d7da57e778b38cd2bf # shrinks to operations = [Insert([140], 1), Insert([141], 1), Insert([], 1), RemovePrefix([140])]
+cc 4242fd480c1182be1e1d8ec53e072b4f5ba8c4dbb7907c485e4eb2684a006473 # shrinks to left_entries = [([197, 147, 0], 1)], right_entries = [([197], 1)], third_entries = []

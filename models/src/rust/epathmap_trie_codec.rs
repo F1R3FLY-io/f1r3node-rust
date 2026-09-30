@@ -9,9 +9,9 @@ use std::fmt;
 use std::ops::Range;
 
 use pathmap::arena_compact::ArenaCompactTree;
-use pathmap::zipper::ZipperIteration;
 use pathmap::zipper::{
-    WriteZipperOwned, ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting,
+    WriteZipperOwned, ZipperIteration, ZipperMoving, ZipperReadOnlyIteration, ZipperValues,
+    ZipperWriting,
 };
 use pathmap::PathMap;
 use prost::bytes::Bytes;
@@ -20,12 +20,12 @@ use rspace_plus_plus::rspace::pathmap_codec::CompactTrie;
 use rspace_plus_plus::rspace::pathmap_codec::{
     CanonicalCompactTrieCursor, CanonicalCompactTrieIndexedTopologyCursor,
     CanonicalCompactTrieLineDirection, CanonicalCompactTrieLineSpan,
-    CanonicalCompactTriePreparedLineSpan,
-    CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent,
-    CanonicalCompactTrieValueSummary, CompactTrieError, CompactTrieTopologyEvent,
+    CanonicalCompactTriePreparedLineSpan, CanonicalCompactTrieTopologyCursor,
+    CanonicalCompactTrieTopologyEvent, CanonicalCompactTrieValueSummary, CompactTrieError,
+    CompactTrieTopologyEvent,
 };
 use rspace_plus_plus::rspace::pathmap_mutation::{
-    BarrierProvider, DisposeValue, remove_value_preserving_path, retire_pathmap,
+    remove_value_preserving_path, retire_pathmap, BarrierProvider, DisposeValue,
 };
 
 use crate::rhoapi::Par;
@@ -780,9 +780,7 @@ pub(crate) struct IndexedCanonicalEpm1PreparedLineSpan<'cursor, 'src> {
 impl<'cursor, 'src> IndexedCanonicalEpm1LineSpan<'cursor, 'src> {
     pub(crate) fn source_range(&self) -> Range<usize> { self.inner.source_range() }
 
-    pub(crate) fn direction(&self) -> CanonicalCompactTrieLineDirection {
-        self.inner.direction()
-    }
+    pub(crate) fn direction(&self) -> CanonicalCompactTrieLineDirection { self.inner.direction() }
 
     pub(crate) fn capacity(&self) -> usize {
         let available_events = usize::MAX - *self.topology_events;
@@ -792,16 +790,24 @@ impl<'cursor, 'src> IndexedCanonicalEpm1LineSpan<'cursor, 'src> {
         })
     }
 
-    pub(crate) fn prepare(self, width: usize)
-        -> Option<IndexedCanonicalEpm1PreparedLineSpan<'cursor, 'src>> {
+    pub(crate) fn prepare(
+        self,
+        width: usize,
+    ) -> Option<IndexedCanonicalEpm1PreparedLineSpan<'cursor, 'src>> {
         if width == 0 || width > self.capacity() {
             return None;
         }
         let inner = self.inner.prepare(width)?;
         let next_events = self.topology_events.checked_add(inner.expanded_events())?;
-        let last_source = inner.source().position_at(inner.last_source_offset())?.physical;
+        let last_source = inner
+            .source()
+            .position_at(inner.last_source_offset())?
+            .physical;
         Some(IndexedCanonicalEpm1PreparedLineSpan {
-            inner, topology_events: self.topology_events, next_events, last_source,
+            inner,
+            topology_events: self.topology_events,
+            next_events,
+            last_source,
         })
     }
 }
@@ -823,7 +829,8 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
 
     pub(crate) fn line_span(&mut self) -> Option<IndexedCanonicalEpm1LineSpan<'_, 'a>> {
         if !matches!(self.terminal, IndexedCanonicalEpm1Terminal::Active)
-            || self.mode == EPathMapMode::Empty {
+            || self.mode == EPathMapMode::Empty
+        {
             return None;
         }
         Some(IndexedCanonicalEpm1LineSpan {
@@ -1364,7 +1371,9 @@ mod payload_seal {
     impl Sealed for crate::rust::par_construction::PlannedPar {}
 }
 
-pub(crate) trait EpmPayload: payload_seal::Sealed + Clone + Send + Sync + Unpin + 'static {
+pub(crate) trait EpmPayload:
+    payload_seal::Sealed + Clone + Send + Sync + Unpin + 'static
+{
     fn dispose(self);
 }
 
@@ -1418,10 +1427,15 @@ impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
             };
             return Ok(OwnedResidentEPathMap::new(repr, ResidentEpmBarrier));
         }
-        let EPathMapRepr::Map(source) = &self.repr else { unreachable!() };
+        let EPathMapRepr::Map(source) = &self.repr else {
+            unreachable!()
+        };
         let mut reader = source.read_zipper();
         let mut destination = PendingWriter {
-            state: PendingWriterState::Map(WriteZipperOwned::new(), PendingScaffold::New(Par::default)),
+            state: PendingWriterState::Map(
+                WriteZipperOwned::new(),
+                PendingScaffold::New(Par::default),
+            ),
         };
         let mut frames = Vec::new();
         let mut span_len = 0;
@@ -1430,7 +1444,9 @@ impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
             let scaffold = reader.val().is_none() && !reader.path().is_empty();
             if let Some(value) = reader.val() {
                 let value = convert(value)?;
-                let PendingWriterState::Map(writer, _) = &mut destination.state else { unreachable!() };
+                let PendingWriterState::Map(writer, _) = &mut destination.state else {
+                    unreachable!()
+                };
                 writer.set_val(value);
             } else if scaffold {
                 destination.install_scaffold_value();
@@ -1452,15 +1468,21 @@ impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
                         destination.descend_first_span(span);
                         first_span = false;
                     } else {
-                        let PendingWriterState::Map(writer, _) = &mut destination.state else { unreachable!() };
+                        let PendingWriterState::Map(writer, _) = &mut destination.state else {
+                            unreachable!()
+                        };
                         writer.descend_to(span);
                     }
                     continue 'enter;
                 }
                 let (_, length, scaffold) = frames.pop().expect("live mapping frame");
-                let PendingWriterState::Map(writer, _) = &mut destination.state else { unreachable!() };
+                let PendingWriterState::Map(writer, _) = &mut destination.state else {
+                    unreachable!()
+                };
                 if scaffold {
-                    remove_value_preserving_path(writer).expect("installed mapping scaffold").dispose();
+                    remove_value_preserving_path(writer)
+                        .expect("installed mapping scaffold")
+                        .dispose();
                 }
                 if length != 0 {
                     writer.ascend(length);
@@ -1469,13 +1491,13 @@ impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
             }
             break;
         }
-        let repr = destination.into_repr().expect("mapping retains a live destination");
+        let repr = destination
+            .into_repr()
+            .expect("mapping retains a live destination");
         Ok(OwnedResidentEPathMap::new(repr, ResidentEpmBarrier))
     }
 
-    pub(crate) fn new(repr: EPathMapRepr<V>, barrier: B) -> Self {
-        Self { repr, barrier }
-    }
+    pub(crate) fn new(repr: EPathMapRepr<V>, barrier: B) -> Self { Self { repr, barrier } }
 
     pub(crate) fn as_repr(&self) -> &EPathMapRepr<V> { &self.repr }
 
@@ -1533,7 +1555,9 @@ struct EpmMapOwner<V: EpmPayload> {
 
 impl<V: EpmPayload> EpmMapOwner<V> {
     fn from_writer(writer: WriteZipperOwned<V>, scaffold: PendingScaffold<V>) -> Self {
-        Self { owned: Some((writer.into_map(), scaffold)) }
+        Self {
+            owned: Some((writer.into_map(), scaffold)),
+        }
     }
 
     fn into_writer_parts(mut self) -> (WriteZipperOwned<V>, PendingScaffold<V>) {
@@ -1565,7 +1589,10 @@ impl<V: EpmPayload> Drop for PendingWriter<V> {
     fn drop(&mut self) {
         match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
             PendingWriterState::Set(writer) => {
-                drop(EpmMapOwner::from_writer(writer, PendingScaffold::Repeat(())));
+                drop(EpmMapOwner::from_writer(
+                    writer,
+                    PendingScaffold::Repeat(()),
+                ));
             }
             PendingWriterState::Map(writer, scaffold) => {
                 drop(EpmMapOwner::from_writer(writer, scaffold));
@@ -1577,20 +1604,24 @@ impl<V: EpmPayload> Drop for PendingWriter<V> {
 
 impl<V: EpmPayload> PendingWriter<V> {
     fn discard() -> Self {
-        Self { state: PendingWriterState::Discard }
+        Self {
+            state: PendingWriterState::Discard,
+        }
     }
 
     fn into_repr(mut self) -> Result<EPathMapRepr<V>, TrieCodecError> {
-        Ok(match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
-            PendingWriterState::Empty => EPathMapRepr::Empty,
-            PendingWriterState::Set(zipper) => EPathMapRepr::Set(zipper.into_map()),
-            PendingWriterState::Map(zipper, _) => EPathMapRepr::Map(zipper.into_map()),
-            PendingWriterState::Discard => {
-                return Err(TrieCodecError::new(
-                    "EPM1 rejected without a retained semantic error",
-                ));
-            }
-        })
+        Ok(
+            match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
+                PendingWriterState::Empty => EPathMapRepr::Empty,
+                PendingWriterState::Set(zipper) => EPathMapRepr::Set(zipper.into_map()),
+                PendingWriterState::Map(zipper, _) => EPathMapRepr::Map(zipper.into_map()),
+                PendingWriterState::Discard => {
+                    return Err(TrieCodecError::new(
+                        "EPM1 rejected without a retained semantic error",
+                    ));
+                }
+            },
+        )
     }
 
     fn install_scaffold_value(&mut self) {
@@ -1617,21 +1648,29 @@ impl<V: EpmPayload> PendingWriter<V> {
     /// zipper over a pristine map still references PathMap's immutable empty
     /// sentinel, while the map-level constructor is the public API that
     /// replaces that sentinel without installing a transient value.
-    fn descend_first_byte(&mut self, byte: u8) {
-        self.descend_first_span(&[byte]);
-    }
+    fn descend_first_byte(&mut self, byte: u8) { self.descend_first_span(&[byte]); }
 
     fn descend_first_span(&mut self, span: &[u8]) {
         match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
             PendingWriterState::Set(zipper) => {
                 let mut owner = EpmMapOwner::from_writer(zipper, PendingScaffold::Repeat(()));
-                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path(span);
+                owner
+                    .owned
+                    .as_mut()
+                    .expect("the transferred EPM map owns its root")
+                    .0
+                    .create_path(span);
                 let (zipper, _) = owner.into_writer_parts();
                 self.state = PendingWriterState::Set(zipper);
             }
             PendingWriterState::Map(zipper, scaffold) => {
                 let mut owner = EpmMapOwner::from_writer(zipper, scaffold);
-                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path(span);
+                owner
+                    .owned
+                    .as_mut()
+                    .expect("the transferred EPM map owns its root")
+                    .0
+                    .create_path(span);
                 let (zipper, scaffold) = owner.into_writer_parts();
                 self.state = PendingWriterState::Map(zipper, scaffold);
             }
@@ -1732,7 +1771,11 @@ macro_rules! owned_epm_cursor {
 }
 
 owned_epm_cursor!(OwnedEPathMapSetEntries, (), PendingScaffold::Repeat(()));
-owned_epm_cursor!(OwnedEPathMapMapEntries, Par, PendingScaffold::New(Par::default));
+owned_epm_cursor!(
+    OwnedEPathMapMapEntries,
+    Par,
+    PendingScaffold::New(Par::default)
+);
 
 impl OwnedResidentEPathMap {
     pub(crate) fn into_entries(mut self) -> crate::rust::rhoapi_ext::OwnedEPathMapEntries {
@@ -1796,11 +1839,7 @@ fn parse_pending_framing(bytes: &[u8]) -> Result<PendingFraming, TrieCodecError>
 /// synchronous entry point. ACT topology is replayed directly into one owned
 /// write zipper; only the current child body and traversal depth survive a PDA
 /// suspension.
-pub(crate) struct PendingEpmDecode<
-    'a,
-    S: AsRef<[u8]>,
-    V: EpmPayload = Par,
-> {
+pub(crate) struct PendingEpmDecode<'a, S: AsRef<[u8]>, V: EpmPayload = Par> {
     snapshot: S,
     mode: Option<EPathMapMode>,
     topology: Option<PendingTopology<'a>>,
@@ -1821,9 +1860,7 @@ pub(crate) struct PendingEpmDecode<
 
 pub(crate) type OwnedPendingEpmDecode<V = Par> = PendingEpmDecode<'static, Bytes, V>;
 
-impl<'a, S: AsRef<[u8]>, V: EpmPayload>
-    PendingEpmDecode<'a, S, V>
-{
+impl<'a, S: AsRef<[u8]>, V: EpmPayload> PendingEpmDecode<'a, S, V> {
     fn from_parts(
         snapshot: S,
         framing: PendingFraming,
@@ -1844,12 +1881,16 @@ impl<'a, S: AsRef<[u8]>, V: EpmPayload>
             }
         };
 
-        let mut writer = PendingWriter { state: match mode {
-            Some(EPathMapMode::Empty) => PendingWriterState::Empty,
-            Some(EPathMapMode::Set) => PendingWriterState::Set(WriteZipperOwned::new()),
-            Some(EPathMapMode::Map) => PendingWriterState::Map(WriteZipperOwned::new(), scaffold),
-            None => PendingWriterState::Discard,
-        } };
+        let mut writer = PendingWriter {
+            state: match mode {
+                Some(EPathMapMode::Empty) => PendingWriterState::Empty,
+                Some(EPathMapMode::Set) => PendingWriterState::Set(WriteZipperOwned::new()),
+                Some(EPathMapMode::Map) => {
+                    PendingWriterState::Map(WriteZipperOwned::new(), scaffold)
+                }
+                None => PendingWriterState::Discard,
+            },
+        };
 
         match mode {
             Some(EPathMapMode::Empty) => {
@@ -2079,7 +2120,11 @@ impl<'a, S: AsRef<[u8]>, V: EpmPayload>
 
 impl PendingEpmDecode<'static, Bytes> {
     pub(crate) fn new(snapshot: Bytes, validate_canonical: bool) -> Result<Self, TrieCodecError> {
-        Self::new_with_provider(snapshot, validate_canonical, PendingScaffold::New(Par::default))
+        Self::new_with_provider(
+            snapshot,
+            validate_canonical,
+            PendingScaffold::New(Par::default),
+        )
     }
 }
 
@@ -2089,7 +2134,11 @@ impl<V: EpmPayload> PendingEpmDecode<'static, Bytes, V> {
         validate_canonical: bool,
         scaffold: V,
     ) -> Result<Self, TrieCodecError> {
-        Self::new_with_provider(snapshot, validate_canonical, PendingScaffold::Repeat(scaffold))
+        Self::new_with_provider(
+            snapshot,
+            validate_canonical,
+            PendingScaffold::Repeat(scaffold),
+        )
     }
 
     fn new_with_provider(

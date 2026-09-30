@@ -1,5 +1,3 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 use proptest::prelude::*;
 
 use super::*;
@@ -216,32 +214,85 @@ fn raw_topology_ingress_preserves_topology_and_bootstraps_valid_barrier() {
 
 #[test]
 fn builder_unwind_retires_partial_branching_keys() {
-    small_stack(|| {
-        for mode in [EPathMapMode::Set, EPathMapMode::Map] {
-            let mut arena = ParConstruction::new();
-            let value = arena.empty_par().unwrap();
-            let mut children = Vec::new();
-            let mut path = Vec::new();
-            for _ in 0..2048 {
-                path.push(1);
-                let key = arena.empty_par().unwrap();
-                arena.pars[key.0].canonical_path_override = Some(path.clone().into_boxed_slice());
-                children.push(key);
-                if mode == EPathMapMode::Map {
-                    children.push(value);
-                }
-                *path.last_mut().unwrap() = 0;
+    for (index, _) in [EPathMapMode::Set, EPathMapMode::Map].iter().enumerate() {
+        let scratch = shared::rust::test_scratch::acquire("planned-epm-builder-unwind-");
+        let marker = scratch.path().join("reused");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "rust::par_construction::planned_epm_ownership_tests::builder_unwind_child",
+                "--nocapture",
+            ])
+            .env("PLANNED_EPM_BUILDER_MODE", index.to_string())
+            .env("PLANNED_EPM_BUILDER_MARKER", &marker)
+            .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+        let outcome = shared::rust::test_process::run_child_probe(
+            &mut command,
+            std::time::Duration::from_secs(30),
+        )
+        .expect("run the planned EPathMap builder child");
+        match outcome {
+            shared::rust::test_process::ProbeOutcome::Failed(failure) => assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            ),
+            shared::rust::test_process::ProbeOutcome::Passed => {
+                panic!("invalid planned EPathMap handle was accepted")
             }
-            children.push(PlannedPar(usize::MAX));
+        }
+        assert_eq!(std::fs::read(marker).unwrap(), b"reused");
+    }
+}
+
+#[test]
+#[ignore = "isolated planned EPathMap builder child"]
+fn builder_unwind_child() {
+    let Ok(index) = std::env::var("PLANNED_EPM_BUILDER_MODE") else {
+        return;
+    };
+    let index: usize = index.parse().expect("planned EPathMap mode index");
+    let mode = [EPathMapMode::Set, EPathMapMode::Map][index];
+    let marker =
+        std::env::var_os("PLANNED_EPM_BUILDER_MARKER").expect("planned EPathMap builder marker");
+    small_stack(move || {
+        struct ReuseOnDrop {
+            arena: ParConstruction,
+            value: PlannedPar,
+            marker: std::path::PathBuf,
+        }
+        impl Drop for ReuseOnDrop {
+            fn drop(&mut self) {
+                assert!(self.arena.finish(self.value).unwrap().is_empty());
+                std::fs::write(&self.marker, b"reused").unwrap();
+            }
+        }
+        let mut arena = ParConstruction::new();
+        let value = arena.empty_par().unwrap();
+        let mut verify = ReuseOnDrop {
+            arena,
+            value,
+            marker: marker.into(),
+        };
+        let mut children = Vec::new();
+        let mut path = Vec::new();
+        for _ in 0..2048 {
+            path.push(1);
+            let key = verify.arena.empty_par().unwrap();
+            verify.arena.pars[key.0].canonical_path_override =
+                Some(path.clone().into_boxed_slice());
+            children.push(key);
             if mode == EPathMapMode::Map {
                 children.push(value);
             }
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| arena.build_epm_entries(mode, &children)))
-                    .is_err()
-            );
-            assert!(arena.finish(value).unwrap().is_empty());
+            *path.last_mut().unwrap() = 0;
         }
+        children.push(PlannedPar(usize::MAX));
+        if mode == EPathMapMode::Map {
+            children.push(value);
+        }
+        let _ = verify.arena.build_epm_entries(mode, &children);
     });
 }
 

@@ -3306,11 +3306,26 @@ fn bulk_restore_refusals_preserve_runs_root_and_typed_storage() {
     let run = *actual.restore.last().unwrap();
     let population = run.latest.bytes.len() - run.first_depth + 1;
     for width in [0, population + 1, usize::MAX] {
-        let before = (actual.current, actual.restore.clone(), actual.root_left,
-            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+        let before = (
+            actual.current,
+            actual.restore.clone(),
+            actual.root_left,
+            actual.stats(),
+            actual.arena.stats(),
+            actual.reducer.machine.next_obligation,
+        );
         assert_eq!(actual.try_leave_run(width), None);
-        assert_eq!((actual.current, actual.restore.clone(), actual.root_left,
-            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), before);
+        assert_eq!(
+            (
+                actual.current,
+                actual.restore.clone(),
+                actual.root_left,
+                actual.stats(),
+                actual.arena.stats(),
+                actual.reducer.machine.next_obligation
+            ),
+            before
+        );
     }
     actual.restore.last_mut().unwrap().first_depth = run.latest.bytes.len() + 1;
     let before = (actual.current, actual.restore.clone());
@@ -3337,9 +3352,15 @@ fn bulk_restore_refusals_preserve_runs_root_and_typed_storage() {
     assert_eq!(root.len(), usize::MAX);
     let mut maximal = CanonicalPathTopologyAdmission::new();
     let slot = maximal.arena.register_source(root).unwrap();
-    let bytes = maximal.arena.append_source(maximal.arena.empty(), slot, 0..usize::MAX).unwrap();
+    let bytes = maximal
+        .arena
+        .append_source(maximal.arena.empty(), slot, 0..usize::MAX)
+        .unwrap();
     maximal.restore.push(CanonicalPathRestoreRun {
-        latest: CanonicalPathReducerHandle { state: maximal.current.state, bytes },
+        latest: CanonicalPathReducerHandle {
+            state: maximal.current.state,
+            bytes,
+        },
         first_depth: 0,
     });
     let resources = (maximal.stats(), maximal.arena.stats());
@@ -3360,20 +3381,42 @@ fn bulk_restore_all_mixed_source_prefixes_match_scalar_handles() {
     let right = [0x21, 0x22, 0x23];
     for count in 1..=8 {
         let mut actual = CanonicalPathTopologyAdmission::new();
-        let left_slot = actual.arena.register_source(
-            SourceTreeWindow::from_borrowed(&left, 31, 503).unwrap()).unwrap();
-        let right_slot = actual.arena.register_source(
-            SourceTreeWindow::from_borrowed(&right, 79, usize::MAX - 2).unwrap()).unwrap();
-        let mut bytes = actual.arena.append_source(actual.arena.empty(), left_slot, 0..3).unwrap();
+        let left_slot = actual
+            .arena
+            .register_source(SourceTreeWindow::from_borrowed(&left, 31, 503).unwrap())
+            .unwrap();
+        let right_slot = actual
+            .arena
+            .register_source(SourceTreeWindow::from_borrowed(&right, 79, usize::MAX - 2).unwrap())
+            .unwrap();
+        let mut bytes = actual
+            .arena
+            .append_source(actual.arena.empty(), left_slot, 0..3)
+            .unwrap();
         let retained = actual.arena.retained_source_window(bytes).unwrap();
-        bytes = actual.arena.append(bytes,
-            CanonicalLocatedByte::new(0x7f, CanonicalByteProvenance::new(101, 303))).unwrap();
+        bytes = actual
+            .arena
+            .append(
+                bytes,
+                CanonicalLocatedByte::new(0x7f, CanonicalByteProvenance::new(101, 303)),
+            )
+            .unwrap();
         bytes = actual.arena.append_source(bytes, right_slot, 0..3).unwrap();
-        let latest = CanonicalPathReducerHandle { state: actual.current.state, bytes };
-        actual.restore.push(CanonicalPathRestoreRun { latest, first_depth: 0 });
+        let latest = CanonicalPathReducerHandle {
+            state: actual.current.state,
+            bytes,
+        };
+        actual.restore.push(CanonicalPathRestoreRun {
+            latest,
+            first_depth: 0,
+        });
         let prior = actual.current;
         let before = actual.restore.clone();
-        let resources = (actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+        let resources = (
+            actual.stats(),
+            actual.arena.stats(),
+            actual.reducer.machine.next_obligation,
+        );
         let mut transition = None;
         for _ in 0..count {
             transition = Some(actual.leave(source(917)).unwrap());
@@ -3385,10 +3428,24 @@ fn bulk_restore_all_mixed_source_prefixes_match_scalar_handles() {
         assert_eq!((actual.current, actual.restore.clone()), expected);
         if count == 1 {
             assert_eq!(actual.current, latest);
-            assert_eq!(actual.arena.located_bytes(actual.current.bytes).last().unwrap().provenance,
-                CanonicalByteProvenance::new(79, usize::MAX));
+            assert_eq!(
+                actual
+                    .arena
+                    .located_bytes(actual.current.bytes)
+                    .last()
+                    .unwrap()
+                    .provenance,
+                CanonicalByteProvenance::new(79, usize::MAX)
+            );
         }
-        assert_eq!((actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), resources);
+        assert_eq!(
+            (
+                actual.stats(),
+                actual.arena.stats(),
+                actual.reducer.machine.next_obligation
+            ),
+            resources
+        );
         assert_eq!(retained.bytes().collect::<Vec<_>>(), left);
         assert!(!actual.root_left);
     }
@@ -3535,25 +3592,52 @@ fn source_forward_capacity_is_maximal_strict_and_counter_bounded() {
     let root = SourceTreeWindow::from_borrowed(&input, 17, 101).unwrap();
     let mut actual = CanonicalPathTopologyAdmission::new_with_source(Some(root)).unwrap();
     for (offset, byte) in input.into_iter().enumerate() {
-        actual.edge(LocatedPathByte::in_source(byte, 17, 101 + offset)).unwrap();
+        actual
+            .edge(LocatedPathByte::in_source(byte, 17, 101 + offset))
+            .unwrap();
     }
     let state = actual.reducer.state(actual.current);
     let owner = state.owners.unwrap();
     let stamp = state.stamp as u128;
     let before = actual.reducer.owners.entries[owner.0].all_boundary;
-    for boundary in [stamp - 1, stamp, stamp + 1, stamp + 2, stamp + 13,
-        usize::MAX as u128, usize::MAX as u128 + 1, u128::MAX] {
+    for boundary in [
+        stamp - 1,
+        stamp,
+        stamp + 1,
+        stamp + 2,
+        stamp + 13,
+        usize::MAX as u128,
+        usize::MAX as u128 + 1,
+        u128::MAX,
+    ] {
         actual.reducer.owners.entries[owner.0].all_boundary.end = boundary;
         for available in [0, 1, 2, 7, 29, 30, usize::MAX] {
             for budget in [0, 1, 6, usize::MAX] {
                 actual.reducer.machine.stats.edges = usize::MAX - budget;
                 let expected = boundary.checked_sub(stamp + 1).map_or(0, |remaining| {
-                    remaining.min(29).min(available as u128).min(budget as u128)
-                        .min((usize::MAX - actual.current.bytes.len()) as u128) as usize
+                    remaining
+                        .min(29)
+                        .min(available as u128)
+                        .min(budget as u128)
+                        .min((usize::MAX - actual.current.bytes.len()) as u128)
+                        as usize
                 });
-                let unchanged = (actual.current, actual.restore.clone(), actual.stats(), actual.arena.stats());
+                let unchanged = (
+                    actual.current,
+                    actual.restore.clone(),
+                    actual.stats(),
+                    actual.arena.stats(),
+                );
                 assert_eq!(actual.forward_capacity(available), expected);
-                assert_eq!((actual.current, actual.restore.clone(), actual.stats(), actual.arena.stats()), unchanged);
+                assert_eq!(
+                    (
+                        actual.current,
+                        actual.restore.clone(),
+                        actual.stats(),
+                        actual.arena.stats()
+                    ),
+                    unchanged
+                );
             }
         }
     }
@@ -3574,30 +3658,63 @@ fn source_forward_refusals_preserve_logical_state_and_registered_source() {
     assert_eq!(actual.forward_capacity(usize::MAX), 0);
     assert!(!actual.try_forward_source(0..1).unwrap());
     for (offset, byte) in input[..2].iter().copied().enumerate() {
-        actual.edge(LocatedPathByte::in_source(byte, 17, 101 + offset)).unwrap();
+        actual
+            .edge(LocatedPathByte::in_source(byte, 17, 101 + offset))
+            .unwrap();
     }
     for range in [0..0, 2..7, 3..2, 0..8, usize::MAX..usize::MAX] {
-        let before = (actual.current, actual.restore.clone(), actual.source,
-            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+        let before = (
+            actual.current,
+            actual.restore.clone(),
+            actual.source,
+            actual.stats(),
+            actual.arena.stats(),
+            actual.reducer.machine.next_obligation,
+        );
         assert_ne!(actual.try_forward_source(range), Ok(true));
-        assert_eq!((actual.current, actual.restore.clone(), actual.source,
-            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), before);
+        assert_eq!(
+            (
+                actual.current,
+                actual.restore.clone(),
+                actual.source,
+                actual.stats(),
+                actual.arena.stats(),
+                actual.reducer.machine.next_obligation
+            ),
+            before
+        );
     }
     let current = actual.current;
     let history = actual.restore.clone();
     for range in [2..4, 4..6] {
         assert!(actual.try_forward_source(range.clone()).unwrap());
-        let bytes = actual.arena.located_bytes(actual.current.bytes).collect::<Vec<_>>();
-        assert_eq!(bytes[2..].iter().map(|byte| byte.byte).collect::<Vec<_>>(), input[range]);
+        let bytes = actual
+            .arena
+            .located_bytes(actual.current.bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bytes[2..].iter().map(|byte| byte.byte).collect::<Vec<_>>(),
+            input[range]
+        );
         assert!(actual.try_leave_run(2).is_some());
         assert_eq!(actual.current.state, current.state);
-        assert_eq!(actual.arena.located_bytes(actual.current.bytes).collect::<Vec<_>>(),
-            actual.arena.located_bytes(current.bytes).collect::<Vec<_>>());
+        assert_eq!(
+            actual
+                .arena
+                .located_bytes(actual.current.bytes)
+                .collect::<Vec<_>>(),
+            actual
+                .arena
+                .located_bytes(current.bytes)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(actual.restore, history);
     }
     assert!(actual.try_forward_source(2..6).unwrap());
     assert_eq!(actual.forward_capacity(1), 0);
-    actual.edge(LocatedPathByte::in_source(input[6], 17, 107)).unwrap();
+    actual
+        .edge(LocatedPathByte::in_source(input[6], 17, 107))
+        .unwrap();
     assert!(actual.active_obligation().unwrap().awaiting_resolution);
     assert!(!actual.try_forward_source(2..3).unwrap());
     let id = actual.active_obligation().unwrap().obligation.id;

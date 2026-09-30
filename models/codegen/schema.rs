@@ -11727,7 +11727,7 @@ fn emit_protobuf_decoder_pda(
 
 use std::mem;
 use prost::encoding;
-use crate::rust::par_construction::{retire_draining_capacity, ConstructionCheckpoint, ParConstruction, PlannedPar, ProtobufParBuilder as Par};
+use crate::rust::par_construction::{retire_draining_capacity, ConstructionCheckpoint, ParConstruction, PlannedPar, ProtobufParBuilder as Par, ProtobufRootStream};
 use crate::rust::epathmap_trie_codec::OwnedPendingEpmDecode;
 use crate::rust::rholang::protobuf_construction::{construction_error, PublicProjection};
 use owned_slots::EPathMap;
@@ -12128,12 +12128,15 @@ struct Machine<B> {
     values: Vec<Value>,
     garbage: Vec<Value>,
     candidates: Vec<(ConstructionCheckpoint, usize)>,
+    root_candidate: Option<(ConstructionCheckpoint, usize)>,
     stats: DecodeStats,
     arena: ParConstruction,
+    root_stream: Option<ProtobufRootStream>,
 }
 
 impl<B: Buf> Machine<B> {
     fn new(buf: B, root: Node, validate_epathmaps: bool) -> Self {
+        let root_stream = matches!(root, Node::Par { .. }).then(ProtobufRootStream::default);
         Machine {
             buf: DecoderInput::Root(buf),
             input_stack: Vec::new(),
@@ -12143,12 +12146,30 @@ impl<B: Buf> Machine<B> {
             values: Vec::new(),
             garbage: Vec::new(),
             candidates: Vec::new(),
+            root_candidate: None,
             stats: DecodeStats {
                 max_frames: 1,
                 max_values: 0,
             },
             arena: ParConstruction::new(),
+            root_stream,
         }
+    }
+
+    fn push_candidate(&mut self) {
+        let candidate = (self.arena.construction_checkpoint(), self.garbage.len());
+        if self.root_candidate.is_none() {
+            self.root_candidate = Some(candidate);
+        } else {
+            self.candidates.push(candidate);
+        }
+    }
+
+    fn pop_candidate(&mut self) -> (ConstructionCheckpoint, usize) {
+        self.candidates
+            .pop()
+            .or_else(|| self.root_candidate.take())
+            .expect("component checkpoint")
     }
 
     fn message_limit(&mut self, protobuf_wire_type: WireType) -> Result<usize, DecodeError> {
@@ -12215,14 +12236,17 @@ impl<B: Buf> Machine<B> {
             }
             self.stats.max_frames = self.stats.max_frames.max(self.frames.len());
             self.stats.max_values = self.stats.max_values.max(self.values.len());
-            if self.buf.remaining() == 0 && self.input_stack.is_empty() && self.epm_depth == 0 {
+            if (self.frames.capacity() > 16 || self.candidates.capacity() > 16)
+                && self.buf.remaining() == 0 && self.input_stack.is_empty() && self.epm_depth == 0 {
                 retire_draining_capacity(&mut self.frames, &mut frame_retirement);
                 retire_draining_capacity(&mut self.candidates, &mut candidate_retirement);
             }
         }
+        retire_draining_capacity(&mut self.frames, &mut frame_retirement);
+        retire_draining_capacity(&mut self.candidates, &mut candidate_retirement);
         assert!(self.input_stack.is_empty(), "protobuf decoder: nested input outlived its EPM1 value");
         assert_eq!(self.epm_depth, 0, "protobuf decoder: EPM1 validation depth did not return to zero");
-        assert!(self.candidates.is_empty(), "protobuf decoder: unfinished component checkpoint");
+        assert!(self.candidates.is_empty() && self.root_candidate.is_none(), "protobuf decoder: unfinished component checkpoint");
         Ok(())
     }
 
@@ -12584,7 +12608,7 @@ fn emit_protobuf_decoder_par_step(src: &mut String, fields: &[Field]) {
                     "            {tag}u32 => {{\n\
                                  let child_limit = self.message_limit(protobuf_wire_type)\n\
                                      .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
-                                 self.candidates.push((self.arena.construction_checkpoint(), self.garbage.len()));\n\
+                                 self.push_candidate();\n\
                                  self.frames.push(Frame::Attach(Attach::{attach} {{ parent: value, limit }}));\n\
                                  self.frames.push(Frame::Node(Node::{child} {{ value: Default::default(), limit: child_limit }}));\n\
                              }}"
@@ -12993,15 +13017,52 @@ fn emit_protobuf_decoder_attach_arms(
             "            Attach::{attach} {{ parent, limit }} => self.{method}(parent, limit),"
         )
         .expect("write external Par attach route");
+        let direct_prelude = if child == "Expr" {
+            "                let mut direct_declined = false;\n\
+             if self.frames.is_empty() {\n\
+                 let expr = match child.expr_instance.as_ref() {\n\
+                     Some(owned_slots::ExprExprInstance::GBool(value)) => Some(crate::rhoapi::Expr { expr_instance: Some(crate::rhoapi::expr::ExprInstance::GBool(*value)) }),\n\
+                     Some(owned_slots::ExprExprInstance::GInt(value)) => Some(crate::rhoapi::Expr { expr_instance: Some(crate::rhoapi::expr::ExprInstance::GInt(*value)) }),\n\
+                     Some(owned_slots::ExprExprInstance::GDouble(value)) => Some(crate::rhoapi::Expr { expr_instance: Some(crate::rhoapi::expr::ExprInstance::GDouble(*value)) }),\n\
+                     _ => None,\n\
+                 };\n\
+                 if let (Some(stream), Some(expr)) = (self.root_stream.as_mut(), expr.as_ref()) {\n\
+                     if stream.try_insert_fixed_expr(expr, usize::MAX) {\n\
+                         let (checkpoint, garbage_start) = self.pop_candidate();\n\
+                         let mut discarded = self.garbage.split_off(garbage_start);\n\
+                         self.retire_values(&mut discarded);\n\
+                         self.arena.rewind_construction(checkpoint);\n\
+                         self.frames.push(Frame::Node(Node::Par { value: parent, limit }));\n\
+                         return Ok(());\n\
+                     }\n\
+                     direct_declined = true;\n\
+                 }\n\
+             }\n"
+        } else {
+            "                let direct_declined = false;\n"
+        };
         let success = format!(
-            "                let component = child.plan(&mut self.arena).map_err(construction_error)\n\
+            "{direct_prelude}                let component = child.plan(&mut self.arena).map_err(construction_error)\n\
                      .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
-                 let search = self.arena.search_protobuf_component(&parent, component);\n\
-                 let (checkpoint, garbage_start) = self.candidates.pop().expect(\"component checkpoint\");\n\
+                 let (checkpoint, garbage_start) = self.pop_candidate();\n\
                  let mut discarded = self.garbage.split_off(garbage_start);\n\
                  self.retire_values(&mut discarded);\n\
-                 let component = if let Some(existing) = self.arena.existing_protobuf_component(&search) {{\n\
+                 let streamed = !direct_declined && self.frames.is_empty() && self.root_stream.as_mut().is_some_and(|stream|\n\
+                     stream.try_insert(&self.arena, component, usize::MAX));\n\
+                 if streamed {{\n\
                      self.arena.rewind_construction(checkpoint);\n\
+                     self.frames.push(Frame::Node(Node::Par {{ value: parent, limit }}));\n\
+                     return Ok(());\n\
+                 }}\n\
+                 let replayed = self.frames.is_empty() && self.root_stream.is_some();\n\
+                 if replayed {{\n\
+                     self.root_stream.take().expect(\"declined root stream\")\n\
+                         .replay(&mut self.arena, &mut parent).map_err(construction_error)\n\
+                         .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                 }}\n\
+                 let search = self.arena.search_protobuf_component(&parent, component);\n\
+                 let component = if let Some(existing) = self.arena.existing_protobuf_component(&search) {{\n\
+                     if !replayed {{ self.arena.rewind_construction(checkpoint); }}\n\
                      existing\n\
                  }} else {{ component }};\n\
                  self.arena.apply_protobuf_component(&mut parent, component, search).map_err(construction_error)\n\
@@ -13516,7 +13577,11 @@ fn decode_par_with_epathmap_validation<B: Buf>(
         .expect("the single checked Par root exists")
     {
         Value::Par(value) => {
-            let value = value.project(&mut PublicProjection { arena: &mut machine.arena })?;
+            let value = if let Some(stream) = machine.root_stream.take() {
+                stream.finish(&mut machine.arena, value).map_err(construction_error)?
+            } else {
+                value.project(&mut PublicProjection { arena: &mut machine.arena })?
+            };
             #[cfg(feature = "phase7-depth-histograms")]
             crate::rust::rholang::phase7_depth_histogram::record_par("protobuf_decoder", &value);
             Ok((value, stats))

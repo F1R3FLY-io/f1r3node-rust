@@ -12,13 +12,89 @@ use crate::rust::rholang::match_schema::RhoMatchProgram;
 use crate::rust::rholang::match_schema_tables::PAR_PROTOBUF_REGION_PROGRAM;
 use crate::rust::rholang::protobuf_encoder;
 
+fn assert_region_negative_child(case: &str) {
+    let scratch = shared::rust::test_scratch::acquire("protobuf-region-negative-");
+    let marker = scratch.path().join("reached-mutant");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rust::rholang::protobuf_region::emission_tests::region_negative_child",
+            "--nocapture",
+        ])
+        .env("PROTOBUF_REGION_NEGATIVE_CASE", case)
+        .env("PROTOBUF_REGION_NEGATIVE_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the protobuf region negative child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            );
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the protobuf region negative child did not fail: {case}")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), case.as_bytes());
+}
+
+fn mark_region_negative_case(case: &str) {
+    let marker = std::env::var_os("PROTOBUF_REGION_NEGATIVE_MARKER")
+        .expect("protobuf region negative marker");
+    std::fs::write(marker, case.as_bytes()).unwrap();
+}
+
+#[test]
+#[ignore = "isolated protobuf region negative child"]
+fn region_negative_child() {
+    let Some(case) = std::env::var_os("PROTOBUF_REGION_NEGATIVE_CASE") else {
+        return;
+    };
+    let case = case
+        .to_str()
+        .expect("protobuf region negative case is UTF-8");
+    match case {
+        "counter" => {
+            use super::{Frame, FrameSchema};
+            let mut frame = Frame::new(
+                ProtobufRegion::from(Vec::new()),
+                FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+                None,
+                None,
+                true,
+            );
+            frame.last_tag = 1;
+            frame.occurrence = usize::MAX;
+            mark_region_negative_case(case);
+            frame.next_occurrence(1);
+        }
+        "registration-cut" | "registration-occurrence" | "registration-parent" => {
+            run_registration_negative_child(case)
+        }
+        "dispatch-borrow" | "dispatch-retention" => run_dispatch_negative_child(case),
+        "provenance" => run_provenance_negative_child(case),
+        "swapped-cuts" => run_swapped_cuts_negative_child(case),
+        _ => panic!("unknown protobuf region negative case: {case}"),
+    }
+}
+
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn native_occurrence_counter_crosses_u32_boundary_and_resets() {
     use super::{Frame, FrameSchema};
     let mut frame = Frame::new(
-        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
-        None, None, true,
+        ProtobufRegion::from(Vec::new()),
+        FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None,
+        None,
+        true,
     );
     frame.last_tag = 1;
     frame.occurrence = u32::MAX as usize - 1;
@@ -32,15 +108,16 @@ fn native_occurrence_counter_crosses_u32_boundary_and_resets() {
 fn synthetic_invalid_counter_retains_checked_overflow_behavior() {
     use super::{Frame, FrameSchema};
     let mut frame = Frame::new(
-        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
-        None, None, true,
+        ProtobufRegion::from(Vec::new()),
+        FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None,
+        None,
+        true,
     );
     frame.last_tag = 1;
     frame.occurrence = usize::MAX;
     assert_eq!(frame.next_occurrence(2), 0);
-    frame.last_tag = 1;
-    frame.occurrence = usize::MAX;
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frame.next_occurrence(1))).is_err());
+    assert_region_negative_child("counter");
 }
 
 #[test]
@@ -48,20 +125,34 @@ fn native_par_cut_paths_preserve_machine_sized_occurrences() {
     use super::{Frame, FrameSchema, ProtobufRegionStepKind};
     let mut builder = Builder::new();
     let mut frames = vec![Frame::new(
-        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
-        None, None, true,
+        ProtobufRegion::from(Vec::new()),
+        FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None,
+        None,
+        true,
     )];
     let ordinals = [0, 1, u32::MAX as usize, usize::MAX / 2, usize::MAX];
     for occurrence in ordinals {
         let index = builder.cuts.len();
-        builder.add_child(
-            &mut frames, ProtobufRegion::from(vec![0x20, 1]),
-            &PAR_PROTOBUF_REGION_PROGRAM, 1, 1, occurrence,
-            ProtobufRegionStepKind::Message, PAR_PROTOBUF_REGION_PROGRAM.type_id, None, true,
-        ).unwrap();
+        builder
+            .add_child(
+                &mut frames,
+                ProtobufRegion::from(vec![0x20, 1]),
+                &PAR_PROTOBUF_REGION_PROGRAM,
+                1,
+                1,
+                occurrence,
+                ProtobufRegionStepKind::Message,
+                PAR_PROTOBUF_REGION_PROGRAM.type_id,
+                None,
+                true,
+            )
+            .unwrap();
         let path = &builder.paths[builder.cuts[index].path_leaf];
         assert_eq!(path.step.occurrence, occurrence);
-        assert!(matches!(frames[0].pieces.last(), Some(Piece::Par { tag: 1, cut }) if *cut == index));
+        assert!(
+            matches!(frames[0].pieces.last(), Some(Piece::Par { tag: 1, cut }) if *cut == index)
+        );
     }
 }
 
@@ -150,7 +241,10 @@ fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
     use super::ProtobufRegionStepKind;
     let group = &builder.epathmaps[observed.index];
     assert_eq!(group.mode, observed.mode);
-    assert_eq!(group.cuts, observed.first_cut..observed.first_cut + observed.values.len());
+    assert_eq!(
+        group.cuts,
+        observed.first_cut..observed.first_cut + observed.values.len()
+    );
     assert_eq!(group.path_leaf, observed.first_path);
     let path = &builder.paths[group.path_leaf];
     assert_eq!(path.parent, None);
@@ -159,8 +253,14 @@ fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
     assert_eq!(path.step.field_tag, 1);
     assert_eq!(path.step.occurrence, observed.index);
     let mut rebuilt = group.prefix.as_bytes().to_vec();
-    assert_eq!(group.prefix.absolute_range().start, observed.payload.absolute_range().start);
-    assert_eq!(group.prefix.as_bytes().as_ptr(), observed.payload.as_bytes().as_ptr());
+    assert_eq!(
+        group.prefix.absolute_range().start,
+        observed.payload.absolute_range().start
+    );
+    assert_eq!(
+        group.prefix.as_bytes().as_ptr(),
+        observed.payload.as_bytes().as_ptr()
+    );
     for (ordinal, expected) in observed.values.iter().enumerate() {
         let cut = &builder.cuts[group.cuts.start + ordinal];
         assert_eq!(cut.path_leaf, observed.first_path + 1 + ordinal);
@@ -174,8 +274,15 @@ fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
         let start = rebuilt.len();
         let end = start + expected.len();
         assert_eq!(cut.region.as_bytes(), expected);
-        assert_eq!(cut.region.absolute_range(), observed.payload.absolute_range().start + start..observed.payload.absolute_range().start + end);
-        assert_eq!(cut.region.as_bytes().as_ptr(), observed.payload.as_bytes()[start..].as_ptr());
+        assert_eq!(
+            cut.region.absolute_range(),
+            observed.payload.absolute_range().start + start
+                ..observed.payload.absolute_range().start + end
+        );
+        assert_eq!(
+            cut.region.as_bytes().as_ptr(),
+            observed.payload.as_bytes()[start..].as_ptr()
+        );
         rebuilt.extend_from_slice(expected);
     }
     assert_eq!(rebuilt, observed.payload.as_bytes());
@@ -184,15 +291,21 @@ fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
 fn build_registration_sequence(values: &[Option<i64>]) -> (Builder, Vec<RegisteredGroup>) {
     use super::{Frame, FrameSchema, ProtobufRegionStepKind};
     use crate::rhoapi::Par;
-    use crate::rust::rhoapi_ext::EPathMap;
     use crate::rust::epathmap_trie_codec::EPathMapMode;
-    let make_map = || EPathMap::new_map(
-        values.iter().enumerate().map(|(key, value)| (
-            par_corpus::gint(key as i64),
-            value.map(par_corpus::gint).unwrap_or_default(),
-        )),
-        Vec::new(), false, None,
-    );
+    use crate::rust::rhoapi_ext::EPathMap;
+    let make_map = || {
+        EPathMap::new_map(
+            values.iter().enumerate().map(|(key, value)| {
+                (
+                    par_corpus::gint(key as i64),
+                    value.map(par_corpus::gint).unwrap_or_default(),
+                )
+            }),
+            Vec::new(),
+            false,
+            None,
+        )
+    };
     let groups = [
         make_map(),
         EPathMap::from_set_iter([par_corpus::gint(99)], Vec::new(), false, None),
@@ -201,45 +314,91 @@ fn build_registration_sequence(values: &[Option<i64>]) -> (Builder, Vec<Register
     ];
     let mut builder = Builder::new();
     let mut frames = vec![Frame::new(
-        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
-        None, None, true,
+        ProtobufRegion::from(Vec::new()),
+        FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None,
+        None,
+        true,
     )];
     let mut observations = Vec::new();
     for (index, map) in groups.into_iter().enumerate() {
         let before = RegisteredTables::capture(&builder);
-        let ordinary = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::gint(index as i64)));
-        builder.add_child(
-            &mut frames, ordinary.clone(), &PAR_PROTOBUF_REGION_PROGRAM,
-            1, 1, index, ProtobufRegionStepKind::Message,
-            PAR_PROTOBUF_REGION_PROGRAM.type_id, None, true,
-        ).unwrap();
+        let ordinary = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::gint(
+            index as i64,
+        )));
+        builder
+            .add_child(
+                &mut frames,
+                ordinary.clone(),
+                &PAR_PROTOBUF_REGION_PROGRAM,
+                1,
+                1,
+                index,
+                ProtobufRegionStepKind::Message,
+                PAR_PROTOBUF_REGION_PROGRAM.type_id,
+                None,
+                true,
+            )
+            .unwrap();
         before.assert_preserved(&builder.paths, &builder.cuts, &builder.epathmaps);
         assert_eq!(builder.cuts.len(), before.cuts.len() + 1);
         assert_eq!(builder.paths.len(), before.paths.len() + 1);
         assert_same_region(&ordinary, &builder.cuts[before.cuts.len()].region);
-        assert_eq!(builder.cuts[before.cuts.len()].path_leaf, before.paths.len());
-        assert!(matches!(frames[0].pieces.last(), Some(Piece::Par { tag: 1, cut }) if *cut == before.cuts.len()));
+        assert_eq!(
+            builder.cuts[before.cuts.len()].path_leaf,
+            before.paths.len()
+        );
+        assert!(
+            matches!(frames[0].pieces.last(), Some(Piece::Par { tag: 1, cut }) if *cut == before.cuts.len())
+        );
 
         let mut expected = Vec::new();
         if map.mode() == EPathMapMode::Map {
-            map.for_each_map_entry(|_, value| expected.push(protobuf_encoder::encode_to_vec(value))).unwrap();
+            map.for_each_map_entry(|_, value| {
+                expected.push(protobuf_encoder::encode_to_vec(value))
+            })
+            .unwrap();
         }
         let snapshot = map.trie_snapshot();
         let backing = ProtobufRegion::from([&[99, 42][..], snapshot, &[88][..]].concat());
-        let payload = backing.subregion(super::CanonicalByteRange { start: 2, end: 2 + snapshot.len() }).unwrap();
+        let payload = backing
+            .subregion(super::CanonicalByteRange {
+                start: 2,
+                end: 2 + snapshot.len(),
+            })
+            .unwrap();
         let before = RegisteredTables::capture(&builder);
         let observed = RegisteredGroup {
-            index, first_cut: builder.cuts.len(), first_path: builder.paths.len(),
-            payload: payload.clone(), values: expected, mode: map.mode(),
+            index,
+            first_cut: builder.cuts.len(),
+            first_path: builder.paths.len(),
+            payload: payload.clone(),
+            values: expected,
+            mode: map.mode(),
         };
-        builder.add_epathmap(
-            &mut frames, payload, &PAR_PROTOBUF_REGION_PROGRAM, 1, index, None,
-        ).unwrap();
+        builder
+            .add_epathmap(
+                &mut frames,
+                payload,
+                &PAR_PROTOBUF_REGION_PROGRAM,
+                1,
+                index,
+                None,
+            )
+            .unwrap();
         before.assert_preserved(&builder.paths, &builder.cuts, &builder.epathmaps);
-        assert_eq!(builder.cuts.len(), observed.first_cut + observed.values.len());
-        assert_eq!(builder.paths.len(), observed.first_path + 1 + observed.values.len());
+        assert_eq!(
+            builder.cuts.len(),
+            observed.first_cut + observed.values.len()
+        );
+        assert_eq!(
+            builder.paths.len(),
+            observed.first_path + 1 + observed.values.len()
+        );
         assert_eq!(builder.epathmaps.len(), index + 1);
-        assert!(matches!(frames[0].pieces.last(), Some(Piece::EPathMap { tag: 1, group }) if *group == index));
+        assert!(
+            matches!(frames[0].pieces.last(), Some(Piece::EPathMap { tag: 1, group }) if *group == index)
+        );
         verify_registered_group(&builder, &observed);
         for prior in &observations {
             verify_registered_group(&builder, prior);
@@ -252,7 +411,13 @@ fn build_registration_sequence(values: &[Option<i64>]) -> (Builder, Vec<Register
 #[test]
 fn registration_preserves_tables_between_map_set_empty_and_ordinary_cuts() {
     let (builder, observations) = build_registration_sequence(&[None, Some(7), Some(7), Some(9)]);
-    assert_eq!(observations.iter().map(|g| g.values.len()).collect::<Vec<_>>(), [4, 0, 0, 4]);
+    assert_eq!(
+        observations
+            .iter()
+            .map(|g| g.values.len())
+            .collect::<Vec<_>>(),
+        [4, 0, 0, 4]
+    );
     assert_eq!(builder.cuts.len(), 12);
     for observed in &observations {
         verify_registered_group(&builder, observed);
@@ -261,22 +426,36 @@ fn registration_preserves_tables_between_map_set_empty_and_ordinary_cuts() {
 
 #[test]
 fn registration_controls_reject_shifted_ranges_and_wrong_value_paths() {
+    let (builder, observations) = build_registration_sequence(&[None, Some(7), Some(9)]);
+    let observed = &observations[0];
+    verify_registered_group(&builder, observed);
+    for case in [
+        "registration-cut",
+        "registration-occurrence",
+        "registration-parent",
+    ] {
+        assert_region_negative_child(case);
+    }
+}
+
+fn run_registration_negative_child(case: &str) {
     let (mut builder, observations) = build_registration_sequence(&[None, Some(7), Some(9)]);
     let observed = &observations[0];
     verify_registered_group(&builder, observed);
-    builder.epathmaps[0].cuts.start += 1;
-    assert!(std::panic::catch_unwind(|| verify_registered_group(&builder, observed)).is_err());
-    builder.epathmaps[0].cuts.start -= 1;
     let left = builder.cuts[observed.first_cut].path_leaf;
-    let right = builder.cuts[observed.first_cut + 1].path_leaf;
-    builder.paths[left].step.occurrence = 1;
-    builder.paths[right].step.occurrence = 0;
-    assert!(std::panic::catch_unwind(|| verify_registered_group(&builder, observed)).is_err());
-    builder.paths[left].step.occurrence = 0;
-    builder.paths[right].step.occurrence = 1;
-    let parent = builder.paths[left].parent.take();
-    assert!(std::panic::catch_unwind(|| verify_registered_group(&builder, observed)).is_err());
-    builder.paths[left].parent = parent;
+    match case {
+        "registration-cut" => builder.epathmaps[0].cuts.start += 1,
+        "registration-occurrence" => {
+            let right = builder.cuts[observed.first_cut + 1].path_leaf;
+            builder.paths[left].step.occurrence = 1;
+            builder.paths[right].step.occurrence = 0;
+        }
+        "registration-parent" => {
+            builder.paths[left].parent.take();
+        }
+        _ => unreachable!(),
+    }
+    mark_region_negative_case(case);
     verify_registered_group(&builder, observed);
 }
 
@@ -302,12 +481,15 @@ fn verify_epathmap_value_frame_partition(
         let mut captured_end = None;
         for observation in observations {
             let base = observation.source.absolute_range().start;
-            let mut fields = CanonicalFieldCursor::in_prost_slot_order(observation.source.as_bytes());
+            let mut fields =
+                CanonicalFieldCursor::in_prost_slot_order(observation.source.as_bytes());
             while let Some(field) = fields.next_field().unwrap() {
                 if field.wire_type == CanonicalWireType::LengthDelimited
                     && base + field.payload_range.start == start
                 {
-                    assert!(captured_end.replace(base + field.payload_range.end).is_none());
+                    assert!(captured_end
+                        .replace(base + field.payload_range.end)
+                        .is_none());
                 }
             }
         }
@@ -395,11 +577,7 @@ fn capture_build(
     (result, observations)
 }
 
-fn verify_publication(bytes: Vec<u8>) -> usize {
-    verify_publication_with_piece_counts(bytes).0
-}
-
-
+fn verify_publication(bytes: Vec<u8>) -> usize { verify_publication_with_piece_counts(bytes).0 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExpectedAction {
@@ -413,12 +591,21 @@ enum ExpectedAction {
 fn expected_action(schema: super::FrameSchema, tag: u32) -> ExpectedAction {
     use crate::rust::rholang::match_schema::{RhoMatchFieldKind as K, RhoMatchPayloadKind as P};
     let child = |id, retain| {
-        if id == PAR_PROTOBUF_REGION_PROGRAM.type_id { ExpectedAction::Cut }
-        else { ExpectedAction::Message(id, retain) }
+        if id == PAR_PROTOBUF_REGION_PROGRAM.type_id {
+            ExpectedAction::Cut
+        } else {
+            ExpectedAction::Message(id, retain)
+        }
     };
     let super::FrameSchema::Message(program) = schema else {
-        let super::FrameSchema::MapEntry { value_type_id, .. } = schema else { unreachable!() };
-        return if tag == 2 { child(value_type_id, true) } else { ExpectedAction::Borrow };
+        let super::FrameSchema::MapEntry { value_type_id, .. } = schema else {
+            unreachable!()
+        };
+        return if tag == 2 {
+            child(value_type_id, true)
+        } else {
+            ExpectedAction::Borrow
+        };
     };
     for (field, protobuf) in program.fields.iter().zip(program.protobuf_fields) {
         if let K::Oneof(variants) = field.kind {
@@ -442,24 +629,34 @@ fn expected_action(schema: super::FrameSchema, tag: u32) -> ExpectedAction {
     ExpectedAction::Borrow
 }
 
-fn verify_dispatch_action(
-    expected: ExpectedAction,
-    piece: &Piece,
-    observations: &[PublishedNode],
-) {
+fn verify_dispatch_action(expected: ExpectedAction, piece: &Piece, observations: &[PublishedNode]) {
     use super::FrameSchema;
     match (expected, piece) {
         (ExpectedAction::Borrow, Piece::Borrowed(_))
         | (ExpectedAction::Cut, Piece::Par { .. })
         | (ExpectedAction::Snapshot, Piece::EPathMap { .. }) => {}
-        (ExpectedAction::Message(id, retain), Piece::Child { node, retain_empty_shell, .. }) => {
+        (
+            ExpectedAction::Message(id, retain),
+            Piece::Child {
+                node,
+                retain_empty_shell,
+                ..
+            },
+        ) => {
             assert_eq!(*retain_empty_shell, retain);
             let FrameSchema::Message(program) = observations[*node].schema else {
                 panic!("ordinary child was dispatched as a map entry");
             };
             assert_eq!(program.type_id, id);
         }
-        (ExpectedAction::Map(id), Piece::Child { node, retain_empty_shell, .. }) => {
+        (
+            ExpectedAction::Map(id),
+            Piece::Child {
+                node,
+                retain_empty_shell,
+                ..
+            },
+        ) => {
             assert!(!retain_empty_shell);
             let FrameSchema::MapEntry { value_type_id, .. } = observations[*node].schema else {
                 panic!("map entry was dispatched as an ordinary child");
@@ -482,7 +679,9 @@ fn singleton_field(tag: u32, kind: crate::rust::rholang::protobuf_schema::Protob
         ProtobufWireType::LengthDelimited => {
             let body: &[u8] = if kind == ProtobufKind::EPathMapSnapshot {
                 &[69, 80, 77, 49, 1, 0, 0, 0]
-            } else { &[] };
+            } else {
+                &[]
+            };
             prost::encoding::encode_varint(body.len() as u64, &mut bytes);
             bytes.extend_from_slice(body);
         }
@@ -511,7 +710,8 @@ fn every_generated_field_and_oneof_arm_has_exact_dispatch_and_presence() {
         for (tag, kind) in fields {
             let source = ProtobufRegion::from(singleton_field(tag, kind));
             let (result, observations) = capture_build(source, program);
-            let plan = result.unwrap_or_else(|error| panic!("{} tag {tag}: {error}", program.type_name));
+            let plan =
+                result.unwrap_or_else(|error| panic!("{} tag {tag}: {error}", program.type_name));
             for index in 0..observations.len() {
                 verify_node_field_certificates(index, &plan, &observations);
             }
@@ -533,56 +733,81 @@ fn every_generated_field_and_oneof_arm_has_exact_dispatch_and_presence() {
 
 #[test]
 fn dispatch_certificate_rejects_byte_identical_borrow_and_retention_mutants() {
-    let source = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::all_par_fields()));
+    assert_region_negative_child("dispatch-borrow");
+    assert_region_negative_child("dispatch-retention");
+}
+
+fn run_dispatch_negative_child(case: &str) {
+    let source = ProtobufRegion::from(protobuf_encoder::encode_to_vec(
+        &par_corpus::all_par_fields(),
+    ));
     let (result, observations) = capture_build(source, &PAR_PROTOBUF_REGION_PROGRAM);
     let plan = result.unwrap();
-    let mut checked_borrow = false;
-    let mut checked_retention = false;
     for (index, node) in plan.nodes.iter().enumerate() {
         let source = &observations[index].source;
         let mut fields = super::CanonicalRegionFieldCursor::in_prost_slot_order(source.clone());
         for (slot, piece) in node.pieces.iter().enumerate() {
             let field = fields.next_field().unwrap().unwrap();
-            if matches!(piece, Piece::Child { .. } | Piece::Par { .. }) && !checked_borrow {
+            if case == "dispatch-borrow" && matches!(piece, Piece::Child { .. } | Piece::Par { .. })
+            {
                 let mut mutant = plan.clone();
                 mutant.nodes[index].pieces[slot] =
                     Piece::Borrowed(source.subregion(field.encoded_range).unwrap());
                 assert_eq!(mutant.reconstructed_bytes(), plan.reconstructed_bytes());
-                assert!(std::panic::catch_unwind(|| {
-                    verify_node_field_certificates(index, &mutant, &observations);
-                }).is_err());
-                checked_borrow = true;
+                mark_region_negative_case(case);
+                verify_node_field_certificates(index, &mutant, &observations);
+                return;
             }
-            if matches!(piece, Piece::Child { .. }) && !checked_retention {
+            if case == "dispatch-retention" && matches!(piece, Piece::Child { .. }) {
                 let mut mutant = plan.clone();
-                let Piece::Child { retain_empty_shell, .. } = &mut mutant.nodes[index].pieces[slot] else { unreachable!() };
+                let Piece::Child {
+                    retain_empty_shell, ..
+                } = &mut mutant.nodes[index].pieces[slot]
+                else {
+                    unreachable!()
+                };
                 *retain_empty_shell = !*retain_empty_shell;
                 assert_eq!(mutant.reconstructed_bytes(), plan.reconstructed_bytes());
-                assert!(std::panic::catch_unwind(|| {
-                    verify_node_field_certificates(index, &mutant, &observations);
-                }).is_err());
-                checked_retention = true;
+                mark_region_negative_case(case);
+                verify_node_field_certificates(index, &mutant, &observations);
+                return;
             }
         }
     }
-    assert!(checked_borrow && checked_retention);
+    panic!("protobuf region fixture lacks mutant case: {case}");
 }
 
 #[test]
 fn dispatch_refusal_precedence_and_shared_oneof_slots_never_return_a_root() {
-    use crate::rust::rholang::match_schema_tables::{SEND_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM};
+    use crate::rust::rholang::match_schema_tables::{
+        EXPR_RHO_MATCH_PROGRAM, SEND_RHO_MATCH_PROGRAM,
+    };
     use crate::rust::rholang::protobuf_cursor::CanonicalProtobufError;
     for bytes in [vec![10, 0, 10, 0], vec![8, 0, 16, 0]] {
-        let program = if bytes[0] == 10 { &SEND_RHO_MATCH_PROGRAM } else { &EXPR_RHO_MATCH_PROGRAM };
+        let program = if bytes[0] == 10 {
+            &SEND_RHO_MATCH_PROGRAM
+        } else {
+            &EXPR_RHO_MATCH_PROGRAM
+        };
         let (result, _) = capture_build(ProtobufRegion::from(bytes), program);
-        assert!(matches!(result, Err(ProtobufRegionError::Schema {
-            detail: "canonical singular field is duplicated", ..
-        })));
+        assert!(matches!(
+            result,
+            Err(ProtobufRegionError::Schema {
+                detail: "canonical singular field is duplicated",
+                ..
+            })
+        ));
     }
-    let (result, _) = capture_build(ProtobufRegion::from(vec![10, 0, 8, 0]), &SEND_RHO_MATCH_PROGRAM);
-    assert!(matches!(result, Err(ProtobufRegionError::Framing(
-        CanonicalProtobufError::UnexpectedWireType { field: 1, .. }
-    ))));
+    let (result, _) = capture_build(
+        ProtobufRegion::from(vec![10, 0, 8, 0]),
+        &SEND_RHO_MATCH_PROGRAM,
+    );
+    assert!(matches!(
+        result,
+        Err(ProtobufRegionError::Framing(
+            CanonicalProtobufError::UnexpectedWireType { field: 1, .. }
+        ))
+    ));
 }
 
 #[test]
@@ -596,19 +821,24 @@ fn repeated_unknown_fields_do_not_claim_a_known_singular_slot() {
     let (result, observations) = capture_build(source, &SEND_RHO_MATCH_PROGRAM);
     let plan = result.unwrap();
     assert_eq!(plan.reconstructed_bytes().as_ref(), bytes.as_slice());
-    assert_eq!(verify_node_field_certificates(plan.root, &plan, &observations), [2, 0, 1, 0]);
-    assert!(matches!(plan.nodes[plan.root].pieces.as_slice(),
-        [Piece::Borrowed(_), Piece::Borrowed(_), Piece::Par { tag: 1, .. }]));
+    assert_eq!(
+        verify_node_field_certificates(plan.root, &plan, &observations),
+        [2, 0, 1, 0]
+    );
+    assert!(matches!(plan.nodes[plan.root].pieces.as_slice(), [
+        Piece::Borrowed(_),
+        Piece::Borrowed(_),
+        Piece::Par { tag: 1, .. }
+    ]));
 }
-
 
 fn verify_node_field_certificates(
     index: usize,
     plan: &ProtobufCutPlan,
     observations: &[PublishedNode],
 ) -> [usize; 4] {
-    use crate::rust::rholang::protobuf_cursor::{CanonicalFieldCursor, CanonicalWireType};
     use super::{FrameSchema, ProtobufRegionStep, ProtobufRegionStepKind};
+    use crate::rust::rholang::protobuf_cursor::{CanonicalFieldCursor, CanonicalWireType};
     let parent = &observations[index];
     let source = &observations[index].source;
     let base = source.absolute_range().start;
@@ -617,10 +847,21 @@ fn verify_node_field_certificates(
     let mut end = 0;
     let mut previous_tags = Vec::new();
     for piece in &plan.nodes[index].pieces {
-        let field = fields.next_field().unwrap().expect("one source field per piece");
-        let occurrence = previous_tags.iter().rev().take_while(|tag| **tag == field.number).count();
+        let field = fields
+            .next_field()
+            .unwrap()
+            .expect("one source field per piece");
+        let occurrence = previous_tags
+            .iter()
+            .rev()
+            .take_while(|tag| **tag == field.number)
+            .count();
         previous_tags.push(field.number);
-        verify_dispatch_action(expected_action(parent.schema, field.number), piece, observations);
+        verify_dispatch_action(
+            expected_action(parent.schema, field.number),
+            piece,
+            observations,
+        );
         let expected_step = match parent.schema {
             FrameSchema::Message(program) => ProtobufRegionStep {
                 owner_type_id: program.type_id,
@@ -628,7 +869,12 @@ fn verify_node_field_certificates(
                 occurrence,
                 kind: ProtobufRegionStepKind::Message,
             },
-            FrameSchema::MapEntry { owner_type_id, outer_tag, occurrence, .. } => ProtobufRegionStep {
+            FrameSchema::MapEntry {
+                owner_type_id,
+                outer_tag,
+                occurrence,
+                ..
+            } => ProtobufRegionStep {
                 owner_type_id,
                 field_tag: outer_tag,
                 occurrence,
@@ -651,7 +897,10 @@ fn verify_node_field_certificates(
         if let Piece::Borrowed(region) = piece {
             counts[0] += 1;
             assert_eq!(region.as_bytes(), encoded);
-            assert_eq!(region.absolute_range(), base + field.encoded_range.start..base + end);
+            assert_eq!(
+                region.absolute_range(),
+                base + field.encoded_range.start..base + end
+            );
             continue;
         }
         assert_eq!(field.wire_type, CanonicalWireType::LengthDelimited);
@@ -663,7 +912,12 @@ fn verify_node_field_certificates(
                 assert_eq!(child.absolute_range(), payload_range);
                 assert_eq!(child.as_bytes().as_ptr(), payload.as_ptr());
                 match observations[*node].schema {
-                    FrameSchema::MapEntry { owner_type_id, outer_tag, occurrence: entry_ordinal, .. } => {
+                    FrameSchema::MapEntry {
+                        owner_type_id,
+                        outer_tag,
+                        occurrence: entry_ordinal,
+                        ..
+                    } => {
                         assert_eq!(observations[*node].path_leaf, parent.path_leaf);
                         assert!(matches!(parent.schema, FrameSchema::Message(_)));
                         assert_eq!(owner_type_id, expected_step.owner_type_id);
@@ -671,7 +925,9 @@ fn verify_node_field_certificates(
                         assert_eq!(entry_ordinal, occurrence);
                     }
                     FrameSchema::Message(_) => check_path(
-                        observations[*node].path_leaf.expect("ordinary descent registers a path"),
+                        observations[*node]
+                            .path_leaf
+                            .expect("ordinary descent registers a path"),
                         expected_step,
                     ),
                 }
@@ -691,7 +947,8 @@ fn verify_node_field_certificates(
                 assert_eq!(group.prefix.absolute_range().start, payload_range.start);
                 assert_eq!(group.prefix.as_bytes().as_ptr(), payload.as_ptr());
                 check_path(group.path_leaf, ProtobufRegionStep {
-                    kind: ProtobufRegionStepKind::EPathMapSnapshot, ..expected_step
+                    kind: ProtobufRegionStepKind::EPathMapSnapshot,
+                    ..expected_step
                 });
                 let mut body = group.prefix.as_bytes().to_vec();
                 for (ordinal, cut) in plan.cuts[group.cuts.clone()].iter().enumerate() {
@@ -756,10 +1013,14 @@ fn verify_publication_with_piece_counts(bytes: Vec<u8>) -> (usize, [usize; 4]) {
     let mut piece_counts = [0; 4];
     let mut ranks = Vec::new();
     for (index, (node, observed)) in plan.nodes.iter().zip(&observations).enumerate() {
-        observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps);
-        for (total, count) in piece_counts.iter_mut().zip(
-            verify_node_field_certificates(index, &plan, &observations)
-        ) {
+        observed
+            .tables
+            .assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps);
+        for (total, count) in
+            piece_counts
+                .iter_mut()
+                .zip(verify_node_field_certificates(index, &plan, &observations))
+        {
             *total += count;
         }
         let range = observed.source.absolute_range();
@@ -843,8 +1104,11 @@ fn captured_frame_provenance_covers_dedicated_and_inherited_paths() {
                 _ => {}
             }
         }
-        map_values += plan.paths.iter()
-            .filter(|path| path.step.kind == super::ProtobufRegionStepKind::MapValue).count();
+        map_values += plan
+            .paths
+            .iter()
+            .filter(|path| path.step.kind == super::ProtobufRegionStepKind::MapValue)
+            .count();
     }
     assert!(ordinary > 0);
     assert!(inherited > 0);
@@ -853,23 +1117,30 @@ fn captured_frame_provenance_covers_dedicated_and_inherited_paths() {
 
 #[test]
 fn captured_frame_provenance_rejects_another_valid_earlier_parent() {
+    assert_region_negative_child("provenance");
+}
+
+fn run_provenance_negative_child(case: &str) {
     for (_, par) in par_corpus::par_corpus() {
         let root = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par));
         let (result, observations) = capture_build(root, &PAR_PROTOBUF_REGION_PROGRAM);
         let plan = result.unwrap();
         for (index, node) in plan.nodes.iter().enumerate() {
             for piece in &node.pieces {
-                let Piece::Par { cut, .. } = piece else { continue };
+                let Piece::Par { cut, .. } = piece else {
+                    continue;
+                };
                 let leaf = plan.cuts[*cut].path_leaf;
                 let actual = plan.paths[leaf].parent;
-                let Some(other) = (0..leaf).find(|candidate| Some(*candidate) != actual) else { continue };
+                let Some(other) = (0..leaf).find(|candidate| Some(*candidate) != actual) else {
+                    continue;
+                };
                 verify_node_field_certificates(index, &plan, &observations);
                 let mut mutant = plan.clone();
                 mutant.paths[leaf].parent = Some(other);
                 assert!(other < leaf && other < mutant.paths.len());
-                assert!(std::panic::catch_unwind(|| {
-                    verify_node_field_certificates(index, &mutant, &observations);
-                }).is_err());
+                mark_region_negative_case(case);
+                verify_node_field_certificates(index, &mutant, &observations);
                 return;
             }
         }
@@ -893,8 +1164,8 @@ proptest! {
 
 #[test]
 fn epathmap_publication_frames_include_empty_and_distinct_map_values() {
-    use crate::rhoapi::{Expr, Par};
     use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::{Expr, Par};
     use crate::rust::rhoapi_ext::EPathMap;
     let map = EPathMap::new_map(
         [
@@ -902,7 +1173,9 @@ fn epathmap_publication_frames_include_empty_and_distinct_map_values() {
             (par_corpus::gint(2), par_corpus::gint(7)),
             (par_corpus::gint(3), par_corpus::gint(9)),
         ],
-        Vec::new(), false, None,
+        Vec::new(),
+        false,
+        None,
     );
     let par = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPathmapBody(map)),
@@ -916,13 +1189,17 @@ fn every_published_node_preserves_source_caches_indices_and_prior_meaning() {
     assert!(corpus.len() >= 40);
     let mut piece_counts = [0; 4];
     for (_, par) in corpus {
-        for (total, count) in piece_counts.iter_mut().zip(
-            verify_publication_with_piece_counts(protobuf_encoder::encode_to_vec(&par)).1
-        ) {
+        for (total, count) in piece_counts
+            .iter_mut()
+            .zip(verify_publication_with_piece_counts(protobuf_encoder::encode_to_vec(&par)).1)
+        {
             *total += count;
         }
     }
-    assert!(piece_counts.iter().all(|count| *count > 0), "all four piece kinds must be exercised");
+    assert!(
+        piece_counts.iter().all(|count| *count > 0),
+        "all four piece kinds must be exercised"
+    );
     verify_publication(protobuf_encoder::encode_to_vec(
         &par_corpus::all_par_fields(),
     ));
@@ -955,34 +1232,52 @@ fn late_framing_failure_never_publishes_the_root() {
     assert!(observations[0].source.is_empty());
 }
 
-
 #[test]
 fn field_certificate_rejects_swapped_same_tag_par_cuts() {
-    let input = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::all_par_fields()));
+    assert_region_negative_child("swapped-cuts");
+}
+
+fn run_swapped_cuts_negative_child(case: &str) {
+    let input = ProtobufRegion::from(protobuf_encoder::encode_to_vec(
+        &par_corpus::all_par_fields(),
+    ));
     let (result, observations) = capture_build(input, &PAR_PROTOBUF_REGION_PROGRAM);
     let plan = result.unwrap();
     let mut mutation = None;
     for (index, node) in plan.nodes.iter().enumerate() {
         for (left, a) in node.pieces.iter().enumerate() {
             for (right, b) in node.pieces.iter().enumerate().skip(left + 1) {
-                if let (Piece::Par { tag: a_tag, cut: a_cut }, Piece::Par { tag: b_tag, cut: b_cut }) = (a, b) {
+                if let (
+                    Piece::Par {
+                        tag: a_tag,
+                        cut: a_cut,
+                    },
+                    Piece::Par {
+                        tag: b_tag,
+                        cut: b_cut,
+                    },
+                ) = (a, b)
+                {
                     if a_tag == b_tag && a_cut != b_cut {
                         mutation = Some((index, left, right));
                         break;
                     }
                 }
             }
-            if mutation.is_some() { break; }
+            if mutation.is_some() {
+                break;
+            }
         }
-        if mutation.is_some() { break; }
+        if mutation.is_some() {
+            break;
+        }
     }
     let (index, left, right) = mutation.expect("fixture includes distinct same-tag Par cuts");
     verify_node_field_certificates(index, &plan, &observations);
     let mut mutant = plan.clone();
     mutant.nodes[index].pieces.swap(left, right);
-    assert!(std::panic::catch_unwind(|| {
-        verify_node_field_certificates(index, &mutant, &observations)
-    }).is_err());
+    mark_region_negative_case(case);
+    verify_node_field_certificates(index, &mutant, &observations);
 }
 
 fn widened_delimited_length(tag: u32, body: usize) -> Result<usize, ProtobufRegionError> {

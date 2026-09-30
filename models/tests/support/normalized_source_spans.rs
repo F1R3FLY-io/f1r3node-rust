@@ -455,32 +455,58 @@ fn composed_mixed_sources_keep_lifetimes_and_exact_skip_accounting() {
     let bytes = (0..129).map(|at| at as u8).collect::<Vec<_>>();
     let (view, expected) = {
         let (mut arena, handle, frozen) = frozen(&bytes);
-        let prefix = IndexedByteRegion::from_borrowed(&bytes, 91, 501).subview(range(0, 61)).unwrap();
+        let prefix = IndexedByteRegion::from_borrowed(&bytes, 91, 501)
+            .subview(range(0, 61))
+            .unwrap();
         let suffix = frozen.subview(range(61, 129)).unwrap();
-        let expected = located(&prefix).into_iter().chain(located(&suffix)).collect::<Vec<_>>();
-        let source = prefix.source_window().unwrap().concat(&suffix.source_window().unwrap()).unwrap();
+        let expected = located(&prefix)
+            .into_iter()
+            .chain(located(&suffix))
+            .collect::<Vec<_>>();
+        let source = prefix
+            .source_window()
+            .unwrap()
+            .concat(&suffix.source_window().unwrap())
+            .unwrap();
         assert!(source.height() > 0);
         let parent = IndexedByteRegion::from_source(source, origin(991));
         let child = parent.subview_with_end(range(0, 129), origin(992)).unwrap();
         assert_same_root(&parent, &child);
-        for at in 0..129 { arena.append(handle, CanonicalLocatedByte::new(0xff, origin(at))).unwrap(); }
+        for at in 0..129 {
+            arena
+                .append(handle, CanonicalLocatedByte::new(0xff, origin(at)))
+                .unwrap();
+        }
         (child, expected)
     };
     assert_view(&view, &expected, origin(992));
     for skip in [0, 1, 60, 61, 62, 128, 129] {
         let mut cursor = view.located_bytes();
         assert!(cursor.skip_exact(skip));
-        assert_eq!((cursor.bytes_yielded(), cursor.bytes_traversed()), (skip, 0));
+        assert_eq!(
+            (cursor.bytes_yielded(), cursor.bytes_traversed()),
+            (skip, 0)
+        );
         assert!(!cursor.skip_exact(130 - skip));
-        assert_eq!((cursor.bytes_yielded(), cursor.bytes_traversed()), (skip, 0));
+        assert_eq!(
+            (cursor.bytes_yielded(), cursor.bytes_traversed()),
+            (skip, 0)
+        );
         if skip < expected.len() {
             assert_eq!(cursor.next(), Some(expected[skip]));
-            assert_eq!((cursor.bytes_yielded(), cursor.bytes_traversed()), (skip + 1, 1));
+            assert_eq!(
+                (cursor.bytes_yielded(), cursor.bytes_traversed()),
+                (skip + 1, 1)
+            );
             assert_eq!(cursor.collect::<Vec<_>>(), expected[skip + 1..]);
-        } else { assert_eq!(cursor.next(), None); }
+        } else {
+            assert_eq!(cursor.next(), None);
+        }
     }
     let mut nested = view.clone();
-    for _ in 0..20_000 { nested = nested.subview(range(0, nested.len())).unwrap(); }
+    for _ in 0..20_000 {
+        nested = nested.subview(range(0, nested.len())).unwrap();
+    }
     assert_same_root(&view, &nested);
     assert_view(&nested, &expected, origin(992));
 }
@@ -494,16 +520,36 @@ fn composed_conversion_requires_independent_end_authority_at_native_max() {
     assert!(selected.position_at(1).is_none());
     assert!(root.source_window().is_none());
     let anchored = selected.subview_with_end(range(0, 1), origin(300)).unwrap();
-    let composed = IndexedByteRegion::from_source(anchored.source_window().unwrap(), anchored.position_at(1).unwrap().physical);
-    assert_view(&composed, &[CanonicalLocatedByte::new(11, CanonicalByteProvenance::new(37, usize::MAX))], origin(300));
+    let composed = IndexedByteRegion::from_source(
+        anchored.source_window().unwrap(),
+        anchored.position_at(1).unwrap().physical,
+    );
+    assert_view(
+        &composed,
+        &[CanonicalLocatedByte::new(
+            11,
+            CanonicalByteProvenance::new(37, usize::MAX),
+        )],
+        origin(300),
+    );
     assert!(anchored.subview(range(1, 1)).is_none());
     assert_view(&composed.subview(range(1, 1)).unwrap(), &[], origin(300));
     let empty = composed.subview_with_end(range(1, 1), origin(301)).unwrap();
-    assert_view(&composed.try_coalesce(&empty).unwrap(), &located(&composed), origin(301));
+    assert_view(
+        &composed.try_coalesce(&empty).unwrap(),
+        &located(&composed),
+        origin(301),
+    );
     assert!(selected.position_at(1).is_none());
     let (arena, handle, _) = frozen(&bytes);
-    assert!(IndexedByteRegion::from_arena(&arena, handle, origin(3)).source_window().is_none());
-    assert!(IndexedByteRegion::from_protobuf_region(ProtobufRegion::copy_from_slice(&bytes), 3).source_window().is_none());
+    assert!(IndexedByteRegion::from_arena(&arena, handle, origin(3))
+        .source_window()
+        .is_none());
+    assert!(
+        IndexedByteRegion::from_protobuf_region(ProtobufRegion::copy_from_slice(&bytes), 3)
+            .source_window()
+            .is_none()
+    );
 }
 
 #[test]
@@ -514,31 +560,67 @@ fn composed_cross_backing_coalescing_preserves_original_owners_and_right_end() {
     for root in [&borrowed, &frozen] {
         for cut in 0..=bytes.len() {
             let left = root.subview_with_end(range(0, cut), origin(701)).unwrap();
-            let right = root.subview_with_end(range(cut, bytes.len()), origin(702)).unwrap();
-            let composed_left = IndexedByteRegion::from_source(left.source_window().unwrap(), left.end_position().physical);
-            let composed_right = IndexedByteRegion::from_source(right.source_window().unwrap(), right.end_position().physical);
-            assert_view(&composed_left.try_coalesce(&right).unwrap(), &located(root), origin(702));
-            assert_view(&left.try_coalesce(&composed_right).unwrap(), &located(root), origin(702));
+            let right = root
+                .subview_with_end(range(cut, bytes.len()), origin(702))
+                .unwrap();
+            let composed_left = IndexedByteRegion::from_source(
+                left.source_window().unwrap(),
+                left.end_position().physical,
+            );
+            let composed_right = IndexedByteRegion::from_source(
+                right.source_window().unwrap(),
+                right.end_position().physical,
+            );
+            assert_view(
+                &composed_left.try_coalesce(&right).unwrap(),
+                &located(root),
+                origin(702),
+            );
+            assert_view(
+                &left.try_coalesce(&composed_right).unwrap(),
+                &located(root),
+                origin(702),
+            );
         }
     }
 }
 
 #[test]
 fn composed_framing_matches_original_bytes_and_exact_terminal_errors() {
-    for bytes in [vec![], vec![0x0a, 3, 1, 2, 3, 0x10, 0x7f], vec![0x80],
-        vec![0x0a, 0x80], vec![0x0a, 4, 1, 2], vec![0x0a, 0, 0],
-        vec![0x08, 0x80, 0], vec![0x0a, 0, 0x08, 1],
-        vec![0x09, 1, 2, 3, 4, 5, 6, 7, 8], vec![0x0d, 1, 2, 3, 4],
-        vec![0x09, 1], vec![0x0d], vec![0x0b]] {
+    for bytes in [
+        vec![],
+        vec![0x0a, 3, 1, 2, 3, 0x10, 0x7f],
+        vec![0x80],
+        vec![0x0a, 0x80],
+        vec![0x0a, 4, 1, 2],
+        vec![0x0a, 0, 0],
+        vec![0x08, 0x80, 0],
+        vec![0x0a, 0, 0x08, 1],
+        vec![0x09, 1, 2, 3, 4, 5, 6, 7, 8],
+        vec![0x0d, 1, 2, 3, 4],
+        vec![0x09, 1],
+        vec![0x0d],
+        vec![0x0b],
+    ] {
         let borrowed = IndexedByteRegion::from_borrowed(&bytes, 17, 101);
         for cut in 0..=bytes.len() {
             let mut arena = CanonicalBytesArena::new();
             let mut handle = arena.empty();
             for (at, byte) in bytes.iter().enumerate().skip(cut) {
-                handle = arena.append(handle, CanonicalLocatedByte::new(*byte, CanonicalByteProvenance::new(17, 101 + at))).unwrap();
+                handle = arena
+                    .append(
+                        handle,
+                        CanonicalLocatedByte::new(
+                            *byte,
+                            CanonicalByteProvenance::new(17, 101 + at),
+                        ),
+                    )
+                    .unwrap();
             }
-            let source = SourceTreeWindow::from_borrowed_range(&bytes, 0..cut, 17, 101).unwrap()
-                .concat(&SourceTreeWindow::from_frozen(arena.freeze(handle))).unwrap();
+            let source = SourceTreeWindow::from_borrowed_range(&bytes, 0..cut, 17, 101)
+                .unwrap()
+                .concat(&SourceTreeWindow::from_frozen(arena.freeze(handle)))
+                .unwrap();
             let composed = IndexedByteRegion::from_source(source, borrowed.end_position().physical);
             let mut left = IndexedCanonicalFieldCursor::new(borrowed.clone());
             let mut right = IndexedCanonicalFieldCursor::new(composed);
@@ -551,11 +633,22 @@ fn composed_framing_matches_original_bytes_and_exact_terminal_errors() {
                         assert_eq!(left_field.payload_range, right_field.payload_range);
                         assert_eq!(left_field.field_start, right_field.field_start);
                         match (left_field.value, right_field.value) {
-                            (IndexedCanonicalFieldValue::Varint(a), IndexedCanonicalFieldValue::Varint(b)) => assert_eq!(a, b),
-                            (IndexedCanonicalFieldValue::LengthDelimited(a), IndexedCanonicalFieldValue::LengthDelimited(b)) |
-                            (IndexedCanonicalFieldValue::Fixed32(a), IndexedCanonicalFieldValue::Fixed32(b)) |
-                            (IndexedCanonicalFieldValue::Fixed64(a), IndexedCanonicalFieldValue::Fixed64(b)) =>
-                                assert_view(&b, &located(&a), a.end_position().physical),
+                            (
+                                IndexedCanonicalFieldValue::Varint(a),
+                                IndexedCanonicalFieldValue::Varint(b),
+                            ) => assert_eq!(a, b),
+                            (
+                                IndexedCanonicalFieldValue::LengthDelimited(a),
+                                IndexedCanonicalFieldValue::LengthDelimited(b),
+                            )
+                            | (
+                                IndexedCanonicalFieldValue::Fixed32(a),
+                                IndexedCanonicalFieldValue::Fixed32(b),
+                            )
+                            | (
+                                IndexedCanonicalFieldValue::Fixed64(a),
+                                IndexedCanonicalFieldValue::Fixed64(b),
+                            ) => assert_view(&b, &located(&a), a.end_position().physical),
                             _ => panic!("unexpected field value in framing fixture"),
                         }
                     }
@@ -581,19 +674,33 @@ fn all_backings_content_equality_preserves_bytes_across_chunk_partitions() {
         let (arena, handle, frozen) = frozen(&bytes);
         let borrowed = IndexedByteRegion::from_borrowed(&bytes, 91, 501);
         let cut = bytes.len() / 2;
-        let source = SourceTreeWindow::from_borrowed_range(&bytes, 0..cut, 91, 501).unwrap()
-            .concat(&frozen.subview(range(cut, bytes.len())).unwrap().source_window().unwrap()).unwrap();
+        let source = SourceTreeWindow::from_borrowed_range(&bytes, 0..cut, 91, 501)
+            .unwrap()
+            .concat(
+                &frozen
+                    .subview(range(cut, bytes.len()))
+                    .unwrap()
+                    .source_window()
+                    .unwrap(),
+            )
+            .unwrap();
         let views = [
-            borrowed.clone(), frozen.clone(),
+            borrowed.clone(),
+            frozen.clone(),
             IndexedByteRegion::from_source(source, origin(981)),
-            IndexedByteRegion::from_source(borrowed.source_window().unwrap(), borrowed.end_position().physical),
+            IndexedByteRegion::from_source(
+                borrowed.source_window().unwrap(),
+                borrowed.end_position().physical,
+            ),
             IndexedByteRegion::from_protobuf_region(ProtobufRegion::copy_from_slice(&bytes), 101),
             IndexedByteRegion::from_arena(&arena, handle, origin(982)),
         ];
         for left in &views {
             for right in &views {
                 assert!(left.content_eq(right));
-                for cut in 0..bytes.len() { assert!(!left.content_eq(&right.subview(range(0, cut)).unwrap())); }
+                for cut in 0..bytes.len() {
+                    assert!(!left.content_eq(&right.subview(range(0, cut)).unwrap()));
+                }
             }
             for at in 0..bytes.len() {
                 let mut changed = bytes.clone();

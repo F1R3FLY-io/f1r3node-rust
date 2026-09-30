@@ -17618,6 +17618,672 @@ Receipts under `target/verification/protobuf-attach-8516/`:
 | `pilot-indirect-mixed-r1/observations.jsonl` | `cef7180a3f62e4ae4cd828f11dade04eac5779a1479b630c8060bcded1890a81` |
 | `samples-indirect-mixed-r1/observations.jsonl` | `8c4f3f437c0310cade73af409627fb9ad7b42d35daeed50b4965bcebe90dff69` |
 
+## J-228 — Bounded root-key streaming and Bag reweight (2026-09-27)
+
+**Scope and decision.** Continue required task 8516 and preregistered experiment
+348 inside the f1r3node checkout. A root `Par` still uses the generated
+protobuf pushdown machine. Once that machine has decoded a bounded `GBool`,
+`GInt` or raw-bit `GDouble` expression, its attachment can emit the existing
+canonical score/protobuf key directly into the reusable root buffer. The
+general planner remains responsible for every recursive or nonadmitted arm.
+If a checked aggregate or addressability guard declines, the root stream
+replays first-insertion order into the planned arena, preserving the existing
+error and topology path. The key contains the existing domain, component tag,
+score, canonical body and score-length trailer; neither wire format nor
+PathMap dependency changes.
+
+**Retained count and mutation invariant.** During streaming, Bag endpoint
+values identify first-insertion order. One byte per unique endpoint holds
+counts through 255; an overflow sidecar holds larger positive counts. At
+finish, a borrowed read cursor gathers at most 64 complete keys into a
+reusable byte buffer. A guarded writer then visits only those already
+observed endpoints, replaces each ordinal with its final count, runs the
+normal disposal hook for the replaced copyable value and updates the exact
+cardinality. The next read resumes after the last key. This bounds temporary
+key storage independently of total distinct width while retaining sorted
+callback order. The original two-fork writer preflight is still used for
+arbitrary insertion; verified existing endpoints use a narrower guarded
+descent. The 132-endpoint native test crosses multiple chunk boundaries,
+including an empty key and a prefix key.
+
+**Executable binding.** The final feature-enabled release binary passes 16
+frozen-decoder oracle tests, eight root-stream tests and four independent
+ground-leaf tests; the Bag release binary passes all three reweight tests.
+One resource cell in the oracle suite is intentionally ignored for separately
+capped execution. The new fragmented oracle exercises Boolean values,
+integer limits, signed-zero and NaN bit patterns, a count above 255, truncated
+input and a malformed suffix. It compares canonical protobuf bytes, compact
+Bag bytes, exact errors and remaining input with the frozen decoder. The
+existing `RootConstructionStreaming` formal statements remain conditional on
+the canonical-key and counted-step premises; these native checks bind the
+current generated route to those premises, not a new complexity theorem.
+
+**MEASURED.** The r9 batch removed fixed-numeric arena planning and replaced
+the Bag value in place: width 4,096 distinct fell from r8's 4.695 ms to
+4.243 ms, but remained above the 3.445 ms frozen control. A first bounded
+read/write implementation (r10) still used two read forks per write-side
+move and worsened that cell to 4.338 ms against 3.377 ms frozen. The r11
+verified-endpoint move removed almost all extra allocation calls. Its
+31-pair, CPU-admitted, same-binary comparison of fragmented distinct integer
+input reports the following paired planned/frozen decode-time ratios. The
+99% intervals use a fixed-seed percentile bootstrap over paired ratios.
+
+| Distinct width | Median ratio | 99% interval | Planned/frozen allocation calls in the 4,096 pilot |
+|---:|---:|---:|---:|
+| 1 | 2.284 | 2.122–2.465 | — |
+| 16 | 1.980 | 1.841–2.104 | — |
+| 256 | 1.367 | 1.333–1.404 | — |
+| 4,096 | 1.148 | 1.138–1.177 | 33,123 / 32,701 |
+
+The final r12 binary adds the guarded disposer call. Seven-pair confirmation
+still gives median ratios 1.958, 1.367 and 1.162 at widths 1, 256 and 4,096.
+At width 4,096, planned/frozen peak outstanding bytes are 423,844 / 416,984;
+the duplicate case's ratio is 0.462 with 87 / 16,441 allocation calls.
+Every completed measurement cell matches the exact frozen protobuf, compact,
+bincode, metadata, multiplicity, error and remaining-input witnesses.
+
+Deep mixed pilots on the same final binary retain the intended improvement:
+at depth 1,024, planned/frozen decode times are 37.712 / 13,264.299 ms for
+`mixed`, and 40.958 / 14,646.483 ms for `mixed-metadata`. Planned peaks are
+10,077,476 and 10,085,838 bytes, below both frozen peaks. These are single
+pilot observations, not a repeated-sample deep verdict. Small-stack and
+full-workspace acceptance are separate requirements.
+
+**Open gate.** Task 8516 is not complete. The 31-pair distinct-width intervals
+are wholly above parity and the shallow cells remain roughly twice as slow.
+The preregistered investigation trigger is crossed even after the allocation
+gap narrows. Finish the manifest/proof bindings, unchanged depth-4,096 gate,
+full release/workspace qualification and a resource repair or explicit
+acceptance decision before claiming this task or campaign complete. Do not
+infer shallow parity from the deep wins.
+
+Receipts below are relative to `target/verification/protobuf-attach-8516/`.
+The final measured models binary is
+`76c7f327bebed45f4057ddb96e6a7d7c24df8ee85f11eade4306b93435dadb95`.
+
+| Receipt | SHA-256 |
+|---|---|
+| `paired-wide-distinct-r11/observations.jsonl` | `f3e13079419e97f0b247b85471cffa530c43a46ec731a48737e5de975713bf0e` |
+| `final-width-r12/observations.jsonl` | `af65461d1177bd204f3131a32ab18d5d764462d85619809374aace6d45bb9c7f` |
+| `final-deep-r12/observations.jsonl` | `9c8c46aa8b4759389417719415e724aba14d9b04aff27b8e9f7cd1e00fd793c1` |
+| `final-oracle-r12.log` | `c33e9808b2047306873935922a5c98aac1bc633fc45646b9ec51996aeb643473` |
+| `final-bag-r12.log` | `92fbce7e38623a0046dc8ec9cde8d1812fcae7aae7ac86df1173a1ab1d08c0f3` |
+
+## J-229 — Bounded disorder overlay and pinned wide-root comparison (2026-09-28)
+
+**Scope and provenance.** Task 8516 remains in progress. The root stream keeps
+the common increasing-key case in a Bag with unit endpoint values and tracks
+repeats or late out-of-order keys in a bounded 64-key overlay. If another
+uncached key exceeds that bound, it converts the Bag to first-insertion
+ordinals and retains the existing planned replay path. Final multiplicities
+are applied only to affected overlay keys; sorted unique roots use a borrowed
+Bag visit to derive metadata. The frozen decoder source remains byte-for-byte
+at BLAKE2b-512
+`0345508b4e4ee4002f5b17cdb0adc143186fd78cb11846bd733d67ec8940919daac48097e7dafff4cec6e81422d01589ae0e032af198f3c4f9db5c5316f0c10f`
+(SHA-256 `9b47784f40096e11d3185a9a2d01a8b4b27beef4184f844ca1f90c81ec6bc69c`).
+The r17 candidate feature-enabled models binary SHA-256 is
+`f49ad87e2d342db1d1ad57640e94461757260b8e62b6a8970b3d9959702f6137`;
+a rebuild after reverting the rejected follow-up reproduced this hash exactly.
+
+**Qualification.** Nine root-stream tests pass, including a 65-key overlay
+conversion and exact first-insertion replay topology. The frozen-decoder
+oracle passes 16 runnable tests with one separately capped resource cell
+ignored. The formal-equivalence manifest passes 51/51 and the Bag reweight
+tests pass 3/3. `DecodedComponentConstruction.v` compiles with all 73
+closed-context reports, and independent `coqchk` accepts the module. The
+unchanged `rholang::stack_depth_gate` passes 16/16 with its five existing
+opt-in cases ignored; its depth-4,096 process stays within the original
+watchdog. The gate takes 163.37 seconds of tests, peaks at 2.8 GiB, and uses
+zero swap under the 8 GiB cap.
+
+**MEASURED pinned comparison.** All 16 cold fragmented wide-root pilot cells
+for distinct, duplicate, late-duplicate and late-new integer input preserve
+the exact frozen protobuf, compact, bincode, metadata, error and remaining
+input witnesses. At width 4,096, the late-duplicate planned/frozen pilot time
+ratio is 1.050 with 32,722/32,699 allocation calls, down from the 1.30 ratio
+that exposed the unbounded late-conversion path. The 31-pair, CPU-admitted
+distinct-width run reports fixed-seed bootstrap intervals over paired ratios:
+
+| Distinct width | Median planned/frozen decode time | 99% interval | Planned/frozen allocation calls |
+|---:|---:|---:|---:|
+| 1 | 1.068 | 1.009–1.130 | 66 / 61 |
+| 16 | 1.230 | 1.148–1.338 | 183 / 172 |
+| 256 | 1.110 | 1.072–1.156 | 1,871 / 1,856 |
+| 4,096 | 1.035 | 1.021–1.048 | 32,720 / 32,701 |
+
+Scoped planned peak bytes are lower than control at widths 1, 16 and 256
+(2,874/5,978, 4,360/7,384 and 28,600/31,384); at width 4,096 they are
+418,040/416,984. These are decode-window net-allocation peaks, not RSS.
+The width-16 and width-256 intervals remain above parity, so the shallow
+resource gate is not silently treated as passing. A cursor-insertion
+follow-up saved one allocation per distinct cell, but 31-pair width-16 time
+rose to 1.297 (99% interval 1.234–1.372) for a small width-4,096 gain to
+1.021 (1.011–1.028); that change was reverted.
+
+**Provenance correction.** J-228's r11/r12 receipt metadata records frozen
+source SHA-256 `b2bcf6b2ae89a2dd68f08c9b6701952c62bf8b89cae657ed93b0e3a73e28a027`,
+which differs from the pinned source above. Retain those measurements as
+historical investigations, not as the final frozen-source comparison. The
+fully pinned r17 cells and their complete witnesses are resource evidence for
+that candidate. An end-of-run capacity fix below requires a new binary and
+representative remeasurement before these ratios can qualify the final code.
+
+**MEASURED geometric cohorts.** A 24-cell cold pilot covers ENot, mixed,
+mixed-metadata and nested Map construction at depths 16/64/256/1,024/2,048/4,096.
+All 24 planned arms finish. Frozen arms finish with exact witnesses through
+2,048 for the first three cohorts and through 1,024 for Map. The other frozen
+arms report `incomplete_decode` at the 180-second cap; they are censored, not
+assigned latency ratios. At depth 2,048, planned/frozen scoped peak bytes are
+3,006,794/7,272,888 for ENot, 20,156,875/21,881,490 for mixed and
+20,171,893/21,910,004 for mixed-metadata. The paired allocation calls are
+119,737/184,998,265, 297,047/211,680,851 and 312,124/233,957,826.
+Map's last complete pilot at depth 1,024 has peak bytes
+12,631,571/13,358,516 and allocation calls 346,655/190,847,737.
+
+The representative repeated-sample cells use the preregistered 31 pairs for
+subsecond controls and seven pairs for slower controls. The 99% intervals are
+fixed-seed bootstrap intervals over paired decode-time ratios:
+
+| Cohort/depth | Pairs | Median planned/frozen time | 99% interval |
+|---|---:|---:|---:|
+| ENot/256 | 31 | 0.00491 | 0.00487–0.00495 |
+| Mixed/256 | 31 | 0.01012 | 0.01006–0.01019 |
+| Mixed metadata/256 | 31 | 0.00971 | 0.00967–0.00985 |
+| ENot/1,024 | 7 | 0.00116 | 0.00115–0.00119 |
+| Mixed/1,024 | 7 | 0.00291 | 0.00284–0.00296 |
+| Mixed metadata/1,024 | 7 | 0.00279 | 0.00252–0.00290 |
+| Map/64 | 31 | 0.02801 | 0.02765–0.02837 |
+| Map/256 | 7 | 0.00775 | 0.00709–0.01045 |
+
+**Broader release gate.** The capped `cargo test --workspace --release` build
+finishes in 29 minutes and begins running tests. The node library passes
+205/205, but the complete command reaches its one-hour runtime cap inside
+Casper's 856-test integration target. Seven multi-parent Casper cases report
+`FAILED` before termination; the combined run does not print their final
+failure details. One of those cases passes alone, 1/1, under a 6 GiB cap in
+249.77 seconds. This does not qualify the full workspace or explain the
+broader-suite failures. The first directly affected release library run
+finds a separate, real decoder regression: 698 models tests pass and one
+fails because the shallow retirement guard leaves a frame Vec at capacity
+16 after recursive duplicate decoding. A final `Machine::run` drain fixes
+the exact test, 1/1; the full affected library rerun is active. The width-16
+and width-256 shallow regression and full workspace gate remain open, so task
+8516 and the campaign remain open.
+
+Receipts below are relative to `target/verification/protobuf-attach-8516/`.
+
+| Receipt | SHA-256 |
+|---|---|
+| `r17-distinct-31/observations.jsonl` | `26382d21bbfe4ce8d59baf1e4c8820d1c1d01aab23d6342d15787fdb7625e543` |
+| `r19-geometric-pilot/observations.jsonl` | `ded16f7d73d328616335700574b46864b5fa2fb59944f2eb118cea1e196f14cc` |
+| `r19-geometric-256-31/observations.jsonl` | `fcacac84b62182c590e4c77b6aaae41e3c45add6a1630d96d01e2955946aab12` |
+| `r19-geometric-1024-7/observations.jsonl` | `8d59a1f9f0836b930d09b4d1b147e12d599d62bfa8c8d644132f0707b86ddc17` |
+| `r19-map-64-31/observations.jsonl` | `a7cae6304cb852b85c07184223e0e87166735c590c413ca3aebbd5064ef8e853` |
+| `r19-map-256-7/observations.jsonl` | `d69d93546cf2b71b1b7817f445bbabf729842fddd2e59de16c8c4943fd21ddb5` |
+| `r19-depth5917.log` | `31644b96a5d3aeb8a5ee5cc9e3e3b83b1cb86e17c8df0378dc2108d987e7bd40` |
+| `r19-rocq.log` | `479643541873058842c3659fbb0778f5ddd8c0993f2643957678de605c4ee623` |
+| `r19-coqchk.log` | `615049b3d2b67d24263a68446daea3ac4343587036d0962a3bb75f9225a5aba0` |
+| `r19-default-oracle.log` | `2a4d97b6a081de7eff4411fbccc1280d5dbab4d9a4386db2b31549db89617f8e` |
+| `r19-workspace.log` | `43053a2c370f1699c45f02c35512362e738bb0eb91c0380673f8de1052f5c3f2` |
+
+## J-230 — Final-binary decoder resource qualification (2026-09-29)
+
+**MEASURED coordinate.** This entry measures the feature-enabled models binary
+SHA-256 `851418d3d3d5cdb5e8ee5f2fbf1ff50e7a5c5130fa290a4dd322e1db6e2246f0`
+after the final `Machine::run` capacity drain repaired the recursive-duplicate
+release test. The frozen decoder remains at the pinned BLAKE2b-512 and SHA-256
+recorded in J-229. Every arm used the same CPU-31 admission check, alternating
+order within process pairs, 4/6 GiB high/max memory limits, zero swap and a
+180-second runtime cap. All completed pairs agreed on exact protobuf, compact
+and bincode digests, locally-free and connective metadata, cardinality,
+literal error, and remaining input. A capped arm without a complete witness
+contributes no latency ratio.
+
+The 31-pair fragmented distinct-root matrix has fixed-seed bootstrap 99%
+intervals over the median of within-pair planned/frozen decode-time ratios:
+
+| Width | Median ratio | 99% interval | Planned/frozen decode allocations |
+|---:|---:|---:|---:|
+| 1 | 1.251 | 1.087–1.300 | 66 / 61 |
+| 16 | 1.286 | 1.191–1.436 | 183 / 172 |
+| 256 | 1.143 | 1.097–1.181 | 1,871 / 1,856 |
+| 4,096 | 1.050 | 1.035–1.074 | 32,720 / 32,701 |
+
+The 31-pair late-duplicate width-4,096 matrix gives 1.055 (1.036–1.088),
+with 32,722/32,699 allocations and 417,976/416,984 scoped peak bytes. The
+final wide pilot covers distinct, duplicate, late-duplicate and late-new keys
+at widths 1, 16, 256 and 4,096; all 16 cells have exact witnesses. The
+distinct width-1, width-16 and width-256 median slowdowns cross the
+preregistered 10% investigation trigger. Width-16's full interval lies above
+parity. J-229 records the rejected cursor-insertion experiment; these results
+do not approve a shallow regression or close task 8516.
+
+**MEASURED geometric matrix.** All 24 planned pilot arms finish at depths
+16/64/256/1,024/2,048/4,096 for ENot, mixed, mixed-metadata and Map. Nineteen
+frozen arms finish with exact witnesses: through 2,048 for the first three
+cohorts, and through 1,024 for Map. At depth 4,096 for ENot and depth 2,048
+and 4,096 for Map, the frozen control reaches the cap after timed decoding
+but before witness completion. The other two depth-4,096 controls are capped
+during decode. All five are censored. At depth 2,048, ENot has a cold-pilot
+time ratio of 0.00058, 119,737/184,998,265 allocations and
+3,006,794/7,272,888 scoped peak bytes. Mixed has 0.00178,
+297,047/211,680,851 allocations and 20,156,875/21,881,490 peak bytes.
+Mixed-metadata has 0.00187, 312,124/233,957,826 allocations and
+20,171,893/21,910,004 peak bytes. Map's last complete pilot at depth 1,024
+has 0.00302, 346,655/190,847,737 allocations and
+12,631,571/13,358,516 peak bytes. These peaks count outstanding allocation
+bytes inside the decode window, not process RSS.
+
+Representative repeated cells follow the preregistered 31 pairs for
+subsecond frozen controls and seven pairs for slower controls:
+
+| Cohort/depth | Pairs | Median ratio | 99% interval |
+|---|---:|---:|---:|
+| ENot/256 | 31 | 0.00482 | 0.00474–0.00493 |
+| Mixed/256 | 31 | 0.01043 | 0.01034–0.01064 |
+| Mixed metadata/256 | 31 | 0.01005 | 0.00986–0.01020 |
+| ENot/1,024 | 7 | 0.00117 | 0.00114–0.00118 |
+| Mixed/1,024 | 7 | 0.00306 | 0.00299–0.00313 |
+| Mixed metadata/1,024 | 7 | 0.00298 | 0.00281–0.00306 |
+| Map/64 | 31 | 0.02883 | 0.02855–0.02905 |
+| Map/256 | 7 | 0.00807 | 0.00795–0.00843 |
+
+The final-binary resource receipts are relative to
+`target/verification/protobuf-attach-8516/`:
+
+| Receipt | SHA-256 |
+|---|---|
+| `r20-wide-pilot/observations.jsonl` | `063e02c0fccff96dfda74d40f649f10a6368655b01b6daef85ccaa7035206351` |
+| `r20-distinct-31/observations.jsonl` | `60b424ecb2abc4f3857a0c327f7bb3942ad2d20dcd8b49546a71ad173c8f6516` |
+| `r20-late-duplicate-4096-31/observations.jsonl` | `10a611e60828162c11e30ab649483897cc94a89f82ceed227fda7fc7152a60b3` |
+| `r20-geometric-pilot/observations.jsonl` | `52c832a39fa611d496a92c4ede7e5e1a60d1025895b02759fa307ead729cb694` |
+| `r20-geometric-256-31/observations.jsonl` | `e1f003d6f7d713faf0d4b76fdf234978f3171b01cf5ad5a4bb42e163adecd167` |
+| `r20-geometric-1024-7/observations.jsonl` | `aa35e303222f3f38e302d7e0d6f668ef0810bfad503d79185665da55d238dd2c` |
+| `r20-map-64-31/observations.jsonl` | `a1dc73b3d5b464b9644529fc66a4f24b1dbeeb8132ee0ccbd1cdd9526b7daca1` |
+| `r20-map-256-7/observations.jsonl` | `a9184a79d194e1361868ffa03df5fbea75fe4b24141bdd6bb5068ea0d5af1839` |
+
+**Final-source validation.** The exact recursive-duplicate capacity test passes
+after the end-of-run drain. Release library runs pass 699/699 models tests,
+424/424 rholang tests and 735/735 rspace++ tests, with the existing opt-in
+cases ignored. The feature-enabled frozen oracle passes 16 runnable tests with
+one resource cell ignored, and the root-stream suite passes 9/9. The final
+formal-equivalence manifest passes 51/51. The unchanged depth-4,096 gate
+passes 16/16, with five existing opt-in cases ignored, in 167.03 seconds of
+tests and 2 GiB peak memory with zero swap under an 8 GiB cap. Rocq proof
+source did not change after J-229's 73 closed-context reports and successful
+`coqchk`. The full release workspace run and the explicit shallow-resource
+acceptance decision remain separate open gates. `pgmcp bug-gate` reports no
+open bugs anchored to the changed files, and the scoped diff passes
+`git diff --check`.
+
+| Validation receipt | SHA-256 |
+|---|---|
+| `r20-duplicate.log` | `92b00b6f8be6f4c06f6bc7b71f0eae8a3d639244d9e418482ef72d8af9f285b4` |
+| `r20-affected-libs.log` | `43c49dbf33e29d48e7a08368805ffa295023de721f9779c1b50d6678ddf8cc94` |
+| `r20-oracle.log` | `3b6015cdce01f6bb66ffde62dc4f278f1a293f2620929b9af02a65562fb32e54` |
+| `r20-root.log` | `871b3336288781045aacfcbc68838725307c851c351986d9b87b8581def20727` |
+| `r20-depth5917.log` | `3e6802c699665c85fd37686e4a51cb1c3ca39351326e18eda5d9b139ea684277` |
+| `r20-manifest.log` | `da45fcc4e1d75e1aa78c649af4c8c183a7a1b8f7ee0ce0bdc18ffe58be859332` |
+| `r20-bug-gate.log` | `7932bd119fa74baadf9382c3d8232d3739480c12ffbae43855f91e7cf6818ca0` |
+
+**Broader release gate diagnosis.** A capped final-source
+`cargo test --workspace --release` with four test threads builds and reaches
+Casper's 856-test integration target. Seven add-block tests report `FAILED`;
+the run is stopped after those failures rather than spending the remaining
+window on tests that cannot make the command pass. A focused 15-test
+`multi_parent_casper_add_block_spec` run under the same four-thread limits
+finishes with five passes, six failures and four existing ignores. Every
+captured failure is `HistoryError(RootError(RootCatalogConflict))` at
+`rho_runtime.rs:366`, where the expected root-catalog generation trails the
+actual one by one. The test harness returns a process-cached `GenesisContext`
+including its `rspace_scope_id` to multiple tests; those tests can therefore
+checkpoint one shared root catalog concurrently. A serial same-process filter
+that includes the failing `add_a_valid_block_from_peer` case finishes with
+six passes, two existing ignores and zero failures. This is evidence for a
+test-fixture concurrency defect, not proof that all 856 integration cases
+pass serially. Full workspace acceptance remains open; the decoder leaf is
+not marked complete, and the shallow-resource decision is still required.
+
+| Broader-gate receipt | SHA-256 |
+|---|---|
+| `r20-workspace.log` | `10ffc969ce107787c3d7b1fbbbba39b86df647e56ec3f012dd5f34e78226ba64` |
+| `r20-casper-addblock.log` | `4a6c9ee77b3b465b79c7e154e3104110ec145c841c75bbcdd3091b623d5210ff` |
+| `r20-casper-serial3.log` | `876f7bf923b4053000ae116d5e51bbaeda65375b94103d8ba693c2f9895487f2` |
+
+## J-231 — Shallow decoder acceptance decision (2026-09-29)
+
+**USER DECISION.** The user accepts J-230's measured shallow slowdown for
+the current planned protobuf decoder candidate and requests optimization
+later. This supersedes J-230's pending shallow-resource decision, but does
+not turn the measured ratios into performance parity. The accepted
+distinct-root planned/frozen median ratios remain 1.251 at width 1, 1.286
+at width 16, 1.143 at width 256, and 1.050 at width 4,096, with the
+99% intervals and measurement conditions recorded in J-230. Follow-up
+optimization is tracked separately in pgmcp as
+`pathmap-protobuf-decoder-shallow-optimization` (item 8566).
+
+The full release workspace gate remains open because the four-thread Casper
+integration run encounters the root-catalog fixture conflict described in
+J-230. The user subsequently directed that Casper must not be touched unless
+it is explicitly required for cost-accounting correctness; integration-test
+or Casper correctness alone is insufficient. No such direct cost-accounting
+requirement has been identified here. Decoder task 8516 remains in progress
+while its non-Casper release scope is checked; this decision accepts only the
+measured shallow cost and does not claim a full workspace pass.
+
+## J-232 — Non-Casper release verification after the scope decision (2026-09-29)
+
+**MEASURED validation boundary.** With Casper test targets excluded as
+directed in J-231, the capped release workspace run completed
+65 test targets without a reported failure before its 1,800-second cap
+interrupted `trie_escape_arm_stack`. That run includes 699 passing models
+library tests and its preceding integration targets. A separate release run
+completed the two remaining registered models targets: six escape-arm
+small-stack tests and six variant-exhaustiveness tests all passed. The
+`var_sort_matcher_test.rs` source is not a standalone Cargo test target;
+Cargo's registered-target list was used for the tail run.
+
+A second release workspace run excluding Casper and models passed the
+424-test rholang library and preceding targets, then failed
+`rholang --test handwritten_recursion_census`: its exact component inventory
+reported 13 unclassified and five stale strongly connected components.
+The census is a broader PathMap integration gate, not a failure of the
+protobuf decoder's oracle or construction tests. A third run excluding
+Casper, models and rholang failed in the node library's
+`legacy_map_clone_preserves_json_iteration_order` assertion (122 other
+node library tests passed). The same node library target had passed 123/123
+in the preceding run; this establishes differing observed outcomes, not
+their cause. Neither failure was bypassed or called a workspace pass.
+
+The PathMap-bearing `rspace_plus_plus` package was then tested independently
+in release mode. Its 735 runnable library tests passed, with one existing
+ignore, and all 23 other Cargo test targets passed. This decoder work did not
+edit a Casper source or test file. The full workspace acceptance gate remains
+open under parent task 5834; this partitioned evidence is not a green
+full-workspace command. Task 8516 is claimed done on its required decoder
+leaf scope, including the capped full-release attempt, the user-approved
+shallow-cost exception, and the unchanged depth gate. It is not verified by
+pgmcp, and the parent still owns the broader workspace failures. The scoped
+diff passes `git diff --check`; `pgmcp bug-gate` finds no open bugs anchored
+to the 23 currently changed files.
+
+All five commands used four build jobs and test threads, a 6/8 GiB
+memory high/max envelope, zero swap and a 1,800-second cap. Their receipts
+are relative to `target/verification/protobuf-attach-8516/`:
+
+| Receipt | Outcome | SHA-256 |
+|---|---|---|
+| `r21-workspace-no-casper.log` | timed out after 65 passing targets, during `trie_escape_arm_stack` | `f4f4c739d6032294d271a49e42df3b4b97465ffeaa4b10e1f9e0fea5591a2f68` |
+| `r22-workspace-rest.log` | rholang census failed after library 424/424 passed | `37eb75fb3ed74e5819c82376b86a9fb84fefcdc355448d94cc63cf380c233fc3` |
+| `r23-models-tail-b.log` | two remaining models targets passed 12/12 | `d712323fc2cd9a4ed093c3237bd7bc555bbe04d989c9f4789301f7ffd87bbfb3` |
+| `r24-workspace-rest.log` | node order assertion failed after 122 other library passes | `67cfc66950181df6a2de8aa6aa5399313afe15025a9f208f2e1965ec8ad45f4d` |
+| `r25-rspace.log` | all 24 rspace targets passed | `564bbe717c6865477c5dd73111189cdcd0e98ff10bbadf35db8531111d3a3a2b` |
+| `r26-bug-gate.log` | no open bugs anchored to changed files | `7932bd119fa74baadf9382c3d8232d3739480c12ffbae43855f91e7cf6818ca0` |
+
+### J-233 — Current nested-If matcher requalification (2026-09-29)
+
+This is an evidence-only checkpoint for pgmcp `spatial-matcher-byte-native-nested-if-decoding`
+(5866), under the existing PathMap campaign. No matcher or Casper source was edited. The
+branch remains intact while cost-accounting-specific work finishes; the requested separation
+of cost-accounting and Casper fixes follows that completion, not this checkpoint.
+
+The current release `matcher_if_family` target passed 8/8, and
+`matcher_recursive_family_cursor` passed 6/6. Both include fixed-small-stack depth gates,
+malformed-child or late-failure controls, and allocation-growth assertions. The current
+release `spatial_matcher_pda_equivalence` library selection passed 57/57 (367 other library
+tests were filtered), including the independent recursive equation, exact `FreeMap` and
+candidate-domain checks. The latter command ran as a systemd user scope with
+`MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`, `CPUQuota=400%`, four build jobs and
+four test threads. The focused logs `r27-matcher-if-family.log` and
+`r28-matcher-recursive-family.log` have SHA-256
+`73b81b6b7de95d9968a2cbf8ff9b67ebf2b640e51cb0efdf8aacdc22ef58b1f9` and
+`bd76c052c73795ab20bf06adae3e219e9f77e113c8751793d5e6c87448e6df45`.
+The oracle log is `target/verification/protobuf-attach-8516/r34-matcher-oracle-release.log`,
+SHA-256 `6835362b6c620cbb8afdd831770a80244139cfb8df9d5a1613fbfaaad5c66e88`.
+
+Criterion collected 20 samples per cell in each build profile, with fixture construction
+outside the timed matcher call. The table reports the displayed time estimate and 95%
+interval; it is a within-profile depth ladder, not a cross-profile speed comparison.
+
+| Nested `If` depth | Release time | Debug time |
+|---:|---:|---:|
+| 128 | 100.88 µs [100.43, 101.54] | 1.2889 ms [1.2872, 1.2910] |
+| 512 | 236.05 µs [234.52, 238.67] | 2.2858 ms [2.2771, 2.2966] |
+| 2,048 | 781.40 µs [776.15, 786.70] | 6.2642 ms [6.2383, 6.2880] |
+| 4,096 | 1.5057 ms [1.4967, 1.5189] | 11.626 ms [11.545, 11.737] |
+
+The release and debug benchmark logs have SHA-256
+`a412af6fe8aa68533a11131a6cc23eddb9488660018b8f96f95019100da7b952` and
+`9f3dcc822593457ec5ccca23800017a387e337408b068a887c7c2ef246917833`.
+Their raw per-depth sample and estimate files are preserved under
+`target/verification/protobuf-attach-8516/r29-if-bench-samples/` and
+`r30-if-bench-samples/`, respectively. Criterion's printed debug “regression” compares
+against the release run sharing its benchmark name; that cross-profile comparison is
+invalid. The release 128-depth estimate is slower than the historical 2026-08-20
+55.002-µs observation, while the 4,096-depth estimates are close (1.5057 versus
+1.5387 ms). Those different-date measurements do not isolate a causal source change.
+
+The same thread-local allocator implementation used in the original test remains in
+place. A matching-only release run requested 38,716 allocations / 3,299,401 bytes at
+depth 128 (5,100 encoded input bytes) and 306,334 / 26,081,209 at depth 1,024
+(41,724 input bytes). The debug run requested 38,760 / 3,532,105 and
+306,390 / 27,919,545, respectively. Both growth ratios are near the eightfold depth
+increase and pass the retained quadratic negative control. The absolute request
+counts exceed the historical 351 / 1,262 results; this is a current resource drift,
+not a measurement-method change or an unmet linear-growth assertion. Logs `r32-if-alloc-release.log`
+and `r33-if-alloc-debug.log` have SHA-256
+`0423fb9eb744be14d00d27c2282f2bae86919bc39786c21abf106d5013a24d33` and
+`a023a3fc36727ad8247fb689bf85c5636c60abddcae81024f7a43add325b6b76`.
+
+Eight separate one-case benchmark test-mode invocations with `/usr/bin/time -v`
+completed at depths 128, 512, 2,048 and 4,096 in release and debug. Their process
+peak RSS was 50,388–52,044 KiB in release and 50,860–51,848 KiB in debug;
+`r31-rss-{release,debug}-{128,512,2048,4096}.log` retains the individual records.
+These process peaks include fixture and test-runner memory and are not a measure of
+match-only retained heap. No full-workspace green result, Casper gate, or pgmcp
+verification is claimed here. Scheduler revision 1351 currently selects blocked
+baseline 5636 before 5866, so the latter remains unclaimed while this evidence is
+recorded. Task 5636's v2 replay archive had already passed its 13 ordinary
+concurrent checks with one capture-only ignore; its remaining blocker is
+historical experiment provenance, not a pending Casper repair.
+
+### J-234 — Singleton ParBag cost-accounting boundary (2026-09-29)
+
+Pgmcp `par-singleton-total-bag-exactness` (5849) is confirmed against its
+recorded predecessor reproduction. Current resident `single_bundle` and
+`single_connective` use total ParBag cardinality, and `ParConstruction::import_par`
+retains only the immediate singleton Bundle or Connective shell while importing
+direct children through the opaque canonical-byte path. The current release
+`models --test par_bag` target passes 36/36, including Bundle+If,
+Connective+If, Connective+GUnforgeable rejection and true-singleton planned
+import. Its log is `target/verification/parbag-5849/r01-models-par-bag-release.log`,
+SHA-256 `488ba4f4b9d3b086fd50d01f9438af23ccacb022b62ace9c6d9aa0144bd4bd79`.
+
+The release `metered_wrappers_agree` substitution differential passes 1/1.
+It compares the production result and charge with the independent recursive
+oracle on success and error paths. Its corpus includes an all-slots `Par` with
+Bundle, Connective and If together; it does not directly include the
+Connective+GUnforgeable mixed case. Log
+`target/verification/parbag-5849/r02-metered-substitution-release.log` has
+SHA-256 `00579cbf092f33accc7751377b559418cbd700264917f902f9f6f73590beffa5`.
+The normalizer runs before metering, so its differential can establish bytes
+but has no charge trace. Focused passes do not establish the missing mixed-case
+metered differential, full-workspace release acceptance, or the required
+reconciliation with the already recorded retired `CBR-056`
+(`BUG_FIX_RULED_NONCONSENSUS`). No production or Casper source was edited.
+
+At the user's request, only regenerable Cargo caches under `target/debug/`
+and `target/release/` were removed after the focused runs and after checking
+for live Cargo/release processes. Top-level executables and all verification
+logs and raw samples remain. `target/` fell from about 12 GiB to 1.1 GiB;
+subsequent Cargo tests will rebuild their caches. This cleanup and the branch
+decomposition are separate: the cost-accounting branch is to be extracted
+only after the cost-accounting-specific changes are complete, with Casper
+fixes isolated on another branch. No Casper work is authorized by a
+non-accounting integration or Casper test need.
+
+### J-235 — Original RSpace experiment rows recovered from pre-v86 backup (2026-09-29)
+
+The current pgmcp service still returns `experiment not found` for baseline
+experiments 208, 218, 233 and 327. A read-only database check found no rows for
+those IDs or their linked runs, samples, hypotheses and results, so the current
+lookup's `valid_to IS NULL` filter is not the only cause. The existing 9.6 GiB
+`~/.local/share/pgmcp/backups/pgmcp-pre-v86-20260902T1658.dump`
+has SHA-256 `afe3e1913c42001d3eba27de7f279e1c23d1d1e87e9bc449ab295ddd4be378c0`.
+Its indexed tables were streamed read-only, without restoring or copying the dump.
+
+The backup contains original experiment, locked-hypothesis, run and sample rows
+for 208, 218 and 233. Experiment 208 has 44 complete runs and 2,244 samples;
+218 has two finalized runs and 820 samples with both sealed run digests; 233
+has three complete runs and 1,804 samples. All 4,868 raw values are finite and
+all replicate indexes are contiguous within their run/arm/metric/unit groups.
+The recovered primary criteria were locked on August 15 or 16, before the
+respective runs, and retain their planned sample sizes and statistical tests.
+Artifacts 316 and 397 for 208 and 321 for 233 are in the backup. The
+[integration report](../rspace/pathmap-bag-rspace-integration.md#reproducible-baseline-evidence)
+records criterion details and per-experiment raw-row digests. The original run
+metadata includes benchmark commands, host conditions, source coordinates and
+times; this check has not established every observed compiler/Cargo version.
+
+Experiment 327 and artifacts 409/410 are absent from this September 2 backup;
+the task log first associates them with a September 5 progress event. They are
+also unavailable from the current service and bounded retained-file search.
+Baseline 5636 therefore remains blocked on original 327 provenance and any
+remaining tool-version reconciliation. The v2 replay archive previously passed
+13 ordinary concurrent checks with one capture-only ignore and is not a pending
+Casper task. No pgmcp database/source, production code, or Casper files were
+changed, and no benchmark was rerun. The user-requested cost-accounting/Casper
+branch separation remains deferred until cost-accounting work is complete.
+
+### J-236 — Mixed-family ParBag differential acceptance (2026-09-29)
+
+The substitution corpus now includes constructed Bundle+If, nested Bundle
+with a Bundle+If body, Connective+If, and Connective+GUnforgeable terms. The
+parsed normalizer corpus also includes a Bundle whose body contains Bundle
+and If siblings. These cases exercise the total-bag singleton boundary and
+the immediate planned Bundle shell while preserving direct-child import.
+
+The capped release `models --test par_bag` gate passes 36/36. The complete
+`rholang --lib substitute_oracle::differential_substitute_worklist` gate passes
+17/17, including the independent recursive byte-and-charge oracle and the
+depth-4096 fixed-stack New injection gate. Its log is
+`target/verification/parbag-5849/r03-mixed-substitution-release.log`, SHA-256
+`7fb08ec7bb000aeab59cd1b7b2722d09b775426ffc53b4f5058789bc8838b7d6`.
+The complete `rholang --lib normalize_differential` gate passes 11/11;
+its log is `target/verification/parbag-5849/r04-mixed-normalizer-release.log`,
+SHA-256 `a228ae648e043074b28ce552fc47d553c54b00bedda3b93d03e8e60ef6a6ef49`.
+Normalization precedes metering, so this gate proves result and binding
+equivalence rather than a charge trace. The metered substitution differential
+supplies the charge comparison.
+
+The `pgmcp bug-gate` check passes for the current changed-file set (27 files):
+`target/verification/parbag-5849/r06-pgmcp-bug-gate.log`, SHA-256
+`4d9770b02bd833a4eb6f7949ea9600b13e2c45429b5df363f5bc35526e094dc6`.
+It checks anchored open bugs and does not replace the task-specific acceptance
+criteria or the full workspace gate.
+
+J-234 incorrectly described a consensus-register entry as missing. `CBR-056`
+already records this singleton repair as retired
+`BUG_FIX_RULED_NONCONSENSUS`; no duplicate active entry is needed. The current
+full capped release workspace gate is running, so the focused passes do not
+close task 5849 or its required child verifications. No production or Casper
+source was edited in this acceptance batch.
+
+### J-237 — Experiment 327 original pgmcp calls recovered (2026-09-29)
+
+J-235 established that the September 2 backup predates experiment 327. A later
+read-only search found a September 5 Codex session replay of earlier pgmcp
+call-and-response payloads.
+The source transcript has SHA-256
+`65baa0891877faec9aa73ec0a08681a14f590bc2fc16ce95fb8c04ead5734775`.
+The [bounded extract](../stack-safety/measurements/rspace-act-lmdb-experiment-327-transcript-2026-09-29.json),
+SHA-256 `555566dc9cfced5b022da475588d970e664449b831406d2163e8478c3531d453`,
+retains source-line hashes, the locked observational hypothesis, six successful
+measurement submissions, their two original run UUIDs and 18 submitted scalar
+values, original artifact calls and responses for IDs 409–412, and the
+historical `experiment_get` snapshot. The values cover ACT and LMDB write,
+lookup and disk metrics at 256, 4,096 and 16,384 entries. The snapshot remained
+`measuring` with no decision or sealed digest; the disk-byte submissions had
+unit warnings against the experiment's throughput unit.
+The transcript event timestamps are later replay times, not benchmark times.
+
+This preserves the original pgmcp call-and-response payloads, not restored database
+rows, Criterion's ten per-cell replicate observations or a new benchmark.
+Observed compiler/Cargo versions and the underlying Criterion samples remain
+unverified. The [integration report](../rspace/pathmap-bag-rspace-integration.md#reproducible-baseline-evidence)
+records the exact scope. Baseline task 5636 therefore remains blocked on the
+remaining historical reproducibility obligations. No pgmcp database/source,
+production code or Casper file was changed.
+
+### J-238 — Panic-interceptor policy classification (2026-09-29)
+
+**DECISION.** The repository-wide `shared::panic_expectation_gate` is an
+acceptance condition for the PathMap integration. Each test that formerly
+passed by intercepting an expected panic now observes the failure in a
+separate libtest child process. Where a test checked state after unwinding,
+the child uses a destructor-time observer to verify restoration before it
+reports its failure; the parent requires the panic disposition, the specific
+diagnostic and the observer's marker. This preserves rollback, thread-local
+scope, disposer ordering and live-root normalization checks across the model
+and RSpace tests. The two `guarded_pathmap.rs` expectations use this pattern.
+
+The remaining interceptor tokens are classified by the exact-count allowlist
+in `shared/tests/panic_expectation_gate.rs`. Its new `guarded_pathmap.rs`
+entry covers one production import and five production barriers: two
+quarantined final-teardown fail-stop boundaries, two write-cursor root
+normalizers that resume the original panic, and one incoming-value disposal
+boundary. The one retained interceptor in the PathMap mutation test support
+is a diagnostic trace collector; neither its success nor its panic outcome
+alone makes the test pass. The policy gate rejects a count drift or any newly
+unclassified interceptor, so these reasons do not grant future uses an
+implicit exemption.
+
+**MEASURED.** The complete release policy suite passes all five tests,
+including planted-attribute and scanner controls. Its command is
+`cargo test --release -p shared --test panic_expectation_gate`; the log is
+`target/verification/parbag-5849/r54-policy-all-tests.log`, SHA-256
+`19d8bb88041052a23a4e2005ccf1eec4470d8556123dd646839975dcc918315a`.
+The two guarded PathMap child probes and the focused model probes also pass
+in release mode. The full capped workspace run started before these edits,
+so it cannot serve as exact-candidate acceptance evidence; an integrated
+rerun and its terminal digest remain required. No Casper source was edited.
+
+
+### J-239 — Integrated non-Casper release and proof requalification (2026-09-30)
+
+**MEASURED.** The repaired candidate passes the capped non-Casper release
+workspace gate: `cargo nextest run --release --no-fail-fast --workspace
+--exclude casper --test-threads 2` completed in 2,413.836 seconds with
+4,988/4,988 tests passing, 45 skipped, and no failures. The source state
+before this journal-only receipt had tracked-diff SHA-256
+`e13d7965727197c27aa76c26be699c1cedafaf7749d51e825923e2c922a107fd`.
+The log is `target/verification/parbag-5849/r78-noncasper-formal-census-release-nextest.log`,
+SHA-256 `710c7aeb020613a7bc8ad28afbb0fdf01226ebfd5368909d78d5618aec5c6023`.
+The previously failing legacy-map JSON-order assertion, generated PathMap
+child-path property, two formal source bindings, and exact recursion census
+all pass in this run. The five-test panic-interceptor policy suite passes
+within the same gate. The formatter and `git diff --check` are clean; the
+frozen decoder oracle retains its cited bytes.
+
+**MEASURED.** The pinned Rocq compiler rechecked the modified
+`GenerationCheckpointPublication.v` and `DecodedComponentConstruction.v`
+with their expected 94 and 73 closed-context reports. The pinned kernel
+checker accepted both modules. Logs under
+`target/verification/parbag-5849/` are `r81-generation-checkpoint-rocq.log`
+(SHA-256 `56dfa3fce52b326a9a1d30e7a0548faec576f9f46757e3fd491727eb307de049`),
+`r82-decoded-component-rocq.log`
+(`4592e0b7151952b6593148f9c7a7ff89dbff37e366166d71c1c6a7e3613b43cc`),
+`r83-generation-checkpoint-coqchk.log`
+(`7ddc0cc8a60d3947dcff4eae5ea7491f167ece07a1f471c4ce1314f0681b3a36`),
+and `r84-decoded-component-coqchk.log`
+(`11705c482a150ee9891d971b690b664ddd6480291e427992a29f6f913a054d88`).
+
+This result excludes Casper test targets, and the current source diff contains
+no Casper file. It qualifies the named PathMap and ParBag repair batch but is
+not a full-workspace-with-Casper pass or completion of the PathMap campaign.
+The separately requested cost-accounting/Casper branch decomposition remains
+after cost-accounting-specific work is complete.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

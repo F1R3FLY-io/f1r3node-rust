@@ -1,7 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use pathmap::zipper::Zipper;
 use proptest::prelude::*;
@@ -285,28 +284,144 @@ fn modes_root_prefix_dense_siblings_and_repeated_values_are_exact() {
 fn first_error_and_panic_stop_callbacks_without_publishing() {
     let paths: Vec<_> = (0..8).map(|v| (vec![v], true)).collect();
     for at in 0..8 {
-        for panic in [false, true] {
-            let mut calls = 0;
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                source(&paths).try_map_resident(|v| {
-                    let index = calls;
-                    calls += 1;
-                    if index == at {
-                        if panic {
-                            panic!("injected callback interruption");
-                        }
-                        return Err(index);
-                    }
-                    Ok(integer(v.0))
-                })
-            }));
-            assert_eq!(calls, at + 1);
-            if panic {
-                assert!(result.is_err());
+        let mut calls = 0;
+        let result = source(&paths).try_map_resident(|v| {
+            let index = calls;
+            calls += 1;
+            if index == at {
+                return Err(index);
+            }
+            Ok(integer(v.0))
+        });
+        assert_eq!(calls, at + 1);
+        assert!(matches!(result, Err(error) if error == at));
+        observe_payload_mapping_unwind(&format!("callback:{at}"), "injected callback interruption");
+    }
+}
+
+fn observe_payload_mapping_unwind(case: &str, diagnostic: &str) {
+    let scratch = shared::rust::test_scratch::acquire("epm-payload-mapping-unwind-");
+    let marker = scratch.path().join("verified");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rust::epathmap_trie_codec::payload_mapping_tests::payload_mapping_unwind_child",
+            "--nocapture",
+        ])
+        .env("EPM_PAYLOAD_MAPPING_CASE", case)
+        .env("EPM_PAYLOAD_MAPPING_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the EPathMap payload mapping child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            );
+            assert!(failure.stderr.contains(diagnostic), "{}", failure.stderr);
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the EPathMap payload mapping child did not fail")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), b"verified");
+}
+
+#[test]
+#[ignore = "isolated EPathMap payload mapping unwind child"]
+fn payload_mapping_unwind_child() {
+    let Ok(case) = std::env::var("EPM_PAYLOAD_MAPPING_CASE") else {
+        return;
+    };
+    let marker =
+        std::env::var_os("EPM_PAYLOAD_MAPPING_MARKER").expect("EPathMap payload mapping marker");
+    let marker: std::path::PathBuf = marker.into();
+    match case.as_str() {
+        callback if callback.starts_with("callback:") => {
+            let at: usize = callback[9..].parse().expect("callback stop index");
+            assert!(at < 8);
+            struct CallbackCountOnDrop {
+                calls: std::rc::Rc<Cell<usize>>,
+                expected: usize,
+                marker: std::path::PathBuf,
+            }
+            impl Drop for CallbackCountOnDrop {
+                fn drop(&mut self) {
+                    assert_eq!(self.calls.get(), self.expected);
+                    std::fs::write(&self.marker, b"verified").unwrap();
+                }
+            }
+            let calls = std::rc::Rc::new(Cell::new(0));
+            let _checked = CallbackCountOnDrop {
+                calls: std::rc::Rc::clone(&calls),
+                expected: at + 1,
+                marker,
+            };
+            let paths: Vec<_> = (0..8).map(|v| (vec![v], true)).collect();
+            let _ = source(&paths).try_map_resident::<()>(|v| {
+                let index = calls.get();
+                calls.set(index + 1);
+                if index == at {
+                    panic!("injected callback interruption");
+                }
+                Ok(integer(v.0))
+            });
+        }
+        "meter_unwind" | "meter_nested" => {
+            struct MeterClearedOnDrop {
+                marker: std::path::PathBuf,
+            }
+            impl Drop for MeterClearedOnDrop {
+                fn drop(&mut self) {
+                    assert!(METER.with(Cell::get).is_none());
+                    std::fs::write(&self.marker, b"verified").unwrap();
+                }
+            }
+            struct OuterMeterOnDrop;
+            impl Drop for OuterMeterOnDrop {
+                fn drop(&mut self) {
+                    assert!(METER.with(Cell::get).is_some());
+                }
+            }
+            let _checked = MeterClearedOnDrop { marker };
+            if case == "meter_unwind" {
+                let _ = capture_allocations(|| panic!("meter unwind"));
             } else {
-                assert!(matches!(result, Ok(Err(error)) if error == at));
+                let _ = capture_allocations(|| {
+                    let _outer = OuterMeterOnDrop;
+                    capture_allocations(|| ());
+                });
             }
         }
+        "deep" => {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    struct ReachedOnDrop(std::path::PathBuf);
+                    impl Drop for ReachedOnDrop {
+                        fn drop(&mut self) { std::fs::write(&self.0, b"verified").unwrap(); }
+                    }
+                    let _reached = ReachedOnDrop(marker);
+                    let mut paths = Vec::new();
+                    let mut prefix = Vec::new();
+                    for i in 0..8192 {
+                        prefix.push(1);
+                        paths.push((prefix.clone(), i % 1024 == 0));
+                        *prefix.last_mut().unwrap() = 0;
+                    }
+                    let _ = source(&paths).try_map_resident::<()>(|_| panic!("deep callback"));
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+        _ => panic!("unknown EPathMap payload mapping child case"),
     }
 }
 
@@ -406,12 +521,8 @@ fn allocation_meter_tracks_lifecycle_and_reallocation() {
 #[test]
 fn allocation_meter_scopes_restore_after_unwind_and_reject_nesting() {
     assert_eq!(capture_allocations(|| ()).1, AllocationCounts::default());
-    assert!(catch_unwind(|| capture_allocations(|| panic!("meter unwind"))).is_err());
-    assert!(METER.with(Cell::get).is_none());
-    let _ = capture_allocations(|| {
-        assert!(catch_unwind(|| capture_allocations(|| ())).is_err());
-        assert!(METER.with(Cell::get).is_some());
-    });
+    observe_payload_mapping_unwind("meter_unwind", "meter unwind");
+    observe_payload_mapping_unwind("meter_nested", "nested allocation capture");
     assert!(METER.with(Cell::get).is_none());
 }
 
@@ -462,12 +573,9 @@ fn deep_branching_success_error_and_unwind_are_stack_safe() {
                 assert_eq!(mapped.is_err(), failure);
                 drop(mapped);
             }
-            assert!(catch_unwind(AssertUnwindSafe(|| {
-                let _ = source(&paths).try_map_resident::<()>(|_| panic!("deep callback"));
-            }))
-            .is_err());
         })
         .unwrap()
         .join()
         .unwrap();
+    observe_payload_mapping_unwind("deep", "deep callback");
 }

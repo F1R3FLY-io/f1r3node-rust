@@ -10086,6 +10086,33 @@ encoded collection candidate domains further; the present universal domain is a 
 performance opportunity, not a correctness or stack-safety deferral. Complete release-workspace
 validation remains a separate gate and is not implied by these focused results.
 
+#### 5.30.5 Current-source nested-If requalification — 2026-09-29
+
+The current release matcher tests pass 8/8 conditional and 6/6 recursive-family
+cases. The selected production-PDA versus recursive-oracle library tests pass
+57/57, including complete `FreeMap` rollback and candidate-domain equivalence;
+367 other library tests were filtered. The latter ran with a 6/8-GiB systemd
+memory high/max, zero swap, four build jobs and four test threads. The raw log
+SHA-256 is `6835362b6c620cbb8afdd831770a80244139cfb8df9d5a1613fbfaaad5c66e88`.
+These are current-source gates, not a full-workspace result.
+
+Twenty-sample Criterion ladders at depths 128, 512, 2,048 and 4,096 produce
+release estimates of 100.88, 236.05, 781.40 and 1,505.7 µs; debug estimates
+are 1.2889, 2.2858, 6.2642 and 11.626 ms. Within each profile, the ladder
+remains approximately linear in encoded depth. The debug Criterion output's
+automatic comparison to the preceding release run is not a valid regression
+test because the build profiles differ. Matching-only allocation requests grow
+from 38,716 / 3,299,401 bytes at depth 128 to 306,334 / 26,081,209 bytes at
+depth 1,024 in release, with corresponding debug counts 38,760 / 3,532,105
+and 306,390 / 27,919,545. The original thread-local allocator method is
+unchanged; the absolute count is higher than the historical 351 / 1,262
+observations, though the current linear-growth assertion and its quadratic
+negative control pass. Separate one-case process peak-RSS measurements span
+50,388–52,044 KiB in release and 50,860–51,848 KiB in debug, including
+fixture and runner memory. Full intervals, per-depth raw samples, memory logs,
+hashes, and the open pgmcp scheduling/verification boundary are recorded in
+the PathMap engineering journal J-233. No Casper source or test was changed.
+
 ### 5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]
 
 #### 5.31.1 Defect and hypothesis
@@ -15980,6 +16007,17 @@ Workloads with incremental WAL updates, concurrent readers, crash recovery, and 
 semantic namespaces still require separate measurements before selecting a production backend.
 The reproducible harness is `rspace++/benches/rspace_act_lmdb.rs` (commits `53b5ef356` and
 `0c1d01ceb`).
+
+The [experiment 327 transcript extract](measurements/rspace-act-lmdb-experiment-327-transcript-2026-09-29.json)
+preserves the original pgmcp observational protocol, 18 submitted scalar values,
+two run UUIDs, and artifact contents/IDs 409–412 with source-line hashes. The
+transcript event timestamps reflect later context replay, not the benchmark run.
+The historical snapshot remained `measuring` without a decision or sealed digest;
+the disk-byte values had a unit-mismatch warning against the primary throughput
+unit. These are pgmcp-submitted fixture summaries, not Criterion's ten per-cell
+replicates. The underlying raw replicates and observed compiler/Cargo versions
+remain unavailable, so this appendix does not establish full historical
+reproducibility or a production persistence verdict.
 
 ## Appendix I — checkpoint coordination boundary (2026-09-03)
 

@@ -1,4 +1,5 @@
 use proptest::prelude::*;
+use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
 
 use super::*;
 use crate::rhoapi::expr::ExprInstance;
@@ -11,7 +12,6 @@ use crate::rust::rholang::canonical_path_admission::{
     CanonicalPathReducer, CanonicalPathReducerHandle,
 };
 use crate::rust::rholang::protobuf_encoder;
-use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
 
 impl<'src> EPathMapFrame<'src> {
     fn from_epm1_region(
@@ -560,7 +560,11 @@ fn joint_epm_fixture(map: bool, keys: impl IntoIterator<Item = Vec<u8>>) -> Vec<
 
     fn field(number: u32, body: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
-        prost::encoding::encode_key(number, prost::encoding::WireType::LengthDelimited, &mut result);
+        prost::encoding::encode_key(
+            number,
+            prost::encoding::WireType::LengthDelimited,
+            &mut result,
+        );
         prost::encoding::encode_varint(body.len() as u64, &mut result);
         result.extend_from_slice(body);
         result
@@ -568,11 +572,15 @@ fn joint_epm_fixture(map: bool, keys: impl IntoIterator<Item = Vec<u8>>) -> Vec<
 
     let snapshot = if map {
         let mut trie = pathmap::PathMap::new();
-        for key in keys { trie.insert(&key, integer(11)); }
+        for key in keys {
+            trie.insert(&key, integer(11));
+        }
         epathmap_trie_codec::encode(&EPathMapRepr::Map(trie))
     } else {
         let mut trie = pathmap::PathMap::new();
-        for key in keys { trie.insert(&key, ()); }
+        for key in keys {
+            trie.insert(&key, ());
+        }
         epathmap_trie_codec::encode(&EPathMapRepr::<Par>::Set(trie))
     };
     field(5, &field(32, &field(9, &snapshot)))
@@ -581,17 +589,27 @@ fn joint_epm_fixture(map: bool, keys: impl IntoIterator<Item = Vec<u8>>) -> Vec<
 fn composed_joint_input(bytes: &[u8]) -> IndexedByteRegion<'_> {
     let mut root = super::super::canonical_source_tree::SourceTreeWindow::empty();
     for (index, byte) in bytes.chunks(1).enumerate() {
-        let offset = if index % 17 == 0 { usize::MAX } else { 101 - index % 97 };
+        let offset = if index % 17 == 0 {
+            usize::MAX
+        } else {
+            101 - index % 97
+        };
         let leaf = super::super::canonical_source_tree::SourceTreeWindow::from_borrowed(
-            byte, (index % 7) as u32, offset,
-        ).unwrap();
+            byte,
+            (index % 7) as u32,
+            offset,
+        )
+        .unwrap();
         root = root.concat(&leaf).unwrap();
     }
     IndexedByteRegion::from_source(root, CanonicalByteProvenance::new(99, 313))
 }
 
-fn assert_joint_epm_transport(input: IndexedByteRegion<'_>) -> (
-    Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError>, EpmBatchObservation,
+fn assert_joint_epm_transport(
+    input: IndexedByteRegion<'_>,
+) -> (
+    Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError>,
+    EpmBatchObservation,
 ) {
     let ((scalar, scalar_path), scalar_batches) = with_epm_transport(true, || {
         observe_full_admission(|| {
@@ -604,11 +622,17 @@ fn assert_joint_epm_transport(input: IndexedByteRegion<'_>) -> (
         })
     });
     assert_eq!(scalar_batches, EpmBatchObservation::default());
-    assert_eq!(batched, scalar, "joint transport must retain every admission field and error");
+    assert_eq!(
+        batched, scalar,
+        "joint transport must retain every admission field and error"
+    );
     assert_eq!(batched_path.edges, scalar_path.edges);
     assert_eq!(batched_path.states, scalar_path.states);
     assert_eq!(batched_path.frames, scalar_path.frames);
-    assert_eq!(batched_path.repeated_owner_work, scalar_path.repeated_owner_work);
+    assert_eq!(
+        batched_path.repeated_owner_work,
+        scalar_path.repeated_owner_work
+    );
     assert_eq!(batched_path.observations, scalar_path.observations);
     (batched, batches)
 }
@@ -626,40 +650,111 @@ fn assert_joint_epm_success(bytes: &[u8], width: usize) {
         let (result, batches) = assert_joint_epm_transport(input);
         let admitted = result.unwrap();
         assert_eq!(admitted.score_bytes(), Some(score.as_slice()));
-        assert_eq!(admitted.stats().canonical_path_obligations,
-            admitted.stats().canonical_path_resolutions);
+        assert_eq!(
+            admitted.stats().canonical_path_obligations,
+            admitted.stats().canonical_path_resolutions
+        );
         assert!(admitted.stats().canonical_path_obligations > 0);
         assert_eq!(admitted.stats().reconstructed_key_bytes, 0);
         assert_eq!(admitted.stats().legacy_endpoint_replays, 0);
         assert_eq!(admitted.stats().typed_decodes, 0);
-        assert!(batches.forward_batches > 0 && batches.unwind_batches > 0, "{batches:?}");
+        assert!(
+            batches.forward_batches > 0 && batches.unwind_batches > 0,
+            "{batches:?}"
+        );
         assert!(batches.forward_bytes >= width / 2, "{batches:?}");
-        assert!(batches.max_forward > 1 && batches.max_unwind > 1, "{batches:?}");
+        assert!(
+            batches.max_forward > 1 && batches.max_unwind > 1,
+            "{batches:?}"
+        );
     }
 }
 
 #[test]
 fn joint_epm_transport_scopes_restore_modes_and_evidence_after_panics() {
+    let scratch = shared::rust::test_scratch::acquire("epm-transport-unwind-");
+    let marker = scratch.path().join("restored");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rust::rholang::protobuf_admission::standalone_path_admission::joint_epm_transport_unwind_child",
+            "--nocapture",
+        ])
+        .env("EPM_TRANSPORT_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the EPathMap transport child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            );
+            assert!(failure.stderr.contains("scoped transport control"));
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the EPathMap transport child did not fail")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), b"inner+outer");
+}
+
+#[test]
+#[ignore = "isolated EPathMap transport unwind child"]
+fn joint_epm_transport_unwind_child() {
+    let Some(marker) = std::env::var_os("EPM_TRANSPORT_UNWIND_MARKER") else {
+        return;
+    };
+    struct VerifyOuter {
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOuter {
+        fn drop(&mut self) {
+            assert!(!scalar_epm_transport());
+            let observed = EPM_BATCHES.with(|cell| cell.get().unwrap());
+            assert_eq!(observed.forward_batches, 1);
+            assert_eq!(observed.forward_bytes, 3);
+            assert_eq!(observed.unwind_bytes, 0);
+            std::fs::write(&self.marker, b"inner").unwrap();
+        }
+    }
+    struct VerifyFinal {
+        marker: std::path::PathBuf,
+        mode: bool,
+        evidence: Option<EpmBatchObservation>,
+    }
+    impl Drop for VerifyFinal {
+        fn drop(&mut self) {
+            assert_eq!(scalar_epm_transport(), self.mode);
+            assert_eq!(EPM_BATCHES.with(std::cell::Cell::get), self.evidence);
+            assert_eq!(std::fs::read(&self.marker).unwrap(), b"inner");
+            std::fs::write(&self.marker, b"inner+outer").unwrap();
+        }
+    }
+    let marker: std::path::PathBuf = marker.into();
     let original_mode = scalar_epm_transport();
     let original_evidence = EPM_BATCHES.with(std::cell::Cell::get);
-    let (_, evidence) = with_epm_transport(false, || {
+    let _final = VerifyFinal {
+        marker: marker.clone(),
+        mode: original_mode,
+        evidence: original_evidence,
+    };
+    with_epm_transport(false, || {
         record_epm_batch(CanonicalCompactTrieLineDirection::Forward, 3);
-        let failed = std::panic::catch_unwind(|| {
-            with_epm_transport(true, || {
-                assert!(scalar_epm_transport());
-                record_epm_batch(CanonicalCompactTrieLineDirection::Unwind, 5);
-                panic!("scoped transport control");
-            });
+        let _outer = VerifyOuter {
+            marker: marker.clone(),
+        };
+        with_epm_transport(true, || {
+            assert!(scalar_epm_transport());
+            record_epm_batch(CanonicalCompactTrieLineDirection::Unwind, 5);
+            panic!("scoped transport control");
         });
-        assert!(failed.is_err());
-        assert!(!scalar_epm_transport());
-        let observed = EPM_BATCHES.with(|cell| cell.get().unwrap());
-        assert_eq!(observed.forward_bytes, 3);
-        assert_eq!(observed.unwind_bytes, 0);
     });
-    assert_eq!(evidence.forward_batches, 1);
-    assert_eq!(scalar_epm_transport(), original_mode);
-    assert_eq!(EPM_BATCHES.with(std::cell::Cell::get), original_evidence);
 }
 
 #[test]
@@ -668,8 +763,10 @@ fn joint_epm_transport_preserves_opaque_children_scores_and_all_source_backings(
         for map in [false, true] {
             for width in [31, 257] {
                 for count in [1, 3] {
-                    let bytes = joint_epm_fixture(map,
-                        (0..count).map(|index| joint_epm_key(nested, width, index)));
+                    let bytes = joint_epm_fixture(
+                        map,
+                        (0..count).map(|index| joint_epm_key(nested, width, index)),
+                    );
                     assert_joint_epm_success(&bytes, width);
                 }
             }
@@ -702,19 +799,29 @@ proptest! {
 fn joint_epm_transport_preserves_malformed_child_and_boundary_provenance() {
     let raw = joint_epm_key(false, 129, 1);
     let nested = joint_epm_key(true, 129, 1);
-    let stable_body = protobuf_encoder::encode_to_vec(&expr(ExprInstance::GByteArray(vec![37; 129])));
-    let raw_body = protobuf_encoder::encode_to_vec(&expr(ExprInstance::GByteArray(vec![37; 129]))
-        .with_sends(vec![Send { chan: Some(integer(7)), ..Send::default() }]));
+    let stable_body =
+        protobuf_encoder::encode_to_vec(&expr(ExprInstance::GByteArray(vec![37; 129])));
+    let raw_body = protobuf_encoder::encode_to_vec(
+        &expr(ExprInstance::GByteArray(vec![37; 129])).with_sends(vec![Send {
+            chan: Some(integer(7)),
+            ..Send::default()
+        }]),
+    );
     let mut invalid_body = raw_body;
     invalid_body.push(0);
     let mut suffix = raw.clone();
     suffix.push(0xff);
     let mut invalid_nested = nested.clone();
     let mut at = 1;
-    while invalid_nested[at] & 0x80 != 0 { at += 1; }
+    while invalid_nested[at] & 0x80 != 0 {
+        at += 1;
+    }
     invalid_nested[at + 1] ^= 0xff;
     let invalid_set_escape = EPathMap::from_set_iter(
-        [expr(ExprInstance::GByteArray(vec![37; 129]))], Vec::new(), false, None,
+        [expr(ExprInstance::GByteArray(vec![37; 129]))],
+        Vec::new(),
+        false,
+        None,
     );
     for key in [
         raw[..raw.len() - 1].to_vec(),
@@ -733,8 +840,14 @@ fn joint_epm_transport_preserves_malformed_child_and_boundary_provenance() {
                 composed_joint_input(&bytes),
             ] {
                 let (result, batches) = assert_joint_epm_transport(input);
-                assert!(result.is_err(), "malformed key unexpectedly admitted: {key:?}");
-                assert!(batches.forward_batches > 0, "failure fixture never exercises batching: {batches:?}");
+                assert!(
+                    result.is_err(),
+                    "malformed key unexpectedly admitted: {key:?}"
+                );
+                assert!(
+                    batches.forward_batches > 0,
+                    "failure fixture never exercises batching: {batches:?}"
+                );
             }
         }
     }
@@ -755,9 +868,8 @@ fn component_stack_fixture<T: crate::rust::par_bag::ParBagComponent>(
     assert!(T::semantic_shape_is_complete(value));
     with_component_key(value, |key| {
         let trailer = key.len() - std::mem::size_of::<u64>();
-        let score_len = usize::try_from(u64::from_be_bytes(
-            key[trailer..].try_into().unwrap(),
-        )).unwrap();
+        let score_len =
+            usize::try_from(u64::from_be_bytes(key[trailer..].try_into().unwrap())).unwrap();
         let score_start = PAR_BAG_KEY_DOMAIN.len() + 1;
         let score_end = score_start + score_len;
         ComponentStackFixture {
@@ -777,8 +889,8 @@ fn component_stack_fixtures() -> Vec<ComponentStackFixture> {
     use crate::rhoapi::connective::ConnectiveInstance;
     use crate::rhoapi::g_unforgeable::UnfInstance;
     use crate::rhoapi::{
-        Bundle, Connective, ConnectiveBody, GPrivate, GUnforgeable, If, Match,
-        MatchCase, New, Receive, ReceiveBind,
+        Bundle, Connective, ConnectiveBody, GPrivate, GUnforgeable, If, Match, MatchCase, New,
+        Receive, ReceiveBind,
     };
     use crate::rust::rholang::match_schema_tables::{
         BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
@@ -787,90 +899,159 @@ fn component_stack_fixtures() -> Vec<ComponentStackFixture> {
     };
     let empty = Par::default();
     let fixtures = vec![
-        component_stack_fixture(&Send {
-            chan: Some(empty.clone()), data: vec![integer(1)], persistent: true,
-            connective_used: true, ..Send::default()
-        }, &SEND_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&Receive {
-            binds: vec![ReceiveBind {
-                patterns: vec![integer(2)], source: Some(empty.clone()),
-                ..ReceiveBind::default()
-            }],
-            body: Some(empty.clone()), condition: Some(integer(3)), persistent: true,
-            peek: true, bind_count: 1, connective_used: true, ..Receive::default()
-        }, &RECEIVE_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&New {
-            bind_count: 2, p: Some(empty.clone()),
-            uri: vec!["rho:a".to_string(), "rho:z".to_string()],
-            injections: std::collections::BTreeMap::from([("x".to_string(), integer(4))]),
-            ..New::default()
-        }, &NEW_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&Expr {
-            expr_instance: Some(ExprInstance::GInt(-7)),
-        }, &EXPR_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&Match {
-            target: Some(empty.clone()),
-            cases: vec![MatchCase {
-                pattern: Some(integer(5)), source: Some(integer(6)),
-                guard: Some(integer(7)), ..MatchCase::default()
-            }],
-            connective_used: true, ..Match::default()
-        }, &MATCH_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&Bundle {
-            body: Some(empty.clone()), read_flag: true, write_flag: false,
-        }, &BUNDLE_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&Connective {
-            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
-                ps: vec![integer(8), integer(9)],
-            })),
-        }, &CONNECTIVE_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1, 2, 3] })),
-        }, &GUNFORGEABLE_RHO_MATCH_PROGRAM),
-        component_stack_fixture(&If {
-            condition: Some(integer(10)), if_true: Some(empty), if_false: Some(integer(11)),
-            connective_used: true, ..If::default()
-        }, &IF_RHO_MATCH_PROGRAM),
+        component_stack_fixture(
+            &Send {
+                chan: Some(empty.clone()),
+                data: vec![integer(1)],
+                persistent: true,
+                connective_used: true,
+                ..Send::default()
+            },
+            &SEND_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &Receive {
+                binds: vec![ReceiveBind {
+                    patterns: vec![integer(2)],
+                    source: Some(empty.clone()),
+                    ..ReceiveBind::default()
+                }],
+                body: Some(empty.clone()),
+                condition: Some(integer(3)),
+                persistent: true,
+                peek: true,
+                bind_count: 1,
+                connective_used: true,
+                ..Receive::default()
+            },
+            &RECEIVE_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &New {
+                bind_count: 2,
+                p: Some(empty.clone()),
+                uri: vec!["rho:a".to_string(), "rho:z".to_string()],
+                injections: std::collections::BTreeMap::from([("x".to_string(), integer(4))]),
+                ..New::default()
+            },
+            &NEW_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &Expr {
+                expr_instance: Some(ExprInstance::GInt(-7)),
+            },
+            &EXPR_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &Match {
+                target: Some(empty.clone()),
+                cases: vec![MatchCase {
+                    pattern: Some(integer(5)),
+                    source: Some(integer(6)),
+                    guard: Some(integer(7)),
+                    ..MatchCase::default()
+                }],
+                connective_used: true,
+                ..Match::default()
+            },
+            &MATCH_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &Bundle {
+                body: Some(empty.clone()),
+                read_flag: true,
+                write_flag: false,
+            },
+            &BUNDLE_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![integer(8), integer(9)],
+                })),
+            },
+            &CONNECTIVE_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1, 2, 3] })),
+            },
+            &GUNFORGEABLE_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &If {
+                condition: Some(integer(10)),
+                if_true: Some(empty),
+                if_false: Some(integer(11)),
+                connective_used: true,
+                ..If::default()
+            },
+            &IF_RHO_MATCH_PROGRAM,
+        ),
     ];
-    let families: Vec<_> = (0..=u8::MAX).filter_map(ParComponentTag::from_byte).collect();
+    let families: Vec<_> = (0..=u8::MAX)
+        .filter_map(ParComponentTag::from_byte)
+        .collect();
     assert_eq!(fixtures.len(), families.len());
     for family in families {
-        assert_eq!(fixtures.iter().filter(|fixture| fixture.expected.family == family).count(), 1);
+        assert_eq!(
+            fixtures
+                .iter()
+                .filter(|fixture| fixture.expected.family == family)
+                .count(),
+            1
+        );
     }
     fixtures
 }
 
 #[test]
 fn joint_epm_transport_preserves_large_opaque_payloads_on_an_unchanged_small_stack() {
-    let fixtures = [false, true].map(|nested| {
-        joint_epm_fixture(true, [joint_epm_key(nested, 8192, 1)])
-    });
+    let fixtures =
+        [false, true].map(|nested| joint_epm_fixture(true, [joint_epm_key(nested, 8192, 1)]));
     let components = component_stack_fixtures();
-    std::thread::Builder::new().name("joint-epm-opaque".to_owned()).stack_size(64 * 1024).spawn(move || {
-        for (kind, bytes) in ["RawParEscape", "NestedEpm1"].into_iter().zip(fixtures) {
-            let (result, batches) = assert_joint_epm_transport(
-                IndexedByteRegion::from_borrowed(&bytes, 7, 101));
-            result.unwrap();
-            assert!(batches.forward_bytes > 4096 && batches.unwind_bytes > 4096, "{batches:?}");
-            eprintln!("64 KiB admission: kind={kind}, encoded_bytes={}, {batches:?}", bytes.len());
-        }
-        for fixture in components {
-            let admit = || validate_canonical_protobuf_inner(
-                IndexedByteRegion::from_borrowed(&fixture.body, 7, 101),
-                fixture.program,
-                Some((fixture.expected.family, &fixture.score)),
-            );
-            let (scalar, scalar_batches) = with_epm_transport(true, admit);
-            let (batched, batches) = with_epm_transport(false, admit);
-            assert_eq!(scalar_batches, EpmBatchObservation::default());
-            assert_eq!(batched, scalar);
-            let admission = batched.unwrap();
-            assert_eq!(admission.score_bytes(), Some(fixture.score.as_slice()));
-            assert_eq!(admission.component(), Some(fixture.expected));
-            eprintln!("64 KiB admission: kind={:?}, encoded_bytes={}, {batches:?}",
-                fixture.expected.family, fixture.body.len());
-        }
-    }).unwrap().join().unwrap();
+    std::thread::Builder::new()
+        .name("joint-epm-opaque".to_owned())
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            for (kind, bytes) in ["RawParEscape", "NestedEpm1"].into_iter().zip(fixtures) {
+                let (result, batches) =
+                    assert_joint_epm_transport(IndexedByteRegion::from_borrowed(&bytes, 7, 101));
+                result.unwrap();
+                assert!(
+                    batches.forward_bytes > 4096 && batches.unwind_bytes > 4096,
+                    "{batches:?}"
+                );
+                eprintln!(
+                    "64 KiB admission: kind={kind}, encoded_bytes={}, {batches:?}",
+                    bytes.len()
+                );
+            }
+            for fixture in components {
+                let admit = || {
+                    validate_canonical_protobuf_inner(
+                        IndexedByteRegion::from_borrowed(&fixture.body, 7, 101),
+                        fixture.program,
+                        Some((fixture.expected.family, &fixture.score)),
+                    )
+                };
+                let (scalar, scalar_batches) = with_epm_transport(true, admit);
+                let (batched, batches) = with_epm_transport(false, admit);
+                assert_eq!(scalar_batches, EpmBatchObservation::default());
+                assert_eq!(batched, scalar);
+                let admission = batched.unwrap();
+                assert_eq!(admission.score_bytes(), Some(fixture.score.as_slice()));
+                assert_eq!(admission.component(), Some(fixture.expected));
+                eprintln!(
+                    "64 KiB admission: kind={:?}, encoded_bytes={}, {batches:?}",
+                    fixture.expected.family,
+                    fixture.body.len()
+                );
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 struct IndexedCompletedPayload {
@@ -1019,12 +1200,10 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
                     .unwrap();
                 stream.assert_reference_equivalent(&reference);
                 successful += 1;
-                assert!(
-                    history
-                        .value(pending, true, CanonicalPathSource::new(index))
-                        .unwrap()
-                        .is_err()
-                );
+                assert!(history
+                    .value(pending, true, CanonicalPathSource::new(index))
+                    .unwrap()
+                    .is_err());
             }
             (None, None) => {}
             _ => panic!("storage modes disagree about child completion at {index}"),
@@ -1508,11 +1687,9 @@ fn pending_parent_cannot_advance_or_accept_wrong_summary() {
         wrong.step(&mut stats).unwrap(),
         FrameAction::Push(_)
     ));
-    assert!(
-        wrong
-            .accept(FrameSummary::CanonicalPath(summary), &mut stats)
-            .is_err()
-    );
+    assert!(wrong
+        .accept(FrameSummary::CanonicalPath(summary), &mut stats)
+        .is_err());
 }
 
 #[test]
@@ -1794,7 +1971,9 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 };
                 let mut children = Vec::new();
                 let mut constructor_stats = CanonicalProtobufAdmissionStats::default();
-                request.push_into(&mut children, &mut constructor_stats).unwrap();
+                request
+                    .push_into(&mut children, &mut constructor_stats)
+                    .unwrap();
                 assert_eq!(children.len(), 1);
                 assert_eq!(constructor_stats.epathmaps, 1);
                 let Frame::EPathMap(child) = &children[0] else {
@@ -2171,12 +2350,10 @@ fn ordinary_region_work_matrix_tracks_all_owner_walks() {
                         let mut reference = CanonicalPathStreamReducer::new();
                         for byte in parent.input.located_bytes() {
                             reference.reference_edge(&parent.input, byte).unwrap();
-                            assert!(
-                                reference
-                                    .completed_obligation(&parent.input)
-                                    .unwrap()
-                                    .is_none()
-                            );
+                            assert!(reference
+                                .completed_obligation(&parent.input)
+                                .unwrap()
+                                .is_none());
                         }
                         assert_eq!(reference.owner_work().active_queries, eager_owner_steps);
                         assert_eq!(reference.owner_work().completed_queries, eager_owner_steps);

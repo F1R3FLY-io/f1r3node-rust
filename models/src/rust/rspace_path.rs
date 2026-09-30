@@ -2,10 +2,9 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize
 use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV2, StructuralSequenceEncoder};
 
 use super::canonical_path::encode_trie_path;
+use super::channel_image::{ChannelImageError, ChannelImageV2};
 use super::rholang::match_path::encode_par_match_atom;
 use crate::rhoapi::{ListParWithRandom, Par};
-
-use super::channel_image::{ChannelImageError, ChannelImageV2};
 
 /// V2 datum adapter: the first envelope field is the canonical RCI2 image,
 /// followed by caller-supplied canonical RMP2 structure and datum identity.
@@ -16,7 +15,11 @@ pub fn rho_path_v2_datum_key(
     datum_identity: &[u8],
 ) -> Result<Vec<u8>, ChannelImageError> {
     let image = ChannelImageV2::from_par(channel)?;
-    Ok(RhoPathV2::datum_key(image.as_bytes(), datum_structure, datum_identity))
+    Ok(RhoPathV2::datum_key(
+        image.as_bytes(),
+        datum_structure,
+        datum_identity,
+    ))
 }
 
 /// V2 continuation adapter using canonical RCI2 images as channel members.
@@ -28,20 +31,23 @@ pub fn rho_path_v2_continuation_key(
         .iter()
         .map(ChannelImageV2::from_par)
         .collect::<Result<Vec<_>, _>>()?;
-    let refs = images.iter().map(ChannelImageV2::as_bytes).collect::<Vec<_>>();
-    RhoPathV2::continuation_key(&refs, continuation_identity)
-        .map_err(ChannelImageError::OuterPath)
+    let refs = images
+        .iter()
+        .map(ChannelImageV2::as_bytes)
+        .collect::<Vec<_>>();
+    RhoPathV2::continuation_key(&refs, continuation_identity).map_err(ChannelImageError::OuterPath)
 }
 
 /// Build only the V2 continuation group prefix for PathMap subtree lookup.
-pub fn rho_path_v2_continuation_prefix(
-    channels: &[Par],
-) -> Result<Vec<u8>, ChannelImageError> {
+pub fn rho_path_v2_continuation_prefix(channels: &[Par]) -> Result<Vec<u8>, ChannelImageError> {
     let images = channels
         .iter()
         .map(ChannelImageV2::from_par)
         .collect::<Result<Vec<_>, _>>()?;
-    let refs = images.iter().map(ChannelImageV2::as_bytes).collect::<Vec<_>>();
+    let refs = images
+        .iter()
+        .map(ChannelImageV2::as_bytes)
+        .collect::<Vec<_>>();
     RhoPathV2::continuation_prefix(&refs).map_err(ChannelImageError::OuterPath)
 }
 

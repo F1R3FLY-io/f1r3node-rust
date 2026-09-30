@@ -19,11 +19,14 @@ impl SourcePhysicalInventory {
     pub(crate) fn observe(&mut self, source: &SourceTreeWindow<'_>) {
         let mut pending = source.root.iter().collect::<Vec<_>>();
         while let Some(node) = pending.pop() {
-            if !self.nodes.insert(Arc::as_ptr(node) as usize) { continue; }
+            if !self.nodes.insert(Arc::as_ptr(node) as usize) {
+                continue;
+            }
             self.node_storage_bytes += std::mem::size_of_val(node.as_ref());
             match node.payload.as_ref().unwrap() {
                 SourcePayload::Borrowed { bytes, .. } => {
-                    self.borrowed_slices.insert((bytes.as_ptr() as usize, bytes.len()));
+                    self.borrowed_slices
+                        .insert((bytes.as_ptr() as usize, bytes.len()));
                 }
                 SourcePayload::Frozen(bytes) => bytes.observe_physical_storage(self),
                 SourcePayload::Branch2(children) => pending.extend(children),
@@ -37,7 +40,9 @@ impl SourcePhysicalInventory {
 fn physical_inventory_deduplicates_shared_roots_without_expanding_logical_bytes() {
     let input = [7];
     let mut root = borrowed(&input, 3, usize::MAX);
-    for _ in 0..usize::BITS - 2 { root = root.concat(&root).unwrap(); }
+    for _ in 0..usize::BITS - 2 {
+        root = root.concat(&root).unwrap();
+    }
     let mut physical = SourcePhysicalInventory::default();
     physical.observe(&root);
     assert_eq!(physical.borrowed_slices.len(), 1);
@@ -45,7 +50,11 @@ fn physical_inventory_deduplicates_shared_roots_without_expanding_logical_bytes(
     assert!(physical.byte_pages.is_empty());
     let nodes = physical.nodes.len();
     let storage = physical.node_storage_bytes;
-    for view in [root.clone(), root.subview(0..1).unwrap(), root.subview(root.len()-1..root.len()).unwrap()] {
+    for view in [
+        root.clone(),
+        root.subview(0..1).unwrap(),
+        root.subview(root.len() - 1..root.len()).unwrap(),
+    ] {
         physical.observe(&view);
     }
     assert_eq!(physical.nodes.len(), nodes);
@@ -82,13 +91,11 @@ fn assert_shape(source: &SourceTreeWindow<'_>) -> usize {
                 assert_eq!(node.height, 0);
                 assert_eq!(node.len, *len);
                 assert!(start.checked_add(*len).unwrap() <= bytes.len());
-                assert!(
-                    absolute_start
-                        .checked_add(*start)
-                        .unwrap()
-                        .checked_add(*len - 1)
-                        .is_some()
-                );
+                assert!(absolute_start
+                    .checked_add(*start)
+                    .unwrap()
+                    .checked_add(*len - 1)
+                    .is_some());
             }
             SourcePayload::Frozen(bytes) => {
                 assert_eq!(node.height, 0);
@@ -107,11 +114,9 @@ fn assert_shape(source: &SourceTreeWindow<'_>) -> usize {
                 pending.extend(children);
             }
             SourcePayload::Branch3(children) => {
-                assert!(
-                    children
-                        .iter()
-                        .all(|child| child.height == children[0].height)
-                );
+                assert!(children
+                    .iter()
+                    .all(|child| child.height == children[0].height));
                 assert_eq!(
                     usize::from(node.height),
                     usize::from(children[0].height) + 1
@@ -214,8 +219,12 @@ fn frozen_chunks_preserve_truncated_page_seams_and_cached_seeks() {
     let mut arena = CanonicalBytesArena::new();
     let mut handle = arena.empty();
     for at in 0..513 {
-        handle = arena.append(handle, CanonicalLocatedByte::new(at as u8,
-            CanonicalByteProvenance::new(5, at * 7))).unwrap();
+        handle = arena
+            .append(
+                handle,
+                CanonicalLocatedByte::new(at as u8, CanonicalByteProvenance::new(5, at * 7)),
+            )
+            .unwrap();
     }
     let root = SourceTreeWindow::from_frozen(arena.freeze(handle));
     let source = root.subview(17..500).unwrap();
@@ -256,10 +265,16 @@ fn chunk_equality_handles_unequal_partitions_and_every_mismatch() {
         for chunk in bytes.chunks(width) {
             let mut handle = arena.empty();
             for byte in chunk {
-                handle = arena.append(handle, CanonicalLocatedByte::new(*byte,
-                    CanonicalByteProvenance::new(17, 29))).unwrap();
+                handle = arena
+                    .append(
+                        handle,
+                        CanonicalLocatedByte::new(*byte, CanonicalByteProvenance::new(17, 29)),
+                    )
+                    .unwrap();
             }
-            result = result.concat(&SourceTreeWindow::from_frozen(arena.freeze(handle))).unwrap();
+            result = result
+                .concat(&SourceTreeWindow::from_frozen(arena.freeze(handle)))
+                .unwrap();
         }
         result
     };
@@ -276,7 +291,9 @@ fn chunk_equality_handles_unequal_partitions_and_every_mismatch() {
     }
     let atom = [3];
     let mut shared = borrowed(&atom, 3, usize::MAX);
-    for _ in 1..usize::BITS { shared = shared.concat(&shared).unwrap(); }
+    for _ in 1..usize::BITS {
+        shared = shared.concat(&shared).unwrap();
+    }
     let view = shared.subview(1..shared.len() - 1).unwrap();
     assert!(shared.content_eq(&shared.clone()));
     assert!(view.content_eq(&view.clone()));
@@ -405,10 +422,9 @@ fn coalescing_requires_original_owner_and_exact_adjacency() {
         observations(&root)
     );
     assert!(left.try_coalesce(&root.subview(1..4).unwrap()).is_none());
-    assert!(
-        left.try_coalesce(&borrowed(&other, 8, 20).subview(2..4).unwrap())
-            .is_none()
-    );
+    assert!(left
+        .try_coalesce(&borrowed(&other, 8, 20).subview(2..4).unwrap())
+        .is_none());
     assert_eq!(root.contiguous_bytes(1..3), Some(&bytes[1..3]));
     assert!(root.contiguous_bytes(3..5).is_none());
 }
@@ -483,10 +499,9 @@ fn original_leaf_frozen_rejoins_preserve_backing_and_discontinuous_origins() {
         assert_eq!(left.concat(&right).unwrap().height(), 0);
     }
     let separately_frozen = SourceTreeWindow::from_frozen(arena.freeze(handle));
-    assert!(
-        left.try_coalesce(&separately_frozen.subview(63..193).unwrap())
-            .is_none()
-    );
+    assert!(left
+        .try_coalesce(&separately_frozen.subview(63..193).unwrap())
+        .is_none());
     drop((root, left, middle, right, tail, frozen, arena));
     assert_eq!(joined_left.located_bytes().collect::<Vec<_>>(), expected);
     assert_eq!(joined_right.located_bytes().collect::<Vec<_>>(), expected);
@@ -568,8 +583,12 @@ fn physical_last_byte_at_native_max_keeps_indexed_end_authority_separate() {
     assert_eq!(anchored.position_at(0).unwrap().physical.offset, usize::MAX);
     assert_eq!(anchored.position_at(1).unwrap().physical, anchor);
     assert!(indexed.position_at(1).is_none());
-    assert!(indexed.subview_with_end(CanonicalByteRange { start: 1, end: 1 }, anchor).is_none());
-    assert!(indexed.subview_with_end(CanonicalByteRange { start: 0, end: 0 }, anchor).is_some());
+    assert!(indexed
+        .subview_with_end(CanonicalByteRange { start: 1, end: 1 }, anchor)
+        .is_none());
+    assert!(indexed
+        .subview_with_end(CanonicalByteRange { start: 0, end: 0 }, anchor)
+        .is_some());
     let source = SourceTreeWindow::from_borrowed(&bytes, 19, usize::MAX).unwrap();
     assert_eq!(source.located_bytes().collect::<Vec<_>>(), vec![
         CanonicalLocatedByte::new(73, CanonicalByteProvenance::new(19, usize::MAX)),
@@ -591,7 +610,10 @@ fn physical_last_byte_boundary_survives_every_split_and_original_owner_rejoin() 
         let (left, right) = source.split(cut).unwrap();
         let joined = left.try_coalesce(&right).unwrap();
         assert_eq!(observations(&joined), observations(&source));
-        assert_eq!(joined.located_bytes().collect::<Vec<_>>(), observations(&source));
+        assert_eq!(
+            joined.located_bytes().collect::<Vec<_>>(),
+            observations(&source)
+        );
         assert_eq!(assert_shape(&joined), 1);
         assert_eq!(joined.height(), 0);
     }
@@ -610,9 +632,18 @@ fn selected_borrowed_range_preserves_identity_without_validating_unused_tail() {
     let tail = SourceTreeWindow::from_borrowed_range(&bytes, 1..2, 31, base).unwrap();
     let joined = source.subview(0..1).unwrap().try_coalesce(&tail).unwrap();
     assert_eq!(assert_shape(&joined), 1);
-    assert_eq!(joined.contiguous_bytes(0..2).unwrap().as_ptr(), bytes.as_ptr());
-    let SourcePayload::Borrowed { bytes: original, start, .. } =
-        tail.root.as_ref().unwrap().payload.as_ref().unwrap() else { unreachable!() };
+    assert_eq!(
+        joined.contiguous_bytes(0..2).unwrap().as_ptr(),
+        bytes.as_ptr()
+    );
+    let SourcePayload::Borrowed {
+        bytes: original,
+        start,
+        ..
+    } = tail.root.as_ref().unwrap().payload.as_ref().unwrap()
+    else {
+        unreachable!()
+    };
     assert!(std::ptr::eq(*original, &bytes[..]));
     assert_eq!(*start, 1);
     assert!(SourceTreeWindow::from_borrowed_range(&bytes, 0..0, 31, usize::MAX).is_some());
@@ -706,9 +737,15 @@ fn trimmed_exports_release_excluded_composed_roots() {
         let mut arena = CanonicalBytesArena::new();
         let mut handle = arena.empty();
         for offset in 0..4 {
-            handle = arena.append(handle, CanonicalLocatedByte::new(
-                source as u8, CanonicalByteProvenance::new(source, offset),
-            )).unwrap();
+            handle = arena
+                .append(
+                    handle,
+                    CanonicalLocatedByte::new(
+                        source as u8,
+                        CanonicalByteProvenance::new(source, offset),
+                    ),
+                )
+                .unwrap();
         }
         let leaf = SourceTreeWindow::from_frozen(arena.freeze(handle));
         leaves.push(Arc::downgrade(leaf.root.as_ref().unwrap()));
@@ -778,18 +815,26 @@ proptest! {
 
 #[test]
 fn trimmed_shared_huge_prefix_exports_on_an_unchanged_small_stack() {
-    std::thread::Builder::new().stack_size(64 * 1024).spawn(|| {
-        let atom = [43];
-        let mut root = borrowed(&atom, 37, usize::MAX);
-        for _ in 1..usize::BITS { root = root.concat(&root).unwrap(); }
-        let last = root.len() - 1;
-        let exported = root.trimmed_subview(last..root.len()).unwrap();
-        drop(root);
-        assert_eq!(assert_shape(&exported), 1);
-        assert_eq!(observations(&exported), vec![CanonicalLocatedByte::new(
-            43, CanonicalByteProvenance::new(37, usize::MAX),
-        )]);
-    }).unwrap().join().unwrap();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            let atom = [43];
+            let mut root = borrowed(&atom, 37, usize::MAX);
+            for _ in 1..usize::BITS {
+                root = root.concat(&root).unwrap();
+            }
+            let last = root.len() - 1;
+            let exported = root.trimmed_subview(last..root.len()).unwrap();
+            drop(root);
+            assert_eq!(assert_shape(&exported), 1);
+            assert_eq!(observations(&exported), vec![CanonicalLocatedByte::new(
+                43,
+                CanonicalByteProvenance::new(37, usize::MAX),
+            )]);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

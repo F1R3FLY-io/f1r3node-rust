@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use proptest::collection::vec;
@@ -410,20 +409,150 @@ fn fault_datum(fault: PreparationFault) -> Datum<PreparationFault> {
 
 #[test]
 fn preparation_faults_are_strongly_atomic() {
-    for fault in [PreparationFault::Structure, PreparationFault::Serialization] {
-        let mut store = RSpaceDataStore::new();
-        let before = store.clone();
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let _ = store.set_channel("fault-target".to_owned(), [fault_datum(fault)]);
-        }));
-        assert!(outcome.is_err());
-        assert_eq!(store, before);
-        assert_eq!(store.index, before.index);
-    }
+    assert_channel_failure_child("structure", "synthetic structure encoding fault");
+    assert_channel_failure_child("serialization", "synthetic datum encoding fault");
 }
 
 #[test]
 fn catalog_lock_poison_precedes_authoritative_publication() {
+    assert_channel_failure_child("poison-publication", "candidate catalog write lock");
+}
+
+#[test]
+fn catalog_lock_poison_precedes_clear_publication() {
+    assert_channel_failure_child("poison-clear", "candidate catalog write lock");
+}
+
+fn assert_channel_failure_child(case: &str, expected_diagnostic: &str) {
+    let scratch = shared::rust::test_scratch::acquire("channel-replacement-failure-");
+    let marker = scratch.path().join("preserved");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rspace::data_index::channel_prefix_replacement_properties::channel_failure_child",
+            "--nocapture",
+        ])
+        .env("CHANNEL_REPLACEMENT_FAILURE_CASE", case)
+        .env("CHANNEL_REPLACEMENT_FAILURE_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the channel replacement failure child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+            assert!(failure.stderr.contains(expected_diagnostic), "{}", failure.stderr);
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the channel replacement failure child did not fail: {case}")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), case.as_bytes());
+}
+
+#[test]
+#[ignore = "isolated channel replacement failure child"]
+fn channel_failure_child() {
+    let Some(case) = std::env::var_os("CHANNEL_REPLACEMENT_FAILURE_CASE") else {
+        return;
+    };
+    let marker = std::env::var_os("CHANNEL_REPLACEMENT_FAILURE_MARKER")
+        .expect("channel replacement failure marker");
+    let case = case
+        .to_str()
+        .expect("channel replacement failure case is UTF-8");
+    match case {
+        "structure" => run_preparation_failure_child(PreparationFault::Structure, case, marker),
+        "serialization" => {
+            run_preparation_failure_child(PreparationFault::Serialization, case, marker)
+        }
+        "poison-publication" => run_poison_publication_child(case, marker),
+        "poison-clear" => run_poison_clear_child(case, marker),
+        _ => panic!("unknown channel replacement failure case: {case}"),
+    }
+}
+
+fn run_preparation_failure_child(fault: PreparationFault, case: &str, marker: std::ffi::OsString) {
+    struct VerifyOnDrop {
+        store: RSpaceDataStore<String, PreparationFault>,
+        before: RSpaceDataStore<String, PreparationFault>,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.store, self.before);
+            assert_eq!(self.store.index, self.before.index);
+            std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let store = RSpaceDataStore::new();
+    let mut verify = VerifyOnDrop {
+        before: store.clone(),
+        store,
+        case: case.to_owned(),
+        marker: marker.into(),
+    };
+    let _ = verify
+        .store
+        .set_channel("fault-target".to_owned(), [fault_datum(fault)]);
+}
+
+struct VerifyPoisonedStoreOnDrop {
+    store: RSpaceDataStore<String, String>,
+    before: RSpaceDataStore<String, String>,
+    channels: Vec<String>,
+    case: String,
+    marker: std::path::PathBuf,
+}
+
+impl Drop for VerifyPoisonedStoreOnDrop {
+    fn drop(&mut self) {
+        assert!(self.store.candidate_catalogs.is_poisoned());
+        self.store.candidate_catalogs.clear_poison();
+        assert_eq!(self.store, self.before);
+        assert_eq!(self.store.index, self.before.index);
+        assert_eq!(self.store.loaded_channel_count(), self.before.loaded_channel_count());
+        assert_eq!(
+            physical_channel_count(&self.store.index),
+            physical_channel_count(&self.before.index)
+        );
+        let catalogs = self.store.candidate_catalogs.read().unwrap();
+        let before_catalogs = self.before.candidate_catalogs.read().unwrap();
+        assert_eq!(catalogs.len(), before_catalogs.len());
+        for channel in &self.channels {
+            assert_eq!(
+                self.store.channel_data(channel).unwrap(),
+                self.before.channel_data(channel).unwrap()
+            );
+            let marker = RhoPathV1::datum_prefix(channel);
+            assert!(Arc::ptr_eq(
+                catalogs.get(&marker).unwrap(),
+                before_catalogs.get(&marker).unwrap()
+            ));
+        }
+        std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
+    }
+}
+
+fn poison_catalog_lock(store: &RSpaceDataStore<String, String>) {
+    std::thread::scope(|scope| {
+        let catalogs = &store.candidate_catalogs;
+        let _ = scope
+            .spawn(move || {
+                let _guard = catalogs.write().unwrap();
+                panic!("synthetic catalog lock poison");
+            })
+            .join();
+    });
+    assert!(store.candidate_catalogs.is_poisoned());
+}
+
+fn run_poison_publication_child(case: &str, marker: std::ffi::OsString) {
     let target = "target".to_owned();
     let sibling = "sibling".to_owned();
     let mut store = RSpaceDataStore::new();
@@ -435,67 +564,33 @@ fn catalog_lock_poison_precedes_authoritative_publication() {
         .unwrap();
     let _ = store.channel_pool(&target).unwrap().unwrap();
     let _ = store.channel_pool(&sibling).unwrap().unwrap();
-    let target_marker = RhoPathV1::datum_prefix(&target);
-    let sibling_marker = RhoPathV1::datum_prefix(&sibling);
-    let before_index = store.index.clone();
-    let before_count = store.loaded_channel_count();
-    let before_target_catalog = Arc::clone(
-        store
-            .candidate_catalogs
-            .read()
-            .unwrap()
-            .get(&target_marker)
-            .unwrap(),
-    );
-    let before_sibling_catalog = Arc::clone(
-        store
-            .candidate_catalogs
-            .read()
-            .unwrap()
-            .get(&sibling_marker)
-            .unwrap(),
-    );
-
-    let poisoned = catch_unwind(AssertUnwindSafe(|| {
-        let _guard = store.candidate_catalogs.write().unwrap();
-        panic!("synthetic catalog lock poison");
-    }));
-    assert!(poisoned.is_err());
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let _ = store.set_channel(target.clone(), [datum(3, false)]);
-    }));
-    assert!(outcome.is_err());
-    store.candidate_catalogs.clear_poison();
-
-    assert_eq!(store.index, before_index);
-    assert_eq!(physical_channel_count(&store.index), before_count);
-    assert_eq!(store.loaded_channel_count(), before_count);
-    let catalogs = store.candidate_catalogs.read().unwrap();
-    assert!(Arc::ptr_eq(catalogs.get(&target_marker).unwrap(), &before_target_catalog));
-    assert!(Arc::ptr_eq(catalogs.get(&sibling_marker).unwrap(), &before_sibling_catalog));
+    let mut verify = VerifyPoisonedStoreOnDrop {
+        before: store.clone(),
+        store,
+        channels: vec![target.clone(), sibling],
+        case: case.to_owned(),
+        marker: marker.into(),
+    };
+    poison_catalog_lock(&verify.store);
+    let _ = verify.store.set_channel(target, [datum(3, false)]);
 }
 
-#[test]
-fn catalog_lock_poison_precedes_clear_publication() {
+fn run_poison_clear_child(case: &str, marker: std::ffi::OsString) {
     let channel = "loaded".to_owned();
     let mut store = RSpaceDataStore::new();
     store
         .set_channel(channel.clone(), [datum(1, false)])
         .unwrap();
     let _ = store.channel_pool(&channel).unwrap().unwrap();
-    let before = store.clone();
-
-    let poisoned = catch_unwind(AssertUnwindSafe(|| {
-        let _guard = store.candidate_catalogs.write().unwrap();
-        panic!("synthetic catalog lock poison");
-    }));
-    assert!(poisoned.is_err());
-    let outcome = catch_unwind(AssertUnwindSafe(|| store.clear()));
-    assert!(outcome.is_err());
-    store.candidate_catalogs.clear_poison();
-
-    assert_eq!(store, before);
-    assert_eq!(store.channel_data(&channel).unwrap(), before.channel_data(&channel).unwrap());
+    let mut verify = VerifyPoisonedStoreOnDrop {
+        before: store.clone(),
+        store,
+        channels: vec![channel],
+        case: case.to_owned(),
+        marker: marker.into(),
+    };
+    poison_catalog_lock(&verify.store);
+    verify.store.clear();
 }
 
 #[test]

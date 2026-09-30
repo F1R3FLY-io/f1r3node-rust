@@ -84,7 +84,9 @@ fn compact_import_focus(setup_only: bool) {
     use models::rust::par_bag::ParBag;
 
     fn parameter(name: &str, default: usize) -> usize {
-        std::env::var(name).map_or(default, |value| value.parse().expect("integer benchmark parameter"))
+        std::env::var(name).map_or(default, |value| {
+            value.parse().expect("integer benchmark parameter")
+        })
     }
     fn carrier(map: EPathMap) -> Par {
         Par::default().with_exprs(vec![Expr {
@@ -123,15 +125,20 @@ fn compact_import_focus(setup_only: bool) {
     assert_eq!(verified.compact_snapshot(), compact);
     drop(verified);
     println!("compact-import fixture shape={shape} depth={depth} endpoints={endpoints} width={width} compact_bytes={} mode={}", compact.len(), if setup_only { "setup_only" } else { "import" });
-    if setup_only { return; }
+    if setup_only {
+        return;
+    }
     let mut times = Vec::with_capacity(repetitions);
     for sample in 0..warmups.checked_add(repetitions).unwrap() {
         let started = Instant::now();
-        let imported = ParBag::from_compact_bytes(black_box(&compact)).expect("measured compact import");
+        let imported =
+            ParBag::from_compact_bytes(black_box(&compact)).expect("measured compact import");
         black_box(&imported);
         drop(imported);
         let elapsed = started.elapsed();
-        if sample >= warmups { times.push(elapsed.as_nanos()); }
+        if sample >= warmups {
+            times.push(elapsed.as_nanos());
+        }
     }
     for (sample, elapsed) in times.into_iter().enumerate() {
         println!("compact-import sample shape={shape} depth={depth} endpoints={endpoints} width={width} compact_bytes={} sample={sample} elapsed_ns={elapsed}", compact.len());

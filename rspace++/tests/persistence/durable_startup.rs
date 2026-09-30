@@ -198,26 +198,81 @@ fn borrowed_recovery_retains_writer_and_pin_across_every_rebuild_failure() {
 
 #[test]
 fn borrowed_recovery_unwind_keeps_the_owners_writer_and_generation_pin() {
+    let scratch = test_scratch::acquire("rspace-borrowed-recovery-unwind-parent-");
+    let marker = scratch.path().join("authority-preserved");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rspace::persistence::tests::durable_startup::borrowed_recovery_unwind_child",
+            "--nocapture",
+        ])
+        .env("RSPACE_BORROWED_RECOVERY_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the borrowed recovery unwind child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+            assert!(failure.stderr.contains("injected borrowed recovery unwind"));
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the borrowed recovery unwind child did not fail")
+        }
+    }
+    assert_eq!(fs::read(marker).unwrap(), b"authority-preserved");
+}
+
+#[test]
+#[ignore = "isolated borrowed recovery unwind child"]
+fn borrowed_recovery_unwind_child() {
+    let Some(marker) = std::env::var_os("RSPACE_BORROWED_RECOVERY_UNWIND_MARKER") else {
+        return;
+    };
+    struct VerifyOnDrop {
+        lease: DurableWriterLeaseV1,
+        generation: GenerationLeaseKeyV1,
+        image: super::durable_recovery::CheckpointPackImage,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_writer_and_generation_are_held(&self.lease, self.generation);
+            let recovered = recover_physical_from_lease_v1(
+                &mut self.lease,
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+            )
+            .unwrap();
+            assert_eq!(recovered.state(), self.image.catalog.state());
+            assert_eq!(recovered.terminal_address(), self.image.commit_address);
+            assert_writer_and_generation_are_held(&self.lease, self.generation);
+            fs::write(&self.marker, b"authority-preserved").unwrap();
+        }
+    }
     let scratch = test_scratch::acquire("rspace-borrowed-recovery-unwind-");
     let image = install_checkpoint_store(scratch.path());
-    let mut lease = DurableDirectoryV1::open(scratch.path())
+    let lease = DurableDirectoryV1::open(scratch.path())
         .unwrap()
         .try_acquire_writer()
         .unwrap();
     let generation = GenerationLeaseKeyV1::from_catalog(image.catalog);
     let _pin = lease.generation_leases().acquire(generation).unwrap();
+    let mut verify = VerifyOnDrop {
+        lease,
+        generation,
+        image,
+        marker: marker.into(),
+    };
     arm_durable_startup_hook(DurableStartupHookPointV1::BeforeFirstCatalogVerification, || {
         panic!("injected borrowed recovery unwind")
     });
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
-    }));
-    assert!(result.is_err());
-    assert_writer_and_generation_are_held(&lease, generation);
-    let recovered =
-        recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
-            .unwrap();
-    assert_eq!(recovered.state(), image.catalog.state());
+    recover_physical_from_lease_v1(&mut verify.lease, limits(), LogPackDecodeLimits::UNBOUNDED)
+        .unwrap();
 }
 
 #[test]

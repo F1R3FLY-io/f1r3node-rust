@@ -738,7 +738,7 @@ rocq_compile_with_closed_count theories/CollectionCollisionElision.v 20 \
   "empty and singleton collection collision-elision equivalence"
 rocq_check_modules "collection collision elision" StackSafePDA.CollectionCollisionElision
 rocq_reject_placeholders theories/DecodedComponentConstruction.v
-rocq_compile_with_closed_count theories/DecodedComponentConstruction.v 63 \
+rocq_compile_with_closed_count theories/DecodedComponentConstruction.v 73 \
   "decoded incomplete-component planned construction"
 rocq_check_modules "decoded incomplete-component construction" StackSafePDA.DecodedComponentConstruction
 rocq_reject_placeholders theories/DecoderOracleRouting.v
@@ -1044,7 +1044,7 @@ TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
 rholang_run_tests 9 --lib region_slot_tests
 rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 9 --lib incomplete_preservation_tests
-rpb3_run_tests 13 --lib protobuf_decoder_oracle::
+rpb3_run_tests 14 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --release -j4 --features protobuf-projection-experiment --lib protobuf_decoder_oracle::measurement::measurement_
 rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 5 --lib decoder_control_tests::
@@ -1054,6 +1054,8 @@ rpb3_run_tests 4 --lib planned_fragment_comparison_tests::
 rpb3_run_tests 4 --lib planned_ground_leaf_tests::
 rpb3_run_tests 5 --lib planned_fragment_publication_tests::
 rpb3_run_tests 5 --lib planned_pooled_storage_tests::
+rpb3_run_tests 9 --lib root_stream_
+rspace_preparation_run_tests 3 --lib reweight_tests::
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests

@@ -43,8 +43,8 @@ use rspace_plus_plus::rspace::pathmap_mutation::{
 
 use super::canonical_path::{
     declared_canonical_path_flags, declared_canonical_path_metadata, decode_trie_path,
-    encode_trie_path, encode_trie_path_with_stability, prepare_legacy_trie_path, validate_canonical_path,
-    CanonicalPathMetadata, CodecError,
+    encode_trie_path, encode_trie_path_with_stability, prepare_legacy_trie_path,
+    validate_canonical_path, CanonicalPathMetadata, CodecError,
 };
 use super::epathmap_trie_codec::{
     self, EPathMapMode, EPathMapRepr, OwnedEPathMapMapEntries, OwnedEPathMapSetEntries,
@@ -102,17 +102,32 @@ pub(crate) fn insert_epm_set_key(map: &mut RholangSetPathMap, key: &[u8]) {
     native_insert(map, key, ());
 }
 
-pub(crate) fn join_epm_set_keys(left: &RholangSetPathMap, right: &RholangSetPathMap) -> RholangSetPathMap {
-    join_exact_with_grafts(left, right).expect("unit payloads cannot conflict").0
+pub(crate) fn join_epm_set_keys(
+    left: &RholangSetPathMap,
+    right: &RholangSetPathMap,
+) -> RholangSetPathMap {
+    join_exact_with_grafts(left, right)
+        .expect("unit payloads cannot conflict")
+        .0
 }
 
 #[allow(deprecated)]
-pub(crate) fn legacy_path_frames(region: &[u8]) -> impl Iterator<Item = Result<&[u8], DecodeError>> {
-    PathFrames::new(region).map(|frame| frame.map_err(|fault| match fault {
-        PathFrameError::LengthOverflow { .. } => DecodeError::new("EPathMap serialized_paths: key length overflow"),
-        PathFrameError::TruncatedKey { .. } => DecodeError::new("EPathMap serialized_paths: truncated key"),
-        PathFrameError::TruncatedLength { .. } => DecodeError::new("EPathMap serialized_paths: trailing bytes after the final key"),
-    }))
+pub(crate) fn legacy_path_frames(
+    region: &[u8],
+) -> impl Iterator<Item = Result<&[u8], DecodeError>> {
+    PathFrames::new(region).map(|frame| {
+        frame.map_err(|fault| match fault {
+            PathFrameError::LengthOverflow { .. } => {
+                DecodeError::new("EPathMap serialized_paths: key length overflow")
+            }
+            PathFrameError::TruncatedKey { .. } => {
+                DecodeError::new("EPathMap serialized_paths: truncated key")
+            }
+            PathFrameError::TruncatedLength { .. } => {
+                DecodeError::new("EPathMap serialized_paths: trailing bytes after the final key")
+            }
+        })
+    })
 }
 
 fn native_remove<V>(map: &mut pathmap::PathMap<V>, path: &[u8]) -> Option<V>
@@ -141,7 +156,11 @@ struct EntryTrieStorage {
 
 impl EntryTrieStorage {
     fn new(repr: OwnedResidentEPathMap) -> Self {
-        Self { repr, trie_snapshot: OnceLock::new(), epm_layout: OnceLock::new() }
+        Self {
+            repr,
+            trie_snapshot: OnceLock::new(),
+            epm_layout: OnceLock::new(),
+        }
     }
 
     fn clear_caches(&mut self) {
@@ -152,7 +171,10 @@ impl EntryTrieStorage {
 
 impl Clone for EntryTrieStorage {
     fn clone(&self) -> Self {
-        Self::new(OwnedResidentEPathMap::new(self.repr.as_repr().clone(), ResidentEpmBarrier))
+        Self::new(OwnedResidentEPathMap::new(
+            self.repr.as_repr().clone(),
+            ResidentEpmBarrier,
+        ))
     }
 }
 
@@ -788,7 +810,8 @@ impl EntryTrie {
     #[allow(deprecated)]
     fn from_repr(repr: EPathMapRepr<Par>) -> Result<Self, DecodeError> {
         Self::from_owned_repr_with_key_validation(
-            OwnedResidentEPathMap::new(repr, ResidentEpmBarrier), true,
+            OwnedResidentEPathMap::new(repr, ResidentEpmBarrier),
+            true,
         )
     }
 
@@ -876,8 +899,11 @@ impl EntryTrie {
     /// are one `Arc`/`OnceLock` indirection and return the cached slice without
     /// allocation; the enclosing serializer then copies the slice to its output.
     pub fn trie_snapshot(&self) -> &[u8] {
-        self.storage.trie_snapshot
-            .get_or_init(|| epathmap_trie_codec::encode_with_layout(self.representation(), self.epm_layout()))
+        self.storage
+            .trie_snapshot
+            .get_or_init(|| {
+                epathmap_trie_codec::encode_with_layout(self.representation(), self.epm_layout())
+            })
             .as_slice()
     }
 
@@ -1030,9 +1056,7 @@ impl EntryTrie {
         })
     }
 
-    fn invalidate_derived(&mut self) {
-        Arc::make_mut(&mut self.storage).clear_caches();
-    }
+    fn invalidate_derived(&mut self) { Arc::make_mut(&mut self.storage).clear_caches(); }
 
     fn fold_par_metadata(&mut self, par: &Par) {
         let codec_stable = eval_stable_par(par);
@@ -1165,7 +1189,10 @@ impl EntryTrie {
             metadata.locally_free,
         );
         if matches!(self.representation(), EPathMapRepr::Empty) {
-            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Set(RholangSetPathMap::new()), ResidentEpmBarrier));
+            self.replace_repr(OwnedResidentEPathMap::new(
+                EPathMapRepr::Set(RholangSetPathMap::new()),
+                ResidentEpmBarrier,
+            ));
         }
         let EPathMapRepr::Set(map) = self.representation_mut() else {
             unreachable!("map mode was rejected and empty mode was specialized")
@@ -1217,7 +1244,10 @@ impl EntryTrie {
         }
 
         if matches!(self.representation(), EPathMapRepr::Empty) {
-            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Map(pathmap::PathMap::new()), ResidentEpmBarrier));
+            self.replace_repr(OwnedResidentEPathMap::new(
+                EPathMapRepr::Map(pathmap::PathMap::new()),
+                ResidentEpmBarrier,
+            ));
         }
 
         self.fold_par_metadata_with_stability(&key, key_stable);
@@ -1427,7 +1457,10 @@ impl EntryTrie {
             EPathMapRepr::Map(map) => map.val_count(),
         };
         if self.representation().is_empty() {
-            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
+            self.replace_repr(OwnedResidentEPathMap::new(
+                EPathMapRepr::Empty,
+                ResidentEpmBarrier,
+            ));
             self.len = 0;
         }
         self.recompute_folds();
@@ -1441,7 +1474,9 @@ impl EntryTrie {
             EPathMapRepr::Set(map) => map.contains(key),
             EPathMapRepr::Map(map) => map.contains(key),
         };
-        if !present { return false; }
+        if !present {
+            return false;
+        }
         let removed = match self.representation_mut() {
             EPathMapRepr::Empty => return false,
             EPathMapRepr::Set(map) => native_remove(map, key).is_some(),
@@ -1467,7 +1502,9 @@ impl EntryTrie {
             EPathMapRepr::Set(map) => map.path_exists_at(prefix),
             EPathMapRepr::Map(map) => map.path_exists_at(prefix),
         };
-        if !present { return false; }
+        if !present {
+            return false;
+        }
         let changed = match self.representation_mut() {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => native_remove_branches(map, prefix),
@@ -1486,7 +1523,10 @@ impl EntryTrie {
             return false;
         }
         if prefix.is_empty() {
-            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
+            self.replace_repr(OwnedResidentEPathMap::new(
+                EPathMapRepr::Empty,
+                ResidentEpmBarrier,
+            ));
             self.len = 0;
             self.recompute_folds();
             return true;
@@ -1496,7 +1536,9 @@ impl EntryTrie {
             EPathMapRepr::Set(map) => map.path_exists_at(prefix),
             EPathMapRepr::Map(map) => map.path_exists_at(prefix),
         };
-        if !present { return false; }
+        if !present {
+            return false;
+        }
         let changed = match self.representation_mut() {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => {
@@ -1529,7 +1571,9 @@ impl EntryTrie {
             EPathMapRepr::Set(map) => map.path_exists_at(path),
             EPathMapRepr::Map(map) => map.path_exists_at(path),
         };
-        if exists { return Ok(false); }
+        if exists {
+            return Ok(false);
+        }
         let changed = match self.representation_mut() {
             EPathMapRepr::Empty => return Err(EPathMapEmptyModeError),
             EPathMapRepr::Set(map) => native_create_path(map, path),
@@ -1933,7 +1977,9 @@ impl EntryTrie {
             EPathMapRepr::Map(_) => unreachable!("map mode was rejected"),
         };
         let joined = OwnedResidentEPathMap::new(EPathMapRepr::Set(joined), ResidentEpmBarrier);
-        let EPathMapRepr::Set(map) = joined.as_repr() else { unreachable!() };
+        let EPathMapRepr::Set(map) = joined.as_repr() else {
+            unreachable!()
+        };
         self.len = map.val_count();
         self.replace_repr(joined);
 
@@ -2048,7 +2094,6 @@ impl EntryTrie {
     /// There is exactly one `Par` retainer to drain: map-mode PathMap values.
     /// The snapshot/layout caches contain bytes only, and set mode stores unit
     /// values, so neither can reintroduce recursive `Par` destruction.
-    ///
     pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
         // ⚠ NO `..` — see the doc above.
         let EntryTrie {
@@ -2145,7 +2190,10 @@ impl EntryTrie {
         if removed.is_some() {
             self.len -= 1;
             if empty {
-                self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
+                self.replace_repr(OwnedResidentEPathMap::new(
+                    EPathMapRepr::Empty,
+                    ResidentEpmBarrier,
+                ));
             }
             self.invalidate_derived();
             // The folds are not invertible, so they are recomputed rather than
@@ -2184,7 +2232,10 @@ impl EntryTrie {
         let empty = map.is_empty();
         self.len -= 1;
         if empty {
-            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
+            self.replace_repr(OwnedResidentEPathMap::new(
+                EPathMapRepr::Empty,
+                ResidentEpmBarrier,
+            ));
         }
         self.recompute_folds();
         self.invalidate_derived();
@@ -2305,11 +2356,14 @@ impl EntryTrie {
             return normalized;
         }
         EntryTrie {
-            storage: Arc::new(EntryTrieStorage::new(OwnedResidentEPathMap::new(if map.is_empty() {
-                EPathMapRepr::Empty
-            } else {
-                EPathMapRepr::Set(map.clone())
-            }, ResidentEpmBarrier))),
+            storage: Arc::new(EntryTrieStorage::new(OwnedResidentEPathMap::new(
+                if map.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    EPathMapRepr::Set(map.clone())
+                },
+                ResidentEpmBarrier,
+            ))),
             len,
             entries_stable,
             entries_reducer_eval_identity,
@@ -2387,7 +2441,10 @@ impl fmt::Debug for EntryTrie {
         f.debug_struct("EntryTrie")
             .field("mode", &self.mode())
             .field("len", &self.len)
-            .field("snapshot_cached", &self.storage.trie_snapshot.get().is_some())
+            .field(
+                "snapshot_cached",
+                &self.storage.trie_snapshot.get().is_some(),
+            )
             .finish()
     }
 }
@@ -2743,7 +2800,8 @@ impl EPathMap {
         validate_canonical_keys: bool,
     ) -> Result<(), DecodeError> {
         self.replace_owned_decoded_representation_with(
-            OwnedResidentEPathMap::new(repr, ResidentEpmBarrier), validate_canonical_keys,
+            OwnedResidentEPathMap::new(repr, ResidentEpmBarrier),
+            validate_canonical_keys,
         )
     }
 
@@ -3128,7 +3186,13 @@ impl prost::Message for EPathMap {
         #[cfg(test)]
         if crate::protobuf_decoder_oracle::enter_decoder() {
             let mut erased: &mut dyn Buf = buf;
-            return protobuf_field_oracle::merge_field(self, tag, protobuf_wire_type, &mut erased, ctx);
+            return protobuf_field_oracle::merge_field(
+                self,
+                tag,
+                protobuf_wire_type,
+                &mut erased,
+                ctx,
+            );
         }
         #[cfg(test)]
         crate::protobuf_decoder_oracle::assert_successor_body();

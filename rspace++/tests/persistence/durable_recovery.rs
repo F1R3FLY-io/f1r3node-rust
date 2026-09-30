@@ -1170,7 +1170,8 @@ fn every_checkpoint_pack_truncation_fails_before_authority() {
         );
         assert!(
             result.is_err(),
-            "truncating checkpoint pack at byte {cut}/{complete_len} unexpectedly exposed authority"
+            "truncating checkpoint pack at byte {cut}/{complete_len} unexpectedly exposed \
+             authority"
         );
     }
 }

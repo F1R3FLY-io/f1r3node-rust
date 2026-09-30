@@ -1,5 +1,3 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 use proptest::prelude::*;
 
 use super::*;
@@ -121,29 +119,88 @@ proptest! {
 
 #[test]
 fn mutation_clears_both_caches_before_exposing_repr() {
-    for shared in [false, true] {
-        for map in [false, true] {
-            let mut current = fixture(map, 10);
-            let bytes = current.trie_snapshot().to_vec();
-            let old_metadata = metadata(&current.ps);
-            let sibling = shared.then(|| current.clone());
-            assert!(catch_unwind(AssertUnwindSafe(|| {
-                let _ = current.ps.representation_mut();
-                assert_cold(&current.ps);
-                panic!("injected mutation-entry interruption");
-            }))
-            .is_err());
-            assert_cold(&current.ps);
-            assert_eq!(metadata(&current.ps), old_metadata);
-            if let Some(sibling) = sibling {
-                assert!(!Arc::ptr_eq(&current.ps.storage, &sibling.ps.storage));
+    for case in 0..4 {
+        let scratch = shared::rust::test_scratch::acquire("epm-resident-ownership-unwind-");
+        let marker = scratch.path().join("verified");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "rust::rhoapi_ext::resident_ownership_tests::mutation_cache_unwind_child",
+                "--nocapture",
+            ])
+            .env("EPM_RESIDENT_OWNERSHIP_CASE", case.to_string())
+            .env("EPM_RESIDENT_OWNERSHIP_MARKER", &marker)
+            .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+        let outcome = shared::rust::test_process::run_child_probe(
+            &mut command,
+            std::time::Duration::from_secs(30),
+        )
+        .expect("run the mutation cache child");
+        match outcome {
+            shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+                assert_eq!(
+                    failure.kind,
+                    shared::rust::test_process::ProbeFailureKind::Panicked
+                );
+                assert!(failure
+                    .stderr
+                    .contains("injected mutation-entry interruption"));
+            }
+            shared::rust::test_process::ProbeOutcome::Passed => {
+                panic!("the mutation cache child did not fail")
+            }
+        }
+        assert_eq!(std::fs::read(marker).unwrap(), b"verified");
+    }
+}
+
+#[test]
+#[ignore = "isolated mutation cache child"]
+fn mutation_cache_unwind_child() {
+    let Ok(case) = std::env::var("EPM_RESIDENT_OWNERSHIP_CASE") else {
+        return;
+    };
+    let case: usize = case.parse().expect("mutation cache case index");
+    assert!(case < 4);
+    let marker =
+        std::env::var_os("EPM_RESIDENT_OWNERSHIP_MARKER").expect("mutation cache marker path");
+    struct VerifyOnDrop {
+        current: EPathMap,
+        sibling: Option<EPathMap>,
+        bytes: Vec<u8>,
+        old_metadata: (usize, bool, bool, Vec<u8>, bool),
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_cold(&self.current.ps);
+            assert_eq!(metadata(&self.current.ps), self.old_metadata);
+            if let Some(sibling) = &self.sibling {
+                assert!(!Arc::ptr_eq(&self.current.ps.storage, &sibling.ps.storage));
                 assert!(sibling.ps.storage.trie_snapshot.get().is_some());
                 assert!(sibling.ps.storage.epm_layout.get().is_some());
-                assert_eq!(sibling.trie_snapshot(), bytes);
+                assert_eq!(sibling.trie_snapshot(), self.bytes);
             }
-            assert_eq!(current.trie_snapshot(), bytes);
+            assert_eq!(self.current.trie_snapshot(), self.bytes);
+            std::fs::write(&self.marker, b"verified").unwrap();
         }
     }
+    let current = fixture(case & 2 != 0, 10);
+    let bytes = current.trie_snapshot().to_vec();
+    let old_metadata = metadata(&current.ps);
+    let sibling = (case & 1 != 0).then(|| current.clone());
+    let mut verify = VerifyOnDrop {
+        current,
+        sibling,
+        bytes,
+        old_metadata,
+        marker: marker.into(),
+    };
+    let _ = verify.current.ps.representation_mut();
+    assert_cold(&verify.current.ps);
+    panic!("injected mutation-entry interruption");
 }
 
 #[test]

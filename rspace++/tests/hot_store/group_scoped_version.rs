@@ -82,7 +82,10 @@ fn shallow_one_channel_oracle(
             state
                 .continuations
                 .get(continuation_channels)
-                .map_or(0, |entries| entries.iter().filter(|entry| *entry == continuation).count()),
+                .map_or(0, |entries| entries
+                    .iter()
+                    .filter(|entry| *entry == continuation)
+                    .count()),
             1,
             "persistent continuation remains exactly once",
         );
@@ -183,7 +186,9 @@ fn an_accepted_match_atomically_removes_the_selected_datum_continuation_and_join
         })
         .expect("the accepted transition is valid");
 
-    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed {
+        continuation: Some(_)
+    }));
     let after = store.snapshot();
     assert_ne!(before.data, after.data);
     assert_eq!(
@@ -252,7 +257,9 @@ fn an_accepted_multichannel_match_preserves_unconsumed_datum_multiplicity() {
         })
         .expect("the multichannel transition is valid");
 
-    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed {
+        continuation: Some(_)
+    }));
     let after = store.snapshot();
     assert_eq!(after.data.get(&channels[0]).map(Vec::len), Some(1));
     assert_eq!(after.data.get(&channels[1]).map(Vec::len), Some(0));
@@ -358,10 +365,7 @@ fn a_present_required_persistent_path_allows_the_atomic_transition() {
     let initial = HotStoreState {
         continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
         installed_continuations: HashMap::new(),
-        data: HashMap::from([(
-            channels[0].clone(),
-            vec![selected_datum.clone(), witness.clone()],
-        )]),
+        data: HashMap::from([(channels[0].clone(), vec![selected_datum.clone(), witness.clone()])]),
         joins: HashMap::new(),
         installed_joins: HashMap::new(),
     };
@@ -385,17 +389,25 @@ fn a_present_required_persistent_path_allows_the_atomic_transition() {
                 peeks: selected.peeks.clone(),
             }),
             datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
-            required_persistent_paths: vec![Arc::from(
-                RSpaceDataIndex::datum_path(&channels[0], &witness),
-            )],
+            required_persistent_paths: vec![Arc::from(RSpaceDataIndex::datum_path(
+                &channels[0],
+                &witness,
+            ))],
             join_channels: Vec::new(),
         })
         .expect("the present witness authorizes the transition");
 
-    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed {
+        continuation: Some(_)
+    }));
     let after = store.snapshot();
     assert_eq!(after.data.get(&channels[0]), Some(&vec![witness]));
-    assert!(after.continuations.get(&channels).is_some_and(Vec::is_empty));
+    assert!(
+        after
+            .continuations
+            .get(&channels)
+            .is_some_and(Vec::is_empty)
+    );
 }
 
 #[test]
@@ -446,7 +458,9 @@ fn an_accepted_match_preserves_a_persistent_continuation() {
         })
         .expect("the persistent transition is valid");
 
-    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed {
+        continuation: Some(_)
+    }));
     let after = store.snapshot();
     assert_eq!(after.data.values().map(Vec::len).sum::<usize>(), 0);
     assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 1);
@@ -498,7 +512,9 @@ fn an_accepted_match_can_remove_the_selected_datum_and_publish_a_new_arrival() {
         })
         .expect("the arrival transition is valid");
 
-    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed {
+        continuation: Some(_)
+    }));
     let after = store.snapshot();
     assert_eq!(after.data.get(&channels[0]), Some(&vec![arrival]));
     assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 0);
@@ -575,7 +591,9 @@ fn replaying_a_committed_one_shot_match_is_stale_and_nonmutating() {
     let first = store
         .apply_accepted_match(transition.clone())
         .expect("the first replay attempt is valid");
-    assert!(matches!(first, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    assert!(matches!(first, AcceptedMatchOutcome::Committed {
+        continuation: Some(_)
+    }));
     let after_first = store.snapshot();
     let checkpoint_after_first = store.checkpoint_changes().expect("checkpoint projection");
 
@@ -584,10 +602,7 @@ fn replaying_a_committed_one_shot_match_is_stale_and_nonmutating() {
         .expect("replay is an ordinary stale outcome");
     assert!(matches!(second, AcceptedMatchOutcome::Stale));
     assert_same_state(&after_first, &store.snapshot());
-    assert_eq!(
-        checkpoint_after_first,
-        store.checkpoint_changes().expect("checkpoint projection")
-    );
+    assert_eq!(checkpoint_after_first, store.checkpoint_changes().expect("checkpoint projection"));
 }
 
 #[test]
@@ -645,7 +660,9 @@ fn shallow_oracle_matches_one_channel_accepted_transition_matrix() {
         for persist in [false, true] {
             for arrival_present in [false, true] {
                 let selected = WaitingContinuation {
-                    patterns: Arc::new(vec![format!("pattern-{multiplicity}-{persist}-{arrival_present}")]),
+                    patterns: Arc::new(vec![format!(
+                        "pattern-{multiplicity}-{persist}-{arrival_present}"
+                    )]),
                     continuation: Arc::new(format!(
                         "continuation-{multiplicity}-{persist}-{arrival_present}"
                     )),
@@ -654,15 +671,16 @@ fn shallow_oracle_matches_one_channel_accepted_transition_matrix() {
                     source: Consume {
                         channel_hashes: Vec::new(),
                         hash: Blake2b256Hash::from_bytes(vec![
-                            multiplicity as u8 + (persist as u8) * 8 + (arrival_present as u8) * 16;
+                            multiplicity as u8 +
+                                (persist as u8) * 8 +
+                                (arrival_present as u8) * 16;
                             32
                         ]),
                         persistent: persist,
                     },
                 };
-                let arrival = arrival_present.then(|| {
-                    Datum::create(&channel, format!("arrival-{multiplicity}"), false)
-                });
+                let arrival = arrival_present
+                    .then(|| Datum::create(&channel, format!("arrival-{multiplicity}"), false));
                 let channel_group = vec![channel.clone()];
                 let initial = HotStoreState {
                     continuations: HashMap::from([(channel_group.clone(), vec![selected.clone()])]),
@@ -682,10 +700,8 @@ fn shallow_oracle_matches_one_channel_accepted_transition_matrix() {
                     arrival.clone(),
                     &selected,
                 );
-                let store = HotStoreInstances::create_from_hs_and_hr(
-                    initial,
-                    Box::new(EmptyHistory),
-                );
+                let store =
+                    HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
                 let (version, _) = store.get_continuations_versioned(&channel_group);
                 let mut datum_delta = BagDelta::new();
                 datum_delta
@@ -717,10 +733,9 @@ fn shallow_oracle_matches_one_channel_accepted_transition_matrix() {
                         join_channels: vec![channel.clone()],
                     })
                     .expect("matrix transition is valid");
-                assert!(matches!(
-                    outcome,
-                    AcceptedMatchOutcome::Committed { continuation: Some(_) }
-                ));
+                assert!(matches!(outcome, AcceptedMatchOutcome::Committed {
+                    continuation: Some(_)
+                }));
                 assert_same_state(&expected, &store.snapshot());
             }
         }

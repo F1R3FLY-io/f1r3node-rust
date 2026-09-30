@@ -393,11 +393,9 @@ fn assert_ordered_receive_correspondence(fields: &[(u8, i32, bool)], peeks: BTre
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
         assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(
-            actual
-                .iter()
-                .all(|&position| position < u64::try_from(fields.len()).unwrap())
-        );
+        assert!(actual
+            .iter()
+            .all(|&position| position < u64::try_from(fields.len()).unwrap()));
     }
 }
 

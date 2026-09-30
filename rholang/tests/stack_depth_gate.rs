@@ -975,20 +975,25 @@ fn runs_within(stack: usize, depth: usize, subject_name: &str) -> bool {
 
 #[test]
 fn panicking_gate_child_is_not_a_negative_stack_witness() {
-    let panic = std::panic::catch_unwind(|| {
-        !runs_within(1024 * 1024, 4, "invalid-subject-for-probe-regression")
-    })
-    .expect_err("an ordinary child panic satisfied an expected stack-failure assertion");
-    let diagnostic = panic
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panic.downcast_ref::<&str>().copied())
-        .expect("string panic diagnostic");
-    assert!(diagnostic.contains("Panicked"), "{diagnostic}");
-    assert!(
-        diagnostic.contains("invalid-subject-for-probe-regression"),
-        "{diagnostic}"
+    let observation = gate_probe(1024 * 1024, 4, "invalid-subject-for-probe-regression")
+        .expect("run the negative stack probe child");
+    let failure = match observation {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => failure,
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("an invalid stack probe subject cannot pass")
+        }
+    };
+    assert_eq!(
+        failure.kind,
+        shared::rust::test_process::ProbeFailureKind::Panicked
     );
+    assert_eq!(failure.exit_code, Some(101));
+    assert!(matches!(
+        shared::rust::test_process::stack_survived::<std::io::Error>(Ok(
+            shared::rust::test_process::ProbeOutcome::Failed(failure)
+        )),
+        Err(shared::rust::test_process::ProbeFailureCause::Outcome(_))
+    ));
 }
 
 // ---------------------------------------------------------------------------

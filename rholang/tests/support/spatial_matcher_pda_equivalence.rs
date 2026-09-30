@@ -563,12 +563,7 @@ fn compare(label: &str, target: Par, pattern: Par) {
     compare_with_entry_map(label, target, pattern, BTreeMap::new());
 }
 
-fn compare_with_entry_map(
-    label: &str,
-    target: Par,
-    pattern: Par,
-    entry_map: BTreeMap<i32, Par>,
-) {
+fn compare_with_entry_map(label: &str, target: Par, pattern: Par, entry_map: BTreeMap<i32, Par>) {
     let mut recursive = RecursiveContext::new();
     recursive.free_map = entry_map.clone();
     let recursive_verdict = recursive
@@ -602,7 +597,11 @@ fn assert_binding_bytes(
     actual_map: &BTreeMap<i32, Par>,
     expected_map: &BTreeMap<i32, Par>,
 ) {
-    assert_eq!(actual_map.len(), expected_map.len(), "{label}: binding count");
+    assert_eq!(
+        actual_map.len(),
+        expected_map.len(),
+        "{label}: binding count"
+    );
     for (level, actual) in actual_map {
         let expected = expected_map
             .get(level)
@@ -1300,6 +1299,50 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         ),
         conditional(free(0), new_gint_par(99, Vec::new(), false), free(1), true),
     );
+
+    let mut nested_target = seven();
+    let mut nested_pattern = free(0);
+    for depth in 1..=8 {
+        nested_target = conditional(one(), nested_target, two(), false);
+        nested_pattern = conditional(one(), nested_pattern, two(), true);
+        let mut success_oracle = RecursiveContext::new();
+        assert!(
+            success_oracle
+                .spatial_match(nested_target.clone(), nested_pattern.clone())
+                .is_some(),
+            "nested conditional depth {depth} must bind in the recursive oracle"
+        );
+        assert_eq!(success_oracle.free_map.get(&0), Some(&seven()));
+        compare(
+            &format!("nested conditional depth {depth}"),
+            nested_target.clone(),
+            nested_pattern.clone(),
+        );
+
+        let entry_map = BTreeMap::from([(41, new_gint_par(42, Vec::new(), false))]);
+        let refusal_target = conditional(one(), nested_target.clone(), two(), false);
+        let refusal_pattern = conditional(
+            one(),
+            nested_pattern.clone(),
+            new_gint_par(99, Vec::new(), false),
+            true,
+        );
+        let mut refusal_oracle = RecursiveContext::new();
+        refusal_oracle.free_map = entry_map.clone();
+        assert!(
+            refusal_oracle
+                .spatial_match(refusal_target.clone(), refusal_pattern.clone())
+                .is_none(),
+            "nested conditional depth {depth} must refuse after the earlier binding"
+        );
+        assert_eq!(refusal_oracle.free_map, entry_map);
+        compare_with_entry_map(
+            &format!("nested conditional rollback depth {depth}"),
+            refusal_target,
+            refusal_pattern,
+            entry_map,
+        );
+    }
 
     compare(
         "conjunction",

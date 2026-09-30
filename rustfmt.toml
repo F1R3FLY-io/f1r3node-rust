@@ -101,6 +101,8 @@ group_imports = "StdExternalCrate"
 # and `#[rustfmt::skip]` is refused for the reason given above: it edits the very text
 # whose byte-identity is the point.
 ignore = [
+    # Generated decoder oracle is pinned byte-for-byte by the formal manifest.
+    "models/tests/support/protobuf_decoder_frozen.rs",
     "rholang/tests/support/normalize_recursive.rs",
     "rholang/tests/support/pretty_printer_oracle.rs",
 ]

@@ -442,7 +442,8 @@ impl<'src> SourceTreeWindow<'src> {
             return true;
         }
         if let (Some(left), Some(right)) = (
-            self.contiguous_bytes(0..self.len), other.contiguous_bytes(0..other.len),
+            self.contiguous_bytes(0..self.len),
+            other.contiguous_bytes(0..other.len),
         ) {
             return left == right;
         }
@@ -620,7 +621,9 @@ impl<'src, M: CursorMode> SourceCursor<'src, M> {
                 return true;
             }
             self.active = None;
-            let Some(window) = self.pending.pop() else { return false; };
+            let Some(window) = self.pending.pop() else {
+                return false;
+            };
             let node = window.root.as_ref().expect("nonempty pending source root");
             let range = window.start..window.start + window.len;
             match node.payload.as_ref().expect("retained source payload") {

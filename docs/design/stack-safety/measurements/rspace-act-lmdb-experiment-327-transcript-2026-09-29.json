@@ -1,0 +1,593 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 409,
+      "source_line": 133032,
+      "source_line_sha256": "1f5496fef71e932ad3411a9b08782cc88cc80ed1ba20fd0f63ae0ebcb9cc5c8d",
+      "submitted": {
+        "content": "Fair bounded run under systemd-run: ACT dump_from_zipper writes state.act plus fixed-width state.values sidecar; ACT warm exact lookup reads trie ordinal and slices equivalent 128-byte payload; LMDB uses production LmdbKeyValueStore batch put/get. Sizes 256, 4096, 16384; Criterion sample-size 10, warm-up 1s, measurement 1s. ACT write throughput: 2.8688, 7.0871, 7.0190 Melem/s. LMDB write: 1.1001, 1.9473, 1.9729. ACT lookup: 2.0660, 1.7150, 1.4563. LMDB lookup: 3.0735, 2.8560, 2.5571. ACT bytes: 33386, 540825, 2164585. LMDB bytes: 86016, 884736, 3436544. Interpretation: ACT writes faster and is more compact in this fixture; LMDB batch lookup is faster. Not a production backend verdict: incremental WAL, crash recovery, concurrent writers, and all RSpace namespaces remain unmeasured. See Appendix J and commits 53b5ef356, 0c1d01ceb, 87a9584b3.",
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "kind": "criterion",
+        "label": "ACT versus LMDB fair bounded matrix",
+        "metrics": {
+          "disk_bytes": {
+            "ACT": {
+              "16384": 2164585,
+              "256": 33386,
+              "4096": 540825
+            },
+            "LMDB": {
+              "16384": 3436544,
+              "256": 86016,
+              "4096": 884736
+            }
+          },
+          "lookup_melems_s": {
+            "ACT": {
+              "16384": 1.4563,
+              "256": 2.066,
+              "4096": 1.715
+            },
+            "LMDB": {
+              "16384": 2.5571,
+              "256": 3.0735,
+              "4096": 2.856
+            }
+          },
+          "write_melems_s": {
+            "ACT": {
+              "16384": 7.019,
+              "256": 2.8688,
+              "4096": 7.0871
+            },
+            "LMDB": {
+              "16384": 1.9729,
+              "256": 1.1001,
+              "4096": 1.9473
+            }
+          }
+        },
+        "parse": false,
+        "tool": "cargo bench / Criterion"
+      }
+    },
+    {
+      "artifact_id": 410,
+      "source_line": 133088,
+      "source_line_sha256": "2fce36622674033dbd7ac599934dc711081711ffec3883aaf3baf67a1578929d",
+      "submitted": {
+        "content": "Bounded systemd-run cargo test -p rspace_plus_plus --test rho_path_spec --no-fail-fast passed 20/20 in 0.14s. Covered V2 framing, malformed rejection, prefix queries, nested value skipping, and million-byte fields on a small native stack. This is codec verification only; it does not establish lifecycle activation or production persistence migration.",
+        "experiment_id": 327,
+        "git_ref": "e2c27f2aa",
+        "kind": "log",
+        "label": "RhoPathV2 bounded codec verification",
+        "metrics": {
+          "duration_seconds": 0.14,
+          "tests_failed": 0,
+          "tests_passed": 20
+        },
+        "parse": false,
+        "tool": "cargo test"
+      }
+    },
+    {
+      "artifact_id": 411,
+      "source_line": 133125,
+      "source_line_sha256": "b232c99610078d98cdde04d60711a60872b3b18fdfb5add8b6f3356763dc91ad",
+      "submitted": {
+        "content": "Bounded systemd-run cargo test -p rspace_plus_plus --test mod continuation_join_lifecycle --no-fail-fast passed 1/1: continuation_join_lifecycle_equivalence::legacy_and_pathmap_continuation_join_lifecycles_are_identical. The fixture compares PathMap-backed hot-store lifecycle with the legacy oracle across continuation/join setup, duplicate/order behavior, checkpoint/reset, export/import, replay, and post-state fields. This is one focused differential, not full V1/V2 production activation.",
+        "experiment_id": 327,
+        "git_ref": "e2c27f2aa",
+        "kind": "log",
+        "label": "RhoPathV2 lifecycle differential",
+        "metrics": {
+          "duration_seconds": 0.05,
+          "tests_failed": 0,
+          "tests_passed": 1
+        },
+        "parse": false,
+        "tool": "cargo test"
+      }
+    },
+    {
+      "artifact_id": 412,
+      "source_line": 133166,
+      "source_line_sha256": "99d60bf0937939aa06419cc769f3a5bb800e4eb7626331b409a5aab1573e0984",
+      "submitted": {
+        "content": "Bounded systemd-run cargo test -p rspace_plus_plus --lib retention --no-fail-fast passed 15/15 in 0.06s. Covers generation lease blocking/release, transactional unknown/overflow release, deterministic retained-root snapshots, manifest validation, rewrite differential, and durable publication retention requirements.",
+        "experiment_id": 327,
+        "git_ref": "e2c27f2aa",
+        "kind": "log",
+        "label": "retained-generation reclamation gate",
+        "metrics": {
+          "duration_seconds": 0.06,
+          "tests_failed": 0,
+          "tests_passed": 15
+        },
+        "parse": false,
+        "tool": "cargo test"
+      }
+    }
+  ],
+  "experiment_get": {
+    "result": {
+      "context": "Fair bounded Criterion harness compares ACT dump_from_zipper plus fixed-width state.values sidecar against production LmdbKeyValueStore batch put; warm exact ACT trie lookup plus sidecar slice against LMDB batch get. Sizes 256, 4096, 16384. This is fixture-level evidence only; WAL, crash recovery, concurrent writers, and full RSpace namespaces remain unmeasured.",
+      "correction": "benjamini_hochberg",
+      "created_at": "2026-09-05T01:00:54.010664+00:00",
+      "decisions": [],
+      "experiment_id": 327,
+      "git_ref": "87a9584b3",
+      "hypotheses": [
+        {
+          "acceptance_criterion": {
+            "params": {
+              "observed": null,
+              "prediction": "report measured ACT and LMDB write, lookup, and disk metrics with explicit fixture-level caveats",
+              "verdict": "inconclusive"
+            },
+            "type": "observational"
+          },
+          "criterion_locked_at": "2026-09-05T01:00:54.010664+00:00",
+          "hypothesis_id": 327,
+          "planned_n": null,
+          "predicted_direction": "increase",
+          "primary_metric": "write_throughput_melems_s",
+          "statement": "For shared-prefix RSpace-like keys with fixed 128-byte payloads, ACT persistence provides higher write throughput and lower on-disk footprint than the production LMDB store, while lookup throughput remains an independent metric.",
+          "unit": "million elements/second",
+          "verdict": "pending"
+        }
+      ],
+      "kind": "optimization",
+      "measurement_runs": [
+        {
+          "arm_kind": "treatment",
+          "arm_label": "ACT",
+          "finalized_at": null,
+          "run_id": "3dd6f37f-7709-4d2c-b3e4-97371382bcd9",
+          "sample_count": 9,
+          "samples_digest": null,
+          "status": "complete",
+          "status_reason": null,
+          "usable_in_decision": true
+        },
+        {
+          "arm_kind": "control",
+          "arm_label": "LMDB",
+          "finalized_at": null,
+          "run_id": "d0df5abd-1471-4a0b-85d6-44dfa5dd3d6e",
+          "sample_count": 9,
+          "samples_digest": null,
+          "status": "complete",
+          "status_reason": null,
+          "usable_in_decision": true
+        }
+      ],
+      "paired_binary": [],
+      "plan_ref": "docs/design/stack-safety/stack-safety-report-2026-07-29.md#appendix-j",
+      "project": "f1r3node-rust-mettail",
+      "question": "Does the fair ACT dump plus payload-sidecar design improve persistence write throughput and storage footprint versus LMDB batch put/get on the same fixture?",
+      "slug": "rspace-act-lmdb-bounded-persistence-fixture-2026-09",
+      "status": "measuring",
+      "title": "Bounded ACT versus LMDB persistence fixture",
+      "updated_at": "2026-09-05T01:01:31.449667+00:00"
+    },
+    "source_line": 133039,
+    "source_line_sha256": "455c5d4c550325f2af61077ebfcd145f9628e914e76811aa281205c16b71a47f"
+  },
+  "experiment_open": {
+    "result": {
+      "anchored_files": 2,
+      "criterion_locked": true,
+      "experiment_id": 327,
+      "hypothesis_id": 327,
+      "kind": "optimization",
+      "protocol": {
+        "acceptance_criterion": {
+          "params": {
+            "observed": null,
+            "prediction": "report measured ACT and LMDB write, lookup, and disk metrics with explicit fixture-level caveats",
+            "verdict": "inconclusive"
+          },
+          "type": "observational"
+        },
+        "arms": [
+          {
+            "description": "Baseline: the unchanged code / current main.",
+            "kind": "control",
+            "label": "control"
+          },
+          {
+            "description": "The change under test.",
+            "kind": "treatment",
+            "label": "treatment"
+          }
+        ],
+        "correction": "benjamini_hochberg",
+        "data_schema": "experiment_decide with an `observational` criterion carrying {prediction, observed, verdict}; no samples required.",
+        "kind": "optimization",
+        "metric_nature": "observational",
+        "notes": [
+          "Evidence-based hypothesis chain: record the predicted vs observed evidence for each hypothesis; the verdict is supported/falsified, no p-value. Prescribe the diagnostic commands/queries as the 'measurement kit'."
+        ],
+        "predicted_direction": "increase",
+        "primary_metric": "write_throughput_melems_s",
+        "recommended_test": "observational",
+        "reproducibility_checklist": [
+          "Pin each arm to a single CCD with `taskset -c <cores>` (or sched_setaffinity) to remove cross-CCD L3/NUMA variance.",
+          "Set every pinned core to the `performance` governor (`cpupower frequency-set -g performance`); record scaling_driver + boost state.",
+          "Record the full hardware string (first H1 of ~/.claude/hardware-specifications.md), `uname -a`, and the CPU model in host_meta.",
+          "Record the exact commands / tool invocations, the git SHA of each arm, and a fixed RNG seed.",
+          "Tee benchmark output to a file and run once — do not re-run to cherry-pick a favorable result.",
+          "Discard warm-up replicates; measure only after the series reaches steady state."
+        ],
+        "required_samples_per_arm": null,
+        "unit": "million elements/second",
+        "warmup_runs": 0
+      },
+      "slug": "rspace-act-lmdb-bounded-persistence-fixture-2026-09"
+    },
+    "source_line": 133014,
+    "source_line_sha256": "b16a2bbad5af738508f7f62680ed641beae40ab69d4e1aae9db41474582ace76",
+    "submitted": {
+      "acceptance_criterion": {
+        "params": {
+          "prediction": "report measured ACT and LMDB write, lookup, and disk metrics with explicit fixture-level caveats",
+          "verdict": "inconclusive"
+        },
+        "type": "observational"
+      },
+      "anchor_paths": [
+        "rspace++/benches/rspace_act_lmdb.rs",
+        "rspace++/Cargo.toml",
+        "docs/design/stack-safety/stack-safety-report-2026-07-29.md"
+      ],
+      "context": "Fair bounded Criterion harness compares ACT dump_from_zipper plus fixed-width state.values sidecar against production LmdbKeyValueStore batch put; warm exact ACT trie lookup plus sidecar slice against LMDB batch get. Sizes 256, 4096, 16384. This is fixture-level evidence only; WAL, crash recovery, concurrent writers, and full RSpace namespaces remain unmeasured.",
+      "git_ref": "87a9584b3",
+      "hardware": {
+        "cpu": "32 physical cores (user reported)",
+        "cpu_quota": "400%",
+        "memory_limit": "2 GiB",
+        "os": "Linux",
+        "runner": "systemd-run --user --scope"
+      },
+      "hypothesis": "For shared-prefix RSpace-like keys with fixed 128-byte payloads, ACT persistence provides higher write throughput and lower on-disk footprint than the production LMDB store, while lookup throughput remains an independent metric.",
+      "kind": "optimization",
+      "plan_ref": "docs/design/stack-safety/stack-safety-report-2026-07-29.md#appendix-j",
+      "predicted_direction": "increase",
+      "primary_metric": "write_throughput_melems_s",
+      "project": "f1r3node-rust-mettail",
+      "question": "Does the fair ACT dump plus payload-sidecar design improve persistence write throughput and storage footprint versus LMDB batch put/get on the same fixture?",
+      "slug": "rspace-act-lmdb-bounded-persistence-fixture-2026-09",
+      "title": "Bounded ACT versus LMDB persistence fixture",
+      "unit": "million elements/second"
+    }
+  },
+  "measurements": [
+    {
+      "inserted_samples": 3,
+      "run_id": "3dd6f37f-7709-4d2c-b3e4-97371382bcd9",
+      "source_line": 133024,
+      "source_line_sha256": "98ee0b271d9f1543b5c545ae9d2743da0065a1607129988687ee6e69839fff89",
+      "submitted": {
+        "arm_kind": "treatment",
+        "arm_label": "ACT",
+        "dimensions": [
+          {
+            "n": 256
+          },
+          {
+            "n": 4096
+          },
+          {
+            "n": 16384
+          }
+        ],
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "host_meta": {
+          "cpu": "32 physical cores",
+          "cpu_quota": "400%",
+          "fixture": "shared-prefix keys; 128-byte payloads; Criterion sample-size 10; warmup 1s; measurement 1s",
+          "memory_max": "2G",
+          "runner": "systemd-run --user --wait --collect --quiet",
+          "sizes": [
+            256,
+            4096,
+            16384
+          ],
+          "swap_max": "0"
+        },
+        "hypothesis_id": 327,
+        "metric": "write_throughput_melems_s",
+        "samples": [
+          2.8688,
+          7.0871,
+          7.019
+        ],
+        "seed": 20260904,
+        "source": "external_benchmark",
+        "unit": "million elements/second",
+        "unit_keys": [
+          "n=256",
+          "n=4096",
+          "n=16384"
+        ]
+      },
+      "unit_match": true,
+      "unit_warning": null
+    },
+    {
+      "inserted_samples": 3,
+      "run_id": "d0df5abd-1471-4a0b-85d6-44dfa5dd3d6e",
+      "source_line": 133025,
+      "source_line_sha256": "fd1f1084f8db45b3d2da5e8b9230e6b066344bbd417aaf2abff1443d31d15bf4",
+      "submitted": {
+        "arm_kind": "control",
+        "arm_label": "LMDB",
+        "dimensions": [
+          {
+            "n": 256
+          },
+          {
+            "n": 4096
+          },
+          {
+            "n": 16384
+          }
+        ],
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "host_meta": {
+          "cpu": "32 physical cores",
+          "cpu_quota": "400%",
+          "fixture": "shared-prefix keys; 128-byte payloads; Criterion sample-size 10; warmup 1s; measurement 1s",
+          "memory_max": "2G",
+          "runner": "systemd-run --user --wait --collect --quiet",
+          "sizes": [
+            256,
+            4096,
+            16384
+          ],
+          "swap_max": "0"
+        },
+        "hypothesis_id": 327,
+        "metric": "write_throughput_melems_s",
+        "samples": [
+          1.1001,
+          1.9473,
+          1.9729
+        ],
+        "seed": 20260904,
+        "source": "external_benchmark",
+        "unit": "million elements/second",
+        "unit_keys": [
+          "n=256",
+          "n=4096",
+          "n=16384"
+        ]
+      },
+      "unit_match": true,
+      "unit_warning": null
+    },
+    {
+      "inserted_samples": 3,
+      "run_id": "3dd6f37f-7709-4d2c-b3e4-97371382bcd9",
+      "source_line": 133026,
+      "source_line_sha256": "4a7fb9dd36dce9f12e94a696eec4f882c9d66462bd0cf148550c6635782ebab7",
+      "submitted": {
+        "arm_kind": "treatment",
+        "arm_label": "ACT",
+        "dimensions": [
+          {
+            "n": 256
+          },
+          {
+            "n": 4096
+          },
+          {
+            "n": 16384
+          }
+        ],
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "host_meta": {
+          "cpu": "32 physical cores",
+          "cpu_quota": "400%",
+          "fixture": "shared-prefix keys; 128-byte payloads; Criterion sample-size 10; warmup 1s; measurement 1s",
+          "memory_max": "2G",
+          "runner": "systemd-run --user --wait --collect --quiet",
+          "sizes": [
+            256,
+            4096,
+            16384
+          ],
+          "swap_max": "0"
+        },
+        "hypothesis_id": 327,
+        "metric": "lookup_throughput_melems_s",
+        "samples": [
+          2.066,
+          1.715,
+          1.4563
+        ],
+        "seed": 20260904,
+        "source": "external_benchmark",
+        "unit": "million elements/second",
+        "unit_keys": [
+          "n=256",
+          "n=4096",
+          "n=16384"
+        ]
+      },
+      "unit_match": true,
+      "unit_warning": null
+    },
+    {
+      "inserted_samples": 3,
+      "run_id": "d0df5abd-1471-4a0b-85d6-44dfa5dd3d6e",
+      "source_line": 133027,
+      "source_line_sha256": "93e0c450affc3a0e96c8c71011c0b9df24f0eb13a8c55fc2fa1496632a7fc77a",
+      "submitted": {
+        "arm_kind": "control",
+        "arm_label": "LMDB",
+        "dimensions": [
+          {
+            "n": 256
+          },
+          {
+            "n": 4096
+          },
+          {
+            "n": 16384
+          }
+        ],
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "host_meta": {
+          "cpu": "32 physical cores",
+          "cpu_quota": "400%",
+          "fixture": "shared-prefix keys; 128-byte payloads; Criterion sample-size 10; warmup 1s; measurement 1s",
+          "memory_max": "2G",
+          "runner": "systemd-run --user --wait --collect --quiet",
+          "sizes": [
+            256,
+            4096,
+            16384
+          ],
+          "swap_max": "0"
+        },
+        "hypothesis_id": 327,
+        "metric": "lookup_throughput_melems_s",
+        "samples": [
+          3.0735,
+          2.856,
+          2.5571
+        ],
+        "seed": 20260904,
+        "source": "external_benchmark",
+        "unit": "million elements/second",
+        "unit_keys": [
+          "n=256",
+          "n=4096",
+          "n=16384"
+        ]
+      },
+      "unit_match": true,
+      "unit_warning": null
+    },
+    {
+      "inserted_samples": 3,
+      "run_id": "3dd6f37f-7709-4d2c-b3e4-97371382bcd9",
+      "source_line": 133028,
+      "source_line_sha256": "fc13d645037c3fb4d3ed20cbf0c1d2e9df8468baae6710cab2966f6f15ff7d48",
+      "submitted": {
+        "arm_kind": "treatment",
+        "arm_label": "ACT",
+        "dimensions": [
+          {
+            "n": 256
+          },
+          {
+            "n": 4096
+          },
+          {
+            "n": 16384
+          }
+        ],
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "host_meta": {
+          "cpu": "32 physical cores",
+          "cpu_quota": "400%",
+          "fixture": "shared-prefix keys; 128-byte payloads; Criterion sample-size 10; warmup 1s; measurement 1s",
+          "memory_max": "2G",
+          "runner": "systemd-run --user --wait --collect --quiet",
+          "sizes": [
+            256,
+            4096,
+            16384
+          ],
+          "swap_max": "0"
+        },
+        "hypothesis_id": 327,
+        "metric": "disk_bytes",
+        "samples": [
+          33386,
+          540825,
+          2164585
+        ],
+        "seed": 20260904,
+        "source": "external_benchmark",
+        "unit": "bytes",
+        "unit_keys": [
+          "n=256",
+          "n=4096",
+          "n=16384"
+        ]
+      },
+      "unit_match": false,
+      "unit_warning": "submitted unit Some(\"bytes\") does not match the hypothesis's declared unit Some(\"million elements/second\")"
+    },
+    {
+      "inserted_samples": 3,
+      "run_id": "d0df5abd-1471-4a0b-85d6-44dfa5dd3d6e",
+      "source_line": 133029,
+      "source_line_sha256": "b7517b5bcb0002df8605f55960553dd2919743e0b593ac3544e8fd9125301c7d",
+      "submitted": {
+        "arm_kind": "control",
+        "arm_label": "LMDB",
+        "dimensions": [
+          {
+            "n": 256
+          },
+          {
+            "n": 4096
+          },
+          {
+            "n": 16384
+          }
+        ],
+        "experiment_id": 327,
+        "git_ref": "87a9584b3",
+        "host_meta": {
+          "cpu": "32 physical cores",
+          "cpu_quota": "400%",
+          "fixture": "shared-prefix keys; 128-byte payloads; Criterion sample-size 10; warmup 1s; measurement 1s",
+          "memory_max": "2G",
+          "runner": "systemd-run --user --wait --collect --quiet",
+          "sizes": [
+            256,
+            4096,
+            16384
+          ],
+          "swap_max": "0"
+        },
+        "hypothesis_id": 327,
+        "metric": "disk_bytes",
+        "samples": [
+          86016,
+          884736,
+          3436544
+        ],
+        "seed": 20260904,
+        "source": "external_benchmark",
+        "unit": "bytes",
+        "unit_keys": [
+          "n=256",
+          "n=4096",
+          "n=16384"
+        ]
+      },
+      "unit_match": false,
+      "unit_warning": "submitted unit Some(\"bytes\") does not match the hypothesis's declared unit Some(\"million elements/second\")"
+    }
+  ],
+  "provenance": {
+    "kind": "Retained Codex transcript replay of earlier pgmcp call-and-response payloads, not a direct database export",
+    "scope": "Six successful pgmcp submissions contain 18 scalar observations. Criterion per-replicate samples and observed compiler/Cargo versions are not in this extract.",
+    "session_basename": "rollout-2026-09-05T17-44-49-01a07388-0590-7d43-b37a-e0b30d2ba5d6.jsonl",
+    "session_sha256": "65baa0891877faec9aa73ec0a08681a14f590bc2fc16ce95fb8c04ead5734775",
+    "timestamp_note": "Transcript event timestamps reflect later context replay. The experiment snapshot created_at and tool-result fields are the preserved pgmcp payload values; event timestamps are not benchmark run times."
+  }
+}

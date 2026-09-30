@@ -121,6 +121,18 @@ type Allowed = (&'static str, usize, &'static str);
 const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
     // ── use 3: production code defending itself ──────────────────────────────
     (
+        "rspace++/src/rspace/guarded_pathmap.rs",
+        6,
+        "PRODUCTION, NOT A TEST. The import and five calls enforce guarded \
+         PathMap ownership invariants. AnchorRoot::drop and retire_pathmap \
+         quarantine populated raw headers and abort if final iterative teardown \
+         unwinds, preventing an unsafe recursive drop. The two write-cursor \
+         entry points normalize a live empty root before resuming a caller's \
+         panic. set_val_at disposes an incoming value if the mutation fails \
+         before transfer and then resumes the panic. The two test expectations \
+         formerly in this file run in isolated child processes.",
+    ),
+    (
         "rspace++/libs/rspace_rhotypes/src/lib.rs",
         3,
         "PRODUCTION, NOT A TEST. The import names the interceptor and the two calls \
@@ -163,6 +175,16 @@ const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
          shape axis, an open finding — or spawning one process per probe per trim \
          through a differential that compares renders, and neither is a test author's \
          unilateral call.",
+    ),
+    (
+        "rspace++/tests/support/pathmap_mutation.rs",
+        1,
+        "TEST HARNESS, not a panic expectation. `raw_minimal_history_trace` records \
+         each pinned upstream operation's outcome as context for two native PathMap \
+         mutation tests. It appends either the successful state trace or the panic \
+         message, and neither outcome determines whether the native tests pass. The \
+         separate assertion that the pinned upstream four-operation history panics \
+         runs in an isolated child process.",
     ),
     // ── the token, but not the construct ─────────────────────────────────────
     (

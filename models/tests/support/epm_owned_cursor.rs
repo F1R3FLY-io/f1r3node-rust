@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -244,27 +243,132 @@ fn balanced(counts: &Counts) {
 #[test]
 fn partial_drop_and_callback_unwind_balance_payloads() {
     for stop in 0..=6 {
-        for panic in [false, true] {
-            let counts = Arc::new(Counts::default());
-            let mut map = PathMap::new();
-            for key in [b"".as_slice(), b"a", b"a/b", b"a/b/c", b"a/c", b"b"] {
-                map.insert(key, Tracked::new(&counts));
-            }
-            map.create_path(b"a/b/dangling");
-            let mut cursor =
-                EpmOwnedCursor::new(map, PendingScaffold::Repeat(Tracked::new(&counts)));
-            let result = catch_unwind(AssertUnwindSafe(move || {
-                for _ in 0..stop {
-                    let (_, value) = cursor.next().unwrap();
-                    drop(value);
-                }
-                if panic {
-                    panic!("injected consumer failure");
-                }
-            }));
-            assert_eq!(result.is_err(), panic);
-            balanced(&counts);
+        let counts = Arc::new(Counts::default());
+        let mut cursor = tracked_cursor(&counts);
+        for _ in 0..stop {
+            let (_, value) = cursor.next().unwrap();
+            drop(value);
         }
+        drop(cursor);
+        balanced(&counts);
+
+        let scratch = shared::rust::test_scratch::acquire("epm-owned-cursor-unwind-");
+        let marker = scratch.path().join("balanced");
+        observe_owned_cursor_unwind(
+            &format!("partial:{stop}"),
+            Some(&marker),
+            "injected consumer failure",
+        );
+    }
+}
+
+fn tracked_cursor(counts: &Arc<Counts>) -> EpmOwnedCursor<Tracked> {
+    let mut map = PathMap::new();
+    for key in [b"".as_slice(), b"a", b"a/b", b"a/b/c", b"a/c", b"b"] {
+        map.insert(key, Tracked::new(counts));
+    }
+    map.create_path(b"a/b/dangling");
+    EpmOwnedCursor::new(map, PendingScaffold::Repeat(Tracked::new(counts)))
+}
+
+fn observe_owned_cursor_unwind(case: &str, marker: Option<&std::path::Path>, diagnostic: &str) {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rust::epathmap_trie_codec::owned_cursor_tests::owned_cursor_unwind_child",
+            "--nocapture",
+        ])
+        .env("EPM_OWNED_CURSOR_CASE", case)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    if let Some(marker) = marker {
+        command.env("EPM_OWNED_CURSOR_MARKER", marker);
+    }
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the owned cursor child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            );
+            assert!(failure.stderr.contains(diagnostic), "{}", failure.stderr);
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the owned cursor child did not fail")
+        }
+    }
+    if let Some(marker) = marker {
+        assert_eq!(std::fs::read(marker).unwrap(), b"balanced");
+    }
+}
+
+fn integer_par(value: i64) -> Par {
+    use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::Expr;
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(value)),
+    }])
+}
+
+#[test]
+#[ignore = "isolated owned cursor unwind child"]
+fn owned_cursor_unwind_child() {
+    use crate::rust::rhoapi_ext::EPathMap;
+    let Ok(case) = std::env::var("EPM_OWNED_CURSOR_CASE") else {
+        return;
+    };
+    match case.as_str() {
+        "set" => {
+            EPathMap::from_set_iter([integer_par(1), integer_par(2)], vec![1], true, None)
+                .into_raw_set_entries(|_| panic!("injected set callback failure"))
+                .unwrap();
+        }
+        "map" => {
+            EPathMap::new_map(
+                [
+                    (integer_par(1), integer_par(3)),
+                    (integer_par(2), integer_par(4)),
+                ],
+                vec![2],
+                false,
+                None,
+            )
+            .into_raw_map_entries(|_, _| panic!("injected map callback failure"))
+            .unwrap();
+        }
+        partial if partial.starts_with("partial:") => {
+            let stop: usize = partial[8..].parse().expect("partial cursor stop");
+            assert!(stop <= 6);
+            let marker =
+                std::env::var_os("EPM_OWNED_CURSOR_MARKER").expect("owned cursor balance marker");
+            struct BalanceOnDrop {
+                counts: Arc<Counts>,
+                marker: std::path::PathBuf,
+            }
+            impl Drop for BalanceOnDrop {
+                fn drop(&mut self) {
+                    balanced(&self.counts);
+                    std::fs::write(&self.marker, b"balanced").unwrap();
+                }
+            }
+            let counts = Arc::new(Counts::default());
+            let _balance = BalanceOnDrop {
+                counts: Arc::clone(&counts),
+                marker: marker.into(),
+            };
+            let mut cursor = tracked_cursor(&counts);
+            for _ in 0..stop {
+                let (_, value) = cursor.next().unwrap();
+                drop(value);
+            }
+            panic!("injected consumer failure");
+        }
+        _ => panic!("unknown owned cursor child case"),
     }
 }
 
@@ -325,24 +429,19 @@ fn deep_branching_partial_consumption_is_stack_safe() {
 
 #[test]
 fn public_consuming_boundaries_keep_modes_and_guard_callback_unwind() {
-    use crate::rhoapi::expr::ExprInstance;
-    use crate::rhoapi::Expr;
     use crate::rust::rhoapi_ext::{EPathMap, OwnedEPathMapEntries};
-
-    fn integer(value: i64) -> Par {
-        Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(value)),
-        }])
-    }
 
     assert!(matches!(
         EPathMap::default().into_owned_parts().entries,
         OwnedEPathMapEntries::Empty
     ));
-    let set = || EPathMap::from_set_iter([integer(1), integer(2)], vec![1], true, None);
+    let set = || EPathMap::from_set_iter([integer_par(1), integer_par(2)], vec![1], true, None);
     let map = || {
         EPathMap::new_map(
-            [(integer(1), integer(3)), (integer(2), integer(4))],
+            [
+                (integer_par(1), integer_par(3)),
+                (integer_par(2), integer_par(4)),
+            ],
             vec![2],
             false,
             None,
@@ -360,16 +459,6 @@ fn public_consuming_boundaries_keep_modes_and_guard_callback_unwind() {
     assert_eq!(parts.entries.count(), 2);
     assert!(map().into_raw_set_entries(|_| unreachable!()).is_err());
     assert!(set().into_raw_map_entries(|_, _| unreachable!()).is_err());
-    assert!(catch_unwind(AssertUnwindSafe(|| {
-        set()
-            .into_raw_set_entries(|_| panic!("injected set callback failure"))
-            .unwrap();
-    }))
-    .is_err());
-    assert!(catch_unwind(AssertUnwindSafe(|| {
-        map()
-            .into_raw_map_entries(|_, _| panic!("injected map callback failure"))
-            .unwrap();
-    }))
-    .is_err());
+    observe_owned_cursor_unwind("set", None, "injected set callback failure");
+    observe_owned_cursor_unwind("map", None, "injected map callback failure");
 }

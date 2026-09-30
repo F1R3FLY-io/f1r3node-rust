@@ -55,7 +55,9 @@ def collect(args):
                     root / "models/tests/support/protobuf_decoder_oracle.rs",
                     root / "models/tests/support/protobuf_decoder_frozen.rs",
                     root / "models/tests/support/epm_payload_mapping.rs",
-                    root / "models/codegen/schema.rs"]
+                    root / "models/codegen/schema.rs",
+                    root / "models/src/rust/par_construction.rs",
+                    root / "rspace++/src/rspace/bag.rs"]
     metadata = {
         "git_ref": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
         "binary": str(binary.relative_to(root)),
@@ -69,6 +71,7 @@ def collect(args):
         "runtime_seconds": args.seconds, "pairs": args.pairs, "warmup_pairs": 2 if args.pairs else 0,
         "shapes": args.shapes, "sizes": args.sizes, "entries": args.entries, "inputs": args.inputs,
         "seed": 8516, "instrumented": True,
+        "admission_wait_seconds": args.admission_wait_seconds,
     }
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     with (output / "observations.jsonl").open("w") as rows:
@@ -78,10 +81,18 @@ def collect(args):
             rounds = [("pilot", 0)] if not args.pairs else [
                 *(('warmup', n) for n in range(2)), *(('sample', n) for n in range(args.pairs))]
             for phase, sample in rounds:
-                raw, idle = cpu_snapshot(args.cpu)
-                (output / f"cpu-{cell_index}-{phase}-{sample}.json").write_text(raw)
-                if not idle:
-                    raise RuntimeError("CPU admission refused; retain partial run and choose an idle physical core")
+                deadline = time.monotonic() + args.admission_wait_seconds
+                attempt = 0
+                while True:
+                    raw, idle = cpu_snapshot(args.cpu)
+                    suffix = "" if attempt == 0 else f"-retry-{attempt}"
+                    (output / f"cpu-{cell_index}-{phase}-{sample}{suffix}.json").write_text(raw)
+                    if idle:
+                        break
+                    print(f"{cell_index}-{phase}-{sample}: CPU admission refused (attempt {attempt})", flush=True)
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("CPU admission refused; retain partial run and choose an idle physical core")
+                    attempt += 1
                 completed = []
                 arms = ["frozen", "planned"] if (cell_index + sample) % 2 == 0 else ["planned", "frozen"]
                 for arm in arms:
@@ -167,6 +178,7 @@ if __name__ == "__main__":
     parser.add_argument("--inputs", default="fragmented")
     parser.add_argument("--seconds", type=int, default=180)
     parser.add_argument("--pairs", type=int, choices=[0, 7, 31], default=0)
+    parser.add_argument("--admission-wait-seconds", type=int, default=0)
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -175,4 +187,6 @@ if __name__ == "__main__":
             parser.error("--binary, --output and --cpu are required")
         if args.seconds <= 0:
             parser.error("--seconds must be positive")
+        if args.admission_wait_seconds < 0 or args.admission_wait_seconds > 60:
+            parser.error("--admission-wait-seconds must be between zero and sixty")
         collect(args)

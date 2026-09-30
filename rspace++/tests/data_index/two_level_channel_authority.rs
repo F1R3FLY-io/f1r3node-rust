@@ -145,7 +145,9 @@ fn empty_catalog_is_distinct_and_unrelated_channels_do_not_supply_candidates() {
     let value = datum(12);
     let mut store = RSpaceDataStore::new();
     store.set_channel(empty.clone(), []).unwrap();
-    store.set_channel(populated.clone(), [value.clone()]).unwrap();
+    store
+        .set_channel(populated.clone(), [value.clone()])
+        .unwrap();
 
     let empty_pool = store
         .channel_pool(&empty)
@@ -160,7 +162,12 @@ fn empty_catalog_is_distinct_and_unrelated_channels_do_not_supply_candidates() {
         .channel_pool(&populated)
         .unwrap()
         .expect("the populated channel has a candidate catalog");
-    assert_eq!(populated_pool.stored_availability().count(&RSpaceDataIndex::relative_datum_path(&value)), 1);
+    assert_eq!(
+        populated_pool
+            .stored_availability()
+            .count(&RSpaceDataIndex::relative_datum_path(&value)),
+        1
+    );
     assert_eq!(populated_pool.candidate(0).map(|(datum, _)| datum), Some(&value));
     assert_eq!(store.loaded_channel_count(), 2);
 }

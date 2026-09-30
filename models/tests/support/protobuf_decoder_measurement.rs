@@ -31,6 +31,8 @@ const SHAPES: &[&str] = &[
     "map",
     "wide-distinct",
     "wide-duplicate",
+    "wide-late-duplicate",
+    "wide-late-new",
 ];
 const ENTRIES: &[&str] = &["par", "message", "merge", "delimited", "send"];
 
@@ -113,13 +115,14 @@ fn fixture(shape: &str, size: usize) -> Vec<u8> {
             .unwrap()
             .encode_to_vec(),
         "mixed" | "mixed-metadata" | "map" => planned_fixture(shape, size),
-        "wide-distinct" | "wide-duplicate" => {
+        "wide-distinct" | "wide-duplicate" | "wide-late-duplicate" | "wide-late-new" => {
             let mut bytes = Vec::new();
             for i in 0..size {
-                let value = if shape == "wide-distinct" {
-                    i as i64
-                } else {
-                    7
+                let value = match shape {
+                    "wide-duplicate" => 7,
+                    "wide-late-duplicate" if i + 1 == size && size > 1 => 0,
+                    "wide-late-new" if i + 1 == size && size > 1 => -1,
+                    _ => i as i64,
                 };
                 let expr = Expr {
                     expr_instance: Some(ExprInstance::GInt(value)),
@@ -292,21 +295,32 @@ fn measurement_fixtures_match_independent_resident_oracles() {
             );
         }
     }
-    for shape in ["wide-distinct", "wide-duplicate"] {
+    for shape in [
+        "wide-distinct",
+        "wide-duplicate",
+        "wide-late-duplicate",
+        "wide-late-new",
+    ] {
         for size in [0, 1, 4, 16] {
             let input = fixture(shape, size);
             let expected = Par::default().with_exprs(
                 (0..size)
                     .map(|i| Expr {
-                        expr_instance: Some(ExprInstance::GInt(if shape == "wide-distinct" {
-                            i as i64
-                        } else {
-                            7
+                        expr_instance: Some(ExprInstance::GInt(match shape {
+                            "wide-duplicate" => 7,
+                            "wide-late-duplicate" if i + 1 == size && size > 1 => 0,
+                            "wide-late-new" if i + 1 == size && size > 1 => -1,
+                            _ => i as i64,
                         })),
                     })
                     .collect(),
             );
-            assert_eq!(input, expected.encode_to_vec());
+            if matches!(shape, "wide-late-duplicate" | "wide-late-new") {
+                let observed = super::legacy(|| decoder::decode_par(input.as_slice())).unwrap();
+                assert_eq!(observed.encode_to_vec(), expected.encode_to_vec());
+            } else {
+                assert_eq!(input, expected.encode_to_vec());
+            }
         }
     }
 }

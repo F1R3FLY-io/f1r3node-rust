@@ -1,6 +1,7 @@
 use std::cell::Cell;
 
 #[allow(dead_code, clippy::all)]
+#[rustfmt::skip]
 #[path = "protobuf_decoder_frozen.rs"]
 pub(crate) mod frozen;
 
@@ -169,8 +170,7 @@ fn routing_scope_restores_nested_state_and_unwind() {
         assert!(!ROUTING.get().legacy);
     });
     assert_eq!(ROUTING.get(), initial);
-    let panic = std::panic::catch_unwind(|| legacy(|| poisoned(|| panic!("scope unwind"))));
-    assert!(panic.is_err());
+    assert_decoder_oracle_unwind_child("routing", "scope unwind", b"inner:outer");
     assert_eq!(ROUTING.get(), initial);
     legacy(|| {
         std::thread::spawn(|| assert_eq!(ROUTING.get(), Routing::default()))
@@ -194,13 +194,102 @@ fn successor_poison_is_live_and_legacy_route_bypasses_it() {
     let counts = COUNTS.get();
     assert!(counts.frozen > 1);
     assert_eq!(counts.successor, 0);
-    assert!(
-        std::panic::catch_unwind(|| poisoned(|| decoder::decode_par(bytes.as_slice()))).is_err()
+    assert_decoder_oracle_unwind_child(
+        "poison",
+        "successor decoder reached under oracle poison",
+        b"successor-restored",
     );
     COUNTS.set(Counts::default());
     assert!(observed_root(bytes.as_slice()).0.is_ok());
     assert_eq!(COUNTS.get().frozen, 0);
     assert!(COUNTS.get().successor > 0);
+}
+
+fn assert_decoder_oracle_unwind_child(case: &str, diagnostic: &str, expected_marker: &[u8]) {
+    let scratch = shared::rust::test_scratch::acquire("decoder-oracle-unwind-");
+    let marker = scratch.path().join("restored");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "protobuf_decoder_oracle::decoder_oracle_unwind_child",
+            "--nocapture",
+        ])
+        .env("DECODER_ORACLE_UNWIND_CASE", case)
+        .env("DECODER_ORACLE_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run decoder oracle unwind child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(
+                failure.kind,
+                shared::rust::test_process::ProbeFailureKind::Panicked
+            );
+            assert!(failure.stderr.contains(diagnostic), "{failure:?}");
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("decoder oracle unwind child did not fail")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), expected_marker);
+}
+
+#[test]
+#[ignore = "isolated decoder oracle unwind child"]
+fn decoder_oracle_unwind_child() {
+    let Some(case) = std::env::var_os("DECODER_ORACLE_UNWIND_CASE") else {
+        return;
+    };
+    let marker =
+        std::path::PathBuf::from(std::env::var_os("DECODER_ORACLE_UNWIND_MARKER").unwrap());
+    match case.to_str().unwrap() {
+        "routing" => {
+            struct VerifyOuter(std::path::PathBuf);
+            impl Drop for VerifyOuter {
+                fn drop(&mut self) {
+                    assert_eq!(ROUTING.get(), Routing::default());
+                    assert_eq!(std::fs::read(&self.0).unwrap(), b"inner");
+                    std::fs::write(&self.0, b"inner:outer").unwrap();
+                }
+            }
+            struct VerifyInner(std::path::PathBuf);
+            impl Drop for VerifyInner {
+                fn drop(&mut self) {
+                    assert_eq!(ROUTING.get(), Routing {
+                        legacy: true,
+                        poison: false
+                    });
+                    std::fs::write(&self.0, b"inner").unwrap();
+                }
+            }
+            let _outer = VerifyOuter(marker.clone());
+            legacy(|| {
+                let _inner = VerifyInner(marker);
+                poisoned(|| panic!("scope unwind"));
+            });
+        }
+        "poison" => {
+            struct VerifyPoison(std::path::PathBuf);
+            impl Drop for VerifyPoison {
+                fn drop(&mut self) {
+                    assert_eq!(ROUTING.get(), Routing::default());
+                    assert_eq!(COUNTS.get().frozen, 0);
+                    assert!(COUNTS.get().successor > 0);
+                    std::fs::write(&self.0, b"successor-restored").unwrap();
+                }
+            }
+            COUNTS.set(Counts::default());
+            let bytes = corpus::all_par_fields().encode_to_vec();
+            let _verify = VerifyPoison(marker);
+            let _ = poisoned(|| decoder::decode_par(bytes.as_slice()));
+        }
+        other => panic!("unknown decoder oracle unwind case: {other}"),
+    }
 }
 
 #[test]
@@ -301,6 +390,53 @@ fn canonical_fast_import_retains_baseline_borrowed_input_observation() {
     let mut message_input = bytes.as_slice();
     assert!(legacy(|| Par::decode(&mut message_input)).is_ok());
     assert_eq!(message_input.remaining(), 0);
+}
+
+#[test]
+fn fixed_numeric_root_stream_matches_fragmented_frozen_reference() {
+    use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::Expr;
+
+    let values = [
+        ExprInstance::GBool(false),
+        ExprInstance::GInt(i64::MIN),
+        ExprInstance::GDouble(0x8000_0000_0000_0000),
+        ExprInstance::GInt(0),
+        ExprInstance::GBool(true),
+        ExprInstance::GDouble(0x7ff8_0000_0000_0001),
+        ExprInstance::GInt(i64::MAX),
+        ExprInstance::GDouble(0),
+        ExprInstance::GInt(-1),
+    ];
+    let mut bytes = Vec::new();
+    for value in values {
+        prost::encoding::bytes::encode(
+            5,
+            &Expr {
+                expr_instance: Some(value),
+            }
+            .encode_to_vec(),
+            &mut bytes,
+        );
+    }
+    let duplicate = Expr {
+        expr_instance: Some(ExprInstance::GInt(-1)),
+    }
+    .encode_to_vec();
+    for _ in 0..258 {
+        prost::encoding::bytes::encode(5, &duplicate, &mut bytes);
+    }
+    let mut malformed = bytes.clone();
+    malformed.extend_from_slice(&[0x2a, 0x03, 0x10]);
+    for input in [&bytes[..], &malformed[..], &bytes[..bytes.len() - 1]] {
+        for split in [1, input.len() / 2, input.len() - 1] {
+            let source = || {
+                Bytes::copy_from_slice(&input[..split])
+                    .chain(Bytes::copy_from_slice(&input[split..]))
+            };
+            assert_eq!(legacy(|| observed_root(source())), observed_root(source()));
+        }
+    }
 }
 
 proptest! {

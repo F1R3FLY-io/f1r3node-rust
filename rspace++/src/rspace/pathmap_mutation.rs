@@ -256,6 +256,28 @@ where
         }
     }
 
+    pub(crate) fn move_to_existing_value(&mut self, relative: &[u8]) {
+        let prefix = self.prefix;
+        let overlap = self
+            .inner
+            .path()
+            .iter()
+            .copied()
+            .zip(prefix.iter().chain(relative).copied())
+            .take_while(|(old, new)| old == new)
+            .count();
+        self.inner.ascend(self.inner.path().len() - overlap);
+        if overlap < prefix.len() {
+            self.inner.descend_to(&prefix[overlap..]);
+            self.inner.descend_to(relative);
+        } else {
+            self.inner.descend_to(&relative[overlap - prefix.len()..]);
+        }
+        assert!(self.inner.is_val(), "selected Bag endpoint exists");
+        self.missing = false;
+        self.pending.clear();
+    }
+
     pub fn create_path(&mut self) -> bool {
         if !self.missing {
             return false;
@@ -282,6 +304,13 @@ where
         let replaced = self.inner.set_val(incoming.value.take().unwrap());
         self.endpoints.commit(next);
         replaced
+    }
+
+    pub(crate) fn replace_copy(&mut self, value: V)
+    where V: Copy {
+        let replaced =
+            std::mem::replace(self.inner.get_val_mut().expect("focused Bag endpoint"), value);
+        self.dispose.dispose(replaced);
     }
 
     pub fn remove_val(&mut self) -> Option<V> {

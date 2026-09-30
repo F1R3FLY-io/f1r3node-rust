@@ -18,8 +18,8 @@ use crate::rspace::persistence::durable::{
     arm_generation_checkpoint_publication_hook, recover_read_authority,
 };
 use crate::rspace::persistence::{
-    DagTransactionLimits, GenerationLeaseKeyV1, LogPackDecodeLimits, RSpaceSemanticProfile,
-    SemanticProfile,
+    DagTransactionLimits, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, LogPackDecodeLimits,
+    RSpaceSemanticProfile, SemanticProfile, StateVersionV1,
 };
 
 type Profile = RSpaceSemanticProfile<String, String, String, String>;
@@ -37,79 +37,190 @@ fn poll_checkpoint(owner: &mut DurableRSpaceAuthorityV1<Profile>) {
     ));
 }
 
+fn assert_authority_unwind_child(case: &str, expected_diagnostic: &str) {
+    let scratch = shared::rust::test_scratch::acquire("rspace-durable-owner-unwind-");
+    let marker = scratch.path().join("verified");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "rspace::persistence::tests::durable_rspace_authority::authority_unwind_child",
+            "--nocapture",
+        ])
+        .env("RSPACE_DURABLE_OWNER_UNWIND_CASE", case)
+        .env("RSPACE_DURABLE_OWNER_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the durable owner unwind child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+            assert!(failure.stderr.contains(expected_diagnostic), "{}", failure.stderr);
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the durable owner unwind child did not fail: {case}")
+        }
+    }
+    assert_eq!(fs::read(marker).unwrap(), case.as_bytes());
+}
+
+fn authority_unwind_marker() -> std::path::PathBuf {
+    std::env::var_os("RSPACE_DURABLE_OWNER_UNWIND_MARKER")
+        .expect("durable owner unwind marker")
+        .into()
+}
+
+#[test]
+#[ignore = "isolated durable owner unwind child"]
+fn authority_unwind_child() {
+    let Some(case) = std::env::var_os("RSPACE_DURABLE_OWNER_UNWIND_CASE") else {
+        return;
+    };
+    let case = case.to_str().expect("durable owner unwind case is UTF-8");
+    let mut parts = case.split(':');
+    match parts.next().unwrap() {
+        "boundary" => {
+            let index = parts.next().unwrap().parse::<usize>().unwrap();
+            assert!(parts.next().is_none());
+            run_owner_boundary_unwind_child(index, case);
+        }
+        "publication" => {
+            assert!(parts.next().is_none());
+            run_owner_publication_unwind_child(case);
+        }
+        "invalid-base" => {
+            let replace = parts.next().unwrap().parse::<bool>().unwrap();
+            assert!(parts.next().is_none());
+            run_invalid_base_unwind_child(replace, case);
+        }
+        "ack-conflict" => {
+            assert!(parts.next().is_none());
+            run_ack_conflict_unwind_child(case);
+        }
+        _ => panic!("unknown durable owner unwind case: {case}"),
+    }
+}
+
 #[test]
 fn owner_capture_preparation_and_acknowledgement_unwinds_retain_all_required_capabilities() {
-    use crate::rspace::persistence::durable::journal_owner_hooks::{self, JournalOwnerHookPoint};
-    for point in [
+    for index in 0..owner_boundary_points().len() {
+        assert_authority_unwind_child(
+            &format!("boundary:{index}"),
+            "journal owner boundary unwind",
+        );
+    }
+}
+
+fn owner_boundary_points()
+-> [crate::rspace::persistence::durable::journal_owner_hooks::JournalOwnerHookPoint; 5] {
+    use crate::rspace::persistence::durable::journal_owner_hooks::JournalOwnerHookPoint;
+    [
         JournalOwnerHookPoint::AfterCapture,
         JournalOwnerHookPoint::AfterPreparation,
         JournalOwnerHookPoint::BeforeSuccessorPin,
         JournalOwnerHookPoint::AfterSuccessorPin,
         JournalOwnerHookPoint::AfterAcknowledgement,
-    ] {
-        let (scratch, hot, gate, mut owner) = fixture();
-        populate(&hot);
-        let old = owner.state().unwrap();
-        let old_key = owner.generation_key();
-        let new_key = GenerationLeaseKeyV1::new(
-            old_key.epoch() + 1,
-            old_key.first_live_pack(),
-            old_key.active_pack(),
-            old_key.index_generation(),
-        );
-        let registry = owner.generation_leases();
-        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let seen = Arc::clone(&observed);
-        let hook_hot = Arc::clone(&hot);
-        let hook_gate = Arc::clone(&gate);
-        let hook_registry = registry.clone();
-        let _hook = journal_owner_hooks::arm(point, move || {
-            seen.store(true, std::sync::atomic::Ordering::Relaxed);
-            assert!(hook_gate.try_read().is_err());
-            assert!(hook_registry.has_active(old_key).unwrap());
-            let pinned = matches!(
-                point,
-                JournalOwnerHookPoint::AfterSuccessorPin |
-                    JournalOwnerHookPoint::AfterAcknowledgement
-            );
-            assert_eq!(hook_registry.has_active(new_key).unwrap(), pinned);
-            if point == JournalOwnerHookPoint::AfterAcknowledgement {
-                assert_empty(&hook_hot);
-            } else {
-                assert!(!hook_hot.pending_deltas().unwrap().data.unwrap().is_empty());
-            }
-            panic!("journal owner boundary unwind");
-        });
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll_checkpoint(&mut owner)))
-                .is_err()
-        );
-        assert!(observed.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(gate.try_read().is_err());
-        assert!(registry.has_active(old_key).unwrap());
-        assert!(
-            DurableDirectoryV1::open(scratch.path())
-                .unwrap()
-                .try_acquire_writer()
-                .is_err()
-        );
-        let files = store_files(scratch.path());
-        let recovered = owner.reconcile(publication_limits()).unwrap();
-        if matches!(
-            point,
-            JournalOwnerHookPoint::AfterCapture | JournalOwnerHookPoint::AfterPreparation
-        ) {
-            assert_eq!(recovered, old);
-            assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
-        } else {
-            assert_eq!(recovered.generation(), old.generation() + 1);
-            assert_empty(&hot);
-            assert!(!registry.has_active(old_key).unwrap());
-            assert!(registry.has_active(new_key).unwrap());
-        }
-        assert_eq!(store_files(scratch.path()), files);
-        assert!(gate.try_read().is_ok());
+    ]
+}
+
+fn run_owner_boundary_unwind_child(index: usize, case: &str) {
+    use crate::rspace::persistence::durable::journal_owner_hooks::{self, JournalOwnerHookPoint};
+    struct VerifyOnDrop {
+        scratch: PersistenceTrialDir,
+        hot: Store,
+        gate: Arc<RwLock<()>>,
+        owner: DurableRSpaceAuthorityV1<Profile>,
+        old: StateVersionV1,
+        old_key: GenerationLeaseKeyV1,
+        new_key: GenerationLeaseKeyV1,
+        registry: GenerationLeaseRegistryV1,
+        observed: Arc<std::sync::atomic::AtomicBool>,
+        point: JournalOwnerHookPoint,
+        case: String,
+        marker: std::path::PathBuf,
     }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert!(self.observed.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(self.gate.try_read().is_err());
+            assert!(self.registry.has_active(self.old_key).unwrap());
+            assert!(
+                DurableDirectoryV1::open(self.scratch.path())
+                    .unwrap()
+                    .try_acquire_writer()
+                    .is_err()
+            );
+            let files = store_files(self.scratch.path());
+            let recovered = self.owner.reconcile(publication_limits()).unwrap();
+            if matches!(
+                self.point,
+                JournalOwnerHookPoint::AfterCapture | JournalOwnerHookPoint::AfterPreparation
+            ) {
+                assert_eq!(recovered, self.old);
+                assert!(!self.hot.pending_deltas().unwrap().data.unwrap().is_empty());
+            } else {
+                assert_eq!(recovered.generation(), self.old.generation() + 1);
+                assert_empty(&self.hot);
+                assert!(!self.registry.has_active(self.old_key).unwrap());
+                assert!(self.registry.has_active(self.new_key).unwrap());
+            }
+            assert_eq!(store_files(self.scratch.path()), files);
+            assert!(self.gate.try_read().is_ok());
+            fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let point = owner_boundary_points()[index];
+    let (scratch, hot, gate, owner) = fixture();
+    populate(&hot);
+    let old = owner.state().unwrap();
+    let old_key = owner.generation_key();
+    let new_key = GenerationLeaseKeyV1::new(
+        old_key.epoch() + 1,
+        old_key.first_live_pack(),
+        old_key.active_pack(),
+        old_key.index_generation(),
+    );
+    let registry = owner.generation_leases();
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut verify = VerifyOnDrop {
+        scratch,
+        hot,
+        gate,
+        owner,
+        old,
+        old_key,
+        new_key,
+        registry,
+        observed,
+        point,
+        case: case.to_owned(),
+        marker: authority_unwind_marker(),
+    };
+    let seen = Arc::clone(&verify.observed);
+    let hook_hot = Arc::clone(&verify.hot);
+    let hook_gate = Arc::clone(&verify.gate);
+    let hook_registry = verify.registry.clone();
+    let _hook = journal_owner_hooks::arm(point, move || {
+        seen.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(hook_gate.try_read().is_err());
+        assert!(hook_registry.has_active(old_key).unwrap());
+        let pinned = matches!(
+            point,
+            JournalOwnerHookPoint::AfterSuccessorPin | JournalOwnerHookPoint::AfterAcknowledgement
+        );
+        assert_eq!(hook_registry.has_active(new_key).unwrap(), pinned);
+        if point == JournalOwnerHookPoint::AfterAcknowledgement {
+            assert_empty(&hook_hot);
+        } else {
+            assert!(!hook_hot.pending_deltas().unwrap().data.unwrap().is_empty());
+        }
+        panic!("journal owner boundary unwind");
+    });
+    poll_checkpoint(&mut verify.owner);
 }
 
 fn store_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
@@ -558,41 +669,54 @@ async fn owner_uncertain_old_and_new_publications_retain_the_gate_and_original_w
     }
 }
 
-#[tokio::test]
-async fn owner_unwind_keeps_the_expected_terminal_and_recovers_without_republication() {
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
+#[test]
+fn owner_unwind_keeps_the_expected_terminal_and_recovers_without_republication() {
+    assert_authority_unwind_child("publication", "owner publication unwind");
+}
 
-    let (scratch, hot, gate, mut owner) = fixture();
+fn run_owner_publication_unwind_child(case: &str) {
+    struct VerifyOnDrop {
+        scratch: PersistenceTrialDir,
+        hot: Store,
+        gate: Arc<RwLock<()>>,
+        owner: DurableRSpaceAuthorityV1<Profile>,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert!(self.gate.try_read().is_err());
+            assert_eq!(self.owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+            let terminal = self.owner.pending_terminal().unwrap();
+            let catalog = fs::read(self.scratch.path().join("catalog.v1")).unwrap();
+            assert_eq!(self.owner.reconcile(publication_limits()).unwrap(), terminal.state());
+            assert_eq!(fs::read(self.scratch.path().join("catalog.v1")).unwrap(), catalog);
+            assert_empty(&self.hot);
+            assert!(self.gate.try_read().is_ok());
+            assert!(
+                self.owner
+                    .generation_leases()
+                    .has_active(GenerationLeaseKeyV1::from_catalog(terminal))
+                    .unwrap()
+            );
+            fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let (scratch, hot, gate, owner) = fixture();
     populate(&hot);
+    let mut verify = VerifyOnDrop {
+        scratch,
+        hot,
+        gate,
+        owner,
+        case: case.to_owned(),
+        marker: authority_unwind_marker(),
+    };
     arm_generation_checkpoint_publication_hook(
         GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
         || panic!("owner publication unwind"),
     );
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut checkpoint = std::pin::pin!(owner.checkpoint(publication_limits()));
-        assert!(matches!(
-            checkpoint
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Ready(_)
-        ));
-    }));
-    assert!(result.is_err());
-    assert!(gate.try_read().is_err());
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
-    let terminal = owner.pending_terminal().unwrap();
-    let catalog = fs::read(scratch.path().join("catalog.v1")).unwrap();
-    assert_eq!(owner.reconcile(publication_limits()).unwrap(), terminal.state());
-    assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), catalog);
-    assert_empty(&hot);
-    assert!(gate.try_read().is_ok());
-    assert!(
-        owner
-            .generation_leases()
-            .has_active(GenerationLeaseKeyV1::from_catalog(terminal))
-            .unwrap()
-    );
+    poll_checkpoint(&mut verify.owner);
 }
 
 #[tokio::test]
@@ -656,27 +780,18 @@ async fn invalidated_base_cannot_release_a_refused_capture_as_ready() {
 
 #[test]
 fn invalidated_base_cannot_release_old_recovery_or_report_ready() {
-    use crate::rspace::persistence::durable::journal_owner_hooks::{self, JournalOwnerHookPoint};
     for capture_unwind in [false, true] {
         for replace in [false, true] {
+            if capture_unwind {
+                assert_authority_unwind_child(&format!("invalid-base:{replace}"), "capture unwind");
+                continue;
+            }
             let (scratch, hot, gate, mut owner) = fixture();
             populate(&hot);
-            if capture_unwind {
-                let _hook = journal_owner_hooks::arm(JournalOwnerHookPoint::AfterCapture, || {
-                    panic!("capture unwind")
-                });
-                assert!(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll_checkpoint(
-                        &mut owner
-                    )))
-                    .is_err()
-                );
-            } else {
-                arm_generation_checkpoint_publication_failpoint(
-                    GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
-                );
-                poll_checkpoint(&mut owner);
-            }
+            arm_generation_checkpoint_publication_failpoint(
+                GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
+            );
+            poll_checkpoint(&mut owner);
             let files = store_files(scratch.path());
             if replace {
                 hot.set_state(hot.snapshot());
@@ -712,6 +827,59 @@ fn invalidated_base_cannot_release_old_recovery_or_report_ready() {
     }
 }
 
+fn run_invalid_base_unwind_child(replace: bool, case: &str) {
+    use crate::rspace::persistence::durable::journal_owner_hooks::{self, JournalOwnerHookPoint};
+    struct VerifyOnDrop {
+        scratch: PersistenceTrialDir,
+        hot: Store,
+        gate: Arc<RwLock<()>>,
+        owner: DurableRSpaceAuthorityV1<Profile>,
+        replace: bool,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            let files = store_files(self.scratch.path());
+            if self.replace {
+                self.hot.set_state(self.hot.snapshot());
+            } else {
+                self.hot.clear();
+            }
+            for _ in 0..3 {
+                assert!(
+                    self.owner.reconcile(publication_limits()).is_err(),
+                    "invalid hot base accepted after exact old recovery"
+                );
+                assert!(self.owner.state().is_err());
+                assert!(self.gate.try_read().is_err());
+                assert_eq!(store_files(self.scratch.path()), files);
+                assert!(
+                    self.owner
+                        .generation_leases()
+                        .has_active(self.owner.generation_key())
+                        .unwrap()
+                );
+            }
+            fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let (scratch, hot, gate, owner) = fixture();
+    populate(&hot);
+    let mut verify = VerifyOnDrop {
+        scratch,
+        hot,
+        gate,
+        owner,
+        replace,
+        case: case.to_owned(),
+        marker: authority_unwind_marker(),
+    };
+    let _hook =
+        journal_owner_hooks::arm(JournalOwnerHookPoint::AfterCapture, || panic!("capture unwind"));
+    poll_checkpoint(&mut verify.owner);
+}
+
 fn assert_journals_unchanged(hot: &Store, before: &crate::rspace::hot_store::PendingDeltas) {
     let after = hot.pending_deltas().unwrap();
     assert_eq!(before.data, after.data);
@@ -738,11 +906,9 @@ fn assert_journals_unchanged(hot: &Store, before: &crate::rspace::hot_store::Pen
 #[test]
 fn acknowledgement_conflict_retains_both_pins_and_never_republishes() {
     use crate::rspace::persistence::durable::journal_owner_hooks::{self, JournalOwnerHookPoint};
-    for (point, unwind) in [
-        (JournalOwnerHookPoint::AfterSuccessorPin, false),
-        (JournalOwnerHookPoint::AfterAcknowledgement, false),
-        (JournalOwnerHookPoint::AfterAcknowledgement, true),
-    ] {
+    for point in
+        [JournalOwnerHookPoint::AfterSuccessorPin, JournalOwnerHookPoint::AfterAcknowledgement]
+    {
         let (scratch, hot, gate, mut owner) = fixture();
         populate(&hot);
         let old_key = owner.generation_key();
@@ -758,13 +924,8 @@ fn acknowledgement_conflict_retains_both_pins_and_never_republishes() {
                     pending.joins.unwrap(),
                 )
                 .unwrap();
-            if unwind {
-                panic!("acknowledgement completion unwind");
-            }
         });
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll_checkpoint(&mut owner)));
-        assert_eq!(result.is_err(), unwind);
+        poll_checkpoint(&mut owner);
         let terminal = owner.pending_terminal().unwrap();
         let files = store_files(scratch.path());
         let pending = hot.pending_deltas().unwrap();
@@ -783,6 +944,74 @@ fn acknowledgement_conflict_retains_both_pins_and_never_republishes() {
             assert_journals_unchanged(&hot, &pending);
         }
     }
+    assert_authority_unwind_child("ack-conflict", "acknowledgement completion unwind");
+}
+
+fn run_ack_conflict_unwind_child(case: &str) {
+    use crate::rspace::persistence::durable::journal_owner_hooks::{self, JournalOwnerHookPoint};
+    struct VerifyOnDrop {
+        scratch: PersistenceTrialDir,
+        hot: Store,
+        gate: Arc<RwLock<()>>,
+        owner: DurableRSpaceAuthorityV1<Profile>,
+        old_key: GenerationLeaseKeyV1,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            let terminal = self.owner.pending_terminal().unwrap();
+            let files = store_files(self.scratch.path());
+            let pending = self.hot.pending_deltas().unwrap();
+            for _ in 0..3 {
+                assert!(self.owner.reconcile(publication_limits()).is_err());
+                assert_eq!(self.owner.phase(), JournalPublicationPhaseV1::AwaitingAck);
+                assert!(self.gate.try_read().is_err());
+                assert!(
+                    self.owner
+                        .generation_leases()
+                        .has_active(self.old_key)
+                        .unwrap()
+                );
+                assert!(
+                    self.owner
+                        .generation_leases()
+                        .has_active(GenerationLeaseKeyV1::from_catalog(terminal))
+                        .unwrap()
+                );
+                assert_eq!(store_files(self.scratch.path()), files);
+                assert_journals_unchanged(&self.hot, &pending);
+            }
+            fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let (scratch, hot, gate, owner) = fixture();
+    populate(&hot);
+    let old_key = owner.generation_key();
+    let mut verify = VerifyOnDrop {
+        scratch,
+        hot,
+        gate,
+        owner,
+        old_key,
+        case: case.to_owned(),
+        marker: authority_unwind_marker(),
+    };
+    let changed = Arc::clone(&verify.hot);
+    let _hook = journal_owner_hooks::arm(JournalOwnerHookPoint::AfterAcknowledgement, move || {
+        let pending = changed.pending_deltas().unwrap();
+        changed
+            .restore_pending_deltas(
+                pending.data.unwrap(),
+                pending.continuations.unwrap(),
+                pending.continuation_content.unwrap(),
+                pending.continuation_source_bytes.unwrap(),
+                pending.joins.unwrap(),
+            )
+            .unwrap();
+        panic!("acknowledgement completion unwind");
+    });
+    poll_checkpoint(&mut verify.owner);
 }
 
 #[tokio::test]

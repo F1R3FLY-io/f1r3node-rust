@@ -40,10 +40,12 @@ fn check_field_partition(bytes: &[u8], numeric_order: bool) -> bool {
                 };
                 prost::encoding::encode_varint((u64::from(field.number) << 3) | wire, &mut rebuilt);
                 match &field.value {
-                    CanonicalFieldValue::Varint(value) =>
-                        prost::encoding::encode_varint(*value, &mut rebuilt),
-                    CanonicalFieldValue::Fixed64(body) | CanonicalFieldValue::Fixed32(body) =>
-                        rebuilt.extend_from_slice(body),
+                    CanonicalFieldValue::Varint(value) => {
+                        prost::encoding::encode_varint(*value, &mut rebuilt)
+                    }
+                    CanonicalFieldValue::Fixed64(body) | CanonicalFieldValue::Fixed32(body) => {
+                        rebuilt.extend_from_slice(body)
+                    }
                     CanonicalFieldValue::LengthDelimited(body) => {
                         prost::encoding::encode_varint(body.len() as u64, &mut rebuilt);
                         rebuilt.extend_from_slice(body);
@@ -152,7 +154,6 @@ proptest! {
         }
     }
 }
-
 
 fn assert_field_equivalent(borrowed: CanonicalField<'_>, owned: CanonicalRegionField) {
     assert_eq!(borrowed.number, owned.number);

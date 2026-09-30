@@ -1,22 +1,32 @@
-use super::*;
 use proptest::prelude::*;
+
+use super::*;
 use crate::rust::rholang::canonical_source_tree::tests::SourcePhysicalInventory;
 
 impl FrozenCanonicalBytes {
     pub(crate) fn observe_physical_storage(&self, inventory: &mut SourcePhysicalInventory) {
         let data = &self.inner.data;
         let identity = Arc::as_ptr(data) as usize;
-        if inventory.frozen_indexes.contains_key(&identity) { return; }
+        if inventory.frozen_indexes.contains_key(&identity) {
+            return;
+        }
         let storage = std::mem::size_of_val(data.as_ref())
             + std::mem::size_of_val(data.pages.as_ref())
             + std::mem::size_of_val(data.leaves.as_ref())
             + std::mem::size_of_val(data.logical_pages.as_ref());
         inventory.frozen_indexes.insert(identity, storage);
         for page in &data.pages {
-            inventory.byte_pages.insert(Arc::as_ptr(&page.bytes) as usize,
-                (page.bytes.bytes.len(), page.bytes.bytes.capacity()));
-            inventory.provenance_pages.insert(Arc::as_ptr(&page.provenance) as usize,
-                (page.provenance.values.len(), page.provenance.values.capacity()));
+            inventory.byte_pages.insert(
+                Arc::as_ptr(&page.bytes) as usize,
+                (page.bytes.bytes.len(), page.bytes.bytes.capacity()),
+            );
+            inventory.provenance_pages.insert(
+                Arc::as_ptr(&page.provenance) as usize,
+                (
+                    page.provenance.values.len(),
+                    page.provenance.values.capacity(),
+                ),
+            );
         }
     }
 }
@@ -37,8 +47,10 @@ pub(crate) struct ArenaPhysicalInventory {
 }
 
 impl CanonicalBytesArena<'_> {
-    pub(crate) fn physical_inventory(&self, completions: &[SourceTreeWindow<'_>])
-        -> ArenaPhysicalInventory {
+    pub(crate) fn physical_inventory(
+        &self,
+        completions: &[SourceTreeWindow<'_>],
+    ) -> ArenaPhysicalInventory {
         let mut inventory = ArenaPhysicalInventory {
             descriptor_slots: self.backend.nodes.len(),
             descriptor_capacity: self.backend.nodes.capacity(),
@@ -48,23 +60,40 @@ impl CanonicalBytesArena<'_> {
             registry_roots: self.backend.sources.len(),
             completion_roots: completions.len(),
             generated_payload_cells: self.stats.payload_slots,
-            sealed_generated_byte_pages: self.backend.byte_pages.iter()
-                .filter(|page| Arc::strong_count(page) > 1).count(),
-            sealed_generated_provenance_pages: self.backend.provenance_pages.iter()
-                .filter(|page| Arc::strong_count(page) > 1).count(),
+            sealed_generated_byte_pages: self
+                .backend
+                .byte_pages
+                .iter()
+                .filter(|page| Arc::strong_count(page) > 1)
+                .count(),
+            sealed_generated_provenance_pages: self
+                .backend
+                .provenance_pages
+                .iter()
+                .filter(|page| Arc::strong_count(page) > 1)
+                .count(),
             ..ArenaPhysicalInventory::default()
         };
-        for source in self.backend.sources.iter().chain(self.source_cache.iter().flatten())
-            .chain(completions) {
+        for source in self
+            .backend
+            .sources
+            .iter()
+            .chain(self.source_cache.iter().flatten())
+            .chain(completions)
+        {
             inventory.shared.observe(source);
         }
         for page in &self.backend.byte_pages {
-            inventory.shared.byte_pages.insert(Arc::as_ptr(page) as usize,
-                (page.bytes.len(), page.bytes.capacity()));
+            inventory.shared.byte_pages.insert(
+                Arc::as_ptr(page) as usize,
+                (page.bytes.len(), page.bytes.capacity()),
+            );
         }
         for page in &self.backend.provenance_pages {
-            inventory.shared.provenance_pages.insert(Arc::as_ptr(page) as usize,
-                (page.values.len(), page.values.capacity()));
+            inventory.shared.provenance_pages.insert(
+                Arc::as_ptr(page) as usize,
+                (page.values.len(), page.values.capacity()),
+            );
         }
         inventory
     }
@@ -82,8 +111,11 @@ fn physical_inventory_deduplicates_registry_cache_and_completion_owners() {
     let right = arena.register_source(source.clone()).unwrap();
     let first = arena.append_source(arena.empty(), left, 0..129).unwrap();
     let second = arena.append_source(arena.empty(), right, 0..129).unwrap();
-    let completions = [arena.retained_source_window(first).unwrap(),
-        arena.retained_source_window(second).unwrap(), source];
+    let completions = [
+        arena.retained_source_window(first).unwrap(),
+        arena.retained_source_window(second).unwrap(),
+        source,
+    ];
     let inventory = arena.physical_inventory(&completions);
     assert_eq!(inventory.registry_roots, 2);
     assert_eq!(inventory.cached_roots, 2);
@@ -98,10 +130,14 @@ fn physical_inventory_deduplicates_registry_cache_and_completion_owners() {
     drop(original);
     drop(arena);
     let mut retained = SourcePhysicalInventory::default();
-    for root in &completions { retained.observe(root); }
+    for root in &completions {
+        retained.observe(root);
+    }
     assert_eq!(retained, inventory.shared);
-    assert_eq!(completions[0].located_bytes().collect::<Vec<_>>(),
-        (0..129).map(located).collect::<Vec<_>>());
+    assert_eq!(
+        completions[0].located_bytes().collect::<Vec<_>>(),
+        (0..129).map(located).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -109,14 +145,19 @@ fn retained_prefix_physical_inventory_records_geometric_metadata_growth() {
     for width in [16, 64, 256] {
         let input = [19];
         let mut arena = CanonicalBytesArena::new();
-        let slot = arena.register_source(SourceTreeWindow::from_borrowed(&input, 1, 900).unwrap()).unwrap();
+        let slot = arena
+            .register_source(SourceTreeWindow::from_borrowed(&input, 1, 900).unwrap())
+            .unwrap();
         let mut handle = arena.empty();
         let mut completions = Vec::new();
         let mut expected = Vec::new();
         for index in 0..width {
             handle = arena.append_source(handle, slot, 0..1).unwrap();
             handle = arena.append(handle, located(index)).unwrap();
-            expected.push(CanonicalLocatedByte::new(19, CanonicalByteProvenance::new(1, 900)));
+            expected.push(CanonicalLocatedByte::new(
+                19,
+                CanonicalByteProvenance::new(1, 900),
+            ));
             expected.push(located(index));
             completions.push(arena.retained_source_window(handle).unwrap());
         }
@@ -146,7 +187,10 @@ fn retained_prefix_physical_inventory_records_geometric_metadata_growth() {
             inventory.generated_payload_cells, inventory.sealed_generated_byte_pages);
         drop(arena);
         for (index, root) in completions.iter().enumerate() {
-            assert_eq!(root.located_bytes().collect::<Vec<_>>(), expected[..2 * (index + 1)]);
+            assert_eq!(
+                root.located_bytes().collect::<Vec<_>>(),
+                expected[..2 * (index + 1)]
+            );
         }
         let final_root = completions.pop().unwrap();
         drop(completions);
@@ -158,14 +202,20 @@ fn retained_prefix_physical_inventory_records_geometric_metadata_growth() {
 }
 
 fn located(index: usize) -> CanonicalLocatedByte {
-    CanonicalLocatedByte::new(index as u8, CanonicalByteProvenance::new(
-        (index % 7) as u32, 103 + index * 3,
-    ))
+    CanonicalLocatedByte::new(
+        index as u8,
+        CanonicalByteProvenance::new((index % 7) as u32, 103 + index * 3),
+    )
 }
 
-fn append_range(arena: &mut CanonicalBytesArena, mut handle: CanonicalBytesHandle,
-    range: Range<usize>) -> CanonicalBytesHandle {
-    for index in range { handle = arena.append(handle, located(index)).unwrap(); }
+fn append_range(
+    arena: &mut CanonicalBytesArena,
+    mut handle: CanonicalBytesHandle,
+    range: Range<usize>,
+) -> CanonicalBytesHandle {
+    for index in range {
+        handle = arena.append(handle, located(index)).unwrap();
+    }
     handle
 }
 
@@ -183,10 +233,15 @@ fn source_segments_retain_borrowed_bytes_without_owned_payload_cells() {
     let exported = arena.retained_source_window(handle).unwrap();
     assert_eq!(arena.stats().source_segment_exports, 0);
     drop(arena);
-    assert_eq!(exported.contiguous_bytes(0..84).unwrap().as_ptr(), input[13..].as_ptr());
+    assert_eq!(
+        exported.contiguous_bytes(0..84).unwrap().as_ptr(),
+        input[13..].as_ptr()
+    );
     for (i, byte) in exported.located_bytes().enumerate() {
-        assert_eq!(byte, CanonicalLocatedByte::new(input[13 + i],
-            CanonicalByteProvenance::new(9, 713 + i)));
+        assert_eq!(
+            byte,
+            CanonicalLocatedByte::new(input[13 + i], CanonicalByteProvenance::new(9, 713 + i))
+        );
     }
 }
 
@@ -194,23 +249,34 @@ fn source_segments_retain_borrowed_bytes_without_owned_payload_cells() {
 fn source_append_refusals_and_empty_ranges_do_not_mutate_storage() {
     let input = [5, 8, 13];
     let mut arena = CanonicalBytesArena::new();
-    let slot = arena.register_source(SourceTreeWindow::from_borrowed_range(
-        &input, 0..3, 0, 0).unwrap()).unwrap();
+    let slot = arena
+        .register_source(SourceTreeWindow::from_borrowed_range(&input, 0..3, 0, 0).unwrap())
+        .unwrap();
     let handle = arena.append(arena.empty(), located(0)).unwrap();
     let before = arena.stats();
     let nodes = arena.backend.nodes.len();
     assert_eq!(arena.append_source(handle, slot, 2..2).unwrap(), handle);
-    assert!(matches!(arena.append_source(handle, CanonicalSourceSlot(usize::MAX), 0..1),
-        Err(CanonicalBytesArenaError::UnknownSource { .. })));
+    assert!(matches!(
+        arena.append_source(handle, CanonicalSourceSlot(usize::MAX), 0..1),
+        Err(CanonicalBytesArenaError::UnknownSource { .. })
+    ));
     for range in [2..1, 0..4, usize::MAX..usize::MAX] {
-        assert!(matches!(arena.append_source(handle, slot, range),
-            Err(CanonicalBytesArenaError::SliceOutsideSequence { .. })));
+        assert!(matches!(
+            arena.append_source(handle, slot, range),
+            Err(CanonicalBytesArenaError::SliceOutsideSequence { .. })
+        ));
     }
-    let overflowing = CanonicalBytesHandle { sequence: Some(SequenceSpan {
-        root: handle.sequence.unwrap().root, start: 0, len: usize::MAX,
-    }) };
-    assert_eq!(arena.append_source(overflowing, slot, 0..1),
-        Err(CanonicalBytesArenaError::LengthOverflow));
+    let overflowing = CanonicalBytesHandle {
+        sequence: Some(SequenceSpan {
+            root: handle.sequence.unwrap().root,
+            start: 0,
+            len: usize::MAX,
+        }),
+    };
+    assert_eq!(
+        arena.append_source(overflowing, slot, 0..1),
+        Err(CanonicalBytesArenaError::LengthOverflow)
+    );
     assert_eq!(arena.stats(), before);
     assert_eq!(arena.backend.nodes.len(), nodes);
     assert!(arena.source_cache.is_empty());
@@ -221,7 +287,9 @@ fn source_append_refusals_and_empty_ranges_do_not_mutate_storage() {
 fn source_offsets_subtract_prefix_before_adding_large_root_position() {
     let input = [42];
     let mut source = SourceTreeWindow::from_borrowed_range(&input, 0..1, 7, usize::MAX).unwrap();
-    for _ in 0..usize::BITS - 1 { source = source.concat(&source).unwrap(); }
+    for _ in 0..usize::BITS - 1 {
+        source = source.concat(&source).unwrap();
+    }
     let len = source.len();
     let mut arena = CanonicalBytesArena::new();
     let slot = arena.register_source(source).unwrap();
@@ -229,9 +297,19 @@ fn source_offsets_subtract_prefix_before_adding_large_root_position() {
     let middle = arena.append(head, located(1)).unwrap();
     let tail = arena.append_source(middle, slot, len - 1..len).unwrap();
     let selected = arena.slice(tail, len..len + 2).unwrap();
-    let oracle = [located(1), CanonicalLocatedByte::new(42, CanonicalByteProvenance::new(7, usize::MAX))];
+    let oracle = [
+        located(1),
+        CanonicalLocatedByte::new(42, CanonicalByteProvenance::new(7, usize::MAX)),
+    ];
     assert_eq!(arena.located_bytes(selected).collect::<Vec<_>>(), oracle);
-    assert_eq!(arena.retained_source_window(selected).unwrap().located_bytes().collect::<Vec<_>>(), oracle);
+    assert_eq!(
+        arena
+            .retained_source_window(selected)
+            .unwrap()
+            .located_bytes()
+            .collect::<Vec<_>>(),
+        oracle
+    );
     assert_eq!(arena.stats().payload_slots, 1);
 }
 
@@ -308,19 +386,34 @@ fn mixed_original_composed_sources_preserve_every_selected_range() {
     let mut arena = CanonicalBytesArena::new();
     let slot = arena.register_source(original.clone()).unwrap();
     assert!(arena.backend.sources[slot.0].shares_root_with(&original));
-    let handle = arena.append_source(arena.empty(), slot, 0..original.len()).unwrap();
+    let handle = arena
+        .append_source(arena.empty(), slot, 0..original.len())
+        .unwrap();
     let generated = arena.append(handle, located(123)).unwrap();
     let full = arena.append_source(generated, slot, 1..7).unwrap();
-    let oracle = expected.iter().copied().chain([located(123)])
-        .chain(expected[1..7].iter().copied()).collect::<Vec<_>>();
+    let oracle = expected
+        .iter()
+        .copied()
+        .chain([located(123)])
+        .chain(expected[1..7].iter().copied())
+        .collect::<Vec<_>>();
     assert_eq!(arena.stats().payload_slots, 1);
     let retained = arena.retained_source_window(full).unwrap();
     for start in 0..=oracle.len() {
         for end in start..=oracle.len() {
             let selected = arena.slice(full, start..end).unwrap();
-            assert_eq!(arena.located_bytes(selected).collect::<Vec<_>>(), oracle[start..end]);
-            assert_eq!(arena.retained_source_window(selected).unwrap().located_bytes()
-                .collect::<Vec<_>>(), oracle[start..end]);
+            assert_eq!(
+                arena.located_bytes(selected).collect::<Vec<_>>(),
+                oracle[start..end]
+            );
+            assert_eq!(
+                arena
+                    .retained_source_window(selected)
+                    .unwrap()
+                    .located_bytes()
+                    .collect::<Vec<_>>(),
+                oracle[start..end]
+            );
         }
     }
     drop(arena);
@@ -334,19 +427,29 @@ fn direct_owned_segment_exports_match_independent_legacy_freezer() {
     fn check<const CAPACITY: usize>() {
         let mut arena = PageBackedArena::<CAPACITY>::new();
         let mut handle = arena.empty();
-        for i in 0..CAPACITY * 3 + 7 { handle = arena.append(handle, located(i)).unwrap(); }
+        for i in 0..CAPACITY * 3 + 7 {
+            handle = arena.append(handle, located(i)).unwrap();
+        }
         let prefix = arena.slice(handle, 3..CAPACITY + 1).unwrap();
         let _fork = arena.append(prefix, located(200)).unwrap();
         for (index, node) in arena.nodes.iter().enumerate() {
-            let SequenceNodeKind::Segment { previous, used, .. } = node.kind else { continue; };
+            let SequenceNodeKind::Segment { previous, used, .. } = node.kind else {
+                continue;
+            };
             let start = previous.map_or(0, |p| p.len);
-            let legacy = arena.freeze(CanonicalBytesHandle { sequence: Some(SequenceSpan {
-                root: SequenceNodeId(index), start, len: used,
-            }) });
+            let legacy = arena.freeze(CanonicalBytesHandle {
+                sequence: Some(SequenceSpan {
+                    root: SequenceNodeId(index),
+                    start,
+                    len: used,
+                }),
+            });
             let direct = arena.freeze_owned_segment(SequenceNodeId(index));
             assert!(direct.content_eq(&legacy));
             assert_eq!(direct.len(), used);
-            for offset in 0..used { assert_eq!(direct.provenance_at(offset), legacy.provenance_at(offset)); }
+            for offset in 0..used {
+                assert_eq!(direct.provenance_at(offset), legacy.provenance_at(offset));
+            }
             assert_eq!(direct.data.pages.len(), 1);
             assert_eq!(direct.data.leaves.len(), 1);
         }
@@ -359,23 +462,31 @@ fn direct_owned_segment_exports_match_independent_legacy_freezer() {
 
 #[test]
 fn mixed_source_descriptors_export_and_drop_on_an_unchanged_small_stack() {
-    std::thread::Builder::new().stack_size(64 * 1024).spawn(|| {
-        let input = [1, 2, 3, 4];
-        let mut arena = CanonicalBytesArena::new();
-        let slot = arena.register_source(SourceTreeWindow::from_borrowed_range(
-            &input, 0..4, 2, 100).unwrap()).unwrap();
-        let mut handle = arena.empty();
-        for i in 0..4096 {
-            handle = arena.append_source(handle, slot, 1..3).unwrap();
-            handle = arena.append(handle, located(i)).unwrap();
-        }
-        let exported = arena.retained_source_window(handle).unwrap();
-        assert_eq!(exported.len(), 4096 * 3);
-        assert_eq!(arena.stats().payload_slots, 4096);
-        assert_eq!(arena.bytes(handle).count(), exported.len());
-        drop(arena);
-        assert_eq!(exported.located_bytes().count(), 4096 * 3);
-    }).unwrap().join().unwrap();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            let input = [1, 2, 3, 4];
+            let mut arena = CanonicalBytesArena::new();
+            let slot = arena
+                .register_source(
+                    SourceTreeWindow::from_borrowed_range(&input, 0..4, 2, 100).unwrap(),
+                )
+                .unwrap();
+            let mut handle = arena.empty();
+            for i in 0..4096 {
+                handle = arena.append_source(handle, slot, 1..3).unwrap();
+                handle = arena.append(handle, located(i)).unwrap();
+            }
+            let exported = arena.retained_source_window(handle).unwrap();
+            assert_eq!(exported.len(), 4096 * 3);
+            assert_eq!(arena.stats().payload_slots, 4096);
+            assert_eq!(arena.bytes(handle).count(), exported.len());
+            drop(arena);
+            assert_eq!(exported.located_bytes().count(), 4096 * 3);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -394,12 +505,18 @@ fn retained_cache_exports_every_range_without_rebuilding_segment_indexes() {
         for end in start..=193 {
             let slice = arena.slice(handle, start..end).unwrap();
             let selected = arena.retained_source_window(slice).unwrap();
-            assert_eq!(selected.located_bytes().collect::<Vec<_>>(), oracle[start..end]);
+            assert_eq!(
+                selected.located_bytes().collect::<Vec<_>>(),
+                oracle[start..end]
+            );
         }
     }
     let finished = arena.stats();
     assert_eq!(finished.source_cache_nodes, qualified.source_cache_nodes);
-    assert_eq!(finished.source_segment_exports, qualified.source_segment_exports);
+    assert_eq!(
+        finished.source_segment_exports,
+        qualified.source_segment_exports
+    );
     assert_eq!(finished.byte_pages, qualified.byte_pages);
     assert!(finished.source_cache_hits > 0);
 }
@@ -413,11 +530,25 @@ fn empty_and_invalid_exports_do_not_publish_cache_or_seal_pages() {
     assert!(arena.retained_source_window(empty).unwrap().is_empty());
     let original = handle.sequence.unwrap();
     for span in [
-        SequenceSpan { len: 13, ..original },
-        SequenceSpan { start: usize::MAX, len: 1, ..original },
-        SequenceSpan { root: SequenceNodeId(usize::MAX), ..original },
+        SequenceSpan {
+            len: 13,
+            ..original
+        },
+        SequenceSpan {
+            start: usize::MAX,
+            len: 1,
+            ..original
+        },
+        SequenceSpan {
+            root: SequenceNodeId(usize::MAX),
+            ..original
+        },
     ] {
-        assert!(arena.retained_source_window(CanonicalBytesHandle { sequence: Some(span) }).is_none());
+        assert!(arena
+            .retained_source_window(CanonicalBytesHandle {
+                sequence: Some(span)
+            })
+            .is_none());
     }
     assert_eq!(arena.stats(), before);
     assert!(arena.source_cache.is_empty());
@@ -439,10 +570,19 @@ fn retained_publication_preserves_old_forks_and_counts_generated_page_seals() {
     let selected = arena.retained_source_window(fork).unwrap();
     let expected = (3..9).chain([93]).map(located).collect::<Vec<_>>();
     assert_eq!(selected.located_bytes().collect::<Vec<_>>(), expected);
-    assert_eq!(arena.retained_source_window(full).unwrap().located_bytes().collect::<Vec<_>>(),
-        (0..25).map(located).collect::<Vec<_>>());
+    assert_eq!(
+        arena
+            .retained_source_window(full)
+            .unwrap()
+            .located_bytes()
+            .collect::<Vec<_>>(),
+        (0..25).map(located).collect::<Vec<_>>()
+    );
     drop(arena);
-    assert_eq!(before.located_bytes().collect::<Vec<_>>(), (3..9).map(located).collect::<Vec<_>>());
+    assert_eq!(
+        before.located_bytes().collect::<Vec<_>>(),
+        (3..9).map(located).collect::<Vec<_>>()
+    );
     assert_eq!(selected.located_bytes().collect::<Vec<_>>(), expected);
 }
 
@@ -451,8 +591,18 @@ fn trimmed_cache_export_retains_only_intersecting_generated_pages() {
     let mut arena = CanonicalBytesArena::new();
     let empty = arena.empty();
     let original = append_range(&mut arena, empty, 0..192);
-    let pages = arena.backend.byte_pages.iter().map(Arc::downgrade).collect::<Vec<_>>();
-    let provenance = arena.backend.provenance_pages.iter().map(Arc::downgrade).collect::<Vec<_>>();
+    let pages = arena
+        .backend
+        .byte_pages
+        .iter()
+        .map(Arc::downgrade)
+        .collect::<Vec<_>>();
+    let provenance = arena
+        .backend
+        .provenance_pages
+        .iter()
+        .map(Arc::downgrade)
+        .collect::<Vec<_>>();
     let handle = arena.slice(original, 70..72).unwrap();
     let selected = arena.retained_source_window(handle).unwrap();
     drop(arena);
@@ -460,7 +610,10 @@ fn trimmed_cache_export_retains_only_intersecting_generated_pages() {
         assert_eq!(bytes.upgrade().is_some(), index == 1);
         assert_eq!(origins.upgrade().is_some(), index == 1);
     }
-    assert_eq!(selected.located_bytes().collect::<Vec<_>>(), vec![located(70), located(71)]);
+    assert_eq!(selected.located_bytes().collect::<Vec<_>>(), vec![
+        located(70),
+        located(71)
+    ]);
     drop(selected);
     assert!(pages.iter().all(|page| page.upgrade().is_none()));
     assert!(provenance.iter().all(|page| page.upgrade().is_none()));
@@ -477,18 +630,37 @@ fn old_cache_hits_do_not_allocate_slots_after_unrelated_growth() {
     let capacity = arena.source_cache.capacity();
     let qualified = arena.stats();
     let extended = arena.append(original, located(12)).unwrap();
-    assert_ne!(extended.sequence.unwrap().root, original.sequence.unwrap().root);
-    for index in 20..200 { arena.append(empty, located(index)).unwrap(); }
+    assert_ne!(
+        extended.sequence.unwrap().root,
+        original.sequence.unwrap().root
+    );
+    for index in 20..200 {
+        arena.append(empty, located(index)).unwrap();
+    }
     assert!(arena.backend.nodes.len() > count);
     assert_eq!(arena.backend.nodes[id].len, 12);
-    let SequenceNodeKind::Segment { used, .. } = arena.backend.nodes[id].kind else { unreachable!() };
+    let SequenceNodeKind::Segment { used, .. } = arena.backend.nodes[id].kind else {
+        unreachable!()
+    };
     assert_eq!(used, 12);
-    assert_eq!(arena.retained_source_window(original).unwrap().located_bytes().collect::<Vec<_>>(),
-        (0..12).map(located).collect::<Vec<_>>());
+    assert_eq!(
+        arena
+            .retained_source_window(original)
+            .unwrap()
+            .located_bytes()
+            .collect::<Vec<_>>(),
+        (0..12).map(located).collect::<Vec<_>>()
+    );
     assert_eq!(arena.source_cache.len(), count);
     assert_eq!(arena.source_cache.capacity(), capacity);
-    assert_eq!(arena.stats().source_cache_nodes, qualified.source_cache_nodes);
-    assert_eq!(arena.stats().source_segment_exports, qualified.source_segment_exports);
+    assert_eq!(
+        arena.stats().source_cache_nodes,
+        qualified.source_cache_nodes
+    );
+    assert_eq!(
+        arena.stats().source_segment_exports,
+        qualified.source_segment_exports
+    );
 }
 
 proptest! {
@@ -548,20 +720,31 @@ proptest! {
 
 #[test]
 fn retained_source_cache_expands_and_drops_deep_descriptors_on_a_small_stack() {
-    std::thread::Builder::new().stack_size(64 * 1024).spawn(|| {
-        let mut arena = CanonicalBytesArena::new();
-        let empty = arena.empty();
-        let handle = append_range(&mut arena, empty, 0..100_000);
-        let selected = arena.retained_source_window(handle).unwrap();
-        assert_eq!(selected.len(), 100_000);
-        assert_eq!(selected.byte_at(99_999), Some(99_999usize as u8));
-        let before = arena.stats();
-        let repeated = arena.retained_source_window(handle).unwrap();
-        assert!(selected.shares_root_with(&repeated));
-        assert_eq!(arena.stats().source_segment_exports, before.source_segment_exports);
-        drop(arena);
-        assert_eq!(selected.provenance_at(99_999), Some(located(99_999).provenance));
-        drop(selected);
-        drop(repeated);
-    }).unwrap().join().unwrap();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            let mut arena = CanonicalBytesArena::new();
+            let empty = arena.empty();
+            let handle = append_range(&mut arena, empty, 0..100_000);
+            let selected = arena.retained_source_window(handle).unwrap();
+            assert_eq!(selected.len(), 100_000);
+            assert_eq!(selected.byte_at(99_999), Some(99_999usize as u8));
+            let before = arena.stats();
+            let repeated = arena.retained_source_window(handle).unwrap();
+            assert!(selected.shares_root_with(&repeated));
+            assert_eq!(
+                arena.stats().source_segment_exports,
+                before.source_segment_exports
+            );
+            drop(arena);
+            assert_eq!(
+                selected.provenance_at(99_999),
+                Some(located(99_999).provenance)
+            );
+            drop(selected);
+            drop(repeated);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

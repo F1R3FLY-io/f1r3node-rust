@@ -762,3 +762,100 @@ Print Assumptions addressable_link_fits.
 Print Assumptions cold_indirection_preserves_view.
 
 End PooledConstructionStorage.
+
+Module RootConstructionStreaming.
+
+Fixpoint total (values : list nat) : nat :=
+  match values with [] => 0 | value :: rest => value + total rest end.
+
+Theorem total_append left right : total (left ++ right) = total left + total right.
+Proof. induction left; cbn; lia. Qed.
+
+Theorem positive_partition_fits left own right limit :
+  total left + own + total right <= limit ->
+  total left <= limit /\ own <= limit /\ total right <= limit.
+Proof. lia. Qed.
+
+Theorem every_intermediate_partition_fits prefix middle suffix limit :
+  total (prefix ++ middle ++ suffix) <= limit -> total middle <= limit.
+Proof. repeat rewrite total_append. lia. Qed.
+
+Definition guard limit score wire zero :=
+  (score <=? limit) && (wire <=? limit) && (zero <=? limit).
+
+Theorem accepted_guard_bounds_every_summary limit score wire zero :
+  guard limit score wire zero = true ->
+  score <= limit /\ wire <= limit /\ zero <= limit.
+Proof.
+  unfold guard. repeat rewrite Bool.andb_true_iff.
+  repeat rewrite Nat.leb_le. tauto.
+Qed.
+
+Theorem aggregate_guard_does_not_prove_key_addressability :
+  guard 8 6 6 0 = true /\ ~ 6 + 6 <= 8.
+Proof. split; [reflexivity|lia]. Qed.
+
+Section Replay.
+Context {State Component Error : Type}.
+Variable reference : State -> Component -> State + Error.
+Variable compact : State -> Component -> State.
+Variable accepted : State -> Component -> bool.
+Hypothesis compact_success : forall state component,
+  accepted state component = true ->
+  reference state component = inl (compact state component).
+
+Definition step state component :=
+  if accepted state component then inl (compact state component)
+  else reference state component.
+
+Theorem guarded_step_refines_reference state component :
+  step state component = reference state component.
+Proof.
+  unfold step. destruct (accepted state component) eqn:H;
+    [symmetry; apply compact_success; exact H|reflexivity].
+Qed.
+
+Theorem declined_guard_preserves_reference_error state component error :
+  accepted state component = false -> reference state component = inr error ->
+  step state component = inr error.
+Proof. intros H R. unfold step. now rewrite H. Qed.
+End Replay.
+
+Section Publication.
+Context {Key Error : Type}.
+Definition publish (parsed : list (Key * nat) + Error)
+    (emit : list (Key * nat) -> list (Key * nat) + Error) :=
+  match parsed with inl entries => emit entries | inr error => inr error end.
+
+Theorem later_parse_error_precedes_deferred_emission error emit :
+  publish (inr error) emit = inr error.
+Proof. reflexivity. Qed.
+
+Definition indexed (keys : list Key) := combine keys (seq 0 (length keys)).
+Definition reweight (entries : list (Key * nat)) (counts : list nat) :=
+  map (fun entry => (fst entry, nth (snd entry) counts 0)) entries.
+
+Theorem reweight_preserves_every_key entries counts :
+  map fst (reweight entries counts) = map fst entries.
+Proof.
+  unfold reweight. rewrite map_map. apply map_ext.
+  intros [key id]. reflexivity.
+Qed.
+
+Theorem reweight_uses_exact_recorded_count entries counts key id :
+  In (key, id) entries -> In (key, nth id counts 0) (reweight entries counts).
+Proof. intros H. apply in_map_iff. exists (key, id). auto. Qed.
+End Publication.
+
+Print Assumptions total_append.
+Print Assumptions positive_partition_fits.
+Print Assumptions every_intermediate_partition_fits.
+Print Assumptions accepted_guard_bounds_every_summary.
+Print Assumptions aggregate_guard_does_not_prove_key_addressability.
+Print Assumptions guarded_step_refines_reference.
+Print Assumptions declined_guard_preserves_reference_error.
+Print Assumptions later_parse_error_precedes_deferred_emission.
+Print Assumptions reweight_preserves_every_key.
+Print Assumptions reweight_uses_exact_recorded_count.
+
+End RootConstructionStreaming.

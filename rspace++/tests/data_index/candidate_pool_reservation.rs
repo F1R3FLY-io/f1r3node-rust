@@ -104,10 +104,8 @@ fn replay_exclusion_reduces_capacity_without_rewriting_authority() {
     let right = &[2, 0x20][..];
     let mut pool = pool(&[(left, 3), (right, 1)]);
     let authority = pool.authority.clone();
-    pool.excluded.set_count(
-        left,
-        Some(Multiplicity::new(1).expect("test multiplicity is positive")),
-    );
+    pool.excluded
+        .set_count(left, Some(Multiplicity::new(1).expect("test multiplicity is positive")));
 
     assert_eq!(pool.authority, authority);
     assert!(pool.reserve(0));

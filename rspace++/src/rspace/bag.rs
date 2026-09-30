@@ -491,6 +491,106 @@ impl Bag {
         self.insert_many(path, Multiplicity::ONE)
     }
 
+    pub fn get_or_insert(
+        &mut self,
+        path: &[u8],
+        proposed: Multiplicity,
+    ) -> Result<(Multiplicity, bool), BagError> {
+        if let Some(value) = self.entries.get(path).copied() {
+            return Ok((value, false));
+        }
+        self.get_or_insert_from_cursor(path, proposed)
+    }
+
+    pub fn get_or_insert_from_cursor(
+        &mut self,
+        path: &[u8],
+        proposed: Multiplicity,
+    ) -> Result<(Multiplicity, bool), BagError> {
+        let mut distinct = self.distinct_len;
+        let mut cardinality = self.exact_cardinality;
+        let result = self.entries.with_write_cursor(|mut cursor| {
+            cursor.move_to_path(path);
+            if let Some(value) = cursor.val() {
+                return Ok((*value, false));
+            }
+            distinct = distinct
+                .checked_add(1)
+                .ok_or(BagError::DistinctCountOverflow)?;
+            cardinality = cardinality.checked_add(u128::from(proposed.get())).ok_or(
+                BagError::CardinalityOverflow {
+                    current: cardinality,
+                    added: proposed.get(),
+                },
+            )?;
+            cursor.set_val(proposed);
+            Ok((proposed, true))
+        })?;
+        self.distinct_len = distinct;
+        self.exact_cardinality = cardinality;
+        Ok(result)
+    }
+
+    pub fn try_reweight<E>(
+        mut self,
+        mut replace: impl FnMut(&[u8], Multiplicity) -> Result<Multiplicity, E>,
+    ) -> Result<Self, E>
+    where
+        E: From<BagError>,
+    {
+        let mut cardinality = 0u128;
+        let mut bytes = Vec::new();
+        let mut spans = Vec::with_capacity(64);
+        let mut resume = Vec::new();
+        let mut first = true;
+        let mut has_more = true;
+        while has_more {
+            bytes.clear();
+            spans.clear();
+            has_more = self.entries.with_read_cursor(|mut cursor| {
+                if !first {
+                    assert_eq!(cursor.descend_to_existing(&resume), resume.len());
+                }
+                let mut present = if first {
+                    cursor.val().is_some() || cursor.to_next_val()
+                } else {
+                    cursor.to_next_val()
+                };
+                while present && spans.len() < 64 {
+                    let start = bytes.len();
+                    bytes.extend_from_slice(cursor.path());
+                    spans.push((start, bytes.len(), *cursor.val().expect("visited Bag endpoint")));
+                    present = cursor.to_next_val();
+                }
+                present
+            });
+            if spans.is_empty() {
+                break;
+            }
+            let (start, end, _) = spans[spans.len() - 1];
+            resume.clear();
+            resume.extend_from_slice(&bytes[start..end]);
+            self.entries.with_write_cursor(|mut cursor| {
+                for &(start, end, prior) in &spans {
+                    let path = &bytes[start..end];
+                    let value = replace(path, prior)?;
+                    cardinality = cardinality.checked_add(u128::from(value.get())).ok_or(
+                        BagError::CardinalityOverflow {
+                            current: cardinality,
+                            added: value.get(),
+                        },
+                    )?;
+                    cursor.move_to_existing_value(path);
+                    cursor.replace_copy(value);
+                }
+                Ok::<_, E>(())
+            })?;
+            first = false;
+        }
+        self.exact_cardinality = cardinality;
+        Ok(self)
+    }
+
     pub fn insert_many(
         &mut self,
         path: &[u8],
@@ -1416,3 +1516,77 @@ mod prefix_replacement_tests {
 #[cfg(test)]
 #[path = "../../tests/bag/cow_root_publication.rs"]
 mod cow_root_publication_tests;
+
+#[cfg(test)]
+mod reweight_tests {
+    use super::*;
+
+    #[test]
+    fn reweight_preserves_keys_snapshot_and_exact_cardinality() {
+        let mut source = Bag::new();
+        for (path, count) in [(b"a".as_slice(), 1), (b"ab".as_slice(), 2), (b"z".as_slice(), 3)] {
+            source
+                .insert_many(path, Multiplicity::new(count).unwrap())
+                .unwrap();
+        }
+        let snapshot = source.clone();
+        let result = source
+            .try_reweight(|_, id| Multiplicity::new(u64::MAX - id.get()))
+            .unwrap();
+        assert_eq!(result.distinct_len(), 3);
+        assert_eq!(result.exact_cardinality(), 3 * u128::from(u64::MAX) - 6);
+        assert_eq!(snapshot.exact_cardinality(), 6);
+        for (path, id) in [(b"a".as_slice(), 1), (b"ab".as_slice(), 2), (b"z".as_slice(), 3)] {
+            assert_eq!(snapshot.count(path), id);
+            assert_eq!(result.count(path), u64::MAX - id);
+        }
+    }
+
+    #[test]
+    fn rejected_partial_reweight_publishes_no_result_or_snapshot_change() {
+        let mut source = Bag::new();
+        source.insert(b"a").unwrap();
+        source
+            .insert_many(b"z", Multiplicity::new(2).unwrap())
+            .unwrap();
+        let snapshot = source.clone();
+        let error = source
+            .try_reweight(|_, id| {
+                if id.get() == 2 {
+                    Err(BagError::ZeroMultiplicity)
+                } else {
+                    Multiplicity::new(9)
+                }
+            })
+            .err()
+            .unwrap();
+        assert_eq!(error, BagError::ZeroMultiplicity);
+        assert_eq!(snapshot.count(b"a"), 1);
+        assert_eq!(snapshot.count(b"z"), 2);
+        assert_eq!(snapshot.exact_cardinality(), 3);
+    }
+
+    #[test]
+    fn reweight_resumes_across_bounded_chunks_in_key_order() {
+        let mut source = Bag::new();
+        source.insert(b"").unwrap();
+        source.insert(b"k").unwrap();
+        for index in 0..130 {
+            source.insert(format!("k-{index:03}").as_bytes()).unwrap();
+        }
+        let mut visited = Vec::new();
+        let result = source
+            .try_reweight(|path, prior| {
+                visited.push(path.to_vec());
+                Multiplicity::new(prior.get() + 1)
+            })
+            .unwrap();
+        assert_eq!(visited.len(), 132);
+        assert!(visited.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(result.distinct_len(), 132);
+        assert_eq!(result.exact_cardinality(), 264);
+        for key in visited {
+            assert_eq!(result.count(&key), 2);
+        }
+    }
+}

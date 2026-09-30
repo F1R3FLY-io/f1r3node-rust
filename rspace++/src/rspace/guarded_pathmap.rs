@@ -713,10 +713,21 @@ where
     pub(crate) fn move_to_path(&mut self, path: &[u8]) { self.inner.move_to_path(path); }
 
     #[inline]
+    pub(crate) fn move_to_existing_value(&mut self, path: &[u8]) {
+        self.inner.move_to_existing_value(path);
+    }
+
+    #[inline]
     pub(crate) fn set_val(&mut self, value: V) {
         if let Some(replaced) = self.inner.set_val(value) {
             self.dispose.dispose(replaced);
         }
+    }
+
+    #[inline]
+    pub(crate) fn replace_copy(&mut self, value: V)
+    where V: Copy {
+        self.inner.replace_copy(value);
     }
 
     #[inline]
@@ -765,9 +776,7 @@ struct NoopDrainObserver;
 
 impl DrainObserver for NoopDrainObserver {}
 
-pub fn remove_value_preserving_path<V>(
-    zipper: &mut impl ZipperWriting<V>,
-) -> Option<V>
+pub fn remove_value_preserving_path<V>(zipper: &mut impl ZipperWriting<V>) -> Option<V>
 where V: Clone + Send + Sync + Unpin + 'static {
     if !zipper.is_val() {
         return None;
@@ -824,12 +833,8 @@ where
 {
     let mut quarantined = ManuallyDrop::new(map);
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let removed = drain_pathmap_with_provider(
-            &mut quarantined,
-            dispose,
-            barrier,
-            &mut NoopDrainObserver,
-        );
+        let removed =
+            drain_pathmap_with_provider(&mut quarantined, dispose, barrier, &mut NoopDrainObserver);
         assert!(quarantined.is_empty());
         unsafe { ManuallyDrop::drop(&mut quarantined) };
         removed
@@ -1047,7 +1052,12 @@ where
     D: DisposeValue<V>,
 {
     remove_valued_leaf_and_bubble_with_provider(
-        zipper, origin, floor_depth, dispose, count, &StaticBarrier::<B>(PhantomData),
+        zipper,
+        origin,
+        floor_depth,
+        dispose,
+        count,
+        &StaticBarrier::<B>(PhantomData),
     )
 }
 
@@ -1170,8 +1180,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
-    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
@@ -1287,6 +1297,41 @@ mod tests {
         }
     }
 
+    struct VerifyDuringUnwind<F: FnOnce()>(Option<F>);
+
+    impl<F: FnOnce()> Drop for VerifyDuringUnwind<F> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0.take().unwrap()();
+            }
+        }
+    }
+
+    fn assert_guarded_unwind_child(child: &str, diagnostic: &str, marker_bytes: &[u8]) {
+        let scratch = shared::rust::test_scratch::acquire("guarded-pathmap-unwind-");
+        let marker = scratch.path().join("verified");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--ignored", "--exact", child, "--nocapture"])
+            .env("GUARDED_PATHMAP_UNWIND_MARKER", &marker)
+            .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+        let outcome = shared::rust::test_process::run_child_probe(
+            &mut command,
+            std::time::Duration::from_secs(30),
+        )
+        .expect("run guarded PathMap unwind child");
+        match outcome {
+            shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+                assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+                assert!(failure.stderr.contains(diagnostic), "{failure:?}");
+            }
+            shared::rust::test_process::ProbeOutcome::Passed => {
+                panic!("guarded PathMap unwind child did not fail")
+            }
+        }
+        assert_eq!(std::fs::read(marker).unwrap(), marker_bytes);
+    }
+
     fn guarded_probe_map(
         tracking: &Arc<ProbeTracking>,
         order: &Arc<Mutex<Vec<usize>>>,
@@ -1370,27 +1415,42 @@ mod tests {
 
     #[test]
     fn unwinding_writer_resets_and_normalizes_before_resuming_the_panic() {
+        assert_guarded_unwind_child(
+            "rspace::guarded_pathmap::tests::unwinding_writer_child",
+            "injected writer unwind after final removal",
+            b"normalized-and-reopened",
+        );
+    }
+
+    #[test]
+    #[ignore = "isolated guarded writer unwind child"]
+    fn unwinding_writer_child() {
+        let Some(marker) = std::env::var_os("GUARDED_PATHMAP_UNWIND_MARKER") else {
+            return;
+        };
+        let marker = std::path::PathBuf::from(marker);
         let tracking = Arc::new(ProbeTracking::default());
         let order = Arc::new(Mutex::new(Vec::new()));
-        let mut guarded = guarded_probe_map(&tracking, &order);
-        guarded.set_val_at([0x11], Probe::tracked(1, &tracking));
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            guarded.with_write_cursor(|mut cursor| {
-                cursor.move_to_path(&[0x11]);
-                assert!(cursor.remove_val_and_prune());
-                panic!("injected writer unwind after final removal");
+        let guarded = RefCell::new(guarded_probe_map(&tracking, &order));
+        guarded
+            .borrow_mut()
+            .set_val_at([0x11], Probe::tracked(1, &tracking));
+        let _verify = VerifyDuringUnwind(Some(|| {
+            let mut guarded = guarded.borrow_mut();
+            assert!(guarded.is_empty());
+            guarded.with_read_cursor(|cursor| {
+                assert_eq!(cursor.val_count(), 0);
+                assert_eq!(cursor.child_mask().iter().count(), 0);
             });
+            guarded.set_val_at([0x22], Probe::tracked(2, &tracking));
+            assert_eq!(guarded.get([0x22]).map(|probe| probe.id), Some(2));
+            std::fs::write(&marker, b"normalized-and-reopened").unwrap();
         }));
-        assert!(result.is_err());
-        assert!(guarded.is_empty());
-        guarded.with_read_cursor(|cursor| {
-            assert_eq!(cursor.val_count(), 0);
-            assert_eq!(cursor.child_mask().iter().count(), 0);
+        guarded.borrow_mut().with_write_cursor(|mut cursor| {
+            cursor.move_to_path(&[0x11]);
+            assert!(cursor.remove_val_and_prune());
+            panic!("injected writer unwind after final removal");
         });
-
-        guarded.set_val_at([0x22], Probe::tracked(2, &tracking));
-        assert_eq!(guarded.get([0x22]).map(|probe| probe.id), Some(2));
     }
 
     #[test]
@@ -2120,6 +2180,20 @@ mod tests {
 
     #[test]
     fn panicking_disposer_clone_precedes_raw_header_clone() {
+        assert_guarded_unwind_child(
+            "rspace::guarded_pathmap::tests::panicking_disposer_clone_child",
+            "injected disposer-clone failure",
+            b"clone-refused-before-header",
+        );
+    }
+
+    #[test]
+    #[ignore = "isolated disposer clone unwind child"]
+    fn panicking_disposer_clone_child() {
+        let Some(marker) = std::env::var_os("GUARDED_PATHMAP_UNWIND_MARKER") else {
+            return;
+        };
+        let marker = std::path::PathBuf::from(marker);
         struct PanicOnClone {
             attempts: Arc<AtomicUsize>,
         }
@@ -2131,7 +2205,7 @@ mod tests {
             }
         }
 
-        small_stack(|| {
+        small_stack(move || {
             let tracking = Arc::new(ProbeTracking::default());
             let disposed = Arc::new(AtomicUsize::new(0));
             let attempts = Arc::new(AtomicUsize::new(0));
@@ -2148,28 +2222,32 @@ mod tests {
             );
             left.set_val_at([0; 4_096], Probe::tracked(1, &tracking));
             let right = left.clone();
-
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                left.set_val_at([1], Probe::tracked(2, &tracking));
+            let maps = RefCell::new(Some((left, right)));
+            let _verify = VerifyDuringUnwind(Some(|| {
+                let (left, right) = maps.borrow_mut().take().unwrap();
+                assert_eq!(attempts.load(Ordering::Relaxed), 1);
+                assert_eq!(
+                    tracking.clones.load(Ordering::Relaxed),
+                    0,
+                    "the raw PathMap header and payloads must not be cloned first"
+                );
+                assert!(left.contains([0; 4_096]));
+                assert!(right.contains([0; 4_096]));
+                assert!(!left.contains([1]));
+                assert!(!right.contains([1]));
+                assert_eq!(disposed.load(Ordering::Relaxed), 1);
+                drop(left);
+                assert_eq!(disposed.load(Ordering::Relaxed), 1);
+                drop(right);
+                assert_eq!(disposed.load(Ordering::Relaxed), 2);
+                assert_eq!(tracking.drops.load(Ordering::Relaxed), 2);
+                std::fs::write(&marker, b"clone-refused-before-header").unwrap();
             }));
-            assert!(result.is_err(), "the injected disposer clone must panic");
-            assert_eq!(attempts.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                tracking.clones.load(Ordering::Relaxed),
-                0,
-                "the raw PathMap header and payloads must not be cloned first"
-            );
-            assert!(left.contains([0; 4_096]));
-            assert!(right.contains([0; 4_096]));
-            assert!(!left.contains([1]));
-            assert!(!right.contains([1]));
-
-            assert_eq!(disposed.load(Ordering::Relaxed), 1);
-            drop(left);
-            assert_eq!(disposed.load(Ordering::Relaxed), 1);
-            drop(right);
-            assert_eq!(disposed.load(Ordering::Relaxed), 2);
-            assert_eq!(tracking.drops.load(Ordering::Relaxed), 2);
+            maps.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .0
+                .set_val_at([1], Probe::tracked(2, &tracking));
         });
     }
 

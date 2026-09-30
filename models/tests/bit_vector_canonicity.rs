@@ -419,29 +419,57 @@ fn canonicalising_union_would_move_consensus_bytes() {
 // ---------------------------------------------------------------------------
 
 fn is_attributed_ordinal_page_site(text: &str, line: usize) -> bool {
-    let Some((_, fields)) = text.split_once("struct PageFrozenData {") else { return false };
-    let Some((fields, _)) = fields.split_once("\n}") else { return false };
-    if !fields.lines().any(|field| field.trim() == "logical_pages: Box<[usize]>,") {
+    let Some((_, fields)) = text.split_once("struct PageFrozenData {") else {
+        return false;
+    };
+    let Some((fields, _)) = fields.split_once("\n}") else {
+        return false;
+    };
+    if !fields
+        .lines()
+        .any(|field| field.trim() == "logical_pages: Box<[usize]>,")
+    {
         return false;
     }
-    let Some(start) = text.find("fn freeze_owned_segment(") else { return false };
-    let Some(end) = text[start..].find("\n    }") else { return false };
+    let Some(start) = text.find("fn freeze_owned_segment(") else {
+        return false;
+    };
+    let Some(end) = text[start..].find("\n    }") else {
+        return false;
+    };
     let body = &text[start..start + end];
-    if !body.contains("data: Arc::new(PageFrozenData {") { return false; }
+    if !body.contains("data: Arc::new(PageFrozenData {") {
+        return false;
+    }
     let first_line = text[..start].bytes().filter(|&byte| byte == b'\n').count() + 1;
-    let Some(relative_line) = line.checked_sub(first_line) else { return false };
+    let Some(relative_line) = line.checked_sub(first_line) else {
+        return false;
+    };
     let mut lines = body.lines().skip(relative_line);
-    lines.next().is_some_and(|line| line.trim_start().starts_with("logical_pages: vec![0;"))
-        && lines.next().is_some_and(|line| line.trim() == ".into_boxed_slice(),")
+    lines
+        .next()
+        .is_some_and(|line| line.trim_start().starts_with("logical_pages: vec![0;"))
+        && lines
+            .next()
+            .is_some_and(|line| line.trim() == ".into_boxed_slice(),")
 }
 
 #[test]
 fn non_byte_attribution_requires_the_exact_owner_field_type_and_initializer() {
     let fixture = "struct PageFrozenData {\n    logical_pages: Box<[usize]>,\n}\nimpl Arena {\n    fn freeze_owned_segment(&self) {\n        data: Arc::new(PageFrozenData {\n            logical_pages: vec![0; used / BLOCK_BYTES]\n                .into_boxed_slice(),\n            other: vec![0; used]\n                .into_boxed_slice(),\n        })\n    }\n}";
     assert!(is_attributed_ordinal_page_site(fixture, 7));
-    assert!(!is_attributed_ordinal_page_site(&fixture.replace("Box<[usize]>", "Box<[u8]>"), 7));
-    assert!(!is_attributed_ordinal_page_site(&fixture.replace("Arc::new(PageFrozenData", "Arc::new(Unrelated"), 7));
-    assert!(!is_attributed_ordinal_page_site(&fixture.replace("fn freeze_owned_segment", "fn unrelated"), 7));
+    assert!(!is_attributed_ordinal_page_site(
+        &fixture.replace("Box<[usize]>", "Box<[u8]>"),
+        7
+    ));
+    assert!(!is_attributed_ordinal_page_site(
+        &fixture.replace("Arc::new(PageFrozenData", "Arc::new(Unrelated"),
+        7
+    ));
+    assert!(!is_attributed_ordinal_page_site(
+        &fixture.replace("fn freeze_owned_segment", "fn unrelated"),
+        7
+    ));
     assert!(!is_attributed_ordinal_page_site(fixture, 9));
 }
 
@@ -512,15 +540,22 @@ fn the_bitset_construction_sites_are_enumerated_from_source() {
         }
     }
 
-    let ordinal_source = std::fs::read_to_string(root.join("src/rust/rholang/canonical_bytes_arena.rs")).unwrap();
+    let ordinal_source =
+        std::fs::read_to_string(root.join("src/rust/rholang/canonical_bytes_arena.rs")).unwrap();
     let is_ordinal = |site: &(String, usize, String)| {
         site.0 == "src/rust/rholang/canonical_bytes_arena.rs"
             && is_attributed_ordinal_page_site(&ordinal_source, site.1)
     };
-    assert_eq!(found.iter().filter(|site| is_ordinal(site)).count(), 1,
-        "the non-byte ordinal-table attribution must identify exactly one typed construction");
-    assert_eq!(found.len(), ATTRIBUTED.len() + 1,
-        "every computed zero-fill site requires semantic attribution: {found:#?}");
+    assert_eq!(
+        found.iter().filter(|site| is_ordinal(site)).count(),
+        1,
+        "the non-byte ordinal-table attribution must identify exactly one typed construction"
+    );
+    assert_eq!(
+        found.len(),
+        ATTRIBUTED.len() + 1,
+        "every computed zero-fill site requires semantic attribution: {found:#?}"
+    );
     found.retain(|site| !is_ordinal(site));
     assert_eq!(
         found.len(),
