@@ -6,6 +6,7 @@ pub mod chromadb_service;
 #[cfg(not(feature = "chromadb"))]
 #[path = "chromadb_service_stub.rs"]
 pub mod chromadb_service;
+pub mod swi_prolog_service;
 pub mod compiler;
 pub mod contract_call;
 pub mod deploy_parameters;

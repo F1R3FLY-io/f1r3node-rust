@@ -37,6 +37,7 @@ use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
 };
+use super::swi_prolog_service::{petta_execute_framed, Frame};
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
@@ -275,6 +276,8 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    pub fn swipl_execute_petta() -> Par { byte_name(38) }
 }
 
 pub struct BodyRefs;
@@ -312,6 +315,7 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+    pub const SWIPL_EXECUTE_PETTA: i64 = 37;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -340,6 +344,7 @@ pub struct ProcessContext {
     /// consulting it directly instead of duplicating the table.
     pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
+    pub urn_to_channel: Arc<HashMap<String, Par>>,
 }
 
 impl ProcessContext {
@@ -354,6 +359,7 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_to_channel: Arc<HashMap<String, Par>>,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -372,7 +378,9 @@ impl ProcessContext {
                 ollama_service,
                 grpc_client_service,
                 chromadb_service,
+                urn_to_channel.clone(),
             ),
+            urn_to_channel,
         }
     }
 }
@@ -534,6 +542,7 @@ pub struct SystemProcesses {
     pretty_printer: PrettyPrinter,
     #[allow(dead_code)] // Note: This isn't dead when the chromadb flag is used
     chromadb_service: SharedChromaDBService,
+    pub urn_to_channel: Arc<HashMap<String, Par>>,
 }
 
 impl SystemProcesses {
@@ -547,6 +556,7 @@ impl SystemProcesses {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_to_channel: Arc<HashMap<String, Par>>,
     ) -> Self {
         SystemProcesses {
             dispatcher,
@@ -559,6 +569,7 @@ impl SystemProcesses {
             grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
+            urn_to_channel,
         }
     }
 
@@ -2008,6 +2019,147 @@ impl SystemProcesses {
     }
 
     // ChromaDB section end
+
+    // SWIPL section begin
+
+    /// System process handler for `rho:petta:execute` URN.
+    ///
+    /// Executes MeTTa code through the PeTTa (SWI-Prolog) interpreter and returns
+    /// the result to the calling Rholang contract.
+    ///
+    /// # URN Specification
+    ///
+    /// **URN:** `rho:petta:execute`
+    ///
+    /// **Arity:** 2 arguments
+    ///
+    /// **Arguments:**
+    /// 1. `metta_code: String` - MeTTa code to execute
+    /// 2. `ack: Channel` - Acknowledgment channel to receive result
+    ///
+    /// # Return Shape
+    ///
+    /// Sends a single `Par` on the acknowledgment channel containing the execution result.
+    /// The structure matches PeTTa's JSON output converted to Rholang types.
+    ///
+    /// # Determinism and consensus
+    ///
+    /// This is a **deterministic** system process. It is NOT registered in
+    /// [`non_deterministic_ops`], so the output is not cached in the event log.
+    /// Every node runs the interpreter: the proposer during play, and each
+    /// validator again during replay. Determinism is enforced by ordinary replay
+    /// validation — the recomputed post-state hash, the COMM matching in the
+    /// replay rspace (including the forwarded frames), and the deploy cost must
+    /// all match the proposer's block.
+    ///
+    /// The interpreter is expected to be deterministic for a valid program:
+    /// network is unshared, `git-import!` is stripped, Python is excluded, and
+    /// the RNG/rounding builtins are bit-exact with CPython so seeded values are
+    /// reproducible. A program that instead depends on a nondeterminism source —
+    /// unseeded RNG through `getrandom`, `time-time`/`time-sleep`, or the
+    /// wall-clock timeout in [`petta_execute_framed`] — can diverge on replay.
+    /// A divergence yields a different post-state hash, so the block is rejected
+    /// as an invalid transaction (this verdict is non-slashable in this node).
+    ///
+    /// # Error handling
+    ///
+    /// An interpreter error, a frame-forwarding error, or an ack produce error
+    /// returns an `InterpreterError` that fails the deploy. Because the process
+    /// is deterministic, a validator re-running the same failing program observes
+    /// the same error.
+    ///
+    /// # See Also
+    ///
+    /// - [`petta_execute`] - Low-level PeTTa execution (in `swi_prolog_service`)
+    /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs (PeTTa is absent)
+    /// - Tests: `swipl_petta_replay_spec.rs`
+    pub async fn petta_execute(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let rand = contract_args
+            .0
+            .first()
+            .map(|lpwr| lpwr.random_state.clone())
+            .unwrap_or_default();
+
+        let Some((produce, _is_replay, _previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("petta_execute"));
+        };
+
+        let [metta_code, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("petta_execute"));
+        };
+        let Some(metta_code) = RhoString::unapply(metta_code) else {
+            return Err(illegal_argument_error("petta_execute"));
+        };
+
+        // PeTTa is a deterministic system process: every node (proposer and
+        // replaying validators) runs the interpreter and derives the same
+        // output and frames. Determinism is enforced by ordinary replay
+        // validation (post-state hash, COMM matching, cost). A program that
+        // relies on a nondeterminism source (unseeded RNG via `getrandom`,
+        // `time-time`/`time-sleep`, or the wall-clock timeout in
+        // `petta_execute_framed`) diverges on replay and its block is rejected
+        // as an invalid transaction.
+        let (frames, output_par) = match petta_execute_framed(&metta_code).await {
+            Ok((frames, par)) => (frames, par),
+            Err(e) => return Err(InterpreterError::SwiplError(e.to_string().into())),
+        };
+
+        // Forward emission frames to their Rholang channels.
+        self.forward_frames(&frames, rand.clone()).await?;
+
+        let output = vec![output_par];
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::SwiplError(
+                format!("Failed to produce PeTTa output on ack channel: {e}").into(),
+            ));
+        }
+        Ok(output)
+    }
+
+    /// Forward frames emitted by the MeTTa interpreter to their Rholang channels.
+    ///
+    /// Each frame specifies a channel URN (e.g. `"rho:io:stdout"`) and a list of argument
+    /// `Par` values. This method looks up the URN in the `urn_to_channel` map and produces
+    /// each argument on the corresponding fixed channel via rspace.
+    async fn forward_frames(
+        &self,
+        frames: &[Frame],
+        rand: Vec<u8>,
+    ) -> Result<(), InterpreterError> {
+        for frame in frames {
+            let channel_par = match self.urn_to_channel.get(&frame.channel) {
+                Some(ch) => ch.clone(),
+                None => {
+                    tracing::warn!(target: "f1r3fly.petta",
+                        "Unknown channel URN in frame: {}", frame.channel);
+                    continue;
+                }
+            };
+
+            for arg in &frame.arguments {
+                let lpwr = ListParWithRandom {
+                    pars: vec![arg.clone()],
+                    random_state: rand.clone(),
+                };
+
+                self.space
+                    .produce(channel_par.clone(), lpwr, false)
+                    .await
+                    .map_err(|e| InterpreterError::NonDeterministicProcessFailure {
+                        cause: Box::new(InterpreterError::SwiplError(
+                            format!("Failed to produce on channel {}: {}", frame.channel, e).into(),
+                        )),
+                        output_not_produced: vec![],
+                    })?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
