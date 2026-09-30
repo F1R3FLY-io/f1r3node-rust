@@ -13,20 +13,21 @@
 //   - `FileHandle` — the per-fd metadata record (owning
 //     `Arc<File>` OR a shadow-handle `None` for follower replay).
 //   - `FileHandleTable` — the runtime-wide cloneable handle with
-//     the private `Inner` allocator + map, PLUS `wal` and the
-//     deploy-scope cells.
+//     the private `Inner` allocator + map, PLUS `wal`, the
+//     deploy-scope cells, and the payload trait-object slots.
 //   - `new` / `default` / `insert` / `insert_at` / `remove` /
 //     `raw_fd` / `with_mut` (slice 1).
 //   - `wal: Wal` public field + WAL journaling access (slice 2).
 //   - `current_deploy_scope` / `current_deploy_sig` cells + their
 //     poison-aborted accessors (slice 2).
+//   - `payload_store` / `payload_source_recorder` cells + their
+//     `share_*` / getter methods (slice 3).
 //
 // # Deferred to later `handle_table` slices
 //
-//   - Cross-registry sharing plumbing (`root_registry: Root
-//     IdentityRegistry`, `lock_registry: LockRegistry`,
-//     `dir_handles: DirHandleTable`, `payload_store`,
-//     `payload_source_recorder`) + their `share_*` methods.
+//   - Cross-registry sharing plumbing (`root_registry:
+//     RootIdentityRegistry`, `lock_registry: LockRegistry`,
+//     `dir_handles: DirHandleTable`) + their `share_*` methods.
 //   - `close_all_for_deploy` / `has_active_handles_sync` — gated
 //     on `LockRegistry` for the symmetric sweep interface.
 //   - Soft-checkpoint machinery (`snapshot_next_fd` /
@@ -93,7 +94,7 @@ use tokio::sync::RwLock;
 use super::errors::poison_abort;
 use super::lock::DeployScope;
 use super::mode::AccessMode;
-use super::wal::Wal;
+use super::wal::{PayloadPersistence, PayloadSourceRecorder, Wal};
 use super::ConsensusMode;
 
 /// Per-fd metadata record.
@@ -275,6 +276,31 @@ pub struct FileHandleTable {
     /// concurrent runtimes have independent `FileHandleTable`
     /// instances.
     deploy: Arc<std::sync::RwLock<DeployState>>,
+    /// Serving-side payload persistence backend (optional).
+    /// Populated by the boot pipeline via `share_payload_store`
+    /// from a manager-shared slot; tests that don't wire a store
+    /// see `None` and the yet-to-land `journal_write` skips the
+    /// persist step (matches pre-persistence behavior).
+    ///
+    /// Cell shape: `Arc<std::sync::RwLock<Option<Arc<dyn ...>>>>`
+    /// — outer `Arc` so clones share the slot; `RwLock` so the
+    /// boot pipeline can install (`share_*`) after construction;
+    /// inner `Option<Arc<dyn ...>>` so an unset backend is
+    /// distinguishable from a live one and the trait object is
+    /// cheaply-cloneable.
+    ///
+    /// Private field — accessors below route through
+    /// `poison_abort` (same discipline as the deploy cell).
+    payload_store: Arc<std::sync::RwLock<Option<Arc<dyn PayloadPersistence>>>>,
+    /// Serving-side payload-source recorder (optional).  Same
+    /// cell shape + sharing pattern as `payload_store`; drives
+    /// the second tier of the joiner-side payload-fetch chain
+    /// (see the `PayloadSourceRecorder` trait docstring in
+    /// `wal.rs`).
+    ///
+    /// Private field — accessors below route through
+    /// `poison_abort`.
+    payload_source_recorder: Arc<std::sync::RwLock<Option<Arc<dyn PayloadSourceRecorder>>>>,
 }
 
 /// Bundled `(scope, sig)` for the current deploy.  Private —
@@ -526,6 +552,56 @@ impl FileHandleTable {
         let mut guard = poison_abort(self.deploy.write(), "FileHandleTable.deploy");
         guard.scope = [0u8; 32];
         guard.sig.clear();
+    }
+
+    // --- Payload trait-object plumbing -----------------------------
+
+    /// Attach (or clear, with `None`) the manager-shared payload
+    /// persistence backend.  Called from the boot pipeline via
+    /// the runtime manager after `FileHandleTable::new`; the
+    /// interior `RwLock` gives interior mutability so the write
+    /// is visible through every already-cloned handle without
+    /// requiring `&mut self`.
+    ///
+    /// After attachment, the (yet-to-land) `journal_write` on
+    /// every mutating fs handler for a Consensus cap will call
+    /// `store.persist(bytes)` to stash the write payload content-
+    /// addressed on disk for peer-fetch by joiners.
+    pub fn share_payload_store(&self, shared: Option<Arc<dyn PayloadPersistence>>) {
+        *poison_abort(self.payload_store.write(), "FileHandleTable.payload_store") = shared;
+    }
+
+    /// Read the currently-installed persistence backend, if any.
+    /// The returned `Option<Arc<dyn ...>>` is cheap to clone (Arc
+    /// refcount bump).  Called by `journal_write` on every write
+    /// to decide whether to persist.
+    pub fn payload_store(&self) -> Option<Arc<dyn PayloadPersistence>> {
+        poison_abort(self.payload_store.read(), "FileHandleTable.payload_store").clone()
+    }
+
+    /// Attach (or clear, with `None`) the manager-shared payload-
+    /// source recorder — the second tier of the joiner-side
+    /// payload-fetch chain (see the `PayloadSourceRecorder` trait
+    /// docstring in `wal.rs`).  Same sharing pattern as
+    /// `share_payload_store`.
+    pub fn share_payload_source_recorder(&self, shared: Option<Arc<dyn PayloadSourceRecorder>>) {
+        *poison_abort(
+            self.payload_source_recorder.write(),
+            "FileHandleTable.payload_source_recorder",
+        ) = shared;
+    }
+
+    /// Read the currently-installed payload-source recorder, if
+    /// any.  Called by `journal_write` on every Consensus-cap
+    /// write to decide whether to record
+    /// `(payload_hash → deploy_sig)` into the block-storage
+    /// side-index.
+    pub fn payload_source_recorder(&self) -> Option<Arc<dyn PayloadSourceRecorder>> {
+        poison_abort(
+            self.payload_source_recorder.read(),
+            "FileHandleTable.payload_source_recorder",
+        )
+        .clone()
     }
 }
 
@@ -891,5 +967,188 @@ mod tests {
         table.set_current_deploy(scope, sig.clone());
         assert_eq!(table.current_deploy_scope(), scope);
         assert_eq!(table.current_deploy_sig(), sig);
+    }
+
+    // --- Slice 3: payload trait-object plumbing --------------------
+
+    /// Test-only `PayloadPersistence` fake that records every
+    /// `persist` invocation and returns Blake2b256 via the trait
+    /// contract (matches `MockPersistence` in `wal.rs`).
+    #[derive(Debug, Default)]
+    struct RecordingPersistence {
+        seen: std::sync::Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl PayloadPersistence for RecordingPersistence {
+        fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+            self.seen.lock().unwrap().push(bytes.to_vec());
+            match super::super::wal::PayloadRef::hash(bytes) {
+                super::super::wal::PayloadRef::Hash(h) => Ok(h),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// Test-only `PayloadSourceRecorder` fake.
+    #[derive(Debug, Default)]
+    struct RecordingRecorder {
+        seen: std::sync::Mutex<Vec<([u8; 32], Vec<u8>)>>,
+    }
+
+    impl PayloadSourceRecorder for RecordingRecorder {
+        fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((payload_hash, deploy_sig.to_vec()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn payload_store_starts_unset() {
+        let table = FileHandleTable::new();
+        assert!(table.payload_store().is_none());
+    }
+
+    #[test]
+    fn payload_source_recorder_starts_unset() {
+        let table = FileHandleTable::new();
+        assert!(table.payload_source_recorder().is_none());
+    }
+
+    /// `share_payload_store` attaches a backend that a subsequent
+    /// `payload_store()` read observes.  End-to-end round-trip via
+    /// the trait — invokes `.persist(bytes)` through the returned
+    /// `Arc<dyn ...>` and confirms the fake recorded the bytes.
+    #[test]
+    fn share_payload_store_then_persist_roundtrips_through_trait() {
+        let table = FileHandleTable::new();
+        let backend = Arc::new(RecordingPersistence::default());
+        table.share_payload_store(Some(backend.clone() as Arc<dyn PayloadPersistence>));
+
+        let installed = table.payload_store().expect("must be set");
+        let bytes = b"consensus-write-payload";
+        let hash = installed.persist(bytes).expect("persist ok");
+        // Verify the hash matches the contract (Blake2b256).
+        match super::super::wal::PayloadRef::hash(bytes) {
+            super::super::wal::PayloadRef::Hash(expected) => assert_eq!(hash, expected),
+            _ => unreachable!(),
+        }
+        // The fake recorded the bytes.
+        let seen = backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], bytes.to_vec());
+    }
+
+    /// `share_payload_store(None)` clears a previously-attached
+    /// backend — the getter returns `None`.
+    #[test]
+    fn share_payload_store_none_clears_installed_backend() {
+        let table = FileHandleTable::new();
+        table.share_payload_store(Some(
+            Arc::new(RecordingPersistence::default()) as Arc<dyn PayloadPersistence>
+        ));
+        assert!(table.payload_store().is_some());
+        table.share_payload_store(None);
+        assert!(table.payload_store().is_none());
+    }
+
+    /// Round-trip test for the recorder — parallels the persist
+    /// round-trip test above.
+    #[test]
+    fn share_payload_source_recorder_then_record_roundtrips_through_trait() {
+        let table = FileHandleTable::new();
+        let recorder = Arc::new(RecordingRecorder::default());
+        table.share_payload_source_recorder(Some(
+            recorder.clone() as Arc<dyn PayloadSourceRecorder>
+        ));
+
+        let installed = table.payload_source_recorder().expect("must be set");
+        installed
+            .record([0xAAu8; 32], b"deploy-sig")
+            .expect("record ok");
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], ([0xAAu8; 32], b"deploy-sig".to_vec()));
+    }
+
+    #[test]
+    fn share_payload_source_recorder_none_clears_installed_recorder() {
+        let table = FileHandleTable::new();
+        table.share_payload_source_recorder(Some(
+            Arc::new(RecordingRecorder::default()) as Arc<dyn PayloadSourceRecorder>
+        ));
+        assert!(table.payload_source_recorder().is_some());
+        table.share_payload_source_recorder(None);
+        assert!(table.payload_source_recorder().is_none());
+    }
+
+    /// Both payload cells share `Arc<RwLock<...>>` semantics with
+    /// clones — an attachment through one clone is visible via
+    /// another.  Load-bearing for the RuntimeManager broadcast
+    /// pattern (the boot pipeline calls `share_*` on a manager-
+    /// held clone; every already-spawned runtime's clone MUST
+    /// observe the attachment on the next read).
+    #[test]
+    fn payload_store_and_recorder_share_across_clones() {
+        let a = FileHandleTable::new();
+        let b = a.clone();
+        let backend = Arc::new(RecordingPersistence::default());
+        let recorder = Arc::new(RecordingRecorder::default());
+        a.share_payload_store(Some(backend as Arc<dyn PayloadPersistence>));
+        a.share_payload_source_recorder(Some(recorder as Arc<dyn PayloadSourceRecorder>));
+
+        assert!(b.payload_store().is_some());
+        assert!(b.payload_source_recorder().is_some());
+    }
+
+    /// Replacement semantics: `share_payload_store(Some(A))`
+    /// followed by `share_payload_store(Some(B))` yields `B` on
+    /// the next `payload_store()` read (last-write-wins).  Pins
+    /// the "share_* semantically REPLACES rather than accumulates"
+    /// contract that operator hot-swap of a backend relies on.
+    #[test]
+    fn share_payload_store_replaces_prior_backend() {
+        let table = FileHandleTable::new();
+        let a = Arc::new(RecordingPersistence::default());
+        let b = Arc::new(RecordingPersistence::default());
+        table.share_payload_store(Some(a.clone() as Arc<dyn PayloadPersistence>));
+        table.share_payload_store(Some(b.clone() as Arc<dyn PayloadPersistence>));
+
+        // Invoke through the installed backend and confirm ONLY
+        // `b`'s fake recorded the call — `a` was replaced, not
+        // stacked.
+        table
+            .payload_store()
+            .expect("must be set")
+            .persist(b"witness")
+            .expect("persist ok");
+        assert!(
+            a.seen.lock().unwrap().is_empty(),
+            "prior backend must not receive calls"
+        );
+        assert_eq!(b.seen.lock().unwrap().len(), 1);
+    }
+
+    /// Symmetric replacement pin for the recorder.
+    #[test]
+    fn share_payload_source_recorder_replaces_prior_recorder() {
+        let table = FileHandleTable::new();
+        let a = Arc::new(RecordingRecorder::default());
+        let b = Arc::new(RecordingRecorder::default());
+        table.share_payload_source_recorder(Some(a.clone() as Arc<dyn PayloadSourceRecorder>));
+        table.share_payload_source_recorder(Some(b.clone() as Arc<dyn PayloadSourceRecorder>));
+
+        table
+            .payload_source_recorder()
+            .expect("must be set")
+            .record([0x11u8; 32], b"sig")
+            .expect("record ok");
+        assert!(
+            a.seen.lock().unwrap().is_empty(),
+            "prior recorder must not receive calls"
+        );
+        assert_eq!(b.seen.lock().unwrap().len(), 1);
     }
 }
