@@ -24,7 +24,7 @@ The new artifact requires claim-inventory review and named maintainer acceptance
   "evidence": {
     "kind": "source-bound-hosted-checks-and-elf-mutation-controls",
     "ref": "docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json",
-    "sha256": "0dc0d1cabf7a8ed2d8846dbffc8a19e9b4beb117286c8b65540d068bfbb9aeba"
+    "sha256": "7e844fe3c4dfb287de00c093d355ceddf3cbb32209c699577b00eb3b5092bbb3"
   },
   "verification_status": "recorded",
   "acceptance_status": "pending",

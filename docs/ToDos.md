@@ -257,9 +257,19 @@ branch_completion_plan:
   order:
     - "TASK-019-9 (Batch D): tracker record, pending claim, file-scope confirmation, implementation, tests, evidence record."
     - "TASK-019-10 (Batch E): the same sequence, after TASK-019-9."
-    - "pending_record_refresh: refresh the 10 evidence records after the last code change of the batches."
-    - "TASK-019-8: final branch cleanup, when the branch content is final."
-    - "Then the merge round upward, and TASK-019-6 when the stack merges."
+    - "pending_record_refresh: refresh the affected mandatory records against the final Batch D and Batch E sources. The final inventory determines the count."
+    - "Proceed with upward stack preparation only with separate Git authorization."
+    - "TASK-019-8: finish final cleanup on branch 4, fix/soak-finalization-attribution (PR #441), after it inherits the final stack sources."
+    - "TASK-019-6 retains its scope review, cleanup dependency, accepted-claim gates, passing-check requirements, and separate merge authorization."
+  cleanup_amendment_2026_09_30:
+    decided_by: user
+    recorded_by: pi-node-observation-agent-b
+    approved_now: "Compact the CI report without changing its parsed JSON data. Shorten repeated work-log content. Keep the required files."
+    final_cleanup_branch: fix/soak-finalization-attribution
+    final_cleanup_pull_request: 441
+    stack_order: [451, 447, 436, 441]
+    deferral_scope: "Final file reduction and its inventory review move to branch 4. Task status, claim acceptance, retention rules, and Git authorization remain unchanged."
+    reduction_log: docs/work-logs/node-observation-agent-b-20260930.md
   open_inputs:
     - "Owners on 2026-09-30: agent A (claude-session-f3cbc961) has TASK-019-9 and the TASK-019-8 removals. Agent B (the pi session, docs/work-logs/node-observation-agent-b-20260930.md) has the record refresh, the STE fix, the TASK-019-8 inventory, and TASK-019-10. claude-session-7015f552 keeps the epic claim."
     - "File-scope confirmation of Batch D, then of Batch E."
@@ -546,11 +556,26 @@ tasks:
       - "The baseline and observer-capable images are recorded as distinct candidates."
       - "No candidate is repinned from a rebuilt or mutable tag."
   - id: TASK-019-8
-    title: "Final branch cleanup before the PR #447 merge"
+    title: "Final node-observation cleanup on stack branch 4"
+    previous_title: "Final branch cleanup before the PR #447 merge"
     status: in_progress
     claimed_by: claude-session-7015f552
     claimed_at: 2026-09-23T21:40:00Z
     work_log: docs/work-logs/task-019-8-branch-cleanup.md
+    execution_branch: fix/soak-finalization-attribution
+    execution_pull_request: 441
+    scheduling_status: deferred_to_stack_branch_4
+    scheduling_decided_by: user
+    scheduling_decided_on: 2026-09-30
+    scheduling_reason: "The user approved report and work-log compaction now, with final cleanup on branch 4 after stack inheritance."
+    final_inventory_required: true
+    limited_reduction:
+      report: docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json
+      lines_before: 511
+      lines_after: 242
+      parsed_data_unchanged: true
+      required_files_removed: 0
+      work_log: docs/work-logs/node-observation-agent-b-20260930.md
     blocked_by: []
     precedes: [TASK-019-6]
     scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
@@ -829,7 +854,7 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 5 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model with 5 invariants and 5 negative controls, registered in the gate, the plan manifest, the gate test, and the README. Gate PR tier and gate test pass locally. Step 6 (2 work paths) is next and changes Rust code."
+    stage: "Steps 1 to 6 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model with 5 invariants and 5 controls, registered in the gate, the plan manifest, the gate test, and the README. Step 6: WORK_PATHS = 6 in observation_work.rs with a sum test, 158 observer and snapshot tests pass. AuthorityWork.v needs no change. Step 7 (metered entry points in 4 consensus files) is next."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
     claim_status: pending

@@ -96,9 +96,11 @@ impl WorkMeter for NoopWork {
     fn expand(&self, _: usize) -> Result<(), KvStoreError> { Ok(()) }
 }
 
+pub const WORK_PATHS: usize = 6;
+
 struct BudgetState {
     total: WorkUsage,
-    paths: [WorkUsage; 4],
+    paths: [WorkUsage; WORK_PATHS],
     failure: Option<String>,
 }
 
@@ -156,7 +158,7 @@ impl CheckedWork {
     }
 
     pub fn for_path(&self, path: usize) -> Result<Self, KvStoreError> {
-        if path >= 4 {
+        if path >= WORK_PATHS {
             return Err(limit_error("invalid_path"));
         }
         Ok(Self {
@@ -165,7 +167,7 @@ impl CheckedWork {
         })
     }
 
-    pub fn usage(&self) -> (WorkUsage, [WorkUsage; 4], Option<String>) {
+    pub fn usage(&self) -> (WorkUsage, [WorkUsage; WORK_PATHS], Option<String>) {
         let state = self
             .budget
             .state

@@ -1,12 +1,18 @@
-# TASK-019-8: Final branch cleanup before the PR #447 merge
+# TASK-019-8: Final node-observation cleanup on stack branch 4
 
 ```yaml
 handoff_status: paused
 claimed_by: claude-session-7015f552
 inventory_head: 51febc379
+execution_branch: fix/soak-finalization-attribution
+execution_pull_request: 441
+scheduling_status: deferred_to_stack_branch_4
+scheduling_decided_by: user
+scheduling_decided_on: 2026-09-30
 removals_authorized: false
 next_steps:
-  - Obtain authorization for the five proposed removals, or a decision to remove nothing.
+  - Refresh the inventory on branch 4 after it inherits the final stack sources.
+  - Obtain authorization for the reviewed removal list, or a decision to remove nothing.
   - Apply the authorized removals and rerun the three checks.
   - Record the diff sizes after the removals and request maintainer confirmation of the reduced diff.
 ```
@@ -79,6 +85,17 @@ The new Batch D claim and the changed Batch D artifacts require their own verifi
 The inventory remains provisional until the final Batch D, Batch E, and record-refresh content is available.
 Agent A owns any separately authorized removals.
 The authorization field remains false.
+
+## Scheduling amendment on 2026-09-30
+
+The user approved report and work-log compaction now, with final cleanup on branch 4.
+The live PR chain identifies that branch as `fix/soak-finalization-attribution`, PR #441.
+The [tracker](../ToDos.md#epic-019-casper-node-observation-interface) records the new execution branch and the limited reduction.
+TASK-019-8 remains open, and file removals remain unauthorized.
+
+The TASK-019-6 cleanup dependency and all claim, check, scope-review, and Git authorization requirements remain unchanged.
+The earlier inventories above remain historical checkpoints.
+The final inventory requires the inherited stack sources.
 
 ## Decision requested
 

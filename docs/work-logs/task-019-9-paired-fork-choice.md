@@ -59,13 +59,23 @@ The first `compare_unsafe` control did not fail, because equal inputs cannot sho
 
 Registration: `check-tla-invariants.sh` (default tier, PR tier, 5 controls, plan count 19 to 25, third positive model), `test-check-tla-invariants.sh` (family loop), `verification-plan.json` (6 entries), `README.md` (inventory and model section). `bash scripts/ci/check-tla-invariants.sh --soak-pr` passed in 72 s with 16 clean configurations and 83 controls. `bash scripts/ci/test-check-tla-invariants.sh` passed in 145 s. The 13 ledger records of the model files are written with their digests.
 
+## Step 6 on 2026-09-30: two work paths
+
+`shared/src/rust/dag/observation_work.rs` gets the constant `WORK_PATHS = 6`. The budget state, `for_path`, and `usage` use the constant. Path 4 is the `bounded` fork-choice evaluation and path 5 is the `reference` evaluation, both unused until steps 9 and 10.
+
+The Rocq work model `AuthorityWork.v` has no path count. Its theorem `paths_share_one_budget` is generic over charge lists, so the conditional change does not apply.
+
+New test in `casper/tests/soak_observer.rs`: `work_budget_has_six_paths_and_the_aggregate_is_their_sum`. It charges each of the 6 paths, refuses path 6, and checks that the aggregate is the sum of the paths.
+
+Checks: `cargo nextest run --locked --release -p shared -p casper -p node` for the `soak_observer` and `soak_snapshot` binaries and the `shared` package, 158 of 158 passed. `cargo clippy --locked --release -p shared -p casper --tests -- -D warnings` passed. `rustfmt --check` passed on the 2 files.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
 - [x] File-scope confirmation and the 12 answers.
 - [x] Pending claim, mandatory tags, pending ledger records.
 - [x] Bounded model and 5 controls, registered in the gate.
-- [ ] 2 work paths.
+- [x] 2 work paths.
 - [ ] Metered functions in the 4 consensus files.
 - [ ] Input record and input digest.
 - [ ] `bounded` evaluation and tests.

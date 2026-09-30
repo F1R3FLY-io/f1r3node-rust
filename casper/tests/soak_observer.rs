@@ -40,7 +40,9 @@ use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig,
 };
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use shared::rust::dag::observation_work::{CheckedWork, WorkKind, WorkLimits, WorkMeter};
+use shared::rust::dag::observation_work::{
+    CheckedWork, WorkKind, WorkLimits, WorkMeter, WORK_PATHS,
+};
 use shared::rust::store::key_value_store::KeyValueStore;
 
 const STORES: [&str; 13] = [
@@ -565,6 +567,38 @@ async fn exhausted_preparation_returns_partial_counters_and_releases_busy() {
     assert!(error.reason.contains("operations"));
     assert_eq!(error.work.unwrap().aggregate.operations, 2);
     assert!(evaluate(&fixture, &controller).await.work.complete);
+}
+
+#[test]
+fn work_budget_has_six_paths_and_the_aggregate_is_their_sum() {
+    assert_eq!(WORK_PATHS, 6);
+    let meter = meter(work_limits());
+    let kinds = [
+        WorkKind::Metadata,
+        WorkKind::Traversal,
+        WorkKind::Oracle,
+        WorkKind::Signature,
+        WorkKind::Traversal,
+        WorkKind::Clique,
+    ];
+    for (path, kind) in kinds.iter().enumerate() {
+        let scoped = meter.for_path(path).unwrap();
+        for _ in 0..=path {
+            scoped.step(*kind).unwrap();
+        }
+    }
+    assert!(meter.for_path(WORK_PATHS).is_err());
+    let (total, paths, failure) = meter.usage();
+    assert!(failure.is_none());
+    assert_eq!(paths.len(), WORK_PATHS);
+    assert_eq!(paths[4].traversal, 5);
+    assert_eq!(paths[5].clique, 6);
+    assert_eq!(
+        total.operations,
+        paths.iter().map(|usage| usage.operations).sum::<u64>()
+    );
+    assert_eq!(total.traversal, paths[1].traversal + paths[4].traversal);
+    assert_eq!(total.operations, 21);
 }
 
 #[test]
