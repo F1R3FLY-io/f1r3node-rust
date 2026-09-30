@@ -11,16 +11,24 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MLW="$ROOT/formal/why3/cost_accounting/join_conservation.mlw"
+log_file="$ROOT/target/verification/cost-accounted-rho-why3.log"
+mkdir -p "$(dirname "$log_file")"
+: >"$log_file"
+strict="${CA_ENFORCE_PROOFS:-0}"
 
 echo "Checking cost-accounted rho join conservation (Why3)..."
 
 if [ ! -f "$MLW" ]; then
-  echo "error: Why3 development not found at $MLW" >&2
+  echo "error: Why3 development not found at $MLW" | tee "$log_file" >&2
   exit 1
 fi
 
 if ! command -v why3 >/dev/null 2>&1; then
-  echo "  why3 not found on PATH — skipped (fail-soft)."
+  if [ "$strict" = "1" ]; then
+    echo "error: Why3 is required but not on PATH" | tee "$log_file" >&2
+    exit 1
+  fi
+  echo "  why3 not found on PATH — skipped (fail-soft)." | tee "$log_file"
   exit 0
 fi
 
@@ -30,21 +38,33 @@ for p in alt-ergo cvc5 cvc4 z3 vampire eprover; do
   if printf '%s\n' "$provers_list" | grep -qiE "$p"; then prover="$p"; break; fi
 done
 if [ -z "$prover" ]; then
-  echo "  why3 present but no usable prover configured (run 'why3 config detect') — skipped (fail-soft)."
+  if [ "$strict" = "1" ]; then
+    echo "error: Why3 has no usable prover configured" | tee "$log_file" >&2
+    exit 1
+  fi
+  echo "  why3 present but no usable prover configured (run 'why3 config detect') — skipped (fail-soft)." | tee "$log_file"
   exit 0
 fi
 
-out="$(timeout 300 why3 prove -P "$prover" "$MLW" 2>&1 || true)"
-if printf '%s\n' "$out" | grep -qiE 'Unknown|Timeout|Failure|Invalid|StepLimitExceeded|error'; then
-  echo "  Why3 ($prover) did not discharge a goal:" >&2
-  printf '%s\n' "$out" | grep -iE 'Goal|result|Unknown|Timeout|Failure|Invalid' >&2
+if timeout 300 why3 prove -P "$prover" "$MLW" >"$log_file" 2>&1; then
+  rc=0
+else
+  rc=$?
+fi
+if [ "$rc" -ne 0 ]; then
+  echo "  Why3 ($prover) failed with exit $rc; output: $log_file" >&2
+  cat "$log_file" >&2
   exit 1
 fi
-n_valid="$(printf '%s\n' "$out" | grep -c 'Valid' || true)"
-if [ "$n_valid" -lt 3 ]; then
-  echo "  Why3 ($prover) returned only $n_valid Valid goals (expected 3)." >&2
-  printf '%s\n' "$out" | tail -20 >&2
+n_goals="$(grep -c '^Goal ' "$log_file" || true)"
+n_valid="$(grep -c '^Prover result is: Valid ' "$log_file" || true)"
+if [ "$n_goals" -lt 3 ] || [ "$n_goals" -ne "$n_valid" ] \
+   || ! grep -Fxq "Goal sig_size_pos'vc." "$log_file" \
+   || ! grep -Fxq "Goal key_ge'vc." "$log_file" \
+   || ! grep -Fxq 'Goal join_no_weakening.' "$log_file"; then
+  echo "  Why3 ($prover) validated $n_valid of $n_goals goals; output: $log_file" >&2
+  cat "$log_file" >&2
   exit 1
 fi
-echo "  Why3 ($prover): $n_valid goals Valid (sig_size_pos, key_ge, join_no_weakening)."
+echo "  Why3 ($prover): $n_valid goals Valid (sig_size_pos, key_ge, join_no_weakening); output: $log_file."
 echo "Why3 join-conservation cross-witness passed."
