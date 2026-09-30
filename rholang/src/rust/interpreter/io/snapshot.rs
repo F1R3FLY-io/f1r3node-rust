@@ -19,17 +19,20 @@
 // load).  Plus [`referenced_payload_hashes`] as a small helper
 // that later slices thread through the sidecar path.
 //
-// Slice 4 (this PR) adds the payload-hash sidecar:
+// Slice 4 (PR #507) added the payload-hash sidecar:
 // [`hashes_sidecar_path`] (colocated `.hashes` path derivation),
 // [`read_hashes_sidecar`] (best-effort read that returns an
 // empty set on corruption rather than propagating), and
 // [`scan_retained_payload_hashes`] (union across a snapshot
 // directory).  The sidecar write is threaded into
-// [`write_snapshot`] as a best-effort tail — sidecar write
-// failures log at warn but do not fail the snapshot write, since
-// the snapshot bytes are already durable and a missing sidecar
-// only means the corresponding payload hashes go un-counted on
-// the next retention pass (over-eager delete, safe).
+// [`write_snapshot`] as a best-effort tail.
+//
+// Slice 5 (this PR) adds [`sweep_stale_tmp_files`] — a
+// best-effort maintenance helper that removes stale tmp files
+// left behind by a crash between `atomic_write_file`'s tmp
+// `sync_all` and its `rename`.  Handles both `.wal.tmp` and
+// `.hashes.tmp` shapes produced by the two current writers
+// (snapshot + sidecar).
 //
 // Manifest / writer / pruning all land in subsequent slices as
 // their own natural units.
@@ -1215,6 +1218,93 @@ pub fn scan_retained_payload_hashes(
         }
     }
     Ok(union)
+}
+
+// ===========================================================
+// Stale-tmp-file sweep (slice 5)
+// ===========================================================
+
+/// Tmp-file suffixes produced by [`atomic_write_file`].  Adding a
+/// third writer means adding its suffix here so
+/// [`sweep_stale_tmp_files`] cleans up its stale tmp files too.
+const TMP_SUFFIXES: &[&str] = &[".wal.tmp", ".hashes.tmp"];
+
+/// Sweep stale tmp files from `snapshot_dir` — files matching a
+/// suffix in [`TMP_SUFFIXES`] whose mtime is older than
+/// `older_than_secs`.
+///
+/// # Why this is needed
+///
+/// [`atomic_write_file`] writes to a tmp path then `rename`s
+/// atomically into place.  On a crash BETWEEN the `sync_all` and
+/// the `rename` (a small window, but non-zero), the tmp file is
+/// durable but the final file was never created; the tmp file
+/// lives on disk forever unless something sweeps it.  Neither
+/// [`prune_snapshot_dir`] (yet to land — filters on the final
+/// `.wal` extension) nor [`scan_retained_payload_hashes`]
+/// (filters on `.hashes`) ever GC these leaked tmp files, so
+/// they accumulate proportional to crash frequency.
+///
+/// # Mtime-gated for concurrent safety
+///
+/// `older_than_secs` filters by mtime — files younger than the
+/// cutoff are preserved so this can run concurrently with an
+/// in-progress `atomic_write_file` without racing the tmp write
+/// itself.  Typical operator cadence: called periodically with
+/// a generous threshold (e.g., 1 hour), or on startup after a
+/// crash-recovery scan.
+///
+/// # Failure posture
+///
+/// Individual `remove_file` failures log at `debug` and do NOT
+/// propagate — a permission problem on one leaked file must not
+/// abort the sweep of the rest.  The initial `read_dir` failure
+/// DOES propagate (caller usually wants to know the whole sweep
+/// couldn't start).
+///
+/// Returns the number of files successfully removed.
+pub fn sweep_stale_tmp_files(snapshot_dir: &Path, older_than_secs: u64) -> std::io::Result<usize> {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(older_than_secs))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let mut removed = 0;
+    for entry in std::fs::read_dir(snapshot_dir)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        // Match by full-name suffix (not extension, which is only
+        // the segment after the final dot — `foo.wal.tmp` has
+        // extension `tmp`, but we want to match the compound
+        // `.wal.tmp` to avoid deleting an operator's stray `.tmp`
+        // file that we don't own).
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !TMP_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if mtime >= cutoff {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::debug!(
+                target: "f1r3fly.fs_wal.atomic_write",
+                path = %path.display(),
+                error = %e,
+                "sweep_stale_tmp_files: remove failed; continuing"
+            ),
+        }
+    }
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -2499,5 +2589,163 @@ mod tests {
             union, expected,
             "scan unions payload hashes across both sidecars"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Stale-tmp-file sweep (slice 5)
+    // ---------------------------------------------------------------
+
+    /// Set the mtime of `path` to `now - delta_secs` — the primitive
+    /// every sweep test needs to prove the mtime cutoff fires (or
+    /// doesn't).
+    fn age_file(path: &Path, delta_secs: u64) {
+        let now = std::time::SystemTime::now();
+        let aged = now
+            .checked_sub(std::time::Duration::from_secs(delta_secs))
+            .expect("test clock underflow");
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open for chtime");
+        let times = std::fs::FileTimes::new()
+            .set_modified(aged)
+            .set_accessed(aged);
+        f.set_times(times).expect("set_times");
+    }
+
+    /// A missing snapshot dir SHOULD propagate as an error — sweep
+    /// is a maintenance op the caller invoked explicitly.  Contrast
+    /// [`scan_retained_payload_hashes`] which returns empty on a
+    /// missing dir (that runs on every retention pass and shouldn't
+    /// error a fresh install).
+    #[test]
+    fn sweep_stale_tmp_files_missing_dir_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+        let err = sweep_stale_tmp_files(&missing, 0).expect_err("missing dir is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn sweep_stale_tmp_files_empty_dir_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 0);
+    }
+
+    /// Files not matching a [`TMP_SUFFIXES`] entry must survive.
+    /// A stray `.tmp` (without one of the recognized compound
+    /// suffixes) also survives — sweep only removes what our own
+    /// writers create.
+    #[test]
+    fn sweep_stale_tmp_files_leaves_non_tmp_files_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keep_wal = tmp.path().join("abc.wal");
+        let keep_hashes = tmp.path().join("abc.hashes");
+        let keep_manifest = tmp.path().join("manifest.jsonl");
+        let keep_stray_tmp = tmp.path().join("operators-own.tmp");
+        for p in [&keep_wal, &keep_hashes, &keep_manifest, &keep_stray_tmp] {
+            std::fs::write(p, b"content").unwrap();
+            age_file(p, 3600);
+        }
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 0);
+        for p in [&keep_wal, &keep_hashes, &keep_manifest, &keep_stray_tmp] {
+            assert!(p.exists(), "should survive: {}", p.display());
+        }
+    }
+
+    #[test]
+    fn sweep_stale_tmp_files_removes_wal_tmp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.12345-1-1.wal.tmp");
+        std::fs::write(&path, b"leaked").unwrap();
+        age_file(&path, 3600);
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 1);
+        assert!(!path.exists());
+    }
+
+    /// New in slice 5 vs. the pre-sidecar fileio implementation:
+    /// `.hashes.tmp` (from PR #507's sidecar writer) is also swept.
+    /// A future writer whose suffix is missing from [`TMP_SUFFIXES`]
+    /// would leak.  Load-bearing pin — mismatch between what
+    /// [`atomic_write_file`] creates and what the sweep recognizes
+    /// silently leaks disk space.
+    #[test]
+    fn sweep_stale_tmp_files_removes_hashes_tmp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.12345-1-1.hashes.tmp");
+        std::fs::write(&path, b"leaked").unwrap();
+        age_file(&path, 3600);
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 1);
+        assert!(!path.exists());
+    }
+
+    /// A tmp file younger than the cutoff MUST be preserved — the
+    /// mtime gate exists so this can run concurrently with an
+    /// in-progress `atomic_write_file` without racing its tmp
+    /// write.
+    #[test]
+    fn sweep_stale_tmp_files_respects_mtime_cutoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = tmp.path().join("abc.12345-1-1.wal.tmp");
+        let stale = tmp.path().join("abc.12345-2-2.wal.tmp");
+        std::fs::write(&fresh, b"fresh").unwrap();
+        std::fs::write(&stale, b"stale").unwrap();
+        // fresh: mtime "now" (default from write).
+        age_file(&stale, 7200); // 2 hours old
+                                // Cutoff of 3600 (1 hour) means stale (2h) is eligible,
+                                // fresh (0s) is not.
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 3600).unwrap(), 1);
+        assert!(fresh.exists(), "fresh tmp preserved (younger than cutoff)");
+        assert!(!stale.exists(), "stale tmp removed");
+    }
+
+    /// `older_than_secs = 0` → cutoff == now → every tmp file with
+    /// mtime <= now is eligible.  Because we set the mtime slightly
+    /// in the past via `age_file`, both tmp files here are removed;
+    /// this pins the edge case that "sweep everything you own" is
+    /// expressible without a giant cutoff value.
+    #[test]
+    fn sweep_stale_tmp_files_older_than_zero_removes_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("abc.12345-1-1.wal.tmp");
+        let b = tmp.path().join("abc.12345-2-2.hashes.tmp");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        age_file(&a, 1);
+        age_file(&b, 1);
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 2);
+        assert!(!a.exists());
+        assert!(!b.exists());
+    }
+
+    /// Sweep should not touch subdirectories (only file entries
+    /// have tmp suffixes we care about; a `.wal.tmp` DIRECTORY
+    /// is nothing we produce and removing it recursively would
+    /// be an over-reach).
+    #[test]
+    fn sweep_stale_tmp_files_leaves_directories_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let subdir = tmp.path().join("weird.wal.tmp");
+        std::fs::create_dir(&subdir).unwrap();
+        // sweep should skip (remove_file on a dir fails, but our
+        // debug-log-and-continue posture means the sweep still
+        // returns Ok(0)).
+        let removed = sweep_stale_tmp_files(tmp.path(), 0).unwrap();
+        assert_eq!(removed, 0);
+        assert!(subdir.exists() && subdir.is_dir());
+    }
+
+    /// Post-sweep integration: after a `write_snapshot` cycle,
+    /// nothing sweep-eligible remains (rename consumed the tmp
+    /// file).  Pins that the happy path does not leak tmp files
+    /// under normal operation.
+    #[test]
+    fn sweep_stale_tmp_files_zero_after_successful_write_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        write_snapshot(tmp.path(), &entries).expect("write ok");
+        // Even at older_than_secs = 0, nothing to sweep — rename
+        // consumed the tmp during the write.
+        assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 0);
     }
 }
