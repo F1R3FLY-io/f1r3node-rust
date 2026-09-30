@@ -12,15 +12,27 @@
 // substrate that joiners use to apply a fetched snapshot to a
 // fresh tree.
 //
-// Slice 3 (this PR) adds the on-disk read/write path:
+// Slice 3 (PR #506) added the on-disk read/write path:
 // [`snapshot_path`] (content-addressed filename derivation),
 // [`write_snapshot`] (atomic tmp+rename + fsync), and
 // [`read_snapshot_bytes`] (hash + version verification on
 // load).  Plus [`referenced_payload_hashes`] as a small helper
 // that later slices thread through the sidecar path.
 //
-// Manifest / writer / pruning / payload-hash sidecar all land
-// in subsequent slices as their own natural units.
+// Slice 4 (this PR) adds the payload-hash sidecar:
+// [`hashes_sidecar_path`] (colocated `.hashes` path derivation),
+// [`read_hashes_sidecar`] (best-effort read that returns an
+// empty set on corruption rather than propagating), and
+// [`scan_retained_payload_hashes`] (union across a snapshot
+// directory).  The sidecar write is threaded into
+// [`write_snapshot`] as a best-effort tail — sidecar write
+// failures log at warn but do not fail the snapshot write, since
+// the snapshot bytes are already durable and a missing sidecar
+// only means the corresponding payload hashes go un-counted on
+// the next retention pass (over-eager delete, safe).
+//
+// Manifest / writer / pruning all land in subsequent slices as
+// their own natural units.
 //
 // # Snapshot semantics — log-structured
 //
@@ -84,7 +96,7 @@
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 
-use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES};
 
 /// Wire-format version of the WAL slice encoding.  Prepended as a
 /// single `u8` at the start of every encoded WAL slice; the
@@ -752,6 +764,105 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// the counter guarantees distinct tmp paths regardless of clock.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Atomic file write with tmp+rename+fsync + parent-dir fsync
+/// discipline.  Shared by [`write_snapshot`] (`.wal`) and
+/// [`write_hashes_sidecar`] (`.hashes`).
+///
+/// # Discipline
+///
+///   1. `create_dir_all` on the parent (recover from missing dir).
+///   2. Write to a per-process, per-invocation tmp path
+///      (`{stem}.{pid}-{nanos}-{counter}{tmp_suffix}`).
+///   3. `fsync` the tmp file (durability before rename — a crash
+///      between write and rename otherwise leaves a
+///      page-cache-only file that reads as truncated).
+///   4. `rename` to `final_path` (POSIX-atomic on the same
+///      filesystem).
+///   5. Open the parent dir + `fsync` (POSIX: rename's atomicity
+///      does NOT imply metadata durability).
+///
+/// Dir-fsync failures log at `debug` rather than surfacing —
+/// tmpfs / some network filesystems reject dir fsync with a
+/// legitimate errno; treating those as errors would spam warnings.
+///
+/// `fallback_stem` is used when `final_path.file_stem()` is not
+/// valid UTF-8 (unreachable for the hex-derived paths this module
+/// generates, but keeps the helper total).
+fn atomic_write_file(
+    final_path: &Path,
+    tmp_suffix: &str,
+    fallback_stem: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(
+        "{}.{}-{}-{}{}",
+        final_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(fallback_stem),
+        std::process::id(),
+        now_nanos,
+        counter,
+        tmp_suffix
+    );
+    let tmp_path = final_path.with_file_name(tmp_name);
+
+    // Write + fsync tmp file.  `create_new(true)` — a collision
+    // on the per-process/per-nanos/per-counter tmp path indicates
+    // a serious clock or PID malfunction; surface it rather than
+    // overwriting.
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o644);
+        }
+        let mut file = opts.open(&tmp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+
+    std::fs::rename(&tmp_path, final_path)?;
+
+    if let Some(parent) = final_path.parent() {
+        match std::fs::File::open(parent) {
+            Ok(dir_file) => {
+                if let Err(e) = dir_file.sync_all() {
+                    tracing::debug!(
+                        target: "f1r3fly.fs_wal.atomic_write",
+                        parent = %parent.display(),
+                        error = %e,
+                        "dir fsync after rename failed (fs may not support dir fsync)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "f1r3fly.fs_wal.atomic_write",
+                    parent = %parent.display(),
+                    error = %e,
+                    "opening parent dir for fsync failed"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Content-addressed on-disk snapshot path.
 ///
 /// Layout: `{snapshot_dir}/{root_hex}.wal`.  The filename IS the
@@ -780,22 +891,9 @@ pub fn snapshot_path(snapshot_dir: &Path, root: &[u8; 32]) -> PathBuf {
 /// A crash mid-write could leave a partial file at the final path
 /// that the read-time root check would reject as
 /// [`SnapshotError::RootMismatch`] — but that's a noisy
-/// false-alarm.  Instead:
-///
-///   1. Write to a per-process, per-invocation tmp path
-///      (`{stem}.{pid}-{nanos}-{counter}.wal.tmp`).
-///   2. `fsync` the tmp file (durability before rename).
-///   3. `rename` to the content-addressed final path (POSIX-
-///      atomic on the same filesystem).
-///   4. Open the parent dir + `fsync` (rename metadata durability).
-///
-/// The per-process/per-invocation tmp naming prevents two
-/// concurrent writers in the SAME PROCESS writing the SAME
-/// content from stomping the same tmp file mid-write.  The
-/// per-nanosecond suffix distinguishes back-to-back writes from
-/// the same process; a monotonic [`TMP_COUNTER`] provides
-/// belt-and-suspenders coverage against NTP backward jumps
-/// yielding a duplicate `now_nanos`.
+/// false-alarm.  Instead, the write goes through the shared
+/// [`atomic_write_file`] helper (tmp write + fsync + rename +
+/// parent-dir fsync).  Tmp suffix: `.wal.tmp`.
 ///
 /// # Idempotent
 ///
@@ -812,11 +910,22 @@ pub fn snapshot_path(snapshot_dir: &Path, root: &[u8; 32]) -> PathBuf {
 /// storage.  Content is deterministic across validators; the
 /// file metadata should be too.
 ///
-/// # Sidecar deferred
+/// # Payload-hash sidecar (best-effort tail)
 ///
-/// A later slice will thread payload-hash sidecar writes through
-/// this function (via [`referenced_payload_hashes`], defined
-/// below).  This slice ships the snapshot-blob write path alone.
+/// After the snapshot blob is durably renamed into place, this
+/// function computes the set of payload hashes referenced by
+/// `entries` (via [`referenced_payload_hashes`]) and writes a
+/// colocated `.hashes` sidecar (via [`write_hashes_sidecar`]).
+/// The sidecar exists so retention passes can union the payload
+/// hashes referenced across every retained snapshot without
+/// having to decode the full WAL bytes each pass.
+///
+/// Sidecar failures are logged at `warn` but do NOT fail the
+/// snapshot write: the snapshot bytes are already durable, so
+/// the worst case is a missing sidecar → the corresponding
+/// payload hashes go un-counted on the next retention pass →
+/// safe over-eager delete of the payload store entries a fresh
+/// joiner could have fetched from another peer anyway.
 pub fn write_snapshot(
     snapshot_dir: &Path,
     entries: &[WalEntry],
@@ -824,79 +933,22 @@ pub fn write_snapshot(
     let blob = snapshot_blob(entries);
     let final_path = snapshot_path(snapshot_dir, &blob.root);
 
-    // Ensure directory exists.  Callers should have validated
-    // this at boot; a race that removed it mid-flight surfaces
-    // here as ENOENT.
-    if let Some(parent) = final_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    atomic_write_file(&final_path, ".wal.tmp", "snapshot", &blob.bytes)?;
 
-    // Per-process, per-invocation tmp filename — see the
-    // "Atomic tmp+rename" docstring section.
-    let now_nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_name = format!(
-        "{}.{}-{}-{}.wal.tmp",
-        final_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("snapshot"),
-        std::process::id(),
-        now_nanos,
-        counter
-    );
-    let tmp_path = final_path.with_file_name(tmp_name);
-
-    // Write + fsync tmp file.  `create_new(true)` — a collision
-    // on the per-process/per-nanos tmp path indicates a serious
-    // clock or PID malfunction; surface it rather than
-    // overwriting.
-    {
-        use std::io::Write as _;
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o644);
-        }
-        let mut file = opts.open(&tmp_path)?;
-        file.write_all(&blob.bytes)?;
-        file.sync_all()?;
-    }
-
-    // Atomic rename to the content-addressed final path.
-    std::fs::rename(&tmp_path, &final_path)?;
-
-    // Fsync the parent dir so the rename entry itself is durable
-    // (POSIX: rename's atomicity does not imply metadata
-    // durability).  Some filesystems (tmpfs, some network fs)
-    // reject dir fsync with a legitimate errno — log at debug
-    // rather than surfacing.
-    if let Some(parent) = final_path.parent() {
-        match std::fs::File::open(parent) {
-            Ok(dir_file) => {
-                if let Err(e) = dir_file.sync_all() {
-                    tracing::debug!(
-                        target: "f1r3fly.fs_wal.snapshot",
-                        parent = %parent.display(),
-                        error = %e,
-                        "dir fsync after rename failed (fs may not support dir fsync)"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::debug!(
-                    target: "f1r3fly.fs_wal.snapshot",
-                    parent = %parent.display(),
-                    error = %e,
-                    "opening parent dir for fsync failed"
-                );
-            }
-        }
+    // Payload-hash sidecar — best-effort.  The snapshot bytes are
+    // already durable at this point; a sidecar failure logs at
+    // warn but does not fail the snapshot write.  See the
+    // "Payload-hash sidecar" section of this function's docstring.
+    let referenced = referenced_payload_hashes(entries);
+    let sidecar_path = hashes_sidecar_path(snapshot_dir, &blob.root);
+    if let Err(e) = write_hashes_sidecar(&sidecar_path, &referenced) {
+        tracing::warn!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            error = %e,
+            "hashes sidecar write failed; payload retention will \
+             miss this snapshot's referenced hashes on the next pass"
+        );
     }
 
     Ok((final_path, blob.root, blob.merkle_root))
@@ -968,11 +1020,11 @@ pub fn read_snapshot_bytes(snapshot_dir: &Path, root: &[u8; 32]) -> Result<Vec<u
 /// `DeployRef` — only the `Hash` variant references bytes that
 /// live in the payload store.  Deduplicates via `HashSet`.
 ///
-/// The (yet-to-land) payload-hash sidecar slice will thread this
-/// through [`write_snapshot`] so the sidecar records which
-/// payloads a given snapshot references, letting payload-store
-/// retention union across all retained snapshots without
-/// decoding the full WAL bytes each pass.
+/// Threaded through [`write_snapshot`] (see [`write_hashes_sidecar`])
+/// so the sidecar records which payloads a given snapshot
+/// references, letting payload-store retention union across all
+/// retained snapshots without decoding the full WAL bytes each
+/// pass.
 pub fn referenced_payload_hashes(entries: &[WalEntry]) -> std::collections::HashSet<[u8; 32]> {
     let mut set = std::collections::HashSet::new();
     for e in entries {
@@ -981,6 +1033,188 @@ pub fn referenced_payload_hashes(entries: &[WalEntry]) -> std::collections::Hash
         }
     }
     set
+}
+
+// ===========================================================
+// Payload-hash sidecar (slice 4)
+// ===========================================================
+
+/// Colocated sidecar path for the snapshot at content-address
+/// `root`.  Layout: `{snapshot_dir}/{root_hex}.hashes`.
+///
+/// Colocation with the snapshot is deliberate: it lets a future
+/// pruning pass pair snapshot + sidecar with a simple stem match
+/// (`prune_snapshot_dir` removes the paired sidecar when it
+/// removes the snapshot; see the pruning slice).
+pub fn hashes_sidecar_path(snapshot_dir: &Path, root: &[u8; 32]) -> PathBuf {
+    let mut hex = String::with_capacity(64);
+    for b in root {
+        use std::fmt::Write;
+        let _ = write!(hex, "{b:02x}");
+    }
+    snapshot_dir.join(format!("{hex}.hashes"))
+}
+
+/// Sidecar wire format: `[u32-be count][32-byte hash × count]`.
+///
+/// Writes atomically via the shared [`atomic_write_file`] helper
+/// (same tmp+rename+fsync+dir-fsync discipline as
+/// [`write_snapshot`]) so a mid-write crash leaves either no
+/// sidecar or a fully-durable one — never partial.
+///
+/// # Deterministic layout (sorted)
+///
+/// Hashes are sorted before serialization so two independent
+/// invocations that produce equivalent [`HashSet`]s produce
+/// byte-identical sidecar files.  This aids diff-review and
+/// keeps the sidecar itself content-addressable if we ever need
+/// that property.  Set-iteration order is not guaranteed by
+/// [`HashSet`], so relying on it would produce non-deterministic
+/// on-disk bytes across runs.
+fn write_hashes_sidecar(
+    sidecar_path: &Path,
+    hashes: &std::collections::HashSet<[u8; 32]>,
+) -> std::io::Result<()> {
+    let count: u32 = hashes.len().try_into().unwrap_or(u32::MAX);
+    let mut buf = Vec::with_capacity(4 + hashes.len() * 32);
+    buf.extend_from_slice(&count.to_be_bytes());
+    let mut sorted: Vec<[u8; 32]> = hashes.iter().copied().collect();
+    sorted.sort();
+    for h in sorted {
+        buf.extend_from_slice(&h);
+    }
+
+    atomic_write_file(sidecar_path, ".hashes.tmp", "sidecar", &buf)
+}
+
+/// Read a hashes sidecar back into a [`HashSet`].
+///
+/// # Corrupt-sidecar posture: return empty, log at debug
+///
+/// A short header (< 4 bytes), a body whose length disagrees
+/// with the header count, or a header count exceeding
+/// [`MAX_WAL_ENTRIES`] (defensive OOM cap: a snapshot IS a WAL
+/// slice, so its referenced-payload cardinality is bounded by
+/// the same per-slice cap) returns an empty set + a debug log
+/// line.  The sidecar is best-effort, and a corrupt sidecar just
+/// means the corresponding snapshot's payloads go un-counted in
+/// the retained set on the next pass (over-eager delete, safe).
+/// A hard error would force retention to skip the whole pass on
+/// a single corrupt file.
+///
+/// A missing sidecar file surfaces as [`std::io::ErrorKind::NotFound`]
+/// through the returned [`std::io::Result`] — callers can
+/// distinguish "corrupt, ignore" (Ok(empty)) from "missing,
+/// definitely didn't exist" (Err(NotFound)).
+pub fn read_hashes_sidecar(
+    sidecar_path: &Path,
+) -> std::io::Result<std::collections::HashSet<[u8; 32]>> {
+    let bytes = std::fs::read(sidecar_path)?;
+    let mut set = std::collections::HashSet::new();
+    if bytes.len() < 4 {
+        tracing::debug!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            len = bytes.len(),
+            "hashes sidecar too short for u32-be count header"
+        );
+        return Ok(set);
+    }
+    let count = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    // Defensive OOM cap: a corrupt file whose count byte is
+    // absurdly large (e.g., 0xFFFFFFFF) would otherwise force us
+    // to allocate a multi-GiB HashSet.  A snapshot IS a WAL
+    // slice, so its referenced-payload count is bounded above by
+    // MAX_WAL_ENTRIES; any file claiming more is definitionally
+    // corrupt.
+    if count > MAX_WAL_ENTRIES {
+        tracing::debug!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            count,
+            max = MAX_WAL_ENTRIES,
+            "hashes sidecar header count exceeds MAX_WAL_ENTRIES cap; treating as corrupt"
+        );
+        return Ok(set);
+    }
+    let expected = 4usize.saturating_add(count.saturating_mul(32));
+    if bytes.len() != expected {
+        tracing::debug!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            got = bytes.len(),
+            expected,
+            "hashes sidecar body length disagrees with header count"
+        );
+        return Ok(set);
+    }
+    for i in 0..count {
+        let start = 4 + i * 32;
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&bytes[start..start + 32]);
+        set.insert(buf);
+    }
+    Ok(set)
+}
+
+/// Union the payload hashes referenced by every retained snapshot
+/// in `snapshot_dir`, by reading each `.hashes` sidecar.
+///
+/// Callers pass the returned set to the (yet-to-land) payload-
+/// store prune step to delete any non-referenced entries — the
+/// union across retained snapshots IS the "still-needed" set.
+///
+/// # Missing / corrupt handling
+///
+/// - Missing directory → returns an empty set (not an error),
+///   so a fresh install with no snapshots yet doesn't fail
+///   retention startup.
+/// - Non-`.hashes` entries (`.wal` snapshots themselves,
+///   `.wal.tmp` stale writes, unrelated files) → skipped.
+/// - Symlinks → skipped (matches the future `prune_snapshot_dir`
+///   posture — never chase links from a validator's snapshot
+///   directory).
+/// - Corrupt sidecar (short header, length mismatch) → skipped
+///   silently via [`read_hashes_sidecar`]'s corrupt-returns-empty
+///   posture, so one bad sidecar can't take down the whole
+///   retention pass.
+/// - Individual `read_hashes_sidecar` I/O failures → logged at
+///   debug and skipped (the individual file might be
+///   mid-rename); the union proceeds.
+pub fn scan_retained_payload_hashes(
+    snapshot_dir: &Path,
+) -> std::io::Result<std::collections::HashSet<[u8; 32]>> {
+    let mut union = std::collections::HashSet::new();
+    let read_dir = match std::fs::read_dir(snapshot_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(union),
+        Err(e) => return Err(e),
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("hashes") {
+            continue;
+        }
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        match read_hashes_sidecar(&path) {
+            Ok(set) => union.extend(set),
+            Err(e) => {
+                tracing::debug!(
+                    target: "f1r3fly.fs_wal.payload_store",
+                    path = %path.display(),
+                    error = %e,
+                    "hashes sidecar read failed; skipping"
+                );
+            }
+        }
+    }
+    Ok(union)
 }
 
 #[cfg(test)]
@@ -1944,5 +2178,326 @@ mod tests {
     fn referenced_payload_hashes_empty_input_yields_empty_set() {
         let set = referenced_payload_hashes(&[]);
         assert!(set.is_empty());
+    }
+
+    // ---------------------------------------------------------------
+    // Payload-hash sidecar (slice 4)
+    // ---------------------------------------------------------------
+
+    fn small_hash_set(bytes: &[u8]) -> std::collections::HashSet<[u8; 32]> {
+        bytes
+            .iter()
+            .map(|b| {
+                let mut h = [0u8; 32];
+                h[0] = *b;
+                h
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hashes_sidecar_path_uses_hex64_with_hashes_extension() {
+        let dir = PathBuf::from("/x");
+        let root = [0xABu8; 32];
+        let path = hashes_sidecar_path(&dir, &root);
+        // 32 bytes of 0xAB → 64-char hex of "ab" repeated.
+        let expected_hex: String = "ab".repeat(32);
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        assert_eq!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some(format!("{expected_hex}.hashes").as_str())
+        );
+    }
+
+    #[test]
+    fn hashes_sidecar_path_colocated_with_snapshot() {
+        let dir = PathBuf::from("/x");
+        let root = [0x11u8; 32];
+        let snap = snapshot_path(&dir, &root);
+        let side = hashes_sidecar_path(&dir, &root);
+        // Same parent, same stem, extensions differ.
+        assert_eq!(snap.parent(), side.parent());
+        assert_eq!(snap.file_stem(), side.file_stem());
+        assert_eq!(snap.extension().and_then(|s| s.to_str()), Some("wal"));
+        assert_eq!(side.extension().and_then(|s| s.to_str()), Some("hashes"));
+    }
+
+    #[test]
+    fn hashes_sidecar_empty_set_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("empty.hashes");
+        let empty = std::collections::HashSet::new();
+        write_hashes_sidecar(&path, &empty).expect("write ok");
+        // On disk: just the u32-be zero count header.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes, vec![0u8, 0, 0, 0], "empty set is 4-byte header");
+        let back = read_hashes_sidecar(&path).expect("read ok");
+        assert!(back.is_empty());
+    }
+
+    #[test]
+    fn hashes_sidecar_nonempty_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nonempty.hashes");
+        let set = small_hash_set(&[1, 2, 3]);
+        write_hashes_sidecar(&path, &set).expect("write ok");
+        let back = read_hashes_sidecar(&path).expect("read ok");
+        assert_eq!(back, set);
+    }
+
+    /// The on-disk layout is `[u32-be count][32-byte hash × count]`
+    /// with hashes sorted lexicographically.  Pinning this so an
+    /// accidental switch to `HashSet`'s iteration order (which is
+    /// non-deterministic across runs) is caught at test time.
+    #[test]
+    fn hashes_sidecar_layout_sorted_for_determinism() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sorted.hashes");
+        // Insertion order deliberately reversed vs. sort order.
+        let set = small_hash_set(&[9, 5, 1]);
+        write_hashes_sidecar(&path, &set).expect("write ok");
+        let bytes = std::fs::read(&path).unwrap();
+        // Header: count = 3 in u32-be.
+        assert_eq!(&bytes[0..4], &[0, 0, 0, 3]);
+        // Bodies: sorted by leading byte (1, 5, 9).
+        assert_eq!(bytes[4], 1, "first hash body starts with 1");
+        assert_eq!(bytes[4 + 32], 5, "second hash body starts with 5");
+        assert_eq!(bytes[4 + 64], 9, "third hash body starts with 9");
+        assert_eq!(
+            bytes.len(),
+            4 + 3 * 32,
+            "total length = header + count * 32"
+        );
+    }
+
+    /// Two independent invocations with equivalent hash sets
+    /// produce byte-identical files (via the sort).
+    #[test]
+    fn hashes_sidecar_write_is_deterministic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path_a = tmp.path().join("a.hashes");
+        let path_b = tmp.path().join("b.hashes");
+        let set = small_hash_set(&[7, 3, 2, 11, 5]);
+        write_hashes_sidecar(&path_a, &set).expect("write a ok");
+        write_hashes_sidecar(&path_b, &set).expect("write b ok");
+        assert_eq!(
+            std::fs::read(&path_a).unwrap(),
+            std::fs::read(&path_b).unwrap()
+        );
+    }
+
+    /// Corrupt-sidecar posture: a short header (< 4 bytes) does
+    /// NOT propagate as an error; the reader returns an empty set
+    /// so retention can proceed.
+    #[test]
+    fn read_hashes_sidecar_short_header_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("short.hashes");
+        std::fs::write(&path, b"ab").unwrap();
+        let set = read_hashes_sidecar(&path).expect("read ok (best-effort)");
+        assert!(set.is_empty());
+    }
+
+    /// Header claims N entries but the body length disagrees →
+    /// return empty (corrupt-sidecar posture).
+    #[test]
+    fn read_hashes_sidecar_length_mismatch_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mismatched.hashes");
+        // Claim 5 hashes but write only 4 bytes of body.
+        let mut bytes = vec![0u8, 0, 0, 5];
+        bytes.extend_from_slice(&[0xAAu8; 4]);
+        std::fs::write(&path, &bytes).unwrap();
+        let set = read_hashes_sidecar(&path).expect("read ok (best-effort)");
+        assert!(set.is_empty());
+    }
+
+    /// Header claims a count exceeding [`MAX_WAL_ENTRIES`] → return
+    /// empty (defensive OOM cap).  Body length would be gigabytes
+    /// under a naive read; the cap check fires before we look at
+    /// the body length or attempt any allocation proportional to
+    /// `count`.
+    #[test]
+    fn read_hashes_sidecar_count_exceeds_cap_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("huge.hashes");
+        // u32-be = 0xFFFFFFFF (>> MAX_WAL_ENTRIES); body left empty.
+        std::fs::write(&path, [0xFFu8, 0xFF, 0xFF, 0xFF]).unwrap();
+        let set = read_hashes_sidecar(&path).expect("read ok (best-effort)");
+        assert!(set.is_empty());
+    }
+
+    /// A missing file DOES propagate as an [`io::Error`] — callers
+    /// that need to distinguish "file wasn't there" from "file was
+    /// there but corrupt" get the NotFound signal.
+    #[test]
+    fn read_hashes_sidecar_missing_file_returns_io_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such.hashes");
+        let err = read_hashes_sidecar(&missing).expect_err("should be NotFound");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn scan_retained_payload_hashes_missing_dir_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+        let set = scan_retained_payload_hashes(&missing).expect("missing dir is OK, empty");
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn scan_retained_payload_hashes_empty_dir_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let set = scan_retained_payload_hashes(tmp.path()).expect("empty dir is OK");
+        assert!(set.is_empty());
+    }
+
+    /// Two sidecars with disjoint hash sets → union contains both.
+    #[test]
+    fn scan_retained_payload_hashes_unions_multiple_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_a = [0x01u8; 32];
+        let root_b = [0x02u8; 32];
+        let set_a = small_hash_set(&[10, 20]);
+        let set_b = small_hash_set(&[30, 40]);
+        write_hashes_sidecar(&hashes_sidecar_path(tmp.path(), &root_a), &set_a).unwrap();
+        write_hashes_sidecar(&hashes_sidecar_path(tmp.path(), &root_b), &set_b).unwrap();
+
+        let union = scan_retained_payload_hashes(tmp.path()).expect("scan ok");
+        let mut expected = set_a;
+        expected.extend(set_b);
+        assert_eq!(union, expected);
+    }
+
+    /// The scan skips non-`.hashes` entries — a `.wal` snapshot
+    /// sitting in the same directory must NOT be interpreted as a
+    /// sidecar.
+    #[test]
+    fn scan_retained_payload_hashes_skips_non_hashes_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = [0x03u8; 32];
+        // Real sidecar with one hash.
+        let set = small_hash_set(&[0x77]);
+        write_hashes_sidecar(&hashes_sidecar_path(tmp.path(), &root), &set).unwrap();
+        // Adversarial files with wrong extension.
+        std::fs::write(tmp.path().join("stray.wal"), b"not a sidecar").unwrap();
+        std::fs::write(tmp.path().join("stray.wal.tmp"), b"partial write").unwrap();
+        std::fs::write(tmp.path().join("random.txt"), b"unrelated").unwrap();
+
+        let union = scan_retained_payload_hashes(tmp.path()).expect("scan ok");
+        assert_eq!(union, set, "only .hashes sidecar contributes");
+    }
+
+    /// A corrupt sidecar in the middle of a scan does NOT abort
+    /// the pass — the valid sidecars still contribute to the
+    /// union (via [`read_hashes_sidecar`]'s corrupt-returns-empty
+    /// posture).
+    #[test]
+    fn scan_retained_payload_hashes_skips_corrupt_sidecars_silently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = [0x04u8; 32];
+        let set = small_hash_set(&[0x55]);
+        write_hashes_sidecar(&hashes_sidecar_path(tmp.path(), &root), &set).unwrap();
+        // Corrupt sidecar (short header).
+        std::fs::write(tmp.path().join("bad.hashes"), b"xy").unwrap();
+
+        let union = scan_retained_payload_hashes(tmp.path()).expect("scan ok despite corrupt file");
+        assert_eq!(union, set);
+    }
+
+    /// End-to-end: [`write_snapshot`] threads through the sidecar
+    /// write, so after a successful snapshot write the sidecar
+    /// exists at the colocated path with the expected referenced-
+    /// hash contents.  This is the LOAD-BEARING integration pin for
+    /// the sidecar's role in the retention pipeline.
+    #[test]
+    fn write_snapshot_creates_sidecar_alongside_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        let (snap_path, root, _merkle) = write_snapshot(tmp.path(), &entries).expect("write ok");
+        assert!(snap_path.exists(), "snapshot file exists");
+
+        let side_path = hashes_sidecar_path(tmp.path(), &root);
+        assert!(side_path.exists(), "sidecar file exists next to snapshot");
+        assert_eq!(side_path.parent(), snap_path.parent());
+        assert_eq!(side_path.file_stem(), snap_path.file_stem());
+
+        let recorded = read_hashes_sidecar(&side_path).expect("sidecar read ok");
+        let expected = referenced_payload_hashes(&entries);
+        assert_eq!(
+            recorded, expected,
+            "sidecar records exactly the entries' hash-variant payloads"
+        );
+        // Sanity: diverse_entries contains at least one Hash payload.
+        assert!(
+            !expected.is_empty(),
+            "fixture MUST contain a Hash-variant payload for this test to be meaningful"
+        );
+    }
+
+    /// Entries with no `Hash`-variant payloads → empty referenced
+    /// set → the sidecar still gets written (as a 4-byte
+    /// zero-count header) so retention doesn't confuse "no
+    /// referenced payloads" with "sidecar-missing / assume corrupt".
+    #[test]
+    fn write_snapshot_with_no_hash_refs_creates_empty_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Chmod-only entry: no payload_ref at all.
+        let entries = vec![WalEntry {
+            op: WalOp::Chmod,
+            path: PathBuf::from("/@bundle/f"),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: Some(0o644),
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }];
+        let (_snap_path, root, _merkle) = write_snapshot(tmp.path(), &entries).expect("write ok");
+
+        let side_path = hashes_sidecar_path(tmp.path(), &root);
+        assert!(side_path.exists());
+        assert_eq!(std::fs::read(&side_path).unwrap(), vec![0u8, 0, 0, 0]);
+        let recorded = read_hashes_sidecar(&side_path).expect("sidecar read ok");
+        assert!(recorded.is_empty());
+    }
+
+    /// Sidecar joins the scan-union naturally when written through
+    /// [`write_snapshot`] — the end-to-end proof that a fresh
+    /// install can go directly from "wrote snapshots" to
+    /// "retention scans referenced payloads" with no intermediate
+    /// wiring.
+    #[test]
+    fn scan_after_two_write_snapshot_calls_returns_union() {
+        let tmp = tempfile::tempdir().unwrap();
+        // First snapshot: diverse fixture (contains Hash-variant refs).
+        let entries_a = diverse_entries();
+        let (_, _, _) = write_snapshot(tmp.path(), &entries_a).expect("write a ok");
+        // Second snapshot: a distinct Write with a different payload
+        // so the referenced sets are disjoint (different Blake2b256).
+        let entries_b = vec![WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/@bundle/w-second"),
+            extra_path: None,
+            offset: None,
+            length: Some(9),
+            payload_ref: Some(PayloadRef::hash(b"different")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }];
+        let (_, _, _) = write_snapshot(tmp.path(), &entries_b).expect("write b ok");
+
+        let union = scan_retained_payload_hashes(tmp.path()).expect("scan ok");
+        let mut expected = referenced_payload_hashes(&entries_a);
+        expected.extend(referenced_payload_hashes(&entries_b));
+        assert_eq!(
+            union, expected,
+            "scan unions payload hashes across both sidecars"
+        );
     }
 }
