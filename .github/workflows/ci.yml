@@ -24,10 +24,10 @@ on:
       - trying
     tags:
       - "**"
-  # `labeled` carries the ci-heavy opt-in. `edited` is gone: a title edit cost a
-  # heavy pipeline and changed nothing a test can observe.
+  # `labeled` carries the ci-heavy opt-in. `edited` stays: a stacked pull
+  # request's base change arrives as an edit, and the gate reads the base ref.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled]
   merge_group:
 
 # GitHub keeps one running item and one pending item in each concurrency group.
@@ -858,21 +858,13 @@ jobs:
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
-    if: always()
+    if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
-      - name: Report deferred coverage
-        if: needs.pipeline.result == 'skipped'
-        shell: bash -e {0}
-        run: |
-          echo "Heavy integration coverage is deferred to the merge queue."
-          echo "Add the ci-heavy label to run it on this pull request now."
-
       - name: Check amd64 matrix slots
-        if: needs.pipeline.result != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
@@ -898,21 +890,13 @@ jobs:
   integration_tests_arm64:
     name: Integration Tests (arm64)
     needs: pipeline
-    if: always()
+    if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
-      - name: Report deferred coverage
-        if: needs.pipeline.result == 'skipped'
-        shell: bash -e {0}
-        run: |
-          echo "Heavy integration coverage is deferred to the merge queue."
-          echo "Add the ci-heavy label to run it on this pull request now."
-
       - name: Check arm64 matrix slots
-        if: needs.pipeline.result != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
