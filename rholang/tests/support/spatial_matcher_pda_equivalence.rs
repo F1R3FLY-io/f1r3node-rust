@@ -511,6 +511,17 @@ fn concrete_region_route_is_differentially_exact_on_the_canonical_par_corpus() {
                     // unwind or rejecting malformed fields it never reaches.
                     legacy_undefined_pairs += 1;
                     *domain_errors.entry(error).or_default() += 1;
+                    let mut context = SpatialMatcherContext::new();
+                    let _ = match_par_with_concrete_region_stats(
+                        &mut context,
+                        target.clone(),
+                        pattern.clone(),
+                    )
+                    .0;
+                    assert!(
+                        context.free_map.is_empty(),
+                        "malformed concrete pair changed FreeMap: {target_name} vs {pattern_name}"
+                    );
                     continue;
                 }
             };

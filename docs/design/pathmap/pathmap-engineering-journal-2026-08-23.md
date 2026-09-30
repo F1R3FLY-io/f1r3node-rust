@@ -18327,6 +18327,23 @@ has a width-512 scalar-target regression asserting zero endpoint backing
 copies. Both tests passed within J-239's release gate. They are triaged and
 linked in pgmcp; these observations are not trusted verification receipts.
 
+**MEASURED.** A current-source release check made the corpus differential call
+the production matcher on every pair for which `try_match_pars` reports an
+undefined legacy-oracle domain. The one such pair is `deep_mixed::2` against
+itself: the oracle reaches an absent `Receive.body`, while production's
+authoritative equality shortcut returns success without panic and leaves
+`FreeMap` unchanged. This check proves the required no-panic and no-binding-leak
+disposition without assigning a legacy verdict where the legacy relation is
+undefined. A diagnostic stronger assertion that this pair must refuse failed;
+its log is retained at
+`target/verification/matcher-fixed-bugs/corpus-malformed-negative.log`, SHA-256
+`b266258f0040943749ddb0c88ac27a05113d229111740d12e5f1b5a62eb1ff66`.
+The corrected corpus test passes at current source; its release log SHA-256 is
+`fb6ce7a5ab67ae8effe7f37d94f9d65e0f07276ca651ac09176f4992303ca27d`.
+The width-512 zero-copy regression independently passes with log SHA-256
+`5eeee7d4b0cf7e4345a60f26994ae20c84ff8e7c0eb22aad9ad524f3977d4f33`.
+No matcher production or Casper source changed for this reconciliation.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
