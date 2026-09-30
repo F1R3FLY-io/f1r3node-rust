@@ -77,12 +77,12 @@ mr_status:
 ---
 epic_id: EPIC-020
 title: "Node Log and Accept-Path Self-Limits"
-status: pending
+status: in_progress
 priority: p0
 user_story: null
 blocked_by: []
 created_at: 2026-09-23
-updated_at: 2026-09-23
+updated_at: 2026-09-30
 claimed_by: null
 branch: fix/node-log-and-accept-backoff
 pr_base_branch: dev
@@ -93,12 +93,18 @@ execution_contract:
   scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
   git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
   cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
+  cbc_decision: "The maintainer decided on 2026-09-30 that the accept path stays untagged for TASK-020-1. The regression tests in f1r3fly_server_resource_tests.rs are the verification."
 tasks:
   - id: TASK-020-1
     title: "Back off and rate-limit the transport accept-error path"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-30T00:40:00Z
     blocked_by: []
+    work_log: docs/work-logs/transport-accept-resource-review-20260923.md
+    implementation_status: "The accept loop has the backoff, the log limit, and the stop condition. The six portable regression tests pass. The Linux descriptor test has no result yet."
+    remaining:
+      - "Get the result of the Linux descriptor test from the hosted run. The local container storage had no space for the build."
     files:
       - comm/src/rust/transport/f1r3fly_server.rs
     acceptance:

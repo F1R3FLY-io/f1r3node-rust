@@ -49,3 +49,46 @@ Passing regression tests will not discharge the proposed disk protection claim o
 
 The failing control and corrected results will be recorded here after execution.
 No commit, push, PR change, or merge is authorized by this work.
+
+### Correction on 2026-09-30
+
+`claude-session-f3cbc961` made the correction for TASK-020-1 on `fix/node-log-and-accept-backoff` at `6d4c4a1bd`.
+The maintainer confirmed the file scope and the method before the change.
+The change is in `comm/src/rust/transport/f1r3fly_server.rs` only. The regression tests did not change.
+
+| Correction scope item | Implementation |
+| --- | --- |
+| Delay before a retry | The delay starts at 10 ms and doubles to a maximum of one second. A successful accept sets it back to 10 ms. |
+| Error delivered to the consumer | The listener sends the error first, and then it waits. |
+| Stop when the consumer closes or drops the stream | The accept wait and the retry wait end when the channel closes. |
+| Cancel unfinished handshakes | The listener task owns the handshakes. It releases the listener socket first, and then it cancels the handshakes. |
+| Log limit | The listener writes at most one `ERROR` line in each second. It writes one `WARN` summary in each minute with the field `suppressed_errors`. |
+
+The review text above has a fixed delay of one second. The task record and the tests require the exponential delay, which this correction uses.
+
+### Failing control
+
+| Run | Result |
+| --- | --- |
+| Hosted runs of PR #451 from 2026-09-24 to 2026-09-29 | `Test (comm)` failed, with four reported failures before the run stopped |
+| Local run on macOS before the correction | 6 of 6 portable tests failed |
+
+### Corrected results
+
+| Check | Result |
+| --- | --- |
+| The six portable regression tests, one process for each test | 6 passed |
+| The complete `comm` crate, one process for each test | 399 passed |
+| Clippy on the `comm` crate, all targets, warnings denied | Passed |
+| Rust format | Passed |
+| The Linux descriptor test | Not run. The local container storage had no space for the build. The hosted run is the first result. |
+
+The hosted checks use one process for each test. The local results use the same method.
+
+### Limits
+
+- The timer of the runtime rounds a deadline up to the next millisecond. The listener requests the delay minus 999,999 ns, so the wait does not exceed the nominal delay. The actual wait is between the nominal delay minus one millisecond and the nominal delay.
+- One regression test pauses the clock after real socket operations. The exact times of that test need the compensation above.
+- The log test uses a subscriber for one thread. With all tests in one process and parallel threads, that test fails intermittently. The cause is the shared callsite cache of the tracing library, not the listener.
+- The summary line is written when an accept error occurs after the minute ends. A suppressed count stays unreported if the errors stop before that time.
+- The correction does not limit the number of concurrent handshakes. It does not find the initial cause of the descriptor exhaustion.
