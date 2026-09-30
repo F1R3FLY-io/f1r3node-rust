@@ -24,6 +24,10 @@
 //     `share_*` / getter methods (slice 3).
 //   - `root_registry: RootIdentityRegistry` public field +
 //     `share_root_registry` broadcast method (slice 4).
+//   - Soft-checkpoint machinery (`snapshot_next_fd` /
+//     `seed_next_fd_watermark` / `seed_next_fd_from_state_hash` /
+//     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
+//     assert (slice 8).
 //
 // # Deferred to later `handle_table` slices
 //
@@ -33,10 +37,6 @@
 //     gated on `DirHandleTable`.
 //   - `close_all_for_deploy` / `has_active_handles_sync` — gated
 //     on `LockRegistry` for the symmetric sweep interface.
-//   - Soft-checkpoint machinery (`snapshot_next_fd` /
-//     `seed_next_fd_watermark` / `seed_next_fd_from_state_hash` /
-//     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
-//     assert.
 //
 // Each deferred field / method group has its own natural
 // dependency:  `lock_registry` waits for `lock.rs`'s
@@ -100,6 +100,44 @@ use super::mode::AccessMode;
 use super::path::identity::RootIdentityRegistry;
 use super::wal::{PayloadPersistence, PayloadSourceRecorder, Wal};
 use super::ConsensusMode;
+
+/// Number of low bits reserved as per-lifetime fd-allocation
+/// headroom below the state-hash-derived watermark.  2^20 ≈ 1M
+/// fds is safely above `MAX_OPEN_FDS = 1024` live fds and any
+/// realistic open+close cycle count within a single
+/// block-computation.  A `const` assertion below enforces that
+/// `MAX_OPEN_FDS` cannot silently exceed this budget on a future
+/// change.
+///
+/// # CONSENSUS-OBSERVABLE
+///
+/// This constant governs the state-hash → fd-watermark derivation
+/// in [`FileHandleTable::seed_next_fd_from_state_hash`].  Fd
+/// values live in Rholang tuplespace state (`File`-agent `fdP`
+/// cells → on-chain via the state hash), so validators running a
+/// different value here would compute a different watermark for
+/// the same state hash → different fd allocation sequence →
+/// different tuplespace state.  A partial-upgrade fleet would
+/// silently fork.
+///
+/// Registered into `CONSENSUS_FOLD` at order 14 (below); the
+/// fingerprint fold advertises the constant to peering handshakes
+/// so a mismatched validator fails the `network_id` check at boot
+/// rather than silently forking.
+const FD_ENTROPY_HEADROOM_BITS: u32 = 20;
+
+// Compile-time invariant guard.  If a future change raises
+// `MAX_OPEN_FDS` past the entropy-headroom budget, the build
+// fails here — flagging that `seed_next_fd_from_state_hash`'s
+// aliasing protection must be revisited.  The 2× factor is a
+// safety margin for open+close cycles vs. concurrent-live fds.
+const _: () = assert!(
+    (super::MAX_OPEN_FDS as u64) * 2 < 1u64 << FD_ENTROPY_HEADROOM_BITS,
+    "MAX_OPEN_FDS exceeds FD_ENTROPY_HEADROOM_BITS budget; \
+     the state-hash-derived watermark cannot guarantee aliasing prevention"
+);
+
+crate::register_consensus_constant!(order = 14, name = FD_ENTROPY_HEADROOM_BITS, u64_be);
 
 /// Per-fd metadata record.
 ///
@@ -663,6 +701,134 @@ impl FileHandleTable {
     ///      inner and every runtime sees it.
     pub fn share_root_registry(&self, shared: RootIdentityRegistry) {
         self.root_registry.share_from(&shared);
+    }
+
+    // --- Soft-checkpoint (slice 8) ---------------------------------
+
+    /// Snapshot the next-fd counter for deploy-boundary rollback.
+    /// Callers pair this with [`truncate_to`](Self::truncate_to)
+    /// on `RhoRuntimeImpl` soft-checkpoint: the snapshot is taken
+    /// pre-deploy, and revert closes every fd allocated past it.
+    pub fn snapshot_next_fd(&self) -> u64 { self.inner.next_fd.load(Ordering::Relaxed) }
+
+    /// Raise the fd counter to at least `watermark + 1` before
+    /// the next allocation.  Called on every block boundary via
+    /// runtime reset so a post-restart runtime cannot allocate
+    /// fd values that alias stale references still present in
+    /// the tuplespace.
+    ///
+    /// # Aliasing scenario averted
+    ///
+    /// Pre-restart, Deploy A opened a File with fd = 42 and
+    /// stashed the cap in the tuplespace.  Node restarts; the
+    /// fresh `FileHandleTable::next_fd` starts at 1.  A
+    /// subsequent Deploy B opens 41 unrelated files; the 42nd
+    /// new open would allocate fd = 42.  Deploy A's stashed cap,
+    /// invoked later via `fsRead(42, ...)`, would now read from
+    /// Deploy B's file.  Seeding the watermark from a value
+    /// larger than any pre-restart fd prevents this.
+    ///
+    /// # Monotonic + idempotent
+    ///
+    /// Multiple calls with the same or lower watermark are
+    /// no-ops; the counter never rewinds.  This preserves the
+    /// pre-existing "closed fd is never re-issued" invariant.
+    ///
+    /// Uses a compare-and-swap loop rather than `fetch_max`
+    /// because `AtomicU64::fetch_max` isn't stable everywhere the
+    /// tree builds today — the CAS is a portable equivalent.
+    pub fn seed_next_fd_watermark(&self, watermark: u64) {
+        let target = watermark.saturating_add(1);
+        let mut current = self.inner.next_fd.load(Ordering::Relaxed);
+        while current < target {
+            match self.inner.next_fd.compare_exchange_weak(
+                current,
+                target,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Derive a deterministic per-restart watermark from a
+    /// 32-byte state hash and seed `next_fd` from it.  Called
+    /// on every block boundary via runtime reset.
+    ///
+    /// # Consensus commitment
+    ///
+    /// Fd values are consensus-observable (stored in Rholang
+    /// tuplespace state as `u64` inside `File`-agent `fdP`
+    /// cells; go on-chain via the tuplespace state hash).  This
+    /// derivation is therefore an implicit consensus commitment
+    /// — every validator resetting to the same state hash
+    /// computes the same watermark, so replay of captured fd
+    /// values on followers matches the leader's allocation.  Any
+    /// future change to the derivation (bytes used, shift
+    /// amount, hashing algorithm) is a hard fork.
+    ///
+    /// # Entropy derivation
+    ///
+    /// Take the first 8 bytes of `hash` as a big-endian `u64` and
+    /// mask off the low `FD_ENTROPY_HEADROOM_BITS` bits.  The
+    /// masked bits are reserved as per-lifetime allocation
+    /// headroom — a single runtime lifetime can allocate up to
+    /// `1 << FD_ENTROPY_HEADROOM_BITS` fds before the counter
+    /// would enter the next watermark's range.
+    ///
+    /// Entropy budget: 64 − 20 = 44 bits of state-hash entropy
+    /// in the watermark.  Birthday collision at ~2^22 (~4 million)
+    /// blocks → ~130 years at 1 block/sec.  Headroom budget:
+    /// 2^20 ≈ 1M fd allocations per runtime lifetime, well above
+    /// any realistic per-block open/close pattern
+    /// (`MAX_OPEN_FDS = 1024` live fds → ~1000 open+close cycles
+    /// per block is the realistic upper bound).
+    ///
+    /// # Short-hash guard
+    ///
+    /// `debug_assert!` fires if a caller passes a hash shorter
+    /// than 8 bytes — state hashes are always 32 bytes, but a
+    /// future refactor passing a truncated value would silently
+    /// reduce entropy and disable the aliasing protection.
+    pub fn seed_next_fd_from_state_hash(&self, hash: &[u8]) {
+        // Release-time assert (not `debug_assert!`) — the check
+        // is a single length comparison on a rare boot-only path
+        // and closes the "silent entropy reduction" hole a
+        // truncated hash would open.  State hashes are always 32
+        // bytes in practice; a shorter one is a code bug that
+        // MUST fail loudly rather than silently pad + reduce
+        // watermark entropy.
+        assert!(
+            hash.len() >= 8,
+            "seed_next_fd_from_state_hash requires at least 8 bytes of hash; \
+             got {} — a shorter hash silently reduces entropy and disables aliasing protection",
+            hash.len()
+        );
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&hash[..8]);
+        let hi = u64::from_be_bytes(buf);
+        // Mask off the low headroom bits so a full runtime
+        // lifetime cannot overflow into the next watermark's
+        // range.
+        let watermark = hi & !((1u64 << FD_ENTROPY_HEADROOM_BITS) - 1);
+        self.seed_next_fd_watermark(watermark);
+    }
+
+    /// Roll back to a prior `snapshot_next_fd` value, dropping
+    /// every fd allocated past it.  Called by
+    /// `RhoRuntimeImpl::revert_to_soft_checkpoint` alongside
+    /// `Wal::truncate_to`.
+    ///
+    /// Note: `next_fd` is monotonic even across rollback — the
+    /// counter does NOT rewind.  That is the invariant that
+    /// prevents fd aliasing across deploys.  A rolled-back
+    /// deploy's next-attempt allocation gets a fresh fd value,
+    /// not a reused one.
+    pub async fn truncate_to(&self, snapshot: u64) {
+        let mut table = self.inner.table.write().await;
+        table.retain(|&fd, _| fd < snapshot);
     }
 }
 
@@ -1317,5 +1483,141 @@ mod tests {
             "b (cloned before share) must see manager registrations \
              after a.share_root_registry"
         );
+    }
+
+    // --- Slice 8: soft-checkpoint machinery ------------------------
+
+    #[tokio::test]
+    async fn snapshot_next_fd_returns_current_counter_value() {
+        let table = FileHandleTable::new();
+        assert_eq!(table.snapshot_next_fd(), 1);
+        // After 3 inserts, next_fd advances to 4.
+        for i in 0..3 {
+            table.insert(shadow_handle(i as u8)).await.unwrap();
+        }
+        assert_eq!(table.snapshot_next_fd(), 4);
+    }
+
+    /// `seed_next_fd_watermark` raises the counter to
+    /// `watermark + 1`.  A subsequent `insert()` allocates from
+    /// there, not from the old counter position.
+    #[tokio::test]
+    async fn seed_next_fd_watermark_raises_counter() {
+        let table = FileHandleTable::new();
+        table.seed_next_fd_watermark(100);
+        assert_eq!(table.snapshot_next_fd(), 101);
+        let fd = table.insert(shadow_handle(0x01)).await.unwrap();
+        assert_eq!(fd, 101, "insert allocates from the seeded watermark");
+    }
+
+    /// `seed_next_fd_watermark` is monotonic — a lower watermark
+    /// does NOT rewind the counter.  Preserves the "closed fd is
+    /// never re-issued" invariant across rollback.
+    #[tokio::test]
+    async fn seed_next_fd_watermark_is_monotonic() {
+        let table = FileHandleTable::new();
+        table.seed_next_fd_watermark(100);
+        assert_eq!(table.snapshot_next_fd(), 101);
+        // Attempt to rewind to a lower watermark — no-op.
+        table.seed_next_fd_watermark(50);
+        assert_eq!(table.snapshot_next_fd(), 101);
+        // Same watermark — also no-op.
+        table.seed_next_fd_watermark(100);
+        assert_eq!(table.snapshot_next_fd(), 101);
+    }
+
+    /// `seed_next_fd_watermark(u64::MAX)` saturates safely at
+    /// `u64::MAX` (the `.saturating_add(1)` guard) rather than
+    /// wrapping to zero.  A subsequent `insert()` then trips
+    /// the wrap guard from PR #495 and returns `Err(())`.
+    #[tokio::test]
+    async fn seed_next_fd_watermark_saturates_at_u64_max() {
+        let table = FileHandleTable::new();
+        table.seed_next_fd_watermark(u64::MAX);
+        assert_eq!(table.snapshot_next_fd(), u64::MAX);
+        // Subsequent insert trips the wrap guard.
+        assert_eq!(table.insert(shadow_handle(0x00)).await, Err(()));
+    }
+
+    /// `seed_next_fd_from_state_hash` derives a deterministic
+    /// watermark from the hash prefix.  Same hash → same
+    /// watermark (consensus commitment across validators).
+    #[tokio::test]
+    async fn seed_next_fd_from_state_hash_is_deterministic() {
+        let table_a = FileHandleTable::new();
+        let table_b = FileHandleTable::new();
+        // Distinctive 32-byte hash.
+        let hash: [u8; 32] = [
+            0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        table_a.seed_next_fd_from_state_hash(&hash);
+        table_b.seed_next_fd_from_state_hash(&hash);
+        assert_eq!(
+            table_a.snapshot_next_fd(),
+            table_b.snapshot_next_fd(),
+            "two validators seeding from the same state hash MUST \
+             derive identical watermarks — this is a consensus \
+             commitment"
+        );
+    }
+
+    /// The state-hash-derived watermark leaves at least
+    /// `FD_ENTROPY_HEADROOM_BITS` of headroom before the next
+    /// watermark's range.  Pin the low-bit mask: the resulting
+    /// watermark's low 20 bits are zero, then `seed_next_fd_
+    /// watermark` adds 1 (so bit 0 is set, but bits 1..20 stay
+    /// clear).
+    #[tokio::test]
+    async fn seed_next_fd_from_state_hash_masks_headroom_bits() {
+        let table = FileHandleTable::new();
+        let hash: [u8; 32] = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        table.seed_next_fd_from_state_hash(&hash);
+        // hi = u64::MAX (all 8 leading bytes are 0xFF).
+        // watermark = u64::MAX & !((1 << 20) - 1) = u64::MAX ^ 0xFFFFF = 0xFFFF_FFFF_FFF0_0000.
+        // seed_next_fd_watermark stores watermark + 1 = 0xFFFF_FFFF_FFF0_0001.
+        assert_eq!(table.snapshot_next_fd(), 0xFFFF_FFFF_FFF0_0001);
+    }
+
+    /// `truncate_to` closes every fd allocated past the snapshot.
+    /// The counter does NOT rewind — a subsequent `insert()`
+    /// allocates from where the counter was before truncate.
+    #[tokio::test]
+    async fn truncate_to_drops_fds_past_snapshot_but_leaves_counter_monotonic() {
+        let table = FileHandleTable::new();
+        // Allocate 3 fds → 1, 2, 3.  Snapshot AFTER fd 2 = 3.
+        let fd1 = table.insert(shadow_handle(0x01)).await.unwrap();
+        let fd2 = table.insert(shadow_handle(0x02)).await.unwrap();
+        let snapshot = table.snapshot_next_fd();
+        assert_eq!(snapshot, 3);
+        let fd3 = table.insert(shadow_handle(0x03)).await.unwrap();
+        assert_eq!((fd1, fd2, fd3, table.snapshot_next_fd()), (1, 2, 3, 4));
+
+        // Rollback: fd3 goes away; fd1 and fd2 survive.
+        table.truncate_to(snapshot).await;
+        assert!(table.with_mut(fd1, |_| ()).await.is_some());
+        assert!(table.with_mut(fd2, |_| ()).await.is_some());
+        assert!(table.with_mut(fd3, |_| ()).await.is_none());
+
+        // Counter does NOT rewind.  A new insert allocates fd 4,
+        // NOT fd 3 (which would alias the just-rolled-back fd).
+        let fd4 = table.insert(shadow_handle(0x04)).await.unwrap();
+        assert_eq!(fd4, 4, "counter monotonicity — no fd reuse across rollback");
+    }
+
+    /// `truncate_to(snapshot)` with `snapshot` at-or-past the
+    /// current counter is a no-op (defensive stale-snapshot
+    /// handling).
+    #[tokio::test]
+    async fn truncate_to_past_current_counter_is_noop() {
+        let table = FileHandleTable::new();
+        table.insert(shadow_handle(0x01)).await.unwrap();
+        table.truncate_to(999).await;
+        // Handle survives.
+        assert!(table.with_mut(1, |_| ()).await.is_some());
     }
 }
