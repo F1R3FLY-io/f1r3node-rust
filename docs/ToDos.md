@@ -854,7 +854,7 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 6 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model with 5 invariants and 5 controls, registered in the gate, the plan manifest, the gate test, and the README. Step 6: WORK_PATHS = 6 in observation_work.rs with a sum test, 158 observer and snapshot tests pass. AuthorityWork.v needs no change. Step 7 (metered entry points in 4 consensus files) is next."
+    stage: "Steps 1 to 7 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model with 5 invariants and 5 controls. Step 6: WORK_PATHS = 6. Step 7: metered entry points in estimator.rs, dag_operations.rs, proto_util.rs, and floor.rs with 4 differential tests, 95 integration and 65 unit tests pass. Step 8 (ForkChoiceInputs record and input digest) is next."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
     claim_status: pending

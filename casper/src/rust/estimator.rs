@@ -28,6 +28,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
+use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -67,6 +68,31 @@ impl Estimator {
         max_number_of_parents: i32,
         max_parent_depth_opt: Option<i32>,
     ) -> Result<ForkChoice, KvStoreError> {
+        self.tips_with_latest_messages_metered(
+            &NoopWork,
+            dag,
+            floor,
+            latest_messages_hashes,
+            max_number_of_parents,
+            max_parent_depth_opt,
+        )
+        .await
+    }
+
+    pub async fn tips_with_latest_messages_metered<W: WorkMeter>(
+        &self,
+        meter: &W,
+        dag: &mut KeyValueDagRepresentation,
+        floor: &BlockMetadata,
+        latest_messages_hashes: HashMap<Validator, BlockHash>,
+        max_number_of_parents: i32,
+        max_parent_depth_opt: Option<i32>,
+    ) -> Result<ForkChoice, KvStoreError> {
+        meter.charge(
+            WorkKind::Metadata,
+            latest_messages_hashes.len() as u64,
+            meter.metadata_bytes(),
+        )?;
         let invalid_latest_messages =
             dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
 
@@ -79,6 +105,7 @@ impl Estimator {
         // validator instead of failing every fork-choice run.
         let mut unheld: Vec<Validator> = Vec::new();
         for (validator, hash) in filtered_latest_messages_hashes.iter() {
+            meter.lookup()?;
             if dag.lookup(hash)?.is_none() {
                 tracing::debug!(
                     target: "f1r3fly.casper.estimator",
@@ -93,14 +120,15 @@ impl Estimator {
         }
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
-        let lca = Self::calculate_lca(dag, floor, &filtered_latest_messages_hashes).await?;
+        let lca = Self::calculate_lca(meter, dag, floor, &filtered_latest_messages_hashes).await?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "score-map");
         let scores_map =
-            Self::build_scores_map(dag, &filtered_latest_messages_hashes, &lca).await?;
+            Self::build_scores_map(meter, dag, &filtered_latest_messages_hashes, &lca).await?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "ranked-latest-messages-hashes");
         let ranked_latest_messages_hashes = Self::rank_forkchoices(
+            meter,
             lca.clone(),
             &filtered_latest_messages_hashes,
             dag,
@@ -109,7 +137,12 @@ impl Estimator {
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
         let ranked_shallow_hashes = self
-            .filter_deep_parents(ranked_latest_messages_hashes, dag, max_parent_depth_opt)
+            .filter_deep_parents(
+                meter,
+                ranked_latest_messages_hashes,
+                dag,
+                max_parent_depth_opt,
+            )
             .await?;
 
         // B2: treat BOTH "unlimited" sentinels EXPLICITLY rather than relying on
@@ -135,8 +168,9 @@ impl Estimator {
         })
     }
 
-    async fn filter_deep_parents(
+    async fn filter_deep_parents<W: WorkMeter>(
         &self,
+        meter: &W,
         ranked_latest_hashes: Vec<BlockHash>,
         dag: &KeyValueDagRepresentation,
         max_parent_depth_opt: Option<i32>,
@@ -167,8 +201,14 @@ impl Estimator {
                     ));
                 };
 
+                meter.lookup()?;
                 let max_block_number = dag.lookup_unsafe(main_hash)?.block_number;
 
+                meter.charge(
+                    WorkKind::Metadata,
+                    secondary_hashes.len() as u64,
+                    meter.metadata_bytes(),
+                )?;
                 let secondary_parents: Vec<BlockMetadata> = secondary_hashes
                     .iter()
                     .map(|hash| dag.lookup_unsafe(hash))
@@ -187,11 +227,17 @@ impl Estimator {
         }
     }
 
-    async fn calculate_lca(
+    async fn calculate_lca<W: WorkMeter>(
+        meter: &W,
         block_dag: &KeyValueDagRepresentation,
         floor: &BlockMetadata,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
     ) -> Result<BlockHash, KvStoreError> {
+        meter.charge(
+            WorkKind::Metadata,
+            latest_messages_hashes.len() as u64,
+            meter.metadata_bytes(),
+        )?;
         let latest_messages: Vec<BlockMetadata> = latest_messages_hashes
             .values()
             .map(|hash| block_dag.lookup(hash))
@@ -210,24 +256,32 @@ impl Estimator {
         let result = if filtered_lm.is_empty() {
             floor.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, floor)
-                .await?
-                .block_hash
+            DagOperations::lowest_universal_common_ancestor_many_metered(
+                meter,
+                &filtered_lm,
+                block_dag,
+                floor,
+            )
+            .await?
+            .block_hash
         };
 
         Ok(result)
     }
 
-    async fn build_scores_map(
+    async fn build_scores_map<W: WorkMeter>(
+        meter: &W,
         block_dag: &mut KeyValueDagRepresentation,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
         lowest_common_ancestor: &BlockHash,
     ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
-        fn hash_parents(
+        fn hash_parents<W: WorkMeter>(
+            meter: &W,
             hash: &BlockHash,
             lca_block_number: i64,
             block_dag: &KeyValueDagRepresentation,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
+            meter.lookup()?;
             // Phase 12 (PERF-1): one `lookup_unsafe` call per node, not two.
             // The prior version read `block_number` and then re-read the
             // whole `BlockMetadata` for `parents` — doubling lock
@@ -250,13 +304,15 @@ impl Estimator {
             }
         }
 
-        async fn add_validator_weight_down_supporting_chain(
+        async fn add_validator_weight_down_supporting_chain<W: WorkMeter>(
+            meter: &W,
             score_map: HashMap<BlockHash, i64>,
             validator: &Validator,
             latest_block_hash: &BlockHash,
             block_dag: &mut KeyValueDagRepresentation,
             lowest_common_ancestor: &BlockHash,
         ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
+            meter.lookup()?;
             let lca_block_num = block_dag
                 .lookup_unsafe(lowest_common_ancestor)?
                 .block_number;
@@ -271,15 +327,21 @@ impl Estimator {
             let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
             while let Some(hash) = queue.pop_front() {
+                meter.step(WorkKind::Traversal)?;
                 if !visited.insert(hash.clone()) {
                     continue;
                 }
-                let validator_weight =
-                    proto_util::weight_from_validator_by_dag(block_dag, &hash, validator)?;
+                meter.allocate(1, std::mem::size_of::<BlockHash>())?;
+                let validator_weight = proto_util::weight_from_validator_by_dag_metered(
+                    meter, block_dag, &hash, validator,
+                )?;
                 // B3: fail loudly on score overflow rather than wrapping. Reachable
                 // only if the cumulative bonded weight on a block exceeds i64::MAX —
                 // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
                 // so this can only ever reject an already-invalid state, never a valid one.
+                if !result.contains_key(&hash) {
+                    meter.allocate(1, std::mem::size_of::<(BlockHash, i64)>())?;
+                }
                 let entry = result.entry(hash.clone()).or_insert(0);
                 *entry = entry.checked_add(validator_weight).ok_or_else(|| {
                     KvStoreError::InvalidArgument(
@@ -288,8 +350,9 @@ impl Estimator {
                             .to_string(),
                     )
                 })?;
-                for parent in hash_parents(&hash, lca_block_num, block_dag)? {
+                for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
                     if !visited.contains(&parent) {
+                        meter.step(WorkKind::Traversal)?;
                         queue.push_back(parent);
                     }
                 }
@@ -302,6 +365,7 @@ impl Estimator {
         let mut scores_map: HashMap<BlockHash, i64> = HashMap::new();
         for (validator, latest_block_hash) in latest_messages_hashes.iter() {
             scores_map = add_validator_weight_down_supporting_chain(
+                meter,
                 scores_map,
                 validator,
                 latest_block_hash,
@@ -340,36 +404,44 @@ impl Estimator {
     /// message with no scored main-parent child (one that HAS such a child is
     /// a superseded ancestor of another tip on its own chain) — ordered
     /// (score DESC, hash ASC) for callers that consume the full frontier.
-    fn rank_forkchoices(
+    fn rank_forkchoices<W: WorkMeter>(
+        meter: &W,
         lca: BlockHash,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
         block_dag: &KeyValueDagRepresentation,
         scores: &HashMap<BlockHash, i64>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        fn scored_main_children(
+        fn scored_main_children<W: WorkMeter>(
+            meter: &W,
             block: &BlockHash,
             block_dag: &KeyValueDagRepresentation,
             scores: &HashMap<BlockHash, i64>,
-        ) -> Vec<BlockHash> {
+        ) -> Result<Vec<BlockHash>, KvStoreError> {
+            meter.lookup()?;
             match block_dag.children(block) {
-                Some(children_set) => children_set
-                    .iter()
-                    .filter(|child| {
-                        scores.contains_key(*child)
-                            && block_dag.main_parent(child).as_ref() == Some(block)
-                    })
-                    .cloned()
-                    .collect(),
-                None => Vec::new(),
+                Some(children_set) => {
+                    meter.charge(WorkKind::Traversal, children_set.len() as u64, 0)?;
+                    Ok(children_set
+                        .iter()
+                        .filter(|child| {
+                            scores.contains_key(*child)
+                                && block_dag.main_parent(child).as_ref() == Some(block)
+                        })
+                        .cloned()
+                        .collect())
+                }
+                None => Ok(Vec::new()),
             }
         }
 
         let mut head = lca;
         loop {
-            let mut children = scored_main_children(&head, block_dag, scores);
+            meter.step(WorkKind::Traversal)?;
+            let mut children = scored_main_children(meter, &head, block_dag, scores)?;
             if children.is_empty() {
                 break;
             }
+            meter.charge(WorkKind::Traversal, children.len() as u64, 0)?;
             children.sort_by(|a, b| {
                 let score_a = scores.get(a).copied().unwrap_or(0);
                 let score_b = scores.get(b).copied().unwrap_or(0);
@@ -378,15 +450,19 @@ impl Estimator {
             head = children.swap_remove(0);
         }
 
-        let frontier: Vec<BlockHash> = latest_messages_hashes
-            .values()
-            .filter(|hash| {
-                **hash != head && scored_main_children(hash, block_dag, scores).is_empty()
-            })
-            .cloned()
+        let mut frontier: Vec<BlockHash> = Vec::new();
+        for hash in latest_messages_hashes.values() {
+            if *hash != head && scored_main_children(meter, hash, block_dag, scores)?.is_empty() {
+                frontier.push(hash.clone());
+            }
+        }
+        let frontier: Vec<BlockHash> = frontier
+            .into_iter()
             .collect::<HashSet<_>>() // distinct
             .into_iter()
             .collect();
+        meter.allocate(frontier.len(), std::mem::size_of::<(i64, BlockHash)>())?;
+        meter.charge(WorkKind::Traversal, frontier.len() as u64, 0)?;
         let mut ranked = ListOps::sort_by_with_decreasing_order(frontier, scores);
 
         let mut tips = Vec::with_capacity(ranked.len() + 1);

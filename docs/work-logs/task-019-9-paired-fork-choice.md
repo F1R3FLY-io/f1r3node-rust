@@ -69,6 +69,25 @@ New test in `casper/tests/soak_observer.rs`: `work_budget_has_six_paths_and_the_
 
 Checks: `cargo nextest run --locked --release -p shared -p casper -p node` for the `soak_observer` and `soak_snapshot` binaries and the `shared` package, 158 of 158 passed. `cargo clippy --locked --release -p shared -p casper --tests -- -D warnings` passed. `rustfmt --check` passed on the 2 files.
 
+## Step 7 on 2026-09-30: metered entry points
+
+Each of the 4 functions keeps its body in a `_metered` variant, and the current function calls that variant with `NoopWork`. This is the Batch B2 pattern of `floor.rs`.
+
+| Function | Charge sites |
+|---|---|
+| `proto_util::weight_from_validator_by_dag_metered` | `lookup()` before each of the 2 DAG reads |
+| `DagOperations::lowest_universal_common_ancestor_many_metered` | Allocation for the sets, a traversal step for each loop iteration, `lookup()` or a traversal step in the cache helper, allocation for each cache insert |
+| `Estimator::tips_with_latest_messages_metered` | Metadata charges for the batch reads and `lookup()` before each DAG read. A traversal step for each BFS pop, queued parent, child scan, and descent step. Allocation for each visited and score entry. One traversal charge of `n` for each sort. |
+| `floor::fork_choice_floor_metered` | A traversal step for each latest message, `floor_of_block_metered`, `lookup()` before the final read, and one traversal step after the loop |
+
+The step after the loop in `fork_choice_floor_metered` makes a budget failure visible. The loop reports a non-held error of one latest message as an abstention and continues. A budget failure inside `floor_of_block_metered` is such an error. The meter failure is sticky, so the final step returns it. With `NoopWork` the step is a no-op.
+
+The frontier filter of `rank_forkchoices` became a loop, because the child scan now returns a `Result`. The set of frontier hashes, the distinct step, and the sort call did not change.
+
+4 differential tests in `casper/tests/soak_observer.rs` run on a 5-block fork DAG. Each metered function gives the result of the current function for several inputs. The counted work is above zero, and the missing-block error text is equal. A budget of 1 operation gives the `observation_work:` limit error.
+
+Checks: 95 integration tests of the fork-choice, estimator, floor, and observer suites passed. 65 unit tests of the casper library for floor, estimator, and weight passed. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed on the 5 files after a format pass on 2 of them.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -76,7 +95,7 @@ Checks: `cargo nextest run --locked --release -p shared -p casper -p node` for t
 - [x] Pending claim, mandatory tags, pending ledger records.
 - [x] Bounded model and 5 controls, registered in the gate.
 - [x] 2 work paths.
-- [ ] Metered functions in the 4 consensus files.
+- [x] Metered functions in the 4 consensus files.
 - [ ] Input record and input digest.
 - [ ] `bounded` evaluation and tests.
 - [ ] `reference` evaluation and tests.

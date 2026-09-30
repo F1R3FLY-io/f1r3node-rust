@@ -569,6 +569,209 @@ async fn exhausted_preparation_returns_partial_counters_and_releases_busy() {
     assert!(evaluate(&fixture, &controller).await.work.complete);
 }
 
+async fn fork_fixture() -> Fixture {
+    let base = Fixture::new().await;
+    let template = &base.chain[0];
+    Fixture::from_chain(vec![
+        graph_block(template, 1, 0, 7, &[], &[]),
+        graph_block(template, 2, 1, 7, &[1], &[(7, 1)]),
+        graph_block(template, 3, 1, 9, &[1], &[(9, 1)]),
+        graph_block(template, 4, 2, 7, &[2], &[(7, 2), (8, 1)]),
+        graph_block(template, 5, 2, 8, &[3, 2], &[(8, 1), (7, 2)]),
+    ])
+    .await
+}
+
+fn tag(value: u8) -> BlockHash { Bytes::from(vec![value; 32]) }
+
+fn validator(value: u8) -> Bytes { Bytes::from(vec![value; 65]) }
+
+fn fork_latest_messages() -> HashMap<Bytes, BlockHash> {
+    HashMap::from([
+        (validator(7), tag(4)),
+        (validator(8), tag(5)),
+        (validator(9), tag(3)),
+    ])
+}
+
+fn one_operation() -> CheckedWork {
+    let mut limits = work_limits();
+    limits.operations = 1;
+    meter(limits)
+}
+
+fn is_limit_error(text: &str) -> bool { text.contains("observation_work:") }
+
+#[tokio::test]
+async fn metered_weight_read_matches_the_production_read() {
+    use casper::rust::util::proto_util;
+    let fixture = fork_fixture().await;
+    let mut dag = fixture.dag.get_representation().unwrap();
+    for (block, validator_tag) in [(4, 7), (5, 8), (3, 7), (1, 7)] {
+        let expected = proto_util::weight_from_validator_by_dag(
+            &mut dag,
+            &tag(block),
+            &validator(validator_tag),
+        )
+        .unwrap();
+        let wide = meter(work_limits());
+        let metered = proto_util::weight_from_validator_by_dag_metered(
+            &wide,
+            &mut dag,
+            &tag(block),
+            &validator(validator_tag),
+        )
+        .unwrap();
+        assert_eq!(metered, expected);
+        assert!(wide.usage().0.metadata >= 1);
+    }
+    let missing = tag(200);
+    let expected = proto_util::weight_from_validator_by_dag(&mut dag, &missing, &validator(7))
+        .unwrap_err()
+        .to_string();
+    let metered = proto_util::weight_from_validator_by_dag_metered(
+        &meter(work_limits()),
+        &mut dag,
+        &missing,
+        &validator(7),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(metered, expected);
+    let error = proto_util::weight_from_validator_by_dag_metered(
+        &one_operation(),
+        &mut dag,
+        &tag(4),
+        &validator(7),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(is_limit_error(&error), "{error}");
+}
+
+#[tokio::test]
+async fn metered_common_ancestor_matches_the_production_walk() {
+    use casper::rust::util::dag_operations::DagOperations;
+    let fixture = fork_fixture().await;
+    let dag = fixture.dag.get_representation().unwrap();
+    let blocks: Vec<_> = [4u8, 5, 3]
+        .iter()
+        .map(|block| dag.lookup_unsafe(&tag(*block)).unwrap())
+        .collect();
+    let floor = dag.lookup_unsafe(&tag(1)).unwrap();
+    let expected = DagOperations::lowest_universal_common_ancestor_many(&blocks, &dag, &floor)
+        .await
+        .unwrap();
+    let wide = meter(work_limits());
+    let metered =
+        DagOperations::lowest_universal_common_ancestor_many_metered(&wide, &blocks, &dag, &floor)
+            .await
+            .unwrap();
+    assert_eq!(metered, expected);
+    assert_eq!(expected.block_hash, tag(1));
+    let (total, _, failure) = wide.usage();
+    assert!(total.traversal >= 1 && total.allocation >= 1);
+    assert!(failure.is_none());
+    let error = DagOperations::lowest_universal_common_ancestor_many_metered(
+        &one_operation(),
+        &blocks,
+        &dag,
+        &floor,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(is_limit_error(&error), "{error}");
+}
+
+#[tokio::test]
+async fn metered_fork_choice_matches_the_production_estimator() {
+    use casper::rust::estimator::Estimator;
+    let fixture = fork_fixture().await;
+    let mut dag = fixture.dag.get_representation().unwrap();
+    let floor = dag.lookup_unsafe(&tag(1)).unwrap();
+    let estimator = Estimator::apply();
+    for (parents, depth) in [
+        (Estimator::UNLIMITED_PARENTS, None),
+        (1, None),
+        (2, Some(1)),
+    ] {
+        let expected = estimator
+            .tips_with_latest_messages(&mut dag, &floor, fork_latest_messages(), parents, depth)
+            .await
+            .unwrap();
+        let wide = meter(work_limits());
+        let metered = estimator
+            .tips_with_latest_messages_metered(
+                &wide,
+                &mut dag,
+                &floor,
+                fork_latest_messages(),
+                parents,
+                depth,
+            )
+            .await
+            .unwrap();
+        assert_eq!(metered, expected);
+        assert_eq!(expected.tips[0], tag(4));
+        let (total, _, failure) = wide.usage();
+        assert!(total.metadata >= 3 && total.traversal >= 3 && total.allocation >= 1);
+        assert!(failure.is_none());
+    }
+    let error = estimator
+        .tips_with_latest_messages_metered(
+            &one_operation(),
+            &mut dag,
+            &floor,
+            fork_latest_messages(),
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(is_limit_error(&error), "{error}");
+}
+
+#[tokio::test]
+async fn metered_fork_choice_floor_matches_the_production_floor() {
+    use casper::rust::finality::floor::{fork_choice_floor, fork_choice_floor_metered};
+    use casper::rust::safety::clique_oracle::FtThreshold;
+    let fixture = fork_fixture().await;
+    let dag = fixture.dag.get_representation().unwrap();
+    let approved = dag.lookup_unsafe(&tag(1)).unwrap();
+    let latest: Vec<BlockHash> = vec![tag(4), tag(5), tag(3)];
+    for ppm in [0, 200_000, 500_000, 990_000] {
+        let ftt = FtThreshold::from_ppm(ppm);
+        let expected = fork_choice_floor(&dag, &fixture.blocks, &latest, approved.clone(), ftt)
+            .await
+            .unwrap();
+        let wide = meter(work_limits());
+        let metered =
+            fork_choice_floor_metered(&wide, &dag, &fixture.blocks, &latest, approved.clone(), ftt)
+                .await
+                .unwrap();
+        assert_eq!(metered, expected);
+        let (total, _, failure) = wide.usage();
+        assert!(failure.is_none());
+        if ppm > 0 {
+            assert!(total.traversal >= 3);
+        }
+    }
+    let error = fork_choice_floor_metered(
+        &one_operation(),
+        &dag,
+        &fixture.blocks,
+        &latest,
+        approved,
+        FtThreshold::from_ppm(500_000),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(is_limit_error(&error), "{error}");
+}
+
 #[test]
 fn work_budget_has_six_paths_and_the_aggregate_is_their_sum() {
     assert_eq!(WORK_PATHS, 6);
