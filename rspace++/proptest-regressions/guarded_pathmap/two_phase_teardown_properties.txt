@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 49b66bcd56b839df8f0932a0ef11da45079fb0620a04877effd5f61b8fdf565f # shrinks to path = [0, 0]
+cc 3fc2a9c27bd2895ad4178210523072101d9bb497fa2f827f4210209b9cd46562 # shrinks to history = [([0], 0), ([1], 0), ([46], 1), ([46, 0], 0)]

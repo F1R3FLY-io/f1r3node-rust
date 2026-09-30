@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rspace_plus_plus::rspace::bag::{Bag, Multiplicity};
+use rspace_plus_plus::rspace::bag::{Bag, Multiplicity, SortedUniqueBagError};
 use rspace_plus_plus::rspace::data_index::{CandidatePool, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -124,6 +124,48 @@ fn logical_cardinality_never_materializes_occurrence_sized_storage() {
     assert_eq!(maximum_image.len() - one_image.len(), 8);
     assert_eq!(one_image_allocations, maximum_image_allocations);
     assert_eq!(maximum_image_bytes - one_image_bytes, 8);
+}
+
+#[test]
+fn exact_algebra_does_not_allocate_one_path_per_endpoint() {
+    for cardinality in [64usize, 1024] {
+        let keys = (0..cardinality)
+            .map(|ordinal| {
+                let mut key = vec![0xA5; 64];
+                key.extend_from_slice(&(ordinal as u64).to_be_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let construct = |count| {
+            Bag::try_from_sorted_unique(|writer| {
+                for key in &keys {
+                    writer.push(key, Multiplicity::new(count).unwrap())?;
+                }
+                Ok::<(), SortedUniqueBagError>(())
+            })
+            .unwrap()
+        };
+        let low = construct(1);
+        let high = construct(2);
+        let (baseline, baseline_calls, _) = measure(|| construct(1));
+        let (meet, meet_calls, _) = measure(|| high.meet(&low));
+        let (subtract, subtract_calls, _) = measure(|| high.subtract(&low));
+        let (subbag, subbag_calls, _) = measure(|| low.is_subbag_of(&high));
+
+        assert_eq!(baseline, low);
+        assert_eq!(meet, low);
+        assert_eq!(subtract, low);
+        assert!(subbag);
+        assert!(
+            meet_calls <= baseline_calls + 32,
+            "{cardinality}: {meet_calls} > {baseline_calls} + 32"
+        );
+        assert!(
+            subtract_calls <= baseline_calls + 32,
+            "{cardinality}: {subtract_calls} > {baseline_calls} + 32"
+        );
+        assert!(subbag_calls <= 32, "{cardinality}: {subbag_calls} > 32");
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

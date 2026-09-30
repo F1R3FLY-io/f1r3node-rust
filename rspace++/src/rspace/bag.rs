@@ -980,43 +980,64 @@ impl Bag {
         } else {
             (other, self)
         };
-        let mut result = Self::new();
-        for (path, multiplicity) in probe.iter() {
-            if let Some(counter) = index.entries.get(&path) {
-                result.set_count(&path, Some(multiplicity.min(*counter)));
-            }
-        }
-        result
+        Self::try_from_sorted_unique(|writer| {
+            probe.with_read_cursor(|mut cursor| {
+                let mut present = cursor.val().is_some() || cursor.to_next_val();
+                while present {
+                    if let Some(counter) = index.entries.get(cursor.path()) {
+                        let multiplicity = *cursor.val().expect("visited Bag endpoint");
+                        writer.push(cursor.path(), multiplicity.min(*counter))?;
+                    }
+                    present = cursor.to_next_val();
+                }
+                Ok::<(), SortedUniqueBagError>(())
+            })
+        })
+        .expect("ordered resident Bag endpoints form a valid sorted-unique stream")
     }
 
     pub fn subtract(&self, other: &Self) -> Self {
-        let mut removals = other.iter().peekable();
         Self::try_from_sorted_unique(|writer| {
-            for (path, current) in self.iter() {
-                while removals
-                    .peek()
-                    .is_some_and(|(removed_path, _)| removed_path < &path)
-                {
-                    removals.next();
-                }
-                let next = match removals.peek() {
-                    Some((removed_path, removed)) if removed_path == &path => (current.get() >
-                        removed.get())
-                    .then(|| Multiplicity(current.get() - removed.get())),
-                    _ => Some(current),
-                };
-                if let Some(next) = next {
-                    writer.push(&path, next)?;
-                }
-            }
-            Ok::<(), SortedUniqueBagError>(())
+            self.with_read_cursor(|mut current| {
+                other.with_read_cursor(|mut removals| {
+                    let mut current_present = current.val().is_some() || current.to_next_val();
+                    let mut removal_present = removals.val().is_some() || removals.to_next_val();
+                    while current_present {
+                        while removal_present && removals.path() < current.path() {
+                            removal_present = removals.to_next_val();
+                        }
+                        let current_count = *current.val().expect("visited Bag endpoint");
+                        let next = if removal_present && removals.path() == current.path() {
+                            let removed = *removals.val().expect("visited Bag endpoint");
+                            (current_count.get() > removed.get())
+                                .then(|| Multiplicity(current_count.get() - removed.get()))
+                        } else {
+                            Some(current_count)
+                        };
+                        if let Some(next) = next {
+                            writer.push(current.path(), next)?;
+                        }
+                        current_present = current.to_next_val();
+                    }
+                    Ok::<(), SortedUniqueBagError>(())
+                })
+            })
         })
         .expect("ordered resident Bag endpoints form a valid sorted-unique stream")
     }
 
     pub fn is_subbag_of(&self, other: &Self) -> bool {
-        self.iter()
-            .all(|(path, multiplicity)| other.count(&path) >= multiplicity.get())
+        self.with_read_cursor(|mut cursor| {
+            let mut present = cursor.val().is_some() || cursor.to_next_val();
+            while present {
+                let multiplicity = *cursor.val().expect("visited Bag endpoint");
+                if other.count(cursor.path()) < multiplicity.get() {
+                    return false;
+                }
+                present = cursor.to_next_val();
+            }
+            true
+        })
     }
 
     /// Serialize this Bag as PathMap's raw prefix-compressed `ACTree03` arena.
