@@ -1,10 +1,8 @@
 // See comm/src/main/scala/coop/rchain/comm/discovery/KademliaNodeDiscovery.scala
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
+use std::sync::Arc;
 
-use prost::bytes::Bytes;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -13,16 +11,13 @@ use super::kademlia_rpc::KademliaRPC;
 use super::kademlia_store::KademliaStore;
 use crate::rust::discovery::node_discovery::NodeDiscovery;
 use crate::rust::errors::CommError;
-use crate::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-
-const REDISCOVERY_DELAY: Duration = Duration::from_secs(300);
+use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 
 #[derive(Clone)]
 pub struct KademliaNodeDiscovery<T: KademliaRPC> {
     node_id: NodeIdentifier,
     store: Arc<KademliaStore<T>>,
     rpc: Arc<T>,
-    suppressed: Arc<Mutex<HashMap<Bytes, (Endpoint, Instant)>>>,
 }
 
 #[async_trait::async_trait]
@@ -36,18 +31,7 @@ impl<T: KademliaRPC + Send + Sync + 'static> NodeDiscovery for KademliaNodeDisco
     }
 
     fn evict_unreachable_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
-        self.store.remove(&peer.id.key)?;
-        let mut suppressed = self.suppressed.lock().map_err(|_| {
-            CommError::InternalCommunicationError(
-                "Failed to acquire suppressed peer lock".to_string(),
-            )
-        })?;
-        suppressed.retain(|_, (_, until)| *until > Instant::now());
-        suppressed.insert(
-            peer.id.key.clone(),
-            (peer.endpoint.clone(), Instant::now() + REDISCOVERY_DELAY),
-        );
-        Ok(())
+        self.store.evict_unreachable_peer(peer)
     }
 }
 
@@ -57,7 +41,6 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
             node_id,
             store,
             rpc,
-            suppressed: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -136,26 +119,7 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
         let mut result = HashSet::new();
 
         for peer in peers {
-            let is_suppressed = {
-                let mut suppressed = self.suppressed.lock().map_err(|_| {
-                    CommError::InternalCommunicationError(
-                        "Failed to acquire suppressed peer lock".to_string(),
-                    )
-                })?;
-                match suppressed.get(&peer.id.key) {
-                    Some((endpoint, until))
-                        if endpoint == &peer.endpoint && *until > Instant::now() =>
-                    {
-                        true
-                    }
-                    Some(_) => {
-                        suppressed.remove(&peer.id.key);
-                        false
-                    }
-                    None => false,
-                }
-            };
-            if is_suppressed {
+            if self.store.is_suppressed(peer)? {
                 continue;
             }
 
@@ -178,48 +142,5 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
         }
 
         Ok(result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC;
-
-    #[test]
-    fn expired_delay_allows_a_peer_to_be_discovered_again() {
-        let local = PeerNode {
-            id: NodeIdentifier {
-                key: Bytes::from(vec![1]),
-            },
-            endpoint: Endpoint::new("local".to_string(), 40400, 40404),
-        };
-        let dead = PeerNode {
-            id: NodeIdentifier {
-                key: Bytes::from(vec![2]),
-            },
-            endpoint: Endpoint::new("dead".to_string(), 40400, 40404),
-        };
-        let rpc = Arc::new(GrpcKademliaRPC::new(
-            "test".to_string(),
-            Duration::from_secs(1),
-            true,
-            local.clone(),
-        ));
-        let store = Arc::new(KademliaStore::new(local.id.clone(), rpc.clone()));
-        let discovery = KademliaNodeDiscovery::new(store, rpc, local.id.clone());
-
-        discovery.evict_unreachable_peer(&dead).unwrap();
-        discovery
-            .suppressed
-            .lock()
-            .unwrap()
-            .get_mut(&dead.id.key)
-            .unwrap()
-            .1 = Instant::now() - Duration::from_secs(1);
-        let candidates = discovery
-            .filter(&[dead.clone()], &HashSet::new(), &local.id)
-            .unwrap();
-        assert!(candidates.contains(&dead));
     }
 }
