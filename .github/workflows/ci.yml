@@ -134,8 +134,10 @@ jobs:
           # GitHub-hosted checks only and reaches the heavy pipeline through the
           # queue, so a green Integration context on a PR means "not run here".
           run_heavy=false
+          # TEMP (sandbox test only, never merge): keep the merge group off OCI
+          # so the queue wiring can be proven without spending VMs.
           if [ "$EVENT_NAME" = merge_group ]; then
-            run_heavy=true
+            run_heavy=false
           elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
             run_heavy=true
           elif [ "$EVENT_NAME" = push ] && {

@@ -83,7 +83,7 @@ PR_HAS_HEAVY_LABEL=true \
   run_case labelled-fork pull_request refs/pull/3/merge dev feature/three fork/repository '[]' '' '' false
 PR_HAS_HEAVY_LABEL=true \
   run_case labelled-upper-stack pull_request refs/pull/2/merge feature/one feature/two example/repository '[]' '' '' false
-run_case merge-group merge_group refs/heads/gh-readonly-queue/dev/pr-1-abc '' '' '' '[]' '' '' true
+run_case merge-group merge_group refs/heads/gh-readonly-queue/dev/pr-1-abc '' '' '' '[]' '' '' false
 run_case dev-push push refs/heads/dev '' '' '' '[]' '' '' true
 run_case version-tag push refs/tags/v0.4.46 '' '' '' '[]' '' '' true
 run_case staging-push push refs/heads/staging '' '' '' '[]' '' '' false
