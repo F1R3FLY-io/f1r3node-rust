@@ -77,12 +77,13 @@ mr_status:
 ---
 epic_id: EPIC-020
 title: "Node Log and Accept-Path Self-Limits"
-status: pending
+status: in_progress
 priority: p0
-user_story: null
+user_story: US-009
+user_flow: FLOW-002
 blocked_by: []
 created_at: 2026-09-23
-updated_at: 2026-09-23
+updated_at: 2026-09-30
 claimed_by: null
 branch: fix/node-log-and-accept-backoff
 pr_base_branch: dev
@@ -93,12 +94,25 @@ execution_contract:
   scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
   git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
   cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
+  cbc_decision: "The maintainer decided on 2026-09-30 that the accept path stays untagged for TASK-020-1. The regression tests in f1r3fly_server_resource_tests.rs are the verification."
 tasks:
   - id: TASK-020-1
     title: "Back off and rate-limit the transport accept-error path"
-    status: pending
-    claimed_by: null
+    status: complete
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-30T00:40:00Z
+    verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    verification_claimed_at: 2026-09-30T01:03:01Z
+    verification_status: in_progress
     blocked_by: []
+    work_log: docs/work-logs/transport-accept-resource-review-20260923.md
+    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. The approved story and flow repair now links EPIC-020 to US-009 and FLOW-002."
+    hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
+    hosted_run: 36651370411
+    hosted_job: 109688126217
+    unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
+    completion_blocker: null
+    remaining: []
     files:
       - comm/src/rust/transport/f1r3fly_server.rs
     acceptance:
@@ -110,15 +124,20 @@ tasks:
       - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
       - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
       - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
+    completion_gaps: []
+    completed_date: 2026-09-30
   - id: TASK-020-2
     title: "Bound the file log by bytes, not only by time"
-    status: pending
-    claimed_by: null
+    status: complete
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T01:20:37Z
     blocked_by: []
+    work_log: docs/work-logs/task-020-2-byte-bounded-logging-20260930.md
     files:
-      - node/src/rust/configuration/model.rs
+      - shared/src/rust/tracing_init/mod.rs
+      - shared/src/rust/tracing_init/bounded_file.rs
       - node/src/main/resources/defaults.conf
-      - shared/src/rust/logging.rs
+      - node/src/rust/configuration/mod.rs
     acceptance:
       - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
       - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
@@ -128,23 +147,46 @@ tasks:
       - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
       - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
       - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
+    unit_tests: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
+    completion_gaps: []
+    completed_date: 2026-09-30
   - id: TASK-020-3
     title: "One sink per deployment and a container log cap check"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T02:23:57Z
+    claimed_at_source: clock_checkpoint_after_claim
     blocked_by: []
+    work_log: docs/work-logs/task-020-3-deployment-log-caps-20260930.md
+    implementation_status: "The local deployment commands and repository guards pass. The external container caps already exist, but system-integration still selects both sinks. The task remains open."
+    completion_blocker: "Review the external log-reader contract, change the deployment to one sink, and record its verified merge revision."
+    external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
+    external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    external_single_sink_merge_revision: null
+    unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
     files:
-      - docker/ci-ports.shard.yml
-      - docker/ci-ports.standalone.yml
-      - docker/monitoring.yml
+      - Cargo.lock
+      - scripts/supply-chain/Cargo.toml
       - scripts/supply-chain/tests/repository.rs
+      - scripts/supply-chain/tests/support/compose_logging.rs
+      - scripts/ci/test-compose-log-policy.sh
+      - node/tests/log_sink_cli.rs
+      - docker/shard.yml
+      - docker/standalone.yml
+      - docker/observer.yml
+      - docker/validator4.yml
+      - docker/shard.vps1.yml
+      - docker/shard.vps2.yml
+      - docs/node/README.md
     acceptance:
       - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
       - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
       - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
       - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
     notes:
-      - "docker/shard.yml, standalone.yml, observer.yml, validator4.yml, shard.vps1.yml, and shard.vps2.yml already cap at 100m."
+      - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
+      - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
+      - "The local system-integration checkout is stale. Remote main already caps all eleven node service definitions across five variants. Its conf/rust.conf still selects both sinks."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
     status: pending
