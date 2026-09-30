@@ -634,7 +634,7 @@ fn recursive_family_cursor_resource_probe() {
             counting_alloc::measure(|| context.spatial_match(target, pattern));
         let elapsed_ns = start.elapsed().as_nanos();
         assert_eq!(result, Some(()));
-        if matches!(family, Family::ConnectiveNot | Family::ConnectiveOr) {
+        if depth > 0 && matches!(family, Family::ConnectiveNot | Family::ConnectiveOr) {
             assert!(context.free_map.is_empty());
         } else {
             assert_eq!(context.free_map.get(&0), Some(&expected_capture));
