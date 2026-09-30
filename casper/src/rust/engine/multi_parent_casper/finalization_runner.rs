@@ -278,6 +278,74 @@ pub(crate) async fn run_queued_finalizer(
     }
 }
 
+/// The committee is read from the target's MAIN PARENT, so sibling branches
+/// carrying different bonds each clear the threshold under their own
+/// electorate; R-COMM requires `bonds_of(floor)`.
+async fn report_committee_drift(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    adopted: &BlockHash,
+    adopted_number: i64,
+) {
+    if !tracing::enabled!(target: "f1r3fly.finalizer", tracing::Level::WARN) {
+        return;
+    }
+    let used = match crate::rust::safety::clique_oracle::CliqueOracle::get_corresponding_weight_map(
+        adopted, dag,
+    )
+    .await
+    {
+        Ok(map) => map,
+        Err(_) => return,
+    };
+    let Ok(Some(floor_hash)) = dag.get_cached_floor(adopted) else {
+        return;
+    };
+    let Ok(Some(floor_meta)) = dag.lookup(&floor_hash) else {
+        return;
+    };
+    // Equal totals do not mean equal electorates: one validator out and another
+    // in at the same stake sums the same, and that swap is the shape an
+    // epoch-boundary withdrawer move produces alongside a bond.
+    let mut used_pairs: Vec<_> = used.iter().map(|(v, s)| (v.clone(), *s)).collect();
+    used_pairs.sort();
+    let mut floor_pairs: Vec<_> = floor_meta
+        .weight_map
+        .iter()
+        .map(|(v, s)| (v.clone(), *s))
+        .collect();
+    floor_pairs.sort();
+    if used_pairs == floor_pairs {
+        return;
+    }
+    let only_in_used = used_pairs
+        .iter()
+        .filter(|pair| !floor_pairs.contains(pair))
+        .take(8)
+        .map(|(v, s)| format!("{}={}", PrettyPrinter::build_string_bytes(v), s))
+        .collect::<Vec<_>>()
+        .join(",");
+    let only_in_floor = floor_pairs
+        .iter()
+        .filter(|pair| !used_pairs.contains(pair))
+        .take(8)
+        .map(|(v, s)| format!("{}={}", PrettyPrinter::build_string_bytes(v), s))
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::warn!(
+        target: "f1r3fly.finalizer",
+        adopted = %PrettyPrinter::build_string_bytes(adopted),
+        adopted_number,
+        floor = %PrettyPrinter::build_string_bytes(&floor_hash),
+        floor_number = floor_meta.block_number,
+        used_total = used_pairs.iter().map(|(_, s)| *s).sum::<i64>(),
+        floor_total = floor_pairs.iter().map(|(_, s)| *s).sum::<i64>(),
+        only_in_used = %only_in_used,
+        only_in_floor = %only_in_floor,
+        "certification committee differs from the committee at this block's floor: \
+         sibling branches can clear the threshold under different electorates"
+    );
+}
+
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
 ) -> Result<BlockMessage, CasperError> {
@@ -474,6 +542,7 @@ pub(crate) async fn compute_last_finalized_block(
             )
             .await
             .map_err(CasperError::from)?;
+        report_committee_drift(&dag, &new_lfb.hash, new_lfb.block_number).await;
         // `floor_of_view` only ever returns an adoption that CAPTURES the
         // current LFB, so `extends_previous_lfb` is true by construction —
         // emitted anyway for parity with soak dashboards that alarm on it.
