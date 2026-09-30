@@ -22,12 +22,15 @@
 //     poison-aborted accessors (slice 2).
 //   - `payload_store` / `payload_source_recorder` cells + their
 //     `share_*` / getter methods (slice 3).
+//   - `root_registry: RootIdentityRegistry` public field +
+//     `share_root_registry` broadcast method (slice 4).
 //
 // # Deferred to later `handle_table` slices
 //
-//   - Cross-registry sharing plumbing (`root_registry:
-//     RootIdentityRegistry`, `lock_registry: LockRegistry`,
-//     `dir_handles: DirHandleTable`) + their `share_*` methods.
+//   - `lock_registry: LockRegistry` + `share_lock_registry` —
+//     gated on `LockRegistry`.
+//   - `dir_handles: DirHandleTable` + `share_dir_handles` —
+//     gated on `DirHandleTable`.
 //   - `close_all_for_deploy` / `has_active_handles_sync` — gated
 //     on `LockRegistry` for the symmetric sweep interface.
 //   - Soft-checkpoint machinery (`snapshot_next_fd` /
@@ -94,6 +97,7 @@ use tokio::sync::RwLock;
 use super::errors::poison_abort;
 use super::lock::DeployScope;
 use super::mode::AccessMode;
+use super::path::identity::RootIdentityRegistry;
 use super::wal::{PayloadPersistence, PayloadSourceRecorder, Wal};
 use super::ConsensusMode;
 
@@ -224,6 +228,21 @@ pub struct FileHandleTable {
     /// own methods already route through `poison_abort` internally,
     /// so no discipline is bypassed by direct access.
     pub wal: Wal,
+    /// Shared root-identity registry.  Populated once at boot from
+    /// operator-provisioned root paths; consulted on every
+    /// `safe_descend` (or its handler-side wrappers) to detect
+    /// post-boot rename-and-recreate of the root directory (H-5
+    /// defense).  Attached to the handle table so all handler
+    /// closures reach it via `self.handles.root_registry`; shared
+    /// across runtimes via `RuntimeManager` so a single boot-time
+    /// population is visible everywhere (see
+    /// [`share_root_registry`](Self::share_root_registry)).
+    ///
+    /// Public field (matches fileio's ergonomic idiom) — the
+    /// registry's own methods already route through `poison_abort`
+    /// internally (see `RootIdentityRegistry` docs), so no
+    /// discipline is bypassed by direct access.
+    pub root_registry: RootIdentityRegistry,
     /// The per-runtime "current deploy state" — `scope` + `sig`
     /// bundled under a **single** guard.
     ///
@@ -602,6 +621,48 @@ impl FileHandleTable {
             "FileHandleTable.payload_source_recorder",
         )
         .clone()
+    }
+
+    // --- Root-identity registry sharing ----------------------------
+
+    /// Attach the manager-shared root-identity registry so all
+    /// runtimes spawned from this manager see the same
+    /// `logical → Root` map.  Called from the boot pipeline
+    /// (`RuntimeManager::spawn_runtime` /
+    /// `spawn_replay_runtime`) — same broadcast pattern as
+    /// [`share_payload_store`](Self::share_payload_store).
+    ///
+    /// Takes `&self` (not `&mut self`) — the underlying
+    /// [`RootIdentityRegistry::share_from`] is `&self` (interior
+    /// mutability via the outer `RwLock`), so the boot pipeline
+    /// can install after already-spawned runtimes have cloned
+    /// the handle table.
+    ///
+    /// # Load-bearing invariant: reducer-clone visibility
+    ///
+    /// `rho_runtime::create_rho_runtime` clones the
+    /// `FileHandleTable` (and therefore this field) to hand a
+    /// copy to the reducer BEFORE the boot pipeline calls
+    /// `share_root_registry`.  The two-layer indirection inside
+    /// `RootIdentityRegistry` (see its struct-level docstring)
+    /// ensures the reducer's earlier clone shares the OUTER slot
+    /// with the runtime's clone — swapping the INNER Arc via
+    /// `share_from` is visible through both.  A field-replacement
+    /// approach here (`self.root_registry = shared`) would only
+    /// update the runtime's outer field and leave the reducer's
+    /// clone bound to its old inner — the PB-M-14 canary
+    /// regression fileio's investigation surfaced.
+    ///
+    /// The two properties this call preserves:
+    ///   1. **Reducer-clone visibility**: the reducer's earlier
+    ///      clone points at the SAME outer slot Arc as `self`;
+    ///      the inner swap is observed by both.
+    ///   2. **Late-registration propagation**: after the swap,
+    ///      every clone routes through `shared`'s inner Arc — a
+    ///      later `register` on the manager writes to the shared
+    ///      inner and every runtime sees it.
+    pub fn share_root_registry(&self, shared: RootIdentityRegistry) {
+        self.root_registry.share_from(&shared);
     }
 }
 
@@ -1150,5 +1211,111 @@ mod tests {
             "prior recorder must not receive calls"
         );
         assert_eq!(b.seen.lock().unwrap().len(), 1);
+    }
+
+    // --- Slice 4: root_registry + share_root_registry --------------
+
+    use tempfile::TempDir;
+
+    use super::super::path::identity::Root;
+
+    #[test]
+    fn root_registry_starts_empty() {
+        let table = FileHandleTable::new();
+        assert!(table.root_registry.is_empty());
+        assert_eq!(table.root_registry.len(), 0);
+    }
+
+    /// Basic sanity: `share_root_registry` installs a manager
+    /// registry; the table's own root_registry accessor sees
+    /// registrations made through the shared handle.
+    #[test]
+    fn share_root_registry_exposes_manager_registrations() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let manager = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/target");
+        manager.register(logical.clone(), root);
+
+        let table = FileHandleTable::new();
+        assert!(table.root_registry.get(&logical).is_none(), "pre-share");
+
+        table.share_root_registry(manager);
+        assert!(
+            table.root_registry.get(&logical).is_some(),
+            "post-share: table sees manager's registration"
+        );
+    }
+
+    /// **Load-bearing** — mirrors PR #501's PB-M-14 regression
+    /// scenario at the `FileHandleTable` layer:
+    ///
+    ///   1. Manager registry created empty.
+    ///   2. Table created; `share_root_registry(manager)` called.
+    ///   3. `reducer_clone` captured from the table AFTER step 2.
+    ///   4. Manager registers AFTER step 3.
+    ///   5. reducer_clone.root_registry MUST see the step-4
+    ///      registration.
+    ///
+    /// A field-replacement design would fail step 5 because
+    /// reducer_clone would still hold its own registry inner
+    /// disjoint from the manager.  The two-layer indirection
+    /// inside `RootIdentityRegistry` (see PR #501) makes both
+    /// clones share the outer slot; the swap inside `share_from`
+    /// is visible through both.
+    #[test]
+    fn share_root_registry_preserves_reducer_clone_visibility() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        // Step 1: empty manager.
+        let manager = RootIdentityRegistry::new();
+
+        // Step 2: table shares from manager.
+        let table = FileHandleTable::new();
+        table.share_root_registry(manager.clone());
+
+        // Step 3: reducer captures a clone of the table AFTER
+        // the share_root_registry call.
+        let reducer_clone = table.clone();
+
+        // Step 4: manager registers AFTER reducer_clone was
+        // captured.
+        let logical = PathBuf::from("/@bundle/late");
+        manager.register(logical.clone(), root);
+
+        // Step 5: the reducer_clone's root_registry MUST see the
+        // late registration.  A pre-fix field-replacement design
+        // would fail this — the reducer_clone would hold a
+        // disjoint inner Arc.
+        assert!(
+            reducer_clone.root_registry.get(&logical).is_some(),
+            "reducer_clone MUST see manager's late registration \
+             via the two-layer share_from indirection"
+        );
+    }
+
+    /// `share_root_registry` follows the same across-clones
+    /// visibility contract as `share_payload_store` — a share
+    /// through one clone is visible via another.
+    #[test]
+    fn share_root_registry_broadcasts_across_prior_clones() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let a = FileHandleTable::new();
+        let b = a.clone();
+
+        let manager = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/via-a");
+        manager.register(logical.clone(), root);
+
+        a.share_root_registry(manager);
+        assert!(
+            b.root_registry.get(&logical).is_some(),
+            "b (cloned before share) must see manager registrations \
+             after a.share_root_registry"
+        );
     }
 }
