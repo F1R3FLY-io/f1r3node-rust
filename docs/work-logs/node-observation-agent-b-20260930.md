@@ -104,3 +104,28 @@ The draft's recommended scope contains thirty-eight main files and thirty-one ev
 Conditional options can change that scope.
 The stated ten-record refresh count also requires an explicit final inventory.
 Agent B will not start Batch E code before the required scope decision.
+
+### Scope review on 2026-09-30
+
+The user authorized a scope review, not implementation.
+Agent B reviewed HEAD `030384f5f31613c64552f7d5b517ef1fe2552d11` after Agent A committed Batch D step 7.
+The earlier draft contains sixteen decisions, not the six listed in the tracker.
+Its 69-file recommendation shares initial-fault arithmetic but leaves the final subtraction in the public block API.
+
+The complete-arithmetic recommendation contains 72 files: 39 main files, 31 ledger records, and two run files.
+It adds the block API path and proposed mandatory records for the block API and dispatch paths.
+All five proposed tags require human ratification.
+No source, tracker, claim, tag, or ledger file changed through this review.
+
+The exact list and decisions are in `target/node-observation-prep-20260928-01/batch-e/scope-review-20260930.md`.
+The companion `scope-inventory-20260930.json` records the attributes and reviewed source hashes in the same directory.
+The inventory contains 72 unique paths, with 33 new files and 39 changed files.
+Ten reviewed source hashes remain equal at the review checkpoint, and the new prose passed the STE Check.
+
+The final currency check found Agent A's new changes in three shared observer files.
+The inventory preserves the earlier hashes and records the later differences.
+The 72-file list remains prospective until the completed Batch D source check.
+
+Batch E still requires scope confirmation and the completed Batch D handoff.
+The review does not claim complete floating-point proofs, tracker wire proofs, hosted test coverage, or live qualification.
+Final cleanup remains on branch 4.

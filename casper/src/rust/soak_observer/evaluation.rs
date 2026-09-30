@@ -14,6 +14,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::soak_snapshot::ReadLimits;
 
+use super::fork_choice::{self, ForkChoiceObservation, LatestMessageCounts, LowerBoundRule};
 use super::reference::Reference;
 use super::{
     AuthorityInputs, CaptureEndpoint, Coverage, EventKind, FloorOutcome, ObservationEvent,
@@ -97,6 +98,12 @@ pub enum FloorSelection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ForkChoiceSelection {
+    pub reference: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthorityRequest {
     pub capture: CaptureOptions,
     pub evaluation: WorkLimits,
@@ -106,6 +113,38 @@ pub struct AuthorityRequest {
     pub original: bool,
     pub reference: bool,
     pub strict: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_choice: Option<ForkChoiceSelection>,
+}
+
+#[derive(Serialize)]
+struct RequestDigestInput<'a> {
+    capture: &'a CaptureOptions,
+    evaluation: &'a WorkLimits,
+    targets: &'a [String],
+    body_hashes: &'a [String],
+    floor: &'a Option<FloorSelection>,
+    original: bool,
+    reference: bool,
+    strict: bool,
+}
+
+impl AuthorityRequest {
+    fn digest_input(&self) -> (RequestDigestInput<'_>, Option<&ForkChoiceSelection>) {
+        (
+            RequestDigestInput {
+                capture: &self.capture,
+                evaluation: &self.evaluation,
+                targets: &self.targets,
+                body_hashes: &self.body_hashes,
+                floor: &self.floor,
+                original: self.original,
+                reference: self.reference,
+                strict: self.strict,
+            },
+            self.fork_choice.as_ref(),
+        )
+    }
 }
 
 pub fn parse_hash(hash: &str) -> Result<BlockHash, String> {
@@ -294,6 +333,7 @@ pub struct AuthorityResponse {
     pub targets: Vec<TargetResult>,
     pub floor_result: Value<FloorValue>,
     pub floor_comparison: Value<FloorComparison>,
+    pub fork_choice: Value<ForkChoiceObservation>,
     pub work: WorkReport,
     pub events: Vec<ObservationEvent>,
 }
@@ -462,15 +502,28 @@ async fn evaluate_inner(
         return Err("instance_changed".to_string());
     }
     prepare(&snapshot, meter)?;
-    let authority_digest = digest(
-        &(
-            "batch-b2-authority-v1",
-            snapshot.digest(),
-            &endpoint.authority,
-            request,
-        ),
-        meter,
-    )?;
+    let (request_digest_input, fork_choice_selection) = request.digest_input();
+    let authority_digest = match fork_choice_selection {
+        None => digest(
+            &(
+                "batch-b2-authority-v1",
+                snapshot.digest(),
+                &endpoint.authority,
+                &request_digest_input,
+            ),
+            meter,
+        )?,
+        Some(selection) => digest(
+            &(
+                "batch-b2-authority-v1",
+                snapshot.digest(),
+                &endpoint.authority,
+                &request_digest_input,
+                selection,
+            ),
+            meter,
+        )?,
+    };
     let snapshot_digest = snapshot.digest_hex();
     let measured_work = meter.for_path(1).map_err(|e| e.to_string())?;
     let original_work = meter.for_path(2).map_err(|e| e.to_string())?;
@@ -489,6 +542,9 @@ async fn evaluate_inner(
         .floor
         .as_ref()
         .map(|selection| digest(&(&authority_digest, "floor", selection), meter))
+        .transpose()?;
+    let fork_choice_digest = fork_choice_selection
+        .map(|_| fork_choice_input_digest(&authority_digest, &endpoint.fork_choice, meter))
         .transpose()?;
     let measured = scratch(&snapshot, meter);
     let original = if request.original {
@@ -679,6 +735,20 @@ async fn evaluate_inner(
             (Value::from_result(input_digest, result), comparison)
         }
     };
+    let fork_choice_observation = match (fork_choice_selection, fork_choice_digest) {
+        (Some(_), Some(input_digest)) => Value::available(&input_digest, ForkChoiceObservation {
+            input_digest: input_digest.clone(),
+            inputs: endpoint.fork_choice.clone(),
+            latest_messages: LatestMessageCounts {
+                captured: snapshot.latest_messages.len(),
+                ..LatestMessageCounts::default()
+            },
+            bounded: Value::unavailable(&input_digest, "not_implemented"),
+            reference: Value::unavailable(&input_digest, "not_implemented"),
+            comparison: Value::unavailable(&input_digest, "not_implemented"),
+        }),
+        _ => Value::NotRequested,
+    };
     let work = work_report(meter, request, &authority_digest);
     Ok(AuthorityResponse {
         scope: "batch-b2-detached-authority-evaluation",
@@ -707,7 +777,28 @@ async fn evaluate_inner(
         targets,
         floor_result,
         floor_comparison,
+        fork_choice: fork_choice_observation,
         work,
         events: Vec::new(),
     })
+}
+
+pub fn fork_choice_input_digest(
+    authority_digest: &str,
+    inputs: &super::ForkChoiceInputs,
+    meter: &CheckedWork,
+) -> Result<String, String> {
+    digest(
+        &(
+            fork_choice::INPUT_DIGEST_DOMAIN,
+            authority_digest,
+            inputs,
+            fork_choice::LATEST_MESSAGE_SCOPE,
+            [
+                LowerBoundRule::FinalizedFloor.name(),
+                LowerBoundRule::ApprovedBlock.name(),
+            ],
+        ),
+        meter,
+    )
 }

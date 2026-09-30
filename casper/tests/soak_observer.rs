@@ -205,6 +205,7 @@ impl Fixture {
             original: true,
             reference: true,
             strict: false,
+            fork_choice: None,
         }
     }
 }
@@ -770,6 +771,145 @@ async fn metered_fork_choice_floor_matches_the_production_floor() {
     .unwrap_err()
     .to_string();
     assert!(is_limit_error(&error), "{error}");
+}
+
+fn endpoint(fixture: &Fixture) -> CaptureEndpoint {
+    let mut conf = CasperShardConf::new();
+    conf.fault_tolerance_threshold_ppm = 1_000_000;
+    conf.fault_tolerance_threshold = -1.0;
+    conf.max_parent_depth = 12;
+    conf.deploy_lifespan = 50;
+    CaptureEndpoint::new(
+        fixture.dag.clone(),
+        fixture.blocks.clone(),
+        &conf,
+        &fixture.chain[0],
+    )
+}
+
+#[derive(serde::Serialize)]
+struct BatchB2Request<'a> {
+    capture: &'a CaptureOptions,
+    evaluation: &'a WorkLimits,
+    targets: &'a [String],
+    body_hashes: &'a [String],
+    floor: &'a Option<FloorSelection>,
+    original: bool,
+    reference: bool,
+    strict: bool,
+}
+
+#[tokio::test]
+async fn a_request_without_a_fork_choice_selection_keeps_the_batch_b2_digest_and_bytes() {
+    use casper::rust::soak_observer::evaluation::{parse_hash, AuthorityRequest};
+    use crypto::rust::hash::sha_256::Sha256Hasher;
+    let fixture = Fixture::new().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let request = fixture.request();
+    let response = evaluate(&fixture, &controller).await;
+    let batch_b2 = BatchB2Request {
+        capture: &request.capture,
+        evaluation: &request.evaluation,
+        targets: &request.targets,
+        body_hashes: &request.body_hashes,
+        floor: &request.floor,
+        original: request.original,
+        reference: request.reference,
+        strict: request.strict,
+    };
+    let bodies: Vec<BlockHash> = request
+        .body_hashes
+        .iter()
+        .map(|hash| parse_hash(hash).unwrap())
+        .collect();
+    let captured = snapshot(&fixture, &bodies);
+    let expected = hex::encode(Sha256Hasher::hash(
+        bincode::serialize(&(
+            "batch-b2-authority-v1",
+            captured.digest(),
+            endpoint(&fixture).authority(),
+            &batch_b2,
+        ))
+        .unwrap(),
+    ));
+    assert_eq!(response.authority_digest, expected);
+    assert!(matches!(response.fork_choice, Value::NotRequested));
+    let echoed = serde_json::to_value(&response.request).unwrap();
+    assert!(echoed.get("fork_choice").is_none());
+    let json = serde_json::to_string(&response).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["fork_choice"]["availability"], "not_requested");
+    let decoded: AuthorityRequest =
+        serde_json::from_str(&serde_json::to_string(&response.request).unwrap()).unwrap();
+    assert!(decoded.fork_choice.is_none());
+}
+
+#[tokio::test]
+async fn a_fork_choice_selection_binds_the_inputs_and_reports_the_unimplemented_state() {
+    use casper::rust::soak_observer::evaluation::{
+        fork_choice_input_digest, AuthorityRequest, ForkChoiceSelection,
+    };
+    let fixture = Fixture::new().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let mut request = fixture.request();
+    request.fork_choice = Some(ForkChoiceSelection { reference: true });
+    let plain = evaluate(&fixture, &controller).await;
+    let response = controller
+        .authority_snapshot(request.clone(), Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_ne!(response.authority_digest, plain.authority_digest);
+    let Value::Available {
+        input_digest,
+        value,
+    } = &response.fork_choice
+    else {
+        panic!(
+            "the observation is not available: {:?}",
+            response.fork_choice
+        );
+    };
+    let endpoint = endpoint(&fixture);
+    let inputs = endpoint.fork_choice_inputs();
+    assert_eq!(&value.inputs, inputs);
+    assert_eq!(value.inputs.approved_block_number, 0);
+    assert_eq!(value.inputs.latest_message_depth, 1000);
+    assert_eq!(value.latest_messages.captured, 1);
+    let expected =
+        fork_choice_input_digest(&response.authority_digest, inputs, &meter(work_limits()))
+            .unwrap();
+    assert_eq!(input_digest, &expected);
+    fn not_implemented<T>(field: &Value<T>, digest: &str) -> bool {
+        matches!(field, Value::Unavailable { reason, input_digest: Some(d) }
+            if reason == "not_implemented" && d == digest)
+    }
+    assert!(not_implemented(&value.bounded, input_digest));
+    assert!(not_implemented(&value.reference, input_digest));
+    assert!(not_implemented(&value.comparison, input_digest));
+    let mut changed = inputs.clone();
+    changed.max_number_of_parents += 1;
+    assert_ne!(
+        fork_choice_input_digest(&response.authority_digest, &changed, &meter(work_limits()))
+            .unwrap(),
+        expected
+    );
+    let mut changed = inputs.clone();
+    changed.approved_block_number += 1;
+    assert_ne!(
+        fork_choice_input_digest(&response.authority_digest, &changed, &meter(work_limits()))
+            .unwrap(),
+        expected
+    );
+    assert_ne!(
+        fork_choice_input_digest("other", inputs, &meter(work_limits())).unwrap(),
+        expected
+    );
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains("\"fork_choice\":{\"reference\":true}"));
+    let unknown = json.replace("{\"reference\":true}", "{\"reference\":true,\"extra\":1}");
+    assert!(serde_json::from_str::<AuthorityRequest>(&unknown).is_err());
 }
 
 #[test]

@@ -53,7 +53,7 @@ pub struct Estimator;
 
 impl Estimator {
     pub const UNLIMITED_PARENTS: i32 = i32::MAX;
-    const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
+    pub const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
 
     pub fn apply() -> Self { Self }
 

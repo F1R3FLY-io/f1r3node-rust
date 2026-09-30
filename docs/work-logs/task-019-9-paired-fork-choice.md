@@ -88,6 +88,22 @@ The frontier filter of `rank_forkchoices` became a loop, because the child scan 
 
 Checks: 95 integration tests of the fork-choice, estimator, floor, and observer suites passed. 65 unit tests of the casper library for floor, estimator, and weight passed. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed on the 5 files after a format pass on 2 of them.
 
+## Step 8 on 2026-09-30: input record and input digest
+
+`CaptureEndpoint` binds `ForkChoiceInputs` at attachment: `max_number_of_parents` from the shard configuration, `approved_block_number` from the approved block, and `latest_message_depth` from the estimator constant, which is public now. Two accessors give the tests read access to the authority and fork-choice inputs.
+
+`AuthorityRequest` gets the optional field `fork_choice: Option<ForkChoiceSelection>`, absent from the JSON when `None`. `ForkChoiceSelection { reference: bool }` rejects unknown fields.
+
+The authority digest input is a struct of the 8 Batch B2 request fields, plus the selection only when it is present. `bincode` writes that struct and the request struct identically, so the digest of a request with no selection is byte-equal to the Batch B2 digest. A test compares against a literal copy of the Batch B2 digest input.
+
+The fork-choice input digest has the domain `batch-d-fork-choice-v1` and covers the authority digest, the inputs record, the scope `captured_latest_messages`, and the 2 lower bound rule names. `fork_choice_input_digest` is public for the tests.
+
+The response has the field `fork_choice: Value<ForkChoiceObservation>`. With no selection it is `NotRequested`. With a selection the observation is available with the input digest, the inputs, and the captured latest message count. Its `bounded`, `reference`, and `comparison` fields are `Unavailable` with the reason `not_implemented` until steps 9 to 11.
+
+`casper/src/rust/soak_observer/fork_choice.rs` holds the result types only: `ForkChoiceObservation`, `ForkChoiceResult`, `ForkChoiceComparison`, `LowerBound`, `LowerBoundRule`, `LatestMessageCounts`, `EvaluationMode`, and the constants. Its ledger record is written now, because the file exists.
+
+Checks: the 24 casper observer and estimator tests passed, which include the 2 new tests. `node/tests/soak_observer.rs` is Linux only (`#![cfg(target_os = "linux")]`) and runs in CI. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed on the 5 Rust files.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -96,7 +112,7 @@ Checks: 95 integration tests of the fork-choice, estimator, floor, and observer 
 - [x] Bounded model and 5 controls, registered in the gate.
 - [x] 2 work paths.
 - [x] Metered functions in the 4 consensus files.
-- [ ] Input record and input digest.
+- [x] Input record and input digest.
 - [ ] `bounded` evaluation and tests.
 - [ ] `reference` evaluation and tests.
 - [ ] Comparison, response field, negative controls.
