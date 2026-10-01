@@ -1,19 +1,14 @@
 # CbC Evidence: scripts/ci/check-formal-invariants.sh
 
-This pending successor preserves the committed prior record through `previous_record`.
-Earlier acceptance does not cover the Batch E source changes.
-
-The final source refresh preserves the historical identities and the registration gaps.
-The report records verification observations, not named acceptance.
-The status remains pending.
+The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9839b0e` on 2026-10-01 (PR #447, comment 5924422936). This record is discharged for the Batch E bytes of the file. The registration gap stays recorded in `registration_gap`.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/check-formal-invariants.sh",
     "id": "scripts-ci-check-formal-invariants-sh",
-    "commit": "c83b16f30b28fd9ef3fb7dcdccaa1ff4876cbd03",
-    "commit_is_base": false,
+    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "commit_is_base": true,
     "working_tree": false,
     "sha256": "8cf26f199b4ac1970cb74a6bf8f5c803bba411a5662b06367db99651ca618213",
     "sha256_at_registration": "d69aa2f8f72db96be2703f7ab8deb37c24ee0a96ee599c0d175c8bf22d1dda66",
@@ -33,27 +28,27 @@ The status remains pending.
     "docs/claims/casper-node-authority-evaluation.md": "15cc3c2951f8291b4670cf9554103755833777b857cd700feac1776d02924081",
     "docs/claims/casper-node-display-projection.md": "6310f626415a6ba2d1250e2d656fdcb576415c6153deda1a26da55c617b8faad"
   },
-  "status": "pending",
-  "scope": "batch-e-registration",
+  "status": "discharged",
+  "scope": "batch-e-acceptance-01",
   "previous_record": {
+    "artifact": "scripts/ci/check-formal-invariants.sh",
     "path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md",
-    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a",
-    "sha256": "a4ddf5efc08459495c902524d5a264cb6a46c9f3fc3a9d833ad215721a4355f5"
+    "sha256": "2d59a2499c3742b7f1e12d5853c6bb4a38c3bb8147935ff72e450e82c9f54ba5",
+    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f"
   },
   "evidence": {
-    "path": "docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/report.json",
-    "sha256": "52f766491135dcf59b72d935e8ef697251fba1cebbe2a5d3f11ae5d47f87393a",
-    "validation": "docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/validation.json",
-    "acceptance": "pending"
+    "kind": "tiered-evidence-accepted",
+    "ref": "docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/report.json",
+    "sha256": "52f766491135dcf59b72d935e8ef697251fba1cebbe2a5d3f11ae5d47f87393a"
   },
   "tiers": {
-    "refutation": "pending",
-    "construction": "pending",
-    "binding": "pending"
+    "refutation": "recorded",
+    "construction": "recorded-partial",
+    "binding": "recorded"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null,
+  "verified_at": "2026-10-01T03:59:08+00:00",
   "previous_refresh_record": {
     "path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md",
     "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
@@ -84,6 +79,13 @@ The status remains pending.
     "construction": "scoped-integer-proofs-passed-with-declared-gaps",
     "binding": "named-source-tests-passed-not-refinement",
     "adapter_discharge": false
+  },
+  "acceptance": {
+    "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-005",
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
+    "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "reviewed_at": "2026-10-01T03:56:25Z"
   }
 }
 ```

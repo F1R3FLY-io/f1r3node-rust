@@ -938,7 +938,9 @@ tasks:
       - "Confirmation of this batch does not authorize Batch E."
   - id: TASK-019-10
     title: "Batch E: equivocation input capture for the detached display projection"
-    status: in_progress
+    status: complete
+    completed_on: "2026-10-01"
+    closed_by: claude-session-f3cbc961
     claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
     claimed_at: 2026-09-30T17:45:58Z
     proposed_owner: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
@@ -949,7 +951,7 @@ tasks:
     handoff_revision: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
     handoff_digests_verified: 7
     claims: [CLAIM-CASPER-NODE-OBSERVATION-005]
-    claim_status: pending
+    claim_status: accepted
     claim_file: docs/claims/casper-node-display-projection.md
     work_log: docs/work-logs/task-019-10-display-projection.md
     plan: docs/plans/casper-node-observation-batch-e.md
@@ -967,10 +969,22 @@ tasks:
     cbc_tags_applied: true
     implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
     source_scope_recheck_required: false
-    stage: "Implementation and source-bound verification are complete within the approved scope. There are 495 selected passing tests. Formal models, scoped integer proofs, all property bindings, and isolated node checks passed. Named maintainer acceptance remains pending."
+    stage: "Complete on 2026-10-01. The named maintainer accepted claim 005 at revision 1a9839b0e on the evidence package. The 31 Batch E records are discharged. CI on 1a9839b0e was still running at the acceptance; the display admission test fix of that revision is proven by that run."
     record_refresh_coordination: "All 31 Batch E records bind final sources at c83b16f30 plus 7 working-tree artifact hashes. The 16 original prior-record identities and 19 prior-refresh identities remain exact. Twelve late registrations remain explicit. The PR-base mandatory inventory has 106 sources, so this refresh does not cover the other 75."
     verification_package: docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01
     proposed_reviewer: jltatbeach
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936
+    acceptance_form: "Issue comment by the named maintainer. The text names the claim, the revision, the package, and the report SHA-256. The suggested statement appears once as a quote and once as the maintainer's own text."
+    acceptance_revision: 1a9839b0e52e494e20ab13c0a79a55bd2164e34f
+    acceptance_reviewed_at: 2026-10-01T03:56:25Z
+    acceptance_package: docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01
+    acceptance_decisions: "E1, E14, E17 bounded by design. Construction gaps E7, E11, E15 and the other stated limits accepted as recorded. The 12 late source registrations acknowledged."
+    tiers_reached:
+      refutation: "DisplayProjection bounded model with 3 negative controls. 17 positive TLA+ configurations and 86 expected negative controls in the gate."
+      construction: "Scoped integer proofs with declared gaps: 47 closed assumption sets. E7 and E15 tracker wire encoding and E11 IEEE-754 arithmetic stay pending, accepted as recorded."
+      binding: "17 properties mapped to 26 executed named tests. 495 distinct selected tests passed, including 259 isolated node library tests and 22 isolated node integration tests."
+    strict_cbc_result: "Exit 4 with 31 pending records before the acceptance. After the acceptance the 31 Batch E records are discharged."
     acceptance_request: docs/work-logs/task-019-10-display-projection.md#maintainer-acceptance-request
     open_questions: "No scope decision remains open. A new implementation path requires a scope amendment."
     scope: "Capture the equivocation inputs in the same interval as the detached DAG capture, and calculate the display projection from captured inputs only, with the arithmetic of the live calculation."

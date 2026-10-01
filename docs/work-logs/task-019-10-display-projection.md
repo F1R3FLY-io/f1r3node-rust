@@ -196,3 +196,9 @@ The new tracker encoding and floating-point construction remain explicit proof g
 Logical observation limits do not establish physical storage or live safety.
 Final cleanup remains on stack branch 4.
 No staging, commit, push, branch switch, merge, or removal occurred through Agent B.
+
+## Acceptance on 2026-10-01
+
+The named maintainer `jltatbeach` accepted CLAIM-CASPER-NODE-OBSERVATION-005 in [PR #447 comment 5924422936](https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936) at 2026-10-01T03:56:25Z. The text names the claim, revision `1a9839b0e`, the evidence package, and the report SHA-256 `52f766491135dcf59b72d935e8ef697251fba1cebbe2a5d3f11ae5d47f87393a`. It accepts E1, E14, and E17 as bounded by design. It accepts the E7, E11, and E15 construction gaps and the other stated limits as recorded. It acknowledges the 12 late source registrations. The form is an issue comment, as for claim 004.
+
+All 31 source hashes of the report equal the files committed at `1a9839b0e`. The 31 Batch E records changed to `discharged` with the scope `batch-e-acceptance-01`, the evidence kind `tiered-evidence-accepted`, and a `previous_record` entry for the verified version. The tracker marks TASK-019-10 complete. Recorded by claude-session-f3cbc961 at the user's request.

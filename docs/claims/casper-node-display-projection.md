@@ -1,10 +1,10 @@
 # Casper Node Display Projection
 
-This claim registers the pending Batch E obligations. It contains no acceptance or discharge evidence.
+This claim registered the pending Batch E obligations. The named maintainer `jltatbeach` accepted it on 2026-10-01 at revision `1a9839b0e` on the evidence package `docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01` ([PR #447 comment 5924422936](https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936)). Decisions: E1, E14, and E17 are bounded by design. The construction gaps E7, E11, and E15 and the other stated limits are accepted as recorded. The 12 late source registrations are acknowledged.
 
 ```yaml
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-005
-status: pending
+status: accepted
 adapter: null
 scope: batch-e-detached-display-projection
 implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
