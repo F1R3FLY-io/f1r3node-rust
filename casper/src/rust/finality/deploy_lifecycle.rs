@@ -47,14 +47,16 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::dag::deploy_lifecycle_types::{
     LifecycleEventKind, LifecycleEvents, TerminalRecord, TerminalState,
 };
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
-use super::floor::{in_floor_closure, Floor};
+use super::floor::{self, in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
+use crate::rust::safety::clique_oracle::FtThreshold;
 
 /// The citability horizon: how far below the floor an admissible block can
 /// still cite. Derives from `max_parent_depth` ALONE (shard config — the
@@ -401,13 +403,17 @@ impl FloorSettledProbe {
 
 #[derive(Default)]
 struct Schedule {
-    /// Sigs to re-evaluate once the max frozen lm-floor height reaches the
-    /// key (next floor advance for coverage re-checks; the contestability
-    /// bound for Expired/Failed).
+    /// Sigs to re-evaluate once the floor-clock height reaches the key (next
+    /// floor advance for coverage re-checks; the contestability bound for
+    /// Expired/Failed).
     floor_thresholds: BTreeMap<i64, HashSet<Bytes>>,
-    /// The monotone max frozen latest-message floor — the highest floor
-    /// any known canonical block carries. The register's ONE clock.
+    /// The register's ONE clock: the derived floor of the node's adopted LFB,
+    /// monotone. Not the LFB — an effect is irreversible at the floor, not at
+    /// the marker.
     max_floor: Option<Floor>,
+    /// The adopted LFB `max_floor` was derived from: the basis moves only when
+    /// this does, so an admission under an unchanged LFB skips the derivation.
+    basis_of: Option<BlockHash>,
     /// Per-sig coverage memo: the floor block whose lineage a previous
     /// membership check already answered FALSE for. The next check walks
     /// only the new segment above it.
@@ -446,38 +452,52 @@ impl DeployLifecycle {
         Ok(())
     }
 
-    /// The register's advance step, run for every accepted block (the
-    /// proposer and validator paths both flow through block admission):
-    /// bump the floor clock and evaluate the sigs whose thresholds
-    /// crossed, plus the sigs this block touched. Ingest already happened
-    /// inside the DAG insert.
+    /// Bump the floor clock and evaluate the sigs whose thresholds crossed,
+    /// plus the ones `touched` carries — a newly admitted block, or `None` for
+    /// the finalizer's own advance, which has no block in hand.
     ///
-    /// Returns the sigs that reached a TERMINAL verdict in this pass.
-    /// Every terminal state means no further proposal is possible or
-    /// needed, so the caller releases the proposer's pool copy against
-    /// exactly this list; verdicts are write-once, so a sig is released
-    /// at most once.
-    pub async fn observe_block(
+    /// Returns the sigs that reached a TERMINAL verdict in this pass — no
+    /// further proposal is possible or needed for any of them, so the caller
+    /// releases the pool copy against exactly this list. Verdicts are
+    /// write-once, so a sig is released at most once.
+    pub async fn observe(
         &self,
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
-        block: &BlockMessage,
+        touched: Option<&BlockMessage>,
         deploy_lifespan: i64,
         citability_horizon: Option<i64>,
+        ftt: FtThreshold,
     ) -> Result<Vec<Bytes>, CasperError> {
-        // The register's clock is the node's ADOPTED LFB — the output of
-        // `floor_of_view`, which is containment-guarded — never an admitted
-        // block's frozen floor. A frozen floor is another validator's claim
-        // about ITS chain: under a sibling-fork race it can sit on a branch
-        // this node never adopted, and a write-once verdict keyed on it is
-        // permanently incoherent with this node's read surface (the ucc
-        // ca7197d8 fork wrote Finalized network-wide off one side's frozen
-        // floor while two nodes served the other side).
+        // Two facts, both needed. The clock's PROVENANCE is the node's adopted
+        // LFB, never a floor read off an admitted block — that is another
+        // validator's claim about its own chain. Its HEIGHT is that LFB's
+        // derived floor, not the LFB: the LFB reaches a future block through
+        // scope, where a merge can still reject an effect, while the floor
+        // reaches it through the merge base, where nothing can.
         let adopted_hash = dag.last_finalized_block();
-        let adopted_number = dag
-            .lookup_unsafe(&adopted_hash)
-            .map_err(CasperError::from)?
-            .block_number;
+        let known_basis = {
+            let schedule = self.schedule.lock();
+            (schedule.basis_of.as_ref() == Some(&adopted_hash))
+                .then(|| schedule.max_floor.clone())
+                .flatten()
+        };
+        let basis = match known_basis {
+            Some(basis) => basis,
+            None => match floor::floor_of_block(dag, block_store, &adopted_hash, ftt).await {
+                Ok(basis) => basis,
+                Err(CasperError::BlockNotHeld(missing, _)) => {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.lifecycle",
+                        missing = %hex::encode(&missing[..8.min(missing.len())]),
+                        "register clock holds: the adopted LFB's floor needs a block \
+                         below this node's history"
+                    );
+                    return Ok(Vec::new());
+                }
+                Err(other) => return Err(other),
+            },
+        };
 
         let mut schedule = self.schedule.lock();
         if !schedule.rebuilt {
@@ -486,34 +506,34 @@ impl DeployLifecycle {
             schedule = self.schedule.lock();
         }
 
-        // The floor clock (monotone; adoption itself is monotone per node).
+        // Monotone: adoption is monotone per node and `floor_of_block` is
+        // monotone along ancestry, so the memoized FALSE answers in `checked`
+        // stay valid across advances.
         let floor_advanced = match &schedule.max_floor {
-            Some(current) => adopted_number > current.block_number,
+            Some(current) => basis.block_number > current.block_number,
             None => true,
         };
+        // Recorded even when the floor did not move: a lagging floor is common.
+        schedule.basis_of = Some(adopted_hash);
         if floor_advanced {
-            schedule.max_floor = Some(Floor {
-                hash: adopted_hash,
-                block_number: adopted_number,
-            });
-            // Carrier-index retention: entries below the adopted floor
-            // minus the lifespan sit below every future scan window
-            // (earliest = maxParent + 1 − lifespan, and parents sit above
-            // the floor). The prune is strided inside the index, so most
-            // advances no-op. A failure must not affect the verdict path —
-            // retention is an optimization, never consensus input.
-            if let Err(e) = dag.prune_carriers_below(adopted_number - deploy_lifespan) {
+            let prune_below = basis.block_number - deploy_lifespan;
+            schedule.max_floor = Some(basis);
+            // Entries this far below the floor sit below every future scan
+            // window (earliest = maxParent + 1 − lifespan, parents above the
+            // floor). Retention only — never consensus input.
+            if let Err(e) = dag.prune_carriers_below(prune_below) {
                 tracing::warn!("carrier-index prune failed (retention only): {}", e);
             }
         }
 
-        // Due: crossed thresholds plus the block's own touched sigs.
         let mut due: HashSet<Bytes> = HashSet::new();
-        for pd in &block.body.deploys {
-            due.insert(pd.deploy.sig.clone());
-        }
-        for rd in &block.body.rejected_deploys {
-            due.insert(rd.sig.clone());
+        if let Some(block) = touched {
+            for pd in &block.body.deploys {
+                due.insert(pd.deploy.sig.clone());
+            }
+            for rd in &block.body.rejected_deploys {
+                due.insert(rd.sig.clone());
+            }
         }
         let floor_height = schedule
             .max_floor
@@ -723,6 +743,23 @@ fn frozen_display(
     (rejection_count, latest_height, latest_block_hash)
 }
 
+/// Keyed on the register's write-once terminal list and nothing else. The
+/// rejected-deploy buffer is not touched here: it answers to the proposer's
+/// own justification-derived floor.
+pub fn release_terminalized(
+    deploy_storage: &parking_lot::Mutex<KeyValueDeployStorage>,
+    terminalized: &[Bytes],
+) -> Result<(), CasperError> {
+    if terminalized.is_empty() {
+        return Ok(());
+    }
+    let mut storage = deploy_storage.lock();
+    for sig in terminalized {
+        storage.remove_by_sig(sig).map_err(CasperError::from)?;
+    }
+    Ok(())
+}
+
 fn write_terminal(
     dag: &KeyValueDagRepresentation,
     sig: &Bytes,
@@ -757,8 +794,11 @@ fn write_terminal(
 
 #[cfg(test)]
 mod tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
     use models::rust::block_implicits::get_random_block;
-    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedDeploy};
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -784,17 +824,11 @@ mod tests {
 
     /// A genuinely signed deploy (the store re-verifies deploy signatures
     /// on decode) with a distinct sig per `n`, wrapped as processed.
-    fn processed(
-        n: i32,
-        failed: bool,
-    ) -> (
-        Bytes,
-        models::rust::casper::protocol::casper_message::ProcessedDeploy,
-    ) {
+    fn processed(n: i32, failed: bool) -> (Bytes, ProcessedDeploy) {
         let deploy = crate::rust::util::construct_deploy::basic_deploy_data(n, None, None)
             .expect("deploy data");
         let sig = deploy.sig.clone();
-        let mut pd = models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy);
+        let mut pd = ProcessedDeploy::empty(deploy);
         pd.is_failed = failed;
         (sig, pd)
     }
@@ -806,19 +840,7 @@ mod tests {
             .expect("block store")
     }
 
-    /// The register's clock is the node's ADOPTED LFB, never an admitted
-    /// block's frozen floor: a frozen floor on a branch this node has not
-    /// adopted must not advance the clock or write a verdict (the ucc
-    /// ca7197d8 fork wrote Finalized off one side's frozen floor while two
-    /// nodes served the other side). The verdict lands exactly when the
-    /// node itself adopts a covering LFB.
-    #[tokio::test]
-    async fn verdicts_key_on_the_adopted_lfb_never_a_frozen_floor() {
-        use block_storage::rust::dag::block_dag_key_value_storage::{
-            BlockDagKeyValueStorage, InsertMode,
-        };
-        use models::rust::block_implicits::get_random_block;
-
+    async fn store_and_dag() -> (KeyValueBlockStore, BlockDagKeyValueStorage) {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
@@ -826,70 +848,77 @@ mod tests {
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
             .await
             .expect("dag storage");
+        (block_store, dag_storage)
+    }
 
-        let mk = |number: i64,
-                  seq: i32,
-                  parents: Vec<BlockHash>,
-                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
-            get_random_block(
-                Some(number),
-                Some(seq),
-                None,
-                None,
-                None,
-                None,
-                Some(number),
-                Some(parents),
-                Some(Vec::new()),
-                Some(deploys),
-                Some(Vec::new()),
-                None,
-                Some("test".to_string()),
-                None,
-            )
-        };
+    /// Adopt `block` as the LFB with its verdict basis seeded at `floor`.
+    /// Seeding is what the tests below reckon their heights against; deriving
+    /// the floor instead would drag the oracle into fixtures that are not
+    /// about it.
+    async fn adopt(dag_storage: &BlockDagKeyValueStorage, block: &BlockHash, floor: &BlockHash) {
+        dag_storage
+            .get_representation()
+            .expect("dag")
+            .put_cached_floor(block.clone(), floor.clone())
+            .expect("seed the verdict basis");
+        dag_storage
+            .record_directly_finalized(block.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt");
+    }
 
-        let (sig, pd) = {
-            let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-                1,
-                None,
-                Some("test".to_string()),
-            )
-            .expect("deploy data");
-            let sig = deploy.sig.clone();
-            (
-                sig,
-                models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy),
-            )
-        };
-
-        let genesis = mk(0, 0, Vec::new(), Vec::new());
-        let a = mk(1, 1, vec![genesis.block_hash.clone()], vec![pd]);
-        let b = mk(2, 2, vec![a.block_hash.clone()], Vec::new());
-        let c = mk(3, 3, vec![b.block_hash.clone()], Vec::new());
-
-        for block in [&genesis, &a, &b, &c] {
+    /// Store every block and insert it, genesis as the approved root.
+    fn seed(
+        block_store: &KeyValueBlockStore,
+        dag_storage: &BlockDagKeyValueStorage,
+        blocks: &[&BlockMessage],
+    ) {
+        for block in blocks {
             block_store.put_block_message(block).expect("store block");
         }
+        let (genesis, rest) = blocks.split_first().expect("at least the root");
         dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&a, &b, &c] {
+            .insert(genesis, InsertMode::Approved)
+            .expect("insert root");
+        for block in rest {
             dag_storage
                 .insert(block, InsertMode::Normal)
                 .expect("insert block");
         }
+    }
 
-        // Another validator's claim: block b's FROZEN floor is b itself —
-        // covering the deploy's carrier — while THIS node has adopted
-        // nothing past genesis.
+    /// The register's clock is the node's ADOPTED LFB, never an admitted
+    /// block's frozen floor: one on a branch this node has not adopted must
+    /// not advance the clock or write a verdict. The verdict lands exactly
+    /// when the node itself adopts a covering LFB.
+    #[tokio::test]
+    async fn verdicts_key_on_the_adopted_lfb_never_a_frozen_floor() {
+        let (block_store, dag_storage) = store_and_dag().await;
+        let (sig, pd) = processed(1, false);
+
+        let genesis = block_at(0, vec![], 0);
+        let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
+        a.body.deploys = vec![pd];
+        let b = block_at(2, vec![a.block_hash.clone()], 2);
+        let c = block_at(3, vec![b.block_hash.clone()], 3);
+        seed(&block_store, &dag_storage, &[&genesis, &a, &b, &c]);
+
+        // Another validator's claim: b's FROZEN floor is b itself — covering
+        // the carrier — while THIS node has adopted nothing past genesis.
         let dag = dag_storage.get_representation().expect("dag");
         dag.put_cached_floor(b.block_hash.clone(), b.block_hash.clone())
             .expect("seed frozen floor");
 
         let register = DeployLifecycle::default();
         let terminalized = register
-            .observe_block(&dag, &block_store, &b, 10, Some(10))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&b),
+                10,
+                Some(10),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("observe b");
         assert!(
@@ -907,13 +936,65 @@ mod tests {
             .expect("adopt b");
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe_block(&dag, &block_store, &c, 10, Some(10))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&c),
+                10,
+                Some(10),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("observe c");
         assert_eq!(
             terminalized,
             vec![sig],
             "adoption of a covering LFB must land the Finalized verdict"
+        );
+    }
+
+    /// Membership keys on the adopted LFB's DERIVED FLOOR, never the LFB
+    /// itself: the LFB reaches a future block through scope, where a merge can
+    /// reject the effect, while the floor reaches it through the merge base.
+    #[tokio::test]
+    async fn membership_keys_on_the_adopted_lfbs_floor_not_the_lfb() {
+        let (block_store, dag_storage) = store_and_dag().await;
+        let (sig, pd) = processed(1, false);
+
+        let genesis = block_at(0, vec![], 0);
+        let mut carrier = block_at(1, vec![genesis.block_hash.clone()], 1);
+        carrier.body.deploys = vec![pd];
+        let b = block_at(2, vec![carrier.block_hash.clone()], 2);
+        let c = block_at(3, vec![b.block_hash.clone()], 3);
+        seed(&block_store, &dag_storage, &[&genesis, &carrier, &b, &c]);
+
+        // c's own floor still sits at genesis: the carrier is inside state(c)
+        // and above floor(c).
+        adopt(&dag_storage, &c.block_hash, &genesis.block_hash).await;
+
+        let dag = dag_storage.get_representation().expect("dag");
+        assert!(
+            effect_in_state_of(&block_store, &c.block_hash, &sig, 0).expect("walk"),
+            "fixture precondition: the adopted LFB's state must contain the \
+             carrier effect, or this test is not observing the window it is about"
+        );
+
+        let terminalized = DeployLifecycle::default()
+            .observe(
+                &dag,
+                &block_store,
+                Some(&c),
+                10,
+                Some(10),
+                FtThreshold::from_ppm(0),
+            )
+            .await
+            .expect("observe c");
+        assert!(
+            terminalized.is_empty(),
+            "the carrier is inside the adopted LFB's state but above its floor, \
+             so no verdict may be written and the pool copy must stay; got {:?}",
+            terminalized
         );
     }
 
@@ -925,91 +1006,59 @@ mod tests {
     /// read the failed inclusion.
     #[tokio::test]
     async fn clean_covered_win_supersedes_a_covered_failed_execution() {
-        use block_storage::rust::dag::block_dag_key_value_storage::{
-            BlockDagKeyValueStorage, InsertMode,
-        };
-        use models::rust::block_implicits::get_random_block;
+        let (block_store, dag_storage) = store_and_dag().await;
 
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-
-        let mk = |number: i64,
-                  seq: i32,
-                  parents: Vec<BlockHash>,
-                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
-            get_random_block(
-                Some(number),
-                Some(seq),
-                None,
-                None,
-                None,
-                None,
-                Some(number),
-                Some(parents),
-                Some(Vec::new()),
-                Some(deploys),
-                Some(Vec::new()),
-                None,
-                Some("test".to_string()),
-                None,
-            )
-        };
-
-        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            1,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy data");
+        // One deploy in two blocks, so the copies share a sig.
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(1, None, None)
+            .expect("deploy data");
         let sig = deploy.sig.clone();
-        let mut failed_copy =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy.clone());
+        let mut failed_copy = ProcessedDeploy::empty(deploy.clone());
         failed_copy.is_failed = true;
-        let clean_copy =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy);
 
-        let genesis = mk(0, 0, Vec::new(), Vec::new());
-        let a = mk(1, 1, vec![genesis.block_hash.clone()], vec![failed_copy]);
-        let b = mk(2, 2, vec![a.block_hash.clone()], vec![clean_copy]);
-        let c = mk(3, 3, vec![b.block_hash.clone()], Vec::new());
-        let d = mk(4, 4, vec![c.block_hash.clone()], Vec::new());
-
-        for block in [&genesis, &a, &b, &c, &d] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&a, &b, &c, &d] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
+        let genesis = block_at(0, vec![], 0);
+        let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
+        a.body.deploys = vec![failed_copy];
+        let mut b = block_at(2, vec![a.block_hash.clone()], 2);
+        b.body.deploys = vec![ProcessedDeploy::empty(deploy)];
+        let c = block_at(3, vec![b.block_hash.clone()], 3);
+        let d = block_at(4, vec![c.block_hash.clone()], 4);
+        seed(&block_store, &dag_storage, &[&genesis, &a, &b, &c, &d]);
 
         // Arm the sig (adopted LFB still genesis: no verdict possible yet).
         let dag = dag_storage.get_representation().expect("dag");
         let register = DeployLifecycle::default();
         let armed = register
-            .observe_block(&dag, &block_store, &b, 1, Some(1))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&b),
+                1,
+                Some(1),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("observe b");
         assert!(armed.is_empty(), "no verdict before a covering adoption");
 
-        // Adopt d (height 4): past decide_at = max(window_end, last
-        // inclusion at 2) + bound = 3, so the Failed arm is LIVE — and the
-        // failed execution at `a` is inside the adopted floor's closure.
+        // Adopt d, its floor seeded at d: past decide_at = max(window_end,
+        // last inclusion at 2) + bound = 3, so the Failed arm is LIVE, and the
+        // failed execution at `a` is inside the floor's closure.
+        dag.put_cached_floor(d.block_hash.clone(), d.block_hash.clone())
+            .expect("seed the verdict basis");
         dag_storage
             .record_directly_finalized(d.block_hash.clone(), 0.5, |_| async { Ok(()) })
             .await
             .expect("adopt d");
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe_block(&dag, &block_store, &c, 1, Some(1))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&c),
+                1,
+                Some(1),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("observe after adoption");
 
@@ -1176,93 +1225,34 @@ mod tests {
     /// readable re-application above the horizon still lands Finalized.
     #[tokio::test]
     async fn the_register_absorbs_the_horizon_instead_of_erroring_admission() {
-        use block_storage::rust::dag::block_dag_key_value_storage::{
-            BlockDagKeyValueStorage, InsertMode,
-        };
-        use models::rust::block_implicits::get_random_block;
+        let (block_store, dag_storage) = store_and_dag().await;
+        let (sig_blocked, blocked_pd) = processed(1, true);
+        let (sig_live, live_pd) = processed(2, false);
 
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
+        // The horizon: block #5 exists only as a hash pointer — its body was
+        // never restored. The window: w1(#6, anchor) <- w2(#7). w1 carries a
+        // FAILED execution of the blocked sig, so the row exists but
+        // membership must keep walking, straight into the absent block.
+        let absent = block_at(5, vec![], 5);
+        let mut w1 = block_at(6, vec![absent.block_hash.clone()], 6);
+        w1.body.deploys = vec![blocked_pd];
+        let mut w2 = block_at(7, vec![w1.block_hash.clone()], 7);
+        w2.body.deploys = vec![live_pd];
 
-        // Bonds are EMPTY: a truncated DAG holds no height-0 block, so a
-        // bonded-validator insert would (correctly) demand the genesis
-        // sentinel this test does not need.
-        let mk = |number: i64,
-                  seq: i32,
-                  parents: Vec<BlockHash>,
-                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
-            get_random_block(
-                Some(number),
-                Some(seq),
-                None,
-                None,
-                None,
-                None,
-                Some(number),
-                Some(parents),
-                Some(Vec::new()),
-                Some(deploys),
-                Some(Vec::new()),
-                Some(Vec::new()),
-                Some("test".to_string()),
-                None,
-            )
-        };
-
-        // The horizon: block #5 exists only as a hash pointer — its body
-        // was never restored. The window: w1(#6, anchor) <- w2(#7).
-        let absent = mk(5, 5, Vec::new(), Vec::new());
-
-        let blocked_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            1,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy data");
-        let sig_blocked = blocked_deploy.sig.clone();
-        let mut blocked_pd =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(blocked_deploy);
-        blocked_pd.is_failed = true;
-
-        let live_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            2,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy data");
-        let sig_live = live_deploy.sig.clone();
-        let live_pd =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(live_deploy);
-
-        // w1 carries a FAILED execution of the blocked sig: the row exists
-        // (valid_after 0) but membership must keep walking — straight into
-        // the absent block.
-        let w1 = mk(6, 6, vec![absent.block_hash.clone()], vec![blocked_pd]);
-        let w2 = mk(7, 7, vec![w1.block_hash.clone()], vec![live_pd]);
-
-        for block in [&w1, &w2] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&w1, InsertMode::Approved)
-            .expect("insert anchor");
-        dag_storage
-            .insert(&w2, InsertMode::Normal)
-            .expect("insert w2");
-        dag_storage
-            .record_directly_finalized(w2.block_hash.clone(), 0.5, |_| async { Ok(()) })
-            .await
-            .expect("adopt w2");
+        seed(&block_store, &dag_storage, &[&w1, &w2]);
+        adopt(&dag_storage, &w2.block_hash, &w2.block_hash).await;
 
         let dag = dag_storage.get_representation().expect("dag");
         let register = DeployLifecycle::default();
         let terminalized = register
-            .observe_block(&dag, &block_store, &w2, 1, Some(1))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&w2),
+                1,
+                Some(1),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("a horizon crossing must not error block admission");
         assert_eq!(
@@ -1280,18 +1270,22 @@ mod tests {
         // Past the contestability bound (decide_at = max(0+1, 6) + 1 = 7 <
         // floor 8): the Expired arm is live, and must stay suppressed for
         // the horizon-blocked sig. The observation must not re-error either.
-        let w3 = mk(8, 8, vec![w2.block_hash.clone()], Vec::new());
+        let w3 = block_at(8, vec![w2.block_hash.clone()], 8);
         block_store.put_block_message(&w3).expect("store w3");
         dag_storage
             .insert(&w3, InsertMode::Normal)
             .expect("insert w3");
-        dag_storage
-            .record_directly_finalized(w3.block_hash.clone(), 0.5, |_| async { Ok(()) })
-            .await
-            .expect("adopt w3");
+        adopt(&dag_storage, &w3.block_hash, &w3.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe_block(&dag, &block_store, &w3, 1, Some(1))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&w3),
+                1,
+                Some(1),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("later observations must not re-error");
         assert!(terminalized.is_empty());
@@ -1305,19 +1299,23 @@ mod tests {
 
         // A readable re-application above the horizon answers the question
         // the unreadable segment could not: Finalized still lands.
-        let mut w4 = mk(9, 9, vec![w3.block_hash.clone()], Vec::new());
+        let mut w4 = block_at(9, vec![w3.block_hash.clone()], 9);
         w4.body.applied_from_scope = vec![sig_blocked.clone()];
         block_store.put_block_message(&w4).expect("store w4");
         dag_storage
             .insert(&w4, InsertMode::Normal)
             .expect("insert w4");
-        dag_storage
-            .record_directly_finalized(w4.block_hash.clone(), 0.5, |_| async { Ok(()) })
-            .await
-            .expect("adopt w4");
+        adopt(&dag_storage, &w4.block_hash, &w4.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe_block(&dag, &block_store, &w4, 1, Some(1))
+            .observe(
+                &dag,
+                &block_store,
+                Some(&w4),
+                1,
+                Some(1),
+                FtThreshold::from_ppm(0),
+            )
             .await
             .expect("observe w4");
         assert_eq!(terminalized, vec![sig_blocked.clone()]);

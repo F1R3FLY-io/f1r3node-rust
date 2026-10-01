@@ -171,39 +171,30 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     )?;
     record_dag_cardinality_metrics(&updated_dag);
 
-    // Advance the deploy-lifecycle register: the insert above already
-    // ingested the block's body into the lifecycle event rows; this bumps
-    // the register's clocks and evaluates the sigs whose thresholds
-    // crossed. A crash between insert and this step only delays a verdict
-    // (the schedule re-arms from the persisted open rows).
+    // Ingest happened in the insert above. A crash between the two only
+    // delays a verdict: the schedule re-arms from the persisted open rows.
     let terminalized = this
         .deploy_lifecycle
-        .observe_block(
+        .observe(
             &updated_dag,
             &this.block_store,
-            block,
+            Some(block),
             this.casper_shard_conf.deploy_lifespan,
             crate::rust::finality::deploy_lifecycle::citability_horizon(
                 this.casper_shard_conf.max_parent_depth,
             ),
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                this.casper_shard_conf.fault_tolerance_threshold_ppm,
+            ),
         )
         .await?;
 
-    // Release the proposer's pool copy of every sig the register just
-    // settled. This is the ONLY deploy-pool eviction on the finality path:
-    // the register is what re-evaluates as the floor advances, so it is
-    // the only component that can name the moment a deploy stops being
-    // re-proposable. Keying this on the finality marker instead destroys
-    // work — a marked block can still be orphaned, and an orphaned carrier
-    // yields no rejection record, so the pool copy is its only route back
-    // into a live branch. Non-owners simply do not hold the sig (deploys
-    // never gossip) and the removal is a no-op.
-    if !terminalized.is_empty() {
-        let mut storage = this.deploy_storage.lock();
-        for sig in &terminalized {
-            storage.remove_by_sig(sig)?;
-        }
-    }
+    // A non-owner does not hold the sig (deploys never gossip), so this is a
+    // no-op there.
+    crate::rust::finality::deploy_lifecycle::release_terminalized(
+        &this.deploy_storage,
+        &terminalized,
+    )?;
 
     // Publish BlockAdded event
     this.event_publisher

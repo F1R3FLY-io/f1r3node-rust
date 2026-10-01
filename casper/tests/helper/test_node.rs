@@ -53,6 +53,24 @@ use crate::util::comm::transport_layer_test_impl::{
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources;
 
+/// What shard a node is being built into: the genesis it starts from and the
+/// conf overrides applied to it.
+struct ShardSetup<'a> {
+    genesis: &'a GenesisContext,
+    overrides: &'a ShardOverrides,
+}
+
+/// Shard-conf overrides for a test network; `None` takes the shipped default.
+#[derive(Default, Clone)]
+pub struct ShardOverrides {
+    pub synchrony_constraint_threshold: Option<f64>,
+    pub max_number_of_parents: Option<i32>,
+    pub max_parent_depth: Option<i32>,
+    pub with_read_only_size: Option<usize>,
+    pub deploy_lifespan: Option<i64>,
+    pub finalization_rate: Option<i32>,
+}
+
 pub struct TestNode {
     pub name: String,
     pub local: PeerNode,
@@ -783,30 +801,24 @@ impl TestNode {
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
-        Self::create_network_with_deploy_lifespan(
-            genesis,
-            network_size,
+        Self::create_network_with_overrides(genesis, network_size, ShardOverrides {
             synchrony_constraint_threshold,
             max_number_of_parents,
             max_parent_depth,
             with_read_only_size,
-            None,
-        )
+            ..Default::default()
+        })
         .await
     }
 
-    /// `create_network` with a shard `deploy_lifespan` override (default 50).
-    /// A short lifespan lets a spec close deploy validity windows within a
-    /// handful of blocks — required to exercise window-boundary behavior
-    /// (block-expiry, the merge-time window rule) without ~50 filler blocks.
-    pub async fn create_network_with_deploy_lifespan(
+    /// `create_network` with shard-conf overrides. A short `deploy_lifespan`
+    /// closes deploy validity windows within a handful of blocks instead of ~50;
+    /// `finalization_rate: Some(0)` suppresses the detached finalizer, leaving
+    /// `last_finalized_block()` as the only thing that moves the floor.
+    pub async fn create_network_with_overrides(
         genesis: GenesisContext,
         network_size: usize,
-        synchrony_constraint_threshold: Option<f64>,
-        max_number_of_parents: Option<i32>,
-        max_parent_depth: Option<i32>,
-        with_read_only_size: Option<usize>,
-        deploy_lifespan: Option<i64>,
+        overrides: ShardOverrides,
     ) -> Result<Vec<TestNode>, CasperError> {
         // Initialize the shared tracing subscriber once per test process.
         // Without this, tracing calls in production code are silently
@@ -820,21 +832,10 @@ impl TestNode {
         let sks_to_use: Vec<PrivateKey> = genesis
             .validator_sks()
             .into_iter()
-            .take(network_size + with_read_only_size.unwrap_or(0))
+            .take(network_size + overrides.with_read_only_size.unwrap_or(0))
             .collect();
 
-        Self::network(
-            sks_to_use,
-            genesis.clone(),
-            synchrony_constraint_threshold.unwrap_or(0.0),
-            max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
-            max_parent_depth,
-            with_read_only_size.unwrap_or(0),
-            None,
-            test_network,
-            deploy_lifespan,
-        )
-        .await
+        Self::network(sks_to_use, genesis.clone(), None, test_network, overrides).await
     }
 
     pub async fn create_network_with_bootstrap_index(
@@ -854,32 +855,23 @@ impl TestNode {
         Self::network(
             sks_to_use,
             genesis,
-            0.0,
-            Estimator::UNLIMITED_PARENTS,
-            None,
-            0,
             Some(bootstrap_index),
             test_network,
-            None,
+            ShardOverrides::default(),
         )
         .await
     }
 
     /// Creates a network of TestNodes
-    #[allow(clippy::too_many_arguments)]
     async fn network(
         sks: Vec<PrivateKey>,
         genesis_context: GenesisContext,
-        synchrony_constraint_threshold: f64,
-        max_number_of_parents: i32,
-        max_parent_depth: Option<i32>,
-        with_read_only_size: usize,
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
-        deploy_lifespan: Option<i64>,
+        overrides: ShardOverrides,
     ) -> Result<Vec<TestNode>, CasperError> {
-        let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
+        let with_read_only_size = overrides.with_read_only_size.unwrap_or(0);
 
         // Generate node names: "node-1", "node-2", ..., "readOnly-{i}" for read-only nodes
         let names: Vec<String> = (1..=n)
@@ -913,16 +905,14 @@ impl TestNode {
             let node = Self::create_node(
                 name,
                 peer,
-                genesis.clone(),
                 sk,
-                synchrony_constraint_threshold,
-                max_number_of_parents,
-                max_parent_depth,
                 is_readonly,
                 test_network.clone(),
-                &genesis_context,
                 bootstrap_peer.clone(),
-                deploy_lifespan,
+                ShardSetup {
+                    genesis: &genesis_context,
+                    overrides: &overrides,
+                },
             )
             .await;
             nodes.push(node);
@@ -946,22 +936,30 @@ impl TestNode {
         Ok(nodes)
     }
 
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[allow(clippy::type_complexity)]
     async fn create_node(
         name: String,
         current_peer_node: PeerNode,
-        genesis: BlockMessage,
         sk: PrivateKey,
-        // TODO: logical_time: LogicalTime,
-        synchrony_constraint_threshold: f64,
-        max_number_of_parents: i32,
-        max_parent_depth: Option<i32>,
         is_read_only: bool,
         test_network: TestNetwork,
-        genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
-        deploy_lifespan: Option<i64>,
+        setup: ShardSetup<'_>,
     ) -> TestNode {
+        let ShardSetup {
+            genesis: genesis_context,
+            overrides,
+        } = setup;
+        let genesis = genesis_context.genesis_block.clone();
+        let synchrony_constraint_threshold =
+            overrides.synchrony_constraint_threshold.unwrap_or(0.0);
+        let max_number_of_parents = overrides
+            .max_number_of_parents
+            .unwrap_or(Estimator::UNLIMITED_PARENTS);
+        let max_parent_depth = overrides.max_parent_depth;
+        let deploy_lifespan = overrides.deploy_lifespan;
+        let finalization_rate = overrides.finalization_rate;
+
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
             TransportLayerServerTestImpl::new(current_peer_node.clone(), test_network.clone());
@@ -1097,7 +1095,7 @@ impl TestNode {
         let _block_processor_state = Arc::new(RwLock::new(HashSet::<BlockHash>::new()));
 
         let shard_id = "root".to_string();
-        let finalization_rate = 1;
+        let finalization_rate = finalization_rate.unwrap_or(1);
 
         let _approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
