@@ -1,0 +1,83 @@
+{
+  "causal_mutants": [
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg",
+      "config_sha256": "e2faf8dbd0a911f79924ff29c6d8d7d792ee818d897432b7c0e3375ebdc4abe1",
+      "specification": "RootOnlyCompareMutantSpec",
+      "violated_invariant": "CommitUsesExactBase"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthoritySplitMutant.cfg",
+      "config_sha256": "b25079ec889497d2bf39c63bb781cef5f9c7de1d42bf6330f59d63f219fcfca4",
+      "specification": "SplitPublicationMutantSpec",
+      "violated_invariant": "NoUnpublishedCheckpointObjects"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg",
+      "config_sha256": "8070e8610593232d3d0fd77d2f12baaa3620785ada854c2f7b94d8f04b4a929a",
+      "specification": "TrustCallerTargetMutantSpec",
+      "violated_invariant": "VerifiedRootsHaveCompleteClosure"
+    }
+  ],
+  "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.cfg",
+  "config_sha256": "db0199d8e40a9a44fdab54aa8706ddfc2d7e005b568aa155703d8579d0e11a07",
+  "model": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla",
+  "model_sha256": "5044201a3dfcf7261884a49fc90ab3bf7df59a632b19e1ff9dea003d2fd00172",
+  "normal_suite_test_module": "rspace++/tests/state/atomic_state_authority.rs",
+  "obligations": [
+    {
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "TypeInvariant",
+      "test": "memory_checkpoint_publishes_all_namespaces_together"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "CurrentRootIsVerified",
+      "test": "memory_checkpoint_publishes_all_namespaces_together"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "VerifiedRootsHaveCompleteClosure",
+      "test": "missing_or_malformed_cold_leaf_leaves_exact_pre_state"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "ContentKeysAreImmutable",
+      "test": "immutable_collision_leaves_exact_pre_state"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "NoUnpublishedCheckpointObjects",
+      "test": "same_generation_plans_conflict_without_partial_visibility"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "GenerationAdvancesExactlyOnActivation",
+      "test": "lmdb_reopen_preserves_exact_catalog_and_known_root_activation"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "CommitUsesExactBase",
+      "test": "aba_root_reactivation_does_not_revive_an_old_plan"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "FailedCommitLeavesAuthorityUnchanged",
+      "test": "missing_or_malformed_cold_leaf_leaves_exact_pre_state"
+    },
+    {
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "NoOpLeavesAuthorityUnchanged",
+      "test": "no_op_writes_nothing_and_does_not_advance_generation"
+    }
+  ]
+}

@@ -1245,6 +1245,7 @@ do
     exit 1
   fi
 done
+python3 "$repo_root/scripts/check-atomic-checkpoint-obligations.py" --check
 tlc_run "$tla_metadir" \
   RSpaceAtomicCheckpointAuthority.cfg RSpaceAtomicCheckpointAuthority.tla -cleanup
 for checkpoint_authority_mutant in \
