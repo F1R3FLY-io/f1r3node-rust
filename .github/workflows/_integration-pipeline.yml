@@ -752,11 +752,23 @@ jobs:
         run: |
           . system-integration/ci/oci-runners/state.env
 
-          runners="$(gh api "repos/$GH_REPO/actions/runners" --paginate \
-            --jq ".runners[] | select(any(.labels[]; .name == \"run-$GITHUB_RUN_ID\")) | \"\(.id)\t\(.name)\t\(.busy)\"")"
+          list_runners() {
+            gh api "repos/$GH_REPO/actions/runners" --paginate \
+              --jq ".runners[] | select(any(.labels[]; .name == \"run-$GITHUB_RUN_ID\")) | \"\(.id)\t\(.name)\t\(.busy)\""
+          }
+
+          # An empty list can mean the VMs are still registering, not that there
+          # is nothing to reclaim; a partly rejected launch left one behind that
+          # way. Re-check before concluding.
+          runners="$(list_runners)"
+          for _ in 1 2 3 4 5 6; do
+            [ -z "$runners" ] || break
+            sleep 30
+            runners="$(list_runners)"
+          done
 
           if [ -z "$runners" ]; then
-            echo "No runners remain registered for run $GITHUB_RUN_ID; the VMs already self-terminated."
+            echo "No runners registered for run $GITHUB_RUN_ID after 3 minutes; nothing to reclaim."
             exit 0
           fi
 
