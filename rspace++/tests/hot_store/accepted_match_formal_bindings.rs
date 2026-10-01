@@ -455,6 +455,71 @@ fn frozen_split_predecessor_agrees_with_atomic_success_and_mutants_diverge() {
 }
 
 #[test]
+fn frozen_split_delta_refusal_exposes_early_continuation_removal() {
+    for (right_count, arrival_count, overflow) in [(0, 1, false), (1, u64::MAX, true)] {
+        let atomic = Fixture::new(1, right_count, arrival_count, false);
+        let delta = transition_delta(&atomic.paths, 1, 1, 1);
+        let before = atomic.boundary(false);
+        let result = atomic.store.apply_accepted_match(atomic.transition(delta));
+        if overflow {
+            assert!(result.is_err());
+        } else {
+            assert!(matches!(result, Ok(AcceptedMatchOutcome::Stale)));
+        }
+        atomic.assert_unchanged(&before);
+
+        let predecessor = Fixture::new(1, right_count, arrival_count, false);
+        let split_before = predecessor.boundary(false);
+        let selected = predecessor.selected_commit();
+        assert_eq!(
+            predecessor
+                .store
+                .remove_continuation(&predecessor.channels, selected.address.index),
+            Some(())
+        );
+        let split_delta = transition_delta(&predecessor.paths, 1, 1, 1);
+        assert!(
+            predecessor
+                .store
+                .apply_datum_delta(split_delta.delta())
+                .is_err()
+        );
+        let split_after = predecessor.boundary(false);
+        assert_eq!(split_after.counts, before.counts);
+        assert_eq!(split_after.counts, split_before.counts);
+        assert_eq!(split_after.loaded_channels, before.loaded_channels);
+        assert_eq!(split_after.distinct, before.distinct);
+        assert_eq!(split_after.cardinality, before.cardinality);
+        assert_ne!(split_after.continuations, before.continuations);
+        assert_eq!(split_after.installed_continuations, before.installed_continuations);
+        assert_eq!(split_after.joins, before.joins);
+        assert_eq!(split_after.installed_joins, before.installed_joins);
+        assert_eq!(split_after.journal.data, before.journal.data);
+        assert_ne!(split_after.journal.continuations, before.journal.continuations);
+        assert_eq!(split_after.journal.joins, before.journal.joins);
+        assert!(
+            !predecessor
+                .store
+                .state
+                .read()
+                .unwrap()
+                .matches_pending_journal(&before.journal)
+        );
+
+        let without_early_remove = Fixture::new(1, right_count, arrival_count, false);
+        let control_before = without_early_remove.boundary(false);
+        let control_delta = transition_delta(&without_early_remove.paths, 1, 1, 1);
+        assert!(
+            without_early_remove
+                .store
+                .apply_datum_delta(control_delta.delta())
+                .is_err()
+        );
+        without_early_remove.assert_unchanged(&control_before);
+    }
+}
+
+#[test]
 fn exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch() {
     for refusal in 0..3 {
         let fixture = Fixture::new(1, 1, 1, false);
