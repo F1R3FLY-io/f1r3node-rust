@@ -1,22 +1,35 @@
-// Range-lock module — data types (slice 1 of the `lock` submodule
-// tree).
+// Range-lock module — data types (slice 1, prior PR) + state
+// containers + registry skeleton (slice 2, this PR of the `lock`
+// submodule tree).
 //
-// This slice provides the pure-data foundations:
+// Prior slice (earlier Wave 2) provided the pure-data foundations:
 //   - `DevInode` / `DeployScope` — identity + ownership tags.
-//   - `LockId` / `HolderId` — the two newtype identifiers, with
-//     `HolderId::ct_eq` for the constant-time release-path
-//     identity check.
+//   - `LockId` / `HolderId` — newtype identifiers, with
+//     `HolderId::ct_eq` for the constant-time release-path check.
 //   - `LockMode` — read/write.
 //   - `MAX_RANGES_PER_FILE` / `MAX_WAITERS_PER_FILE` /
 //     `LOCK_ID_CEILING` — consensus-observable caps.
-//   - `LockError` — the `FSERR_*` error taxonomy for lock ops.
+//   - `LockError` — the `FSERR_*` error taxonomy.
 //   - `RangeEntry` — one granted range-lock record.
 //
-// The `LockRegistry` + `Waiter` + `WaitPolicy` + `AcquireOutcome`
-// + `FileLockState` + `SequentialEntry` + acquire/release/
-// deadlock-detection logic all land in subsequent Wave 2 slices.
-// Nothing in this slice acquires a lock or calls `poison_abort`,
-// so the deferred `poison_abort` helper does not block landing.
+// This slice adds the state-container surface the acquire/release
+// methods (yet-to-land) manipulate:
+//   - `FileLockState { ranges, sequential_holder, waiters }` —
+//     per-`(dev, inode)` state.
+//   - `SequentialEntry` — a whole-file sequential lock record.
+//   - `WaitPolicy` — Fail (MVP) vs. Wait (slice 8b opt-in).
+//   - `AcquireOutcome { Immediate, Parked { lock_id, admit } }` —
+//     the shape of the acquire-side return.
+//   - `Waiter` (private) + `WaitKind` (private) — one parked
+//     waiter entry.
+//   - `LockRegistry { inner, next_lock_id }` + `new()` +
+//     `mint_next_lock_id` — the empty skeleton.
+//
+// Acquire / release / wake / deadlock-detection logic (`range_
+// conflicts` / `wake_waiters` / `would_close_cycle` / etc.) land
+// in subsequent slices.  The data surface here lets a future
+// slice land the acquire/release methods without re-touching the
+// enum shapes or the struct fields.
 //
 // # Consensus surface
 //
@@ -433,6 +446,265 @@ pub struct RangeEntry {
     pub deploy: DeployScope,
 }
 
+// ===========================================================
+// State containers + registry skeleton (slice 2)
+// ===========================================================
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use tokio::sync::{oneshot, RwLock};
+
+/// Whole-file sequential lock record — one per `(dev, inode)`.
+/// Mutually exclusive with any range lock on the same file.
+#[derive(Debug, Clone)]
+pub struct SequentialEntry {
+    pub id: LockId,
+    pub holder: HolderId,
+    pub deploy: DeployScope,
+}
+
+/// Per-`(dev, inode)` lock state.  Combines:
+///
+///   - `ranges` — currently-granted range locks (one or more
+///     non-overlapping ranges for Read, else at most one Write).
+///   - `sequential_holder` — the whole-file sequential lock
+///     holder, if any.  Mutually exclusive with `ranges` being
+///     non-empty.
+///   - `waiters` — FIFO queue of `wait: true` acquires that hit
+///     a conflict.  Head-of-line serialization prevents writer
+///     starvation under read-heavy admission.
+///
+/// # Representation choice
+///
+/// `Vec<RangeEntry>` scanned linearly on every acquire/release.
+/// Correct against the four operations at any N; appropriate for
+/// the small-N contention profile expected in MVP workloads.
+/// Candidate future optimization: `BTreeMap<offset, ...>` or a
+/// segment tree once real workloads expose N large enough for
+/// the scan cost to matter.  The API surface hides the
+/// representation, so a swap is behind an implementation
+/// boundary.
+///
+/// # Waiter-queue lifecycle
+///
+/// A state with parked waiters is NOT evicted from the registry
+/// map even if `ranges` and `sequential_holder` are empty — the
+/// waiters need somewhere to live until admit or cancel.  The
+/// yet-to-land release path checks `state_is_empty` AFTER
+/// cancelling / waking before evicting.
+#[derive(Debug, Default)]
+pub struct FileLockState {
+    pub ranges: Vec<RangeEntry>,
+    pub sequential_holder: Option<SequentialEntry>,
+    /// FIFO queue of `wait: true` acquires parked on a conflict.
+    /// Private — the acquire path mints a `LockId` for the
+    /// waiter and surfaces it via `AcquireOutcome::Parked`;
+    /// callers manipulate the queue only indirectly via
+    /// `cancel_wait` / release-side admission (both land in
+    /// subsequent slices).  `allow(dead_code)` until those
+    /// slices land; the field is pre-declared so the acquire
+    /// slice doesn't need a schema change.
+    #[allow(dead_code)]
+    waiters: VecDeque<Waiter>,
+}
+
+/// Policy for a conflicting acquire: fail fast, or park and
+/// await admission.
+///
+/// Slice 8a MVP (unmerged on this triage branch) always uses
+/// `Fail`.  Slice 8b's `lockRange(..., {"wait": true})` opts
+/// into `Wait`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitPolicy {
+    /// Return `Err(LockError::Busy)` on conflict (MVP).
+    Fail,
+    /// On conflict, mint a `LockId`, enqueue a `Waiter` in the
+    /// per-`(dev, inode)` FIFO queue, and return
+    /// `AcquireOutcome::Parked { lock_id, admit }`.  The caller
+    /// awaits `admit` for the eventual grant / cancel.
+    Wait,
+}
+
+/// Outcome of a `wait: true`-capable acquire.  Wraps the
+/// immediate-success path and the parked path uniformly.
+///
+/// Under `WaitPolicy::Fail`, only `Immediate` is ever returned
+/// — a conflict short-circuits to `Err(LockError::Busy)` before
+/// the dispatcher ever constructs this enum.
+///
+/// # Not `Clone`
+///
+/// Deliberately NOT `Clone` because the `Parked` variant
+/// carries `oneshot::Receiver`, which has move-only semantics
+/// by design (a one-shot channel's receiver cannot be
+/// duplicated — the admission signal fires exactly once).
+/// Callers that need to pass the outcome by reference should
+/// `match`-destructure once + hold the pieces individually.
+#[derive(Debug)]
+pub enum AcquireOutcome {
+    /// Acquired immediately.  Behaves exactly like a pre-wait-
+    /// policy `Ok(LockId)` return.
+    Immediate(LockId),
+    /// Parked in the waiter queue.  `lock_id` is the id that
+    /// WILL be granted on admission (also the handle for
+    /// `cancel_wait`).  `admit` resolves to:
+    ///
+    ///   - `Ok(Ok(lock_id))` — a release path admitted this
+    ///     waiter.
+    ///   - `Ok(Err(LockError::Cancelled))` — the deploy-end
+    ///     sweep or an explicit `cancel_wait` fired.
+    ///   - `Err(_)` — `oneshot::RecvError`, surfaced when the
+    ///     `LockRegistry` is dropped without signalling.  The
+    ///     caller should treat this as `Cancelled` too.
+    Parked {
+        lock_id: LockId,
+        admit: oneshot::Receiver<Result<LockId, LockError>>,
+    },
+}
+
+/// One parked wait entry.  Private — the waiter's identity is
+/// only visible externally as its `LockId` (used by
+/// `cancel_wait`, a subsequent slice).
+///
+/// Fields are pre-declared for the yet-to-land acquire/release
+/// slices; `#[allow(dead_code)]` suppresses the dead-field
+/// warning until those slices wire them up.  Preserved via a
+/// module-scope attribute (not per-field) because the acquire
+/// slice will light up every field at once.
+#[allow(dead_code)]
+#[derive(Debug)]
+struct Waiter {
+    lock_id: LockId,
+    kind: WaitKind,
+    holder: HolderId,
+    deploy: DeployScope,
+    /// Signalled with `Ok(lock_id)` on admission or
+    /// `Err(LockError::Cancelled)` on cancel.  Dropping the
+    /// sender (registry drop / waiter removal without signal)
+    /// surfaces to the receiver as `Err(RecvError)` which the
+    /// caller treats as Cancelled.
+    admit: oneshot::Sender<Result<LockId, LockError>>,
+}
+
+/// What kind of lock a parked waiter is trying to take.
+/// Pre-declared for the yet-to-land acquire slices (same
+/// `allow(dead_code)` rationale as `Waiter`).
+#[allow(dead_code)]
+#[derive(Debug)]
+enum WaitKind {
+    Range {
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+    },
+    Sequential,
+}
+
+/// Range-lock registry — shared across every runtime spawned
+/// from a single `RuntimeManager` via `share_lock_registry`
+/// (yet-to-land, mirrors the `RootIdentityRegistry` broadcast
+/// pattern).
+///
+/// # Lock topology
+///
+/// `RwLock<HashMap<DevInode, FileLockState>>` gives contention-
+/// free concurrent reads for the yet-to-land `is_locked` query
+/// on the unlink gate hot path.  Writes serialize acquire /
+/// release / sweep — expected low volume vs. read path.
+///
+/// `next_lock_id` is a monotone `AtomicU64` — LockIds are
+/// ephemeral per-runtime handles, NOT consensus-observable.
+/// Two validators replaying the same WAL may mint different
+/// LockId sequences; the only consensus-observable surface is
+/// the WAL (which carries the holder's semantic action, not
+/// the opaque LockId).
+///
+/// # LockId minting discipline
+///
+/// `mint_next_lock_id` returns `Err(LockError::QuotaExceeded)`
+/// past [`LOCK_ID_CEILING`] to prevent 2⁶⁴-wrap collisions with
+/// stale `LockToken`s still in RSpace.  Skips zero so a
+/// sentinel-friendly `0u64` can distinguish "no lock" from "lock
+/// with id 0" if callers ever need the discipline.
+#[derive(Debug, Clone, Default)]
+pub struct LockRegistry {
+    /// Per-`(dev, inode)` state map.  Private — exposed via
+    /// yet-to-land `try_acquire_range` / `release_range` /
+    /// `is_locked` methods.  `allow(dead_code)` until those
+    /// methods wire up the field.
+    #[allow(dead_code)]
+    inner: Arc<RwLock<HashMap<DevInode, FileLockState>>>,
+    next_lock_id: Arc<AtomicU64>,
+}
+
+impl LockRegistry {
+    /// Fresh empty registry.  LockIds start at 1 (zero is
+    /// skipped per the type-level comment on
+    /// `mint_next_lock_id`).
+    pub fn new() -> Self { Self::default() }
+
+    /// Mint the next monotone `LockId`.  Skips zero (sentinel-
+    /// friendly) and refuses past [`LOCK_ID_CEILING`] with
+    /// `LockError::QuotaExceeded`.
+    ///
+    /// Returns `Ok(LockId)` with a value in `[1, LOCK_ID_CEILING]`
+    /// on success.
+    ///
+    /// # Why BOTH checks (ceiling + TryFrom)
+    ///
+    /// On this triage branch [`LOCK_ID_CEILING`] is defined as
+    /// `(i64::MAX as u64) - (1 << 16)`, so it strictly precedes
+    /// the `TryFrom<u64> for LockId` reject boundary at
+    /// `i64::MAX`.  The `lock_consensus_constants_pinned` test
+    /// pins this relationship with
+    /// `assert!(LOCK_ID_CEILING <= i64::MAX as u64)` and a
+    /// companion compile-time assertion lives on
+    /// `LOCK_ID_CEILING`'s definition.  So when control reaches
+    /// `LockId::try_from(raw)` below, `raw` is already in the
+    /// `TryFrom`-safe range — the `.map_err` arm appears dead
+    /// today.
+    ///
+    /// Kept intentionally as a belt-and-suspenders defense: a
+    /// future refactor that loosened `LOCK_ID_CEILING` toward
+    /// `u64::MAX - 2^16` (matching fileio's upstream shape)
+    /// without also loosening `TryFrom` would silently truncate
+    /// values on the Rholang `i64` round-trip.  The `?` through
+    /// the fallible path makes the invariant explicit at every
+    /// mint site.
+    pub fn mint_next_lock_id(&self) -> Result<LockId, LockError> {
+        let raw = self.next_lock_id.fetch_add(1, Ordering::Relaxed);
+        // Skip 0: the counter starts at 0 so the first `fetch_add`
+        // returns 0 — bump through to 1.  This skip-zero logic
+        // assumes `next_lock_id` is never explicitly reset to 0
+        // after construction (there is no public reset method
+        // today; a future contributor adding one must either
+        // teach this loop to retry past the reset or document
+        // that mint-after-reset can race a concurrent mint and
+        // return 0).
+        let raw = if raw == 0 {
+            self.next_lock_id.fetch_add(1, Ordering::Relaxed)
+        } else {
+            raw
+        };
+        if raw > LOCK_ID_CEILING {
+            return Err(LockError::QuotaExceeded);
+        }
+        LockId::try_from(raw).map_err(|_| LockError::QuotaExceeded)
+    }
+}
+
+// Compile-time witness that `LockRegistry: Send + Sync` —
+// required for the yet-to-land handler-dispatch spawn_blocking
+// path and for sharing across runtime clones via
+// `share_lock_registry`.  Hoisted to module scope so every
+// `cargo build` catches a regression.
+const _LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<LockRegistry>();
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +866,144 @@ mod tests {
         };
         let _ = format!("{entry:?}");
         assert_eq!(entry, entry.clone());
+    }
+
+    // --- State containers (slice 2) -------------------------------
+
+    #[test]
+    fn sequential_entry_construction_smoke() {
+        let e = SequentialEntry {
+            id: LockId::try_from(5).unwrap(),
+            holder: HolderId::from_bytes([0x11u8; 32]),
+            deploy: [0x22u8; 32],
+        };
+        let _ = format!("{e:?}");
+        let cloned = e.clone();
+        assert_eq!(cloned.id.as_u64(), 5);
+    }
+
+    #[test]
+    fn file_lock_state_default_is_empty() {
+        let s = FileLockState::default();
+        assert!(s.ranges.is_empty());
+        assert!(s.sequential_holder.is_none());
+        assert!(s.waiters.is_empty());
+    }
+
+    #[test]
+    fn wait_policy_variants_smoke() {
+        for p in [WaitPolicy::Fail, WaitPolicy::Wait] {
+            // Trigger Debug + Copy + PartialEq.
+            let _ = format!("{p:?}");
+            assert_eq!(p, p);
+        }
+        assert_ne!(WaitPolicy::Fail, WaitPolicy::Wait);
+    }
+
+    #[test]
+    fn acquire_outcome_immediate_carries_lock_id() {
+        let outcome = AcquireOutcome::Immediate(LockId::try_from(42).unwrap());
+        match outcome {
+            AcquireOutcome::Immediate(id) => assert_eq!(id.as_u64(), 42),
+            other => panic!("expected Immediate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn acquire_outcome_parked_carries_lock_id_and_receiver() {
+        let (tx, rx) = oneshot::channel();
+        let outcome = AcquireOutcome::Parked {
+            lock_id: LockId::try_from(99).unwrap(),
+            admit: rx,
+        };
+        match outcome {
+            AcquireOutcome::Parked { lock_id, admit } => {
+                assert_eq!(lock_id.as_u64(), 99);
+                // Signal through the sender → receiver sees it.
+                let _ = tx.send(Ok(lock_id));
+                let got = futures::executor::block_on(admit).unwrap().unwrap();
+                assert_eq!(got.as_u64(), 99);
+            }
+            other => panic!("expected Parked, got {other:?}"),
+        }
+    }
+
+    // --- LockRegistry skeleton (slice 2) --------------------------
+
+    #[test]
+    fn lock_registry_new_is_empty() {
+        let reg = LockRegistry::new();
+        // Via the public mint path we observe the counter starts
+        // at 1 (zero skipped per the sentinel-friendly rule).
+        assert_eq!(reg.mint_next_lock_id().unwrap().as_u64(), 1);
+    }
+
+    /// `mint_next_lock_id` returns monotonically increasing ids
+    /// starting at 1 (zero skipped).  LOAD-BEARING: a future
+    /// refactor that mints zero would break the sentinel-friendly
+    /// discipline and silently create a lock the release path
+    /// can't distinguish from "no lock."
+    #[test]
+    fn mint_next_lock_id_is_monotonic_and_skips_zero() {
+        let reg = LockRegistry::new();
+        let a = reg.mint_next_lock_id().unwrap().as_u64();
+        let b = reg.mint_next_lock_id().unwrap().as_u64();
+        let c = reg.mint_next_lock_id().unwrap().as_u64();
+        assert_eq!(a, 1, "first mint skips zero → 1");
+        assert_eq!(b, 2);
+        assert_eq!(c, 3);
+    }
+
+    /// `mint_next_lock_id` refuses past `LOCK_ID_CEILING` with
+    /// `QuotaExceeded`.  Prevents 2⁶⁴-wrap collisions with stale
+    /// LockTokens in RSpace.  LOAD-BEARING consensus invariant.
+    #[test]
+    fn mint_next_lock_id_refuses_past_ceiling() {
+        let reg = LockRegistry::new();
+        // Push the counter to just past the ceiling.  The counter
+        // is behind an `Arc`, so we have to go through the public
+        // mint path repeatedly — do it via a direct store on the
+        // Atomic that `Arc`-shares into the struct.
+        reg.next_lock_id
+            .store(LOCK_ID_CEILING + 1, Ordering::Relaxed);
+        match reg.mint_next_lock_id() {
+            Err(LockError::QuotaExceeded) => (),
+            other => panic!("expected QuotaExceeded past ceiling, got {other:?}"),
+        }
+    }
+
+    /// Right at the ceiling (`raw == LOCK_ID_CEILING`), the mint
+    /// still succeeds — the refuse-threshold is `> ceiling`, not
+    /// `>= ceiling`.
+    #[test]
+    fn mint_next_lock_id_accepts_at_ceiling() {
+        let reg = LockRegistry::new();
+        reg.next_lock_id.store(LOCK_ID_CEILING, Ordering::Relaxed);
+        assert_eq!(reg.mint_next_lock_id().unwrap().as_u64(), LOCK_ID_CEILING);
+    }
+
+    /// Clones share the counter — a `Clone` LockRegistry (used by
+    /// `share_lock_registry` to broadcast one registry across
+    /// runtimes) must observe each other's mints.
+    #[test]
+    fn lock_registry_clone_shares_next_lock_id_counter() {
+        let a = LockRegistry::new();
+        let b = a.clone();
+        let a1 = a.mint_next_lock_id().unwrap().as_u64();
+        let b1 = b.mint_next_lock_id().unwrap().as_u64();
+        let a2 = a.mint_next_lock_id().unwrap().as_u64();
+        assert_eq!(a1, 1);
+        assert_eq!(b1, 2, "clone sees prior mint on the sibling");
+        assert_eq!(a2, 3);
+    }
+
+    /// `LockRegistry: Send + Sync` — pinned by the module-scope
+    /// `_LOCK_REGISTRY_IS_SEND_SYNC` compile-time witness; this
+    /// runtime pin is a belt-and-suspenders catch if someone
+    /// deletes the witness.
+    #[test]
+    fn lock_registry_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<LockRegistry>();
     }
 }
