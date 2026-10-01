@@ -23,6 +23,8 @@ const CHILD_STACK_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_STACK";
 const CHILD_BUFFER_REFERENCE_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_BUFFER_REFERENCE";
 const FULL_MATRIX_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_FULL_MATRIX";
 const SCRATCH_BASE_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_SCRATCH_BASE";
+const HEAPTRACK_SPEC_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_HEAPTRACK_SPEC";
+const HEAPTRACK_OUTPUT_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_HEAPTRACK_OUTPUT";
 const TEST_NAME: &str =
     "rspace::persistence::tests::checkpoint_real_io_resource::checkpoint_real_io_cardinality_resource_gate";
 
@@ -341,18 +343,37 @@ fn checkpoint_real_io_cardinality_resource_gate() {
             );
 
             for phase in ["publication", "recovery"] {
-                let output =
-                    Command::new(std::env::current_exe().expect("current test executable"))
-                        .arg("--exact")
-                        .arg(TEST_NAME)
-                        .arg("--nocapture")
-                        .env(CHILD_PHASE_ENV, phase)
-                        .env(CHILD_ROOT_ENV, scratch.path())
-                        .env(CHILD_HISTORY_ENV, historical_states.to_string())
-                        .env(CHILD_STACK_ENV, stack_bytes.to_string())
-                        .env(CHILD_BUFFER_REFERENCE_ENV, initial_pack_bytes.to_string())
-                        .output()
-                        .expect("checkpoint real-I/O child starts");
+                let executable = std::env::current_exe().expect("current test executable");
+                let selected = std::env::var(HEAPTRACK_SPEC_ENV).ok().is_some_and(|spec| {
+                    spec == format!("{phase}:{historical_states}:{stack_bytes}")
+                });
+                let mut command = if selected {
+                    let output = std::env::var_os(HEAPTRACK_OUTPUT_ENV).unwrap_or_else(|| {
+                        scratch_base
+                            .join("heaptrack-checkpoint-child-%p.gz")
+                            .into_os_string()
+                    });
+                    let mut command = Command::new("heaptrack");
+                    command
+                        .arg("--record-only")
+                        .arg("-o")
+                        .arg(output)
+                        .arg(executable);
+                    command
+                } else {
+                    Command::new(executable)
+                };
+                let output = command
+                    .arg("--exact")
+                    .arg(TEST_NAME)
+                    .arg("--nocapture")
+                    .env(CHILD_PHASE_ENV, phase)
+                    .env(CHILD_ROOT_ENV, scratch.path())
+                    .env(CHILD_HISTORY_ENV, historical_states.to_string())
+                    .env(CHILD_STACK_ENV, stack_bytes.to_string())
+                    .env(CHILD_BUFFER_REFERENCE_ENV, initial_pack_bytes.to_string())
+                    .output()
+                    .expect("checkpoint real-I/O child starts");
                 assert!(
                     output.status.success(),
                     "checkpoint real-I/O {phase}, historical states {historical_states}, stack \
