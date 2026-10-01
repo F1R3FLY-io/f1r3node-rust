@@ -1,0 +1,367 @@
+{
+  "controls": [
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg",
+      "expected_obligation": "ReplayCommitRequiresReactivation",
+      "kind": "mutant",
+      "specification": "SkipResetAcceptanceMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryDuplicatePublicationMutant.cfg",
+      "expected_obligation": "PublicationIsMonotoneAndUnique",
+      "kind": "mutant",
+      "specification": "DuplicatePublicationMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryEscapeMutant.cfg",
+      "expected_obligation": "NoOrdinaryUnwindEscapesBoundary",
+      "kind": "mutant",
+      "specification": "EscapeMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryExposeMutant.cfg",
+      "expected_obligation": "CapabilityOutputRequiresEncodedSuccess",
+      "kind": "mutant",
+      "specification": "ExposeMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryMisclassifyMutant.cfg",
+      "expected_obligation": "PublicationResponseIsTruthful",
+      "kind": "mutant",
+      "specification": "MisclassifyMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryNoFairnessMutant.cfg",
+      "expected_obligation": "EveryStartedCallReturns",
+      "kind": "liveness_mutant",
+      "specification": "NoFairnessMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryTwoPublicationsWitness.cfg",
+      "expected_obligation": "NeverTwoPublications",
+      "kind": "non_vacuity_witness",
+      "specification": "Spec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryUsableStagedOpenMutant.cfg",
+      "expected_obligation": "StageEncodingFailurePoisonsMutatedOpen",
+      "kind": "mutant",
+      "specification": "UsableStagedOpenMutantSpec"
+    }
+  ],
+  "families": {
+    "FFI": [
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-01",
+        "symbol": "TypeInvariant",
+        "target": "all_six_operations_satisfy_the_exhaustive_boundary_fault_matrix",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-02",
+        "symbol": "AtMostOneAffineCapability",
+        "target": "all_six_operations_satisfy_the_exhaustive_boundary_fault_matrix",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-03",
+        "symbol": "PreparedCapabilityIsPrivate",
+        "target": "begin_primary_encoding_failure_exposes_no_open_capability",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-04",
+        "symbol": "CapabilityOutputRequiresEncodedSuccess",
+        "target": "seal_primary_encoding_failure_exposes_no_sealed_capability",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-05",
+        "symbol": "FailureLeavesNoNewCapabilityOutput",
+        "target": "all_six_operations_satisfy_the_exhaustive_boundary_fault_matrix",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-06",
+        "symbol": "NoOrdinaryUnwindEscapesBoundary",
+        "target": "all_six_operations_satisfy_the_exhaustive_boundary_fault_matrix",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-07",
+        "symbol": "PublicationIsMonotoneAndUnique",
+        "target": "two_sequential_publications_are_distinct_and_each_exactly_once",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-08",
+        "symbol": "PublicationResponseIsTruthful",
+        "target": "publish_primary_encoding_failure_returns_null_after_authority_effect",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-09",
+        "symbol": "PrePublicationPanicIsStructured",
+        "target": "pre_publication_operation_panic_is_structured_and_does_not_invent_publication",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-10",
+        "symbol": "PublishSuccessRequiresPublication",
+        "target": "two_sequential_publications_are_distinct_and_each_exactly_once",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-11",
+        "symbol": "StageEncodingFailurePoisonsMutatedOpen",
+        "target": "stage_primary_encoding_failure_poisons_the_mutated_open_session",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "FFI-12",
+        "symbol": "AbortConsumesWithoutPublishing",
+        "target": "all_six_operations_satisfy_the_exhaustive_boundary_fault_matrix",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "PROPERTY",
+        "id": "FFI-13",
+        "symbol": "EveryStartedCallReturns",
+        "target": "all_six_operations_satisfy_the_exhaustive_boundary_fault_matrix",
+        "target_source": "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs"
+      }
+    ],
+    "PT": [
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-01",
+        "symbol": "arbitrary_checkpoint_descriptor_bytes_are_total",
+        "target": "arbitrary_checkpoint_descriptor_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-02",
+        "symbol": "arbitrary_generation_prepare_preflight_bytes_are_total",
+        "target": "arbitrary_generation_prepare_preflight_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-03",
+        "symbol": "arbitrary_generation_prepare_bytes_are_total",
+        "target": "arbitrary_generation_prepare_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-04",
+        "symbol": "arbitrary_generation_commit_bytes_are_total",
+        "target": "arbitrary_generation_commit_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-05",
+        "symbol": "arbitrary_object_index_bytes_are_total",
+        "target": "arbitrary_object_index_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-06",
+        "symbol": "arbitrary_pack_header_bytes_are_total",
+        "target": "arbitrary_pack_header_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-07",
+        "symbol": "arbitrary_retention_manifest_bytes_are_total",
+        "target": "arbitrary_retention_manifest_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-08",
+        "symbol": "arbitrary_exact_catalog_images_are_total",
+        "target": "arbitrary_exact_catalog_images_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      },
+      {
+        "classification": "executable_only",
+        "formal_kind": "EXECUTABLE_ONLY",
+        "id": "PT-09",
+        "symbol": "arbitrary_checkpoint_wire_bytes_are_total",
+        "target": "arbitrary_checkpoint_wire_bytes_are_total",
+        "target_source": "rspace++/tests/persistence/generation_checkpoint_properties.rs"
+      }
+    ],
+    "RR": [
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-01",
+        "symbol": "TypeInvariant",
+        "target": "memory_checkpoint_publishes_all_namespaces_together",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-02",
+        "symbol": "CurrentRootIsVerified",
+        "target": "memory_checkpoint_publishes_all_namespaces_together",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-03",
+        "symbol": "VerifiedRootsHaveCompleteClosure",
+        "target": "memory_checkpoint_publishes_all_namespaces_together",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-04",
+        "symbol": "ContentKeysAreImmutable",
+        "target": "immutable_collision_leaves_exact_pre_state",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-05",
+        "symbol": "NoUnpublishedCheckpointObjects",
+        "target": "same_generation_plans_conflict_without_partial_visibility",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-06",
+        "symbol": "GenerationAdvancesExactlyOnActivation",
+        "target": "no_op_writes_nothing_and_does_not_advance_generation",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-07",
+        "symbol": "SkipResetIsRejectedWithoutAuthorityMutation",
+        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-08",
+        "symbol": "ReplayCommitRequiresReactivation",
+        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-09",
+        "symbol": "ReplayPreparationUsesFreshExactBase",
+        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-10",
+        "symbol": "ReplayPreparationLeavesAuthorityUnchanged",
+        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-11",
+        "symbol": "ReplayTargetMatchesPlay",
+        "target": "epathmap_heavy_record_then_replay_reproduces_the_log",
+        "target_source": "rholang/tests/epathmap_replay_equivalence_spec.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "INVARIANT",
+        "id": "RR-12",
+        "symbol": "ReplayReusesAuthenticatedPlayClosure",
+        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_source": "rspace++/tests/state/atomic_state_authority.rs"
+      },
+      {
+        "classification": "executable_refinement",
+        "formal_kind": "PROPERTY",
+        "id": "RR-13",
+        "symbol": "ReplayLifecycleEventuallyCompletes",
+        "target": "epathmap_heavy_record_then_replay_reproduces_the_log",
+        "target_source": "rholang/tests/epathmap_replay_equivalence_spec.rs"
+      }
+    ]
+  },
+  "source_sha256": {
+    "Cargo.toml": "dc833f0779e36336ab02f388e6bc20202f6bc3384c0cf0b83ab4ff5797e5e6db",
+    "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "ef8f9e77899f132476e5b50fac1fb12f9f8ac3b3351e567c66856840f8c493e0",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg": "e0db6e472c7e81869d38db0489c18311306cc9c1b54f40ca4a2a2678714db0dc",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla": "acec8e9788712614d5bec9b01d83598b65bfb10004ad2a6ac7fd59bd992146a9",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg": "0b68e1905d2d3c8365c0c37938b96b69cefbae16067e44876e2efbd6d47ca5f0",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundary.cfg": "525f1b543a773b26f96ef7847b81c417930907504d1374ae7dc172e21a8ed797",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundary.tla": "18cc81b173ba9eac8d843a5bb93dbcb83c33e1421956745f91271040c0b92437",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryDuplicatePublicationMutant.cfg": "c6dc3f31dcdfd8ff20b75678e8b692d2d98210cc774c4436b50df383a87382ce",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryEscapeMutant.cfg": "f3a39e1fd21fbff9345d8a45739ed3b65e4c1ea1bc3751f200d1a6d15982a623",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryExposeMutant.cfg": "5fc79215781bc2a06eee5be9d59dd682c590249312502fbc5f3549020c7d0636",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryMisclassifyMutant.cfg": "0cb9865dfb325c19dbff4774e2285073bbf3fbe01d4a2ee7c7d1bbdf9d06221a",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryNoFairnessMutant.cfg": "fff68d00330265d9e3e6d8799cba59903e57d663104d77f2e98e97295dd7da60",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryTwoPublicationsWitness.cfg": "b75d1582adc827021b915bf2d3114492892743600a1f18a79795e5447b08ba90",
+    "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryUsableStagedOpenMutant.cfg": "248720144f4a3b3602af64bb2e463f04875d33ed62218ebac80b40e2a35ad2aa",
+    "rholang/Cargo.toml": "788600b18b15ce6dd4239b1d60408402440751e12b9b5c8e5873e3ec1e7fe3ec",
+    "rholang/tests/epathmap_replay_equivalence_spec.rs": "660beba8782f1e658313e6a73bae0321b1bdc2d7736d968a5a43aedb9308192d",
+    "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
+    "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
+    "rspace++/src/rspace/persistence/mod.rs": "02c9ff3ec44c767eabe46f51ad2abc800932c6f7f23109a403dcbae0e6340332",
+    "rspace++/src/rspace/state/rspace_state_authority.rs": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992",
+    "rspace++/tests/persistence/generation_checkpoint_properties.rs": "2f4080420cdd91c233e0137c2941abd67864d1190ec1cb6483f528138b65388b",
+    "rspace++/tests/persistence/mod.rs": "04e260d7a9bedecc34909d5c489d8be820e255e5d25a9ffa43212abc92261687",
+    "rspace++/tests/state/atomic_state_authority.rs": "4a2362f6dc94cd2cd7e3a2415e387813653e0bbe7d293338e6a6020601065e16",
+    "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
+    "shared/tests/workspace_regression_formal_bindings.rs": "cbf69fba3ac5d18cd48fe196036768e29368ccae1ae1a0dfb354482c961e0823"
+  }
+}
