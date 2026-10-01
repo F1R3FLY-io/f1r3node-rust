@@ -40,6 +40,14 @@ not a substitute for the FFI path in an FFI-owner comparison. The runner must
 name the actual owner entrypoint it exercises and freeze these resolved
 settings from that entrypoint before the first pair; mixing entrypoints makes
 the cell ineligible.
+The current FFI constructor reaches `RSpace::create` and
+`RSpaceStateAuthority` through that LMDB store manager. The durable DAG owner
+is constructed through the separate crate-private
+[`DurableAuthorityViewV1::into_rspace_authority`](../../../rspace++/src/rspace/persistence/durable/mod.rs)
+path; current source does not select it from `space_new`. Task 7950 therefore
+needs one equivalent command adapter that actually drives both real owners
+after task 7756's non-default cutover. An FFI LMDB run paired with an isolated
+DAG component fixture is ineligible as an owner comparison.
 
 ## Equal contract and observations
 
