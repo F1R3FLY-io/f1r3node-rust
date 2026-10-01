@@ -705,6 +705,109 @@ const _LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
     assert_send_sync::<LockRegistry>();
 };
 
+// ===========================================================
+// Conflict-detection predicates (slice 3)
+// ===========================================================
+//
+// Pure functions over `FileLockState` and the incoming acquire
+// parameters.  Called from the yet-to-land `try_acquire_range` /
+// `try_acquire_sequential` / `wake_waiters` methods.
+// `#[allow(dead_code)]` until those methods land; tests in this
+// file DO exercise each predicate, so test builds don't need
+// the allow (cfg-test visibility suffices).
+
+/// Two half-open intervals `[o1, o1+l1)` and `[o2, o2+l2)`
+/// overlap iff `o1 < o2 + l2` AND `o2 < o1 + l1`.
+///
+/// Zero-length ranges do NOT overlap anything (defensive — the
+/// natives should reject zero-length before calling here, but
+/// the invariant is cheap and prevents a zero-length "lock"
+/// from protecting nothing while also never conflicting).
+///
+/// Uses `saturating_add` to avoid overflow on `u64::MAX`
+/// end-of-file sentinel ranges that the sequential-flag
+/// whole-file query uses.
+#[allow(dead_code)]
+fn ranges_overlap(a: (u64, u64), b: (u64, u64)) -> bool {
+    if a.1 == 0 || b.1 == 0 {
+        return false;
+    }
+    let a_end = a.0.saturating_add(a.1);
+    let b_end = b.0.saturating_add(b.1);
+    a.0 < b_end && b.0 < a_end
+}
+
+/// Predicate: does an incoming range acquire conflict with any
+/// currently-held lock in `state`?
+///
+/// Returns `true` on conflict (acquire must fail or park); false
+/// on free (acquire can proceed).  Rules, in order:
+///
+///   1. If a sequential holder exists, every range acquire
+///      conflicts (sequential is a whole-file exclusive lock).
+///   2. For each existing range entry:
+///      - Non-overlapping → no conflict (continue).
+///      - Both this acquire AND the entry are `Read` →
+///        reader-reader compatibility, no conflict (continue).
+///      - Same `holder` → re-entrant acquire by the same cap,
+///        no conflict (continue).  Matches POSIX fcntl(2)
+///        semantics where a process may upgrade/downgrade/
+///        shadow its own locks.
+///      - Otherwise → conflict.
+///
+/// The holder check is intentionally structural `==` on
+/// `HolderId` (not `ct_eq`): this is a scan-time admissibility
+/// check, not an authentication step.  The release path uses
+/// `ct_eq` explicitly.
+#[allow(dead_code)]
+fn range_conflicts(
+    state: &FileLockState,
+    offset: u64,
+    length: u64,
+    mode: LockMode,
+    holder: &HolderId,
+) -> bool {
+    if state.sequential_holder.is_some() {
+        return true;
+    }
+    for entry in &state.ranges {
+        if !ranges_overlap((entry.offset, entry.length), (offset, length)) {
+            continue;
+        }
+        if mode == LockMode::Read && entry.mode == LockMode::Read {
+            continue;
+        }
+        if &entry.holder == holder {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// Predicate: does an incoming sequential acquire conflict with
+/// any currently-held lock in `state`?
+///
+/// Sequential requires the state entirely empty (no ranges, no
+/// sequential_holder) per the FIP coexistence rule.  Does NOT
+/// use the same-holder skip — a cap that already holds a range
+/// cannot upgrade to sequential without releasing first.
+#[allow(dead_code)]
+fn sequential_conflicts(state: &FileLockState) -> bool {
+    state.sequential_holder.is_some() || !state.ranges.is_empty()
+}
+
+/// A `FileLockState` is "empty" (safe to evict from the
+/// registry map) only when it has no held locks AND no parked
+/// waiters.  A state with parked waiters MUST NOT be evicted —
+/// dropping the `Waiter`'s `admit` sender would signal cancel
+/// to the caller even though nobody called `cancel_wait`, and
+/// the waiter would silently disappear from the queue.
+#[allow(dead_code)]
+fn state_is_empty(state: &FileLockState) -> bool {
+    state.ranges.is_empty() && state.sequential_holder.is_none() && state.waiters.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,5 +1108,285 @@ mod tests {
     fn lock_registry_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<LockRegistry>();
+    }
+
+    // --- ranges_overlap --------------------------------------------
+
+    /// Classic non-overlap: [0, 10) and [100, 110) are disjoint.
+    #[test]
+    fn ranges_overlap_disjoint_returns_false() {
+        assert!(!ranges_overlap((0, 10), (100, 10)));
+        assert!(!ranges_overlap((100, 10), (0, 10)));
+    }
+
+    /// Full containment: [0, 100) contains [10, 20).  Overlap.
+    #[test]
+    fn ranges_overlap_contained_returns_true() {
+        assert!(ranges_overlap((0, 100), (10, 20)));
+        assert!(ranges_overlap((10, 20), (0, 100)));
+    }
+
+    /// Partial overlap at the boundary: [0, 50) and [40, 20)
+    /// overlap on [40, 50).
+    #[test]
+    fn ranges_overlap_partial_returns_true() {
+        assert!(ranges_overlap((0, 50), (40, 20)));
+        assert!(ranges_overlap((40, 20), (0, 50)));
+    }
+
+    /// Touching but non-overlapping: [0, 10) and [10, 10) share
+    /// a single endpoint (10) but the half-open semantics mean
+    /// no byte is in both.  Must NOT report overlap.
+    #[test]
+    fn ranges_overlap_touching_endpoints_returns_false() {
+        assert!(!ranges_overlap((0, 10), (10, 10)));
+        assert!(!ranges_overlap((10, 10), (0, 10)));
+    }
+
+    /// Zero-length ranges never overlap anything — defense
+    /// against a zero-length "lock" protecting nothing.
+    #[test]
+    fn ranges_overlap_zero_length_never_overlaps() {
+        assert!(!ranges_overlap((0, 0), (0, 10)));
+        assert!(!ranges_overlap((5, 0), (0, 10)));
+        assert!(!ranges_overlap((0, 10), (5, 0)));
+        assert!(!ranges_overlap((0, 0), (0, 0)));
+    }
+
+    /// Saturating-add protects against overflow on `u64::MAX`
+    /// end-of-file sentinel ranges.  `[u64::MAX - 10, 100)`
+    /// mathematically wraps past u64::MAX; the function must
+    /// clamp the end at u64::MAX and still detect overlap with
+    /// a range near the top.
+    #[test]
+    fn ranges_overlap_saturates_on_overflow() {
+        // Range near end-of-u64 with length that would overflow.
+        let near_top = (u64::MAX - 10, 100);
+        // Point inside the saturated range.
+        let probe = (u64::MAX - 5, 1);
+        assert!(ranges_overlap(near_top, probe));
+        assert!(ranges_overlap(probe, near_top));
+    }
+
+    // --- range_conflicts -------------------------------------------
+
+    fn mk_entry(offset: u64, length: u64, mode: LockMode, holder: HolderId) -> RangeEntry {
+        RangeEntry {
+            id: LockId::try_from(42).unwrap(),
+            offset,
+            length,
+            mode,
+            holder,
+            deploy: [0u8; 32],
+        }
+    }
+
+    /// Sequential holder blocks every range acquire (whole-file
+    /// exclusive).  LOAD-BEARING: pins the top-of-function
+    /// short-circuit so a future refactor that interleaved the
+    /// sequential check with the per-entry loop surfaces here.
+    #[test]
+    fn range_conflicts_blocked_by_sequential_holder() {
+        let state = FileLockState {
+            sequential_holder: Some(SequentialEntry {
+                id: LockId::try_from(1).unwrap(),
+                holder: HolderId::from_bytes([0xAAu8; 32]),
+                deploy: [0u8; 32],
+            }),
+            ..Default::default()
+        };
+        let probe_holder = HolderId::from_bytes([0xBBu8; 32]);
+        // Even an empty-ranges state blocks under sequential.
+        assert!(range_conflicts(
+            &state,
+            0,
+            100,
+            LockMode::Read,
+            &probe_holder
+        ));
+        assert!(range_conflicts(
+            &state,
+            500,
+            1,
+            LockMode::Write,
+            &probe_holder
+        ));
+    }
+
+    /// Non-overlapping ranges never conflict regardless of mode
+    /// or holder.
+    #[test]
+    fn range_conflicts_non_overlapping_entries_do_not_conflict() {
+        let holder_a = HolderId::from_bytes([0xAAu8; 32]);
+        let holder_b = HolderId::from_bytes([0xBBu8; 32]);
+        let state = FileLockState {
+            ranges: vec![mk_entry(0, 10, LockMode::Write, holder_a)],
+            ..Default::default()
+        };
+        // Disjoint range, different holder, write mode — must not conflict.
+        assert!(!range_conflicts(
+            &state,
+            100,
+            10,
+            LockMode::Write,
+            &holder_b
+        ));
+    }
+
+    /// Reader-reader overlap is allowed (POSIX fcntl + fileio
+    /// semantics).  LOAD-BEARING compatibility rule.
+    #[test]
+    fn range_conflicts_overlapping_read_locks_do_not_conflict() {
+        let holder_a = HolderId::from_bytes([0xAAu8; 32]);
+        let holder_b = HolderId::from_bytes([0xBBu8; 32]);
+        let state = FileLockState {
+            ranges: vec![mk_entry(0, 100, LockMode::Read, holder_a)],
+            ..Default::default()
+        };
+        // Different holder, overlapping range, both Read → no conflict.
+        assert!(!range_conflicts(&state, 50, 50, LockMode::Read, &holder_b));
+    }
+
+    /// Same-holder re-entrant acquires are allowed (POSIX fcntl
+    /// semantics: a process may upgrade/downgrade/shadow its own
+    /// locks).
+    #[test]
+    fn range_conflicts_same_holder_may_overlap_regardless_of_mode() {
+        let holder = HolderId::from_bytes([0xAAu8; 32]);
+        let state = FileLockState {
+            ranges: vec![mk_entry(0, 100, LockMode::Write, holder.clone())],
+            ..Default::default()
+        };
+        // Same holder overlapping Write-on-Write → no conflict.
+        assert!(!range_conflicts(&state, 50, 50, LockMode::Write, &holder));
+        // Same holder overlapping Read-on-Write → no conflict.
+        assert!(!range_conflicts(&state, 50, 50, LockMode::Read, &holder));
+    }
+
+    /// Different-holder overlap with any Write involvement is a
+    /// conflict.  LOAD-BEARING: three sub-cases
+    /// (Write-on-Write, Write-on-Read, Read-on-Write).
+    #[test]
+    fn range_conflicts_different_holder_write_overlap_conflicts() {
+        let holder_a = HolderId::from_bytes([0xAAu8; 32]);
+        let holder_b = HolderId::from_bytes([0xBBu8; 32]);
+        for (entry_mode, probe_mode) in [
+            (LockMode::Write, LockMode::Write),
+            (LockMode::Write, LockMode::Read),
+            (LockMode::Read, LockMode::Write),
+        ] {
+            let state = FileLockState {
+                ranges: vec![mk_entry(0, 100, entry_mode, holder_a.clone())],
+                ..Default::default()
+            };
+            assert!(
+                range_conflicts(&state, 50, 50, probe_mode, &holder_b),
+                "{entry_mode:?} entry + {probe_mode:?} probe should conflict \
+                 across holders"
+            );
+        }
+    }
+
+    /// Empty state (no ranges, no sequential_holder) → every
+    /// range acquire succeeds.
+    #[test]
+    fn range_conflicts_empty_state_never_conflicts() {
+        let state = FileLockState::default();
+        let holder = HolderId::from_bytes([0xAAu8; 32]);
+        assert!(!range_conflicts(&state, 0, 100, LockMode::Write, &holder));
+        assert!(!range_conflicts(&state, 500, 1, LockMode::Read, &holder));
+    }
+
+    // --- sequential_conflicts --------------------------------------
+
+    #[test]
+    fn sequential_conflicts_empty_state_is_free() {
+        assert!(!sequential_conflicts(&FileLockState::default()));
+    }
+
+    #[test]
+    fn sequential_conflicts_held_sequential_blocks() {
+        let state = FileLockState {
+            sequential_holder: Some(SequentialEntry {
+                id: LockId::try_from(1).unwrap(),
+                holder: HolderId::from_bytes([0xAAu8; 32]),
+                deploy: [0u8; 32],
+            }),
+            ..Default::default()
+        };
+        assert!(sequential_conflicts(&state));
+    }
+
+    /// Any held range (even a single read lock by the SAME holder)
+    /// blocks a sequential acquire.  LOAD-BEARING: pins the
+    /// no-same-holder-skip rule — a cap can't upgrade from
+    /// range to sequential without releasing first.
+    #[test]
+    fn sequential_conflicts_held_range_blocks_even_for_same_holder() {
+        let holder = HolderId::from_bytes([0xAAu8; 32]);
+        let state = FileLockState {
+            ranges: vec![mk_entry(0, 100, LockMode::Read, holder)],
+            ..Default::default()
+        };
+        assert!(sequential_conflicts(&state));
+    }
+
+    // --- state_is_empty --------------------------------------------
+
+    #[test]
+    fn state_is_empty_default_state_is_empty() {
+        assert!(state_is_empty(&FileLockState::default()));
+    }
+
+    #[test]
+    fn state_is_empty_held_range_is_not_empty() {
+        let state = FileLockState {
+            ranges: vec![mk_entry(
+                0,
+                10,
+                LockMode::Read,
+                HolderId::from_bytes([0xAAu8; 32]),
+            )],
+            ..Default::default()
+        };
+        assert!(!state_is_empty(&state));
+    }
+
+    #[test]
+    fn state_is_empty_held_sequential_is_not_empty() {
+        let state = FileLockState {
+            sequential_holder: Some(SequentialEntry {
+                id: LockId::try_from(1).unwrap(),
+                holder: HolderId::from_bytes([0xAAu8; 32]),
+                deploy: [0u8; 32],
+            }),
+            ..Default::default()
+        };
+        assert!(!state_is_empty(&state));
+    }
+
+    /// LOAD-BEARING anti-eviction invariant: a state with ONLY
+    /// parked waiters (empty ranges + no sequential holder)
+    /// is still NOT empty.  Evicting it would drop the
+    /// `Waiter`'s `admit` sender, signalling cancel to a caller
+    /// that never asked for it.  Pin against a future refactor
+    /// that tightened the `state_is_empty` definition to just
+    /// `ranges.is_empty() && sequential_holder.is_none()`.
+    #[test]
+    fn state_is_empty_parked_waiters_prevent_eviction() {
+        let (tx, _rx) = oneshot::channel();
+        let waiter = Waiter {
+            lock_id: LockId::try_from(99).unwrap(),
+            kind: WaitKind::Sequential,
+            holder: HolderId::from_bytes([0xAAu8; 32]),
+            deploy: [0u8; 32],
+            admit: tx,
+        };
+        let mut state = FileLockState::default();
+        state.waiters.push_back(waiter);
+        assert!(
+            !state_is_empty(&state),
+            "waiters alone must prevent eviction"
+        );
     }
 }
