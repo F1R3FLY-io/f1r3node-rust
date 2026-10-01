@@ -8,30 +8,35 @@
 // that a stale fd reliably observes `FSERR_CLOSED` rather than
 // aliasing a later-opened file.
 //
-// # This slice provides
+// # This slice + prior slices provide
 //
-// The pure-storage foundations:
 //   - `FileHandle` — the per-fd metadata record (owning
 //     `Arc<File>` OR a shadow-handle `None` for follower replay).
 //   - `FileHandleTable` — the runtime-wide cloneable handle with
-//     the private `Inner` allocator + map.
+//     the private `Inner` allocator + map, PLUS `wal`, the
+//     deploy-scope cells, and the payload trait-object slots.
 //   - `new` / `default` / `insert` / `insert_at` / `remove` /
-//     `raw_fd` / `with_mut`.
-//
-// # Deferred to later `handle_table` slices
-//
-//   - WAL wiring (`wal: Wal` field + `wal()` accessor).
-//   - Cross-registry sharing plumbing (`root_registry: Root
-//     IdentityRegistry`, `lock_registry: LockRegistry`,
-//     `dir_handles: DirHandleTable`, `payload_store`,
-//     `payload_source_recorder`) + their `share_*` methods.
-//   - Deploy-scope cell (`current_deploy_scope`,
-//     `current_deploy_sig`) + `close_all_for_deploy` /
-//     `has_active_handles_sync`.
+//     `raw_fd` / `with_mut` (slice 1).
+//   - `wal: Wal` public field + WAL journaling access (slice 2).
+//   - `current_deploy_scope` / `current_deploy_sig` cells + their
+//     poison-aborted accessors (slice 2).
+//   - `payload_store` / `payload_source_recorder` cells + their
+//     `share_*` / getter methods (slice 3).
+//   - `root_registry: RootIdentityRegistry` public field +
+//     `share_root_registry` broadcast method (slice 4).
 //   - Soft-checkpoint machinery (`snapshot_next_fd` /
 //     `seed_next_fd_watermark` / `seed_next_fd_from_state_hash` /
 //     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
-//     assert.
+//     assert (slice 8).
+//
+// # Deferred to later `handle_table` slices
+//
+//   - `lock_registry: LockRegistry` + `share_lock_registry` —
+//     gated on `LockRegistry`.
+//   - `dir_handles: DirHandleTable` + `share_dir_handles` —
+//     gated on `DirHandleTable`.
+//   - `close_all_for_deploy` / `has_active_handles_sync` — gated
+//     on `LockRegistry` for the symmetric sweep interface.
 //
 // Each deferred field / method group has its own natural
 // dependency:  `lock_registry` waits for `lock.rs`'s
@@ -80,10 +85,66 @@ use std::sync::Arc;
 // `RwLock` also does not poison, so there's no `poison_abort`
 // equivalent to route through here (contrast `Wal`'s std-lock
 // design in `wal.rs`).
+//
+// The **deploy-scope cells** below (`current_deploy_scope`,
+// `current_deploy_sig`) use `std::sync::RwLock` instead — they're
+// updated at deploy-entry / deploy-drop from synchronous
+// `WalDeployScope::new` / `Drop` code that isn't inside an async
+// context.  Their accessors route through `poison_abort` to match
+// the DD-FailClosedOnInvariantBreak discipline.
 use tokio::sync::RwLock;
 
+use super::errors::poison_abort;
+use super::lock::DeployScope;
 use super::mode::AccessMode;
+use super::path::identity::RootIdentityRegistry;
+use super::wal::{PayloadPersistence, PayloadSourceRecorder, Wal};
 use super::ConsensusMode;
+
+/// Number of low bits reserved as per-lifetime fd-allocation
+/// headroom below the state-hash-derived watermark.  2^20 ≈ 1M
+/// fds is safely above `MAX_OPEN_FDS = 1024` live fds and any
+/// realistic open+close cycle count within a single
+/// block-computation.  A `const` assertion below enforces that
+/// `MAX_OPEN_FDS` cannot silently exceed this budget on a future
+/// change.
+///
+/// # CONSENSUS-OBSERVABLE
+///
+/// This constant governs the state-hash → fd-watermark derivation
+/// in [`FileHandleTable::seed_next_fd_from_state_hash`].  Fd
+/// values live in Rholang tuplespace state (`File`-agent `fdP`
+/// cells → on-chain via the state hash), so validators running a
+/// different value here would compute a different watermark for
+/// the same state hash → different fd allocation sequence →
+/// different tuplespace state.  A partial-upgrade fleet would
+/// silently fork.
+///
+/// Registered into `CONSENSUS_FOLD` at order 14 (below); the
+/// fingerprint fold advertises the constant to peering handshakes
+/// so a mismatched validator fails the `network_id` check at boot
+/// rather than silently forking.
+///
+/// Exposed as `pub(crate)` so `dir_handle_table::FD_ENTROPY_HEADROOM_BITS`
+/// (which uses the same derivation and must share this value — a
+/// divergence would silently fork dir-fd allocation) can
+/// compile-time-assert equality.  Only this copy is registered
+/// in `CONSENSUS_FOLD`; the structural equality assertion covers
+/// the dir-table side.
+pub(crate) const FD_ENTROPY_HEADROOM_BITS: u32 = 20;
+
+// Compile-time invariant guard.  If a future change raises
+// `MAX_OPEN_FDS` past the entropy-headroom budget, the build
+// fails here — flagging that `seed_next_fd_from_state_hash`'s
+// aliasing protection must be revisited.  The 2× factor is a
+// safety margin for open+close cycles vs. concurrent-live fds.
+const _: () = assert!(
+    (super::MAX_OPEN_FDS as u64) * 2 < 1u64 << FD_ENTROPY_HEADROOM_BITS,
+    "MAX_OPEN_FDS exceeds FD_ENTROPY_HEADROOM_BITS budget; \
+     the state-hash-derived watermark cannot guarantee aliasing prevention"
+);
+
+crate::register_consensus_constant!(order = 14, name = FD_ENTROPY_HEADROOM_BITS, u64_be);
 
 /// Per-fd metadata record.
 ///
@@ -186,19 +247,132 @@ pub struct FileHandle {
 /// handler closure holds an independent handle onto the same
 /// underlying map.
 ///
-/// # Slice 1 shape
+/// # Slice-2 shape
 ///
-/// The plumbing fields (`wal`, `root_registry`, `lock_registry`,
-/// `current_deploy_scope`, `dir_handles`, `payload_store`,
-/// `payload_source_recorder`) that fileio's `FileHandleTable`
-/// carries are DEFERRED to later slices — each is gated on a
-/// downstream module landing (or on a `share_*` API needing a
-/// helper method that doesn't exist yet).  The slice-1 struct
-/// is intentionally minimal so the fd allocator can land against
-/// today's dev without dragging in an unlanded dependency chain.
+/// The plumbing fields (`root_registry`, `lock_registry`,
+/// `dir_handles`, `payload_store`, `payload_source_recorder`)
+/// that fileio's `FileHandleTable` carries are DEFERRED to later
+/// slices — each is gated on a downstream module landing (or on a
+/// `share_*` API needing a helper method that doesn't exist yet).
+/// The slice-2 struct adds the two pieces whose downstream
+/// dependencies HAVE landed: the `Wal` buffer (PR #490 / #493)
+/// and the deploy-scope cells (`DeployScope` type + `poison_abort`
+/// helper from PR #488 / #489).
 #[derive(Debug, Clone, Default)]
 pub struct FileHandleTable {
     inner: Arc<Inner>,
+    /// Consensus-mode Write-Ahead Log.  Attached to the handle
+    /// table because both are per-runtime state that gets plumbed
+    /// identically through the reducer.  Handler closures access
+    /// via `self.handles.wal.append_with_ack(...)` etc.  Journal
+    /// appends happen inside the fd-based mutating handlers after
+    /// successful syscall completion, gated on the `FileHandle`'s
+    /// `cmode`.
+    ///
+    /// Public field (matches fileio's ergonomic idiom) — `Wal`'s
+    /// own methods already route through `poison_abort` internally,
+    /// so no discipline is bypassed by direct access.
+    pub wal: Wal,
+    /// Shared root-identity registry.  Populated once at boot from
+    /// operator-provisioned root paths; consulted on every
+    /// `safe_descend` (or its handler-side wrappers) to detect
+    /// post-boot rename-and-recreate of the root directory (H-5
+    /// defense).  Attached to the handle table so all handler
+    /// closures reach it via `self.handles.root_registry`; shared
+    /// across runtimes via `RuntimeManager` so a single boot-time
+    /// population is visible everywhere (see
+    /// [`share_root_registry`](Self::share_root_registry)).
+    ///
+    /// Public field (matches fileio's ergonomic idiom) — the
+    /// registry's own methods already route through `poison_abort`
+    /// internally (see `RootIdentityRegistry` docs), so no
+    /// discipline is bypassed by direct access.
+    pub root_registry: RootIdentityRegistry,
+    /// The per-runtime "current deploy state" — `scope` + `sig`
+    /// bundled under a **single** guard.
+    ///
+    /// # Structural invariant
+    ///
+    /// Both fields live under one `RwLock`.  The compound writers
+    /// `set_current_deploy(scope, sig)` and
+    /// `clear_current_deploy()` update both in a single guard
+    /// scope, so consumers can NEVER observe a half-populated
+    /// pair `(sentinel_scope, non_empty_sig)` or
+    /// `(non_sentinel_scope, empty_sig)` even under concurrent
+    /// reads.  This makes the "both populated OR both sentinel"
+    /// contract *structural* rather than conventional-only.
+    ///
+    /// The per-field `set_current_deploy_scope` /
+    /// `set_current_deploy_sig` setters exist for narrower
+    /// callers (tests intentionally exercising partial-state
+    /// semantics); production deploy-entry / -drop code SHOULD
+    /// use the compound helpers.
+    ///
+    /// # Cell shape
+    ///
+    /// `std::sync::RwLock` (not tokio's async lock) — the cell is
+    /// set from synchronous `WalDeployScope::new` / `Drop` code,
+    /// not from an async context.  Accessors route through
+    /// `poison_abort` per DD-FailClosedOnInvariantBreak.
+    ///
+    /// # Consumers
+    ///
+    ///   - `scope` (`Blake2b256(deploy.sig)` for user deploys):
+    ///     read on lock acquire (Wave 4) and by
+    ///     `LockRegistry::release_all_for_deploy` at deploy end.
+    ///     Sentinel `[0u8; 32]` between deploys.
+    ///   - `sig` (raw signature bytes): read on `journal_write`
+    ///     (Wave 4) to index `(payload_hash → deploy_sig)` via
+    ///     `PayloadSourceRecorder`.  Empty vec between deploys —
+    ///     the record step skips when the cell is empty.
+    ///
+    /// # Why two fields instead of one hash
+    ///
+    /// The scope drives lock-sweep scoping; the sig drives the
+    /// block-storage `deploy_index` walk (which keys on
+    /// `DeployId = shared::ByteString`).  Recording the scope
+    /// hash into the payload-source index would break the joiner
+    /// chain `payload_hash → deploy_sig → block_hash → block
+    /// bytes → ProcessedDeploy`.
+    ///
+    /// Per-runtime cell (not manager-broadcast): each runtime
+    /// processes deploys sequentially, so a single cell suffices;
+    /// concurrent runtimes have independent `FileHandleTable`
+    /// instances.
+    deploy: Arc<std::sync::RwLock<DeployState>>,
+    /// Serving-side payload persistence backend (optional).
+    /// Populated by the boot pipeline via `share_payload_store`
+    /// from a manager-shared slot; tests that don't wire a store
+    /// see `None` and the yet-to-land `journal_write` skips the
+    /// persist step (matches pre-persistence behavior).
+    ///
+    /// Cell shape: `Arc<std::sync::RwLock<Option<Arc<dyn ...>>>>`
+    /// — outer `Arc` so clones share the slot; `RwLock` so the
+    /// boot pipeline can install (`share_*`) after construction;
+    /// inner `Option<Arc<dyn ...>>` so an unset backend is
+    /// distinguishable from a live one and the trait object is
+    /// cheaply-cloneable.
+    ///
+    /// Private field — accessors below route through
+    /// `poison_abort` (same discipline as the deploy cell).
+    payload_store: Arc<std::sync::RwLock<Option<Arc<dyn PayloadPersistence>>>>,
+    /// Serving-side payload-source recorder (optional).  Same
+    /// cell shape + sharing pattern as `payload_store`; drives
+    /// the second tier of the joiner-side payload-fetch chain
+    /// (see the `PayloadSourceRecorder` trait docstring in
+    /// `wal.rs`).
+    ///
+    /// Private field — accessors below route through
+    /// `poison_abort`.
+    payload_source_recorder: Arc<std::sync::RwLock<Option<Arc<dyn PayloadSourceRecorder>>>>,
+}
+
+/// Bundled `(scope, sig)` for the current deploy.  Private —
+/// exposed through `FileHandleTable`'s accessor methods only.
+#[derive(Debug, Default, Clone)]
+struct DeployState {
+    scope: DeployScope,
+    sig: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -385,6 +559,283 @@ impl FileHandleTable {
     where F: FnOnce(&mut FileHandle) -> R {
         let mut table = self.inner.table.write().await;
         table.get_mut(&fd).map(f)
+    }
+
+    // --- Deploy-scope cells ----------------------------------------
+
+    /// Read the current deploy scope.  Returns `[0u8; 32]` (the
+    /// sentinel) when no `WalDeployScope` is live.
+    pub fn current_deploy_scope(&self) -> DeployScope {
+        poison_abort(self.deploy.read(), "FileHandleTable.deploy").scope
+    }
+
+    /// Set ONLY the current deploy scope.  Prefer
+    /// `set_current_deploy(scope, sig)` at deploy-entry — the
+    /// compound writer maintains the "both populated OR both
+    /// sentinel" invariant structurally.  This per-field setter
+    /// exists for narrower callers (tests that intentionally
+    /// exercise partial state).
+    pub fn set_current_deploy_scope(&self, scope: DeployScope) {
+        poison_abort(self.deploy.write(), "FileHandleTable.deploy").scope = scope;
+    }
+
+    /// Read the current deploy signature (raw bytes).  Returns an
+    /// empty vec when no `WalDeployScope` is live — that's the
+    /// sentinel the (yet-to-land) `journal_write` path checks to
+    /// decide whether to skip the payload-source-recorder step.
+    pub fn current_deploy_sig(&self) -> Vec<u8> {
+        poison_abort(self.deploy.read(), "FileHandleTable.deploy")
+            .sig
+            .clone()
+    }
+
+    /// Set ONLY the current deploy signature.  Same "prefer the
+    /// compound writer" caveat as `set_current_deploy_scope`.
+    pub fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+        poison_abort(self.deploy.write(), "FileHandleTable.deploy").sig = sig;
+    }
+
+    /// Set BOTH deploy cells atomically under a single guard.
+    /// Called by the (yet-to-land) `WalDeployScope::new` at
+    /// deploy-entry — the two fields transition together so
+    /// consumers cannot observe a `(scope, sig)` pair that
+    /// straddles the deploy boundary.
+    pub fn set_current_deploy(&self, scope: DeployScope, sig: Vec<u8>) {
+        let mut guard = poison_abort(self.deploy.write(), "FileHandleTable.deploy");
+        guard.scope = scope;
+        guard.sig = sig;
+    }
+
+    /// Reset BOTH deploy cells to their sentinel state atomically
+    /// under a single guard.  Called by the (yet-to-land)
+    /// `WalDeployScope::drop`.  Consumers reading during (or
+    /// concurrent with) this call see either the pre-clear
+    /// `(populated, populated)` or the post-clear `(sentinel,
+    /// sentinel)` — never a straddled pair.
+    pub fn clear_current_deploy(&self) {
+        let mut guard = poison_abort(self.deploy.write(), "FileHandleTable.deploy");
+        guard.scope = [0u8; 32];
+        guard.sig.clear();
+    }
+
+    // --- Payload trait-object plumbing -----------------------------
+
+    /// Attach (or clear, with `None`) the manager-shared payload
+    /// persistence backend.  Called from the boot pipeline via
+    /// the runtime manager after `FileHandleTable::new`; the
+    /// interior `RwLock` gives interior mutability so the write
+    /// is visible through every already-cloned handle without
+    /// requiring `&mut self`.
+    ///
+    /// After attachment, the (yet-to-land) `journal_write` on
+    /// every mutating fs handler for a Consensus cap will call
+    /// `store.persist(bytes)` to stash the write payload content-
+    /// addressed on disk for peer-fetch by joiners.
+    pub fn share_payload_store(&self, shared: Option<Arc<dyn PayloadPersistence>>) {
+        *poison_abort(self.payload_store.write(), "FileHandleTable.payload_store") = shared;
+    }
+
+    /// Read the currently-installed persistence backend, if any.
+    /// The returned `Option<Arc<dyn ...>>` is cheap to clone (Arc
+    /// refcount bump).  Called by `journal_write` on every write
+    /// to decide whether to persist.
+    pub fn payload_store(&self) -> Option<Arc<dyn PayloadPersistence>> {
+        poison_abort(self.payload_store.read(), "FileHandleTable.payload_store").clone()
+    }
+
+    /// Attach (or clear, with `None`) the manager-shared payload-
+    /// source recorder — the second tier of the joiner-side
+    /// payload-fetch chain (see the `PayloadSourceRecorder` trait
+    /// docstring in `wal.rs`).  Same sharing pattern as
+    /// `share_payload_store`.
+    pub fn share_payload_source_recorder(&self, shared: Option<Arc<dyn PayloadSourceRecorder>>) {
+        *poison_abort(
+            self.payload_source_recorder.write(),
+            "FileHandleTable.payload_source_recorder",
+        ) = shared;
+    }
+
+    /// Read the currently-installed payload-source recorder, if
+    /// any.  Called by `journal_write` on every Consensus-cap
+    /// write to decide whether to record
+    /// `(payload_hash → deploy_sig)` into the block-storage
+    /// side-index.
+    pub fn payload_source_recorder(&self) -> Option<Arc<dyn PayloadSourceRecorder>> {
+        poison_abort(
+            self.payload_source_recorder.read(),
+            "FileHandleTable.payload_source_recorder",
+        )
+        .clone()
+    }
+
+    // --- Root-identity registry sharing ----------------------------
+
+    /// Attach the manager-shared root-identity registry so all
+    /// runtimes spawned from this manager see the same
+    /// `logical → Root` map.  Called from the boot pipeline
+    /// (`RuntimeManager::spawn_runtime` /
+    /// `spawn_replay_runtime`) — same broadcast pattern as
+    /// [`share_payload_store`](Self::share_payload_store).
+    ///
+    /// Takes `&self` (not `&mut self`) — the underlying
+    /// [`RootIdentityRegistry::share_from`] is `&self` (interior
+    /// mutability via the outer `RwLock`), so the boot pipeline
+    /// can install after already-spawned runtimes have cloned
+    /// the handle table.
+    ///
+    /// # Load-bearing invariant: reducer-clone visibility
+    ///
+    /// `rho_runtime::create_rho_runtime` clones the
+    /// `FileHandleTable` (and therefore this field) to hand a
+    /// copy to the reducer BEFORE the boot pipeline calls
+    /// `share_root_registry`.  The two-layer indirection inside
+    /// `RootIdentityRegistry` (see its struct-level docstring)
+    /// ensures the reducer's earlier clone shares the OUTER slot
+    /// with the runtime's clone — swapping the INNER Arc via
+    /// `share_from` is visible through both.  A field-replacement
+    /// approach here (`self.root_registry = shared`) would only
+    /// update the runtime's outer field and leave the reducer's
+    /// clone bound to its old inner — the PB-M-14 canary
+    /// regression fileio's investigation surfaced.
+    ///
+    /// The two properties this call preserves:
+    ///   1. **Reducer-clone visibility**: the reducer's earlier
+    ///      clone points at the SAME outer slot Arc as `self`;
+    ///      the inner swap is observed by both.
+    ///   2. **Late-registration propagation**: after the swap,
+    ///      every clone routes through `shared`'s inner Arc — a
+    ///      later `register` on the manager writes to the shared
+    ///      inner and every runtime sees it.
+    pub fn share_root_registry(&self, shared: RootIdentityRegistry) {
+        self.root_registry.share_from(&shared);
+    }
+
+    // --- Soft-checkpoint (slice 8) ---------------------------------
+
+    /// Snapshot the next-fd counter for deploy-boundary rollback.
+    /// Callers pair this with [`truncate_to`](Self::truncate_to)
+    /// on `RhoRuntimeImpl` soft-checkpoint: the snapshot is taken
+    /// pre-deploy, and revert closes every fd allocated past it.
+    pub fn snapshot_next_fd(&self) -> u64 { self.inner.next_fd.load(Ordering::Relaxed) }
+
+    /// Raise the fd counter to at least `watermark + 1` before
+    /// the next allocation.  Called on every block boundary via
+    /// runtime reset so a post-restart runtime cannot allocate
+    /// fd values that alias stale references still present in
+    /// the tuplespace.
+    ///
+    /// # Aliasing scenario averted
+    ///
+    /// Pre-restart, Deploy A opened a File with fd = 42 and
+    /// stashed the cap in the tuplespace.  Node restarts; the
+    /// fresh `FileHandleTable::next_fd` starts at 1.  A
+    /// subsequent Deploy B opens 41 unrelated files; the 42nd
+    /// new open would allocate fd = 42.  Deploy A's stashed cap,
+    /// invoked later via `fsRead(42, ...)`, would now read from
+    /// Deploy B's file.  Seeding the watermark from a value
+    /// larger than any pre-restart fd prevents this.
+    ///
+    /// # Monotonic + idempotent
+    ///
+    /// Multiple calls with the same or lower watermark are
+    /// no-ops; the counter never rewinds.  This preserves the
+    /// pre-existing "closed fd is never re-issued" invariant.
+    ///
+    /// Uses a compare-and-swap loop rather than `fetch_max`
+    /// because `AtomicU64::fetch_max` isn't stable everywhere the
+    /// tree builds today — the CAS is a portable equivalent.
+    pub fn seed_next_fd_watermark(&self, watermark: u64) {
+        let target = watermark.saturating_add(1);
+        let mut current = self.inner.next_fd.load(Ordering::Relaxed);
+        while current < target {
+            match self.inner.next_fd.compare_exchange_weak(
+                current,
+                target,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Derive a deterministic per-restart watermark from a
+    /// 32-byte state hash and seed `next_fd` from it.  Called
+    /// on every block boundary via runtime reset.
+    ///
+    /// # Consensus commitment
+    ///
+    /// Fd values are consensus-observable (stored in Rholang
+    /// tuplespace state as `u64` inside `File`-agent `fdP`
+    /// cells; go on-chain via the tuplespace state hash).  This
+    /// derivation is therefore an implicit consensus commitment
+    /// — every validator resetting to the same state hash
+    /// computes the same watermark, so replay of captured fd
+    /// values on followers matches the leader's allocation.  Any
+    /// future change to the derivation (bytes used, shift
+    /// amount, hashing algorithm) is a hard fork.
+    ///
+    /// # Entropy derivation
+    ///
+    /// Take the first 8 bytes of `hash` as a big-endian `u64` and
+    /// mask off the low `FD_ENTROPY_HEADROOM_BITS` bits.  The
+    /// masked bits are reserved as per-lifetime allocation
+    /// headroom — a single runtime lifetime can allocate up to
+    /// `1 << FD_ENTROPY_HEADROOM_BITS` fds before the counter
+    /// would enter the next watermark's range.
+    ///
+    /// Entropy budget: 64 − 20 = 44 bits of state-hash entropy
+    /// in the watermark.  Birthday collision at ~2^22 (~4 million)
+    /// blocks → ~130 years at 1 block/sec.  Headroom budget:
+    /// 2^20 ≈ 1M fd allocations per runtime lifetime, well above
+    /// any realistic per-block open/close pattern
+    /// (`MAX_OPEN_FDS = 1024` live fds → ~1000 open+close cycles
+    /// per block is the realistic upper bound).
+    ///
+    /// # Short-hash guard
+    ///
+    /// `debug_assert!` fires if a caller passes a hash shorter
+    /// than 8 bytes — state hashes are always 32 bytes, but a
+    /// future refactor passing a truncated value would silently
+    /// reduce entropy and disable the aliasing protection.
+    pub fn seed_next_fd_from_state_hash(&self, hash: &[u8]) {
+        // Release-time assert (not `debug_assert!`) — the check
+        // is a single length comparison on a rare boot-only path
+        // and closes the "silent entropy reduction" hole a
+        // truncated hash would open.  State hashes are always 32
+        // bytes in practice; a shorter one is a code bug that
+        // MUST fail loudly rather than silently pad + reduce
+        // watermark entropy.
+        assert!(
+            hash.len() >= 8,
+            "seed_next_fd_from_state_hash requires at least 8 bytes of hash; \
+             got {} — a shorter hash silently reduces entropy and disables aliasing protection",
+            hash.len()
+        );
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&hash[..8]);
+        let hi = u64::from_be_bytes(buf);
+        // Mask off the low headroom bits so a full runtime
+        // lifetime cannot overflow into the next watermark's
+        // range.
+        let watermark = hi & !((1u64 << FD_ENTROPY_HEADROOM_BITS) - 1);
+        self.seed_next_fd_watermark(watermark);
+    }
+
+    /// Roll back to a prior `snapshot_next_fd` value, dropping
+    /// every fd allocated past it.  Called by
+    /// `RhoRuntimeImpl::revert_to_soft_checkpoint` alongside
+    /// `Wal::truncate_to`.
+    ///
+    /// Note: `next_fd` is monotonic even across rollback — the
+    /// counter does NOT rewind.  That is the invariant that
+    /// prevents fd aliasing across deploys.  A rolled-back
+    /// deploy's next-attempt allocation gets a fresh fd value,
+    /// not a reused one.
+    pub async fn truncate_to(&self, snapshot: u64) {
+        let mut table = self.inner.table.write().await;
+        table.retain(|&fd, _| fd < snapshot);
     }
 }
 
@@ -656,5 +1107,524 @@ mod tests {
         // Visible via the sibling clone.
         let deploy = b.with_mut(fd, |h| h.deploy).await.unwrap();
         assert_eq!(deploy, [0x42; 32]);
+    }
+
+    // --- Slice 2: Wal + deploy-scope cells -------------------------
+
+    #[test]
+    fn wal_field_starts_empty_and_is_shared_across_clones() {
+        use super::super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+
+        let a = FileHandleTable::new();
+        assert!(a.wal.is_empty());
+
+        // Cloning FileHandleTable shares the Arc<...> inside Wal
+        // (Wal itself is Arc-backed).  A journal append through
+        // `a` is visible through `b`.
+        let b = a.clone();
+        let entry = WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/tmp/x"),
+            extra_path: None,
+            offset: None,
+            length: Some(1),
+            payload_ref: Some(PayloadRef::hash(b"x")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        a.wal.append(entry).unwrap();
+        assert_eq!(b.wal.len(), 1);
+    }
+
+    #[test]
+    fn deploy_scope_starts_at_sentinel() {
+        let table = FileHandleTable::new();
+        assert_eq!(table.current_deploy_scope(), [0u8; 32]);
+    }
+
+    #[test]
+    fn deploy_sig_starts_empty() {
+        let table = FileHandleTable::new();
+        assert!(table.current_deploy_sig().is_empty());
+    }
+
+    #[test]
+    fn set_and_read_current_deploy_scope_roundtrips() {
+        let table = FileHandleTable::new();
+        let scope = [0xAAu8; 32];
+        table.set_current_deploy_scope(scope);
+        assert_eq!(table.current_deploy_scope(), scope);
+    }
+
+    #[test]
+    fn set_and_read_current_deploy_sig_roundtrips() {
+        let table = FileHandleTable::new();
+        let sig = b"raw-deploy-sig-bytes".to_vec();
+        table.set_current_deploy_sig(sig.clone());
+        assert_eq!(table.current_deploy_sig(), sig);
+    }
+
+    /// The clones share the underlying `Arc<RwLock<...>>` cells —
+    /// a set through one clone is visible through another.  Load-
+    /// bearing for the (yet-to-land) `WalDeployScope::new` +
+    /// handler-side reads across independently-cloned handles.
+    #[test]
+    fn deploy_scope_and_sig_are_shared_across_clones() {
+        let a = FileHandleTable::new();
+        let b = a.clone();
+        let scope = [0xBBu8; 32];
+        a.set_current_deploy_scope(scope);
+        a.set_current_deploy_sig(b"sig".to_vec());
+        assert_eq!(b.current_deploy_scope(), scope);
+        assert_eq!(b.current_deploy_sig(), b"sig".to_vec());
+    }
+
+    #[test]
+    fn clear_current_deploy_resets_both_cells_to_sentinel() {
+        let table = FileHandleTable::new();
+        table.set_current_deploy_scope([0x11u8; 32]);
+        table.set_current_deploy_sig(vec![0x22, 0x33]);
+        table.clear_current_deploy();
+        assert_eq!(table.current_deploy_scope(), [0u8; 32]);
+        assert!(table.current_deploy_sig().is_empty());
+    }
+
+    /// The compound writer sets both cells under a single guard.
+    /// A subsequent read of either field sees the paired value.
+    #[test]
+    fn set_current_deploy_updates_both_cells_atomically() {
+        let table = FileHandleTable::new();
+        let scope = [0x77u8; 32];
+        let sig = b"paired-sig".to_vec();
+        table.set_current_deploy(scope, sig.clone());
+        assert_eq!(table.current_deploy_scope(), scope);
+        assert_eq!(table.current_deploy_sig(), sig);
+    }
+
+    // --- Slice 3: payload trait-object plumbing --------------------
+
+    /// Test-only `PayloadPersistence` fake that records every
+    /// `persist` invocation and returns Blake2b256 via the trait
+    /// contract (matches `MockPersistence` in `wal.rs`).
+    #[derive(Debug, Default)]
+    struct RecordingPersistence {
+        seen: std::sync::Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl PayloadPersistence for RecordingPersistence {
+        fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+            self.seen.lock().unwrap().push(bytes.to_vec());
+            match super::super::wal::PayloadRef::hash(bytes) {
+                super::super::wal::PayloadRef::Hash(h) => Ok(h),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// Test-only `PayloadSourceRecorder` fake.
+    #[derive(Debug, Default)]
+    struct RecordingRecorder {
+        seen: std::sync::Mutex<Vec<([u8; 32], Vec<u8>)>>,
+    }
+
+    impl PayloadSourceRecorder for RecordingRecorder {
+        fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((payload_hash, deploy_sig.to_vec()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn payload_store_starts_unset() {
+        let table = FileHandleTable::new();
+        assert!(table.payload_store().is_none());
+    }
+
+    #[test]
+    fn payload_source_recorder_starts_unset() {
+        let table = FileHandleTable::new();
+        assert!(table.payload_source_recorder().is_none());
+    }
+
+    /// `share_payload_store` attaches a backend that a subsequent
+    /// `payload_store()` read observes.  End-to-end round-trip via
+    /// the trait — invokes `.persist(bytes)` through the returned
+    /// `Arc<dyn ...>` and confirms the fake recorded the bytes.
+    #[test]
+    fn share_payload_store_then_persist_roundtrips_through_trait() {
+        let table = FileHandleTable::new();
+        let backend = Arc::new(RecordingPersistence::default());
+        table.share_payload_store(Some(backend.clone() as Arc<dyn PayloadPersistence>));
+
+        let installed = table.payload_store().expect("must be set");
+        let bytes = b"consensus-write-payload";
+        let hash = installed.persist(bytes).expect("persist ok");
+        // Verify the hash matches the contract (Blake2b256).
+        match super::super::wal::PayloadRef::hash(bytes) {
+            super::super::wal::PayloadRef::Hash(expected) => assert_eq!(hash, expected),
+            _ => unreachable!(),
+        }
+        // The fake recorded the bytes.
+        let seen = backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], bytes.to_vec());
+    }
+
+    /// `share_payload_store(None)` clears a previously-attached
+    /// backend — the getter returns `None`.
+    #[test]
+    fn share_payload_store_none_clears_installed_backend() {
+        let table = FileHandleTable::new();
+        table.share_payload_store(Some(
+            Arc::new(RecordingPersistence::default()) as Arc<dyn PayloadPersistence>
+        ));
+        assert!(table.payload_store().is_some());
+        table.share_payload_store(None);
+        assert!(table.payload_store().is_none());
+    }
+
+    /// Round-trip test for the recorder — parallels the persist
+    /// round-trip test above.
+    #[test]
+    fn share_payload_source_recorder_then_record_roundtrips_through_trait() {
+        let table = FileHandleTable::new();
+        let recorder = Arc::new(RecordingRecorder::default());
+        table.share_payload_source_recorder(Some(
+            recorder.clone() as Arc<dyn PayloadSourceRecorder>
+        ));
+
+        let installed = table.payload_source_recorder().expect("must be set");
+        installed
+            .record([0xAAu8; 32], b"deploy-sig")
+            .expect("record ok");
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], ([0xAAu8; 32], b"deploy-sig".to_vec()));
+    }
+
+    #[test]
+    fn share_payload_source_recorder_none_clears_installed_recorder() {
+        let table = FileHandleTable::new();
+        table.share_payload_source_recorder(Some(
+            Arc::new(RecordingRecorder::default()) as Arc<dyn PayloadSourceRecorder>
+        ));
+        assert!(table.payload_source_recorder().is_some());
+        table.share_payload_source_recorder(None);
+        assert!(table.payload_source_recorder().is_none());
+    }
+
+    /// Both payload cells share `Arc<RwLock<...>>` semantics with
+    /// clones — an attachment through one clone is visible via
+    /// another.  Load-bearing for the RuntimeManager broadcast
+    /// pattern (the boot pipeline calls `share_*` on a manager-
+    /// held clone; every already-spawned runtime's clone MUST
+    /// observe the attachment on the next read).
+    #[test]
+    fn payload_store_and_recorder_share_across_clones() {
+        let a = FileHandleTable::new();
+        let b = a.clone();
+        let backend = Arc::new(RecordingPersistence::default());
+        let recorder = Arc::new(RecordingRecorder::default());
+        a.share_payload_store(Some(backend as Arc<dyn PayloadPersistence>));
+        a.share_payload_source_recorder(Some(recorder as Arc<dyn PayloadSourceRecorder>));
+
+        assert!(b.payload_store().is_some());
+        assert!(b.payload_source_recorder().is_some());
+    }
+
+    /// Replacement semantics: `share_payload_store(Some(A))`
+    /// followed by `share_payload_store(Some(B))` yields `B` on
+    /// the next `payload_store()` read (last-write-wins).  Pins
+    /// the "share_* semantically REPLACES rather than accumulates"
+    /// contract that operator hot-swap of a backend relies on.
+    #[test]
+    fn share_payload_store_replaces_prior_backend() {
+        let table = FileHandleTable::new();
+        let a = Arc::new(RecordingPersistence::default());
+        let b = Arc::new(RecordingPersistence::default());
+        table.share_payload_store(Some(a.clone() as Arc<dyn PayloadPersistence>));
+        table.share_payload_store(Some(b.clone() as Arc<dyn PayloadPersistence>));
+
+        // Invoke through the installed backend and confirm ONLY
+        // `b`'s fake recorded the call — `a` was replaced, not
+        // stacked.
+        table
+            .payload_store()
+            .expect("must be set")
+            .persist(b"witness")
+            .expect("persist ok");
+        assert!(
+            a.seen.lock().unwrap().is_empty(),
+            "prior backend must not receive calls"
+        );
+        assert_eq!(b.seen.lock().unwrap().len(), 1);
+    }
+
+    /// Symmetric replacement pin for the recorder.
+    #[test]
+    fn share_payload_source_recorder_replaces_prior_recorder() {
+        let table = FileHandleTable::new();
+        let a = Arc::new(RecordingRecorder::default());
+        let b = Arc::new(RecordingRecorder::default());
+        table.share_payload_source_recorder(Some(a.clone() as Arc<dyn PayloadSourceRecorder>));
+        table.share_payload_source_recorder(Some(b.clone() as Arc<dyn PayloadSourceRecorder>));
+
+        table
+            .payload_source_recorder()
+            .expect("must be set")
+            .record([0x11u8; 32], b"sig")
+            .expect("record ok");
+        assert!(
+            a.seen.lock().unwrap().is_empty(),
+            "prior recorder must not receive calls"
+        );
+        assert_eq!(b.seen.lock().unwrap().len(), 1);
+    }
+
+    // --- Slice 4: root_registry + share_root_registry --------------
+
+    use tempfile::TempDir;
+
+    use super::super::path::identity::Root;
+
+    #[test]
+    fn root_registry_starts_empty() {
+        let table = FileHandleTable::new();
+        assert!(table.root_registry.is_empty());
+        assert_eq!(table.root_registry.len(), 0);
+    }
+
+    /// Basic sanity: `share_root_registry` installs a manager
+    /// registry; the table's own root_registry accessor sees
+    /// registrations made through the shared handle.
+    #[test]
+    fn share_root_registry_exposes_manager_registrations() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let manager = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/target");
+        manager.register(logical.clone(), root);
+
+        let table = FileHandleTable::new();
+        assert!(table.root_registry.get(&logical).is_none(), "pre-share");
+
+        table.share_root_registry(manager);
+        assert!(
+            table.root_registry.get(&logical).is_some(),
+            "post-share: table sees manager's registration"
+        );
+    }
+
+    /// **Load-bearing** — mirrors PR #501's PB-M-14 regression
+    /// scenario at the `FileHandleTable` layer:
+    ///
+    ///   1. Manager registry created empty.
+    ///   2. Table created; `share_root_registry(manager)` called.
+    ///   3. `reducer_clone` captured from the table AFTER step 2.
+    ///   4. Manager registers AFTER step 3.
+    ///   5. reducer_clone.root_registry MUST see the step-4
+    ///      registration.
+    ///
+    /// A field-replacement design would fail step 5 because
+    /// reducer_clone would still hold its own registry inner
+    /// disjoint from the manager.  The two-layer indirection
+    /// inside `RootIdentityRegistry` (see PR #501) makes both
+    /// clones share the outer slot; the swap inside `share_from`
+    /// is visible through both.
+    #[test]
+    fn share_root_registry_preserves_reducer_clone_visibility() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        // Step 1: empty manager.
+        let manager = RootIdentityRegistry::new();
+
+        // Step 2: table shares from manager.
+        let table = FileHandleTable::new();
+        table.share_root_registry(manager.clone());
+
+        // Step 3: reducer captures a clone of the table AFTER
+        // the share_root_registry call.
+        let reducer_clone = table.clone();
+
+        // Step 4: manager registers AFTER reducer_clone was
+        // captured.
+        let logical = PathBuf::from("/@bundle/late");
+        manager.register(logical.clone(), root);
+
+        // Step 5: the reducer_clone's root_registry MUST see the
+        // late registration.  A pre-fix field-replacement design
+        // would fail this — the reducer_clone would hold a
+        // disjoint inner Arc.
+        assert!(
+            reducer_clone.root_registry.get(&logical).is_some(),
+            "reducer_clone MUST see manager's late registration \
+             via the two-layer share_from indirection"
+        );
+    }
+
+    /// `share_root_registry` follows the same across-clones
+    /// visibility contract as `share_payload_store` — a share
+    /// through one clone is visible via another.
+    #[test]
+    fn share_root_registry_broadcasts_across_prior_clones() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let a = FileHandleTable::new();
+        let b = a.clone();
+
+        let manager = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/via-a");
+        manager.register(logical.clone(), root);
+
+        a.share_root_registry(manager);
+        assert!(
+            b.root_registry.get(&logical).is_some(),
+            "b (cloned before share) must see manager registrations \
+             after a.share_root_registry"
+        );
+    }
+
+    // --- Slice 8: soft-checkpoint machinery ------------------------
+
+    #[tokio::test]
+    async fn snapshot_next_fd_returns_current_counter_value() {
+        let table = FileHandleTable::new();
+        assert_eq!(table.snapshot_next_fd(), 1);
+        // After 3 inserts, next_fd advances to 4.
+        for i in 0..3 {
+            table.insert(shadow_handle(i as u8)).await.unwrap();
+        }
+        assert_eq!(table.snapshot_next_fd(), 4);
+    }
+
+    /// `seed_next_fd_watermark` raises the counter to
+    /// `watermark + 1`.  A subsequent `insert()` allocates from
+    /// there, not from the old counter position.
+    #[tokio::test]
+    async fn seed_next_fd_watermark_raises_counter() {
+        let table = FileHandleTable::new();
+        table.seed_next_fd_watermark(100);
+        assert_eq!(table.snapshot_next_fd(), 101);
+        let fd = table.insert(shadow_handle(0x01)).await.unwrap();
+        assert_eq!(fd, 101, "insert allocates from the seeded watermark");
+    }
+
+    /// `seed_next_fd_watermark` is monotonic — a lower watermark
+    /// does NOT rewind the counter.  Preserves the "closed fd is
+    /// never re-issued" invariant across rollback.
+    #[tokio::test]
+    async fn seed_next_fd_watermark_is_monotonic() {
+        let table = FileHandleTable::new();
+        table.seed_next_fd_watermark(100);
+        assert_eq!(table.snapshot_next_fd(), 101);
+        // Attempt to rewind to a lower watermark — no-op.
+        table.seed_next_fd_watermark(50);
+        assert_eq!(table.snapshot_next_fd(), 101);
+        // Same watermark — also no-op.
+        table.seed_next_fd_watermark(100);
+        assert_eq!(table.snapshot_next_fd(), 101);
+    }
+
+    /// `seed_next_fd_watermark(u64::MAX)` saturates safely at
+    /// `u64::MAX` (the `.saturating_add(1)` guard) rather than
+    /// wrapping to zero.  A subsequent `insert()` then trips
+    /// the wrap guard from PR #495 and returns `Err(())`.
+    #[tokio::test]
+    async fn seed_next_fd_watermark_saturates_at_u64_max() {
+        let table = FileHandleTable::new();
+        table.seed_next_fd_watermark(u64::MAX);
+        assert_eq!(table.snapshot_next_fd(), u64::MAX);
+        // Subsequent insert trips the wrap guard.
+        assert_eq!(table.insert(shadow_handle(0x00)).await, Err(()));
+    }
+
+    /// `seed_next_fd_from_state_hash` derives a deterministic
+    /// watermark from the hash prefix.  Same hash → same
+    /// watermark (consensus commitment across validators).
+    #[tokio::test]
+    async fn seed_next_fd_from_state_hash_is_deterministic() {
+        let table_a = FileHandleTable::new();
+        let table_b = FileHandleTable::new();
+        // Distinctive 32-byte hash.
+        let hash: [u8; 32] = [
+            0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        table_a.seed_next_fd_from_state_hash(&hash);
+        table_b.seed_next_fd_from_state_hash(&hash);
+        assert_eq!(
+            table_a.snapshot_next_fd(),
+            table_b.snapshot_next_fd(),
+            "two validators seeding from the same state hash MUST \
+             derive identical watermarks — this is a consensus \
+             commitment"
+        );
+    }
+
+    /// The state-hash-derived watermark leaves at least
+    /// `FD_ENTROPY_HEADROOM_BITS` of headroom before the next
+    /// watermark's range.  Pin the low-bit mask: the resulting
+    /// watermark's low 20 bits are zero, then `seed_next_fd_
+    /// watermark` adds 1 (so bit 0 is set, but bits 1..20 stay
+    /// clear).
+    #[tokio::test]
+    async fn seed_next_fd_from_state_hash_masks_headroom_bits() {
+        let table = FileHandleTable::new();
+        let hash: [u8; 32] = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        table.seed_next_fd_from_state_hash(&hash);
+        // hi = u64::MAX (all 8 leading bytes are 0xFF).
+        // watermark = u64::MAX & !((1 << 20) - 1) = u64::MAX ^ 0xFFFFF = 0xFFFF_FFFF_FFF0_0000.
+        // seed_next_fd_watermark stores watermark + 1 = 0xFFFF_FFFF_FFF0_0001.
+        assert_eq!(table.snapshot_next_fd(), 0xFFFF_FFFF_FFF0_0001);
+    }
+
+    /// `truncate_to` closes every fd allocated past the snapshot.
+    /// The counter does NOT rewind — a subsequent `insert()`
+    /// allocates from where the counter was before truncate.
+    #[tokio::test]
+    async fn truncate_to_drops_fds_past_snapshot_but_leaves_counter_monotonic() {
+        let table = FileHandleTable::new();
+        // Allocate 3 fds → 1, 2, 3.  Snapshot AFTER fd 2 = 3.
+        let fd1 = table.insert(shadow_handle(0x01)).await.unwrap();
+        let fd2 = table.insert(shadow_handle(0x02)).await.unwrap();
+        let snapshot = table.snapshot_next_fd();
+        assert_eq!(snapshot, 3);
+        let fd3 = table.insert(shadow_handle(0x03)).await.unwrap();
+        assert_eq!((fd1, fd2, fd3, table.snapshot_next_fd()), (1, 2, 3, 4));
+
+        // Rollback: fd3 goes away; fd1 and fd2 survive.
+        table.truncate_to(snapshot).await;
+        assert!(table.with_mut(fd1, |_| ()).await.is_some());
+        assert!(table.with_mut(fd2, |_| ()).await.is_some());
+        assert!(table.with_mut(fd3, |_| ()).await.is_none());
+
+        // Counter does NOT rewind.  A new insert allocates fd 4,
+        // NOT fd 3 (which would alias the just-rolled-back fd).
+        let fd4 = table.insert(shadow_handle(0x04)).await.unwrap();
+        assert_eq!(fd4, 4, "counter monotonicity — no fd reuse across rollback");
+    }
+
+    /// `truncate_to(snapshot)` with `snapshot` at-or-past the
+    /// current counter is a no-op (defensive stale-snapshot
+    /// handling).
+    #[tokio::test]
+    async fn truncate_to_past_current_counter_is_noop() {
+        let table = FileHandleTable::new();
+        table.insert(shadow_handle(0x01)).await.unwrap();
+        table.truncate_to(999).await;
+        // Handle survives.
+        assert!(table.with_mut(1, |_| ()).await.is_some());
     }
 }
