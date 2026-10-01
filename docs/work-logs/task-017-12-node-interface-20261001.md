@@ -105,3 +105,44 @@ A local image from `node/Dockerfile` on this branch supports the controlled prep
 ### Records
 
 The matrix `dispatch_blockers` list has the image publication fact. The matrix digest changed. The inventory validation of 2026-09-28 names the earlier digest for its own cycle and stays correct for that cycle.
+
+## Controlled preparation results on 2026-10-01
+
+<!-- claude-session-f3cbc961 -->
+
+The user approved the controlled preparation without a published image. The run used a release build of revision `009262781` inside a Linux container. The evidence package is `docs/casper/cbc-evidence/runs/casper-controlled-preparation-009262781-01/`. The package status is `controlled-pinned-unqualified`. It qualifies no candidate.
+
+### What ran
+
+| Step | Result |
+|------|--------|
+| Linux release builds | `node`, `casper-authority-p2p`, `casper-authority-process`, `casper-authority-live`, and a scratch `block-exporter`. Digests are in the report. |
+| Block history | A standalone validator with a pinned single-validator bonds file produced blocks 1 to 5. Three deploys of a one-send contract, one propose after each. The exporter read the LMDB blocks store. |
+| Owner launch | `casper-authority-process` started a non-validator target node from the genesis snapshot with the observer bound to the owner identity. |
+| Manual captures | One capture before the delivery and one after. Both are `captured` and `mapped`. |
+| p2p delivery | `casper-authority-p2p` delivered the 5 blocks over TLS. All 5 deliveries are acknowledged. The driver status is `unknown`. |
+| Live executor | `casper-authority-live` ran 4 operations for the members `bounded` and `reference`. 4 receipts, 8 captures, zero errors, status `incomplete`, exit 1. |
+
+### Observations
+
+| Capture | Held blocks | Heads | Target display |
+|---------|-------------|-------|----------------|
+| Before the delivery | 1 | Genesis block | Not held |
+| After the delivery | 6 | Block 5, bounded and reference | f32 bit pattern of 1.0 |
+
+`head_matches` is true in all 10 captures. The equivocation capture has 0 rows.
+After the delivery the bounded `score_count` is 2 and the reference `score_count` is 1. Batch D finding 1 reproduces on a live chain.
+
+### Findings for the adapter
+
+The report lists findings C1 to C10. The findings with consequences for the live qualification are these:
+
+- C1: Only the owner process can talk to the observer. The supervisor must own the node.
+- C3: A target node with the validator key does not adopt the delivered history. The target must run without a validator key.
+- C4: The driver returns at the transport acknowledgment. The capture after `load_fixture` saw 3 of 6 blocks. The step capture needs a settle condition.
+- C5: The live executor ends `incomplete` because the p2p driver gives `unknown` and exports no observed inputs. The `applied` path needs a driver with input exports for `dag`, `electorate`, and `justification`.
+- C9: A stale `observer.sock` blocks the restarted node's observer. The supervisor must clear the observer directory before each launch.
+
+### Remaining gates
+
+The matrix candidates still pin node `6940a5beb` with null workload configuration digests. The matrix has a `controlled_preparation` section that points to the report. The blockers stay TASK-019-6 and TASK-019-7. Maintainer acceptance, candidate repin, an applied driver with input exports, supervisor activation, and approved soak runs remain necessary.

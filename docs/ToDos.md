@@ -1615,6 +1615,14 @@ tasks:
       finding: "ci.yml publishes node images only on pushes to dev, master, or a v tag. No candidate image contains the observer (claims 004 and 005) until PR #451 and PR #447 merge to dev. The matrix pins node 6940a5beb, which predates the observer."
       order: "PR #451 to dev, PR #447 to dev (TASK-019-6), dev image publication (TASK-019-7), candidate repin and workload pin, controlled and live qualification, maintainer acceptance, preflight and baselines (user dispatch)."
       controlled_preparation: "A local image from node/Dockerfile on this branch supports the authority_finality workload pin, the captured input exports, the candidate block histories, and the exact traversal qualification in controlled mode. It is not an immutable candidate identity."
+    controlled_preparation_2026_10_01:
+      evidence: docs/casper/cbc-evidence/runs/casper-controlled-preparation-009262781-01/report.json
+      evidence_sha256: 0fd60687d7dc5e1d2933e7099ad3dc0b75e61d2d5868d015213428ae043a8647
+      status: controlled-pinned-unqualified
+      result: "A release build of 009262781 ran in a Linux container. The owner launched a non-validator target node. The p2p driver delivered a 5-block single-validator history. Two manual captures and a 4-operation casper-authority-live run (4 receipts, 8 captures, zero errors) show the paired heads, the display projection, and the equivocation capture end to end. The executor status is incomplete because the p2p driver reports unknown and exports no observed inputs."
+      adapter_findings: "C1 owner-only observer access, C3 non-validator target, C4 capture not synchronized with block processing, C5 applied path needs a driver with input exports, C9 clear the observer directory before each launch."
+      qualifies_candidate: false
+      work_log: docs/work-logs/task-017-12-node-interface-20261001.md#controlled-preparation-results-on-2026-10-01
     handoff_scope_2026_10_01:
       agent_now: "Map the Batch D fields (fork_choice bounded and reference heads, comparison, work paths 4 and 5) and the Batch E fields (display inputs, display projection, equivocation capture) in the harness profile. Prepare candidate block histories and captured input exports. Qualify the provider in controlled tests. Triage the CodeQL finding at authority_live.rs:769."
       user_decisions: "OCI runner dispatches (two 24-hour baselines, the 60-hour campaign), the authoritative OCI object and supervisor provisioning, and live admission stay with the user. No dispatch follows from this transfer."
