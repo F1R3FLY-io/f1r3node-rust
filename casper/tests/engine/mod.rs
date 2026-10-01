@@ -3,6 +3,7 @@ pub mod block_approver_protocol_test;
 pub mod engine_cell_test;
 pub mod genesis_ceremony_master_spec;
 pub mod genesis_validator_spec;
+pub mod in_flight_marker_spec;
 pub mod initializing_spec;
 pub mod lfs_block_requester_effects_spec;
 pub mod lfs_block_requester_state_spec;

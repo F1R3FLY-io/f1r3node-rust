@@ -5,15 +5,16 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::block_processor::{BlockProcessor, BlockQueueItem, InFlightBlocks};
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
-    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
-    PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
+    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+    BLOCK_PROCESSOR_METRICS_SOURCE, PROPOSER_QUEUE_PENDING_METRIC,
+    PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
 use casper::rust::ProposeFunction;
@@ -21,8 +22,7 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use models::rust::casper::protocol::casper_message::ApprovedBlock;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, trace, warn};
@@ -84,9 +84,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         usize,
         Option<Arc<RwLock<ProposerState>>>,
         BlockProcessor<T>,
-        Arc<dashmap::DashSet<BlockHash>>,
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-        mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+        Arc<InFlightBlocks>,
+        mpsc::Sender<BlockQueueItem>,
+        mpsc::Receiver<BlockQueueItem>,
         Option<Arc<ProposeFunction>>,
         Arc<casper::rust::api::block_report_api::BlockReportAPI>,
         block_storage::rust::key_value_block_store::KeyValueBlockStore,
@@ -321,9 +321,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // to consumer (BlockProcessorInstance)
     let block_processor_queue_max_pending = block_processor_queue_max_pending();
     let (block_processor_queue_tx, block_processor_queue_rx) =
-        mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(
-            block_processor_queue_max_pending,
-        );
+        mpsc::channel::<BlockQueueItem>(block_processor_queue_max_pending);
 
     // Queue depth is where memory pressure moves when parallel drain is
     // bounded, so it must be observable alongside block-processing.active.
@@ -335,6 +333,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     )
     .set(0.0);
     let block_processor_queue_watch = block_processor_queue_tx.downgrade();
+
+    let block_processor_state_ref = Arc::new(InFlightBlocks::new());
+    let block_processor_state_watch = Arc::downgrade(&block_processor_state_ref);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -349,11 +350,15 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
             .set(pending as f64);
+            if let Some(in_flight) = block_processor_state_watch.upgrade() {
+                metrics::gauge!(
+                    BLOCK_PROCESSING_IN_FLIGHT_METRIC,
+                    "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+                )
+                .set(in_flight.len() as f64);
+            }
         }
     });
-
-    // Block processing state - set of items currently in processing
-    let block_processor_state_ref = Arc::new(dashmap::DashSet::<BlockHash>::new());
 
     // Read RPConf once for use in multiple places
     let rp_conf = rp_conf_cell

@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -36,9 +36,10 @@ use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
-    BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
-    BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
+    BLOCK_PROCESSING_IN_FLIGHT_EVICTED_METRIC, BLOCK_PROCESSING_STORAGE_TIME_METRIC,
+    BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC, BLOCK_VALIDATION_SUCCESS_METRIC,
+    BLOCK_VALIDATION_TIME_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::validate::Validate;
@@ -254,6 +255,111 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// Admission cap on the shared in-flight block set. Must not exceed the
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
+
+pub const IN_FLIGHT_MARKER_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Debug)]
+struct InFlightEntry {
+    generation: u64,
+    inserted_at: Instant,
+}
+
+#[derive(Debug, Default)]
+pub struct InFlightBlocks {
+    markers: dashmap::DashMap<BlockHash, InFlightEntry>,
+    next_generation: AtomicU64,
+}
+
+impl InFlightBlocks {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn contains(&self, hash: &BlockHash) -> bool { self.markers.contains_key(hash) }
+
+    pub fn len(&self) -> usize { self.markers.len() }
+
+    pub fn is_empty(&self) -> bool { self.markers.is_empty() }
+
+    fn evict_stale(&self, now: Instant) -> usize {
+        let before = self.markers.len();
+        self.markers.retain(|hash, entry| {
+            let age = now.saturating_duration_since(entry.inserted_at);
+            let keep = age < IN_FLIGHT_MARKER_MAX_AGE;
+            if !keep {
+                tracing::warn!(
+                    block = %PrettyPrinter::build_string_bytes(hash),
+                    age_secs = age.as_secs(),
+                    "evicting a stale in-flight marker at the cap"
+                );
+            }
+            keep
+        });
+        before - self.markers.len()
+    }
+}
+
+#[derive(Debug)]
+pub struct InFlightBlockGuard {
+    blocks: Arc<InFlightBlocks>,
+    hash: BlockHash,
+    generation: u64,
+}
+
+impl Drop for InFlightBlockGuard {
+    fn drop(&mut self) {
+        self.blocks
+            .markers
+            .remove_if(&self.hash, |_, entry| entry.generation == self.generation);
+    }
+}
+
+#[derive(Debug)]
+pub enum InFlightMark {
+    Marked(InFlightBlockGuard),
+    AlreadyInFlight,
+    CapReached,
+}
+
+pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlightMark {
+    mark_in_flight_at(blocks, hash, Instant::now())
+}
+
+fn mark_in_flight_at(blocks: &Arc<InFlightBlocks>, hash: BlockHash, now: Instant) -> InFlightMark {
+    let generation = blocks.next_generation.fetch_add(1, Ordering::Relaxed);
+    match blocks.markers.entry(hash.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(_) => return InFlightMark::AlreadyInFlight,
+        dashmap::mapref::entry::Entry::Vacant(slot) => {
+            slot.insert(InFlightEntry {
+                generation,
+                inserted_at: now,
+            });
+        }
+    }
+    let guard = InFlightBlockGuard {
+        blocks: blocks.clone(),
+        hash,
+        generation,
+    };
+    if blocks.len() > MAX_BLOCKS_IN_PROCESSING {
+        let evicted = blocks.evict_stale(now);
+        if evicted > 0 {
+            metrics::counter!(
+                BLOCK_PROCESSING_IN_FLIGHT_EVICTED_METRIC,
+                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+            )
+            .increment(evicted as u64);
+        }
+        if blocks.len() > MAX_BLOCKS_IN_PROCESSING {
+            return InFlightMark::CapReached;
+        }
+    }
+    InFlightMark::Marked(guard)
+}
+
+pub type BlockQueueItem = (
+    Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+    BlockMessage,
+    InFlightBlockGuard,
+);
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_TRIM_INTERVAL_BLOCKS: u64 = 64;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -1643,6 +1749,134 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hash(byte: u8) -> BlockHash { BlockHash::from(vec![byte; 32]) }
+
+    #[test]
+    fn a_marker_lives_exactly_as_long_as_its_guard() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let guard = match mark_in_flight(&blocks, hash(1)) {
+            InFlightMark::Marked(guard) => guard,
+            other => panic!("expected a new marker, got {other:?}"),
+        };
+        assert!(matches!(
+            mark_in_flight(&blocks, hash(1)),
+            InFlightMark::AlreadyInFlight
+        ));
+        drop(guard);
+        assert!(blocks.is_empty());
+        assert!(matches!(
+            mark_in_flight(&blocks, hash(1)),
+            InFlightMark::Marked(_)
+        ));
+    }
+
+    fn marked(blocks: &Arc<InFlightBlocks>, byte: u8) -> InFlightBlockGuard {
+        match mark_in_flight(blocks, hash(byte)) {
+            InFlightMark::Marked(guard) => guard,
+            other => panic!("expected a new marker, got {other:?}"),
+        }
+    }
+
+    fn fill_to_cap(blocks: &Arc<InFlightBlocks>, at: Instant) -> Vec<InFlightBlockGuard> {
+        (0..MAX_BLOCKS_IN_PROCESSING)
+            .map(|i| {
+                match mark_in_flight_at(blocks, BlockHash::from(i.to_be_bytes().to_vec()), at) {
+                    InFlightMark::Marked(guard) => guard,
+                    other => panic!("marker {i} must fit under the cap, got {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stale_markers_are_evicted_at_the_cap_and_fresh_ones_are_kept() {
+        let start = Instant::now();
+        let blocks = Arc::new(InFlightBlocks::new());
+        let _stale = fill_to_cap(&blocks, start);
+
+        let soon = start + IN_FLIGHT_MARKER_MAX_AGE / 2;
+        assert!(matches!(
+            mark_in_flight_at(&blocks, hash(0xfe), soon),
+            InFlightMark::CapReached
+        ));
+
+        let later = start + IN_FLIGHT_MARKER_MAX_AGE + Duration::from_secs(1);
+        assert!(matches!(
+            mark_in_flight_at(&blocks, hash(0xff), later),
+            InFlightMark::Marked(_)
+        ));
+        assert!(blocks.len() <= 1);
+    }
+
+    #[test]
+    fn the_guard_of_an_evicted_marker_does_not_remove_a_newer_marker() {
+        let start = Instant::now();
+        let blocks = Arc::new(InFlightBlocks::new());
+        let mut stale = fill_to_cap(&blocks, start);
+        let old_guard = stale.remove(0);
+        let reused = old_guard.hash.clone();
+
+        let later = start + IN_FLIGHT_MARKER_MAX_AGE + Duration::from_secs(1);
+        let _new_guard = match mark_in_flight_at(&blocks, hash(0xff), later) {
+            InFlightMark::Marked(guard) => guard,
+            other => panic!("expected eviction to make room, got {other:?}"),
+        };
+        let _reused_guard = match mark_in_flight_at(&blocks, reused.clone(), later) {
+            InFlightMark::Marked(guard) => guard,
+            other => panic!("an evicted block must be markable again, got {other:?}"),
+        };
+
+        drop(old_guard);
+        assert!(
+            blocks.contains(&reused),
+            "the old guard removed the newer marker of the same block"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_send_releases_the_marker() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        assert!(tx.send(marked(&blocks, 1)).await.is_err());
+        assert!(blocks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_queue_releases_every_queued_marker() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let (tx, rx) = mpsc::channel(4);
+        for byte in 1..=3 {
+            tx.send(marked(&blocks, byte)).await.unwrap();
+        }
+        assert_eq!(blocks.len(), 3);
+
+        drop(rx);
+        drop(tx);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn the_cap_rejects_a_new_marker_without_keeping_it() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let guards: Vec<_> = (0..MAX_BLOCKS_IN_PROCESSING)
+            .map(
+                |i| match mark_in_flight(&blocks, BlockHash::from(i.to_be_bytes().to_vec())) {
+                    InFlightMark::Marked(guard) => guard,
+                    other => panic!("marker {i} must fit under the cap, got {other:?}"),
+                },
+            )
+            .collect();
+        assert!(matches!(
+            mark_in_flight(&blocks, hash(0xff)),
+            InFlightMark::CapReached
+        ));
+        assert_eq!(blocks.len(), MAX_BLOCKS_IN_PROCESSING);
+        drop(guards);
+        assert!(blocks.is_empty());
+    }
     use crate::rust::block_status::ValidBlock;
 
     /// A block validation could not judge must not be cleaned up like one it
