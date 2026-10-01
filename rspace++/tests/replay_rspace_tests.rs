@@ -20,7 +20,7 @@ use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::{ContResult, ISpace, RSpaceResult};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::event::{Consume, IOEvent, Produce};
+use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce};
 use serde::{Deserialize, Serialize};
 
 static METRICS_RECORDER: OnceLock<(DebuggingRecorder, Snapshotter)> = OnceLock::new();
@@ -118,6 +118,25 @@ fn check_same_elements<T: Hash + Eq>(vec1: Vec<T>, vec2: Vec<T>) -> bool {
     set1 == set2
 }
 
+fn accepted_comm_trace_is_complete(log: &[Event], consume: &Consume, produce: &Produce) -> bool {
+    let [
+        Event::Comm(comm),
+        Event::IoEvent(IOEvent::Produce(log_produce)),
+        Event::IoEvent(IOEvent::Consume(log_consume)),
+    ] = log
+    else {
+        return false;
+    };
+    &comm.consume == consume &&
+        comm.produces.len() == 1 &&
+        &comm.produces[0] == produce &&
+        comm.peeks.is_empty() &&
+        comm.times_repeated.len() == 1 &&
+        comm.times_repeated.get(produce) == Some(&1) &&
+        log_produce == produce &&
+        log_consume == consume
+}
+
 #[tokio::test]
 async fn reset_to_a_checkpoint_from_a_different_branch_should_work() {
     let (space, replay_space) = fixture().await;
@@ -160,6 +179,19 @@ async fn creating_a_comm_event_should_replay_correctly() {
         .await;
     let rig_point = space.create_checkpoint().await.unwrap();
 
+    let consume_ref = Consume::create(&channels, &patterns, &continuation, false);
+    let produce_ref = Produce::create(&channels[0], &datum, false);
+    assert!(accepted_comm_trace_is_complete(&rig_point.log, &consume_ref, &produce_ref));
+    let mut missing_comm = rig_point.log.clone();
+    missing_comm.remove(0);
+    assert!(!accepted_comm_trace_is_complete(&missing_comm, &consume_ref, &produce_ref));
+    let mut missing_produce = rig_point.log.clone();
+    missing_produce.remove(1);
+    assert!(!accepted_comm_trace_is_complete(&missing_produce, &consume_ref, &produce_ref));
+    let mut early_comm = rig_point.log.clone();
+    early_comm.swap(0, 1);
+    assert!(!accepted_comm_trace_is_complete(&early_comm, &consume_ref, &produce_ref));
+
     verify_metrics_incremented(snapshotter, baseline_count);
 
     assert!(result_consume.unwrap().is_none());
@@ -179,8 +211,9 @@ async fn creating_a_comm_event_should_replay_correctly() {
     }]);
 
     let _ = replay_space
-        .rig_and_reset(empty_point.root, rig_point.log)
-        .await;
+        .rig_and_reset(empty_point.root.clone(), rig_point.log)
+        .await
+        .unwrap();
     let replay_result_consume = replay_space
         .consume(channels.clone(), patterns.clone(), continuation.clone(), false, BTreeSet::new())
         .await;
@@ -203,6 +236,60 @@ async fn creating_a_comm_event_should_replay_correctly() {
             .lock()
             .expect("replay data lock")
             .is_empty()
+    );
+
+    replay_space
+        .rig_and_reset(empty_point.root.clone(), missing_comm)
+        .await
+        .unwrap();
+    assert!(
+        replay_space
+            .consume(
+                channels.clone(),
+                patterns.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new()
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        replay_space
+            .produce(channels[0].clone(), datum.clone(), false)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_ne!(replay_space.create_checkpoint().await.unwrap().root, rig_point.root);
+
+    replay_space
+        .rig_and_reset(empty_point.root, missing_produce)
+        .await
+        .unwrap();
+    assert!(
+        replay_space
+            .consume(channels.clone(), patterns.clone(), continuation, false, BTreeSet::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        replay_space
+            .produce(channels[0].clone(), datum, false)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        replay_space
+            .create_checkpoint()
+            .await
+            .err()
+            .expect("a replay with an unused COMM event must fail checkpointing")
+            .to_string()
+            .contains("Unused COMM event")
     );
 }
 
