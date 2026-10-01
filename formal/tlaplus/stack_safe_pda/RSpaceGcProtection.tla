@@ -1,9 +1,10 @@
 ------------------------- MODULE RSpaceGcProtection -------------------------
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS MaxWalWindow, OmitCoupledFacet, IgnoreExactPin
+CONSTANTS MaxWalWindow, MaxWalEvents, OmitCoupledFacet, IgnoreExactPin
 
 ASSUME MaxWalWindow \in Nat \ {0}
+ASSUME MaxWalEvents \in Nat \ {0}
 ASSUME OmitCoupledFacet \in BOOLEAN
 ASSUME IgnoreExactPin \in BOOLEAN
 
@@ -166,6 +167,7 @@ Reclaim ==
 
 AdvanceWal ==
   /\ walTail - walHead < MaxWalWindow
+  /\ walTail < MaxWalEvents
   /\ walTail' = walTail + 1
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
                  durable, reclaimIntent, walHead>>
@@ -209,6 +211,7 @@ TypeInvariant ==
   /\ durable \subseteq DurableRoles
   /\ walHead \in Nat
   /\ walTail \in Nat
+  /\ walTail <= MaxWalEvents
 
 PublicationBeforeReclamation == ~oldPresent => catalog = "new"
 ExactOldPinsProtected == oldPins # {} => oldPresent
