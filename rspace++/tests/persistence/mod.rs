@@ -1,6 +1,8 @@
 mod canonical_rebuild_oracle;
 mod canonical_object_streaming_properties;
 mod checkpoint_codec;
+#[cfg(target_os = "linux")]
+mod checkpoint_real_io_resource;
 mod checkpoint_wal;
 mod closure_validation;
 mod closure_union_inventory;
