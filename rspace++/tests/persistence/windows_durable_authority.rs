@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::os::windows::fs::symlink_file;
+use std::os::windows::fs::{symlink_dir, symlink_file};
 use std::process::Command;
 
 use shared::rust::test_scratch;
@@ -31,6 +31,18 @@ fn windows_writer_lease_excludes_second_writer_and_releases_on_drop() {
         .expect("directory reopens after lease drop")
         .try_acquire_writer()
         .expect("dropping the lease releases its lock");
+}
+
+#[test]
+fn windows_reparse_directory_cannot_become_authority() {
+    let scratch = test_scratch::acquire("rspace-windows-authority-directory-reparse-");
+    let target = scratch.path().join("store");
+    let alias = scratch.path().join("alias");
+    std::fs::create_dir(&target).expect("create ordinary target directory");
+    DurableDirectoryV1::open(&target).expect("ordinary directory must be accepted first");
+    symlink_dir(&target, &alias)
+        .expect("create directory symlink; Windows CI needs Developer Mode or symlink privilege");
+    assert!(DurableDirectoryV1::open(&alias).is_err());
 }
 
 #[test]

@@ -159,14 +159,15 @@ contended locks. Its transitions include pre-install refusal, synchronized
 candidate installation, directory-sync success and failure, acknowledgment,
 and restart. The base configuration checks these invariants:
 
-| Model invariant | Observable Windows property |
-| --- | --- |
-| `PinnedDirectoryIsTrusted` | Bad owner, writable ACL, reparse directory, or unqualified filesystem cannot yield a usable directory capability. |
-| `LeasePrecedesChildAuthority` | A child handle cannot authorize mutation without the pinned directory, exclusive lease, safe child metadata, and exact name identity. |
-| `PublishedNameIsSealedAndBound` | Name installation requires a synced child and the same retained directory/child authority. |
-| `RefusalPreservesAuthority` | Every pre-install failure leaves the old official authority unchanged. |
-| `AcknowledgmentRequiresDurability` | No return of publication success follows an omitted or failed namespace barrier. |
-| `RestartNeverSelectsThirdAuthority` | Uncertain restart selects old, new, or reject; successful durability forces new. |
+| Model invariant | Native-only executable binding in this leaf | Negative control or remaining 7947 binding |
+| --- | --- | --- |
+| `TypeInvariant` | The finite model checks its own stage, authority, and observation domains; this is not a filesystem assertion. | No native analogue is claimed. Native result/error types and actual filesystem outcomes need their own 7947 qualification. |
+| `PinnedDirectoryIsTrusted` | `windows_reparse_directory_cannot_become_authority` refuses a directory symlink; `windows_world_writable_directory_and_world_readable_child_are_refused` refuses an overbroad directory ACL. | `SkipDirectoryCheck` violates this invariant in TLC. Wrong-owner and unsupported-filesystem fixtures still need native refusal witnesses. |
+| `LeasePrecedesChildAuthority` | `windows_writer_lease_excludes_second_writer_and_releases_on_drop` checks the exclusive lease; `windows_reparse_and_hard_link_authorities_are_refused` and the ACL test check selected unsafe child cases. | `SkipNameIdentity` violates this invariant in TLC. Native wrong-owner, nonregular child, exact file-ID/name-swap, and duplicated-lock-handle controls remain open. The existing tests do not prove that every child operation requires the lease. |
+| `PublishedNameIsSealedAndBound` | `windows_replace_failure_preserves_old_name_and_sync_failure_never_acks` seals and syncs each candidate before requesting replacement, then observes complete new bytes after an injected post-install sync failure. | No single-defect TLC mutant targets this invariant. A native name-swap/foreign-handle refusal and a successful handle-bound replacement witness remain open; the type-level sealed-candidate API alone is not proof of OS name binding. |
+| `RefusalPreservesAuthority` | The same replacement test injects `BeforeReplace`, requires an error, and compares the official bytes with the old image. | No dedicated TLC mutant; base TLC explores all modeled pre-install refusal transitions. Native failure injection at every pre-install boundary and old catalog-authority checks remain open. |
+| `AcknowledgmentRequiresDurability` | The replacement test injects `DirectorySync` after installation, requires an error, and observes complete new bytes without treating installation as successful acknowledgment. | `SkipDirectorySync` violates this invariant in TLC. A successful native namespace barrier and power-loss qualification remain open. |
+| `RestartNeverSelectsThirdAuthority` | No native crash/restart witness exists in this leaf. Reading the installed file after a returned sync error is not a crash test. | No dedicated TLC mutant; base TLC explores old, new, and reject after uncertainty and forces new after durability. 7947 needs crash/restart injection and cold recovery checks at each publication barrier. |
 
 Three single-defect configurations must produce counterexamples: omitted
 directory security check, omitted child-name identity check, and premature
@@ -178,11 +179,11 @@ working Windows adapter.
 native-only executable properties at the current `DurableDirectoryV1` seam.
 The tests require a Windows CI worker with a qualified private NTFS scratch
 directory; creating symlinks also needs Developer Mode or the corresponding
-privilege. They assert lock contention and release, reparse and hard-link
-refusal, overbroad ACL refusal, pinned-directory identity after pathname
-replacement, and old-name preservation versus indeterminate post-install
-sync failure. They are expected to fail while the non-Unix seam remains
-fail-closed; passing them on a native Windows worker is an implementation
+privilege. They assert lock contention and release, directory and child
+reparse and hard-link refusal, overbroad ACL refusal, pinned-directory identity
+after pathname replacement, and old-name preservation versus indeterminate
+post-install sync failure. They are expected to fail while the non-Unix seam
+remains fail-closed; passing them on a native Windows worker is an implementation
 gate for 7947, not evidence produced by this specification leaf.
 
 Still-required executable cases for 7947 include wrong-owner tokens, denied
