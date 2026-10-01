@@ -7,6 +7,10 @@ integration-owned, PathMap-live, content-addressed durable DAG reached through
 the **non-default real owner**. Both must execute the same RSpace command trace
 and acknowledge the same durable state. Optional ACT snapshots, cache overlays,
 interning, branch geometry and alternate tries are outside this comparison.
+PgMCP experiment 377 locks the primary observational hypothesis before any
+7950 samples. Its engine does not require samples for an observational verdict;
+the 51 primary pairs, secondary pairs, raw artifacts and exact witnesses below
+remain mandatory for the campaign verdict.
 
 ## Existing evidence and source freeze
 
@@ -129,8 +133,13 @@ the other. Use 30 complete pairs for each predeclared secondary cell. Lock
 the trace seed, pair key, arm order, affinity, worker budget and host snapshot
 before measurement. Preflight physical-core idleness with `mpstat`/the
 existing `scripts/bench/benchmark_host.py`; postpone a pair if selected cores
-are busy. Run under a hard `systemd-run` memory ceiling and `MemorySwapMax=0`;
-the ceiling is **not** observed RSS. Timed paired runs have no profiler attached.
+are busy. Pin each arm to the same single CCD, set only its selected cores to
+the `performance` governor, and record the scaling driver, boost state, full
+hardware string, CPU model, `uname -a` and exact affinity. Record the command
+and output once per pair; never rerun a pair to select a favorable result.
+Discard declared warm-up runs before sampling. Run under a hard `systemd-run`
+memory ceiling and `MemorySwapMax=0`; the ceiling is **not** observed RSS.
+Timed paired runs have no profiler attached.
 Use headless `heaptrack` reports and AMD uProf on separate diagnostic repeats,
 never a GUI and never a profiled run as a timing replicate.
 
