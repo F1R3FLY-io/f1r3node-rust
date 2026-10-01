@@ -808,6 +808,128 @@ fn state_is_empty(state: &FileLockState) -> bool {
     state.ranges.is_empty() && state.sequential_holder.is_none() && state.waiters.is_empty()
 }
 
+// ===========================================================
+// Cross-deploy deadlock detection (slice 4) — NB-7
+// ===========================================================
+
+/// NB-7 cross-deploy mutual-wait deadlock detection.
+///
+/// Returns `true` iff admitting a new `wait: true` acquire by
+/// `waiter_deploy` on `target_dev_inode` would close a cycle
+/// in the cross-deploy wait-for graph.  The acquire path uses
+/// this as an eager-refuse pre-check at enqueue time — no
+/// `Waiter` struct is allocated, no `oneshot` channel is
+/// opened.
+///
+/// # Graph
+///
+///   - **Node**: a `DeployScope`.
+///   - **Edge D → H**: deploy D is currently parked on some
+///     `(dev, inode)` whose current holder is deploy H
+///     (D.deploy ≠ H.deploy).
+///
+/// A cycle closes iff some current holder H of
+/// `target_dev_inode` (H.deploy ≠ waiter_deploy) is
+/// transitively reachable from `waiter_deploy` via existing
+/// edges — admitting the new edge `waiter_deploy → H` would
+/// create a back-edge in the DAG.
+///
+/// # Determinism (consensus-observable)
+///
+/// Reachability is a pure set predicate on the graph, so the
+/// answer is order-independent w.r.t. HashMap iteration of
+/// the registry map or Vec iteration of `state.ranges`.  Two
+/// validators with byte-identical `LockRegistry` state
+/// compute the same answer regardless of internal iteration
+/// order.  This matters because `LockError::Deadlock` is
+/// routed through the WAL as a consensus-observable outcome;
+/// a divergent cycle predicate would fork the tuplespace.
+///
+/// # Complexity
+///
+///   - Time: O(V + E) where V ≤ number of live deploys with
+///     any lock or waiter, E ≤ V × F (F = files a deploy is
+///     parked on).  In the expected workload (small F,
+///     single-digit V) this is a handful of comparisons per
+///     park.
+///   - Worst case: bounded by
+///     `MAX_OPEN_FDS × MAX_WAITERS_PER_FILE`.
+///
+/// # Self-deploy edges
+///
+/// The DFS never follows an edge into `waiter_deploy` from
+/// `waiter_deploy` itself (same-deploy self-yield is handled
+/// by the existing same-holder skip in `range_conflicts`;
+/// the seeds here exclude waiter_deploy's own holds).  Same-
+/// deploy holds on the target file cannot form a cross-
+/// deploy cycle by definition.
+///
+/// # `visited` ordering
+///
+/// Uses `BTreeSet<DeployScope>` for stable iteration if we
+/// ever debug-print it.  The reachability answer itself is
+/// iteration-order-independent, so swapping to `HashSet` is
+/// a safe optimization if debug-printing is dropped.
+#[allow(dead_code)]
+fn would_close_cycle(
+    guard: &HashMap<DevInode, FileLockState>,
+    waiter_deploy: DeployScope,
+    target_dev_inode: DevInode,
+) -> bool {
+    use std::collections::BTreeSet;
+    // Seeds: every deploy that currently holds a lock on the
+    // target file, excluding waiter_deploy (same-deploy holds
+    // cannot form a cross-deploy cycle).
+    let mut stack: Vec<DeployScope> = Vec::new();
+    if let Some(state) = guard.get(&target_dev_inode) {
+        for r in &state.ranges {
+            if r.deploy != waiter_deploy {
+                stack.push(r.deploy);
+            }
+        }
+        if let Some(s) = &state.sequential_holder {
+            if s.deploy != waiter_deploy {
+                stack.push(s.deploy);
+            }
+        }
+    }
+    if stack.is_empty() {
+        return false;
+    }
+    // DFS: does any seed reach waiter_deploy via existing
+    // wait-for edges?
+    let mut visited: BTreeSet<DeployScope> = BTreeSet::new();
+    while let Some(node) = stack.pop() {
+        if node == waiter_deploy {
+            return true;
+        }
+        if !visited.insert(node) {
+            continue;
+        }
+        // For every file where `node` has a parked waiter,
+        // add every deploy that holds a lock on that file
+        // (excluding node itself — same-deploy holds are
+        // not real edges).
+        for state in guard.values() {
+            let node_parked = state.waiters.iter().any(|w| w.deploy == node);
+            if !node_parked {
+                continue;
+            }
+            for r in &state.ranges {
+                if r.deploy != node && !visited.contains(&r.deploy) {
+                    stack.push(r.deploy);
+                }
+            }
+            if let Some(s) = &state.sequential_holder {
+                if s.deploy != node && !visited.contains(&s.deploy) {
+                    stack.push(s.deploy);
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1388,5 +1510,291 @@ mod tests {
             !state_is_empty(&state),
             "waiters alone must prevent eviction"
         );
+    }
+
+    // --- would_close_cycle (NB-7) ---------------------------------
+
+    fn mk_waiter(deploy_byte: u8) -> Waiter {
+        let (tx, _rx) = oneshot::channel();
+        Waiter {
+            lock_id: LockId::try_from(1).unwrap(),
+            kind: WaitKind::Sequential,
+            holder: HolderId::from_bytes([deploy_byte; 32]),
+            deploy: [deploy_byte; 32],
+            admit: tx,
+        }
+    }
+
+    fn mk_held_entry(deploy_byte: u8) -> RangeEntry {
+        RangeEntry {
+            id: LockId::try_from(1).unwrap(),
+            offset: 0,
+            length: 100,
+            mode: LockMode::Write,
+            holder: HolderId::from_bytes([deploy_byte; 32]),
+            deploy: [deploy_byte; 32],
+        }
+    }
+
+    /// Empty guard → no cycle possible (no holders anywhere).
+    #[test]
+    fn would_close_cycle_empty_guard_is_false() {
+        let guard = HashMap::new();
+        assert!(!would_close_cycle(&guard, [0x11u8; 32], (1, 1)));
+    }
+
+    /// Target has no entry in the guard → no holders to wait on
+    /// → no cycle.
+    #[test]
+    fn would_close_cycle_target_absent_is_false() {
+        let mut guard = HashMap::new();
+        // Some unrelated file is held — doesn't seed the DFS
+        // because target_dev_inode isn't in guard.
+        guard.insert((2, 2), FileLockState {
+            ranges: vec![mk_held_entry(0xBB)],
+            ..Default::default()
+        });
+        assert!(!would_close_cycle(&guard, [0x11u8; 32], (1, 1)));
+    }
+
+    /// Target held only by `waiter_deploy` itself — same-deploy
+    /// holds are not real edges, so seeds are empty.  Returns
+    /// false.  LOAD-BEARING: a future refactor that forgot the
+    /// self-skip would flag same-deploy re-entrant waits as a
+    /// cycle.
+    #[test]
+    fn would_close_cycle_same_deploy_holder_is_not_an_edge() {
+        let waiter_deploy = [0x11u8; 32];
+        let mut guard = HashMap::new();
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        });
+        assert!(!would_close_cycle(&guard, waiter_deploy, (1, 1)));
+    }
+
+    /// Target held by other deploy, that deploy has no waiters
+    /// → no transitive edge → no cycle.
+    #[test]
+    fn would_close_cycle_other_deploy_holder_without_waiters_is_false() {
+        let mut guard = HashMap::new();
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![mk_held_entry(0xBB)],
+            ..Default::default()
+        });
+        assert!(!would_close_cycle(&guard, [0x11u8; 32], (1, 1)));
+    }
+
+    /// LOAD-BEARING 2-cycle: D1 wants to park on target held by
+    /// D2; D2 is parked on another file held by D1.  Admitting
+    /// D1's wait would close the cycle D1 → D2 → D1.
+    #[test]
+    fn would_close_cycle_direct_two_cycle_fires() {
+        let d1 = [0x11u8; 32];
+        let d2 = [0x22u8; 32];
+        let mut guard = HashMap::new();
+        // Target (dev=1, ino=1) held by D2.  D1 wants to park
+        // here.
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![mk_held_entry(0x22)],
+            ..Default::default()
+        });
+        // Another file (dev=2, ino=2) held by D1, with D2
+        // parked on it.
+        let mut other = FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        };
+        other.waiters.push_back(mk_waiter(0x22));
+        guard.insert((2, 2), other);
+
+        assert!(
+            would_close_cycle(&guard, d1, (1, 1)),
+            "D1 → D2 → D1 cycle should fire"
+        );
+        // Sanity: D2 trying to park on (2, 2) — D1 holds it +
+        // isn't parked anywhere → no cycle.
+        assert!(!would_close_cycle(&guard, d2, (2, 2)));
+    }
+
+    /// 3-cycle: D1 → D2 → D3 → D1.  The DFS must follow the
+    /// chain through the intermediate node.
+    #[test]
+    fn would_close_cycle_three_cycle_fires() {
+        let d1 = [0x11u8; 32];
+        let mut guard = HashMap::new();
+        // Target (dev=1, ino=1) held by D2.
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![mk_held_entry(0x22)],
+            ..Default::default()
+        });
+        // (dev=2, ino=2) held by D3; D2 parked on it.
+        let mut file2 = FileLockState {
+            ranges: vec![mk_held_entry(0x33)],
+            ..Default::default()
+        };
+        file2.waiters.push_back(mk_waiter(0x22));
+        guard.insert((2, 2), file2);
+        // (dev=3, ino=3) held by D1; D3 parked on it.
+        let mut file3 = FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        };
+        file3.waiters.push_back(mk_waiter(0x33));
+        guard.insert((3, 3), file3);
+
+        assert!(
+            would_close_cycle(&guard, d1, (1, 1)),
+            "D1 → D2 → D3 → D1 cycle should fire"
+        );
+    }
+
+    /// Linear chain WITHOUT a cycle: D1 wants target held by D2,
+    /// D2 is parked on file held by D3, D3 holds nothing elsewhere
+    /// and D1 holds nothing D3 is waiting on.  No cycle closes.
+    #[test]
+    fn would_close_cycle_linear_chain_is_not_cycle() {
+        let d1 = [0x11u8; 32];
+        let mut guard = HashMap::new();
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![mk_held_entry(0x22)],
+            ..Default::default()
+        });
+        // (2, 2) held by D3; D2 parked on it.  D3 has no further
+        // outgoing edge back to D1.
+        let mut file2 = FileLockState {
+            ranges: vec![mk_held_entry(0x33)],
+            ..Default::default()
+        };
+        file2.waiters.push_back(mk_waiter(0x22));
+        guard.insert((2, 2), file2);
+        // D1 holds (3, 3) but D3 is NOT parked on it, so no
+        // D3 → D1 edge exists.
+        guard.insert((3, 3), FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        });
+
+        assert!(!would_close_cycle(&guard, d1, (1, 1)));
+    }
+
+    /// Sequential holder on target seeds the DFS (not just the
+    /// range entries).  LOAD-BEARING: pins that both seed
+    /// branches contribute.
+    #[test]
+    fn would_close_cycle_sequential_holder_seeds_dfs() {
+        let d1 = [0x11u8; 32];
+        let mut guard = HashMap::new();
+        // Target held via SEQUENTIAL (not range) by D2.
+        guard.insert((1, 1), FileLockState {
+            sequential_holder: Some(SequentialEntry {
+                id: LockId::try_from(5).unwrap(),
+                holder: HolderId::from_bytes([0x22; 32]),
+                deploy: [0x22u8; 32],
+            }),
+            ..Default::default()
+        });
+        // (2, 2) held by D1; D2 parked on it.
+        let mut file2 = FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        };
+        file2.waiters.push_back(mk_waiter(0x22));
+        guard.insert((2, 2), file2);
+
+        assert!(
+            would_close_cycle(&guard, d1, (1, 1)),
+            "sequential holder on target should seed the DFS"
+        );
+    }
+
+    /// Multiple seeds on target, only one closes a cycle → still
+    /// fires.  Pins that the DFS explores EVERY seed, not just
+    /// the first.
+    #[test]
+    fn would_close_cycle_fires_when_any_seed_reaches_waiter() {
+        let d1 = [0x11u8; 32];
+        let mut guard = HashMap::new();
+        // Target held by D2 AND D3 (reader-reader).  D3 → D1
+        // closes a cycle; D2 doesn't.
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![
+                RangeEntry {
+                    id: LockId::try_from(1).unwrap(),
+                    offset: 0,
+                    length: 10,
+                    mode: LockMode::Read,
+                    holder: HolderId::from_bytes([0x22; 32]),
+                    deploy: [0x22u8; 32],
+                },
+                RangeEntry {
+                    id: LockId::try_from(2).unwrap(),
+                    offset: 20,
+                    length: 10,
+                    mode: LockMode::Read,
+                    holder: HolderId::from_bytes([0x33; 32]),
+                    deploy: [0x33u8; 32],
+                },
+            ],
+            ..Default::default()
+        });
+        // D3 parked on a file D1 holds → D3 → D1 edge.
+        let mut file2 = FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        };
+        file2.waiters.push_back(mk_waiter(0x33));
+        guard.insert((2, 2), file2);
+
+        assert!(would_close_cycle(&guard, d1, (1, 1)));
+    }
+
+    /// Visited-set discipline: a diamond pattern (D1 → D2 and
+    /// D1 → D3, both of which point at D4 which eventually
+    /// reaches back to D1) traverses each node once and still
+    /// detects the cycle.
+    #[test]
+    fn would_close_cycle_diamond_pattern_visits_each_node_once() {
+        let d1 = [0x11u8; 32];
+        let mut guard = HashMap::new();
+        // Target (1, 1) held by D2 AND D3.
+        guard.insert((1, 1), FileLockState {
+            ranges: vec![
+                RangeEntry {
+                    id: LockId::try_from(1).unwrap(),
+                    offset: 0,
+                    length: 10,
+                    mode: LockMode::Read,
+                    holder: HolderId::from_bytes([0x22; 32]),
+                    deploy: [0x22u8; 32],
+                },
+                RangeEntry {
+                    id: LockId::try_from(2).unwrap(),
+                    offset: 20,
+                    length: 10,
+                    mode: LockMode::Read,
+                    holder: HolderId::from_bytes([0x33; 32]),
+                    deploy: [0x33u8; 32],
+                },
+            ],
+            ..Default::default()
+        });
+        // (2, 2) held by D4; both D2 AND D3 parked on it.
+        let mut file2 = FileLockState {
+            ranges: vec![mk_held_entry(0x44)],
+            ..Default::default()
+        };
+        file2.waiters.push_back(mk_waiter(0x22));
+        file2.waiters.push_back(mk_waiter(0x33));
+        guard.insert((2, 2), file2);
+        // (3, 3) held by D1; D4 parked on it → closes cycle.
+        let mut file3 = FileLockState {
+            ranges: vec![mk_held_entry(0x11)],
+            ..Default::default()
+        };
+        file3.waiters.push_back(mk_waiter(0x44));
+        guard.insert((3, 3), file3);
+
+        assert!(would_close_cycle(&guard, d1, (1, 1)));
     }
 }
