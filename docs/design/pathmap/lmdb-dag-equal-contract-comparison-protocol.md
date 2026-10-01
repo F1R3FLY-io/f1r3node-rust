@@ -152,6 +152,16 @@ memory ceiling and `MemorySwapMax=0`; the ceiling is **not** observed RSS.
 Timed paired runs have no profiler attached.
 Use headless `heaptrack` reports and AMD uProf on separate diagnostic repeats,
 never a GUI and never a profiled run as a timing replicate.
+The measurement host is an AMD Ryzen Threadripper PRO 5975WX. The full uProf
+suite is installed under `/opt/amduprof/bin`, with `AMDuProfCLI` also on `PATH`.
+Use its command-line collector and reports for sampled AMD counter and CPI
+diagnostics, retaining the exact command, configuration and raw output. At the
+2026-10-01 preflight, `perf_event_paranoid` was 2 and `AMDuProfPcm` could not
+collect its cumulative IPC counters without a lower setting. Keep the host
+setting unchanged for this comparison; use per-process `perf stat` for exact
+instruction/cycle counts where it is permitted, and label unavailable counters
+as unavailable. Run `heaptrack` with `--record-only` and empty `DISPLAY` and
+`WAYLAND_DISPLAY`, then use `heaptrack_print` to produce its report.
 
 Let $`T_i`$ and $`C_i`$ be treatment and control durable-batch-throughput
 observations in pair $`i`$. The preregistered primary estimate is the median
