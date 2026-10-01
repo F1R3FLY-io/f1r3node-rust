@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 
 use super::support::{TestSemanticProfile, nonzero};
@@ -43,6 +43,40 @@ const PROFILE: SemanticProfileId = SemanticProfileId::from_array(*b"RSpace.Test.
 pub(super) struct SyntheticCheckpointSource {
     pub(super) descriptor: GenerationCheckpointDescriptorV1,
     pub(super) objects: Vec<(ObjectRefV1, Vec<u8>)>,
+    copy_lookup: HashMap<ObjectRefV1, usize>,
+}
+
+impl SyntheticCheckpointSource {
+    fn new(
+        descriptor: GenerationCheckpointDescriptorV1,
+        objects: Vec<(ObjectRefV1, Vec<u8>)>,
+    ) -> Self {
+        let mut copy_lookup = HashMap::with_capacity(objects.len());
+        for (index, (reference, _)) in objects.iter().enumerate() {
+            copy_lookup.entry(*reference).or_insert(index);
+        }
+        Self {
+            descriptor,
+            objects,
+            copy_lookup,
+        }
+    }
+
+    pub(super) fn push_object(&mut self, object: (ObjectRefV1, Vec<u8>)) {
+        self.copy_lookup
+            .entry(object.0)
+            .or_insert(self.objects.len());
+        self.objects.push(object);
+    }
+
+    pub(super) fn sort_objects_by_digest(&mut self) {
+        self.objects
+            .sort_unstable_by_key(|(reference, _)| reference.digest());
+        self.copy_lookup.clear();
+        for (index, (reference, _)) in self.objects.iter().enumerate() {
+            self.copy_lookup.entry(*reference).or_insert(index);
+        }
+    }
 }
 
 impl GenerationCheckpointSourceTestSealV1 for SyntheticCheckpointSource {}
@@ -72,11 +106,11 @@ impl GenerationCheckpointSourceV1 for SyntheticCheckpointSource {
         sink: &mut S,
         _scratch: &mut Vec<u8>,
     ) -> Result<(), GenerationCheckpointSourceCopyErrorV1<Self::ReadError, S::Error>> {
-        let bytes = self
-            .objects
-            .iter()
-            .find_map(|(candidate, bytes)| (*candidate == reference).then_some(bytes))
+        let index = self
+            .copy_lookup
+            .get(&reference)
             .expect("the static test inventory contains every visited object");
+        let bytes = &self.objects[*index].1;
         sink.write_all(bytes)
             .map_err(GenerationCheckpointSourceCopyErrorV1::Sink)
     }
@@ -197,10 +231,7 @@ pub(super) fn semantic_fixture() -> SyntheticCheckpointSource {
         inventory,
     )
     .unwrap();
-    SyntheticCheckpointSource {
-        descriptor,
-        objects,
-    }
+    SyntheticCheckpointSource::new(descriptor, objects)
 }
 
 /// The current state is the two-object empty state while the retained history
@@ -340,13 +371,7 @@ pub(super) fn historically_larger_semantic_fixture()
         inventory,
     )
     .unwrap();
-    (
-        SyntheticCheckpointSource {
-            descriptor,
-            objects,
-        },
-        historical_report,
-    )
+    (SyntheticCheckpointSource::new(descriptor, objects), historical_report)
 }
 
 pub(super) fn malformed_interior_fixture() -> SyntheticCheckpointSource {
@@ -360,11 +385,7 @@ pub(super) fn malformed_interior_fixture() -> SyntheticCheckpointSource {
 pub(super) fn fixture_with_retained_union_cardinality(
     retained_union_objects: usize,
 ) -> SyntheticCheckpointSource {
-    assert!(
-        (2..=256).contains(&retained_union_objects),
-        "a valid state closure needs its manifest plus a root, and the fixture has 255 unique \
-         histories",
-    );
+    assert!(retained_union_objects >= 2, "a valid state closure needs its manifest plus a root",);
     let root = encoded(&CanonicalDagNode::empty());
     let roots = SemanticRoots {
         data_bag: root.0,
@@ -372,7 +393,11 @@ pub(super) fn fixture_with_retained_union_cardinality(
         join_bag: root.0,
     };
     let current_manifest = encoded(&SemanticStateManifestV1::new(1, PROFILE, roots, None).unwrap());
-    let current_state = StateVersionV1::new(10_000, current_manifest.0);
+    let current_generation = u64::try_from(retained_union_objects)
+        .unwrap()
+        .checked_add(10_000)
+        .unwrap();
+    let current_state = StateVersionV1::new(current_generation, current_manifest.0);
     let current_bytes = root.0.encoded_len() + current_manifest.0.encoded_len();
 
     let historical_count = retained_union_objects - 2;
@@ -380,19 +405,21 @@ pub(super) fn fixture_with_retained_union_cardinality(
     let mut manifest_objects = Vec::with_capacity(historical_count + 1);
     manifest_objects.push(current_manifest);
     for index in 0..historical_count {
-        let tag = u8::try_from(index + 1).expect("at most 254 historical states");
+        let generation = u64::try_from(index).unwrap().checked_add(1).unwrap();
+        let mut legacy_root = [0_u8; 32];
+        legacy_root[..8].copy_from_slice(&generation.to_be_bytes());
         let manifest = encoded(
             &SemanticStateManifestV1::new(
                 1,
                 PROFILE,
                 roots,
-                Some(LegacyHistoryRoot::from_array([tag; 32])),
+                Some(LegacyHistoryRoot::from_array(legacy_root)),
             )
             .unwrap(),
         );
         historical.push(
             RetainedStateV1::new(
-                StateVersionV1::new(index as u64 + 1, manifest.0),
+                StateVersionV1::new(generation, manifest.0),
                 root.0.encoded_len() + manifest.0.encoded_len(),
             )
             .unwrap(),
@@ -451,10 +478,7 @@ pub(super) fn fixture_with_retained_union_cardinality(
         inventory,
     )
     .unwrap();
-    SyntheticCheckpointSource {
-        descriptor,
-        objects,
-    }
+    SyntheticCheckpointSource::new(descriptor, objects)
 }
 
 fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
@@ -513,10 +537,7 @@ fn fixture_with_root_and_profile(
         inventory,
     )
     .unwrap();
-    SyntheticCheckpointSource {
-        descriptor,
-        objects,
-    }
+    SyntheticCheckpointSource::new(descriptor, objects)
 }
 
 fn encode_checkpoint(source: &SyntheticCheckpointSource) -> Vec<u8> {

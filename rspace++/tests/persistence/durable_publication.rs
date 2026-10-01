@@ -120,10 +120,8 @@ fn source_with_unreachable_retained_object() -> SyntheticCheckpointSource {
     let mut source = checkpoint_source_fixture();
     let extra = encoded_blob(b"authenticated but unreachable checkpoint object");
     let extra_len = extra.0.encoded_len();
-    source.objects.push(extra);
-    source
-        .objects
-        .sort_unstable_by_key(|(reference, _)| reference.digest());
+    source.push_object(extra);
+    source.sort_objects_by_digest();
 
     let data_bytes = source
         .objects

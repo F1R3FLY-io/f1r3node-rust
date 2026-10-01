@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use proptest::prelude::*;
 
@@ -793,10 +794,10 @@ fn checkpoint_pack_streams_once_and_rebuilds_the_exact_fresh_index() {
     assert_eq!(cursor, image.pack.len() as u64);
 }
 
-fn linux_peak_rss_bytes() -> Option<u64> {
+fn linux_status_bytes(field: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let kibibytes = status.lines().find_map(|line| {
-        line.strip_prefix("VmHWM:")?
+        line.strip_prefix(field)?
             .split_whitespace()
             .next()?
             .parse::<u64>()
@@ -804,6 +805,10 @@ fn linux_peak_rss_bytes() -> Option<u64> {
     })?;
     kibibytes.checked_mul(1024)
 }
+
+fn linux_peak_rss_bytes() -> Option<u64> { linux_status_bytes("VmHWM:") }
+
+fn linux_current_rss_bytes() -> Option<u64> { linux_status_bytes("VmRSS:") }
 
 fn linux_open_descriptor_count() -> Option<usize> {
     Some(
@@ -814,15 +819,26 @@ fn linux_open_descriptor_count() -> Option<usize> {
     )
 }
 
-fn run_checkpoint_cardinality_recovery_case(retained_union_objects: usize) {
-    let image = checkpoint_image_from_source(fixture_with_retained_union_cardinality(
-        retained_union_objects,
-    ));
+fn run_checkpoint_cardinality_recovery_case(retained_union_objects: usize, stack_bytes: usize) {
+    let fixture_start = Instant::now();
+    let source = fixture_with_retained_union_cardinality(retained_union_objects);
+    let fixture_elapsed = fixture_start.elapsed();
+    let publication_start = Instant::now();
+    let image = std::thread::Builder::new()
+        .name(format!("checkpoint-publication-cardinality-{retained_union_objects}"))
+        .stack_size(stack_bytes)
+        .spawn(move || checkpoint_image_from_source(source))
+        .unwrap()
+        .join()
+        .unwrap();
+    let publication_elapsed = publication_start.elapsed();
+    let rss_after_publication = linux_current_rss_bytes();
     let expected_records = retained_union_objects as u64 + 1;
     let descriptors_before = linux_open_descriptor_count();
+    let recovery_start = Instant::now();
     std::thread::Builder::new()
         .name(format!("checkpoint-recovery-cardinality-{retained_union_objects}"))
-        .stack_size(256 * 1024)
+        .stack_size(stack_bytes)
         .spawn(move || {
             let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
             let reads = Arc::clone(&provider.reader.reads);
@@ -850,6 +866,18 @@ fn run_checkpoint_cardinality_recovery_case(retained_union_objects: usize) {
         .unwrap()
         .join()
         .unwrap();
+    let recovery_elapsed = recovery_start.elapsed();
+    eprintln!(
+        "checkpoint cardinality resource: retained_union_objects={retained_union_objects} \
+         stack_bytes={stack_bytes} fixture_ns={} publication_ns={} recovery_ns={} \
+         rss_after_publication_bytes={:?} rss_after_recovery_bytes={:?} peak_rss_bytes={:?}",
+        fixture_elapsed.as_nanos(),
+        publication_elapsed.as_nanos(),
+        recovery_elapsed.as_nanos(),
+        rss_after_publication,
+        linux_current_rss_bytes(),
+        linux_peak_rss_bytes(),
+    );
     if let (Some(before), Some(after)) = (descriptors_before, linux_open_descriptor_count()) {
         assert!(after <= before + 1, "checkpoint recovery leaked descriptors: {before} -> {after}");
     }
@@ -872,27 +900,39 @@ fn checkpoint_cardinality_stack_rss_gate() {
             .to_str()
             .and_then(|value| value.parse::<usize>().ok())
             .expect("checkpoint cardinality child value is a usize");
-        run_checkpoint_cardinality_recovery_case(cardinality);
+        let stack_bytes = std::env::var("RSPACE_CHECKPOINT_STACK_BYTES")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .expect("checkpoint stack size is a usize")
+            })
+            .unwrap_or(256 * 1024);
+        run_checkpoint_cardinality_recovery_case(cardinality, stack_bytes);
         return;
     }
 
-    for cardinality in [2_usize, 16, 256] {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg(
-                "rspace::persistence::tests::durable_recovery::checkpoint_cardinality_stack_rss_gate",
-            )
-            .arg("--nocapture")
-            .env(CHILD_ENV, cardinality.to_string())
-            .output()
-            .expect("checkpoint cardinality child process starts");
-        assert!(
-            output.status.success(),
-            "checkpoint cardinality {cardinality} child failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    for stack_bytes in [128 * 1024usize, 256 * 1024] {
+        for cardinality in [2_usize, 16, 256] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(
+                    "rspace::persistence::tests::durable_recovery::checkpoint_cardinality_stack_rss_gate",
+                )
+                .arg("--nocapture")
+                .env(CHILD_ENV, cardinality.to_string())
+                .env("RSPACE_CHECKPOINT_STACK_BYTES", stack_bytes.to_string())
+                .output()
+                .expect("checkpoint cardinality child process starts");
+            assert!(
+                output.status.success(),
+                "checkpoint cardinality {cardinality}, stack {stack_bytes} child \
+                 failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 }
 
