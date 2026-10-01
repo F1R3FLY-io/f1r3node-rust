@@ -34,3 +34,5 @@ mod staging_store;
 mod support;
 mod transaction_sealing;
 mod wal_codec;
+#[cfg(windows)]
+mod windows_durable_authority;
