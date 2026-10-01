@@ -1,0 +1,261 @@
+{
+  "causal_mutants": [
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalSequentialMarkerMutant.cfg",
+      "expected_invariant": "MarkersAreZero",
+      "id": "EPM1-MUT-01",
+      "specification": "SequentialMarkerSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalNonzeroMarkerMutant.cfg",
+      "expected_invariant": "MarkersAreZero",
+      "id": "EPM1-MUT-02",
+      "specification": "NonzeroMarkerSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalRootOmissionMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-03",
+      "specification": "RootOmissionSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalAddressCollapseMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-04",
+      "specification": "AddressCollapseSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalSkipEndpointMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-05",
+      "specification": "SkipEndpointSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalWrongEndpointMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-06",
+      "specification": "WrongEndpointSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalDuplicateEndpointMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-07",
+      "specification": "DuplicateEndpointSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalMissingBodyMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-08",
+      "specification": "MissingBodySpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalExtraBodyMutant.cfg",
+      "expected_invariant": "AssignmentPrefixIsExact",
+      "id": "EPM1-MUT-09",
+      "specification": "ExtraBodySpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalEarlyPublishMutant.cfg",
+      "expected_invariant": "PublicationRequiresCompleteLockstep",
+      "id": "EPM1-MUT-10",
+      "specification": "EarlyPublishSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalDoublePublishMutant.cfg",
+      "expected_invariant": "PublicationIsExactlyOnce",
+      "id": "EPM1-MUT-11",
+      "specification": "DoublePublishSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalPrecedenceMutant.cfg",
+      "expected_invariant": "ChildErrorPrecedesDeferredAct",
+      "id": "EPM1-MUT-12",
+      "specification": "PrecedenceSpec"
+    }
+  ],
+  "rocq_print_assumptions": [
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-001",
+      "symbol": "canonical_zero_writer_has_one_zero_sentinel_per_logical_endpoint",
+      "target": "epm1_map_layout_writes_zero_marker_for_every_value_occurrence",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-002",
+      "symbol": "canonical_writer_and_image_are_address_independent",
+      "target": "positional_occurrences_ignore_shared_cow_par_addresses",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-003",
+      "symbol": "canonical_zero_writer_is_accepted_by_concrete_act_parser",
+      "target": "positional_replay_preserves_root_prefix_dense_and_topology_only_nodes",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-004",
+      "symbol": "admitted_positional_run_publishes_exactly_once",
+      "target": "pending_decoder_publishes_only_from_successful_finish_without_partial_result",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-005",
+      "symbol": "positional_entry_count_and_count_free_machine_agree",
+      "target": "certified_and_traversed_layout_counts_are_identical_for_every_mode",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-006",
+      "symbol": "positional_error_precedence_is_total",
+      "target": "child_errors_precede_deferred_act_and_noncanonical_body_errors",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-POS-POLICY",
+      "symbol": "campaign_policy_authorizes_amending_unreleased_epm1",
+      "target": null,
+      "target_source": null,
+      "theorem_source": "formal/rocq/actree03_completeness/theories/Epm1CursorAuthorityV2.v"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-POS-007",
+      "symbol": "epm1_positional_act_body_association_capstone",
+      "target": "synchronous_decode_and_generated_pending_core_are_byte_identical",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    }
+  ],
+  "scope_limit": "Direct executable rows bind named EPM1 normal-suite tests; proof-only rows have no claimed Rust refinement. Source correspondence does not substitute for TLC, Rocq, Verus, or Cargo execution.",
+  "source_sha256": {
+    "formal/rocq/actree03_completeness/theories/Epm1CursorAuthorityV2.v": "1788efb8f7f2cc192f6162cd1706098f673ee9081042e3f9621c4bab943b54a1",
+    "formal/rocq/actree03_completeness/theories/Epm1PositionalAssociationV6.v": "8ae5ff605980d68aed5ea54b60f391546f4db0630aecab6a9d86e702169002e1",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalAddressCollapseMutant.cfg": "59648651d5616dc98846d211a8fbf956931216648a3112fcef56f6f3f7fee0f0",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalAssociation.cfg": "1b1516198abcf597b2ec73ed55b62033d60872c18f9a3c3eceedff23f66b52b3",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalAssociation.tla": "716ea1ae4f15cafe718f82503c50730d17e4ce800002c565fe14223976665df5",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalDoublePublishMutant.cfg": "a4bebdd2cbcf436ffd842d29ae47568ebeef60661ab12c532e62fb01d9f77fff",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalDuplicateEndpointMutant.cfg": "7105eec98dff072e50bfc3a207fd5bbab4af700cd42afebbe67d24cfd02bac96",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalEarlyPublishMutant.cfg": "eb6926af7a9bd86deafcd526636367efa5e6c49d86c55966d8847f6bb3394608",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalExtraBodyMutant.cfg": "befecf65f2445177701c6456ec62e5e3e8a33cef5611631350a84bcad928a90a",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalMissingBodyMutant.cfg": "360f9c509b52330c8eb93440991463d920fefbbeb1a3ff1ee6233f80f83ce963",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalNonzeroMarkerMutant.cfg": "af50b670b528a4dbfd03efb489ede9e436c8e037c6e77fa41fcc1e76459859c9",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalPrecedenceMutant.cfg": "2c5dd392e3b3c745d099cfefd08e2ba5b85bb95efada6b1799999240809d16a1",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalRootOmissionMutant.cfg": "a92c5911e80a5a399a4bb626cf652b1c1c4542b6bedd4132e8a482abf3018e40",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalSequentialMarkerMutant.cfg": "a0ec9cb3613247112e8dcbda47c1f4f5eebae87df7fdb565f04be06b7bd34949",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalSkipEndpointMutant.cfg": "0a8c7b89f239be5ee137f9cd6d259c880d60e9d3a99d770289853fc220af2f7a",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalWrongEndpointMutant.cfg": "02b1ecc394cdf5504a4b039774590ec4b780bfae8dd12ef7f1b4c67378c4af33",
+    "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
+    "models/src/rust/epathmap_trie_codec.rs": "38848c5e2310eabf0d23a6cb2d4df260a0cb8bcbdebde961dbe15e1785aa7863",
+    "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
+    "models/tests/formal_equivalence_manifest.rs": "54326d0017d4b7adeded8fe77e9a7d066a78074cebaa158db95ba417761ad4a5"
+  },
+  "tla_invariants": [
+    {
+      "classification": "proof_only",
+      "id": "EPM1-TLA-01",
+      "symbol": "TypeInvariant",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-TLA-02",
+      "symbol": "MarkersAreZero",
+      "target": "epm1_map_layout_writes_zero_marker_for_every_value_occurrence",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-TLA-03",
+      "symbol": "LogicalOccurrencesIgnoreStorageIdentity",
+      "target": "positional_occurrences_ignore_shared_cow_par_addresses",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-TLA-04",
+      "symbol": "AssignmentPrefixIsExact",
+      "target": "positional_replay_preserves_root_prefix_dense_and_topology_only_nodes",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-TLA-05",
+      "symbol": "SuspendedFocusIsExact",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-TLA-06",
+      "symbol": "ChildErrorPrecedesDeferredAct",
+      "target": "child_errors_precede_deferred_act_and_noncanonical_body_errors",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-TLA-07",
+      "symbol": "FailureNeverPublishes",
+      "target": "pending_decoder_publishes_only_from_successful_finish_without_partial_result",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "EPM1-TLA-08",
+      "symbol": "PublicationRequiresCompleteLockstep",
+      "target": "pending_decoder_publishes_only_from_successful_finish_without_partial_result",
+      "target_source": "models/src/rust/epathmap_trie_codec.rs"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-TLA-09",
+      "symbol": "PublicationIsExactlyOnce",
+      "target": null,
+      "target_source": null
+    }
+  ],
+  "verus_obligations": [
+    {
+      "classification": "proof_only",
+      "id": "EPM1-VERUS-01",
+      "kind": "open spec",
+      "symbol": "positional_act_sentinel"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-VERUS-02",
+      "kind": "proof",
+      "symbol": "sentinel_is_storage_identity_independent"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-VERUS-03",
+      "kind": "verified_exec",
+      "symbol": "checked_next_position"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-VERUS-04",
+      "kind": "verified_exec",
+      "symbol": "pair_one_occurrence"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-VERUS-05",
+      "kind": "verified_exec",
+      "symbol": "checked_platform_count"
+    },
+    {
+      "classification": "proof_only",
+      "id": "EPM1-VERUS-06",
+      "kind": "verified_exec",
+      "symbol": "publication_authorized"
+    }
+  ]
+}

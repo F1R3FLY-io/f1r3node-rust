@@ -1849,6 +1849,8 @@ for transcript_mutant in \
     exit 1
   fi
 done
+python3 "$repo_root/scripts/check-epm1-positional-obligations.py" --check
+python3 "$repo_root/scripts/check-epm1-positional-obligations.py" --self-test
 tlc_run "$tla_metadir" \
   Epm1PositionalAssociation.cfg Epm1PositionalAssociation.tla -cleanup
 for epm1_positional_mutant in \
