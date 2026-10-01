@@ -369,6 +369,7 @@ fn bounded_multichannel_transition_refines_independent_sparse_count_oracle() {
     assert!(committed > 0);
     assert!(stale > 0);
     assert!(valid_first_stale_second > 0);
+    assert_extracted_commit_obligations_have_stable_normal_suite_bindings();
 }
 
 #[test]
@@ -671,4 +672,231 @@ fn maximal_arrival_boundary_commits_exactly_once_without_projection() {
         assert_eq!(joins.get(channel), Some(&Vec::new()));
     }
     assert!(state.joins.installed_records().is_empty());
+}
+
+fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
+    struct Binding {
+        id: &'static str,
+        obligation: &'static str,
+        // A proof-only row's test is a finite witness, not executable refinement of that
+        // obligation.
+        proof_only: bool,
+        target_name: &'static str,
+        target: fn(),
+    }
+
+    let rocq = [
+        Binding {
+            id: "ACM-RC-01",
+            obligation: "transition_is_deterministic",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-RC-02",
+            obligation: "refusal_is_observably_nonmutating",
+            proof_only: false,
+            target_name:
+                "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch",
+            target: exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch,
+        },
+        Binding {
+            id: "ACM-RC-03",
+            obligation: "accepted_state_is_one_complete_proposal",
+            proof_only: false,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-RC-04",
+            obligation: "stale_epoch_cannot_commit",
+            proof_only: false,
+            target_name:
+                "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch",
+            target: exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch,
+        },
+        Binding {
+            id: "ACM-RC-05",
+            obligation: "missing_persistent_witness_cannot_commit",
+            proof_only: false,
+            target_name:
+                "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch",
+            target: exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch,
+        },
+        Binding {
+            id: "ACM-RC-06",
+            obligation: "inapplicable_delta_cannot_commit",
+            proof_only: false,
+            target_name:
+                "stale_selected_nonpersistent_or_persistent_path_preserves_all_other_changes",
+            target: stale_selected_nonpersistent_or_persistent_path_preserves_all_other_changes,
+        },
+        Binding {
+            id: "ACM-RC-07",
+            obligation: "comm_publication_follows_a_complete_commit",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-RC-08",
+            obligation: "unrelated_group_is_preserved",
+            proof_only: false,
+            target_name: "unrelated_mutation_does_not_invalidate_an_exact_selected_match",
+            target: unrelated_mutation_does_not_invalidate_an_exact_selected_match,
+        },
+        Binding {
+            id: "ACM-RC-09",
+            obligation: "play_replay_same_ticket_same_result",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+    ];
+    let tla = [
+        Binding {
+            id: "ACM-TLA-01",
+            obligation: "TypeInvariant",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-TLA-02",
+            obligation: "PlayPublishesOneCompleteState",
+            proof_only: false,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-TLA-03",
+            obligation: "ReplayPublishesOneCompleteState",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-TLA-04",
+            obligation: "RejectedTransitionIsNonMutating",
+            proof_only: false,
+            target_name:
+                "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch",
+            target: exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch,
+        },
+        Binding {
+            id: "ACM-TLA-05",
+            obligation: "EventPublicationFollowsCommit",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-TLA-06",
+            obligation: "StaleOrForgedTicketNeverCommits",
+            proof_only: false,
+            target_name:
+                "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch",
+            target: exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch,
+        },
+        Binding {
+            id: "ACM-TLA-07",
+            obligation: "PersistentWitnessesAreRequired",
+            proof_only: false,
+            target_name:
+                "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch",
+            target: exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch,
+        },
+        Binding {
+            id: "ACM-TLA-08",
+            obligation: "CommittedMultiplicityAndArrivalAreExact",
+            proof_only: false,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-TLA-09",
+            obligation: "ContinuationAndJoinCommitTogether",
+            proof_only: false,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+        Binding {
+            id: "ACM-TLA-10",
+            obligation: "PlayReplayTraceEquivalent",
+            proof_only: true,
+            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+        },
+    ];
+
+    let rocq_source = include_str!("../../../formal/rocq/stack_safe_pda/theories/RSpaceCommit.v");
+    let tla_source = include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla");
+    let tla_config = include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg");
+    let normal_suite_source = include_str!("accepted_match_formal_bindings.rs");
+    let rocq_declarations: Vec<_> = rocq_source
+        .lines()
+        .filter_map(|line| line.strip_prefix("Theorem "))
+        .map(|line| {
+            line.split_whitespace()
+                .next()
+                .expect("Rocq theorem has a name")
+        })
+        .collect();
+    let tla_declarations: Vec<_> = tla_config
+        .lines()
+        .filter_map(|line| line.strip_prefix("INVARIANT "))
+        .collect();
+    let mut sorted_rocq = rocq_declarations.clone();
+    sorted_rocq.sort_unstable();
+    assert!(
+        sorted_rocq.windows(2).all(|pair| pair[0] != pair[1]),
+        "duplicate Rocq theorem declaration"
+    );
+    let mut sorted_tla = tla_declarations.clone();
+    sorted_tla.sort_unstable();
+    assert!(
+        sorted_tla.windows(2).all(|pair| pair[0] != pair[1]),
+        "duplicate TLC invariant declaration"
+    );
+    let extracted_rocq: BTreeSet<_> = rocq_declarations.into_iter().collect();
+    let extracted_tla: BTreeSet<_> = tla_declarations.into_iter().collect();
+    assert_eq!(extracted_rocq.len(), rocq.len());
+    assert_eq!(extracted_tla.len(), tla.len());
+    assert!(rocq.iter().any(|binding| binding.proof_only));
+    assert!(tla.iter().any(|binding| binding.proof_only));
+    let mut ids = BTreeSet::new();
+    for (bindings, extracted) in [(&rocq[..], &extracted_rocq), (&tla[..], &extracted_tla)] {
+        let mut mapped = BTreeSet::new();
+        for binding in bindings {
+            assert!(
+                ids.insert(binding.id),
+                "duplicate accepted-match obligation ID: {}",
+                binding.id
+            );
+            assert!(
+                extracted.contains(binding.obligation),
+                "unextracted obligation: {}",
+                binding.id
+            );
+            assert!(
+                mapped.insert(binding.obligation),
+                "duplicate obligation binding: {}",
+                binding.obligation
+            );
+            assert!(
+                normal_suite_source.contains(&format!("#[test]\nfn {}(", binding.target_name)),
+                "binding target is not a normal-suite test: {}",
+                binding.id
+            );
+            let _executable_target = binding.target;
+        }
+        assert_eq!(&mapped, extracted, "model obligation has no normal-suite binding");
+    }
+    for obligation in &extracted_tla {
+        assert!(
+            tla_source.contains(&format!("{obligation} ==")),
+            "TLC invariant has no model definition: {obligation}"
+        );
+    }
 }
