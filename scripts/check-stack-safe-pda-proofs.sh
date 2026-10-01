@@ -1150,6 +1150,8 @@ done
 "$repo_root/scripts/check-pathmap-anchor-loom.sh"
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 python3 "$repo_root/scripts/check-accepted-match-obligations.py" --check
+python3 "$repo_root/scripts/check-bag-obligations.py" --check
+python3 "$repo_root/scripts/check-bag-obligations.py" --self-test
 python3 "$repo_root/scripts/check-workspace-regression-obligations.py" --check
 python3 "$repo_root/scripts/check-workspace-regression-obligations.py" --self-test
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup

@@ -1,0 +1,426 @@
+{
+  "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
+  "delegated_tla": {
+    "config": "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg",
+    "gate": "scripts/check-accepted-match-obligations.py",
+    "invariants": [
+      "TypeInvariant",
+      "PlayPublishesOneCompleteState",
+      "ReplayPublishesOneCompleteState",
+      "RejectedTransitionIsNonMutating",
+      "EventPublicationFollowsCommit",
+      "StaleOrForgedTicketNeverCommits",
+      "PersistentWitnessesAreRequired",
+      "CommittedMultiplicityAndArrivalAreExact",
+      "ContinuationAndJoinCommitTogether",
+      "PlayReplayTraceEquivalent"
+    ],
+    "registry": "formal/accepted_match_obligations.generated.json"
+  },
+  "negative_control": "prefix_coupled_algebra_mutants_disagree_with_the_exact_key_oracle",
+  "normal_suite_test_source": "rspace++/tests/bag_spec.rs",
+  "rocq_obligations": [
+    {
+      "id": "BAG-RC-01",
+      "mode": "concrete_witness",
+      "obligation": "set_count_is_exact",
+      "target_name": "insert_remove_and_metadata_preserve_the_absent_zero_invariant",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-02",
+      "mode": "proof_only",
+      "obligation": "sum_empty_identity",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-03",
+      "mode": "proof_only",
+      "obligation": "sum_commutative",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-04",
+      "mode": "proof_only",
+      "obligation": "sum_associative",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-05",
+      "mode": "concrete_witness",
+      "obligation": "join_commutative",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-06",
+      "mode": "concrete_witness",
+      "obligation": "join_associative",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-07",
+      "mode": "concrete_witness",
+      "obligation": "join_idempotent",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-08",
+      "mode": "proof_only",
+      "obligation": "join_empty_identity",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-09",
+      "mode": "concrete_witness",
+      "obligation": "meet_commutative",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-10",
+      "mode": "concrete_witness",
+      "obligation": "meet_associative",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-11",
+      "mode": "concrete_witness",
+      "obligation": "meet_idempotent",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-12",
+      "mode": "proof_only",
+      "obligation": "meet_empty_absorbing",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-13",
+      "mode": "concrete_witness",
+      "obligation": "join_absorbs_meet",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-14",
+      "mode": "concrete_witness",
+      "obligation": "meet_absorbs_join",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-15",
+      "mode": "concrete_witness",
+      "obligation": "meet_distributes_over_join",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-16",
+      "mode": "concrete_witness",
+      "obligation": "join_distributes_over_meet",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-17",
+      "mode": "concrete_witness",
+      "obligation": "subtraction_conservation",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-18",
+      "mode": "proof_only",
+      "obligation": "subtract_self_empty",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-19",
+      "mode": "proof_only",
+      "obligation": "meet_is_subbag_left",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-20",
+      "mode": "proof_only",
+      "obligation": "meet_is_subbag_right",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-21",
+      "mode": "proof_only",
+      "obligation": "cursor_step_preserves_every_other_key",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-22",
+      "mode": "proof_only",
+      "obligation": "empty_cursor_valid",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-23",
+      "mode": "proof_only",
+      "obligation": "cursor_step_preserves_exact_counts",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-24",
+      "mode": "proof_only",
+      "obligation": "cursor_walk_preserves_exact_counts",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-25",
+      "mode": "proof_only",
+      "obligation": "cursor_finished_is_pointwise_algebra",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-26",
+      "mode": "proof_only",
+      "obligation": "cursor_walk_preserves_visited",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-27",
+      "mode": "proof_only",
+      "obligation": "cursor_walk_visits_input",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-28",
+      "mode": "proof_only",
+      "obligation": "cursor_walk_refines_pointwise_algebra",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-29",
+      "mode": "proof_only",
+      "obligation": "cursor_join_refines_bag_join",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-30",
+      "mode": "proof_only",
+      "obligation": "cursor_meet_refines_bag_meet",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-31",
+      "mode": "proof_only",
+      "obligation": "cursor_subtract_refines_bag_subtract",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-32",
+      "mode": "proof_only",
+      "obligation": "cursor_subbag_step_refines_conjunction",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-33",
+      "mode": "proof_only",
+      "obligation": "empty_subbag_cursor_valid",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-34",
+      "mode": "proof_only",
+      "obligation": "cursor_subbag_step_preserves_validity",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-35",
+      "mode": "proof_only",
+      "obligation": "cursor_subbag_finished_is_exact",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-36",
+      "mode": "proof_only",
+      "obligation": "cursor_subbag_walk_checks_every_key",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-37",
+      "mode": "proof_only",
+      "obligation": "cursor_subbag_walk_refines_finite_support",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-38",
+      "mode": "proof_only",
+      "obligation": "cursor_count_respects_bound",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-39",
+      "mode": "concrete_witness",
+      "obligation": "normalized_delta_reversible",
+      "target_name": "normalized_transaction_delta_applies_and_reverts_exactly",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-40",
+      "mode": "proof_only",
+      "obligation": "canonical_delta_is_normalized",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-41",
+      "mode": "concrete_witness",
+      "obligation": "canonical_delta_is_applicable",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-42",
+      "mode": "concrete_witness",
+      "obligation": "canonical_delta_reaches_target",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-43",
+      "mode": "concrete_witness",
+      "obligation": "canonical_delta_round_trip",
+      "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-RC-44",
+      "mode": "proof_only",
+      "obligation": "nonpersistent_stored_candidate_removes_one",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-45",
+      "mode": "proof_only",
+      "obligation": "nonpersistent_stored_candidate_is_exact",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-46",
+      "mode": "proof_only",
+      "obligation": "persistent_stored_candidate_is_not_removed",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-47",
+      "mode": "proof_only",
+      "obligation": "fresh_candidate_is_not_removed",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-48",
+      "mode": "proof_only",
+      "obligation": "selected_removals_permutation_invariant",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-49",
+      "mode": "proof_only",
+      "obligation": "selected_commit_exact_count",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-50",
+      "mode": "proof_only",
+      "obligation": "permuted_play_replay_commits_equal",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-51",
+      "mode": "proof_only",
+      "obligation": "rejected_commit_publishes_no_partial_state",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-RC-52",
+      "mode": "proof_only",
+      "obligation": "accepted_commit_publishes_exact_proposal",
+      "target_name": null,
+      "target_source": null
+    }
+  ],
+  "rocq_print_assumptions": [],
+  "rocq_source": "formal/rocq/stack_safe_pda/theories/Bag.v",
+  "scope": "Bag multiplicity algebra and checked scalar delta",
+  "sources_sha256": {
+    "formal/accepted_match_obligations.generated.json": "3fe5ffc3b0a1d5dbb1de65e12db26cb35c56838efac7d2f52fcc8ea48029e3df",
+    "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
+    "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
+    "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
+    "rspace++/Cargo.toml": "61e3374b61b5ac5bbc9c0b269515e04c3f43d0207f4a5fe32c06f6906b3f725c",
+    "rspace++/tests/bag_spec.rs": "64314c47797e9a9777af0888c52510ca1c17bc2286a0515f5824227af5a3728d"
+  },
+  "verus_obligations": [
+    {
+      "id": "BAG-VS-01",
+      "kind": "open spec",
+      "mode": "proof_only",
+      "obligation": "apply_count_spec",
+      "target_name": null,
+      "target_source": null
+    },
+    {
+      "id": "BAG-VS-02",
+      "kind": "exec",
+      "mode": "concrete_witness",
+      "obligation": "checked_apply_count",
+      "target_name": "transaction_delta_application_is_atomic_on_underflow_and_overflow",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    },
+    {
+      "id": "BAG-VS-03",
+      "kind": "proof",
+      "mode": "concrete_witness",
+      "obligation": "normalized_checked_delta_reversible",
+      "target_name": "normalized_transaction_delta_applies_and_reverts_exactly",
+      "target_source": "rspace++/tests/bag_spec.rs"
+    }
+  ],
+  "verus_source": "formal/verus/bag_checked_delta.rs"
+}
