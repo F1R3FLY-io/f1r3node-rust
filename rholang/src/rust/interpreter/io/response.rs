@@ -130,7 +130,18 @@ impl TryFrom<i64> for Fd {
 // not an attribute guarantee.)
 #[allow(dead_code)]
 const _FD_LAYOUT_MATCHES_U64: fn() = || {
+    // SAFETY: `Fd` is `#[repr(transparent)]` around `u64`, which
+    // guarantees identical size and alignment.  The closure body
+    // is type-checked (never executed), which forces
+    // `std::mem::transmute`'s compile-time size-equality
+    // constraint to fire — a layout drift on `Fd` (dropping the
+    // `#[repr(transparent)]` attribute or adding a second field
+    // that changes the size) would fail this static check.
     let _: u64 = unsafe { std::mem::transmute::<Fd, u64>(Fd(0)) };
+    // SAFETY: same as above, other direction.  `u64` → `Fd` is
+    // sound under `#[repr(transparent)]` for the same layout
+    // reason; the resulting `Fd` value is not observed at runtime
+    // (the closure never runs).
     let _: Fd = unsafe { std::mem::transmute::<u64, Fd>(0) };
 };
 
