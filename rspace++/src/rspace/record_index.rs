@@ -1753,6 +1753,76 @@ mod tests {
     }
 
     #[test]
+    fn hydrated_continuation_replacement_retains_exact_source_transition() {
+        let channels = vec!["channel".to_owned()];
+        let first = continuation(1, "same");
+        let replacement = continuation(9, "same");
+        let identity = encode_continuation_identity(&first);
+        assert_eq!(identity, encode_continuation_identity(&replacement));
+        let prefix = RhoPathV1::continuation_prefix(&channels);
+        let identity_path = RhoPathV1::collection_record_path(&prefix, &identity);
+        let mut first_canonical = identity.clone();
+        encode_continuation_source_into(&first, &mut first_canonical);
+        let mut replacement_canonical = identity.clone();
+        encode_continuation_source_into(&replacement, &mut replacement_canonical);
+        let (first_ref, _) = continuation_source(&identity, &first_canonical);
+        let (replacement_ref, replacement_bytes) =
+            continuation_source(&identity, &replacement_canonical);
+        assert_ne!(first_ref, replacement_ref);
+
+        let mut store = RSpaceContinuationStore::new();
+        store.set_group(channels.clone(), vec![first.clone()]);
+        assert!(!store.put_prepared(
+            &channels,
+            replacement.clone(),
+            identity.clone(),
+            replacement_canonical.clone(),
+        ));
+        assert!(store.pending_content().is_empty());
+        assert!(store.pending_source_bytes().is_empty());
+        assert_eq!(
+            store
+                .source_record(&channels, &identity_path)
+                .unwrap()
+                .source_ref,
+            Some(first_ref),
+        );
+
+        let mut first_path = prefix.clone();
+        first_path.extend_from_slice(&first_canonical);
+        assert_eq!(store.remove_path(&channels, &first_path), Some(first));
+        let removed = store
+            .pending_content()
+            .get(&identity_path)
+            .copied()
+            .unwrap();
+        assert_eq!(removed.before(), Some(first_ref));
+        assert_eq!(removed.after(), None);
+        assert!(store.pending_source_bytes().is_empty());
+
+        assert!(store.put_prepared(
+            &channels,
+            replacement,
+            identity.clone(),
+            replacement_canonical,
+        ));
+        let replaced = store
+            .pending_content()
+            .get(&identity_path)
+            .copied()
+            .unwrap();
+        assert_eq!(replaced.before(), Some(first_ref));
+        assert_eq!(replaced.after(), Some(replacement_ref));
+        assert_eq!(store.pending_source_bytes().get(&identity_path), Some(&replacement_bytes),);
+
+        let mut restored = RSpaceContinuationStore::<String, String, String>::new();
+        restored.restore_pending_content(store.pending_content().clone());
+        restored.restore_pending_source_bytes(store.pending_source_bytes().clone());
+        assert_eq!(restored.pending_content().get(&identity_path), Some(&replaced));
+        assert_eq!(restored.pending_source_bytes().get(&identity_path), Some(&replacement_bytes),);
+    }
+
+    #[test]
     fn frozen_continuation_identity_repairs_legacy_debug_aliasing() {
         let channels = vec!["channel".to_owned()];
         let first = colliding_debug_continuation(1);
