@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR",
+        "IR", "CR",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {

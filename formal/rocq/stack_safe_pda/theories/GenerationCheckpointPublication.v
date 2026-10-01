@@ -2929,6 +2929,18 @@ Proof.
     unique member agreement). subst cached. destruct success; split; lia.
 Qed.
 
+Theorem checked_inventory_add_refuses_exactly_above_limit :
+  forall limit vertices state vertex weight cached,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  cached = inventory vertices state weight ->
+  checked_add limit cached (activated_weight state vertex weight) = None <->
+    limit < inventory vertices (increment state vertex) weight.
+Proof.
+  intros limit vertices state vertex weight cached unique member agreement exact.
+  subst cached. rewrite checked_add_refuses_exactly_above_limit.
+  rewrite increment_changes_unique_inventory by assumption. reflexivity.
+Qed.
+
 Theorem checked_inventory_remove_is_exact : forall vertices state vertex weight cached result,
   NoDup vertices -> In vertex vertices -> coherent state ->
   cached = inventory vertices state weight ->
@@ -3033,6 +3045,25 @@ Print Assumptions IncrementalReachability.add_before_remove_agrees_with_cold_led
 Print Assumptions IncrementalReachability.no_roots_no_reachability.
 Print Assumptions IncrementalReachability.cursor_suffix_does_not_establish_processed_history.
 Print Assumptions IncrementalReachability.rootless_cycle_has_a_spurious_quiescent_ledger.
+
+Print Assumptions CheckedReachability.checked_add_is_exact.
+Print Assumptions CheckedReachability.checked_add_refuses_exactly_above_limit.
+Print Assumptions CheckedReachability.checked_sub_is_exact.
+Print Assumptions CheckedReachability.checked_sub_refuses_exactly_underflow.
+Print Assumptions CheckedReachability.checked_increment_refines_natural_update.
+Print Assumptions CheckedReachability.checked_increment_refuses_exactly_at_capacity.
+Print Assumptions CheckedReachability.checked_decrement_refines_natural_update.
+Print Assumptions CheckedReachability.checked_decrement_refuses_exactly_zero.
+Print Assumptions CheckedReachability.checked_increment_preserves_bounded_counts.
+Print Assumptions CheckedReachability.checked_decrement_preserves_bounded_counts.
+Print Assumptions CheckedReachability.checked_updates_preserve_coherence.
+Print Assumptions CheckedReachability.increment_changes_unique_inventory.
+Print Assumptions CheckedReachability.decrement_changes_unique_inventory.
+Print Assumptions CheckedReachability.deactivated_inventory_is_funded.
+Print Assumptions CheckedReachability.checked_inventory_add_is_exact.
+Print Assumptions CheckedReachability.checked_inventory_add_refuses_exactly_above_limit.
+Print Assumptions CheckedReachability.checked_inventory_remove_is_exact.
+Print Assumptions CheckedReachability.exact_inventory_removal_cannot_underflow.
 
 Print Assumptions CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes.
 Print Assumptions JournalVersionFreshness.advancing_never_reuses_current_version.

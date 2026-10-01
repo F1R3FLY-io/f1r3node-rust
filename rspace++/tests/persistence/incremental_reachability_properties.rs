@@ -48,6 +48,146 @@ enum Mutation {
     DecrementDecisionAfterUpdate,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CheckedInventory {
+    counts: [u64; 2],
+    objects: u64,
+    bytes: u64,
+}
+
+fn checked_inventory_event(
+    before: &CheckedInventory,
+    vertex: usize,
+    weight: u64,
+    add: bool,
+) -> Option<CheckedInventory> {
+    let mut next = before.clone();
+    let count = next.counts[vertex];
+    let updated = if add {
+        count.checked_add(1)?
+    } else {
+        count.checked_sub(1)?
+    };
+    if count == 0 {
+        next.objects = next.objects.checked_add(1)?;
+        next.bytes = next.bytes.checked_add(weight)?;
+    } else if updated == 0 {
+        next.objects = next.objects.checked_sub(1)?;
+        next.bytes = next.bytes.checked_sub(weight)?;
+    }
+    next.counts[vertex] = updated;
+    Some(next)
+}
+
+fn natural_inventory_event(
+    before: &CheckedInventory,
+    vertex: usize,
+    weights: [u64; 2],
+    add: bool,
+) -> Option<CheckedInventory> {
+    let mut counts = before.counts.map(u128::from);
+    if add {
+        counts[vertex] += 1;
+    } else if counts[vertex] == 0 {
+        return None;
+    } else {
+        counts[vertex] -= 1;
+    }
+    let objects = counts.iter().filter(|&&count| count > 0).count() as u128;
+    let bytes = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, count)| **count > 0)
+        .map(|(index, _)| weights[index] as u128)
+        .sum::<u128>();
+    if counts.iter().any(|&count| count > u64::MAX as u128) ||
+        objects > u64::MAX as u128 ||
+        bytes > u64::MAX as u128
+    {
+        return None;
+    }
+    Some(CheckedInventory {
+        counts: counts.map(|count| count as u64),
+        objects: objects as u64,
+        bytes: bytes as u64,
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn checked_reference_and_unique_inventory_refine_natural_arithmetic(
+        initial in prop_oneof![Just(0), Just(1), Just(u64::MAX - 1), Just(u64::MAX), any::<u64>()],
+        first_weight in prop_oneof![Just(1), Just(u64::MAX - 1), Just(u64::MAX), any::<u64>().prop_map(|value| value.max(1))],
+        second_weight in prop_oneof![Just(1), Just(u64::MAX - 1), Just(u64::MAX), any::<u64>().prop_map(|value| value.max(1))],
+    ) {
+        let weights = [first_weight, second_weight];
+        let mut state = CheckedInventory {
+            counts: [initial, 0],
+            objects: u64::from(initial > 0),
+            bytes: if initial > 0 { first_weight } else { 0 },
+        };
+        for (vertex, add) in [(0, true), (1, true), (1, true), (0, false),
+            (1, false), (1, false), (0, false)]
+        {
+            let before = state.clone();
+            let actual = checked_inventory_event(&before, vertex, weights[vertex], add);
+            let expected = natural_inventory_event(&before, vertex, weights, add);
+            prop_assert_eq!(&actual, &expected);
+            state = actual.unwrap_or(before);
+            prop_assert_eq!(state.objects, state.counts.iter().filter(|&&count| count > 0).count() as u64);
+            prop_assert_eq!(
+                state.bytes as u128,
+                state.counts.iter().enumerate()
+                    .filter(|(_, count)| **count > 0)
+                    .map(|(index, _)| weights[index] as u128)
+                    .sum::<u128>()
+            );
+        }
+    }
+}
+
+#[test]
+fn checked_inventory_boundary_controls_preserve_predecessor() {
+    let empty = CheckedInventory {
+        counts: [0, 0],
+        objects: 0,
+        bytes: 0,
+    };
+    assert_eq!(checked_inventory_event(&empty, 0, 1, false), None);
+    let maximal = checked_inventory_event(&empty, 0, u64::MAX, true).unwrap();
+    assert_eq!(maximal, CheckedInventory {
+        counts: [1, 0],
+        objects: 1,
+        bytes: u64::MAX
+    });
+    assert_eq!(checked_inventory_event(&maximal, 1, 1, true), None);
+    assert_eq!(maximal.bytes, u64::MAX);
+    let duplicated = checked_inventory_event(&maximal, 0, u64::MAX, true).unwrap();
+    assert_eq!(duplicated, CheckedInventory {
+        counts: [2, 0],
+        objects: 1,
+        bytes: u64::MAX
+    });
+    let remaining = checked_inventory_event(&duplicated, 0, u64::MAX, false).unwrap();
+    assert_eq!(remaining, maximal);
+    assert_eq!(checked_inventory_event(&remaining, 0, u64::MAX, false), Some(empty));
+    let almost_full = CheckedInventory {
+        counts: [u64::MAX - 1, 0],
+        objects: 1,
+        bytes: 1,
+    };
+    let full = checked_inventory_event(&almost_full, 0, 1, true).unwrap();
+    assert_eq!(full.counts[0], u64::MAX);
+    assert_eq!(checked_inventory_event(&full, 0, 1, true), None);
+    assert_eq!(full, CheckedInventory {
+        counts: [u64::MAX, 0],
+        objects: 1,
+        bytes: 1
+    });
+}
+
 fn root_counts(vertex_count: usize, roots: &[usize]) -> Vec<usize> {
     let mut counts = vec![0; vertex_count];
     for &root in roots {
