@@ -44,19 +44,21 @@
 // paired `.hashes` sidecars (manifest-independent for
 // correctness under lost manifest entries).
 //
-// Slice 9 (this PR) adds H-4 signing on `ManifestEntry`:
-// [`ManifestEntry::sign_bytes`] (canonical byte-encoding of
-// non-sig fields → Blake2b256 → the message the signature
-// covers), [`ManifestEntry::signed`] (populate the `sig` field
-// by signing with a secp256k1 secret key), and
-// [`ManifestEntry::verify_with_pubkey`] (verify an entry's sig
-// against a public key).  Fills the `sig` field forward-
-// declared in PR #509's wire format.  New error variants
-// [`SnapshotError::UnsignedManifestEntry`] and
-// [`SnapshotError::ManifestSignatureInvalid`] let join clients
-// distinguish "unsigned" from "signature mismatch" cleanly.
+// Slice 9 (PR #514) added H-4 signing on `ManifestEntry`:
+// [`ManifestEntry::sign_bytes`], [`ManifestEntry::signed`],
+// [`ManifestEntry::verify_with_pubkey`], plus
+// [`SnapshotError::UnsignedManifestEntry`] +
+// [`SnapshotError::ManifestSignatureInvalid`].
 //
-// Writer lands in a subsequent slice as its own natural unit.
+// Slice 10 (this PR, CAPSTONE) adds [`SnapshotWriter`] — the
+// cadence-driven orchestrator that ties every prior slice
+// together.  Per-block entry point [`SnapshotWriter::maybe_write`]
+// decides cadence hits, calls [`write_snapshot`] for data
+// slices, calls [`ManifestEntry::signed`] + [`append_manifest_entry`]
+// for both data and empty-sentinel manifest entries, and
+// kicks [`prune_snapshot_dir`] for retention — all with
+// best-effort posture so a single downstream failure does
+// not block subsequent block processing.
 //
 // # Snapshot semantics — log-structured
 //
@@ -2101,6 +2103,233 @@ fn split_top_level_commas(inner: &str) -> Vec<String> {
         parts.push(cur.trim().to_string());
     }
     parts
+}
+
+// ===========================================================
+// Cadence-driven orchestrator (slice 10) — SnapshotWriter
+// ===========================================================
+
+/// Per-block snapshot orchestrator.  Called once per block from
+/// the consensus runtime; decides whether this block's height
+/// hits the cadence and, if so, persists the snapshot bytes,
+/// signs + appends a manifest entry, and prunes old snapshots.
+///
+/// # Lifecycle
+///
+/// Instantiated at boot by a (yet-to-land) configuration layer
+/// that reads operator settings (snapshot dir, cadence, retain,
+/// optional validator signer key).  Held by the runtime and
+/// invoked via [`SnapshotWriter::maybe_write`] on every block.
+///
+/// # Fields and their defaults
+///
+/// - [`dir`] (`PathBuf`): where snapshots and the manifest live.
+///   Expected to be absolute + symlink-resolved by the config
+///   layer; this type doesn't re-validate.
+/// - [`cadence`] (`u64`): block interval between snapshots.
+///   Validated `>= 1` at config load; `0` would divide-by-zero
+///   this type's `is_multiple_of` check.
+/// - [`retain`] (`usize`): how many snapshots to keep after each
+///   write.  Default heuristic `max(2, cadence * 2)` ships as a
+///   placeholder — a floor of 2 guarantees joining validators
+///   can always fetch at least prior + current.  Operators
+///   with concrete join-SLA targets should set this explicitly.
+/// - [`signer_sk`] (`Option<Vec<u8>>`): optional secp256k1
+///   secret key for signing manifest entries at write time.
+///   `None` ships unsigned manifest lines (for tests or
+///   observer nodes without a validator identity).
+/// - [`payload_dir`] (`Option<PathBuf>`): optional on-disk
+///   payload store directory.  Forward-declared for a
+///   yet-to-land casper-integration slice that will prune the
+///   payload store alongside the snapshot dir via
+///   [`scan_retained_payload_hashes`]; this slice ships the
+///   field but does not read it.
+///
+/// # Secret-key material and `Clone`
+///
+/// `#[derive(Clone)]` duplicates `signer_sk`'s bytes in memory
+/// without zeroize-on-drop.  Fine for the single-instance-per-
+/// node setup where the writer is constructed once at boot and
+/// held by the runtime; a hot cloning path would want
+/// `secrecy::Secret` wrapping or HSM-backed signing.  Prefer
+/// moving the writer rather than cloning when both ergonomics
+/// allow.
+#[derive(Debug, Clone)]
+pub struct SnapshotWriter {
+    pub dir: PathBuf,
+    pub cadence: u64,
+    pub retain: usize,
+    pub signer_sk: Option<Vec<u8>>,
+    pub payload_dir: Option<PathBuf>,
+}
+
+impl SnapshotWriter {
+    /// Construct a writer applying the documented placeholder
+    /// retention heuristic `retain = max(2, cadence * 2)`.  The
+    /// floor of 2 guarantees joining validators can always
+    /// fetch at least prior + current.  Operators with concrete
+    /// join-SLA targets should construct the struct directly
+    /// with an explicit `retain` value instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cadence == 0` — would both divide-by-zero the
+    /// `is_multiple_of` check in [`maybe_write`] and trigger
+    /// `max(2, 0)` = 2 instead of the intended heuristic.  The
+    /// config layer is responsible for rejecting `cadence = 0`
+    /// at load time; this constructor catches it immediately
+    /// instead of deferring the panic to first invocation.
+    pub fn with_default_retain(
+        dir: PathBuf,
+        cadence: u64,
+        signer_sk: Option<Vec<u8>>,
+        payload_dir: Option<PathBuf>,
+    ) -> Self {
+        assert!(cadence >= 1, "cadence MUST be >= 1 (got 0)");
+        let retain = std::cmp::max(2, (cadence as usize).saturating_mul(2));
+        Self {
+            dir,
+            cadence,
+            retain,
+            signer_sk,
+            payload_dir,
+        }
+    }
+
+    /// Private helper: return a signed copy of `entry` if
+    /// `signer_sk` is set, else the entry unchanged.  Deduplicates
+    /// the sentinel + data branches of [`maybe_write`].
+    fn maybe_sign(&self, entry: ManifestEntry) -> ManifestEntry {
+        match &self.signer_sk {
+            Some(sk) => entry.signed(sk),
+            None => entry,
+        }
+    }
+
+    /// Try to persist a snapshot for `block_number` given the
+    /// block's consensus WAL contribution.
+    ///
+    /// Returns:
+    ///   - `Ok(None)` on cadence miss OR empty-sentinel append
+    ///     (no `.wal` file written in either case).
+    ///   - `Ok(Some((root, merkle_root)))` on a successful
+    ///     snapshot persist.  `root` is the atomic Blake2b256 of
+    ///     the whole blob (drives the on-disk filename); the
+    ///     `merkle_root` is the Phase 7b-1 Merkle root over 4 MiB
+    ///     chunk hashes (used by joiners to verify chunks fetched
+    ///     via the yet-to-land chunk-fetch opcode).
+    ///
+    /// Callers CANNOT distinguish "cadence miss" from "empty-
+    /// sentinel append" from the return value — both are
+    /// `Ok(None)`.  Join clients learn about empty-sentinel
+    /// slices by reading the manifest.
+    ///
+    /// # Config invariants (debug-asserted)
+    ///
+    /// `cadence >= 1` (required by `is_multiple_of`) and
+    /// `retain >= 1` (required for retention to leave at least
+    /// one survivor) are debug-asserted at the method entry.
+    /// Release builds trust the config layer to enforce these;
+    /// in debug / test builds a misconfigured caller surfaces
+    /// here instead of silently producing weird behavior.
+    ///
+    /// # Cadence math
+    ///
+    /// Writes on blocks where `block_number % cadence == 0`.
+    /// Block 0 (genesis) is a cadence hit (`0 % N == 0`) — cheap
+    /// and useful for joining validators as an early-warning
+    /// content hash.  Negative `block_number` returns `Ok(None)`
+    /// (treated as "no block yet").
+    ///
+    /// # Empty-entries case — the sentinel
+    ///
+    /// A cadence hit with no WAL entries writes NO `.wal` file
+    /// but DOES append an empty-sentinel manifest line
+    /// ([`ManifestEntry::empty`]).  Pre-sentinel semantics were
+    /// a silent skip, indistinguishable from a cadence miss to
+    /// a joining validator; the sentinel lets joiners verify
+    /// they have not missed a snapshot boundary.  The sentinel
+    /// is signed if `signer_sk` is set — H-4 authenticity
+    /// extends to empty slices.
+    ///
+    /// # Best-effort tail: manifest append + prune
+    ///
+    /// The snapshot `.wal` write is the authoritative durable
+    /// act.  Both manifest-append and prune failures log at
+    /// `warn` but do NOT propagate — joiners can reconstruct
+    /// the manifest from a directory scan (see PR #511's
+    /// "conservative posture"), and retention is bounded by
+    /// future successful prune passes anyway.  Logging at warn
+    /// (vs. silent discard) makes persistent failures
+    /// operator-observable.
+    pub fn maybe_write(
+        &self,
+        block_number: i64,
+        entries: &[WalEntry],
+    ) -> Result<Option<([u8; 32], [u8; 32])>, SnapshotError> {
+        debug_assert!(
+            self.cadence >= 1,
+            "SnapshotWriter.cadence MUST be >= 1 (config-layer invariant)"
+        );
+        debug_assert!(
+            self.retain >= 1,
+            "SnapshotWriter.retain MUST be >= 1 (config-layer invariant)"
+        );
+
+        if block_number < 0 {
+            return Ok(None);
+        }
+        let bn = block_number as u64;
+        if !bn.is_multiple_of(self.cadence) {
+            return Ok(None);
+        }
+
+        if entries.is_empty() {
+            let sentinel = self.maybe_sign(ManifestEntry::empty(block_number));
+            if let Err(e) = append_manifest_entry(&self.dir, sentinel) {
+                tracing::warn!(
+                    target: "f1r3fly.fs_wal.snapshot.manifest",
+                    block_number,
+                    error = %e,
+                    "manifest append (empty sentinel) failed; join-protocol \
+                     enumeration will need directory-scan fallback"
+                );
+            }
+            return Ok(None);
+        }
+
+        let (_, root, merkle_root) = write_snapshot(&self.dir, entries)?;
+        tracing::info!(
+            target: "f1r3fly.fs_wal.snapshot",
+            block_number,
+            root_short = %hex_short(&root),
+            merkle_root_short = %hex_short(&merkle_root),
+            n_entries = entries.len(),
+            "snapshot persisted"
+        );
+
+        let data_entry = self.maybe_sign(ManifestEntry::data(block_number, root, entries.len()));
+        if let Err(e) = append_manifest_entry(&self.dir, data_entry) {
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot.manifest",
+                block_number,
+                error = %e,
+                "manifest append failed; snapshot persisted but join-protocol \
+                 enumeration will need directory-scan fallback"
+            );
+        }
+
+        if let Err(e) = prune_snapshot_dir(&self.dir, self.retain) {
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot",
+                block_number,
+                error = %e,
+                "prune failed; retention will catch up on next successful pass"
+            );
+        }
+
+        Ok(Some((root, merkle_root)))
+    }
 }
 
 #[cfg(test)]
@@ -4587,5 +4816,363 @@ mod tests {
             entry.verify_with_pubkey(&pk),
             Err(SnapshotError::ManifestSignatureInvalid)
         ));
+    }
+
+    // ---------------------------------------------------------------
+    // SnapshotWriter (slice 10)
+    // ---------------------------------------------------------------
+
+    fn mk_writer(dir: PathBuf, cadence: u64, retain: usize) -> SnapshotWriter {
+        SnapshotWriter {
+            dir,
+            cadence,
+            retain,
+            signer_sk: None,
+            payload_dir: None,
+        }
+    }
+
+    /// Cadence miss: block_number not a multiple of cadence →
+    /// Ok(None), no files touched.
+    #[test]
+    fn snapshot_writer_cadence_miss_returns_none_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 10, 2);
+        assert_eq!(w.maybe_write(5, &diverse_entries()).unwrap(), None);
+        assert_eq!(
+            std::fs::read_dir(tmp.path()).unwrap().count(),
+            0,
+            "cadence miss writes nothing"
+        );
+    }
+
+    /// Negative block number → Ok(None) (pre-genesis sentinel
+    /// value).
+    #[test]
+    fn snapshot_writer_negative_block_number_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 2);
+        assert_eq!(w.maybe_write(-1, &diverse_entries()).unwrap(), None);
+    }
+
+    /// Genesis (block_number = 0) is a cadence hit for ANY
+    /// cadence (0 % N == 0 for all N >= 1).
+    #[test]
+    fn snapshot_writer_genesis_block_zero_is_cadence_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 10, 2);
+        let out = w.maybe_write(0, &diverse_entries()).unwrap();
+        assert!(out.is_some(), "block 0 is a cadence hit for any cadence");
+    }
+
+    /// Cadence hit with non-empty entries: writes a `.wal` file,
+    /// returns Ok(Some(root, merkle_root)) matching an
+    /// independent `write_snapshot` call for the same entries.
+    #[test]
+    fn snapshot_writer_cadence_hit_writes_snapshot_and_returns_matching_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        let entries = diverse_entries();
+        let (root, merkle_root) = w.maybe_write(1, &entries).unwrap().expect("Some");
+
+        // Independent write (into a different dir) MUST produce
+        // the same (root, merkle_root) — content-addressing is
+        // deterministic across validators.
+        let indep = tempfile::tempdir().unwrap();
+        let (_, root2, merkle2) = write_snapshot(indep.path(), &entries).unwrap();
+        assert_eq!(root, root2);
+        assert_eq!(merkle_root, merkle2);
+
+        // The writer's dir contains the `.wal` at the expected
+        // content-addressed path.
+        assert!(snapshot_path(tmp.path(), &root).exists());
+    }
+
+    /// Empty-entries cadence hit writes NO `.wal` file but DOES
+    /// append an empty-sentinel manifest line.  Return value is
+    /// Ok(None) — caller cannot distinguish from cadence miss.
+    #[test]
+    fn snapshot_writer_empty_entries_writes_sentinel_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        assert_eq!(w.maybe_write(5, &[]).unwrap(), None);
+        // No `.wal` file.
+        let wal_count = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("wal"))
+            .count();
+        assert_eq!(wal_count, 0, "no .wal file on empty-sentinel cadence hit");
+        // Manifest has one entry: the empty sentinel.
+        let entries = read_manifest(tmp.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].block_number, 5);
+        assert_eq!(entries[0].root, None, "empty sentinel has root = None");
+        assert_eq!(entries[0].entries, 0);
+    }
+
+    /// Load-bearing: a successful write appends a corresponding
+    /// manifest entry.  The two sides of the write (snapshot +
+    /// manifest) stay paired.
+    #[test]
+    fn snapshot_writer_appends_manifest_entry_on_successful_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        let entries = diverse_entries();
+        let (root, _) = w.maybe_write(7, &entries).unwrap().expect("Some");
+        let manifest = read_manifest(tmp.path()).unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].block_number, 7);
+        assert_eq!(manifest[0].root, Some(root));
+        assert_eq!(manifest[0].entries, entries.len() as u64);
+    }
+
+    /// `signer_sk = None` ships unsigned manifest entries (the
+    /// pre-H-4 wire format).  Join clients MUST reject these in
+    /// production, but tests and observer nodes may legitimately
+    /// produce them.
+    #[test]
+    fn snapshot_writer_without_signer_produces_unsigned_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        w.maybe_write(1, &diverse_entries()).unwrap();
+        let manifest = read_manifest(tmp.path()).unwrap();
+        assert_eq!(manifest[0].sig, None);
+    }
+
+    /// Load-bearing H-4 end-to-end: `signer_sk = Some(sk)` emits
+    /// a signed manifest entry that verifies under the matching
+    /// pubkey.
+    #[test]
+    fn snapshot_writer_with_signer_produces_verifiable_signed_entry() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        w.signer_sk = Some(sk);
+        w.maybe_write(1, &diverse_entries()).unwrap();
+        let manifest = read_manifest(tmp.path()).unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert!(manifest[0].sig.is_some(), "signed entry has sig populated");
+        manifest[0]
+            .verify_with_pubkey(&pk)
+            .expect("signed entry verifies under matching pubkey");
+    }
+
+    /// H-4 authenticity extends to empty-sentinel entries so a
+    /// malicious actor cannot forge a fake "I had no WAL
+    /// entries at block N" claim.
+    #[test]
+    fn snapshot_writer_with_signer_signs_empty_sentinel() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        w.signer_sk = Some(sk);
+        w.maybe_write(1, &[]).unwrap();
+        let manifest = read_manifest(tmp.path()).unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].root, None, "sentinel");
+        manifest[0]
+            .verify_with_pubkey(&pk)
+            .expect("signed sentinel verifies");
+    }
+
+    /// Prune integration: with `retain = 2` and 4 cadence hits
+    /// at distinct block heights (each producing a distinct
+    /// `.wal` via distinct content), only the 2 newest `.wal`
+    /// files survive after the fourth write.
+    ///
+    /// Note on determinism: `prune_snapshot_dir` orders by mtime
+    /// (then filename as tiebreaker, per PR #511).  Back-to-back
+    /// `maybe_write` calls within the same mtime tick fall back
+    /// to the filename tiebreaker.  To keep this test
+    /// deterministic across clocks we only assert the SURVIVING
+    /// COUNT, not which specific `.wal` survives.
+    #[test]
+    fn snapshot_writer_maybe_write_prunes_according_to_retain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 2);
+        for i in 1..=4 {
+            // Each write uses a distinct payload so content
+            // hashes (and thus `.wal` filenames) differ.
+            let entries = vec![WalEntry {
+                op: WalOp::Write,
+                path: PathBuf::from("/@bundle/x"),
+                extra_path: None,
+                offset: None,
+                length: Some(1),
+                payload_ref: Some(PayloadRef::hash(&[i as u8])),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            }];
+            w.maybe_write(i, &entries).unwrap();
+        }
+        let wal_count = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("wal"))
+            .count();
+        assert_eq!(wal_count, 2, "retain = 2 leaves exactly 2 .wal files");
+    }
+
+    /// Load-bearing end-to-end: two cadence hits produce two
+    /// manifest entries in append order.  Pins the two-phase
+    /// commit (snapshot write + manifest append) across
+    /// multiple blocks.
+    #[test]
+    fn snapshot_writer_two_cadence_hits_produce_two_ordered_manifest_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        let entries_a = diverse_entries();
+        let mut entries_b = entries_a.clone();
+        entries_b.push(WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/@bundle/second"),
+            extra_path: None,
+            offset: None,
+            length: Some(4),
+            payload_ref: Some(PayloadRef::hash(b"more")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        });
+        w.maybe_write(1, &entries_a).unwrap().expect("Some");
+        w.maybe_write(2, &entries_b).unwrap().expect("Some");
+        let manifest = read_manifest(tmp.path()).unwrap();
+        assert_eq!(manifest.len(), 2);
+        assert_eq!(manifest[0].block_number, 1);
+        assert_eq!(manifest[1].block_number, 2);
+        assert_ne!(
+            manifest[0].root, manifest[1].root,
+            "distinct content → distinct roots"
+        );
+    }
+
+    /// Best-effort manifest-append posture: when the manifest
+    /// append fails (we orchestrate this by pre-creating
+    /// `manifest.jsonl` as a directory), `maybe_write` still
+    /// returns Ok(Some(...)) because the snapshot `.wal` is
+    /// already durable.  Pins the "snapshot durability is the
+    /// authoritative act; manifest is best-effort" rationale
+    /// from the docstring.
+    #[test]
+    fn snapshot_writer_manifest_append_failure_does_not_fail_snapshot_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Preempt the manifest-append with a path that can't be
+        // opened as a file.
+        std::fs::create_dir(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        let entries = diverse_entries();
+        let out = w.maybe_write(1, &entries).unwrap();
+        assert!(
+            out.is_some(),
+            "snapshot write succeeded despite manifest failure"
+        );
+
+        let (root, _) = out.unwrap();
+        assert!(
+            snapshot_path(tmp.path(), &root).exists(),
+            ".wal file durable despite manifest-append failure"
+        );
+        // Manifest path is still a directory (the open+append
+        // failed silently per best-effort posture).
+        assert!(
+            tmp.path().join(MANIFEST_FILENAME).is_dir(),
+            "manifest.jsonl is still a directory (append silently failed)"
+        );
+    }
+
+    /// Same best-effort posture applies to the empty-sentinel
+    /// path: a manifest-append failure must not propagate.
+    #[test]
+    fn snapshot_writer_empty_sentinel_manifest_failure_does_not_propagate() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+
+        let w = mk_writer(tmp.path().to_path_buf(), 1, 10);
+        // Must not panic or propagate.
+        assert_eq!(w.maybe_write(1, &[]).unwrap(), None);
+    }
+
+    /// `with_default_retain` applies the documented
+    /// `max(2, cadence * 2)` heuristic — including the floor of
+    /// 2 when `cadence * 2 < 2` (i.e., `cadence = 0` is rejected
+    /// so the floor fires at `cadence = 1`: `max(2, 2) = 2`).
+    #[test]
+    fn snapshot_writer_with_default_retain_applies_heuristic() {
+        let dir = PathBuf::from("/x");
+        assert_eq!(
+            SnapshotWriter::with_default_retain(dir.clone(), 1, None, None).retain,
+            2,
+            "cadence=1 → floor at 2"
+        );
+        assert_eq!(
+            SnapshotWriter::with_default_retain(dir.clone(), 10, None, None).retain,
+            20,
+            "cadence=10 → 10 * 2"
+        );
+        assert_eq!(
+            SnapshotWriter::with_default_retain(dir.clone(), 100, None, None).retain,
+            200,
+            "cadence=100 → 100 * 2"
+        );
+        // Also pin that the heuristic constructor's result works
+        // as a valid writer (no debug_assert fires on retain=2 /
+        // cadence=1).
+        let tmp = tempfile::tempdir().unwrap();
+        let w = SnapshotWriter::with_default_retain(tmp.path().to_path_buf(), 1, None, None);
+        assert!(w.maybe_write(1, &diverse_entries()).unwrap().is_some());
+    }
+
+    /// `with_default_retain` panics on `cadence = 0` — the one
+    /// documented panic surface, caught at construction time
+    /// rather than deferred to first `maybe_write` call (which
+    /// would divide-by-zero in `is_multiple_of`).
+    #[test]
+    #[should_panic(expected = "cadence MUST be >= 1")]
+    fn snapshot_writer_with_default_retain_panics_on_cadence_zero() {
+        let _ = SnapshotWriter::with_default_retain(PathBuf::from("/x"), 0, None, None);
+    }
+
+    /// Debug build fires the `cadence >= 1` invariant assertion
+    /// when a caller constructs the struct directly with
+    /// `cadence = 0` (bypassing `with_default_retain`'s panic)
+    /// and then calls `maybe_write`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "cadence MUST be >= 1")]
+    fn snapshot_writer_maybe_write_debug_asserts_cadence_invariant() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Direct construction with cadence=0 — bypasses the
+        // constructor's panic.
+        let w = SnapshotWriter {
+            dir: tmp.path().to_path_buf(),
+            cadence: 0,
+            retain: 2,
+            signer_sk: None,
+            payload_dir: None,
+        };
+        let _ = w.maybe_write(1, &diverse_entries());
+    }
+
+    /// Debug build fires the `retain >= 1` invariant assertion
+    /// when a caller constructs the struct directly with
+    /// `retain = 0`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "retain MUST be >= 1")]
+    fn snapshot_writer_maybe_write_debug_asserts_retain_invariant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = SnapshotWriter {
+            dir: tmp.path().to_path_buf(),
+            cadence: 1,
+            retain: 0,
+            signer_sk: None,
+            payload_dir: None,
+        };
+        let _ = w.maybe_write(1, &diverse_entries());
     }
 }
