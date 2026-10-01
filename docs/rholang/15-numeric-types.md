@@ -65,9 +65,16 @@ Arbitrary-precision signed integer. Suffix: `n`.
 0n
 ```
 
-No size cap. Gas scales with operand byte length (see [Cost Model](13-cost-model.md)):
+No language-level size cap. Arithmetic complexity scales with operand byte
+length:
 - Add/sub: `O(max(a_len, b_len))`
 - Mul/div/mod: `O(a_len * b_len)` -- quadratic
+
+This complexity description is not a client-selected gas tariff. Consensus
+cost is authority-backed successful communication plus canonical RSpace bytes.
+Large integers increase quantitative cost when their canonical encoding is
+introduced, delivered, or committed to replay evidence. See the
+[Cost Model](13-cost-model.md).
 
 ### Unsigned Int Literals
 

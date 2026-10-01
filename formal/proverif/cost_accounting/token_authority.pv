@@ -1,0 +1,78 @@
+(* ════════════════════════════════════════════════════════════════════════
+   ProVerif cost-accounting token-authority security model — a runnable
+   Dolev-Yao cross-witness, the SECOND security witness alongside
+   formal/tamarin/cost_accounting/token_authority.spthy.
+
+   Division of labour (each tool to its strength):
+     • ProVerif (here) — SECRECY + AUTHENTICATION under an ACTIVE Dolev-Yao
+       attacker who fully controls the network. A token is minted with an
+       unforgeable authenticator (the minting authority's secret key — the
+       applied-pi image of the cost-accounting "tokens live on a SIGNATURE
+       channel"); a gated COMM fires only an authenticated token. ProVerif
+       discharges:
+         - fire_needs_mint  : a spend requires a prior mint of that token
+                              (channel unforgeability — an unminted/forged token
+                              cannot fire), even with the attacker controlling
+                              the wire,
+         - join_needs_mint  : a J2 join fires only on a minted combined token,
+         - minting_key_secret : the minting authority's key stays secret.
+     • Tamarin (.spthy) + Rocq (`ll_no_double_spend_single_witness`,
+       `consumed_fuel_count_eq_token_drop`) — the LINEAR "consumed exactly once"
+       no-double-spend / atomic-once consumption, which ProVerif's monotonic
+       Horn abstraction does not capture (replay of an already-minted token is
+       not unforgeability — it is the linear-resource leg).
+
+   This is the security/authority projection; the per-rule determinism and
+   funded-SN stay with the Rocq operational development.                      *)
+
+set traceDisplay = none.
+
+type key.
+
+(* The public network — the Dolev-Yao attacker reads, blocks, injects, replays. *)
+free net: channel.
+
+(* Perfect authenticators (MACs) keyed by the mint: with no destructor, signX(M,k)
+   is unforgeable without knowing k — the image of "only the holder of the
+   signature key mints on its channel". Two DOMAIN-SEPARATED constructors keep a
+   single-token authenticator from also funding a join (and vice versa). *)
+fun signTok(bitstring, key): bitstring.
+fun signJoin(bitstring, key): bitstring.
+
+(* The minting authority's key — secret. *)
+free mk: key [private].
+
+event Mint(bitstring).
+event Fire(bitstring).
+event MintC(bitstring).
+event JoinFire(bitstring).
+
+(* fire_needs_mint — unforgeability: every spend is preceded by a mint of that
+   token, even with the attacker controlling the network. *)
+query t: bitstring; event(Fire(t)) ==> event(Mint(t)).
+
+(* join_needs_mint — a combined (J2) token fires its join only if it was minted. *)
+query ct: bitstring; event(JoinFire(ct)) ==> event(MintC(ct)).
+
+(* minting_key_secret — the attacker cannot learn the minting key. *)
+query attacker(mk).
+
+(* A minter forges a fresh token, authenticates it, and publishes it on the wire. *)
+let minter =
+  new t: bitstring; event Mint(t); out(net, (t, signTok(t, mk))).
+
+(* A spender accepts a (token, tag) from the wire and fires ONLY a valid token. *)
+let spender =
+  in(net, (x: bitstring, sg: bitstring));
+  if sg = signTok(x, mk) then event Fire(x).
+
+(* A combined-token minter and join-firer for the J2 join property. *)
+let minterC =
+  new ct: bitstring; event MintC(ct); out(net, (ct, signJoin(ct, mk))).
+
+let joinFirer =
+  in(net, (y: bitstring, sg2: bitstring));
+  if sg2 = signJoin(y, mk) then event JoinFire(y).
+
+process
+  ( (! minter) | (! spender) | (! minterC) | (! joinFirer) )

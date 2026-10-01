@@ -8,12 +8,15 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use proptest::prelude::*;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Builder;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 struct WildcardPattern;
@@ -28,11 +31,201 @@ impl Match<WildcardPattern, String, StringCont> for AlwaysMatch {
 }
 
 type TestSpace = RSpace<String, WildcardPattern, String, StringCont>;
+type TestReplaySpace = ReplayRSpace<String, WildcardPattern, String, StringCont>;
 
 async fn make_rspace() -> TestSpace {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+async fn make_rspace_with_replay() -> (TestSpace, TestReplaySpace) {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+async fn create_isolated_branch_roots(
+    base: &TestSpace,
+) -> [rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash; 3] {
+    let first = base.spawn().unwrap();
+    let second = base.spawn().unwrap();
+    let third = base.spawn().unwrap();
+    let (first, second, third) = tokio::join!(
+        async {
+            first
+                .produce("branch-0".to_string(), "value-0".to_string(), false)
+                .await
+                .unwrap();
+            first.create_checkpoint().await.unwrap().root
+        },
+        async {
+            second
+                .produce("branch-1".to_string(), "value-1".to_string(), false)
+                .await
+                .unwrap();
+            second.create_checkpoint().await.unwrap().root
+        },
+        async {
+            third
+                .produce("branch-2".to_string(), "value-2".to_string(), false)
+                .await
+                .unwrap();
+            third.create_checkpoint().await.unwrap().root
+        }
+    );
+    [first, second, third]
+}
+
+async fn assert_replay_branch(
+    reader: &TestReplaySpace,
+    root: &rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    branch: usize,
+) {
+    assert_eq!(reader.get_root().await, *root);
+    for candidate in 0..3 {
+        let values = reader
+            .get_data(&format!("branch-{candidate}"))
+            .await
+            .into_iter()
+            .map(|datum| datum.a)
+            .collect::<Vec<_>>();
+        if candidate == branch {
+            assert_eq!(values, vec![format!("value-{candidate}")]);
+        } else {
+            assert!(values.is_empty());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawned_checkpoints_remain_recorded_and_state_isolated() {
+    let base = make_rspace().await;
+    let base_root = base.create_checkpoint().await.unwrap().root;
+    let left = base.spawn().unwrap();
+    let right = base.spawn().unwrap();
+
+    let (left_checkpoint, right_checkpoint) = tokio::join!(
+        async {
+            left.produce("left".to_string(), "left-value".to_string(), false)
+                .await
+                .unwrap();
+            left.create_checkpoint().await.unwrap()
+        },
+        async {
+            right
+                .produce("right".to_string(), "right-value".to_string(), false)
+                .await
+                .unwrap();
+            right.create_checkpoint().await.unwrap()
+        }
+    );
+
+    assert_ne!(left_checkpoint.root, base_root);
+    assert_ne!(right_checkpoint.root, base_root);
+    assert_ne!(left_checkpoint.root, right_checkpoint.root);
+    let roots = base.get_history_repository();
+    assert!(roots.contains_root(&left_checkpoint.root).unwrap());
+    assert!(roots.contains_root(&right_checkpoint.root).unwrap());
+
+    let left_reader = base.spawn().unwrap();
+    let right_reader = base.spawn().unwrap();
+    let (left_reset, right_reset) = tokio::join!(
+        left_reader.reset(&left_checkpoint.root),
+        right_reader.reset(&right_checkpoint.root)
+    );
+    left_reset.unwrap();
+    right_reset.unwrap();
+
+    assert_eq!(
+        left_reader
+            .get_data(&"left".to_string())
+            .await
+            .into_iter()
+            .map(|datum| datum.a)
+            .collect::<Vec<_>>(),
+        vec!["left-value".to_string()]
+    );
+    assert!(left_reader.get_data(&"right".to_string()).await.is_empty());
+    assert_eq!(
+        right_reader
+            .get_data(&"right".to_string())
+            .await
+            .into_iter()
+            .map(|datum| datum.a)
+            .collect::<Vec<_>>(),
+        vec!["right-value".to_string()]
+    );
+    assert!(right_reader.get_data(&"left".to_string()).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replay_spawns_keep_explicit_roots_during_concurrent_resets() {
+    let (base, replay) = make_rspace_with_replay().await;
+    let roots = create_isolated_branch_roots(&base).await;
+    let first = replay.spawn().unwrap();
+    let second = replay.spawn().unwrap();
+    let third = replay.spawn().unwrap();
+
+    let (first_reset, second_reset, third_reset) =
+        tokio::join!(first.reset(&roots[2]), second.reset(&roots[0]), third.reset(&roots[1]));
+    first_reset.unwrap();
+    second_reset.unwrap();
+    third_reset.unwrap();
+
+    let (_, _, _) = tokio::join!(
+        assert_replay_branch(&first, &roots[2], 2),
+        assert_replay_branch(&second, &roots[0], 0),
+        assert_replay_branch(&third, &roots[1], 1)
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn arbitrary_concurrent_replay_resets_preserve_each_local_root(
+        schedule in proptest::collection::vec(0usize..3, 1..25)
+    ) {
+        Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let (base, replay) = make_rspace_with_replay().await;
+                let roots = create_isolated_branch_roots(&base).await;
+                let readers = [
+                    replay.spawn().unwrap(),
+                    replay.spawn().unwrap(),
+                    replay.spawn().unwrap(),
+                ];
+
+                for offset in 0..schedule.len() {
+                    let selected = [
+                        schedule[offset],
+                        schedule[(offset + 1) % schedule.len()],
+                        schedule[(offset + 2) % schedule.len()],
+                    ];
+                    let (first, second, third) = tokio::join!(
+                        readers[0].reset(&roots[selected[0]]),
+                        readers[1].reset(&roots[selected[1]]),
+                        readers[2].reset(&roots[selected[2]])
+                    );
+                    first.unwrap();
+                    second.unwrap();
+                    third.unwrap();
+                    let (_, _, _) = tokio::join!(
+                        assert_replay_branch(&readers[0], &roots[selected[0]], selected[0]),
+                        assert_replay_branch(&readers[1], &roots[selected[1]], selected[1]),
+                        assert_replay_branch(&readers[2], &roots[selected[2]], selected[2])
+                    );
+                }
+            });
+    }
 }
 
 async fn timed_produces(space: &TestSpace, ops: usize) -> std::time::Duration {

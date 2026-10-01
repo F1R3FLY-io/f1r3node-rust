@@ -505,6 +505,7 @@ jobs:
         crate:
           - rspace_plus_plus
           - rholang
+          - rho-pure-eval
           - shared
           - node
           - models
@@ -665,6 +666,7 @@ jobs:
         crate:
           - rspace_plus_plus
           - rholang
+          - rho-pure-eval
           - shared
           - node
           - models

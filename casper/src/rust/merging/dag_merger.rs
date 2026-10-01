@@ -2189,7 +2189,6 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-    use dashmap::DashMap;
     use rholang::rust::interpreter::rho_type::RhoNumber;
     use rspace_plus_plus::rspace::hashing::stable_hash_provider;
     use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
@@ -2206,13 +2205,11 @@ mod tests {
         removed: Vec<Vec<u8>>,
         added: Vec<Vec<u8>>,
     ) -> StateChange {
-        let datums_changes = DashMap::new();
-        datums_changes.insert(channel, ChannelChange { added, removed });
-        StateChange {
-            datums_changes,
-            cont_changes: DashMap::new(),
-            consume_channels_to_join_serialized_map: DashMap::new(),
-        }
+        StateChange::from_parts(
+            HashMap::from([(channel, ChannelChange { added, removed })]),
+            HashMap::new(),
+            HashMap::new(),
+        )
     }
 
     fn chain(
@@ -2343,6 +2340,7 @@ mod tests {
         let par_with_rnd = ListParWithRandom {
             pars: vec![RhoNumber::create_par(num)],
             random_state: rnd.to_bytes(),
+            ..Default::default()
         };
         let data_hash =
             stable_hash_provider::hash_produce(channel_hash.bytes(), &par_with_rnd, false);
@@ -3524,15 +3522,20 @@ mod tests {
 
         let run = |dependent: bool| -> Vec<DeployChainIndex> {
             // Producer: RMWs the cell (base -> produced) AND writes the counter.
-            let producer_changes = datum_change(cell.clone(), vec![base_value.clone()], vec![
-                produced.clone(),
-            ]);
-            producer_changes
-                .datums_changes
-                .insert(counter.clone(), ChannelChange {
-                    added: vec![encoded_number(&counter, 7)],
-                    removed: Vec::new(),
-                });
+            let producer_changes = StateChange::from_parts(
+                HashMap::from([
+                    (cell.clone(), ChannelChange {
+                        added: vec![produced.clone()],
+                        removed: vec![base_value.clone()],
+                    }),
+                    (counter.clone(), ChannelChange {
+                        added: vec![encoded_number(&counter, 7)],
+                        removed: Vec::new(),
+                    }),
+                ]),
+                HashMap::new(),
+                HashMap::new(),
+            );
             let (producer_log, consumer_log) = if dependent {
                 let mut p = EventLogIndex::empty();
                 p.produces_linear = HashableSet(HashSet::from([carried.clone()]));

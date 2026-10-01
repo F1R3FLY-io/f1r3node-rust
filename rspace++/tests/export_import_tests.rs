@@ -86,7 +86,8 @@ async fn export_and_import_of_one_page_should_works_correctly() {
         page_size,
         start_skip,
         importer1,
-    );
+    )
+    .unwrap();
 
     // Import page to space2
     importer2.set_history_items(history_items);
@@ -114,6 +115,23 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 
     let end_point = space2.create_checkpoint().await.unwrap();
     assert_eq!(end_point.root, RadixHistory::empty_root_node_hash())
+}
+
+#[tokio::test]
+async fn corrupted_history_hash_returns_error() {
+    let (_, _, importer, _, _, _) = test_setup().await;
+    let root = Blake2b256Hash::from_bytes(vec![1; 32]);
+    let claimed_hash = Blake2b256Hash::from_bytes(vec![2; 32]);
+    let result = RSpaceImporterInstance::validate_state_items(
+        vec![(claimed_hash, vec![3; 16])],
+        Vec::new(),
+        vec![(root, None)],
+        750,
+        0,
+        importer,
+    );
+
+    assert!(matches!(result, Err(error) if error.contains("Trie hash does not match")));
 }
 
 #[tokio::test]
@@ -157,7 +175,8 @@ async fn multipage_export_should_work_correctly() {
             page_size,
             start_skip,
             importer1,
-        );
+        )
+        .unwrap();
 
         let r = (
             [history_items, history_items_page.clone()].concat(),
@@ -273,7 +292,8 @@ async fn multipage_export_with_skip_should_work_correctly() {
             page_size,
             skip,
             importer1,
-        );
+        )
+        .unwrap();
 
         let r = (
             [history_items, history_items_page.clone()].concat(),

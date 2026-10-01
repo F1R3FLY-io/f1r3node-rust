@@ -7,7 +7,7 @@ use prost::Message;
 
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::reduce::DebruijnInterpreter;
+use super::reduce::ReducerCore;
 use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
 use super::unwrap_option_safe;
 
@@ -25,7 +25,7 @@ pub fn build_env(data_list: Vec<ListParWithRandom>) -> Env<Par> {
 #[derive(Clone)]
 pub struct RholangAndScalaDispatcher {
     pub _dispatch_table: RhoDispatchMap,
-    pub reducer: Arc<OnceLock<Weak<DebruijnInterpreter>>>,
+    pub reducer: Arc<OnceLock<Weak<ReducerCore>>>,
 }
 
 pub type RhoDispatch = Arc<RholangAndScalaDispatcher>;

@@ -1,0 +1,57 @@
+@startuml
+title Validator funding lifecycle
+
+skinparam backgroundColor #FFFFFF
+skinparam activity {
+  BackgroundColor #E3F2FD
+  BorderColor #1565C0
+  DiamondBackgroundColor #FFF3E0
+  DiamondBorderColor #EF6C00
+  StartColor #2E7D32
+  EndColor #2E7D32
+  FontColor #102027
+}
+
+start
+:Authenticated genesis\ncredits initial allocation; <<genesis>>
+:Validator owns canonical\nSystemVault custody; <<custody>>
+
+if (Bond request is valid?) then (yes)
+  :Transfer existing custody\ninto PoS stake; <<transfer>>
+  :Create or increment\nbond generation; <<identity>>
+else (no)
+  :Reject without state change; <<reject>>
+  stop
+endif
+
+if (Epoch boundary reached?) then (yes)
+  :Select active validators; <<consensus>>
+else (no)
+  :Issue no validator credit; <<no-mint>>
+  stop
+endif
+
+if (Epoch is at or below frontier?) then (yes)
+  :Issue no duplicate credit; <<idempotent>>
+else (no)
+  if (Epoch follows frontier?) then (yes)
+    :Credit every active,\nnon-halted validator; <<mint>>
+    if (Every credit succeeds?) then (yes)
+      :Advance collective\nmint frontier; <<frontier>>
+    else (no)
+      :Restore exact pre-close state; <<reject>>
+    endif
+  else (no)
+    :Reject frontier gap\nwithout state change; <<reject>>
+  endif
+endif
+
+:Play and replay produce\nthe same post-state root; <<replay>>
+stop
+
+legend right
+  |= Color |= Meaning |
+  |<#E3F2FD>| State transition |
+  |<#FFF3E0>| Eligibility decision |
+endlegend
+@enduml

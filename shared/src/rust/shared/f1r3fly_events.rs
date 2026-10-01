@@ -1,6 +1,7 @@
 // F1r3flyEvents — event publishing with startup replay buffer.
 // Ported from node/src/main/scala/coop/rchain/node/effects/RchainEvents.scala
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,7 @@ pub struct F1r3flyEvents {
     sender: broadcast::Sender<F1r3flyEvent>,
     startup_sealed: Arc<AtomicBool>,
     startup_buffer: StartupBuffer,
+    finalized_blocks: Arc<Mutex<HashSet<String>>>,
 }
 
 impl F1r3flyEvents {
@@ -40,6 +42,7 @@ impl F1r3flyEvents {
             sender,
             startup_sealed: Arc::new(AtomicBool::new(false)),
             startup_buffer: Arc::new(Mutex::new(Some(Vec::new()))),
+            finalized_blocks: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -47,6 +50,15 @@ impl F1r3flyEvents {
     /// If the startup buffer is still open, the event is also buffered
     /// for replay to late-connecting WebSocket clients.
     pub fn publish(&self, event: F1r3flyEvent) -> Result<(), String> {
+        if let F1r3flyEvent::BlockFinalised(finalized) = &event {
+            let mut published = self
+                .finalized_blocks
+                .lock()
+                .map_err(|_| "finalized-event identity lock poisoned".to_string())?;
+            if !published.insert(finalized.block_hash.clone()) {
+                return Ok(());
+            }
+        }
         if !self.startup_sealed.load(Ordering::Acquire) {
             if let Ok(mut guard) = self.startup_buffer.lock() {
                 if let Some(ref mut buf) = *guard {
@@ -228,6 +240,26 @@ mod tests {
             elapsed < Duration::from_millis(500),
             "Test took {:?} - expected ~50ms, waker may not be working correctly",
             elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_finalized_block_is_published_once() {
+        let events = F1r3flyEvents::new();
+        let mut stream = events.consume();
+        let event = create_block_finalised_event();
+
+        events.publish(event.clone()).unwrap();
+        events.publish(event).unwrap();
+
+        assert!(matches!(
+            stream.next().await,
+            Some(F1r3flyEvent::BlockFinalised(_))
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), stream.next())
+                .await
+                .is_err()
         );
     }
 

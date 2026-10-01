@@ -378,16 +378,8 @@ mod tests {
     ///
     /// # Per-branch anchor
     ///
-    /// The 11 pinned constants below are anchored against this
-    /// triage branch's Par serialization + Blake2b256 impl at PR
-    /// 2.8 landing.  Values do NOT match fileio's identically-
-    /// shaped pins — dev's dependency graph resolves to different
-    /// bincode / prost versions, so the stable-hash inputs differ
-    /// byte-for-byte.  This is the same per-branch-anchor
-    /// situation as `consensus_fingerprint`'s golden hex.  When
-    /// this triage branch eventually merges back to a canonical-
-    /// ordered `rust/dev`, expect one coordinated regeneration
-    /// pass on both the fingerprint hex AND these 11 constants.
+    /// These pins follow the cost-accounting Par schema after the dev merge.
+    /// Activation requires fresh genesis and the same schema at every node.
     #[test]
     fn cons3_stable_hash_pinned_for_known_pars() {
         use super::super::errors::{FSERR_BAD_ARG, FSERR_IO};
@@ -403,8 +395,8 @@ mod tests {
         let empty_ok_hash = par_stable_hash(&empty_ok);
         // Pinned bytes (regenerate on intentional roll).
         const EXPECTED_EMPTY_OK: [u8; 32] = [
-            119, 68, 78, 243, 133, 152, 110, 124, 198, 181, 74, 235, 79, 177, 172, 38, 203, 235,
-            114, 155, 208, 120, 203, 73, 74, 176, 191, 128, 143, 49, 155, 88,
+            89, 167, 148, 142, 26, 75, 85, 14, 41, 59, 13, 160, 239, 236, 58, 176, 116, 38, 180,
+            54, 121, 32, 0, 75, 107, 121, 123, 46, 228, 251, 160, 110,
         ];
         assert_eq!(
             empty_ok_hash, EXPECTED_EMPTY_OK,
@@ -419,8 +411,8 @@ mod tests {
         let bad_arg_reply = err(FSERR_BAD_ARG, "example");
         let bad_arg_hash = par_stable_hash(&bad_arg_reply);
         const EXPECTED_BAD_ARG: [u8; 32] = [
-            162, 235, 29, 195, 216, 118, 228, 131, 219, 87, 1, 71, 243, 30, 222, 228, 133, 182,
-            173, 116, 48, 92, 76, 4, 227, 116, 173, 97, 160, 208, 40, 14,
+            7, 68, 175, 62, 6, 223, 205, 97, 254, 101, 101, 108, 179, 34, 2, 59, 84, 168, 160, 44,
+            237, 45, 237, 179, 38, 147, 155, 123, 196, 89, 14, 129,
         ];
         assert_eq!(
             bad_arg_hash, EXPECTED_BAD_ARG,
@@ -439,8 +431,8 @@ mod tests {
         // io hashes identically would still pass the assert_ne!
         // below.  The per-shape pin catches that.
         const EXPECTED_IO_ERR: [u8; 32] = [
-            145, 182, 30, 120, 0, 5, 25, 100, 46, 36, 240, 210, 87, 50, 233, 85, 201, 81, 5, 196,
-            133, 50, 27, 23, 249, 76, 143, 248, 115, 242, 31, 198,
+            166, 134, 208, 92, 33, 174, 4, 188, 26, 50, 224, 252, 24, 64, 186, 196, 66, 113, 51,
+            238, 225, 93, 81, 144, 225, 123, 158, 48, 211, 144, 81, 192,
         ];
         assert_eq!(
             io_hash, EXPECTED_IO_ERR,
@@ -465,8 +457,8 @@ mod tests {
         // — subtly different wire bytes).
         let bare_ok_hash = par_stable_hash(&ok_bare());
         const EXPECTED_OK_BARE: [u8; 32] = [
-            107, 154, 136, 229, 143, 183, 156, 151, 253, 248, 83, 217, 50, 206, 169, 190, 117, 96,
-            239, 93, 96, 129, 178, 138, 137, 110, 95, 226, 205, 74, 121, 74,
+            82, 147, 151, 219, 74, 164, 235, 233, 239, 18, 199, 89, 244, 91, 142, 82, 96, 141, 214,
+            219, 56, 78, 181, 71, 121, 197, 126, 184, 153, 217, 232, 6,
         ];
         assert_eq!(
             bare_ok_hash, EXPECTED_OK_BARE,
@@ -478,8 +470,8 @@ mod tests {
         // (position), etc.  Pins the GInt encoding.
         let ok_int_hash = par_stable_hash(&ok_int(42));
         const EXPECTED_OK_INT_42: [u8; 32] = [
-            135, 92, 153, 234, 253, 51, 233, 32, 72, 147, 67, 172, 235, 243, 145, 115, 207, 158,
-            49, 7, 211, 118, 45, 177, 239, 141, 190, 222, 141, 142, 140, 193,
+            51, 96, 87, 171, 31, 222, 60, 15, 222, 21, 30, 120, 92, 184, 132, 206, 41, 146, 180,
+            180, 104, 64, 40, 150, 147, 209, 204, 34, 95, 93, 134, 255,
         ];
         assert_eq!(
             ok_int_hash, EXPECTED_OK_INT_42,
@@ -491,8 +483,8 @@ mod tests {
         // identically to GInt(0/1) would surface here vs. Case 5.
         let ok_bool_hash = par_stable_hash(&ok_bool(true));
         const EXPECTED_OK_BOOL_TRUE: [u8; 32] = [
-            9, 26, 160, 211, 236, 243, 142, 169, 244, 75, 11, 124, 46, 148, 25, 165, 175, 79, 76,
-            159, 111, 121, 119, 18, 182, 7, 67, 231, 32, 121, 87, 174,
+            47, 136, 47, 67, 46, 225, 56, 12, 207, 13, 251, 168, 53, 69, 16, 147, 54, 70, 249, 24,
+            232, 200, 240, 73, 236, 26, 198, 53, 94, 146, 237, 108,
         ];
         assert_eq!(
             ok_bool_hash, EXPECTED_OK_BOOL_TRUE,
@@ -503,8 +495,8 @@ mod tests {
         // fs_read's reply.  Pins the GByteArray encoding.
         let ok_bytes_hash = par_stable_hash(&ok_bytes(vec![0xaa, 0xbb, 0xcc]));
         const EXPECTED_OK_BYTES_AABBCC: [u8; 32] = [
-            60, 91, 188, 191, 162, 185, 129, 243, 195, 174, 1, 84, 122, 199, 0, 100, 125, 116, 31,
-            94, 167, 4, 85, 128, 232, 30, 151, 152, 174, 161, 147, 132,
+            247, 91, 85, 18, 230, 71, 121, 102, 35, 39, 202, 202, 109, 173, 38, 132, 150, 31, 18,
+            130, 118, 50, 245, 107, 157, 75, 250, 81, 219, 28, 249, 29,
         ];
         assert_eq!(
             ok_bytes_hash, EXPECTED_OK_BYTES_AABBCC,
@@ -515,8 +507,8 @@ mod tests {
         // fs_quarantine's reply.  Pins the GString encoding.
         let ok_string_hash = par_stable_hash(&ok_string("hello".to_string()));
         const EXPECTED_OK_STRING_HELLO: [u8; 32] = [
-            97, 151, 102, 147, 7, 140, 199, 50, 63, 63, 140, 199, 86, 207, 150, 44, 204, 150, 144,
-            193, 214, 127, 140, 187, 182, 171, 17, 60, 110, 41, 236, 81,
+            175, 78, 235, 95, 251, 71, 13, 48, 55, 45, 152, 93, 156, 127, 199, 206, 96, 216, 5, 75,
+            56, 51, 81, 238, 189, 154, 43, 32, 100, 66, 142, 232,
         ];
         assert_eq!(
             ok_string_hash, EXPECTED_OK_STRING_HELLO,
@@ -530,8 +522,8 @@ mod tests {
         let entry_b = ok_string("dir".to_string());
         let ok_nested_hash = par_stable_hash(&ok_list(vec![entry_a, entry_b]));
         const EXPECTED_OK_NESTED_LIST: [u8; 32] = [
-            57, 161, 248, 163, 120, 104, 49, 5, 17, 166, 195, 1, 159, 224, 123, 252, 224, 123, 34,
-            86, 247, 2, 225, 231, 189, 132, 130, 70, 247, 2, 14, 37,
+            100, 4, 18, 166, 58, 200, 157, 131, 71, 140, 90, 225, 181, 138, 116, 166, 190, 138,
+            238, 116, 22, 92, 3, 3, 77, 137, 187, 221, 93, 71, 228, 213,
         ];
         assert_eq!(
             ok_nested_hash, EXPECTED_OK_NESTED_LIST,
@@ -544,8 +536,8 @@ mod tests {
         // FSERR shape would hash differently.
         let eos_hash = par_stable_hash(&err_eos());
         const EXPECTED_ERR_EOS: [u8; 32] = [
-            246, 91, 22, 107, 136, 134, 68, 233, 121, 244, 253, 188, 130, 87, 57, 207, 168, 233,
-            247, 151, 57, 212, 205, 91, 59, 199, 207, 85, 183, 127, 141, 253,
+            148, 21, 6, 250, 199, 107, 135, 241, 69, 250, 125, 251, 136, 233, 51, 174, 251, 53, 83,
+            99, 135, 163, 15, 247, 41, 210, 170, 50, 227, 53, 29, 212,
         ];
         assert_eq!(
             eos_hash, EXPECTED_ERR_EOS,
@@ -572,8 +564,8 @@ mod tests {
         // so `error_record` is a faithful proxy.
         let emap_hash = par_stable_hash(&ok_par(error_record("target", "example error")));
         const EXPECTED_ERR_EMAP: [u8; 32] = [
-            119, 174, 145, 222, 110, 25, 178, 74, 223, 169, 238, 192, 168, 47, 121, 34, 243, 119,
-            170, 166, 155, 148, 121, 95, 85, 166, 50, 225, 247, 60, 29, 139,
+            230, 153, 196, 238, 244, 219, 255, 88, 230, 152, 182, 167, 24, 235, 206, 201, 13, 18,
+            45, 86, 65, 63, 20, 219, 250, 23, 249, 96, 18, 162, 132, 180,
         ];
         assert_eq!(
             emap_hash, EXPECTED_ERR_EMAP,

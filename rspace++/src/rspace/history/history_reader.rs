@@ -1,4 +1,5 @@
-use crate::rspace::errors::HistoryError;
+use crate::rspace::errors::{HistoryError, RSpaceError};
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 
 /**
@@ -50,6 +51,14 @@ pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone> {
      * Get reader which accepts non-serialized and hashed keys
      */
     fn base(&self) -> Box<dyn HistoryReaderBase<C, P, A, K>>;
+
+    fn base_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReaderBase<C, P, A, K>>, RSpaceError> {
+        meter.reserve(1, 0, std::mem::size_of_val(self))?;
+        Ok(self.base())
+    }
 
     fn get_data_proj_generic(&self, key: &C) -> Vec<Datum<A>>;
 

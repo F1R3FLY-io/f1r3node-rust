@@ -32,7 +32,7 @@ pub trait HasLocallyFree<T> {
 }
 
 // forTuple
-impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<(Par, Par)> for SpatialMatcherContext<'a> {
     fn connective_used(&self, source: (Par, Par)) -> bool {
         self.connective_used(source.0) || self.connective_used(source.1)
     }
@@ -46,13 +46,89 @@ impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
 }
 
 // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - line 357 and beyond
-impl HasLocallyFree<Par> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Par> for SpatialMatcherContext<'a> {
     fn connective_used(&self, p: Par) -> bool { p.connective_used }
 
     fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { p.locally_free }
 }
 
-impl HasLocallyFree<Bundle> for SpatialMatcherContext {
+fn signature_locally_free(signature: &CostSignature) -> Vec<u8> {
+    use models::rhoapi::cost_signature::Value;
+
+    match &signature.value {
+        Some(Value::BoundLevel(level)) if *level >= 0 => create_bit_vector(&[*level as usize]),
+        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.locally_free.clone(),
+        Some(Value::Compound(compound)) => compound
+            .elements
+            .iter()
+            .map(signature_locally_free)
+            .fold(Vec::new(), union),
+        _ => Vec::new(),
+    }
+}
+
+fn signature_connective_used(signature: &CostSignature) -> bool {
+    use models::rhoapi::cost_signature::Value;
+
+    match &signature.value {
+        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.connective_used,
+        Some(Value::Compound(compound)) => compound.elements.iter().any(signature_connective_used),
+        _ => false,
+    }
+}
+
+impl<'a> HasLocallyFree<If> for SpatialMatcherContext<'a> {
+    fn connective_used(&self, source: If) -> bool {
+        source.condition.as_ref().is_some_and(|p| p.connective_used)
+            || source.if_true.as_ref().is_some_and(|p| p.connective_used)
+            || source.if_false.as_ref().is_some_and(|p| p.connective_used)
+    }
+
+    fn locally_free(&self, source: If, _depth: i32) -> Vec<u8> {
+        [source.condition, source.if_true, source.if_false]
+            .into_iter()
+            .flatten()
+            .map(|p| p.locally_free)
+            .fold(Vec::new(), union)
+    }
+}
+
+impl<'a> HasLocallyFree<CostSignedTerm> for SpatialMatcherContext<'a> {
+    fn connective_used(&self, source: CostSignedTerm) -> bool {
+        source.body.as_ref().is_some_and(|p| p.connective_used)
+            || source
+                .signature
+                .as_ref()
+                .is_some_and(signature_connective_used)
+    }
+
+    fn locally_free(&self, source: CostSignedTerm, _depth: i32) -> Vec<u8> {
+        union(
+            source.body.map(|p| p.locally_free).unwrap_or_default(),
+            source
+                .signature
+                .as_ref()
+                .map(signature_locally_free)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+impl<'a> HasLocallyFree<CostStack> for SpatialMatcherContext<'a> {
+    fn connective_used(&self, source: CostStack) -> bool {
+        source.cells.iter().any(signature_connective_used)
+    }
+
+    fn locally_free(&self, source: CostStack, _depth: i32) -> Vec<u8> {
+        source
+            .cells
+            .iter()
+            .map(signature_locally_free)
+            .fold(Vec::new(), union)
+    }
+}
+
+impl<'a> HasLocallyFree<Bundle> for SpatialMatcherContext<'a> {
     fn connective_used(&self, _source: Bundle) -> bool { false }
 
     fn locally_free(&self, source: Bundle, _depth: i32) -> Vec<u8> {
@@ -60,19 +136,19 @@ impl HasLocallyFree<Bundle> for SpatialMatcherContext {
     }
 }
 
-impl HasLocallyFree<Send> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Send> for SpatialMatcherContext<'a> {
     fn connective_used(&self, s: Send) -> bool { s.connective_used }
 
     fn locally_free(&self, s: Send, _depth: i32) -> Vec<u8> { s.locally_free }
 }
 
-impl HasLocallyFree<GUnforgeable> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<GUnforgeable> for SpatialMatcherContext<'a> {
     fn connective_used(&self, _unf: GUnforgeable) -> bool { false }
 
     fn locally_free(&self, _s: GUnforgeable, _depth: i32) -> Vec<u8> { Default::default() }
 }
 
-impl HasLocallyFree<Expr> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Expr> for SpatialMatcherContext<'a> {
     fn connective_used(&self, e: Expr) -> bool {
         match e.expr_instance {
             Some(GBool(_)) => false,
@@ -234,13 +310,13 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
     }
 }
 
-impl HasLocallyFree<New> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<New> for SpatialMatcherContext<'a> {
     fn connective_used(&self, n: New) -> bool { n.p.unwrap().connective_used }
 
     fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> { n.locally_free }
 }
 
-impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<VarInstance> for SpatialMatcherContext<'a> {
     fn connective_used(&self, v: VarInstance) -> bool {
         match v {
             BoundVar(_) => false,
@@ -264,7 +340,7 @@ impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
     }
 }
 
-impl HasLocallyFree<Var> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Var> for SpatialMatcherContext<'a> {
     fn connective_used(&self, v: Var) -> bool { self.connective_used(v.var_instance.unwrap()) }
 
     fn locally_free(&self, v: Var, depth: i32) -> Vec<u8> {
@@ -272,13 +348,13 @@ impl HasLocallyFree<Var> for SpatialMatcherContext {
     }
 }
 
-impl HasLocallyFree<Receive> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Receive> for SpatialMatcherContext<'a> {
     fn connective_used(&self, r: Receive) -> bool { r.connective_used }
 
     fn locally_free(&self, r: Receive, _depth: i32) -> Vec<u8> { r.locally_free }
 }
 
-impl HasLocallyFree<ReceiveBind> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<ReceiveBind> for SpatialMatcherContext<'a> {
     fn connective_used(&self, rb: ReceiveBind) -> bool { self.connective_used(rb.source.unwrap()) }
 
     fn locally_free(&self, rb: ReceiveBind, depth: i32) -> Vec<u8> {
@@ -291,13 +367,13 @@ impl HasLocallyFree<ReceiveBind> for SpatialMatcherContext {
     }
 }
 
-impl HasLocallyFree<Match> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Match> for SpatialMatcherContext<'a> {
     fn connective_used(&self, m: Match) -> bool { m.connective_used }
 
     fn locally_free(&self, m: Match, _depth: i32) -> Vec<u8> { m.locally_free }
 }
 
-impl HasLocallyFree<MatchCase> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<MatchCase> for SpatialMatcherContext<'a> {
     fn connective_used(&self, mc: MatchCase) -> bool { mc.source.unwrap().connective_used }
 
     fn locally_free(&self, mc: MatchCase, depth: i32) -> Vec<u8> {
@@ -308,7 +384,7 @@ impl HasLocallyFree<MatchCase> for SpatialMatcherContext {
     }
 }
 
-impl HasLocallyFree<Connective> for SpatialMatcherContext {
+impl<'a> HasLocallyFree<Connective> for SpatialMatcherContext<'a> {
     fn connective_used(&self, conn: Connective) -> bool {
         match conn.connective_instance {
             Some(ConnAndBody(_)) => true,
@@ -597,7 +673,7 @@ mod tests {
 
     use super::*;
 
-    fn ctx() -> SpatialMatcherContext { SpatialMatcherContext::new() }
+    fn ctx() -> SpatialMatcherContext<'static> { SpatialMatcherContext::new() }
 
     fn free_par() -> Par {
         let mut par = new_freevar_par(0, Vec::new());
@@ -1077,6 +1153,7 @@ mod tests {
             source: Some(marked_par(2)),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         };
         assert!(!HasLocallyFree::<ReceiveBind>::connective_used(
             &context,
@@ -1092,6 +1169,7 @@ mod tests {
             source: Some(free_par()),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         };
         assert!(HasLocallyFree::<ReceiveBind>::connective_used(
             &context, dirty_bind

@@ -17,12 +17,12 @@ pub trait RSpaceExporter: TrieExporter + Send + Sync {
 pub struct RSpaceExporterInstance;
 
 impl RSpaceExporterInstance {
-    pub fn traverse_history(
+    pub fn try_traverse_history(
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
         get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
-    ) -> Vec<TrieNode<Blake2b256Hash>> {
+    ) -> Result<Vec<TrieNode<Blake2b256Hash>>, String> {
         let settings = ExportDataSettings {
             flag_node_prefixes: false,
             flag_node_keys: true,
@@ -31,23 +31,28 @@ impl RSpaceExporterInstance {
             flag_leaf_values: true,
         };
 
-        fn create_last_prefix(prefix_vec: Vec<Blake2b256Hash>) -> Option<ByteVector> {
+        fn create_last_prefix(
+            prefix_vec: Vec<Blake2b256Hash>,
+        ) -> Result<Option<ByteVector>, String> {
             if prefix_vec.is_empty() {
-                None // Start from root
+                Ok(None)
             } else {
-                // Max prefix length = 127 bytes.
-                // Prefix coded 5 Blake256 elements (0 - size, 1..4 - value of prefix).
-                assert!(prefix_vec.len() >= 5, "RSpace Exporter: Invalid path during export");
+                if prefix_vec.len() < 5 {
+                    return Err("RSpace Exporter: Invalid path during export".to_string());
+                }
 
                 let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) =
                     (prefix_vec[0].bytes()[0] as usize & 0xff, prefix_vec[1..].to_vec());
+                if size_prefix > 128 {
+                    return Err("RSpace Exporter: Invalid prefix size during export".to_string());
+                }
 
                 let mut prefix128 = vec[0].bytes();
                 prefix128.extend(vec[1].bytes());
                 prefix128.extend(vec[2].bytes());
                 prefix128.extend(vec[3].bytes());
 
-                Some(prefix128.iter().take(size_prefix).cloned().collect())
+                Ok(Some(prefix128.iter().take(size_prefix).cloned().collect()))
             }
         }
 
@@ -112,14 +117,14 @@ impl RSpaceExporterInstance {
         }
 
         if start_path.is_empty() {
-            Vec::new()
+            Ok(Vec::new())
         } else {
             let path_vec: Vec<Blake2b256Hash> =
                 start_path.iter().map(|path| path.0.clone()).collect();
             let (root_hash, prefix_vec) =
                 (path_vec.first().unwrap(), path_vec.split_first().map(|(_, tail)| tail).unwrap());
 
-            let last_prefix = create_last_prefix(prefix_vec.to_vec());
+            let last_prefix = create_last_prefix(prefix_vec.to_vec())?;
 
             let exp_res = sequential_export(
                 root_hash.bytes(),
@@ -129,7 +134,7 @@ impl RSpaceExporterInstance {
                 get_from_history,
                 settings,
             )
-            .expect("RSpace Exporter: Failed to export");
+            .map_err(|error| format!("RSpace Exporter: Failed to export: {error:?}"))?;
 
             let (data, new_last_prefix_opt) = exp_res;
             let ExportData {
@@ -158,8 +163,18 @@ impl RSpaceExporterInstance {
             };
 
             nodes_without_last.extend(last_history_node);
-            nodes_without_last
+            Ok(nodes_without_last)
         }
+    }
+
+    pub fn traverse_history(
+        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+        skip: i32,
+        take: i32,
+        get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
+    ) -> Vec<TrieNode<Blake2b256Hash>> {
+        Self::try_traverse_history(start_path, skip, take, get_from_history)
+            .expect("RSpace Exporter: Failed to traverse history")
     }
 
     pub fn path_pretty(path: &(Blake2b256Hash, Option<u8>)) -> String {

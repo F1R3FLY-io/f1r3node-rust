@@ -14,6 +14,23 @@ use crate::rspace::metrics_constants::{
 
 type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
 
+pub(crate) fn deterministic_candidates<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    let hash =
+        |candidate: &D| Blake2b256Hash::new(&bincode::serialize(candidate).unwrap_or_default());
+    let mut indexed: Vec<_> = data
+        .into_iter()
+        .enumerate()
+        .map(|(index, datum)| (datum, index as i32))
+        .collect();
+    indexed.sort_by(|(left, left_index), (right, right_index)| {
+        hash(left)
+            .cmp(&hash(right))
+            .then_with(|| left_index.cmp(right_index))
+    });
+    indexed
+}
+
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
 where
     C: Clone + std::hash::Hash + Eq + Send + Sync,

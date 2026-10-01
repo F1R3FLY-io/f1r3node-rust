@@ -25,7 +25,7 @@ fn deny() -> toml::Value {
 }
 fn today() -> NaiveDate { NaiveDate::from_ymd_opt(2026, 9, 6).unwrap() }
 fn advisory() -> Value {
-    json!({"type":"diagnostic","fields":{"severity":"note","advisory":{"id":"RUSTSEC-2026-0258"},"graphs":[{"Krate":{"name":"h2","version":"0.3.27"}}]}})
+    json!({"type":"diagnostic","fields":{"severity":"note","advisory":{"id":"RUSTSEC-2025-0134"},"graphs":[{"Krate":{"name":"rustls-pemfile","version":"2.2.0"}}]}})
 }
 fn report(records: &[Value]) -> String {
     let summary: serde_json::Map<_, _> = CHECKS
@@ -83,7 +83,7 @@ fn current_policy_and_manifest_coverage_are_valid() {
 #[test]
 fn exceptions_expire_on_the_review_date() {
     let mut p = policy();
-    p.exceptions.get_mut("RUSTSEC-2026-0258").unwrap().review_by = "2026-09-06".parse().unwrap();
+    p.exceptions.get_mut("RUSTSEC-2025-0134").unwrap().review_by = "2026-09-06".parse().unwrap();
     assert!(policy::validate(&p, &deny(), today()).is_err());
 }
 
@@ -91,7 +91,7 @@ fn exceptions_expire_on_the_review_date() {
 fn exceptions_require_owners_packages_and_exact_versions() {
     for field in ["owner", "package", "versions", "range"] {
         let mut p = policy();
-        let entry = p.exceptions.get_mut("RUSTSEC-2026-0258").unwrap();
+        let entry = p.exceptions.get_mut("RUSTSEC-2025-0134").unwrap();
         match field {
             "owner" => entry.owner = " ".into(),
             "package" => entry.package.clear(),
@@ -318,7 +318,7 @@ fn malformed_nested_records_fail_without_stopping_later_records() {
         malformed["fields"]["advisory"] = value.clone();
         let result = report::validate(&report(&[malformed, advisory()]), &p.exceptions);
         assert!(!result.errors.is_empty(), "{value}");
-        assert!(result.encountered.contains("RUSTSEC-2026-0258"));
+        assert!(result.encountered.contains("RUSTSEC-2025-0134"));
     }
     for value in [
         json!(null),
@@ -335,7 +335,7 @@ fn malformed_nested_records_fail_without_stopping_later_records() {
         malformed["fields"]["graphs"] = value.clone();
         let result = report::validate(&report(&[malformed, advisory()]), &p.exceptions);
         assert!(!result.errors.is_empty(), "{value}");
-        assert!(result.encountered.contains("RUSTSEC-2026-0258"));
+        assert!(result.encountered.contains("RUSTSEC-2025-0134"));
     }
 }
 
@@ -374,7 +374,7 @@ fn summaries_require_all_checks_and_nonnegative_integer_counts() {
 fn scans_continue_and_retain_evidence_after_malformed_reports() {
     let dir = tempfile::tempdir().unwrap();
     let mut p = policy();
-    p.exceptions.retain(|id, _| id == "RUSTSEC-2026-0258");
+    p.exceptions.retain(|id, _| id == "RUSTSEC-2025-0134");
     fs::create_dir_all(dir.path().join("supply-chain")).unwrap();
     fs::write(dir.path().join("deny.toml"), "").unwrap();
     fs::write(dir.path().join("supply-chain/policy.toml"), "").unwrap();

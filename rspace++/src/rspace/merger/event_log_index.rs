@@ -85,6 +85,66 @@ impl Ord for EventLogIndex {
 }
 
 impl EventLogIndex {
+    pub fn retained_bytes(&self) -> usize {
+        fn produce_bytes(produce: &Produce) -> usize {
+            std::mem::size_of::<Produce>().saturating_add(
+                produce
+                    .output_value
+                    .iter()
+                    .map(Vec::capacity)
+                    .sum::<usize>(),
+            )
+        }
+
+        fn consume_bytes(consume: &Consume) -> usize {
+            std::mem::size_of::<Consume>().saturating_add(
+                consume
+                    .channel_hashes
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<
+                        crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+                    >()),
+            )
+        }
+
+        let produce_sets = [
+            &self.produces_linear,
+            &self.produces_persistent,
+            &self.produces_consumed,
+            &self.produces_peeked,
+            &self.produces_copied_by_peek,
+            &self.produces_touching_base_joins,
+            &self.produces_mergeable,
+        ];
+        let consume_sets = [
+            &self.consumes_linear_and_peeks,
+            &self.consumes_persistent,
+            &self.consumes_produced,
+            &self.consumes_mergeable,
+        ];
+        let produces = produce_sets.iter().fold(0usize, |total, set| {
+            set.0
+                .iter()
+                .fold(total, |inner, produce| inner.saturating_add(produce_bytes(produce)))
+        });
+        let consumes = consume_sets.iter().fold(0usize, |total, set| {
+            set.0
+                .iter()
+                .fold(total, |inner, consume| inner.saturating_add(consume_bytes(consume)))
+        });
+        std::mem::size_of::<Self>()
+            .saturating_add(produces)
+            .saturating_add(consumes)
+            .saturating_add(
+                self.number_channels_data
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(
+                        crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+                        i64,
+                    )>()),
+            )
+    }
+
     pub fn new(
         event_log: Vec<Event>,
         produce_exists_in_pre_state: impl Fn(&Produce) -> bool,

@@ -1409,12 +1409,7 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
-        // VersionedRegistry.rho into genesis, adding one more contract to
-        // the initial installed set and re-encoding the bootstrap
-        // registry's continuations. Coordinated upgrade required.
-        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
-        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
+        hex::decode("b38db9a0203b6b9cf5987024f325b83da33be5c1b820b3f86fd979578f2985d5")
             .unwrap()
             .into()
     }

@@ -36,6 +36,26 @@ impl MockKeyValueStore {
 impl KeyValueStore for MockKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
+    fn with_value(
+        &self,
+        key: &Vec<u8>,
+        reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        reader(data.get(key).map(Vec::as_slice))
+    }
+
+    fn visit_entries(
+        &self,
+        reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        for (key, value) in data.iter() {
+            reader(key, value)?;
+        }
+        Ok(())
+    }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         let data = self.data.lock().unwrap();
         let results: Vec<Option<Vec<u8>>> = keys.iter().map(|key| data.get(key).cloned()).collect();
@@ -132,6 +152,21 @@ pub struct EmptyKeyValueStore;
 
 impl KeyValueStore for EmptyKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn with_value(
+        &self,
+        _key: &Vec<u8>,
+        reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        reader(None)
+    }
+
+    fn visit_entries(
+        &self,
+        _reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        Ok(())
+    }
 
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         Ok(vec![None; keys.len()])

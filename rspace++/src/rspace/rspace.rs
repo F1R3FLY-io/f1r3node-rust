@@ -28,11 +28,13 @@ use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::Install;
 use crate::rspace::r#match::Match;
+use crate::rspace::operation_context::OperationOrder;
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::Log;
 use crate::rspace::trace::event::Produce;
 
 mod ispace_impl;
+mod accounting;
 mod locks;
 mod ops_consume;
 mod ops_install;
@@ -70,6 +72,7 @@ pub struct RSpace<C, P, A, K> {
     pub store: Arc<arc_swap::ArcSwap<Box<dyn HotStore<C, P, A, K>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
+    ordered_event_log: Arc<std::sync::Mutex<BTreeMap<OperationOrder, Log>>>,
     // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
     // shards keyed by channel_hash(produce) % NUM_LOCK_STRIPES, instead of
     // one global std::sync::Mutex<BTreeMap>. The hot path (log_produce/
@@ -83,6 +86,11 @@ pub struct RSpace<C, P, A, K> {
     // as before this change (pre-existing, out of scope here).
     produce_counter: Arc<Vec<std::sync::Mutex<BTreeMap<Produce, i32>>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
+    accounting_observer: Arc<
+        std::sync::RwLock<
+            Option<Arc<dyn crate::rspace::rspace_interface::RSpaceAccountingObserver<C, P, A, K>>>,
+        >,
+    >,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
     // See striped_locks.rs for the stripe count and hashing/lock scheme.
     // No DashMap entry() → no parking_lot shard contention per produce/consume.

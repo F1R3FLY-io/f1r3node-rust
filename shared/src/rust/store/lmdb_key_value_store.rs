@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use heed::types::SerdeBincode;
+use heed::types::{Bytes, SerdeBincode};
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
-use super::key_value_store::{KeyValueStore, KvStoreError};
+use super::key_value_store::{
+    AtomicStoreMutation, AtomicStoreOperation, KeyValueStore, KvStoreError,
+};
 use crate::rust::ByteBuffer;
 
 // `heed::Database` is a `Copy` handle (a `u32` dbi) and is `Send + Sync`; it
@@ -32,6 +34,40 @@ fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
 
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn visit_entries(
+        &self,
+        reader: &mut crate::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        in_blocking(|| {
+            let transaction = self.env.read_txn()?;
+            let database = self.db.remap_types::<Bytes, Bytes>();
+            for entry in database.iter(&transaction)? {
+                let (key, value) = entry?;
+                reader(
+                    bincode::deserialize::<&[u8]>(key)?,
+                    bincode::deserialize::<&[u8]>(value)?,
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    fn with_value(
+        &self,
+        key: &ByteBuffer,
+        reader: &mut crate::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        in_blocking(|| {
+            let transaction = self.env.read_txn()?;
+            let database = self.db.remap_data_type::<Bytes>();
+            let payload = database
+                .get(&transaction, key)?
+                .map(bincode::deserialize::<&[u8]>)
+                .transpose()?;
+            reader(payload)
+        })
+    }
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
         in_blocking(|| {
@@ -71,6 +107,23 @@ impl KeyValueStore for LmdbKeyValueStore {
                 Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
                 Err(error) => Err(error.into()),
             }
+        })
+    }
+
+    fn put_if_absent(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            for (key, value) in kv_pairs {
+                match self
+                    .db
+                    .put_with_flags(&mut writer, PutFlags::NO_OVERWRITE, &key, &value)
+                {
+                    Ok(()) | Err(HeedError::Mdb(MdbError::KeyExist)) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            writer.commit()?;
+            Ok(())
         })
     }
 
@@ -135,6 +188,137 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let iter = self.db.iter(&reader)?;
+            let mut rows = Vec::new();
+            for result in iter {
+                let (key, value) = result?;
+                if key.starts_with(prefix) {
+                    rows.push((key.to_vec(), value));
+                }
+            }
+            drop(reader);
+            rows.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(rows)
+        })
+    }
+
+    fn scan_prefix_exact_len(
+        &self,
+        prefix: &[u8],
+        key_length: usize,
+    ) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
+        if prefix.len() > key_length {
+            return Ok(Vec::new());
+        }
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let raw_db = self.db.remap_key_type::<Bytes>();
+            let encoded_key = bincode::serialize(&vec![0u8; key_length])?;
+            let header_length = encoded_key.len().checked_sub(key_length).ok_or_else(|| {
+                KvStoreError::SerializationError(
+                    "LMDB composite key encoding is shorter than its payload".to_string(),
+                )
+            })?;
+            let mut encoded_prefix = encoded_key[..header_length].to_vec();
+            encoded_prefix.extend_from_slice(prefix);
+            let iter = raw_db.prefix_iter(&reader, encoded_prefix.as_slice())?;
+            let mut rows = Vec::new();
+            for result in iter {
+                let (encoded, value) = result?;
+                let key: Vec<u8> = bincode::deserialize(encoded)?;
+                if key.len() == key_length && key.starts_with(prefix) {
+                    rows.push((key, value));
+                }
+            }
+            drop(reader);
+            Ok(rows)
+        })
+    }
+
+    fn strict_atomic_mutate(
+        &self,
+        mutations: &[AtomicStoreMutation<'_>],
+    ) -> Result<(), KvStoreError> {
+        in_blocking(|| {
+            let stores = mutations
+                .iter()
+                .map(|mutation| {
+                    mutation
+                        .store
+                        .as_any()
+                        .downcast_ref::<LmdbKeyValueStore>()
+                        .ok_or_else(|| {
+                            KvStoreError::AtomicityUnavailable(
+                                "strict LMDB transaction includes a non-LMDB store".to_string(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if stores
+                .iter()
+                .any(|store| !Arc::ptr_eq(&self.env, &store.env))
+            {
+                return Err(KvStoreError::AtomicityUnavailable(
+                    "strict LMDB transaction spans multiple environments".to_string(),
+                ));
+            }
+            let mut writer = self.env.write_txn()?;
+            for (mutation, store) in mutations.iter().zip(stores) {
+                match &mutation.operation {
+                    AtomicStoreOperation::Put(value) => {
+                        store.db.put(&mut writer, &mutation.key, value)?;
+                    }
+                    AtomicStoreOperation::PutIfAbsentOrEqual(value) => {
+                        match store.db.get(&writer, &mutation.key)? {
+                            Some(existing) if existing != *value => {
+                                return Err(KvStoreError::TransactionConflict(format!(
+                                    "existing value differs for key {}",
+                                    hex::encode(&mutation.key)
+                                )));
+                            }
+                            Some(_) => {}
+                            None => store.db.put(&mut writer, &mutation.key, value)?,
+                        }
+                    }
+                    AtomicStoreOperation::Delete => {
+                        store.db.delete(&mut writer, &mutation.key)?;
+                    }
+                    AtomicStoreOperation::CompareAndSwap {
+                        expected,
+                        replacement,
+                    } => {
+                        let current = store.db.get(&writer, &mutation.key)?;
+                        if current.as_ref() != expected.as_ref() {
+                            return Err(KvStoreError::TransactionConflict(format!(
+                                "compare-and-swap expectation failed for key {}",
+                                hex::encode(&mutation.key)
+                            )));
+                        }
+                        match replacement {
+                            Some(value) => store.db.put(&mut writer, &mutation.key, value)?,
+                            None => {
+                                store.db.delete(&mut writer, &mutation.key)?;
+                            }
+                        }
+                    }
+                }
+                #[cfg(all(test, unix))]
+                transaction_crash_tests::checkpoint("mutation");
+            }
+            #[cfg(all(test, unix))]
+            transaction_crash_tests::checkpoint("before-commit");
+            writer.commit()?;
+            #[cfg(all(test, unix))]
+            transaction_crash_tests::checkpoint("after-commit");
+            Ok(())
+        })
+    }
+
+    fn supports_strict_atomic_mutate(&self) -> bool { true }
+
     // This is only needed for testing purposes
     fn size_bytes(&self) -> usize { todo!() }
 
@@ -162,6 +346,10 @@ impl KeyValueStore for LmdbKeyValueStore {
         Ok(has_first)
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "lmdb_transaction_crash_tests.rs"]
+mod transaction_crash_tests;
 
 /// One store's worth of key/value pairs to write, paired with the store to write them to.
 pub type StoreWrite<'a> = (&'a dyn KeyValueStore, Vec<(ByteBuffer, ByteBuffer)>);
@@ -246,21 +434,43 @@ impl Clone for LmdbKeyValueStore {
 #[cfg(test)]
 mod batched_put_tests {
     use std::collections::BTreeMap;
+    use std::ops::Deref;
 
     use heed::EnvOpenOptions;
+    use tempfile::TempDir;
 
     use super::*;
+    use crate::rust::store::key_value_store::strict_atomic_mutate;
 
-    pub(super) fn open_env() -> Arc<Env> {
-        let dir = tempfile::tempdir().unwrap();
-        // Leak the tempdir path so the Env (and its mmap) stay valid for the
-        // lifetime of the test; each test opens its own directory.
-        let path = Box::leak(Box::new(dir)).path();
+    pub(super) struct TestEnv {
+        env: Arc<Env>,
+        _dir: TempDir,
+    }
+
+    impl Deref for TestEnv {
+        type Target = Arc<Env>;
+
+        fn deref(&self) -> &Self::Target { &self.env }
+    }
+
+    pub(super) fn open_env() -> TestEnv {
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target/shared-test-scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("lmdb-")
+            .tempdir_in(scratch)
+            .unwrap();
         let mut builder = EnvOpenOptions::new();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(4);
-        let env = unsafe { builder.open(path).unwrap() };
-        Arc::new(env)
+        let env = unsafe { builder.open(dir.path()).unwrap() };
+        TestEnv {
+            env: Arc::new(env),
+            _dir: dir,
+        }
     }
 
     pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
@@ -292,6 +502,26 @@ mod batched_put_tests {
 
     impl KeyValueStore for InMemStore {
         fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn with_value(
+            &self,
+            key: &ByteBuffer,
+            reader: &mut crate::rust::store::key_value_store::ValueReader<'_>,
+        ) -> Result<(), KvStoreError> {
+            let map = self.map.lock().unwrap();
+            reader(map.get(key).map(Vec::as_slice))
+        }
+
+        fn visit_entries(
+            &self,
+            reader: &mut crate::rust::store::key_value_store::EntryReader<'_>,
+        ) -> Result<(), KvStoreError> {
+            let map = self.map.lock().unwrap();
+            for (key, value) in map.iter() {
+                reader(key, value)?;
+            }
+            Ok(())
+        }
 
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             let map = self.map.lock().unwrap();
@@ -391,6 +621,228 @@ mod batched_put_tests {
     fn empty_input_is_a_noop() { batched_put(vec![]).unwrap(); }
 
     #[test]
+    fn strict_transaction_commits_same_environment_mutations() {
+        let env = open_env();
+        let a = open_store(&env, "strict-a");
+        let b = open_store(&env, "strict-b");
+        let mutations = [
+            AtomicStoreMutation {
+                store: &a,
+                key: b"a".to_vec(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"one".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &b,
+                key: b"b".to_vec(),
+                operation: AtomicStoreOperation::CompareAndSwap {
+                    expected: None,
+                    replacement: Some(b"two".to_vec()),
+                },
+            },
+        ];
+
+        strict_atomic_mutate(&mutations).unwrap();
+
+        assert_eq!(a.get_one(&b"a".to_vec()).unwrap(), Some(b"one".to_vec()));
+        assert_eq!(b.get_one(&b"b".to_vec()).unwrap(), Some(b"two".to_vec()));
+    }
+
+    #[test]
+    fn strict_unconditional_mutations_do_not_decode_replaced_values() {
+        let env = open_env();
+        let store = open_store(&env, "strict-replace-malformed");
+        let root = b"root".to_vec();
+        let obsolete = b"obsolete".to_vec();
+        let mut writer = env.write_txn().unwrap();
+        let raw = store.db.remap_data_type::<Bytes>();
+        raw.put(&mut writer, &root, &[0xff]).unwrap();
+        raw.put(&mut writer, &obsolete, &[0xff]).unwrap();
+        writer.commit().unwrap();
+        assert!(store.get_one(&root).is_err());
+        assert!(store.get_one(&obsolete).is_err());
+
+        strict_atomic_mutate(&[
+            AtomicStoreMutation {
+                store: &store,
+                key: root.clone(),
+                operation: AtomicStoreOperation::Put(b"next".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &store,
+                key: obsolete.clone(),
+                operation: AtomicStoreOperation::Delete,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(store.get_one(&root).unwrap(), Some(b"next".to_vec()));
+        assert_eq!(store.get_one(&obsolete).unwrap(), None);
+    }
+
+    #[test]
+    fn strict_transaction_rolls_back_every_mutation_on_conflict() {
+        let env = open_env();
+        let a = open_store(&env, "rollback-a");
+        let b = open_store(&env, "rollback-b");
+        a.put_one(b"guard".to_vec(), b"current".to_vec()).unwrap();
+        let mutations = [
+            AtomicStoreMutation {
+                store: &b,
+                key: b"uncommitted".to_vec(),
+                operation: AtomicStoreOperation::Put(b"value".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &a,
+                key: b"guard".to_vec(),
+                operation: AtomicStoreOperation::CompareAndSwap {
+                    expected: Some(b"stale".to_vec()),
+                    replacement: Some(b"next".to_vec()),
+                },
+            },
+        ];
+
+        assert!(matches!(
+            strict_atomic_mutate(&mutations),
+            Err(KvStoreError::TransactionConflict(_))
+        ));
+        assert_eq!(
+            a.get_one(&b"guard".to_vec()).unwrap(),
+            Some(b"current".to_vec())
+        );
+        assert_eq!(b.get_one(&b"uncommitted".to_vec()).unwrap(), None);
+    }
+
+    #[test]
+    fn strict_transaction_rejects_cross_environment_mutations() {
+        let env_a = open_env();
+        let env_b = open_env();
+        let a = open_store(&env_a, "cross-a");
+        let b = open_store(&env_b, "cross-b");
+        let mutations = [
+            AtomicStoreMutation {
+                store: &a,
+                key: b"a".to_vec(),
+                operation: AtomicStoreOperation::Put(b"one".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &b,
+                key: b"b".to_vec(),
+                operation: AtomicStoreOperation::Put(b"two".to_vec()),
+            },
+        ];
+
+        assert!(matches!(
+            strict_atomic_mutate(&mutations),
+            Err(KvStoreError::AtomicityUnavailable(_))
+        ));
+        assert_eq!(a.get_one(&b"a".to_vec()).unwrap(), None);
+        assert_eq!(b.get_one(&b"b".to_vec()).unwrap(), None);
+    }
+
+    #[test]
+    fn state_import_duplicate_cas_guards_repeat_conflict_without_external_progress() {
+        let env = open_env();
+        let store = open_store(&env, "import-duplicate-guards");
+        let mutation = AtomicStoreMutation {
+            store: &store,
+            key: b"alias".to_vec(),
+            operation: AtomicStoreOperation::CompareAndSwap {
+                expected: None,
+                replacement: Some(b"value".to_vec()),
+            },
+        };
+        for _ in 0..3 {
+            let duplicate = AtomicStoreMutation {
+                store: &store,
+                key: mutation.key.clone(),
+                operation: mutation.operation.clone(),
+            };
+            let first = AtomicStoreMutation {
+                store: &store,
+                key: mutation.key.clone(),
+                operation: mutation.operation.clone(),
+            };
+            assert!(matches!(
+                strict_atomic_mutate(&[first, duplicate]),
+                Err(KvStoreError::TransactionConflict(_))
+            ));
+            assert_eq!(store.get_one(&mutation.key).unwrap(), None);
+        }
+        strict_atomic_mutate(&[mutation]).unwrap();
+        assert_eq!(
+            store.get_one(&b"alias".to_vec()).unwrap(),
+            Some(b"value".to_vec())
+        );
+    }
+
+    #[test]
+    fn prefix_scan_is_isolated_and_lexicographically_ordered() {
+        let env = open_env();
+        let store = open_store(&env, "prefix");
+        store
+            .put(kv(&[("p/2", "two"), ("other", "x"), ("p/1", "one")]))
+            .unwrap();
+
+        let rows = store.scan_prefix(b"p/").unwrap();
+
+        assert_eq!(rows, kv(&[("p/1", "one"), ("p/2", "two")]));
+    }
+
+    #[test]
+    fn exact_length_prefix_scan_uses_the_encoded_composite_key_prefix() {
+        let env = open_env();
+        let store = open_store(&env, "composite-prefix");
+        store
+            .put(vec![
+                (vec![1, 7, 9, 1], vec![1]),
+                (vec![1, 7, 9, 0], vec![2]),
+                (vec![1, 7, 9], vec![3]),
+                (vec![1, 8, 9, 0], vec![4]),
+            ])
+            .unwrap();
+
+        let rows = store.scan_prefix_exact_len(&[1, 7], 4).unwrap();
+
+        assert_eq!(rows, vec![
+            (vec![1, 7, 9, 0], vec![2]),
+            (vec![1, 7, 9, 1], vec![1]),
+        ]);
+    }
+
+    #[test]
+    fn compare_and_swap_has_one_winner_under_concurrency() {
+        let env = open_env();
+        let store = Arc::new(open_store(&env, "cas-race"));
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let handles = (0u8..16)
+            .map(|value| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    strict_atomic_mutate(&[AtomicStoreMutation {
+                        store: store.as_ref(),
+                        key: b"winner".to_vec(),
+                        operation: AtomicStoreOperation::CompareAndSwap {
+                            expected: None,
+                            replacement: Some(vec![value]),
+                        },
+                    }])
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let winners = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(Result::is_ok)
+            .count();
+
+        assert_eq!(winners, 1);
+        assert!(store.get_one(&b"winner".to_vec()).unwrap().is_some());
+    }
+
+    #[test]
     fn single_store_batches_trivially() {
         let env = open_env();
         let a = open_store(&env, "a");
@@ -406,20 +858,26 @@ mod batched_put_tests {
 mod store_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::batched_put_tests::{kv, open_env, open_store};
+    use super::batched_put_tests::{kv, open_env, open_store, TestEnv};
     use super::*;
 
-    fn seeded_store() -> LmdbKeyValueStore {
-        let store = open_store(&open_env(), "s");
+    fn new_store() -> (TestEnv, LmdbKeyValueStore) {
+        let env = open_env();
+        let store = open_store(&env, "s");
+        (env, store)
+    }
+
+    fn seeded_store() -> (TestEnv, LmdbKeyValueStore) {
+        let (env, store) = new_store();
         store
             .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
             .unwrap();
-        store
+        (env, store)
     }
 
     #[test]
     fn get_returns_values_in_key_order_with_none_for_missing() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let results = store
             .get(&vec![b"k2".to_vec(), b"missing".to_vec(), b"k1".to_vec()])
             .unwrap();
@@ -431,8 +889,101 @@ mod store_tests {
     }
 
     #[test]
+    fn borrowed_value_is_the_mapped_payload_and_preserves_writer_encoding() {
+        let (_env, store) = new_store();
+        let key = vec![1];
+        let value = vec![7; 4096];
+        store.put(vec![(key.clone(), value.clone())]).unwrap();
+        let transaction = store.env.read_txn().unwrap();
+        let database = store.db.remap_data_type::<Bytes>();
+        let encoded = database.get(&transaction, &key).unwrap().unwrap();
+        assert_eq!(encoded, bincode::serialize(&value).unwrap());
+        let expected_address = encoded[8..].as_ptr();
+        drop(transaction);
+        let mut calls = 0;
+        store
+            .with_value(&key, &mut |bytes| {
+                calls += 1;
+                let bytes = bytes.unwrap();
+                assert_eq!(bytes, value);
+                assert_eq!(bytes.as_ptr(), expected_address);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(calls, 1);
+        store
+            .with_value(&vec![2], &mut |bytes| {
+                calls += 1;
+                assert!(bytes.is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn borrowed_value_keeps_its_snapshot_across_a_concurrent_commit() {
+        let (_env, store) = new_store();
+        let key = vec![1];
+        store.put(vec![(key.clone(), vec![7; 4096])]).unwrap();
+        let writer = store.clone();
+        let writer_key = key.clone();
+        let (begin_tx, begin_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            begin_rx.recv().unwrap();
+            writer.put(vec![(writer_key, vec![8; 4096])]).unwrap();
+            done_tx.send(()).unwrap();
+        });
+        store
+            .with_value(&key, &mut |bytes| {
+                let bytes = bytes.unwrap();
+                assert!(bytes.iter().all(|byte| *byte == 7));
+                begin_tx.send(()).unwrap();
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                assert!(bytes.iter().all(|byte| *byte == 7));
+                Err(KvStoreError::InvalidArgument(
+                    "injected callback failure".to_string(),
+                ))
+            })
+            .unwrap_err();
+        thread.join().unwrap();
+        store
+            .with_value(&key, &mut |bytes| {
+                assert!(bytes.unwrap().iter().all(|byte| *byte == 8));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn malformed_outer_lengths_never_reach_the_borrowed_callback() {
+        let (_env, store) = new_store();
+        let key = vec![1];
+        for declared in [1u64, 4096, u64::MAX] {
+            let mut transaction = store.env.write_txn().unwrap();
+            store
+                .db
+                .remap_data_type::<Bytes>()
+                .put(&mut transaction, &key, &declared.to_le_bytes())
+                .unwrap();
+            transaction.commit().unwrap();
+            let mut calls = 0;
+            assert!(store
+                .with_value(&key, &mut |_| {
+                    calls += 1;
+                    Ok(())
+                })
+                .is_err());
+            assert_eq!(calls, 0);
+        }
+    }
+
+    #[test]
     fn put_overwrites_existing_keys() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         store.put(kv(&[("k1", "updated")])).unwrap();
         assert_eq!(
             store.get_one(&b"k1".to_vec()).unwrap(),
@@ -441,8 +992,125 @@ mod store_tests {
     }
 
     #[test]
+    fn borrowed_scan_visits_each_mapped_payload_once_and_releases_on_error() {
+        let (_env, store) = seeded_store();
+        let transaction = store.env.read_txn().unwrap();
+        let addresses = store
+            .db
+            .remap_types::<Bytes, Bytes>()
+            .iter(&transaction)
+            .unwrap()
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                let key = bincode::deserialize::<&[u8]>(key).unwrap();
+                let value = bincode::deserialize::<&[u8]>(value).unwrap();
+                (
+                    key.to_vec(),
+                    (key.as_ptr() as usize, value.as_ptr() as usize),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        drop(transaction);
+        let mut visited = BTreeMap::new();
+        store
+            .visit_entries(&mut |key, value| {
+                assert_eq!(
+                    addresses[key],
+                    (key.as_ptr() as usize, value.as_ptr() as usize)
+                );
+                assert!(visited.insert(key.to_vec(), value.to_vec()).is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(visited, store.to_map().unwrap());
+        let mut calls = 0;
+        let error = KvStoreError::InvalidArgument("injected visitor error".to_string());
+        assert_eq!(
+            store.visit_entries(&mut |_, _| {
+                calls += 1;
+                Err(error.clone())
+            }),
+            Err(error)
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(store.to_map().unwrap(), visited);
+    }
+
+    #[test]
+    fn borrowed_scan_retains_one_snapshot_across_concurrent_replacement() {
+        let (_env, store) = seeded_store();
+        let expected = store.to_map().unwrap();
+        let writer = store.clone();
+        let (begin_tx, begin_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            begin_rx.recv().unwrap();
+            writer
+                .put(kv(&[
+                    ("k1", "new1"),
+                    ("k2", "new2"),
+                    ("k3", "new3"),
+                    ("k4", "new4"),
+                ]))
+                .unwrap();
+            done_tx.send(()).unwrap();
+        });
+        let mut observed = BTreeMap::new();
+        store
+            .visit_entries(&mut |key, value| {
+                if observed.is_empty() {
+                    begin_tx.send(()).unwrap();
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                }
+                observed.insert(key.to_vec(), value.to_vec());
+                Ok(())
+            })
+            .unwrap();
+        thread.join().unwrap();
+        assert_eq!(observed, expected);
+        assert_eq!(store.to_map().unwrap().len(), 4);
+        assert_eq!(
+            store.get_one(&b"k1".to_vec()).unwrap(),
+            Some(b"new1".to_vec())
+        );
+    }
+
+    #[test]
+    fn borrowed_scan_rejects_malformed_outer_keys_and_values_before_visiting() {
+        for corrupt_key in [false, true] {
+            for declared in [1u64, 4096, u64::MAX] {
+                let (_env, store) = new_store();
+                let valid = bincode::serialize(&vec![1u8]).unwrap();
+                let corrupt = declared.to_le_bytes();
+                let (key, value) = if corrupt_key {
+                    (corrupt.as_slice(), valid.as_slice())
+                } else {
+                    (valid.as_slice(), corrupt.as_slice())
+                };
+                let mut transaction = store.env.write_txn().unwrap();
+                store
+                    .db
+                    .remap_types::<Bytes, Bytes>()
+                    .put(&mut transaction, key, value)
+                    .unwrap();
+                transaction.commit().unwrap();
+                let mut calls = 0;
+                assert!(store
+                    .visit_entries(&mut |_, _| {
+                        calls += 1;
+                        Ok(())
+                    })
+                    .is_err());
+                assert_eq!(calls, 0);
+            }
+        }
+    }
+
+    #[test]
     fn put_one_if_absent_inserts_once_and_keeps_first_value() {
-        let store = open_store(&open_env(), "s");
+        let (_env, store) = new_store();
         assert!(store
             .put_one_if_absent(b"k".to_vec(), b"first".to_vec())
             .unwrap());
@@ -457,7 +1125,7 @@ mod store_tests {
 
     #[test]
     fn delete_returns_count_of_keys_actually_removed() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let deleted = store
             .delete(vec![b"k1".to_vec(), b"missing".to_vec(), b"k3".to_vec()])
             .unwrap();
@@ -474,14 +1142,14 @@ mod store_tests {
         static VISITED: AtomicUsize = AtomicUsize::new(0);
         fn visit(_key: ByteBuffer, _value: ByteBuffer) { VISITED.fetch_add(1, Ordering::SeqCst); }
 
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         store.iterate(visit).unwrap();
         assert_eq!(VISITED.load(Ordering::SeqCst), 3);
     }
 
     #[test]
     fn iterate_while_stops_when_callback_returns_false() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let mut seen = Vec::new();
         store
             .iterate_while(&mut |key, _value| {
@@ -494,7 +1162,7 @@ mod store_tests {
 
     #[test]
     fn iterate_while_propagates_callback_errors() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let result = store.iterate_while(&mut |_key, _value| {
             Err(KvStoreError::InvalidArgument("boom".to_string()))
         });
@@ -506,7 +1174,7 @@ mod store_tests {
 
     #[test]
     fn to_map_and_print_store_reflect_all_entries() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let map = store.to_map().unwrap();
         assert_eq!(map.len(), 3);
         assert_eq!(map.get(b"k2".as_slice()), Some(&b"v2".to_vec()));
@@ -515,7 +1183,7 @@ mod store_tests {
 
     #[test]
     fn non_empty_flips_when_first_entry_lands() {
-        let store = open_store(&open_env(), "s");
+        let (_env, store) = new_store();
         assert!(!store.non_empty().unwrap());
         store.put_one(b"k".to_vec(), b"v".to_vec()).unwrap();
         assert!(store.non_empty().unwrap());
@@ -523,7 +1191,7 @@ mod store_tests {
 
     #[test]
     fn boxed_clone_shares_the_same_database() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let boxed: Box<dyn KeyValueStore> = store.clone_box();
         let cloned = boxed.clone();
         assert_eq!(
@@ -538,8 +1206,8 @@ mod store_tests {
     }
 
     #[test]
-    fn trait_contains_and_put_if_absent_defaults_work_through_lmdb() {
-        let store = seeded_store();
+    fn trait_contains_and_atomic_put_if_absent_work_through_lmdb() {
+        let (_env, store) = seeded_store();
         assert_eq!(
             store
                 .contains(&vec![b"k1".to_vec(), b"missing".to_vec()])
@@ -558,5 +1226,27 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+        store
+            .put_if_absent(kv(&[("new", "first"), ("new", "second"), ("k9", "later")]))
+            .unwrap();
+        assert_eq!(
+            store.get_one(&b"new".to_vec()).unwrap(),
+            Some(b"first".to_vec())
+        );
+        assert_eq!(
+            store.get_one(&b"k9".to_vec()).unwrap(),
+            Some(b"fresh".to_vec())
+        );
+    }
+
+    #[test]
+    fn atomic_put_if_absent_rolls_back_an_earlier_insert_on_late_error() {
+        let (_env, store) = new_store();
+        let result = store.put_if_absent(vec![
+            (b"first".to_vec(), b"value".to_vec()),
+            (vec![0; 4096], b"invalid key".to_vec()),
+        ]);
+        assert!(result.is_err());
+        assert_eq!(store.get_one(&b"first".to_vec()).unwrap(), None);
     }
 }

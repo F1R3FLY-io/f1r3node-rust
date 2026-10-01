@@ -1277,6 +1277,8 @@ pub enum RhoUnforg {
     UnforgPrivate { data: String },
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
+    UnforgAuthority { data: String },
+    UnforgPrincipal { key_family: u32, public_key: String },
     UnforgSysAuthToken,
 }
 
@@ -1689,7 +1691,9 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{
+    Bundle, Expr, GAuthorityId, GDeployId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable, Par,
+};
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
@@ -1707,6 +1711,16 @@ fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
         }),
         RhoUnforg::UnforgDeployer { data } => UnfInstance::GDeployerIdBody(GDeployerId {
             public_key: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgAuthority { data } => UnfInstance::GAuthorityIdBody(GAuthorityId {
+            id: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgPrincipal {
+            key_family,
+            public_key,
+        } => UnfInstance::GPrincipalIdBody(GPrincipalId {
+            key_family,
+            public_key: decode_hex(&public_key)?.into(),
         }),
         RhoUnforg::UnforgSysAuthToken => {
             use models::rhoapi::GSysAuthToken;
@@ -1993,6 +2007,17 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
                 data: hex::encode(&deployer_id.public_key),
             },
         },
+        UnfInstance::GAuthorityIdBody(authority_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgAuthority {
+                data: hex::encode(&authority_id.id),
+            },
+        },
+        UnfInstance::GPrincipalIdBody(principal_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrincipal {
+                key_family: principal_id.key_family,
+                public_key: hex::encode(&principal_id.public_key),
+            },
+        },
         UnfInstance::GSysAuthTokenBody(_) => RhoExpr::ExprUnforg {
             data: RhoUnforg::UnforgSysAuthToken,
         },
@@ -2029,6 +2054,13 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
             RhoUnforg::UnforgPrivate { data } => data.clone(),
             RhoUnforg::UnforgDeploy { data } => data.clone(),
             RhoUnforg::UnforgDeployer { data } => data.clone(),
+            RhoUnforg::UnforgAuthority { data } => data.clone(),
+            RhoUnforg::UnforgPrincipal {
+                key_family,
+                public_key,
+            } => {
+                format!("{key_family}:{public_key}")
+            }
             RhoUnforg::UnforgSysAuthToken => "SysAuthToken".to_string(),
         },
         // Complex types: serialize to JSON string

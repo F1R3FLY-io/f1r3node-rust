@@ -84,14 +84,15 @@ Par (normalized AST)
 |           SpatialMatcher matches    |
 |                                     |
 |  Expr  -> Evaluate arithmetic/logic |
-|           Charge phlogiston         |
+|           Reserve source tokens     |
 |                                     |
 |  System-> Dispatch to Rust handler  |
 |   Chan    (crypto, I/O, registry,   |
 |            external services)       |
 +-------------------------------------+
     |
-    | ChargingRSpace wraps all ops with cost metering
+    | MeteredMachine drains typed billable work frames
+    | RuntimeBudget reserves canonical token events
     | OutOfPhlogistonsError if budget exhausted
     v
 EvaluateResult { cost, errors, mergeable_channels }

@@ -556,11 +556,9 @@ pub fn datum(s: i32) -> Datum<String> {
 
 pub fn create_empty_repository() -> HistoryRepositoryImpl<String, String, String, String> {
     let past_roots = root_repository();
-    let empty_history = HistoryInstances::create(
-        RadixHistory::empty_root_node_hash(),
-        Arc::new(InMemoryKeyValueStore::new()),
-    )
-    .unwrap();
+    let node_store = Arc::new(InMemoryKeyValueStore::new());
+    let empty_history =
+        HistoryInstances::create(RadixHistory::empty_root_node_hash(), node_store.clone()).unwrap();
 
     let _ = past_roots.commit(&RadixHistory::empty_root_node_hash());
 
@@ -568,6 +566,7 @@ pub fn create_empty_repository() -> HistoryRepositoryImpl<String, String, String
         current_history: Arc::new(Mutex::new(Box::new(empty_history))),
         roots_repository: Arc::new(Mutex::new(past_roots)),
         leaf_store: create_inmem_cold_store(),
+        node_store,
         rspace_exporter: Arc::new(EmptyExporter),
         rspace_importer: Arc::new(EmptyImporter),
         _marker: std::marker::PhantomData,

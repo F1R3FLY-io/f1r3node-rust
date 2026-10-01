@@ -7,6 +7,10 @@
 //! all prior bindings without rebinding indices.
 
 use std::collections::HashMap;
+use std::mem::size_of;
+
+use shared::rust::clone_backing::{self, BackingError, BackingMeter, CloneBacking};
+use shared::rust::collection_backing::hash_backing;
 
 #[derive(Clone, Debug)]
 pub struct Env<A: Clone> {
@@ -39,10 +43,72 @@ impl<A: Clone> Env<A> {
         }
     }
 
-    pub fn get(&self, k: &i32) -> Option<A> {
+    pub fn push(&mut self, a: A) -> Result<(), BackingError> {
+        let next = self.level.checked_add(1).ok_or(BackingError::Overflow)?;
         self.env_map
-            .get(&((self.level + self.shift) - k - 1))
-            .cloned()
+            .try_reserve(1)
+            .map_err(|_| BackingError::Allocation)?;
+        self.env_map.insert(self.level, a);
+        self.level = next;
+        Ok(())
+    }
+
+    pub fn push_metered(&mut self, a: A, meter: &dyn BackingMeter) -> Result<(), BackingError>
+    where A: CloneBacking {
+        self.level.checked_add(1).ok_or(BackingError::Overflow)?;
+        let entries = self
+            .env_map
+            .len()
+            .checked_add(1)
+            .ok_or(BackingError::Overflow)?;
+        let (operations, backing) =
+            hash_backing::<i32, A>(entries).ok_or(BackingError::Overflow)?;
+        let scanned = entries
+            .checked_mul(size_of::<i32>())
+            .ok_or(BackingError::Overflow)?;
+        meter.reserve(operations, scanned, backing)?;
+        self.push(a)
+    }
+
+    pub fn get(&self, k: &i32) -> Option<A> {
+        let position = self
+            .level
+            .checked_add(self.shift)?
+            .checked_sub(*k)?
+            .checked_sub(1)?;
+        self.env_map.get(&position).cloned()
+    }
+
+    pub fn get_metered(
+        &self,
+        k: &i32,
+        meter: &dyn BackingMeter,
+    ) -> Result<Option<A>, BackingError>
+    where
+        A: CloneBacking,
+    {
+        let position = self
+            .level
+            .checked_add(self.shift)
+            .and_then(|value| value.checked_sub(*k))
+            .and_then(|value| value.checked_sub(1))
+            .ok_or(BackingError::Overflow)?;
+        let probes = self.env_map.capacity().max(1);
+        let scanned = probes
+            .checked_mul(size_of::<i32>())
+            .ok_or(BackingError::Overflow)?;
+        meter.reserve(
+            probes.checked_add(3).ok_or(BackingError::Overflow)?,
+            scanned,
+            0,
+        )?;
+        match self.env_map.get(&position) {
+            Some(value) => {
+                clone_backing::reserve_copy_and_cleanup(value, meter)?;
+                Ok(Some(value.clone()))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn shift(&self, j: i32) -> Env<A> {

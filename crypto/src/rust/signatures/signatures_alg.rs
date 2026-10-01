@@ -36,6 +36,12 @@ pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
     fn eq(&self, other: &dyn SignaturesAlg) -> bool;
 
     fn box_clone(&self) -> Box<dyn SignaturesAlg>;
+
+    fn ground_eq(&self, left: &[u8], right: &[u8]) -> bool { left == right }
+
+    fn ground_hash(&self, ground: &[u8]) -> Vec<u8> {
+        crate::rust::hash::blake2b256::Blake2b256::hash(ground.to_vec())
+    }
 }
 
 impl Clone for Box<dyn SignaturesAlg> {

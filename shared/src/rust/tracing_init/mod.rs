@@ -12,6 +12,8 @@ use tracing_subscriber::registry::Registry;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
+pub type BoxedTracingLayer = Box<dyn Layer<Registry> + Send + Sync>;
+
 /// HOCON-deserializable logging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
@@ -83,9 +85,17 @@ pub struct TracingGuards {
 /// subscriber. `data_dir` is required when `cfg.sink` includes file output;
 /// logs are written to `<data_dir>/logs/node.log`.
 pub fn init(cfg: &LoggingConfig, data_dir: Option<&Path>) -> Result<TracingGuards> {
+    init_with_layers(cfg, data_dir, Vec::new())
+}
+
+pub fn init_with_layers(
+    cfg: &LoggingConfig,
+    data_dir: Option<&Path>,
+    extra_layers: Vec<BoxedTracingLayer>,
+) -> Result<TracingGuards> {
     let filter = resolve_filter(&cfg.filter);
     let mut guards = TracingGuards::default();
-    let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = Vec::new();
+    let mut layers: Vec<BoxedTracingLayer> = Vec::new();
 
     let to_stdout = matches!(cfg.sink, LogSink::Stdout | LogSink::Both);
     let to_file = matches!(cfg.sink, LogSink::File | LogSink::Both);
@@ -101,6 +111,7 @@ pub fn init(cfg: &LoggingConfig, data_dir: Option<&Path>) -> Result<TracingGuard
         guards._file = Some(guard);
         layers.push(make_layer(cfg.format, writer));
     }
+    layers.extend(extra_layers);
 
     tracing_subscriber::registry()
         .with(layers)

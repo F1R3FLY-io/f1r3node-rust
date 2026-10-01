@@ -975,6 +975,9 @@ pub struct DeployData {
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
     fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
+    fn envelope_intent_v61(&self) -> Result<Vec<u8>, String> {
+        Err("legacy Casper deploys do not support protocol-v6 envelopes".to_string())
+    }
 }
 
 impl DeployData {
@@ -999,7 +1002,24 @@ impl DeployData {
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
+        Self::reject_nonlegacy_fields(&proto)?;
         Ok(DeployData::_from_proto(proto))
+    }
+
+    fn reject_nonlegacy_fields(proto: &DeployDataProto) -> Result<(), String> {
+        if !proto.cosigners.is_empty()
+            || proto.cosigner_threshold != 0
+            || proto.sig_algebra.is_some()
+            || !proto.authority_presentations.is_empty()
+            || !proto.deploy_id.is_empty()
+            || proto.authorization_v61.is_some()
+            || proto.funding_intent.is_some()
+        {
+            return Err(
+                "legacy Casper cannot decode cost-accounted deploy authorization".to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn _from_proto(proto: DeployDataProto) -> Self {
@@ -1020,6 +1040,7 @@ impl DeployData {
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        Self::reject_nonlegacy_fields(&proto)?;
         let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
 

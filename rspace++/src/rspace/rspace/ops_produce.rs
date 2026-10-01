@@ -6,7 +6,6 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
 
-use rand::seq::SliceRandom;
 use serde::Serialize;
 
 use super::RSpace;
@@ -16,7 +15,8 @@ use crate::rspace::metrics_constants::{
     LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::rspace_interface::{
-    MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
+    MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceAccountingObserver,
+    RSpaceOperationCompletion, RSpaceOperationSource,
 };
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Produce};
@@ -44,7 +44,37 @@ where
         metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
-        self.log_produce(produce_ref, persist);
+        let source = RSpaceOperationSource::Produce(produce_ref);
+        let observer = self.start_accounting_operation(
+            source,
+            std::slice::from_ref(&channel),
+            &grouped_channels,
+        )?;
+        let result = self.locked_produce_observed(
+            channel,
+            data,
+            persist,
+            produce_ref,
+            grouped_channels,
+            observer.as_deref(),
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
+
+    fn locked_produce_observed(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        produce_ref: &Produce,
+        grouped_channels: Vec<Vec<C>>,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        Self::observe_produce(observer, produce_ref, &channel, &data, persist)?;
 
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
@@ -58,12 +88,13 @@ where
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
-                let result =
-                    Ok(self
-                        .process_match_found(produce_candidate)
-                        .map(|consume_result| {
+                let result = self
+                    .process_match_found(produce_candidate, produce_ref, persist, observer)
+                    .map(|result| {
+                        result.map(|consume_result| {
                             (consume_result.0, consume_result.1, produce_ref.clone())
-                        }));
+                        })
+                    });
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
@@ -71,6 +102,7 @@ where
             }
             None => {
                 let t2 = Instant::now();
+                self.log_produce(produce_ref, persist);
                 let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
@@ -131,7 +163,10 @@ where
     fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+        produce_ref: &Produce,
+        produce_persistent: bool,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
@@ -147,16 +182,22 @@ where
             source: consume_ref,
         } = &continuation;
 
-        let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
-        self.log_comm(
-            COMM::new(
-                &data_candidates,
-                consume_ref.clone(),
-                peeks.clone(),
-                produce_counters_closure,
-            ),
-            PRODUCE_COMM_LABEL,
+        let produce_counters_closure = |produces: &[Produce]| {
+            let mut counters = self.produce_counters(produces);
+            if !produce_persistent && produces.contains(produce_ref) {
+                *counters.entry(produce_ref.clone()).or_insert(0) += 1;
+            }
+            counters
+        };
+        let comm = COMM::new(
+            &data_candidates,
+            consume_ref.clone(),
+            peeks.clone(),
+            produce_counters_closure,
         );
+        Self::observe_comm(observer, &comm, _cont, *persist, &data_candidates)?;
+        self.log_produce(produce_ref, produce_persistent);
+        self.log_comm(comm, PRODUCE_COMM_LABEL);
 
         if !persist {
             self.get_store()
@@ -165,7 +206,7 @@ where
 
         self.remove_matched_datum_and_join(&channels, &data_candidates);
 
-        self.wrap_result(&channels, &continuation, &data_candidates)
+        Ok(self.wrap_result(&channels, &continuation, &data_candidates))
     }
 
     fn store_data(
@@ -190,7 +231,7 @@ where
         data_candidates: &[ConsumeCandidate<C, A>],
     ) {
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
         let store = self.get_store();
         for consume_candidate in sorted_candidates {
             let channel = &consume_candidate.channel;
@@ -248,15 +289,7 @@ where
         None
     }
 
-    pub(super) fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut indexed_vec = t
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| (d, i as i32))
-            .collect::<Vec<_>>();
-        if indexed_vec.len() >= 2 {
-            indexed_vec.shuffle(&mut rand::rng());
-        }
-        indexed_vec
+    pub(super) fn shuffle_with_index<D: Serialize>(&self, t: Vec<D>) -> Vec<(D, i32)> {
+        crate::rspace::space_matcher::deterministic_candidates(t)
     }
 }

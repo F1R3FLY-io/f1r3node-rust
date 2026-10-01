@@ -113,7 +113,8 @@ Service templates extend this:
 Each Embers operation follows a consistent pattern:
 
 1. **Render** -- populate template with typed Rust data
-2. **Prepare** -- set phlo limit, valid-after-block, deployer key
+2. **Prepare** -- select the valid-after block, authenticated deployer, and any
+   located funding-slot capability
 3. **Sign** -- secp256k1 signature over deploy data
 4. **Deploy** -- submit signed deploy via gRPC
 5. **Propose** -- block includes the deploy (auto-propose in single-validator)
@@ -125,12 +126,19 @@ let contract = Create { env_uri, id, name, ... }.render()?;
 
 let signed = prepare_for_signing()
     .code(contract)
-    .phlo_limit(500_000)
     .valid_after_block_number(latest_block)
     .call()?;
 
 let deploy_id = client.deploy_signed_contract(signed).await?;
 ```
+
+The application does not choose a phlogiston limit. Its wallet or persistent
+agent purse must be funded before state-bound admission. The administrator can
+install the agent and grant, while an end user deposits REV into the grant's
+public funding-slot address and the gateway exercises the retained lollipop
+capability. Refilling the same address funds later executions without giving
+the gateway arbitrary access to the user's wallet. See
+[Wallet-funded process lifecycle](20-wallet-funded-processes.md).
 
 ### Data Model
 
@@ -184,4 +192,5 @@ Based on Embers and the system contracts, production F1R3FLY applications typica
 4. **Use the Either monad** (`rho:lang:either`) for error handling in vault/transfer operations
 5. **Track versions** with a "latest" pointer alongside version-specific entries
 6. **Generate Rholang from application code** using templates rather than writing raw `.rho` files
-7. **Sign and deploy** via the gRPC API with proper phlo limits and nonce management
+7. **Sign and deploy** via the gRPC API after funding the authenticated wallet
+   or process purse and selecting the valid-after block
