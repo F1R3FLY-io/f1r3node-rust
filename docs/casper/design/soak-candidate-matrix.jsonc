@@ -299,6 +299,7 @@
   ],
   "dispatch_blockers": [
     "Current dev has no matching published candidate tag. Its CI image release was skipped after an integration test failure.",
+    "No published image contains the node observer of claims 004 and 005. The CI publish gate releases images on pushes to dev, master, or a v tag only. The observer reaches dev through PR #451 and PR #447 (TASK-019-6), and the dev image publication is TASK-019-7. The pinned node 6940a5beb predates the observer (recorded 2026-10-01).",
     "Executable profile workload configurations remain unpinned.",
     "Profile adapters and required node interfaces remain unqualified.",
     "The refreshed campaign model and configuration inventory requires source-bound acceptance.",
@@ -352,5 +353,20 @@
     "sha256": "c9c146fe0436fd048a0a70d53b3346b53b9c635a1c2a3e9e7e26378966a84cad",
     "external_harness_revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
     "acceptance": "pending"
+  },
+  "controlled_preparation": {
+    "report": "docs/casper/cbc-evidence/runs/casper-controlled-preparation-009262781-01/report.json",
+    "sha256": "0fd60687d7dc5e1d2933e7099ad3dc0b75e61d2d5868d015213428ae043a8647",
+    "date": "2026-10-01",
+    "node_revision": "009262781a032a14df2eed3c8e4f214f864bd068",
+    "qualifies_candidate": false,
+    "workload_configuration_status": "controlled-pinned-unqualified",
+    "workload_configuration_digest": "c987b7b062c27dc2c231e83be047977b0480cf814af1c8e3760261256385ad39",
+    "driver_sha256": "a1dfdc1488643725a1fb7666c33ad5cfd04dfe9b04bb7cbafd6a7504981861df",
+    "approved_request_sha256": "592ff753d6553383b8a69395c9e112cfa64616b7d0af9ea31b9c06409d93dfc2",
+    "configuration_sha256": "4e409888063d80910b9fc6d9919e64795c078e6359d51fe4f40d2e580ddd3dba",
+    "live_executor_status": "incomplete",
+    "live_executor_reason": "The p2p driver reports status unknown and exports no observed inputs. 4 receipts and 8 captures completed with zero errors.",
+    "candidate_pins_unchanged": true
   }
 }

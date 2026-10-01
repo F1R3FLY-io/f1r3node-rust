@@ -1,62 +1,75 @@
 # CbC Evidence: scripts/ci/test-check-tla-invariants.sh
 
-The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
-
-Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
+The merge `c9ca12821` combined the changes of both branches to this script. This record is pending for the merged bytes. The earlier accepted or verified version is in `previous_record`.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/test-check-tla-invariants.sh",
     "id": "scripts-ci-test-check-tla-invariants-sh",
-    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
+    "commit": "c9ca128214ce137708f852cdc252840e217df7a2",
     "commit_is_base": true,
-    "working_tree": true,
-    "sha256": "d95437ab2d4cdf003b21213fc382771941b00fe36ac2f442f4d9279425dcd726"
+    "working_tree": false,
+    "sha256": "a17031a06f349c91dc877cf1acff173b84eddb2d3637b93360fc93a5194e5654",
+    "sha256_at_registration": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
+    "sha256_before_refresh": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
+    "sha256_before_verification_refresh": "ac647001494500c87fdff20b5c1743508e643fab96cc41505b15762fbf7b8c00"
   },
-  "claim": "docs/claims/casper-node-observation.md",
+  "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-001",
-    "CLAIM-CASPER-NODE-OBSERVATION-002"
+    "CLAIM-CASPER-NODE-OBSERVATION-004",
+    "CLAIM-CASPER-NODE-OBSERVATION-005"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38",
-    "docs/claims/casper-node-authority-snapshot.md": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822"
+    "docs/claims/casper-node-fork-choice-observation.md": "c007214aad05afbcd100c0e37fd18b166463147b5fa2e1e797743ab814b15a49",
+    "docs/claims/casper-node-display-projection.md": "6310f626415a6ba2d1250e2d656fdcb576415c6153deda1a26da55c617b8faad"
   },
-  "adapter": null,
-  "status": "discharged",
-  "scope": "task-019-4-handoff-cycle-02",
-  "evidence": {
-    "kind": "tiered-evidence-accepted",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
-    "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
-  },
-  "tiers": {
-    "refutation": "recorded",
-    "construction": "recorded-partial",
-    "binding": "recorded-partial"
-  },
-  "soak": "pending",
-  "waiver": null,
-  "verified_at": "2026-09-23T16:55:28Z",
+  "status": "pending",
+  "scope": "stack-merge-refresh-20261001-01",
   "previous_record": {
     "artifact": "scripts/ci/test-check-tla-invariants.sh",
     "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
-    "sha256": "ace5dcfd2a56dc14cf87a55067228b58f79d0c02afa35ce15333898316b15d62",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "sha256": "c11b46b862dc89d091e545c4b36133dec7d96c78be14fb9aa4ad3f863ec966ab",
+    "commit": "c9ca128214ce137708f852cdc252840e217df7a2",
+    "status": "discharged",
+    "scope": "batch-e-acceptance-01"
   },
-  "accepted_claim_digests": {
-    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274",
-    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
+  "evidence": null,
+  "tiers": {
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "pending"
   },
-  "acceptance": {
-    "reviewer": "jltatbeach",
-    "review_id": 5294038948,
-    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
-    "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
-    "submitted_at": "2026-09-23T16:55:28Z",
-    "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
-    "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
-  }
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": null,
+  "previous_refresh_record": {
+    "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "sha256": "6d5ec6c42eac1250387178bf620942317162c0d7e1974660ff5a8b6b83bd4cfa"
+  },
+  "claim_digests_before_refresh": {
+    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940",
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "refreshed_at": "2026-10-01T01:06:08.639Z",
+  "refresh_scope": "batch-e-final-source-evidence-renewal",
+  "claim_digests_before_verification_refresh": {
+    "docs/claims/casper-node-fork-choice-observation.md": "c007214aad05afbcd100c0e37fd18b166463147b5fa2e1e797743ab814b15a49",
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "verification_refresh_record": {
+    "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
+    "commit": "c83b16f30b28fd9ef3fb7dcdccaa1ff4876cbd03",
+    "sha256": "4bfd9be2599dc204d2910e77a6d0db64261cbd244e4a106dae630c0b9dd89630"
+  },
+  "verification_observation": {
+    "scope": "batch-e-final-source-verification-20261001-01",
+    "refutation": "bounded-models-passed",
+    "construction": "scoped-integer-proofs-passed-with-declared-gaps",
+    "binding": "named-source-tests-passed-not-refinement",
+    "adapter_discharge": false
+  },
+  "refresh_reason": "The merge c9ca12821 of feature/casper-node-observation into formal/soak-casper-consensus combined the changes of both branches to this script. The accepted record applies to the earlier bytes only."
 }
 ```

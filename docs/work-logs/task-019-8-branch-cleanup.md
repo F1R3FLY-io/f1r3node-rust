@@ -1,12 +1,18 @@
-# TASK-019-8: Final branch cleanup before the PR #447 merge
+# TASK-019-8: Final node-observation cleanup on stack branch 4
 
 ```yaml
 handoff_status: paused
 claimed_by: claude-session-7015f552
 inventory_head: 51febc379
+execution_branch: fix/soak-finalization-attribution
+execution_pull_request: 441
+scheduling_status: deferred_to_stack_branch_4
+scheduling_decided_by: user
+scheduling_decided_on: 2026-09-30
 removals_authorized: false
 next_steps:
-  - Obtain authorization for the five proposed removals, or a decision to remove nothing.
+  - Refresh the inventory on branch 4 after it inherits the final stack sources.
+  - Obtain authorization for the reviewed removal list, or a decision to remove nothing.
   - Apply the authorized removals and rerun the three checks.
   - Record the diff sizes after the removals and request maintainer confirmation of the reduced diff.
 ```
@@ -54,6 +60,57 @@ Removing those five manifests leaves every other package companion without a pat
 
 The diff against `dev` before any removal is 239 files, with 24,288 insertions and 323 deletions. Documentation accounts for 135 files and 12,047 insertions, formal inputs for 53 files and 2,746 insertions, tests for 10 files and 3,513 insertions, workflows and scripts for 8 files and 310 insertions, and source for 33 files and 5,672 insertions.
 
+## Provisional refresh by Agent B on 2026-09-30
+
+Agent B recorded the [current inventory and checks](node-observation-agent-b-20260930.md#cleanup-inventory) without removing files.
+The checkpoint is `bc226f89b46366ea4cb0c1907d6781050afb7d0c`.
+The actual PR base is `fix/node-log-and-accept-backoff` at `d673a5cf2793dc242426159ab5bdb711fab8efca`.
+The separate cumulative comparison uses `dev` at `eb98d8e07ecfb3f9354002ee4b5fbf18323da151`.
+
+The committed stack diff contains 246 files, 24,409 added lines, and 319 deleted lines.
+The committed cumulative diff contains 274 files, 28,992 added lines, and 387 deleted lines.
+The scoped inventory contains 226 paths, including active changes.
+It retains 221 paths and identifies the same five self-manifests for final review.
+Their hashes match the earlier tracker list.
+
+The offline check inspected 2,235 links and found four missing local targets in `docs/discoveries/2026-09-19-soak-dispatch-preconditions.md`.
+The check exited 1.
+The linked Agent B log names each missing target.
+The earlier zero-error result above remains historical evidence, not the current result.
+
+The three-artifact CI record gate exits 4 with three pending records after source-specific verification.
+That scoped result is not a full node claim audit.
+The new Batch D claim and the changed Batch D artifacts require their own verification and acceptance.
+
+The inventory remains provisional until the final Batch D, Batch E, and record-refresh content is available.
+Agent A owns any separately authorized removals.
+The authorization field remains false.
+
+## Scheduling amendment on 2026-09-30
+
+The user approved report and work-log compaction now, with final cleanup on branch 4.
+The live PR chain identifies that branch as `fix/soak-finalization-attribution`, PR #441.
+The [tracker](../ToDos.md#epic-019-casper-node-observation-interface) records the new execution branch and the limited reduction.
+TASK-019-8 remains open, and file removals remain unauthorized.
+
+The TASK-019-6 cleanup dependency and all claim, check, scope-review, and Git authorization requirements remain unchanged.
+The earlier inventories above remain historical checkpoints.
+The final inventory requires the inherited stack sources.
+
 ## Decision requested
 
 The five proposed removals reduce the diff by five files and about 1.2 KiB. They change no claim status, record status, tier field, or audit result. The task holds at `removals_authorized: false` until the user or the maintainer authorizes the list or decides to remove nothing.
+
+## Removal on 2026-09-30
+
+The user authorized the removal of the 5 proposed files on 2026-09-30. Each file was an `artifacts.sha256` self-manifest of a run package. No acceptance names the file, and no path or digest cites it outside the TASK-019-8 inventory. The `report.json` and the companions of each package stay.
+
+| Package | SHA-256 of the removed file |
+|---------|-----------------------------|
+| `casper-node-authority-b2-d11acabcb-01` | `35eebe6533eec1ef9dc52ec45d380f4c73c457d4daa64305b67642e61567e673` |
+| `casper-node-claim-gate-03d7f1b27-01` | `a12319c726123e2be0014a6cb8847d1d350c4202a44eda2825afd2bde1606929` |
+| `casper-node-observer-batch-a-877cea722-01` | `21ad765308be31beb8ac8fc6e747b0a1b122c1d797a6a0fc21e867710e963adb` |
+| `casper-node-observer-shutdown-d021a1d53-01` | `8ffa6cc12210ee0fe5c47f797ad4b803c77e982a605fa34e7b4b97931a7e9023` |
+| `casper-node-snapshot-batch-b1-799e2136a-01` | `ce5315cce7c4070d01cd250f0b1ecd01a8a7ced7edc83ef973f341133944e5e7` |
+
+The removal happened on `feature/casper-node-observation` at base `97ab3e3d9`. The content stays in Git history. No claim status, record status, tier field, or audit result changed. The final file reduction of the stack stays on `fix/soak-finalization-attribution` under TASK-017-16.

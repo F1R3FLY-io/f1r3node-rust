@@ -88,35 +88,46 @@ The complete nightly suite and Rocq suite were not rerun with real verifiers. No
 
 Node claims record their binding-job evidence in their own run packages. This record retains its primary claim and historical source identity.
 
+## Source refresh on 2026-09-30
+
+The [refresh report](runs/node-observation-ci-refresh-20260930-01/report.json) binds the current source to the verification results.
+The report preserves the earlier record identity and its acceptance.
+The current record remains pending until the applicable acceptance requirements are met.
+This refresh does not discharge `CLAIM-SOAK-GATE-001` or establish required-check enforcement.
+
 ```json
 {
   "artifact": {
     "path": ".github/workflows/slashing-tests.yml",
-    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "id": "github-workflows-slashing-tests-yml",
+    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
     "commit_is_base": true,
-    "working_tree": true,
-    "sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b",
-    "id": "github-workflows-slashing-tests-yml"
+    "working_tree": false,
+    "sha256": "37956499d722765a831cc70633130d419380317d01dface8a366eb0fd3d71fdd"
   },
   "claim": "CLAIM-SOAK-GATE-001",
   "claim_ids": [
     "CLAIM-SOAK-GATE-001"
   ],
-  "previous_record": {
-    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
-    "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
-    "sha256": "59da572253becdc8277ddf878fa6dc2365fe567cc52fe746ba04a2ba532cf100"
-  },
-  "verification_scope": "historical-gate-evidence-not-node-claim-renewal",
-  "adapter": "embedded",
   "status": "pending",
+  "scope": "agent-b-ci-correction-refresh-20260930-01",
+  "adapter": null,
   "evidence": {
-    "kind": "workflow-tests+bounded-model-check",
-    "ref": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
-    "counterexample": "docs/cbc-evidence/soak-g0-b2-2026-09-08/red.log",
-    "detail": "Direct TLC runs establish bounded baseline results. Hosted execution and the complete gate claim remain open."
+    "kind": "source-bound-hosted-checks-and-elf-mutation-controls",
+    "ref": "docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json",
+    "sha256": "7e844fe3c4dfb287de00c093d355ceddf3cbb32209c699577b00eb3b5092bbb3"
   },
+  "verification_status": "recorded",
+  "acceptance_status": "pending",
+  "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-09-30T04:44:34.480367+00:00",
+  "limits": "The report states the verification limits. Earlier acceptance does not cover the corrected source.",
+  "previous_record": {
+    "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+    "sha256": "3230815cb3fb435e32ea2ddfdfda619b60a83e52b0deb6bb11ddba3fbc6a6d07"
+  },
+  "previous_artifact_sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b"
 }
 ```

@@ -129,3 +129,12 @@ shared/src/rust/dag/observation_work.rs cbc=mandatory cbc-weight=high
 casper/tests/soak_observer.rs cbc=mandatory cbc-weight=high
 casper/src/rust/safety/clique_oracle.rs cbc=mandatory cbc-weight=high
 casper/src/rust/util/clique.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer/fork_choice.rs cbc=mandatory cbc-weight=high
+casper/src/rust/estimator.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/dag_operations.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/proto_util.rs cbc=mandatory cbc-weight=high
+block-storage/src/rust/dag/soak_equivocations.rs cbc=mandatory cbc-weight=high
+casper/src/rust/safety/initial_fault.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer/display.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/multi_parent_casper/dispatch.rs cbc=mandatory cbc-weight=high
+casper/src/rust/api/block_api.rs cbc=mandatory cbc-weight=high

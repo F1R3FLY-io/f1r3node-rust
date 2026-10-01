@@ -47,3 +47,17 @@ Restart readiness requires a verified successor capture. Requests can pin the su
 Controlled Linux tests verify executable invocation, transport capture, receipt binding, unavailable capabilities, and rejection of changed identities.
 
 Passing these tests does not qualify a blockchain node. Source-bound acceptance remains pending.
+
+## Paired head continuation registration
+
+This extension was registered on 2026-10-01 before its implementation.
+Each live snapshot selects the captured head for its member's evaluator mode.
+The snapshot preserves an unavailable head rather than selecting the other evaluator's head.
+A captured disagreement remains a disagreement.
+Exact traversal measurements and candidate qualification remain separate requirements.
+
+Capture request identifiers bind the execution envelope, operation, capture phase, and retry attempt.
+The retry counter is not a cryptographic key or a source of execution entropy.
+The normal launcher obtains execution entropy from the operating system.
+Controlled tests must check identifier separation and refusal of output-directory reuse.
+These tests do not establish global uniqueness for caller-supplied execution nonces.

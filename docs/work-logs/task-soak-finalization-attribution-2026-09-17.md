@@ -163,3 +163,21 @@ The strict CbC gate again returned exit code 4 with two pending claims. This ref
 The two evidence records now identify the tested commit and artifact hashes. Their status remains pending, and their verification timestamps remain null.
 
 The refresh did not run Clippy, hosted CI, or the full workspace test suite. It did not launch live nodes, dispatch workflows, or publish artifacts.
+
+## Acceptance on 2026-10-01
+
+<!-- claude-session-f3cbc961 -->
+
+The named maintainer accepted both records of this branch in PR #441, comment [5936251202](https://github.com/F1R3FLY-io/f1r3node-rust/pull/441#issuecomment-5936251202), at revision `68312594d`.
+The acceptance names both record identifiers, the revision, both artifact digests, and this work log as the evidence.
+
+| Record | Artifact | SHA-256 prefix |
+|--------|----------|----------------|
+| `casper-src-rust-validate-rs` | `casper/src/rust/validate.rs` | `29dc4691` |
+| `casper-src-rust-util-rholang-runtime-manager-rs` | `casper/src/rust/util/rholang/runtime_manager.rs` | `70e0c44b` |
+
+Both artifacts have the same bytes at the record commit `7f0ae8182`, at the accepted revision `68312594d`, and at `7fc161e70`.
+Both records now carry `status: discharged`, an `acceptance` block, and a `previous_record` digest of the pending version.
+The evidence stays bounded regression tests. The acceptance does not add a formal proof and does not authorize a live soak.
+
+The `Markdown Link Check` of PR #441 failed on an inherited work-log link to an authenticated code-scanning page. Commit `3f42fe2b4` on `formal/soak-casper-consensus` changed that link to a code span. The merge `7fc161e70` carries the fix to this branch.

@@ -1758,6 +1758,10 @@ impl SoakCaptureAccess<'_> {
         &self.storage.frontier_index
     }
 
+    pub(crate) fn equivocations_index(&self) -> &EquivocationTrackerStore {
+        &self.storage.equivocation_tracker_index
+    }
+
     pub(crate) fn generation(&self) -> u64 { self.storage.current_generation() }
 }
 

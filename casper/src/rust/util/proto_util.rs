@@ -18,6 +18,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
+use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
 
@@ -164,6 +165,15 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
+    weight_from_validator_by_dag_metered(&NoopWork, dag, block_hash, validator)
+}
+
+pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &mut KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    validator: &Validator,
+) -> Result<i64, KvStoreError> {
     // On the fork-choice BFS a traversed block — or its main parent, read for
     // the weight map — can be absent from the metadata index: a sync/prune
     // window, or, on an LFS-restored node, a parent below the restore horizon
@@ -173,6 +183,7 @@ pub fn weight_from_validator_by_dag(
     // fetch-and-retry, where a `KeyNotFound` hard-failed admission (the #306
     // storm on restored joiners and observers). No backtrace in the context —
     // this is a hot path with exactly one caller (`estimator::build_scores_map`).
+    meter.lookup()?;
     let block_metadata = dag
         .lookup(block_hash)?
         .ok_or_else(|| KvStoreError::MissingBlock {
@@ -184,6 +195,7 @@ pub fn weight_from_validator_by_dag(
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
+            meter.lookup()?;
             let parent_metadata =
                 dag.lookup(parent_hash)?
                     .ok_or_else(|| KvStoreError::MissingBlock {

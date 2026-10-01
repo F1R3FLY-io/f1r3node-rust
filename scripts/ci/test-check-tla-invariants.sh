@@ -127,6 +127,17 @@ for area in "${AREAS[@]}"; do
     done
 done
 
+for target in node_observation/MC_DisplayProjection_fabricated_unsafe node_observation/MC_DisplayProjection_source_unsafe node_observation/MC_DisplayProjection_interval_unsafe; do
+    for result in clean wrong-invariant tool-error wrong-exit no-trace timeout missing; do
+        config="$WORK/repo/formal/tlaplus/$target.cfg"
+        [[ "$result" != missing ]] || mv "$config" "$config.saved"
+        status=0
+        run_gate gate TEST_TLC_TARGET="${target##*/}.cfg" TEST_TLC_RESULT="$result" || status=$?
+        [[ "$result" != missing ]] || mv "$config.saved" "$config"
+        ((status != 0)) || fail "The gate accepted $target with result $result."
+    done
+done
+
 # 2. Routing. A stdlib-only scan of the workflow file: the checks need the
 # trigger keys, the job's scalar keys, and one step's env and run block, and
 # the file is two-space YAML, so an indentation walk is enough.
@@ -303,7 +314,7 @@ fi
 grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
     fail 'The gate failed for a reason other than the unregistered Casper control.'
 rm -f "$planted"
-for family in ObserverSession BoundedCapture; do
+for family in ObserverSession BoundedCapture PairedForkChoice; do
     planted="$tla/node_observation/MC_${family}_planted_unsafe.cfg"
     cp "$tla/node_observation/MC_${family}.cfg" "$planted"
     if run_gate gate; then fail 'The gate accepted an unregistered node unsafe configuration.'; fi

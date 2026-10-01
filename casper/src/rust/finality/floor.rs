@@ -656,12 +656,24 @@ pub async fn fork_choice_floor<'a>(
     approved: BlockMetadata,
     ftt: FtThreshold,
 ) -> Result<BlockMetadata, CasperError> {
+    fork_choice_floor_metered(&NoopWork, dag, block_store, latest_messages, approved, ftt).await
+}
+
+pub async fn fork_choice_floor_metered<'a, W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    latest_messages: impl IntoIterator<Item = &'a BlockHash>,
+    approved: BlockMetadata,
+    ftt: FtThreshold,
+) -> Result<BlockMetadata, CasperError> {
     if ftt.num <= 0 {
         return Ok(approved);
     }
     let mut highest: Option<Floor> = None;
     for hash in latest_messages {
-        match floor_of_block(dag, block_store, hash, ftt).await {
+        meter.step(WorkKind::Traversal)?;
+        match floor_of_block_metered(meter, dag, block_store, hash, ftt).await {
             Ok(floor)
                 if highest
                     .as_ref()
@@ -681,8 +693,10 @@ pub async fn fork_choice_floor<'a>(
             ),
         }
     }
+    meter.step(WorkKind::Traversal)?;
     match highest {
         Some(floor) if floor.block_number > approved.block_number => {
+            meter.lookup()?;
             Ok(dag.lookup_unsafe(&floor.hash)?)
         }
         _ => Ok(approved),

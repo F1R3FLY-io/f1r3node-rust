@@ -381,6 +381,32 @@ mod linux {
                 "floor_comparison":{"availability":"not_requested"},"events":[],"coverage":null,
                 "work":{"aggregate":work,"preparation":work,"measured":work,
                     "original":{"availability":"not_requested"},"reference":{"availability":"not_requested"},"complete":true,"failure":null}}}});
+        if mode == "paired_heads" {
+            let head = |mode: &str, hash: char| {
+                available(
+                    json!({
+                        "mode":mode,"head":hash.to_string().repeat(64),
+                        "lower_bound":{"hash":"a".repeat(64),"block_number":1,"rule":"finalized_floor"},
+                        "common_ancestor":"a".repeat(64),"tips":[hash.to_string().repeat(64)],
+                        "tip_scores":[3],"score_count":1,"score_digest":"7".repeat(64),
+                        "visited_blocks":2,"examined_edges":1
+                    }),
+                    'e',
+                )
+            };
+            response["result"]["value"]["fork_choice"] = available(
+                json!({
+                    "input_digest":"e".repeat(64),"inputs":{"max_number_of_parents":2,
+                    "approved_block_number":0,"latest_message_depth":20},
+                "latest_messages":{"captured":1,"invalid":0,"not_held":0,"not_own_testimony":0,"used":1},
+                "bounded":head("bounded", 'd'),
+                    "reference":head("reference", 'e'),
+                    "comparison":available(json!({"algorithm":"immutable-ghost-reference-v1",
+                        "head_matches":false,"tips_match":false,"bounds_differ":false}), 'e')
+                }),
+                'e',
+            );
+        }
         if mode == "reference_mismatch" {
             response["result"]["value"]["targets"][0]["reference_comparison"] = available(
                 json!({
@@ -454,8 +480,11 @@ mod linux {
                 json!({"member_id":mode,"evaluation_mode":mode,"candidate_id":"fixture","node_id":mode,
                     "node_revision":"2".repeat(40),"node_binary_digest":hash(&exe),"incarnation":"12345678-1234-1234-1234-123456789abc",
                     "dag_digest":inputs["dag"]["sha256"],"electorate_digest":inputs["electorate"]["sha256"],"justification_digest":inputs["justification"]["sha256"]})).collect();
-            let authority =
+            let mut authority =
                 json!({"targets":["d".repeat(64)],"original":true,"reference":true,"strict":false});
+            if mode == "paired_heads" {
+                authority["fork_choice"] = json!({"reference":true});
+            }
             let member_config = json!({"binding":binding,"authority":authority,"target":"d".repeat(64),"configuration_sha256":"3".repeat(64)});
             let manifest = json!({"manifest_digest":"5".repeat(64),"run_id":"fixture-live","phase":"pre_pr216_merge","evidence_kind":"node_observation","policy_variant":"baseline",
                 "candidate_id":"fixture","node_revision":"2".repeat(40),"node_binary_digest":hash(&exe),
@@ -711,5 +740,52 @@ mod linux {
         assert_eq!(receipts[0]["status"], "applied");
         assert_eq!(receipts[1]["observations"].as_array().unwrap().len(), 1);
         assert_eq!(receipts[2]["status"], "unknown");
+    }
+
+    #[test]
+    fn live_snapshot_selects_its_own_captured_evaluator_head() {
+        let fixture = Fixture::new("paired_heads");
+        fixture.run(0);
+        let output = fixture.root.path().join("output");
+        for (index, expected) in [(1, 'd'), (3, 'e')] {
+            let observation =
+                parse(&artifact(&output, &fixture.receipts()[index]["observations"][0]).unwrap())
+                    .unwrap();
+            assert_eq!(observation["payload"]["head"]["presence"], "observed");
+            assert_eq!(
+                observation["payload"]["head"]["value"],
+                expected.to_string().repeat(64)
+            );
+            assert_eq!(observation["payload"]["work"]["presence"], "missing");
+        }
+    }
+
+    #[test]
+    fn capture_ids_separate_steps_and_executions_and_reuse_stops_before_capture() {
+        let mut all_ids = std::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let fixture = Fixture::new("valid");
+            fixture.run(0);
+            let output = fixture.root.path().join("output");
+            for step in 0..4 {
+                for phase in ["before", "capture"] {
+                    let request =
+                        record(&output.join(format!("step-{step:02}/{phase}/request.json")))
+                            .unwrap();
+                    assert!(all_ids.insert(request["request_id"].as_str().unwrap().to_owned()));
+                }
+            }
+            let captures = fixture.captures.load(Ordering::SeqCst);
+            let replay = Command::new(env!("CARGO_BIN_EXE_casper-authority-live"))
+                .arg("--request")
+                .arg(fixture.root.path().join("envelope.json"))
+                .arg("--output")
+                .arg(&output)
+                .output()
+                .unwrap();
+            assert!(!replay.status.success());
+            assert_eq!(fixture.captures.load(Ordering::SeqCst), captures);
+        }
+        assert_eq!(all_ids.len(), 16);
     }
 }

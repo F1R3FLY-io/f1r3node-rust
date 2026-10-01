@@ -31,6 +31,7 @@ use crate::rust::casper::{
 };
 use crate::rust::engine::block_retriever::AdmitHashReason;
 use crate::rust::errors::CasperError;
+use crate::rust::safety::initial_fault;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -195,20 +196,20 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             self.block_dag_storage
                 .access_equivocations_tracker(|tracker| {
                     let equivocation_records = tracker.data()?;
-                    let equivocating_weight: u64 = equivocation_records
-                        .iter()
-                        .map(|record| &record.equivocator)
-                        .filter_map(|equivocator| weights.get(equivocator))
-                        .sum();
+                    let equivocating_weight = initial_fault::equivocating_weight(
+                        &weights,
+                        equivocation_records
+                            .iter()
+                            .map(|record| &record.equivocator),
+                    );
                     Ok(equivocating_weight)
                 })?;
 
-        let total_weight: u64 = weights.values().sum();
-        if total_weight == 0 {
-            Ok(0.0)
-        } else {
-            Ok(equivocating_weight as f32 / total_weight as f32)
-        }
+        let total_weight = initial_fault::total_weight(&weights);
+        Ok(initial_fault::normalized_initial_fault(
+            equivocating_weight,
+            total_weight,
+        ))
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
