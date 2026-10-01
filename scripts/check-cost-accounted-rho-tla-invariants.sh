@@ -58,9 +58,18 @@ WRAPPED_BY[EvalStrictAbsent]=MCEvalStrictAbsent
 WRAPPED_BY[FullProtocol]=MCFull
 WRAPPED_BY[MergeableChannelAccounting]=MCMergeableChannelAccounting
 WRAPPED_BY[RuntimeBudgetReplay]=MCRuntimeBudgetReplay
+WRAPPED_BY[SignedRegionCoreErased]=SignedRegionCore
+WRAPPED_BY[SignedRegionCorePartialJoin]=SignedRegionCore
+WRAPPED_BY[SignedRegionCoreSpanAlias]=SignedRegionCore
 WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
 WRAPPED_BY[TokenGatedJoinM2Grief]=MCTokenGatedJoin
 WRAPPED_BY[EvalNoLockNeg]=MCEvalNoLockNeg
+
+declare -A EXPECTED_INVARIANT_REFUTATIONS
+EXPECTED_INVARIANT_REFUTATIONS[SignedRegionCoreErased]=Inv_ContinuationSealPreserved
+EXPECTED_INVARIANT_REFUTATIONS[SignedRegionCorePartialJoin]=Inv_AtomicJoinDebit
+EXPECTED_INVARIANT_REFUTATIONS[SignedRegionCoreSpanAlias]=Inv_FreshBinderIsolation
+EXPECTED_INVARIANT_REFUTATIONS[TokenGatedJoinM2Grief]=Inv_M2_NoGrieferDrainOfVictim
 
 specs=()
 spec_roots=()
@@ -127,9 +136,10 @@ for i in "${!specs[@]}"; do
     else
         rc=$?
     fi
-    if [[ "$base" == TokenGatedJoinM2Grief ]] \
+    if [[ -n "${EXPECTED_INVARIANT_REFUTATIONS[$base]:-}" ]] \
        && [[ $rc -eq 12 ]] \
-       && grep -Fxq 'Error: Invariant Inv_M2_NoGrieferDrainOfVictim is violated.' "$log_file"; then
+       && grep -Fxq "Error: Invariant ${EXPECTED_INVARIANT_REFUTATIONS[$base]} is violated." "$log_file" \
+       && grep -Fxq 'Error: The behavior up to this point is:' "$log_file"; then
         echo "PASS (expected refutation)"
         passes=$((passes + 1))
     elif [[ "$base" == EvalNoLockNeg ]] \
@@ -139,7 +149,7 @@ for i in "${!specs[@]}"; do
          && grep -Fxq 'Error: The following behavior constitutes a counter-example:' "$log_file"; then
         echo "PASS (expected refutation)"
         passes=$((passes + 1))
-    elif [[ "$base" != TokenGatedJoinM2Grief && "$base" != EvalNoLockNeg ]] \
+    elif [[ -z "${EXPECTED_INVARIANT_REFUTATIONS[$base]:-}" && "$base" != EvalNoLockNeg ]] \
          && [[ $rc -eq 0 ]] \
          && grep -Fq 'Model checking completed. No error has been found.' "$log_file" \
          && ! grep -Fq 'Error:' "$log_file"; then
