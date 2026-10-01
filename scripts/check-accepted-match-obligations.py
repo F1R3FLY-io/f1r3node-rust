@@ -101,7 +101,7 @@ def extract(model, config, rocq, rust, module, runner, mutant_configs):
     )
     require(
         re.search(
-            r'(?s)#\[path = "\.\./\.\./tests/hot_store/accepted_match_formal_bindings\.rs"\]\s*mod accepted_match_formal_bindings_tests;',
+            r'(?s)#\[cfg\(test\)\]\s*#\[path = "\.\./\.\./tests/hot_store/accepted_match_formal_bindings\.rs"\]\s*mod accepted_match_formal_bindings_tests;',
             module,
         )
         is not None,
@@ -152,6 +152,7 @@ def extract(model, config, rocq, rust, module, runner, mutant_configs):
                 len(targets) == 1, f"missing or duplicate normal-suite test: {name}"
             )
             require("#[ignore" not in targets[0], f"ignored-only test: {name}")
+            require("#[cfg" not in targets[0], f"feature-gated test: {name}")
     return {
         "model": str(TLA),
         "model_sha256": hashlib.sha256(model.encode()).hexdigest(),
@@ -272,6 +273,34 @@ def self_test(inputs):
                 1,
             ),
             module,
+            runner,
+            mutants,
+        )
+    )
+    reject(
+        lambda: extract(
+            model,
+            config,
+            rocq,
+            rust.replace(
+                "#[test]\nfn bounded_multichannel_transition_refines_independent_sparse_count_oracle",
+                '#[test]\n#[cfg(feature = "experiment")]\nfn bounded_multichannel_transition_refines_independent_sparse_count_oracle',
+            ),
+            module,
+            runner,
+            mutants,
+        )
+    )
+    reject(
+        lambda: extract(
+            model,
+            config,
+            rocq,
+            rust,
+            module.replace(
+                '#[cfg(test)]\n#[path = "../../tests/hot_store/accepted_match_formal_bindings.rs"]',
+                '#[cfg(feature = "experiment")]\n#[path = "../../tests/hot_store/accepted_match_formal_bindings.rs"]',
+            ),
             runner,
             mutants,
         )
