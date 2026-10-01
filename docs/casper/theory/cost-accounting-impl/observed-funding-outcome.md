@@ -115,7 +115,7 @@ Equivalent retained quantities can use different grouping or input order.
 
 ## Rooted measured settlement
 
-[`NativePrepaidDemandBinding::capture_settlement`](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/inventory/demand.rs) connects the measured prepaid binding to the signed wallet policy.
+[`NativePrepaidDemandBinding::capture_settlement`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/inventory/demand.rs) connects the measured prepaid binding to the signed wallet policy.
 The binding retains the exact checked phlo controls used to validate its acquisition demand.
 The settlement method does not accept replacement controls from its caller.
 The [prepaid binding contract](prepaid-receipt-storage.md#binding-prepaid-cells-to-measured-demand) defines its physical evidence and direct-consumption scope.
@@ -212,7 +212,7 @@ The fixture checks these rules for original execution and replay, including bill
 These fixtures do not verify complete funding-family generation or production issuance of prepaid resources.
 The prepaid initial state is explicit test setup, not the production issuance pipeline.
 Its explicit funding case is test input, not an implementation of the up-front proof producer.
-The [native COMM integration fixture](../../../../casper/tests/util/rholang/native_comm_settlement.rs) complements the raw-byte meter and replay tests.
+The [native COMM integration fixture](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/native_comm_settlement.rs) complements the raw-byte meter and replay tests.
 
 `ObservedPhloFamilyMatch.v` proves rejection of incomplete measurements and unequal usage.
 Its composition theorem retains root equality, execution context, exact resource partitions, retained output, and equivalent settlement selection.
@@ -1535,7 +1535,7 @@ Sources:
 - [RSpace observer regressions](../../../../rspace++/tests/comm_observer_tests.rs)
 - [RSpace observer properties](../../../../rspace++/tests/comm_observer_tests/properties.rs)
 - [Observer ownership model](../../../../formal/loom/cost_accounting/tests/loom_native_operation_observer.rs)
-- [Denied-COMM replay regression](../../../../casper/src/rust/rholang/runtime/envelope_tests/native_replay_failure.rs)
+- [Denied-COMM replay regression](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/rholang/runtime/envelope_tests/native_replay_failure.rs)
 
 ### Complete producer contract
 

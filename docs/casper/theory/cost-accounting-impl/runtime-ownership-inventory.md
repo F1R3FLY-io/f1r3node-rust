@@ -138,7 +138,7 @@ Sources:
 
 ### Import-validity finding
 
-The [state-import analysis](../finalized-floor/state-import-validity.md) records both requester paths, pinned dev provenance, canonical cursors, and the required formal correspondence.
+The [state-import analysis](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/docs/casper/theory/finalized-floor/state-import-validity.md) records both requester paths, pinned dev provenance, canonical cursors, and the required formal correspondence.
 
 The runtime requester imports supplied history and cold-store items before any content validation in that path.
 Its concrete importer writes the supplied keys and bytes directly.
@@ -156,7 +156,7 @@ Invalid input must preserve existing data and the outstanding retry owner.
 These requirements restore an existing validation contract. They do not require different Casper voting or wire semantics.
 
 The runtime requester's recording-importer tests do not cover this boundary.
-The [real-store regressions](../../../../casper/src/rust/engine/runtime_state_import_tests.rs) now use the actual importer, real root lookup, and independent history, cold, and root stores.
+The [real-store regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/engine/runtime_state_import_tests.rs) now use the actual importer, real root lookup, and independent history, cold, and root stores.
 Their nonempty fixture uses the real exporter, normal channel hashing, and typed channel lookup.
 State-import verification requires native reproduction, source attribution, a concurrent formal model, repair, and conformance checks.
 These regressions do not establish the historical cause of a CI failure.
@@ -297,8 +297,8 @@ That case needs an explicit storage-consistency test before any repair or change
 The collector's current safety predicate remains unchanged.
 
 Sources:
-[finalization ledger](../../../../block-storage/src/rust/finality/finalization_ledger.rs),
-[receipt pages](../../../../block-storage/src/rust/finality/finalization_ledger/recovery_pages.rs),
+[finalization ledger](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/finality/finalization_ledger.rs),
+[receipt pages](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/finality/finalization_ledger/recovery_pages.rs),
 [mergeable collector](../../../../casper/src/rust/util/mergeable_channels_gc.rs), and
 [node setup](../../../../node/src/rust/runtime/setup.rs).
 
@@ -327,7 +327,7 @@ No end-to-end shutdown failure has been reproduced as part of this inventory upd
 Sources:
 [engine cell](../../../../casper/src/rust/engine/engine_cell.rs),
 [node runtime](../../../../node/src/rust/runtime/node_runtime.rs),
-[runtime supervision](../../../../node/src/rust/runtime/runtime_supervision.rs), and
+[runtime supervision](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/node/src/rust/runtime/runtime_supervision.rs), and
 [server construction](../../../../node/src/rust/runtime/servers_instances.rs).
 
 ## Cache lock-order finding
@@ -416,7 +416,7 @@ The green invocation identifier was `6ca59bc60af34d3cb5336ae5d1700846`.
 
 ### Formal model and correspondence
 
-The [cache lock model](../../../../formal/tlaplus/finalized_floor/RuntimeCacheLockOrder.tla)
+The [cache lock model](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/formal/tlaplus/finalized_floor/RuntimeCacheLockOrder.tla)
 represents two readers, one evictor, one cached value, and separate physical locks.
 The generic configuration has two independent readers.
 The block-index configuration has a fast reader and a writer-locked recheck reader.
@@ -455,7 +455,7 @@ Its evidence directory is `target/verification/runtime-cache-lock/formal.kA4srX`
 The invocation identifier is `d68b6d25a936406695699cdc62574819`.
 The checker used a 512 MiB Java heap inside a 2 GiB systemd scope with no swap and one CPU.
 
-The [formal checker script](../../../../scripts/check-runtime-cache-lock-order.sh)
+The [formal checker script](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/scripts/check-runtime-cache-lock-order.sh)
 checks input hashes before it reports completion.
 The script requires both safe passes and the two named unsafe counterexamples.
 
@@ -517,7 +517,7 @@ The [block-heap lifecycle](block-heap-lifecycle.md) separates live values from a
 Allocator reclamation cannot release a live cache entry, snapshot, task, or lock guard.
 Its abstract reclamation envelope does not replace this ownership inventory.
 
-The [buffer preservation review](../finalized-floor/buffer-pruning-preservation.md) covers admission and recovery ownership separately.
+The [buffer preservation review](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/docs/casper/theory/finalized-floor/buffer-pruning-preservation.md) covers admission and recovery ownership separately.
 Its unresolved storage policy requires upstream review.
 This inventory does not select that policy.
 

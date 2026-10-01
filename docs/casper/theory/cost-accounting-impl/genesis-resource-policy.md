@@ -60,7 +60,7 @@ This distinction preserves existing fixtures and declared historical formats wit
 
 ## Authenticated loading and funding
 
-[`GenesisResourcePolicy::load`](../../../../casper/src/rust/util/rholang/costacc/genesis_resource_policy.rs) requires the approved genesis block from the existing authority chain.
+[`GenesisResourcePolicy::load`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/genesis_resource_policy.rs) requires the approved genesis block from the existing authority chain.
 The caller must establish approval before this call. The loader is not a block-signature or ceremony verifier.
 The loader rejects a block with parents and queries only its genesis post-state root.
 It requires exactly one canonical byte-array result and checks the record against the genesis protocol, shard, and on-chain decimal scale.

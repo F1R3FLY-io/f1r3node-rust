@@ -165,13 +165,13 @@ The full settlement projection must identify which output funds each retained ob
 
 ## Current source and proof boundaries
 
-[`Exchange.rhox`](../../../../casper/src/main/resources/Exchange.rhox) joins two carrier inputs and swaps their opaque payloads.
+[`Exchange.rhox`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/main/resources/Exchange.rhox) joins two carrier inputs and swaps their opaque payloads.
 It has no priced quote parameter and does not directly debit SystemVault custody.
 Stack transport remains subject to the separate native materialization checks.
 Its one-for-one carrier swap must not be presented as the exact-output vault conversion specified here.
 
 [`Exchange.v`](../../../../formal/rocq/cost_accounted_rho/theories/Exchange.v) and `ExchangeFlow.tla` cover carrier and resource-stack conservation.
-The [exchange tests](../../../../casper/tests/genesis/contracts/exchange_spec.rs) cover swap behavior and one-sided release rejection.
+The [exchange tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/genesis/contracts/exchange_spec.rs) cover swap behavior and one-sided release rejection.
 Those artifacts do not prove quote authorization, numerical rates, provider solvency, expiry, or atomic multi-asset funding.
 This contract requires separate refinement evidence for those obligations.
 

@@ -138,7 +138,7 @@ That internal permission does not establish user consent by itself.
 The upstream native proof and settlement path must provide the correct source, bounds, and authorized effect.
 Do not expose internal settlement authority as a general wallet API.
 
-[`vault_payer`](../../../../casper/src/rust/util/rholang/costacc/vault_payer.rs) derives a logical lane, address, and physical custody key from canonical authority.
+[`vault_payer`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_payer.rs) derives a logical lane, address, and physical custody key from canonical authority.
 It rejects unit authority, but successful address derivation is not a withdrawal proof.
 The complete verifier must establish permissions independently before it uses the returned balance.
 

@@ -76,8 +76,8 @@ The current implementation already separates several of these quantities:
 - [`authority.rs`](../../../../rholang/src/rust/interpreter/accounting/authority.rs) selects funding presentations and tracks physical custody, stacks, and stack births.
 - `allocate_quantitative_debit` scales a funding alternative by the measured byte amount.
 - [`prepare_authority_stack_transfer`](../../../../rholang/src/rust/interpreter/accounting/mod.rs) reserves funding events before a new stack becomes available.
-- [`VaultSettlement`](../../../../casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs) separates the burn and fee within a physical reservation.
-- [`acceptance.rs`](../../../../casper/src/rust/util/rholang/acceptance.rs) reconstructs authenticated inventories and checks state-bound evidence.
+- [`VaultSettlement`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs) separates the burn and fee within a physical reservation.
+- [`acceptance.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/acceptance.rs) reconstructs authenticated inventories and checks state-bound evidence.
 
 These mechanisms do not establish a general monetary valuation for every paper-authorized resource transformation.
 The new mapping must connect them explicitly.

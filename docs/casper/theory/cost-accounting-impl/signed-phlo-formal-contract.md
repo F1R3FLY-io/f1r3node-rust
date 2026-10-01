@@ -225,8 +225,8 @@ Admission returns an error when the maximum stored height has no representable s
 Full-width generated tests compare native submission with an independent `i128` window predicate.
 The deploy API does not accept a separate node-local minimum-price argument.
 
-[`consensus_parameter_tests.rs`](../../../../casper/src/rust/rholang/consensus_parameter_tests.rs) checks numeric boundaries, malformed results, and generated inputs against an independent range predicate.
-[`chain_parameters.rs`](../../../../casper/tests/util/rholang/chain_parameters.rs) checks actual genesis storage, chain queries, and concurrent adoption with different local settings.
+[`consensus_parameter_tests.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/rholang/consensus_parameter_tests.rs) checks numeric boundaries, malformed results, and generated inputs against an independent range predicate.
+[`chain_parameters.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/chain_parameters.rs) checks actual genesis storage, chain queries, and concurrent adoption with different local settings.
 Its startup-reader regression requires absent parameter data and unavailable state roots to cause errors, without a local fallback.
 Native boundary tests execute genesis and queries with the minimum and maximum accepted values.
 Genesis and startup regressions require invalid values to fail before execution.

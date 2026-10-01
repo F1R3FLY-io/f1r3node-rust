@@ -111,7 +111,7 @@ Codec acceptance alone cannot establish backing, authority, class compatibility,
 A native cell record describes one resource unit and its original acquisition.
 It records general SystemVault funds, not validator fuel or an unexecuted exchange quote.
 The acquisition schedule identifies the network, shard, settlement asset, integer unit, and decimal scale.
-[`NativePrepaidCell`](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/cell.rs) checks this record against the adopted policy.
+[`NativePrepaidCell`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/cell.rs) checks this record against the adopted policy.
 A separately completed exchange supplies native funds before acquisition. This record does not reverse that exchange during a later refund.
 
 | Field | Meaning |
@@ -165,7 +165,7 @@ Each selected cell identifies one demand occurrence by index.
 The index refers to the immutable measured sequence, not a sequence after previous consumption.
 Multiple cells can fund one occurrence only while its residual quantity remains positive.
 
-[`NativePrepaidInventory::bind_measured_demand`](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/inventory/demand.rs) requires the expected state root and checked current price controls.
+[`NativePrepaidInventory::bind_measured_demand`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/inventory/demand.rs) requires the expected state root and checked current price controls.
 It checks the measured schedule against the adopted genesis policy.
 The inventory already validates each original acquisition schedule against that policy.
 The original and current prices can differ. Their resource classes, valuation rules, and other policy fields cannot differ.
@@ -481,8 +481,8 @@ Implementation and regression sources:
 
 - [Funding-to-birth binding](../../../../rholang/src/rust/interpreter/accounting/phlo_execution/retained_births.rs)
 - [Generated binding tests](../../../../rholang/src/rust/interpreter/accounting/phlo_execution/consent/tests/wire_controls_family/capture_quantities/births.rs)
-- [Native birth capture](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/births.rs)
-- [Native capture tests](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/births/tests.rs)
+- [Native birth capture](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/births.rs)
+- [Native capture tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/births/tests.rs)
 
 ### Distribute checked backing to individual cells
 
@@ -572,7 +572,7 @@ Prepared records alone do not establish that end-to-end issuance transition.
 Implementation sources:
 
 - [Checked per-cell backing](../../../../rholang/src/rust/interpreter/accounting/phlo_execution/cell_backing.rs)
-- [Native record and insertion preparation](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/retained_records.rs)
+- [Native record and insertion preparation](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/retained_records.rs)
 
 ### Wallet settlement and retained receipt insertion
 
@@ -604,7 +604,7 @@ The enclosing execution still must establish causal births and include applicati
 The settlement checkpoint starts after application execution. It therefore cannot, by itself, restore the earlier application pre-state.
 Cancellation requires the runtime disposal or reset rules below. An exclusive borrow alone does not provide cancellation rollback.
 
-Source: [Retained wallet settlement](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/settlement.rs).
+Source: [Retained wallet settlement](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/settlement.rs).
 
 ### Settlement with prepaid consumption
 
@@ -638,7 +638,7 @@ Original receipt authority and current physical authority can differ after an au
 The enclosing funding proof must establish that transfer and current spending authority before it selects the checked execution.
 The enclosing operation must also own application rollback and canceled runtime disposal.
 
-Source: [Composed prepaid settlement](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/consumption.rs).
+Source: [Composed prepaid settlement](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/consumption.rs).
 
 ## Exact replacement
 
@@ -870,16 +870,16 @@ They also prove acceptance of an unchanged record at a new index and rejection o
 
 Sources:
 
-- [Native storage](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts.rs)
-- [Native regressions](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/tests.rs)
-- [Checkpoint history properties](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/checkpoint_tests.rs)
-- [Wallet and receipt settlement regressions](../../../../casper/tests/util/rholang/wallet_settlement_checkpoint.rs)
-- [Source bucket codec](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/bucket.rs)
-- [Source bucket properties](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/bucket/tests.rs)
-- [Physical stack preflight and regressions](../../../../casper/src/rust/util/rholang/supply.rs)
-- [Ordered cell codec](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/ordered.rs)
-- [Atomic migration](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/stack_pops.rs)
-- [Atomic migration regressions](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/stack_pops/tests.rs)
-- [Root-bound physical capture](../../../../casper/src/rust/util/rholang/costacc/prepaid_receipts/physical.rs)
-- [Physical capture regressions](../../../../casper/src/rust/util/rholang/costacc/genesis_resource_policy/tests/prepaid_cells/physical_capture.rs)
+- [Native storage](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts.rs)
+- [Native regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/tests.rs)
+- [Checkpoint history properties](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/checkpoint_tests.rs)
+- [Wallet and receipt settlement regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/wallet_settlement_checkpoint.rs)
+- [Source bucket codec](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/bucket.rs)
+- [Source bucket properties](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/bucket/tests.rs)
+- [Physical stack preflight and regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/supply.rs)
+- [Ordered cell codec](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/ordered.rs)
+- [Atomic migration](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/stack_pops.rs)
+- [Atomic migration regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/stack_pops/tests.rs)
+- [Root-bound physical capture](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/prepaid_receipts/physical.rs)
+- [Physical capture regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/genesis_resource_policy/tests/prepaid_cells/physical_capture.rs)
 - [Observed funding contract](observed-funding-outcome.md)

@@ -6,9 +6,9 @@ Authority proofs must preserve required resources without inventing operator beh
 This document separates algebraic proofs, ordered stack consumption, native checks, and unsupported funding operators.
 It does not change Casper or add linear operators.
 
-The [rho paper](../../../../../publications/cost-accounting/cost-accounted-rho.tex) specifies join authority conservation and lollipop lowering.
+The [rho paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex) specifies join authority conservation and lollipop lowering.
 The relevant anchors are section 4.8 and `def:sugar-lollipop`.
-The [continued-GSLT paper](../../../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex) distinguishes spatial grouping from temporal stacks.
+The [continued-GSLT paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex) distinguishes spatial grouping from temporal stacks.
 Its rules `eq:R1` through `eq:R3` preserve located remainders and continuation seals.
 Its `rem:dup` requires separate tokens for separate firings, including copies with the same signature.
 

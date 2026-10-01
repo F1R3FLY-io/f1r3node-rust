@@ -61,17 +61,17 @@ Retaining upstream arithmetic does not justify erasing newly introduced accounti
 
 ## Specification constraints
 
-The [cost-accounted rho paper](../../../../../publications/cost-accounting/cost-accounted-rho.tex) preserves signed provenance through communication in `rem:signed-subst`.
+The [cost-accounted rho paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex) preserves signed provenance through communication in `rem:signed-subst`.
 Its join-conservation discussion also preserves authority multiplicity across regrouping.
 
-The [continued-GSLT cost paper](../../../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex) distinguishes cost-free Unit apparatus from erased apparatus.
+The [continued-GSLT cost paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex) distinguishes cost-free Unit apparatus from erased apparatus.
 Its cost-monad construction also distinguishes signature composition from ordered resource-stack concatenation.
 
 Neither paper explicitly defines metadata aggregation for Rholang numeric DAG merging.
 DAG means directed acyclic graph.
 The papers constrain the repair, but they do not independently approve a specific numeric aggregation policy.
 
-The [knotted-topoi paper](../../../../../publications/knotted-topoi/knotted-topoi.tex), `rem:fresh` and `prop:opcorr`, requires distinct occurrences and operational correspondence.
+The [knotted-topoi paper](https://github.com/F1R3FLY-io/publications/blob/main/knotted-topoi/knotted-topoi.tex), `rem:fresh` and `prop:opcorr`, requires distinct occurrences and operational correspondence.
 These constraints support occurrence-sensitive provenance checks.
 The paper does not prescribe numeric aggregation or wallet pricing.
 
@@ -228,7 +228,7 @@ These tests do not establish arbitrary-domain byte-order or arithmetic proofs.
 
 ### Signed funding and weighted obligations
 
-The [signed funding regression](../../../../casper/tests/util/rholang/numeric_merge_funding.rs) executes two authenticated writers from one immutable pre-state.
+The [signed funding regression](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/numeric_merge_funding.rs) executes two authenticated writers from one immutable pre-state.
 The writers use different validator identities and different funded signer purses.
 They publish values one and two through each public numeric tag.
 Each writer passes cold replay, which bypasses the replay cache.
@@ -488,7 +488,7 @@ Preserved metadata changes datum bytes, Produce hashes, and later costs, even wh
 All validators must use the same approved implementation and genesis state.
 The repair is not an in-place migration for an existing accounted network.
 
-[`DeployOccurrenceStore::activate_fresh`](../../../../block-storage/src/rust/dag/deploy_occurrence_store.rs) validates the occurrence schema and protocol marker.
+[`DeployOccurrenceStore::activate_fresh`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/dag/deploy_occurrence_store.rs) validates the occurrence schema and protocol marker.
 That marker does not commit a numeric-merge algorithm or a node source revision.
 Authority-accounting version nine identifies certificate evidence, not the full merge implementation.
 Therefore, neither marker alone proves that mixed old and corrected validators are compatible.

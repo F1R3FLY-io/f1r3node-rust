@@ -9,7 +9,7 @@ The joint purse has no automatic priority over individual purses under this poli
 
 The numeric allocator and its focused checks are implemented.
 The native fee paths now call this allocator through a shared planner.
-Both [multi-wallet regressions](../../../../casper/tests/util/rholang/multi_payer_fee.rs) passed after integration on September 10, 2026.
+Both [multi-wallet regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/multi_payer_fee.rs) passed after integration on September 10, 2026.
 They check one total fee, equal cumulative rotation, certificate cursor transitions, and native/replay root equality.
 This document does not claim that the fee repair or the complete funding solver is finished.
 
@@ -114,7 +114,7 @@ It also proves that excessive multiplicity is rejected and that unrelated presen
 The five headline theorems compiled and passed an independent kernel check without additional axioms.
 These proofs abstract canonical signature parsing, cryptography, physical custody resolution, and native state publication.
 
-Five [Casper identity tests](../../../../casper/src/rust/util/rholang/acceptance/tests/monetary_tests.rs) passed with authenticated version-six threshold envelopes and actual vault custody resolution.
+Five [Casper identity tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/acceptance/tests/monetary_tests.rs) passed with authenticated version-six threshold envelopes and actual vault custody resolution.
 They check equal joint/individual rotation, stable cohort identity after a joint-purse top-up, and exclusion of unsigned members.
 An explicitly presented authorized joint subset receives one equal payer position.
 A separate custody test confirms that legacy and principal aliases share one physical position.
@@ -294,7 +294,7 @@ SystemVault("costCursor", scope, returnChannel)
 
 An absent cursor returns `[false, 0, 0]` without initialization.
 An existing cursor returns `[true, revision, position]` through a joined peek of both numeric channels.
-The [native decoder](../../../../casper/src/rust/util/rholang/costacc/monetary_cursor.rs) requires exactly one result with exactly three correctly typed fields.
+The [native decoder](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/monetary_cursor.rs) requires exactly one result with exactly three correctly typed fields.
 It rejects malformed absence, extra results, negative values, and positions outside the expected cohort.
 An exhausted revision remains readable.
 
@@ -346,7 +346,7 @@ The separate cursor model and Rocq proofs cover bounded representation and arbit
 The candidate model covers abstract monetary conservation and abort preservation.
 The native tests provide implementation evidence at these boundaries, not a proof that the models refine the complete node.
 
-Four [native vault tests](../../../../casper/tests/util/rholang/monetary_cursor_vault.rs) passed after the reader additions.
+Four [native vault tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/monetary_cursor_vault.rs) passed after the reader additions.
 The run completed in 69.54 seconds.
 Strict Casper library and test Clippy checks also passed.
 
@@ -463,7 +463,7 @@ The shared-runtime test lets competing calls consume the same live cursor pair.
 Independent branches can each start from a snapshot where that pair does not exist.
 Their first-use event logs therefore contain no common pre-state cursor produce to consume.
 
-The first [branch regression](../../../../casper/tests/util/rholang/monetary_cursor_branches.rs) tested only `are_conflicting` and failed its absent-cursor expectation.
+The first [branch regression](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/monetary_cursor_branches.rs) tested only `are_conflicting` and failed its absent-cursor expectation.
 The observed classification was:
 
 | Pre-state cursor | Scope relation | Event-log conflict |
@@ -613,7 +613,7 @@ The fee plan binds nine fields:
 - Successor revision and successor position.
 
 The [checked evidence type](../../../../rholang/src/rust/interpreter/accounting/monetary_allocation/evidence.rs) validates shape, ordering, scope, and cursor transitions.
-The [native planner](../../../../casper/src/rust/util/rholang/acceptance/monetary_fee.rs) additionally requires the native policy context and a one-unit fee.
+The [native planner](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/acceptance/monetary_fee.rs) additionally requires the native policy context and a one-unit fee.
 That context is the Blake2b-256 digest of `f1r3node:monetary-fee:rotating-capped-max-min:v1:SystemVault:General`.
 It identifies the flat native fee, not future phlo conversion or another asset.
 Native replay reconstructs eligible physical purses, remaining capacity, and the cursor instead of trusting structurally valid evidence alone.

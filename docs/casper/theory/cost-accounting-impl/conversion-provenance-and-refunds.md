@@ -171,7 +171,7 @@ Its refund tests therefore establish arithmetic for the supplied mapping, not th
 It does not establish native asset authentication, quote semantics, or concurrent atomic publication.
 The native integration must preserve that function's meaning through actual custody resolution and retained evidence.
 
-[`ApplyCostDeploy`](../../../../casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs) matches native allocations and settlements by address and custody role.
+[`ApplyCostDeploy`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs) matches native allocations and settlements by address and custody role.
 It checks that burn plus fee fits the corresponding allocation.
 Those current native fields do not encode the complete multi-asset quote and acquisition provenance required here.
 Extending the integration must preserve those safety checks without interpreting address equality as arbitrary asset equivalence.

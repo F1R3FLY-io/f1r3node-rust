@@ -41,7 +41,7 @@ Failure must not select another wallet as an automatic fallback.
 
 ## Current native projection
 
-The [payer resolver](../../../../casper/src/rust/util/rholang/costacc/vault_payer.rs) returns a canonical signature, logical lane, vault address, and custody digest.
+The [payer resolver](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_payer.rs) returns a canonical signature, logical lane, vault address, and custody digest.
 It rejects unit authority as a payable vault.
 Canonical secp256k1 ground keys and supported family-1 principal encodings resolve to the same native public-key vault.
 Their logical lane identities remain distinct.
@@ -64,7 +64,7 @@ The same rule applies to different assets and independent shard contexts.
 
 ## Direct public-key wallet authorization
 
-[`authorize_direct_wallet_funding`](../../../../casper/src/rust/util/rholang/costacc/direct_wallet_funding.rs) implements the direct public-key wallet case for signed funded deployments.
+[`authorize_direct_wallet_funding`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/direct_wallet_funding.rs) implements the direct public-key wallet case for signed funded deployments.
 It uses the existing `vault_payer` mapping rather than a new wallet-address scheme.
 Each requested custody identity must match a native wallet whose owner supplied a verified envelope signature.
 An unsigned threshold member cannot authorize its wallet, even when the selected members satisfy the envelope's quorum.
@@ -118,7 +118,7 @@ Each family row retains its custody, capacity, hold cap, and debit cap.
 The proof assumes the wallet projection, authenticated payload, and fixed-root storage correspondence.
 It does not infer authority from requester-supplied balances or prove cryptographic properties of the address mapping.
 
-[`DirectWalletFunding::read_snapshot`](../../../../casper/src/rust/util/rholang/costacc/direct_wallet_funding/snapshot.rs) reads the authorized wallets through a `SupplyReader`.
+[`DirectWalletFunding::read_snapshot`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/direct_wallet_funding/snapshot.rs) reads the authorized wallets through a `SupplyReader`.
 The caller supplies the expected pre-state root and a nonzero parallel-read limit.
 The reader must execute every query against that fixed state, including resource-stack queries and SystemVault balance queries.
 The method checks the reported root before and after the reads.
@@ -147,7 +147,7 @@ Funding and settlement must still enforce combined capacity through the accepted
 
 ### Binding a funding family
 
-[`DirectWalletSnapshot::bind_family`](../../../../casper/src/rust/util/rholang/costacc/direct_wallet_funding/binding.rs) connects a checked funding family to the authenticated inventory and signed funding intent.
+[`DirectWalletSnapshot::bind_family`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/direct_wallet_funding/binding.rs) connects a checked funding family to the authenticated inventory and signed funding intent.
 Every family source must retain its snapshot custody identity, balance capacity, exposure limit, and debit limit.
 The family must include every snapshot source exactly once. The existing family checker rejects duplicate custody identities.
 This requirement prevents omission of an authorized source from changing the allocation cohort.
@@ -171,10 +171,10 @@ The model checks fixed-state observations, complete results, bounded active read
 Negative controls expose mixed-state reads and incomplete publication.
 This finite safety check does not prove arbitrary-size liveness, cryptography, RSpace implementation correctness, or distributed settlement.
 
-[`snapshot_tests.rs`](../../../../casper/tests/direct_wallet_funding/snapshot_tests.rs) tests the native helper with signed envelopes and controlled asynchronous readers.
+[`snapshot_tests.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/direct_wallet_funding/snapshot_tests.rs) tests the native helper with signed envelopes and controlled asynchronous readers.
 Generated cases vary balances, absence, source order, wallet count, and parallel-read limits.
 Additional cases check query errors, root mismatch, negative balances, empty funding sets, and preservation of stored resources.
-[`wallet_snapshot_state.rs`](../../../../casper/tests/util/rholang/wallet_snapshot_state.rs) tests the real SystemVault reader across transfers and top-ups at distinct roots.
+[`wallet_snapshot_state.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/wallet_snapshot_state.rs) tests the real SystemVault reader across transfers and top-ups at distinct roots.
 That test exercises fixed-state inventory reads, not complete signed deployment admission or replay publication.
 
 `CanonicalCustodyAliasing.v` defines `snapshot_rows_match` over arbitrary lists of source rows with decidable equality.
@@ -235,9 +235,9 @@ Do not assume that every signer can withdraw independently from that purse.
 Do not require a joint purse to fund unrelated individual obligations without permission.
 
 An unforgeable funding slot identifies a resource capability, not automatic ownership of the depositor's entire wallet.
-The [rho specification](../../../../../publications/cost-accounting/cost-accounted-rho.tex), section `sec:funding-slots`, permits deposits without a fixed depositor identity.
+The [rho specification](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex), section `sec:funding-slots`, permits deposits without a fixed depositor identity.
 Consumed resources still require valid location, authority, backing, and provenance.
-The [continued-GSLT specification](../../../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex), rule `eq:R1`, preserves the remaining purse's location.
+The [continued-GSLT specification](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex), rule `eq:R1`, preserves the remaining purse's location.
 Canonical custody must not flatten that resource-location distinction.
 
 ## Captured identity through settlement

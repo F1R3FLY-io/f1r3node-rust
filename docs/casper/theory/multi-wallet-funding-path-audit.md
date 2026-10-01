@@ -35,11 +35,11 @@ This refresh does not claim that the entire audit or integration verification is
 
 Current source references:
 
-- [Monetary fee planning and checks](../../../casper/src/rust/util/rholang/acceptance/monetary_fee.rs)
+- [Monetary fee planning and checks](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/acceptance/monetary_fee.rs)
 - [Execution and vault application](../../../casper/src/rust/rholang/runtime.rs)
 - [Fee recomputation during replay](../../../casper/src/rust/rholang/replay_runtime.rs)
 - [Restricted funding feasibility](../../../rholang/src/rust/interpreter/accounting/monetary_allocation/funding_feasibility.rs)
-- [Native fee integration tests](../../../casper/tests/util/rholang/multi_payer_fee.rs)
+- [Native fee integration tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/multi_payer_fee.rs)
 - [Approved minimax contract](cost-accounting-impl/lexicographic-minimax-funding.md)
 
 The integration test source includes `state_bound_joint_deploy_pays_one_total_fee_through_vault_and_replay` and repeated-root fee rotation checks.
@@ -147,15 +147,15 @@ Detailed source references:
 - [Genesis balances](../../../casper/src/rust/genesis/genesis.rs)
 - [Vault operations and settlement](../../../casper/src/main/resources/SystemVault.rho)
 - [PoS issuance and redemption](../../../casper/src/main/resources/PoS.rhox)
-- [Carrier exchange](../../../casper/src/main/resources/Exchange.rhox)
-- [Privileged deploy wrappers](../../../casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs)
+- [Carrier exchange](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/main/resources/Exchange.rhox)
+- [Privileged deploy wrappers](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs)
 - [Signed-term and stack normalization](../../../rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/recognize.rs)
 - [Lollipop desugaring](../../../rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/desugar.rs)
 - [Funding signature normalization](../../../rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/sig.rs)
-- [Callable capability registry](../../../casper/src/main/resources/CapabilitiesRegistry.rhox)
+- [Callable capability registry](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/main/resources/CapabilitiesRegistry.rhox)
 - [Stack transfer accounting](../../../rholang/src/rust/interpreter/accounting/mod.rs)
 - [Stack production](../../../rholang/src/rust/interpreter/reduce.rs)
-- [Stack settlement](../../../casper/src/rust/util/rholang/supply.rs)
+- [Stack settlement](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/supply.rs)
 - [Numeric merge implementation](../../../rholang/src/rust/interpreter/merging/rholang_merging_logic.rs)
 - [Numeric merge funding correspondence](cost-accounting-impl/numeric-merge-authority-preservation.md)
 - [Valuation and conversion design boundaries](cost-accounting-impl/funding-settlement-design-review.md)
@@ -242,7 +242,7 @@ Relevant sources:
 - [Native authority presentation properties](../../../rholang/src/rust/interpreter/accounting/authority.rs)
 - [Native stack runtime regressions](../../../casper/tests/util/rholang/runtime_manager_test.rs)
 - [Native funding-grammar regressions](../../../rholang/tests/accounting/ll_rejection_spec.rs)
-- [Native capability-registry regressions](../../../casper/tests/genesis/contracts/capabilities_registry_spec.rs)
+- [Native capability-registry regressions](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/genesis/contracts/capabilities_registry_spec.rs)
 
 #### Existing custody, issuance, and failure evidence
 
@@ -381,12 +381,12 @@ Source files:
 
 - [Funding signatures](../../../rholang/src/rust/interpreter/accounting/mod.rs)
 - [Binary policies](../../../rholang/src/rust/interpreter/accounting/resource_logic.rs)
-- [Admission and replay allocation](../../../casper/src/rust/util/rholang/acceptance.rs)
+- [Admission and replay allocation](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/acceptance.rs)
 - [Authority allocation and custody](../../../rholang/src/rust/interpreter/accounting/authority.rs)
 - [Byte measurements](../../../rholang/src/rust/interpreter/accounting/byte_accounting.rs)
 - [State-bound execution](../../../casper/src/rust/rholang/runtime.rs)
 - [Runtime admission entry points](../../../casper/src/rust/util/rholang/runtime_manager.rs)
-- [Vault settlement](../../../casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs)
+- [Vault settlement](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs)
 - [Deploy wire format](../../../models/src/main/protobuf/CasperMessage.proto)
 - [Deploy information wire format](../../../models/src/main/protobuf/DeployServiceCommon.proto)
 - [Deploy data and signing](../../../models/src/rust/casper/protocol/casper_message.rs)
@@ -505,7 +505,7 @@ The list implementation needs generated arity, alias, role, permutation, and fai
 
 ### NPA-7: Carrier exchange is not priced vault conversion
 
-[`Exchange.rhox`](../../../casper/src/main/resources/Exchange.rhox) consumes one datum from each supplied carrier channel.
+[`Exchange.rhox`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/main/resources/Exchange.rhox) consumes one datum from each supplied carrier channel.
 It sends each payload to the opposite carrier and acknowledges the swap.
 The payloads are opaque to the contract.
 The contract has no vault withdrawal, asset identifier, quoted rate, slippage limit, or refund provenance field.
@@ -654,7 +654,7 @@ This audit does not authorize a production Casper change or select a new activat
 ### Approved test implementation
 
 The user subsequently approved the test-only change.
-[`multi_payer_fee.rs`](../../../casper/tests/util/rholang/multi_payer_fee.rs) now constructs authenticated protocol-v6 envelopes from genesis-funded keys.
+[`multi_payer_fee.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/multi_payer_fee.rs) now constructs authenticated protocol-v6 envelopes from genesis-funded keys.
 It checks one-of-one, two-of-two, three-of-three, and two-of-three signer sets.
 It does not fund a compound vault for the multi-signer cases.
 

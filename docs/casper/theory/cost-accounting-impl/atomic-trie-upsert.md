@@ -112,7 +112,7 @@ One configuration increments values, and the other returns `Nil`.
 Four negative controls expose duplicate creation, an unlocked callback, a stale value bucket, and lost `Nil` membership.
 All six checks passed.
 
-The [native tests](../../../../casper/tests/util/rholang/atomic_trie_upsert.rs) use the actual contract and RSpace runtime.
+The [native tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/atomic_trie_upsert.rs) use the actual contract and RSpace runtime.
 Fixed cases cover trie depths zero, one, and three.
 Depth zero forces all keys into the same collision bucket.
 The generated property checks eight cases with one through eight concurrent updates across four keys and depths zero through three.

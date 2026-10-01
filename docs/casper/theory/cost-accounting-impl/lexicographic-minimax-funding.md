@@ -907,7 +907,7 @@ The bounded model does not establish native checkpoint atomicity, restart persis
 
 #### Native two-cursor publication
 
-[`ApplyPhloCostDeploy`](../../../../casper/src/rust/util/rholang/costacc/vault_cost_deploy/phlo.rs) publishes a realized resource contribution and a realized fee contribution.
+[`ApplyPhloCostDeploy`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_cost_deploy/phlo.rs) publishes a realized resource contribution and a realized fee contribution.
 It uses the separate `SystemVault("applyPhloCost", ...)` method.
 The existing `ApplyCostDeploy` source and fee-only interface remain unchanged.
 Neither publisher selects a funding policy or authenticates an execution outcome.
@@ -981,13 +981,13 @@ It does not model purse balances, crash recovery, or absent-cell rollback.
 
 The [Loom tests](../../../../formal/loom/cost_accounting/tests/funding_cursor_cells.rs) exercise an atomic scope-set acquisition abstraction.
 They do not execute RSpace or establish a refinement proof for its matcher.
-The [native regression tests](../../../../casper/tests/util/rholang/funding_cursor_vault.rs) exercise the actual contract, runtime rollback, and replay.
+The [native regression tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/funding_cursor_vault.rs) exercise the actual contract, runtime rollback, and replay.
 Generated request tests cover contribution presence and transport fields across payer counts, revisions, and positions.
 These tests and models do not establish complete network admission or validator agreement for offered deploys.
 
 #### Checked wallet settlement requests
 
-[`CheckedDirectWalletPolicy::capture_settlement`](../../../../casper/src/rust/util/rholang/costacc/direct_wallet_funding/settlement.rs) matches supplied execution evidence against the complete prepared outcome family.
+[`CheckedDirectWalletPolicy::capture_settlement`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/direct_wallet_funding/settlement.rs) matches supplied execution evidence against the complete prepared outcome family.
 The result retains the original signed envelope, immutable funding snapshot, and selected native capture.
 It does not accept replacement payer addresses, resource scopes, fee scopes, or charge amounts.
 Both funded envelope formats use the same adapter.
@@ -1031,8 +1031,8 @@ The proofs preserve amounts and cohort size and show that omitted zero-hold rows
 Missing wallet mappings fail even when the source hold is zero.
 Positive holds remain present when the entire hold becomes a refund.
 
-The [projection property tests](../../../../casper/src/rust/util/rholang/costacc/direct_wallet_funding/settlement/tests.rs) exercise these obligations with multiple wallets and full-width native amounts.
-The [SystemVault snapshot test](../../../../casper/tests/util/rholang/wallet_snapshot_state.rs) checks envelope retention, checked-view swaps, full refunds, zero requests, publication, and replay.
+The [projection property tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/direct_wallet_funding/settlement/tests.rs) exercise these obligations with multiple wallets and full-width native amounts.
+The [SystemVault snapshot test](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/wallet_snapshot_state.rs) checks envelope retention, checked-view swaps, full refunds, zero requests, publication, and replay.
 These checks do not authenticate supplied runtime observations or complete network admission for offered deploys.
 
 ### Signed family capture
@@ -1128,7 +1128,7 @@ Budget tests distinguish earlier capture failure from failure during native conv
 
 #### Pinned native funding snapshot
 
-[`read_policy_snapshot`](../../../../casper/src/rust/util/rholang/costacc/direct_wallet_funding/policy_snapshot.rs) reads authorized wallet balances and both allocation cursors at one explicit state root.
+[`read_policy_snapshot`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/direct_wallet_funding/policy_snapshot.rs) reads authorized wallet balances and both allocation cursors at one explicit state root.
 The method accepts an authenticated direct-wallet envelope and a runtime manager.
 It constructs `RuntimeManagerSupplyReader` internally, which supplies that root to every state query.
 It does not accept a caller-defined reader, wallet cohort, or cursor scope.

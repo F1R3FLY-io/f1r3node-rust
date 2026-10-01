@@ -238,7 +238,7 @@ The existing one-fee repair remains valid within its documented scope.
 The September 10 implementation audit confirmed that this boundary is not only a theoretical concern.
 The current [native settlement contract](end-to-end-authority-settlement.md#status-and-scope) distinguishes logical COMM cost from physical authority consumption.
 One COMM can consume multiple authority cells.
-[`VaultSettlement`](../../../../casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs) records a vault burn and a separate fee.
+[`VaultSettlement`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs) records a vault burn and a separate fee.
 `ApplyCostDeploy::new` requires their total to fit the corresponding physical reservation.
 
 DR-27 identifies REV and phlogiston as names for one system-token denomination.

@@ -10,15 +10,12 @@ unmaintained = "all"
 unsound = "all"
 maximum-db-staleness = "P7D"
 ignore = [
-  { id = "RUSTSEC-2026-0258", reason = "Legacy reqwest uses h2 0.3.27. Undrained streams can queue empty DATA frames. Replace the legacy HTTP dependencies." },
   { id = "RUSTSEC-2025-0134", reason = "comm directly uses rustls-pemfile 2.2.0. Legacy reqwest also uses 1.0.4. Migrate to rustls-pki-types." },
   { id = "RUSTSEC-2025-0141", reason = "The workspace uses bincode 1.3.3. Replacement requires storage and serialization compatibility tests." },
   { id = "RUSTSEC-2021-0141", reason = "rholang directly uses dotenv 0.15.0. Migrate the OpenAI configuration loader to a maintained implementation." },
   { id = "RUSTSEC-2021-0153", reason = "hocon uses encoding through java-properties. Replace HOCON under TASK-012-5." },
   { id = "RUSTSEC-2024-0436", reason = "comm discovery tests use the paste procedural macro. Replace the test macro." },
   { id = "RUSTSEC-2024-0384", reason = "soak-charts uses instant through charton. This dependency is specific to WebAssembly targets." },
-  { id = "RUSTSEC-2024-0437", reason = "The optional rust-bert feature uses protobuf 2.28.0 through rust_tokenizers. Untrusted model parsing requires review." },
-  { id = "RUSTSEC-2025-0119", reason = "The optional rust-bert feature uses unmaintained number_prefix through cached-path." },
   { id = "RUSTSEC-2026-0173", reason = "The optional chroma feature uses unmaintained proc-macro-error2 through validator_derive." },
 ]
 
@@ -71,7 +68,7 @@ allow-build-scripts = [
   "crossbeam-deque@0.8.7", "crossbeam-deque@0.8.8",
   "crossbeam-epoch@0.9.20", "crossbeam-epoch@0.9.21",
   "crossbeam-utils@0.8.22", "crossbeam-utils@0.8.23",
-  "encoding_rs@0.8.42",
+  "encoding_rs@0.8.42", "esaxx-rs@0.1.10",
   "crunchy@0.2.4", "curve25519-dalek@4.1.3", "defmt-macros@1.1.1", "defmt@1.1.1",
   "eyre@0.6.12", "eyre@0.6.14", "generator@0.7.5", "generator@0.8.9",
   "generic-array@0.14.9", "getrandom@0.3.4", "getrandom@0.4.3", "gxhash@3.5.0",
@@ -82,8 +79,9 @@ allow-build-scripts = [
   "linkme@0.3.37", "linkme-impl@0.3.37",
   "lmdb-master-sys@0.2.6", "matrixmultiply@0.3.11", "mime_guess@2.0.5",
   "native-tls@0.2.18", "nom@4.2.3", "ntapi@0.4.3", "num-complex@0.2.4",
-  "num-traits@0.2.19", "object@0.39.1", "oid-registry@0.7.1",
-  "openssl-sys@0.9.117", "openssl@0.10.81", "parking_lot_core@0.9.12", "paste@1.0.15",
+  "num-traits@0.2.19", "object@0.39.1", "oid-registry@0.7.1", "onig_sys@69.9.3",
+  "openssl-sys@0.9.117", "openssl@0.10.81", "ort-sys@2.0.0-rc.13",
+  "parking_lot_core@0.9.12", "paste@1.0.15",
   "portable-atomic-util@0.2.7", "portable-atomic@1.14.0", "portable-atomic@1.15.0",
   "prettyplease@0.2.37", "proc-macro2@1.0.107", "protobuf@2.28.0",
   "psm@0.1.31", "psm@0.1.32", "pulldown-cmark@0.13.4", "quinn-udp@0.5.15",

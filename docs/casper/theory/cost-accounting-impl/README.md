@@ -5,6 +5,8 @@ calculus onto F1R3node's Rholang, RSpace, SystemVault, and Casper subsystems.
 On `feature/cost-accounted-rho`, the Rholang, model, and native RSpace work is
 implemented; the Casper production bindings in this guide are design contracts
 preserved for completion on `feature/casper-cost-accounting-completion`.
+Links to removed Casper files cite the saved `f9bd3895d` implementation.
+Those links document the derivative prototype, not active code on this branch.
 The two normative design sources are:
 
 - [*Cost-Accounted Rho Calculus*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex)

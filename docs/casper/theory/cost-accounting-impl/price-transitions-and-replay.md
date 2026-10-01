@@ -126,7 +126,7 @@ It also compares the byte schedule with the compiled current byte-schedule versi
 The witness verification path compares its schedule and certificate identity with that certificate.
 These checks protect the present schedule, but do not implement general historical economic-schedule dispatch.
 
-The [replay mutation tests](../../../../casper/src/rust/util/rholang/replay_evidence_tests.rs) include byte-schedule version and digest mutations in certificates and witnesses.
+The [replay mutation tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/replay_evidence_tests.rs) include byte-schedule version and digest mutations in certificates and witnesses.
 Those tests establish payload-binding requirements within their tested paths.
 They do not establish cold execution of every historical schedule or the restored signed-price lifecycle.
 The [replay runtime](../../../../casper/src/rust/rholang/replay_runtime.rs) supplies existing certificate, witness, and rollback integration boundaries.

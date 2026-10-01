@@ -1845,7 +1845,7 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             page_size,
             skip,
             get_from_history,
-        );
+        )?;
         Ok(())
     }
 }

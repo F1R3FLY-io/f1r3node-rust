@@ -19,7 +19,7 @@ In particular, abstract authorization booleans do not prove native signature or 
 
 ## Specification basis
 
-The [rho paper](../../../../../publications/cost-accounting/cost-accounted-rho.tex) defines token-metered delegation under “Programmable tokenized capabilities.”
+The [rho paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex) defines token-metered delegation under “Programmable tokenized capabilities.”
 A parent can give a subordinate a portion of its resource stack.
 The delegated stack limits the subordinate's funded actions.
 Delegation does not duplicate the parent's resources.
@@ -28,7 +28,7 @@ Definition `def:sugar-lollipop` assigns rendezvous funding to the source authori
 Its composability remark permits compound authorities and chains of transfers.
 Definition `def:funding-slot` permits funding through an unforgeable channel rather than a fixed depositor identity.
 
-Rule `eq:R1` in the [continued-GSLT paper](../../../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex) consumes a compatible cell from a located purse.
+Rule `eq:R1` in the [continued-GSLT paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex) consumes a compatible cell from a located purse.
 The remaining purse retains its location.
 Equal monetary value alone cannot replace the required authority, location, or resource compatibility.
 

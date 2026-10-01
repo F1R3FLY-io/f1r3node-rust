@@ -776,7 +776,7 @@ located-stack pop, or process effect. That omission makes later supply discovery
 node-local and can cause honest validators to certify or reject the same deploy
 against different balances.
 
-![CBC support selects certified candidates while the state-preserving predicate prevents fork choice and finality from bypassing the current committed state.](../finalized-floor/diagrams/09-state-preserving-fork-choice.svg)
+![CBC support selects certified candidates while the state-preserving predicate prevents fork choice and finality from bypassing the current committed state.](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/docs/casper/theory/finalized-floor/diagrams/09-state-preserving-fork-choice.svg)
 
 Exact effect provenance closes the same gap during merge. Rejection propagates
 through the transitive dependency graph of exact effects, not through an entire
@@ -795,7 +795,7 @@ The detailed consensus specifications are:
 
 - [Finalized-floor normative specification](../finalized-floor/finalized-floor-specification.md);
 - [Merge-algebra normative specification](../merge-algebra/merge-algebra-specification.md);
-- [Deploy-occurrence verification](../deploy-occurrence/deploy-occurrence-verification.md);
+- [Deploy-occurrence verification](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/docs/casper/theory/deploy-occurrence/deploy-occurrence-verification.md);
 - [Mergeable-evidence authentication](mergeable-evidence-authentication.md); and
 - [Evaluation transaction isolation](evaluation-transaction-isolation.md).
 

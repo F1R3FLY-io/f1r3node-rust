@@ -379,7 +379,7 @@ Any additional approval must be linked and checked before its status changes.
 
 This status ledger completes a documentation deliverable only.
 It does not implement, approve, or verify the proposed protocol choices.
-The [PR 390 correction record](pr390-corrections-and-retained-findings.md) states the retained findings and required corrections.
+The [PR 390 correction record](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/docs/casper/design/pr390-corrections-and-retained-findings.md) states the retained findings and required corrections.
 
 Required qualification remains end-to-end across concurrent validators, replay, storage, resource bounds, clients, and the approved 24-hour soak.
 No source-code or verification-gate change occurred while writing this ledger.

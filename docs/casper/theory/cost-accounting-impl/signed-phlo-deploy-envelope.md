@@ -174,7 +174,7 @@ Neither decoding nor storage changes a shard's active execution policy.
 
 ### Pending records and body-only consumers
 
-[`PendingDeploy`](../../../../block-storage/src/rust/deploy/pending_deploy.rs) owns one checked envelope.
+[`PendingDeploy`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/deploy/pending_deploy.rs) owns one checked envelope.
 Its identity bytes and encoded length derive from that envelope and have no mutation interface.
 The encoded length includes every signer, not only the primary signature.
 This distinction prevents compound legacy envelopes from understating their wire size.
@@ -292,7 +292,7 @@ No container supplies a hidden default limit or converts a funded envelope into 
 
 ### Versioned persistence
 
-[`VersionedDeployStorage`](../../../../block-storage/src/rust/deploy/versioned_deploy_storage.rs) stores canonical envelopes in separate database namespaces.
+[`VersionedDeployStorage`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/deploy/versioned_deploy_storage.rs) stores canonical envelopes in separate database namespaces.
 Each value contains a storage schema number, an authorization version, and canonical protobuf bytes.
 The key contains the typed deployment identity, which distinguishes legacy signatures from envelope commitments.
 
@@ -458,7 +458,7 @@ Generated nested-container tests exercise mixed envelope formats, repeated entri
 The abstract contracts do not prove Rust refinement or shared-wallet settlement concurrency.
 
 The [model tests](../../../../models/src/rust/signed_phlo_deploy/envelope_tests.rs) check native round trips, format substitution, threshold witnesses, and canonical record rejection.
-The [storage tests](../../../../block-storage/src/rust/deploy/versioned_deploy_storage/tests.rs) check restart behavior, unchanged legacy records, corruption, duplicate races, and key limits.
+The [storage tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/deploy/versioned_deploy_storage/tests.rs) check restart behavior, unchanged legacy records, corruption, duplicate races, and key limits.
 Facade tests exercise mixed-format operation histories, complete envelope retention, namespace isolation, restart, and concurrent insertion through cloned handles.
 Pending tests also cover typed membership, typed removal, concurrent removal, and rejection of ambiguous storage without deletion.
 Generated histories compare both removal methods and membership queries with an independent map of retained envelopes.
@@ -483,7 +483,7 @@ Exploration uses three threads and a 5,000-branch failure limit per execution, w
 A negative control removes the transaction guard and must expose partial publication.
 This check covers transaction interleavings, not envelope cryptography or LMDB internals.
 Generated operation histories compare retained envelopes against an independent map after insertion, deletion, lookup, and store reopening.
-The [pending-record tests](../../../../block-storage/src/rust/deploy/pending_deploy/tests.rs) check fixed historical digests, exact re-encoding, identity corruption, signature corruption, and lossy-adapter rejection.
+The [pending-record tests](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/block-storage/src/rust/deploy/pending_deploy/tests.rs) check fixed historical digests, exact re-encoding, identity corruption, signature corruption, and lossy-adapter rejection.
 Generated restoration sequences preserve the signed body, identity, and protocol gate across repeated deserialization.
 Legacy wire tests cover every three-member permutation and generated permutations with up to 32 members, including duplicate-signer rejection.
 The historical processed decoder acts as a differential reference for the reversed additional-signer regression.

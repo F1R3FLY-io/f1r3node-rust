@@ -129,7 +129,7 @@ The rho paper's `eq:fee-extract` transfers one authority token to the fee collec
 It does not specify token-to-REV conversion for arbitrary monetary payer sets.
 The user's one-total-fee requirement therefore needs an explicit mapping from authority obligations to monetary obligations.
 
-The [native multi-wallet regression](../../../casper/tests/util/rholang/multi_payer_fee.rs) exposes two distinct gaps in the working tree based on the audited commit.
+The [native multi-wallet regression](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/tests/util/rholang/multi_payer_fee.rs) exposes two distinct gaps in the working tree based on the audited commit.
 With `Nil`, two selected signers credit two monetary units and three selected signers credit three.
 Replay agrees with those balances, so replay equality does not establish the required total fee.
 This finding does not refute the paper's authority algebra.

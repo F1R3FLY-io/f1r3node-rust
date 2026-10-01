@@ -12,7 +12,7 @@ The [settlement review](funding-settlement-design-review.md) supplies the remain
 
 ## Specification constraints
 
-The [rho paper](../../../../../publications/cost-accounting/cost-accounted-rho.tex) distinguishes communication atomicity from financial-transaction atomicity in `rem:db-atomicity`.
+The [rho paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex) distinguishes communication atomicity from financial-transaction atomicity in `rem:db-atomicity`.
 One communication must either complete or have no effect.
 A multi-step financial operation additionally needs sufficient funding and the applicable deployment boundary.
 
@@ -24,7 +24,7 @@ The paper also describes subordinate capability exhaustion and dynamically suppl
 A blocked located interaction and a failed atomic financial operation are not interchangeable events.
 The implementation must distinguish their scopes rather than apply a universal deployment rollback rule to both.
 
-The [continued-GSLT paper](../../../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex) supplies the matching located-resource discipline.
+The [continued-GSLT paper](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex) supplies the matching located-resource discipline.
 Equal monetary value does not substitute for compatible authority or resource rights.
 The [funding audit](../multi-wallet-funding-path-audit.md) records the inspected specification and implementation boundaries.
 
