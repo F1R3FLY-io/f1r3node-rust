@@ -39,17 +39,24 @@
 // [`read_manifest`] (parse every line, missing file → empty
 // Vec, malformed line → [`SnapshotError::MalformedManifest`]).
 //
-// Slice 8 (this PR) adds [`prune_snapshot_dir`] — mtime-based
+// Slice 8 (PR #511) added [`prune_snapshot_dir`] — mtime-based
 // retention keeping the N newest `.wal` snapshots and their
-// paired `.hashes` sidecars.  Symlinks are skipped (lstat-
-// based).  This closes the retention loop everyone's been
-// building toward: sidecar (PR #507), sweep (PR #508),
-// manifest read (PR #510), and now the actual deletion pass.
-// The design is intentionally manifest-independent — see the
-// docstring's "Conservative posture" section.
+// paired `.hashes` sidecars (manifest-independent for
+// correctness under lost manifest entries).
 //
-// Writer / H-4 signing land in subsequent slices as their own
-// natural units.
+// Slice 9 (this PR) adds H-4 signing on `ManifestEntry`:
+// [`ManifestEntry::sign_bytes`] (canonical byte-encoding of
+// non-sig fields → Blake2b256 → the message the signature
+// covers), [`ManifestEntry::signed`] (populate the `sig` field
+// by signing with a secp256k1 secret key), and
+// [`ManifestEntry::verify_with_pubkey`] (verify an entry's sig
+// against a public key).  Fills the `sig` field forward-
+// declared in PR #509's wire format.  New error variants
+// [`SnapshotError::UnsignedManifestEntry`] and
+// [`SnapshotError::ManifestSignatureInvalid`] let join clients
+// distinguish "unsigned" from "signature mismatch" cleanly.
+//
+// Writer lands in a subsequent slice as its own natural unit.
 //
 // # Snapshot semantics — log-structured
 //
@@ -493,6 +500,22 @@ pub enum SnapshotError {
     /// carries the underlying [`ManifestEntry::from_line`] error
     /// text.
     MalformedManifest { line: usize, cause: String },
+    /// [`ManifestEntry::verify_with_pubkey`] was called on an
+    /// entry whose `sig` field is `None`.  Join clients MUST
+    /// reject unsigned entries in production (unless an explicit
+    /// "trust local disk" override is set) — an unsigned entry
+    /// is indistinguishable from one with a stripped signature.
+    UnsignedManifestEntry,
+    /// Signature verification failed: the `sig` field is present
+    /// but does not match the public key over the entry's
+    /// canonical [`ManifestEntry::sign_bytes`].  Causes:
+    /// tampering (sig forged for different field values),
+    /// wrong public key for this entry's writer, or a signature
+    /// over a different canonical encoding (version drift).
+    /// Distinct from [`UnsignedManifestEntry`] so the join
+    /// protocol can diagnose "unsigned by writer" vs. "signed
+    /// but doesn't verify."
+    ManifestSignatureInvalid,
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -519,6 +542,12 @@ impl std::fmt::Display for SnapshotError {
             }
             SnapshotError::MalformedManifest { line, cause } => {
                 write!(f, "manifest line {line}: {cause}")
+            }
+            SnapshotError::UnsignedManifestEntry => {
+                write!(f, "manifest entry is unsigned (no sig field)")
+            }
+            SnapshotError::ManifestSignatureInvalid => {
+                write!(f, "manifest entry signature verification failed")
             }
         }
     }
@@ -1758,6 +1787,118 @@ impl ManifestEntry {
             sig,
         })
     }
+
+    // -------------------------------------------------------
+    // H-4 signing (slice 9)
+    // -------------------------------------------------------
+
+    /// Canonical byte-encoding of the four non-`sig` fields,
+    /// Blake2b256-hashed → the 32-byte message a secp256k1
+    /// signature covers.
+    ///
+    /// # Layout (binary, big-endian)
+    ///
+    ///   `MANIFEST_FORMAT_VERSION (u8)`
+    /// | `block_number (i64 BE)`
+    /// | `root presence tag (u8: 0=None, 1=Some)` [+ 32 bytes if 1]
+    /// | `entries (u64 BE)`
+    /// | `ts_ms (i64 BE)`
+    ///
+    /// Then `Blake2b256(buf)`.
+    ///
+    /// # Why binary (not JSON) canonical encoding
+    ///
+    /// The signed message is deliberately NOT the JSON output
+    /// of [`ManifestEntry::to_line`].  JSON is for interop and
+    /// operator inspection; binary canonical encoding is for
+    /// signature stability.  A future `to_line` tweak (e.g.,
+    /// Unicode escape handling, number formatting) would
+    /// invalidate every existing signature if signing covered
+    /// the JSON text.  Binary covers only the semantic field
+    /// values, so a signature survives any wire-format
+    /// refactor as long as `MANIFEST_FORMAT_VERSION` doesn't
+    /// change.
+    ///
+    /// # Why include `MANIFEST_FORMAT_VERSION` in the message
+    ///
+    /// Ties the signature to the specific manifest format.  If
+    /// the format ever bumps to v2 with a new field, a v1 sig
+    /// cannot be mis-interpreted as a valid v2 sig (the
+    /// prepended version byte would differ, Blake2b256 output
+    /// would differ, verify would fail).
+    pub fn sign_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(1 + 8 + 1 + 32 + 8 + 8);
+        buf.push(MANIFEST_FORMAT_VERSION);
+        buf.extend_from_slice(&self.block_number.to_be_bytes());
+        match &self.root {
+            Some(r) => {
+                buf.push(1);
+                buf.extend_from_slice(r);
+            }
+            None => buf.push(0),
+        }
+        buf.extend_from_slice(&self.entries.to_be_bytes());
+        buf.extend_from_slice(&self.ts_ms.to_be_bytes());
+        Blake2b256::hash(buf)
+    }
+
+    /// Return a copy of `self` with the `sig` field populated
+    /// by signing [`sign_bytes`] with `sk_bytes` (a 32-byte
+    /// secp256k1 secret key).  The caller is responsible for
+    /// invoking this before writing to the manifest; the
+    /// (yet-to-land) higher-level writer wraps the two-step
+    /// (sign + append).
+    ///
+    /// # Signature determinism depends on the Secp256k1 strategy
+    ///
+    /// This crate's [`crypto::rust::signatures::secp256k1::Secp256k1`]
+    /// uses `sign_prehash` (RFC 6979 deterministic nonces), so
+    /// two signings of the same entry under the same key
+    /// produce byte-identical `sig` bytes — pinned by
+    /// `manifest_signed_is_deterministic_rfc6979`.  Do NOT rely
+    /// on this cross-strategy: a future swap to a non-RFC-6979
+    /// backend (e.g., randomized ECDSA) would make the `sig`
+    /// bytes non-deterministic across invocations.  Both bytes
+    /// would still verify under the same public key — the
+    /// signature's semantic contract is "verifies under this
+    /// public key over this message," not "produces identical
+    /// bytes."  Consumers checking sig-equality (e.g.,
+    /// detecting duplicate manifest entries) MUST use the
+    /// semantic fields, not `sig` bytes.
+    pub fn signed(mut self, sk_bytes: &[u8]) -> Self {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let msg = self.sign_bytes();
+        let sig = Secp256k1.sign(&msg, sk_bytes);
+        self.sig = Some(sig);
+        self
+    }
+
+    /// Verify the entry's signature against a public key.
+    ///
+    /// Returns [`SnapshotError::UnsignedManifestEntry`] if
+    /// `sig` is `None`; returns
+    /// [`SnapshotError::ManifestSignatureInvalid`] if the
+    /// signature doesn't verify.  Join-protocol MUST call this
+    /// on every manifest line before treating `root` as
+    /// authoritative.  The two-variant split lets the join
+    /// protocol distinguish "writer never signed" (operator
+    /// misconfig or local-disk-tooling edit) from "signature
+    /// present but doesn't verify" (tampering, wrong pubkey,
+    /// or canonical-encoding drift).
+    pub fn verify_with_pubkey(&self, pk_bytes: &[u8]) -> Result<(), SnapshotError> {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let sig = self
+            .sig
+            .as_deref()
+            .ok_or(SnapshotError::UnsignedManifestEntry)?;
+        let msg = self.sign_bytes();
+        if !Secp256k1.verify(&msg, sig, pk_bytes) {
+            return Err(SnapshotError::ManifestSignatureInvalid);
+        }
+        Ok(())
+    }
 }
 
 // ===========================================================
@@ -2675,6 +2816,12 @@ mod tests {
             cause: "example-cause".into(),
         });
         assert!(s.contains("17") && s.contains("example-cause"), "got {s:?}");
+
+        let s = format!("{}", SnapshotError::UnsignedManifestEntry);
+        assert!(s.contains("unsigned"), "got {s:?}");
+
+        let s = format!("{}", SnapshotError::ManifestSignatureInvalid);
+        assert!(s.contains("signature verification failed"), "got {s:?}");
 
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
         let s = format!("{}", SnapshotError::Io(io_err));
@@ -4169,5 +4316,276 @@ mod tests {
         assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 1);
         assert!(a.exists(), "lexicographically-smaller filename survives");
         assert!(!b.exists());
+    }
+
+    // ---------------------------------------------------------------
+    // H-4 signing (slice 9)
+    // ---------------------------------------------------------------
+
+    fn new_secp256k1_keypair() -> (Vec<u8>, Vec<u8>) {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let (sk, pk) = Secp256k1.new_key_pair();
+        (sk.bytes.to_vec(), pk.bytes.to_vec())
+    }
+
+    fn fixture_entry() -> ManifestEntry {
+        ManifestEntry {
+            block_number: 42,
+            root: Some([0xABu8; 32]),
+            entries: 7,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        }
+    }
+
+    /// `sign_bytes` is deterministic — same entry, same output.
+    /// Load-bearing property for signatures to verify
+    /// deterministically across runs.
+    #[test]
+    fn manifest_sign_bytes_is_deterministic() {
+        let entry = fixture_entry();
+        assert_eq!(entry.sign_bytes(), entry.sign_bytes());
+    }
+
+    /// The output is a 32-byte Blake2b256 digest.  Pins the
+    /// hash primitive — a change to a different hash function
+    /// (same size, different algorithm) would silently
+    /// invalidate every existing signature.
+    #[test]
+    fn manifest_sign_bytes_is_32_byte_blake2b256_digest() {
+        assert_eq!(fixture_entry().sign_bytes().len(), 32);
+    }
+
+    /// `sign_bytes` ignores the `sig` field.  A signature
+    /// cannot cover its own output — if it did, flipping `sig`
+    /// from `None` to `Some(sig_bytes)` after signing would
+    /// invalidate the signature it just created.
+    #[test]
+    fn manifest_sign_bytes_ignores_sig_field() {
+        let unsigned = fixture_entry();
+        let mut signed_shape = unsigned.clone();
+        signed_shape.sig = Some(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(unsigned.sign_bytes(), signed_shape.sign_bytes());
+    }
+
+    /// Each semantic field is covered by the signed message —
+    /// changing block_number, root, entries, or ts_ms yields a
+    /// different digest.  Prevents a tampering attack where an
+    /// attacker modifies one field hoping the signature still
+    /// matches (which it wouldn't, if sign_bytes covers it).
+    #[test]
+    fn manifest_sign_bytes_differs_by_each_semantic_field() {
+        let base = fixture_entry();
+        let base_hash = base.sign_bytes();
+
+        let mut mutated = base.clone();
+        mutated.block_number += 1;
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "block_number must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.root = Some([0xCDu8; 32]);
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "root value must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.root = None;
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "root presence must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.entries += 1;
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "entries must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.ts_ms += 1;
+        assert_ne!(mutated.sign_bytes(), base_hash, "ts_ms must affect digest");
+    }
+
+    /// `signed()` populates the `sig` field; the returned
+    /// entry's other fields are unchanged.
+    #[test]
+    fn manifest_signed_populates_sig_field_and_preserves_others() {
+        let (sk, _pk) = new_secp256k1_keypair();
+        let unsigned = fixture_entry();
+        let signed = unsigned.clone().signed(&sk);
+        assert!(signed.sig.is_some(), "sig populated after signed()");
+        // Non-sig fields preserved.
+        assert_eq!(signed.block_number, unsigned.block_number);
+        assert_eq!(signed.root, unsigned.root);
+        assert_eq!(signed.entries, unsigned.entries);
+        assert_eq!(signed.ts_ms, unsigned.ts_ms);
+    }
+
+    /// Load-bearing round-trip: a freshly-signed entry verifies
+    /// cleanly against the same public key.
+    #[test]
+    fn manifest_signed_verify_round_trips_with_matching_pubkey() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+        signed.verify_with_pubkey(&pk).expect("verify ok");
+    }
+
+    /// A signature made with one key does NOT verify under a
+    /// different public key.  Baseline cryptographic property;
+    /// pinned to catch a future implementation bug that would,
+    /// e.g., accidentally accept any pubkey.
+    #[test]
+    fn manifest_verify_with_wrong_pubkey_returns_signature_invalid() {
+        let (sk, _pk) = new_secp256k1_keypair();
+        let (_sk2, pk2) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+        match signed.verify_with_pubkey(&pk2) {
+            Err(SnapshotError::ManifestSignatureInvalid) => (),
+            other => panic!("expected ManifestSignatureInvalid, got: {other:?}"),
+        }
+    }
+
+    /// Verify on an entry with `sig = None` surfaces
+    /// `UnsignedManifestEntry` (distinct from "signed but
+    /// doesn't verify") — the two-variant split lets join
+    /// clients diagnose the operator-facing problem.
+    #[test]
+    fn manifest_verify_unsigned_returns_unsigned_error() {
+        let (_sk, pk) = new_secp256k1_keypair();
+        let unsigned = fixture_entry();
+        match unsigned.verify_with_pubkey(&pk) {
+            Err(SnapshotError::UnsignedManifestEntry) => (),
+            other => panic!("expected UnsignedManifestEntry, got: {other:?}"),
+        }
+    }
+
+    /// Tampering with ANY signed field (post-signing) breaks
+    /// verification — the tamper-detection load-bearer.
+    #[test]
+    fn manifest_verify_fails_on_any_tampered_field() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+
+        for mutate in [
+            Box::new(|e: &mut ManifestEntry| e.block_number += 1)
+                as Box<dyn Fn(&mut ManifestEntry)>,
+            Box::new(|e: &mut ManifestEntry| e.root = Some([0xCDu8; 32])),
+            Box::new(|e: &mut ManifestEntry| e.root = None),
+            Box::new(|e: &mut ManifestEntry| e.entries += 1),
+            Box::new(|e: &mut ManifestEntry| e.ts_ms += 1),
+        ] {
+            let mut tampered = signed.clone();
+            mutate(&mut tampered);
+            match tampered.verify_with_pubkey(&pk) {
+                Err(SnapshotError::ManifestSignatureInvalid) => (),
+                other => panic!("tampered entry should fail verify: {other:?}"),
+            }
+        }
+    }
+
+    /// End-to-end integration: sign an entry, serialize to a
+    /// line, parse the line back, verify.  Load-bearing — pins
+    /// that `to_line` / `from_line` preserve the `sig` field
+    /// losslessly across the wire format.
+    #[test]
+    fn manifest_signed_to_line_from_line_round_trips_with_verify() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+        let line = signed.to_line();
+        let parsed = ManifestEntry::from_line(&line).expect("parse ok");
+        assert_eq!(parsed, signed);
+        parsed
+            .verify_with_pubkey(&pk)
+            .expect("verify ok after wire round-trip");
+    }
+
+    /// The signed message prefixes `MANIFEST_FORMAT_VERSION` so
+    /// a v1-signed entry's bytes could not be mistaken for a
+    /// hypothetical v2-signed entry's.  Pins the first byte of
+    /// the pre-hash buffer by constructing it manually.
+    #[test]
+    fn manifest_sign_bytes_version_byte_prefix_is_pinned() {
+        let entry = ManifestEntry {
+            block_number: 0,
+            root: None,
+            entries: 0,
+            ts_ms: 0,
+            sig: None,
+        };
+        // Expected pre-hash buffer: [MANIFEST_FORMAT_VERSION, 0...0 (bn), 0 (root=None), 0...0 (entries), 0...0 (ts_ms)]
+        let mut expected_prehash = Vec::with_capacity(1 + 8 + 1 + 8 + 8);
+        expected_prehash.push(MANIFEST_FORMAT_VERSION);
+        expected_prehash.extend_from_slice(&0i64.to_be_bytes());
+        expected_prehash.push(0u8); // root presence = None
+        expected_prehash.extend_from_slice(&0u64.to_be_bytes());
+        expected_prehash.extend_from_slice(&0i64.to_be_bytes());
+        let expected_hash = Blake2b256::hash(expected_prehash);
+        assert_eq!(entry.sign_bytes(), expected_hash);
+    }
+
+    /// This crate's secp256k1 strategy uses `sign_prehash` (RFC
+    /// 6979 deterministic nonces), so two signings of the same
+    /// entry under the same key produce byte-identical `sig`
+    /// bytes.  Pins the current strategy so a swap to a
+    /// randomized-ECDSA backend (which would still verify but
+    /// not byte-match) surfaces here instead of silently
+    /// breaking a downstream consumer that assumed sig-equality.
+    #[test]
+    fn manifest_signed_is_deterministic_rfc6979() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let a = fixture_entry().signed(&sk);
+        let b = fixture_entry().signed(&sk);
+        assert_eq!(
+            a.sig, b.sig,
+            "RFC 6979: two signings of the same entry under the same key \
+             produce byte-identical sig bytes"
+        );
+        // Semantic contract still holds either way.
+        a.verify_with_pubkey(&pk).unwrap();
+        b.verify_with_pubkey(&pk).unwrap();
+    }
+
+    /// Garbage `sig` bytes (zero-length, random non-DER) must
+    /// surface `ManifestSignatureInvalid` rather than panicking
+    /// or returning Ok.  Pins the delegation contract with
+    /// `Secp256k1::verify` — any bytes that aren't a valid
+    /// signature over `sign_bytes()` under the pubkey are
+    /// rejected cleanly.
+    #[test]
+    fn manifest_verify_malformed_sig_bytes_returns_signature_invalid() {
+        let (_sk, pk) = new_secp256k1_keypair();
+        let mut entry = fixture_entry();
+
+        // Zero-length sig bytes.
+        entry.sig = Some(Vec::new());
+        assert!(matches!(
+            entry.verify_with_pubkey(&pk),
+            Err(SnapshotError::ManifestSignatureInvalid)
+        ));
+
+        // Short, non-DER garbage.
+        entry.sig = Some(vec![0, 0, 0]);
+        assert!(matches!(
+            entry.verify_with_pubkey(&pk),
+            Err(SnapshotError::ManifestSignatureInvalid)
+        ));
+
+        // 72 bytes (plausible length) but all zeros — not a
+        // valid DER-encoded signature.
+        entry.sig = Some(vec![0u8; 72]);
+        assert!(matches!(
+            entry.verify_with_pubkey(&pk),
+            Err(SnapshotError::ManifestSignatureInvalid)
+        ));
     }
 }
