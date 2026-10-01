@@ -19,7 +19,6 @@ EXTENDS Integers, FiniteSets, Sequences, TLC
 CONSTANTS
     Validators,         \* Set of validator IDs
     MaxLevel,           \* Max neglect-chain depth to model
-    EconomicNeglectSlashing,
     EnforceClosureBound,\* TRUE checks T-12 under the BFT precondition
     BondWeight,         \* Validator -> non-negative stake weight
     CurrentValidators,  \* Validators eligible in the current validator set
@@ -116,7 +115,6 @@ TypeOK ==
     /\ RebondNewNonce \in Nat
     /\ EnforceRecordRetention \in BOOLEAN
     /\ Renaming \in [Validators -> Validators]
-    /\ EconomicNeglectSlashing \in BOOLEAN
 
 (****************************************************************************)
 (* Bounded BFT quorum threshold                                             *)
@@ -145,16 +143,9 @@ ActiveStakeQuorums == {Q \in SUBSET ActiveValidators : StakeSum(Q) >= ActiveStak
 ClosureStep(S) ==
     S \cup { v \in Validators : neglectGraph[v] \cap S # {} }
 
-ProtocolClosureStep(S) ==
-    IF EconomicNeglectSlashing THEN ClosureStep(S) ELSE S
-
 RECURSIVE ClosureAfter(_, _)
 ClosureAfter(S, n) ==
     IF n = 0 THEN S ELSE ClosureStep(ClosureAfter(S, n - 1))
-
-RECURSIVE ProtocolClosureAfter(_, _)
-ProtocolClosureAfter(S, n) ==
-    IF n = 0 THEN S ELSE ProtocolClosureStep(ProtocolClosureAfter(S, n - 1))
 
 ViewGraph(visibility, reports) ==
     [v \in Validators |-> visibility[v] \ reports[v]]
@@ -208,7 +199,7 @@ RenamingDivergenceClass ==
 SlashedClosurePrefix ==
     IF step = 0
     THEN {}
-    ELSE ProtocolClosureAfter(equivocators, step - 1)
+    ELSE ClosureAfter(equivocators, step - 1)
 
 RustViewDetectabilityClass ==
     IF \A v \in Validators : neglectGraph[v] \subseteq RustViewGraph[v]
@@ -216,10 +207,10 @@ RustViewDetectabilityClass ==
     ELSE "projection_risk"
 
 BoundedSlashClosure ==
-    Cardinality(ProtocolClosureAfter(equivocators, MaxLevel)) <= F
+    Cardinality(ClosureAfter(equivocators, MaxLevel)) <= F
 
 BoundedWeightedSlashClosure ==
-    StakeSum(ProtocolClosureAfter(equivocators, MaxLevel)) <= StakeF
+    StakeSum(ClosureAfter(equivocators, MaxLevel)) <= StakeF
 
 CurrentClosureStep(S) ==
     S \cup { v \in CurrentValidators :
@@ -458,8 +449,7 @@ SlashStep ==
                         v \notin slashed
                         /\ ( IF step = 0
                              THEN v \in equivocators
-                             ELSE EconomicNeglectSlashing
-                                  /\ neglectGraph[v] \cap slashed # {} ) }
+                             ELSE neglectGraph[v] \cap slashed # {} ) }
        IN  /\ slashed' = slashed \cup delta
            /\ step' = step + 1
            /\ UNCHANGED <<equivocators, neglectGraph>>
@@ -473,8 +463,7 @@ FixedPoint ==
             v \in slashed
             \/ ( IF step = 0
                  THEN v \notin equivocators
-                 ELSE ~EconomicNeglectSlashing
-                      \/ neglectGraph[v] \cap slashed = {} )
+                 ELSE neglectGraph[v] \cap slashed = {} )
     /\ UNCHANGED vars
 
 (****************************************************************************)
@@ -506,7 +495,7 @@ Inv_SlashedInUniverse ==
     slashed \subseteq Validators
 
 Inv_SlashedWithinClosure ==
-    slashed \subseteq ProtocolClosureAfter(equivocators, MaxLevel)
+    slashed \subseteq ClosureAfter(equivocators, MaxLevel)
 
 Inv_SlashedEqualsClosurePrefix ==
     slashed = SlashedClosurePrefix
@@ -565,10 +554,7 @@ Inv_ActiveStakeQuorumsIntersect ==
         Q1 \cap Q2 # {}
 
 Inv_ClosureStableAtMaxLevel ==
-    step = MaxLevel => ProtocolClosureStep(slashed) = slashed
-
-Inv_NeglectCannotCreateEconomicEvidence ==
-    ~EconomicNeglectSlashing => slashed \subseteq equivocators
+    step = MaxLevel => ClosureStep(slashed) = slashed
 
 Inv_EpochEligibleInCurrent ==
     EpochEligibleEquivocators \subseteq CurrentValidators

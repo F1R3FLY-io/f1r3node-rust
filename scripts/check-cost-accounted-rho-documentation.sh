@@ -6,19 +6,14 @@ cd "$ROOT"
 
 mapfile -d '' documentation < <(
   find \
-    docs/casper \
     docs/crypto \
     docs/models \
-    docs/node \
     docs/rholang \
     docs/casper/theory/cost-accounting-impl \
-    docs/casper/theory/finalized-floor \
-    docs/casper/theory/fork-choice \
-    docs/casper/theory/slashing \
     -type f -name '*.md' -print0
   find docs/casper/theory -maxdepth 1 -type f -name 'cost-account*.md' -print0
   find docs/formal-verification.md formal/README.md formal/loom/cost_accounting/README.md \
-    formal/tlaplus/state_import/README.md -type f -name '*.md' -print0
+    -type f -name '*.md' -print0
 )
 
 if [[ "${#documentation[@]}" -eq 0 ]]; then

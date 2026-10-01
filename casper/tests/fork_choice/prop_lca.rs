@@ -64,7 +64,6 @@ use proptest::test_runner::TestCaseError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
-use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
     static ref RUNTIME: tokio::runtime::Runtime =
@@ -104,7 +103,6 @@ async fn build_random_dag(
 
     let mut hashes: Vec<BlockHash> = Vec::with_capacity(n + 1);
     hashes.push(genesis.block_hash.clone());
-    let creator = generate_validator(Some("LCA DAG"));
 
     for i in 1..=n {
         let mut parents: Vec<BlockHash> = (0..i)
@@ -124,7 +122,8 @@ async fn build_random_dag(
             block_dag_storage,
             parents,
             &genesis,
-            Some(creator.clone()),
+            None,
+            None,
             None,
             None,
             None,
@@ -165,7 +164,6 @@ async fn build_random_tree(
 
     let mut hashes: Vec<BlockHash> = Vec::with_capacity(n + 1);
     hashes.push(genesis.block_hash.clone());
-    let creator = generate_validator(Some("LCA tree"));
 
     for i in 1..=n {
         let parent = (parent_choice.get(i - 1).copied().unwrap_or(0) as usize) % i;
@@ -174,7 +172,8 @@ async fn build_random_tree(
             block_dag_storage,
             vec![hashes[parent].clone()],
             &genesis,
-            Some(creator.clone()),
+            None,
+            None,
             None,
             None,
             None,

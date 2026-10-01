@@ -52,6 +52,7 @@ fn propose(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -164,9 +165,15 @@ async fn certified(
     target: &BlockHash,
     snapshot: &BTreeMap<Validator, BlockHash>,
 ) -> bool {
-    CliqueOracle::ft_witnessed_exact(target, dag, snapshot, FtThreshold::from_f32_lossy(FTT))
-        .await
-        .expect("ft_witnessed_exact")
+    CliqueOracle::ft_witnessed_exact(
+        target,
+        dag,
+        snapshot,
+        FtThreshold::from_f32_lossy(FTT),
+        false,
+    )
+    .await
+    .expect("ft_witnessed_exact")
 }
 
 /// The below-target conflation, in miniature (the CI-scale replay red is

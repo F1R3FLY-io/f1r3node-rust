@@ -149,7 +149,8 @@ impl CertificateHelper {
         // Remove PEM headers and decode base64
         let pem_lines: Vec<&str> = pem_content
             .lines()
-            .filter(|line| !line.contains("KEY"))
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("-----"))
             .collect();
         let base64_content = pem_lines.join("");
 
@@ -394,7 +395,7 @@ impl CertificateHelper {
             ));
         }
 
-        if public_key.first() == Some(&0) {
+        if public_key.len() > 64 && public_key.first() == Some(&0) {
             public_key.remove(0);
         }
 

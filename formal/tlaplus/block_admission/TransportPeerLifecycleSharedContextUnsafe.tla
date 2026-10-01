@@ -1,3 +1,0 @@
-------------- MODULE TransportPeerLifecycleSharedContextUnsafe -------------
-EXTENDS TransportPeerLifecycle
-=============================================================================

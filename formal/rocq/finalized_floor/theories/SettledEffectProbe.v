@@ -9,9 +9,7 @@
  * The probe decides whether a sig's effect is already committed on a state
  * lineage: it walks the merge-base chain from a tip down to a height bound
  * and answers TRUE iff some block on the walked segment applied the sig
- * (a committed `deploys` effect or an `applied_from_scope` entry). A
- * committed effect includes a successful body and a verified failed-body
- * settlement.
+ * (a non-failed `deploys` entry or an `applied_from_scope` entry).
  *
  * Soak run 33099406770 (issue #24) measured this per-sig walk at 92% of
  * `dag_merger::merge` wall time: ~30 probes per merge each re-walk the same
@@ -51,7 +49,7 @@ Context {Sig : Type}.
 Hypothesis sig_eq_dec : forall a b : Sig, {a = b} + {a <> b}.
 
 (* A lineage block, abstracted to the sigs whose effects it applies:
-   its committed `deploys` effects plus its `applied_from_scope` list. *)
+   its non-failed `deploys` entries plus its `applied_from_scope` list. *)
 Definition lineage_block := list Sig.
 
 (* A walked lineage segment, tip-first, truncated at the walk bound. *)
@@ -123,31 +121,6 @@ Proof.
   intros s1 s2 sig Htrue.
   rewrite walk_segment_composition, Htrue.
   apply orb_true_r.
-Qed.
-
-Definition settled_effect_probe_contract : Prop :=
-  (forall (seg : segment) (sig : Sig),
-    walk seg sig = true <-> In sig (collect seg)) /\
-  (forall (s1 s2 : segment) (sig : Sig),
-    walk (s1 ++ s2) sig = walk s1 sig || walk s2 sig) /\
-  (forall (s1 s2 : segment) (sig : Sig),
-    walk s2 sig = false ->
-    walk (s1 ++ s2) sig = walk s1 sig) /\
-  (forall (s1 s2 : segment) (sig : Sig),
-    walk s2 sig = true ->
-    walk (s1 ++ s2) sig = true).
-
-Theorem settled_effect_probe_end_to_end :
-  settled_effect_probe_contract.
-Proof.
-  unfold settled_effect_probe_contract.
-  split.
-  - apply walk_collect_equiv.
-  - split.
-    + apply walk_segment_composition.
-    + split.
-      * apply walk_memo_false_stable.
-      * apply walk_true_stable.
 Qed.
 
 End SettledEffectProbe.

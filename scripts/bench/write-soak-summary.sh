@@ -135,4 +135,5 @@ jq -n \
           tracked_metrics: rollup_tracked_metrics,
           iteration_metrics: $all
         }
-  ' >"$OUTPUT_DIR/summary.json"
+  ' >"$OUTPUT_DIR/summary.json.tmp.$$" &&
+	mv -f "$OUTPUT_DIR/summary.json.tmp.$$" "$OUTPUT_DIR/summary.json"

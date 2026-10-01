@@ -9,7 +9,7 @@
 //
 // Post-fix invariant: a block whose own creator-justification
 // references a *later* sender-block is classified as
-// JustificationRegression and the dispatcher persists the rejection.
+// JustificationRegression and the dispatcher mints a record.
 
 use super::harness::SlashingTestHarness;
 use super::types::{BlockMeta, Status};
@@ -40,8 +40,9 @@ fn pre_fix_bug_6_self_regression_caught() {
         "post-fix #6: self-regression is detected; pre-fix this returned Valid"
     );
 
+    // Bug #3 catch-all also mints a record.
     assert!(
-        !harness.has_record("v0", 4),
-        "JustificationRegression must not create equivocation evidence"
+        harness.has_record("v0", 4),
+        "post-fix #3: dispatcher mints record for JustificationRegression"
     );
 }

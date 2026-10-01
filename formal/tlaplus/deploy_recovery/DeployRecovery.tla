@@ -9,11 +9,9 @@ CONSTANTS
     ValidAfter,
     OccurrenceAware,
     EnforceExpiry,
-    OwnerCustody,
+    SingleLeader,
     HeartbeatsContinue,
-    PreserveSelectedRecovery,
-    CandidateScoped,
-    PreserveSelectedRehome
+    PreserveSelectedRecovery
 
 ValidatorSet == 1..NumValidators
 Sources == [height : 0..MaxHeight, validator : ValidatorSet]
@@ -25,8 +23,6 @@ RetryRecords ==
      proposalView : 0..(MaxHeight - 1),
      blockHeight : 1..MaxHeight,
      sourceFree : BOOLEAN,
-     custodySource : Sources,
-     historicalSelfChain : BOOLEAN,
      unexpired : BOOLEAN,
      survivesSelfChainFilter : BOOLEAN]
 
@@ -39,7 +35,6 @@ VARIABLES
     tombstones,
     visibleOccurrences,
     visibleTombstones,
-    excludedSources,
     pendingRetries
 
 vars ==
@@ -51,7 +46,6 @@ vars ==
       tombstones,
       visibleOccurrences,
       visibleTombstones,
-      excludedSources,
       pendingRetries>>
 
 Init ==
@@ -63,21 +57,10 @@ Init ==
     /\ tombstones = {}
     /\ visibleOccurrences = [v \in ValidatorSet |-> InitialSources]
     /\ visibleTombstones = [v \in ValidatorSet |-> {}]
-    /\ excludedSources = [v \in ValidatorSet |-> {}]
     /\ pendingRetries = {}
 
 ActiveSources == occurrences \ tombstones
 LocalActiveSources(v) == visibleOccurrences[v] \ visibleTombstones[v]
-CandidateActiveSources(v) == LocalActiveSources(v) \ excludedSources[v]
-RetrySourceFree(v) ==
-    IF CandidateScoped
-    THEN CandidateActiveSources(v) = {}
-    ELSE LocalActiveSources(v) = {}
-
-CustodyCandidates(v) ==
-    IF OwnerCustody
-    THEN {source \in visibleTombstones[v] : source.validator = v}
-    ELSE visibleTombstones[v]
 
 InWindowAt(blockHeight) ==
     /\ ValidAfter < blockHeight
@@ -88,7 +71,7 @@ LeaderAt(finalizedView) == (finalizedView % NumValidators) + 1
 
 DispositionAllowsRetry(v) ==
     IF OccurrenceAware
-    THEN RetrySourceFree(v)
+    THEN LocalActiveSources(v) = {}
     ELSE visibleTombstones[v] /= {}
 
 CandidateBlockHeight(v) == observedProposalHeights[v] + 1
@@ -96,30 +79,26 @@ CandidateBlockHeight(v) == observedProposalHeights[v] + 1
 RetryEligible(v) ==
     /\ CandidateBlockHeight(v) <= MaxHeight
     /\ DispositionAllowsRetry(v)
-    /\ CustodyCandidates(v) /= {}
     /\ IF EnforceExpiry
        THEN InWindowAt(CandidateBlockHeight(v))
        ELSE TRUE
 
 PrepareRetry(v) ==
-    \E custodySource \in CustodyCandidates(v) :
     LET record ==
         [validator |-> v,
          finalizedView |-> observedFinalizedHeights[v],
          proposalView |-> observedProposalHeights[v],
          blockHeight |-> CandidateBlockHeight(v),
-         sourceFree |-> RetrySourceFree(v),
-         custodySource |-> custodySource,
-         historicalSelfChain |-> LocalActiveSources(v) /= {},
+         sourceFree |-> LocalActiveSources(v) = {},
          unexpired |-> InWindowAt(CandidateBlockHeight(v)),
-         survivesSelfChainFilter |->
-             IF LocalActiveSources(v) /= {}
-             THEN PreserveSelectedRehome
-             ELSE PreserveSelectedRecovery]
+         survivesSelfChainFilter |-> PreserveSelectedRecovery]
     IN
     /\ v \in OnlineValidators
     /\ RetryEligible(v)
     /\ ~\E pending \in pendingRetries : pending.validator = v
+    /\ IF SingleLeader
+       THEN v = LeaderAt(observedFinalizedHeights[v])
+       ELSE TRUE
     /\ pendingRetries' = pendingRetries \union {record}
     /\ UNCHANGED
        <<proposalHeight,
@@ -129,8 +108,7 @@ PrepareRetry(v) ==
          occurrences,
          tombstones,
          visibleOccurrences,
-         visibleTombstones,
-         excludedSources>>
+         visibleTombstones>>
 
 PublishRetry(pending) ==
     LET source ==
@@ -160,26 +138,7 @@ PublishRetry(pending) ==
        <<finalizedHeight,
          observedFinalizedHeights,
          tombstones,
-         visibleTombstones,
-         excludedSources>>
-
-ExcludeSelfChainSource(v, source) ==
-    /\ v \in OnlineValidators
-    /\ source.validator = v
-    /\ source \in LocalActiveSources(v)
-    /\ source \notin excludedSources[v]
-    /\ excludedSources' =
-       [excludedSources EXCEPT ![v] = @ \union {source}]
-    /\ UNCHANGED
-       <<proposalHeight,
-         finalizedHeight,
-         observedProposalHeights,
-         observedFinalizedHeights,
-         occurrences,
-         tombstones,
-         visibleOccurrences,
-         visibleTombstones,
-         pendingRetries>>
+         visibleTombstones>>
 
 PublishRejection(v, source) ==
     /\ v \in OnlineValidators
@@ -195,7 +154,6 @@ PublishRejection(v, source) ==
          observedFinalizedHeights,
          occurrences,
          visibleOccurrences,
-         excludedSources,
          pendingRetries>>
 
 ObserveOccurrence(v, source) ==
@@ -211,7 +169,6 @@ ObserveOccurrence(v, source) ==
          occurrences,
          tombstones,
          visibleTombstones,
-         excludedSources,
          pendingRetries>>
 
 ObserveTombstone(v, source) ==
@@ -228,7 +185,6 @@ ObserveTombstone(v, source) ==
          observedFinalizedHeights,
          occurrences,
          tombstones,
-         excludedSources,
          pendingRetries>>
 
 ObserveProposalHeight(v) ==
@@ -244,7 +200,6 @@ ObserveProposalHeight(v) ==
          tombstones,
          visibleOccurrences,
          visibleTombstones,
-         excludedSources,
          pendingRetries>>
 
 ObserveFinalizedHeight(v) ==
@@ -264,7 +219,6 @@ ObserveFinalizedHeight(v) ==
          tombstones,
          visibleOccurrences,
          visibleTombstones,
-         excludedSources,
          pendingRetries>>
 
 Advance(v) ==
@@ -292,13 +246,10 @@ Advance(v) ==
          tombstones,
          visibleOccurrences,
          visibleTombstones,
-         excludedSources,
          pendingRetries>>
 
 PrepareAny == \E v \in ValidatorSet : PrepareRetry(v)
 PublishAny == \E pending \in RetryRecords : PublishRetry(pending)
-ExcludeAny ==
-    \E v \in ValidatorSet, source \in Sources : ExcludeSelfChainSource(v, source)
 RejectAny ==
     \E v \in ValidatorSet, source \in Sources : PublishRejection(v, source)
 ObserveOccurrenceAny ==
@@ -314,7 +265,6 @@ AdvanceAny == \E v \in ValidatorSet : Advance(v)
 Next ==
     \/ PrepareAny
     \/ PublishAny
-    \/ ExcludeAny
     \/ RejectAny
     \/ ObserveOccurrenceAny
     \/ ObserveTombstoneAny
@@ -347,11 +297,8 @@ TypeOK ==
     /\ tombstones \subseteq occurrences
     /\ visibleOccurrences \in [ValidatorSet -> SUBSET occurrences]
     /\ visibleTombstones \in [ValidatorSet -> SUBSET tombstones]
-    /\ excludedSources \in [ValidatorSet -> SUBSET occurrences]
     /\ \A v \in ValidatorSet :
           visibleTombstones[v] \subseteq visibleOccurrences[v]
-    /\ \A v \in ValidatorSet :
-          excludedSources[v] \subseteq visibleOccurrences[v]
     /\ pendingRetries \subseteq RetryRecords
 
 Inv_ExactTombstones == tombstones \subseteq occurrences
@@ -361,7 +308,6 @@ Inv_LocalViewsAreSound ==
         /\ visibleOccurrences[v] \subseteq occurrences
         /\ visibleTombstones[v] \subseteq tombstones
         /\ visibleTombstones[v] \subseteq visibleOccurrences[v]
-        /\ excludedSources[v] \subseteq visibleOccurrences[v]
 
 Inv_RetryRequiresNoActiveSource ==
     \A pending \in pendingRetries : pending.sourceFree
@@ -372,27 +318,21 @@ Inv_NoExpiredRetry ==
 Inv_SelectedRetrySurvivesSelfChainFilter ==
     \A pending \in pendingRetries : pending.survivesSelfChainFilter
 
-Inv_SelectedRehomeSurvivesCandidateFilter ==
-    \A pending \in pendingRetries :
-        pending.historicalSelfChain => pending.survivesSelfChainFilter
-
-Inv_OneRecoveryProposerPerCarrier ==
-    \A source \in Sources :
+Inv_OneRecoveryProposerPerFinalizedView ==
+    \A view \in 0..MaxHeight :
         Cardinality(
-            {pending \in pendingRetries : pending.custodySource = source}
+            {pending \in pendingRetries : pending.finalizedView = view}
         ) <= 1
 
-Inv_RetryHasCarrierOwnerCustody ==
+Inv_RecoveryLeaderIsCommittedViewDerived ==
     \A pending \in pendingRetries :
-        pending.validator = pending.custodySource.validator
+        pending.validator = LeaderAt(pending.finalizedView)
 
-Inv_ParallelRecoveryIsSourceDistinct ==
-    \A left \in pendingRetries, right \in pendingRetries :
-        left /= right /\ left.finalizedView = right.finalizedView
-        => left.custodySource /= right.custodySource
-
-Inv_PendingRetriesBoundedByCustodyOwners ==
-    Cardinality(pendingRetries) <= NumValidators
+Inv_CrossViewRetriesAreBounded ==
+    Cardinality(pendingRetries) =
+        Cardinality(
+            {pending.finalizedView : pending \in pendingRetries}
+        )
 
 Inv_OnePendingRetryPerValidator ==
     \A v \in ValidatorSet :
@@ -417,12 +357,4 @@ RecoveryCommittedOrExpired ==
 
 Live_RecoveryOrExpiry ==
     NeedsRecovery ~> RecoveryCommittedOrExpired
-
-Live_FinalizationProgress ==
-    finalizedHeight < MaxHeight ~> finalizedHeight = MaxHeight
-
-Inv_NoParallelOwnerRecovery ==
-    Cardinality(
-        {pending \in pendingRetries : pending.finalizedView = finalizedHeight}
-    ) < 2
 =============================================================================

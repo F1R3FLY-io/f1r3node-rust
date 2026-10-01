@@ -116,6 +116,31 @@ pub async fn read_on_chain_fault_tolerance_threshold_ppm(
         })
 }
 
+/// The CANONICAL read of the on-chain consensus parameters
+/// `(max-parent-depth, deploy-lifespan, min-phlo-price)`. Same policy as the
+/// protocol FTT above: validity rules fork on these values, so absent is a
+/// HARD ERROR, never a fallback to local configuration — a node running its
+/// own copies would accept blocks its peers reject (and vice versa). Safe to
+/// require for the same reason: the parameters are baked into the PoS
+/// contract at genesis, and no released chain predates them.
+pub async fn read_on_chain_consensus_parameters(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<(i32, i64, i64), CasperError> {
+    runtime_manager
+        .get_consensus_parameters(post_state_hash)
+        .await?
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "PoS contract exposes no getConsensusParameters: max-parent-depth, \
+                 deploy-lifespan and min-phlo-price are consensus values and MUST come \
+                 from chain state; refusing to fall back to local configuration (it \
+                 would diverge this node's validity verdicts from its peers')"
+                    .to_string(),
+            )
+        })
+}
+
 /// LOSSY `f32` view of the on-chain ppm threshold. Retained for display /
 /// back-compat; the exact DECISION path uses
 /// [`read_on_chain_fault_tolerance_threshold_ppm`].
@@ -130,10 +155,10 @@ pub async fn read_on_chain_fault_tolerance_threshold(
 /// Compares the on-chain token metadata against the node's local config.
 /// Returns `Err` with a descriptive message if any field disagrees.
 ///
-/// This is called before a joining node constructs Casper or publishes the
-/// Running state. A mismatch means the operator's config does not reflect the
-/// values baked into this chain's genesis block, so startup fails before APIs
-/// or consensus tasks can observe the node as ready.
+/// This is called once after the node transitions to Running state. A mismatch
+/// means the operator's config does not reflect the values baked into this
+/// chain's genesis block; the safest behaviour is to abort the node so the
+/// API never reports misleading values to clients.
 pub async fn verify_token_metadata_matches_config(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
@@ -214,22 +239,4 @@ pub async fn verify_token_metadata_matches_config(
     );
 
     Ok(())
-}
-
-pub async fn read_on_chain_consensus_parameters(
-    runtime_manager: &RuntimeManager,
-    post_state_hash: &StateHash,
-) -> Result<(i32, i64, i64), CasperError> {
-    runtime_manager
-        .get_consensus_parameters(post_state_hash)
-        .await?
-        .ok_or_else(|| {
-            CasperError::RuntimeError(
-                "PoS contract exposes no getConsensusParameters: max-parent-depth, \
-                 deploy-lifespan and min-phlo-price are consensus values and MUST come \
-                 from chain state; refusing to fall back to local configuration (it \
-                 would diverge this node's validity verdicts from its peers')"
-                    .to_string(),
-            )
-        })
 }

@@ -109,16 +109,13 @@ new return, auth(`rho:system:deployerId`), ret in {
         None,
         Some(contract_user),
         None,
-        Some(node.genesis.shard_id.clone()),
+        None,
     )
     .unwrap();
 
     let result = node
         .runtime_manager
-        .capture_results_cosigned(
-            &proto_util::post_state_hash(&block),
-            &node.envelope_for_deploy(&check_auth_deploy).unwrap(),
-        )
+        .capture_results(&proto_util::post_state_hash(&block), &check_auth_deploy)
         .await
         .unwrap();
 

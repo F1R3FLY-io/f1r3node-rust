@@ -530,7 +530,9 @@ impl DeployData {
     }
 
     pub fn from_cosigned(
-        template: &crypto::rust::signatures::signed::Cosigned<casper_message::DeployData>,
+        template: &crypto::rust::signatures::signed::Cosigned<
+            models::rust::cost_deploy_data::DeployData,
+        >,
     ) -> Self {
         if template.is_envelope_bound() {
             let identity = template

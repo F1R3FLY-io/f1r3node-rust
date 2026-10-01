@@ -524,9 +524,7 @@ Proof.
       (committee := committee) (selected := supporters).
     + rewrite committee_stake_sum_exact with
         (committee := committee) (selected := committee).
-      * unfold ft_exact_gt in Hexact.
-        unfold ft_exact_ge.
-        lia.
+      * exact Hexact.
       * exact Hcommittee.
       * apply incl_refl.
     + exact Hcommittee.

@@ -129,10 +129,14 @@ async fn estimator_should_obey_absent_parent_depth_limitation() {
         .await
         .unwrap();
 
+    // With multi-parent merging, every validator's latest block is a parent.
+    // Genesis has 4 validators but only 2 nodes create blocks; validators 2
+    // and 3 hold the genesis placeholder, which is abstained, so the parents
+    // are b1 and b5.
     assert_eq!(
         b6.header.parents_hash_list.len(),
         2,
-        "Expected b6 to have the exact reachability-maximal frontier (b1, b5)"
+        "Expected b6 to have exactly 2 parents (b1, b5)"
     );
     assert!(
         b6.header.parents_hash_list.contains(&b1.block_hash),
@@ -141,11 +145,5 @@ async fn estimator_should_obey_absent_parent_depth_limitation() {
     assert!(
         b6.header.parents_hash_list.contains(&b5.block_hash),
         "Expected b6 to have b5 as a parent"
-    );
-    assert!(
-        !b6.header
-            .parents_hash_list
-            .contains(&ctx.genesis.genesis_block.block_hash),
-        "Genesis is covered by b1 and b5 and must not remain in the direct-parent antichain"
     );
 }

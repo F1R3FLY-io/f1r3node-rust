@@ -18,13 +18,14 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
+use crate::helper::block_generator::{create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
@@ -52,6 +53,7 @@ fn make_block(
         Some(creator.clone()),
         Some(bonds.to_vec()),
         Some(justifications),
+        None,
         None,
         None,
         None,
@@ -202,11 +204,18 @@ async fn the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival() {
             if !adversarial_ordering {
                 return None;
             }
-            let dag = block_dag_storage
+            let mut dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply();
-            let head = certified_fork_choice(&estimator, &dag, &fork.genesis, fork.latest.clone())
+            let head = estimator
+                .tips_with_latest_messages(
+                    &mut dag,
+                    &BlockMetadata::from_block(&fork.genesis, false, None, None),
+                    fork.latest.clone(),
+                    i32::MAX,
+                    None,
+                )
                 .await
                 .expect("tips")
                 .tips
@@ -342,11 +351,12 @@ proptest! {
                 latest.insert(validator.clone(), tip.block_hash);
             }
 
-            let dag = block_dag_storage
+            let mut dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply();
-            let head = certified_fork_choice(&estimator, &dag, &genesis, latest)
+            let head = estimator
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips

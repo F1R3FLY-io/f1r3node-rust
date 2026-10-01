@@ -66,36 +66,6 @@ fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
 fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
 
-fn private_name_preview_response(request: PrivateNamePreviewQuery) -> PrivateNamePreviewResponse {
-    match BlockAPI::preview_private_names(
-        &request.user.to_vec(),
-        request.timestamp,
-        request.name_qty,
-        casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-    ) {
-        Ok(ids) => {
-            let ids = ids.into_iter().map(Into::into).collect();
-            PrivateNamePreviewResponse {
-                message: Some(
-                    models::casper::v1::private_name_preview_response::Message::Payload(
-                        models::casper::v1::PrivateNamePreviewPayload { ids },
-                    ),
-                ),
-            }
-        }
-        Err(error) => {
-            tracing::debug!(%error, "Private-name preview is unavailable");
-            PrivateNamePreviewResponse {
-                message: Some(
-                    models::casper::v1::private_name_preview_response::Message::Error(
-                        error.into_service_error(),
-                    ),
-                ),
-            }
-        }
-    }
-}
-
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
 pub struct DeployGrpcServiceV1Impl {
@@ -199,12 +169,7 @@ impl DeployGrpcServiceV1Impl {
                     );
                 for deploy in &mut block_info.deploys {
                     deploy.transfers_available = true;
-                    let deploy_id = if deploy.deploy_id.is_empty() {
-                        deploy.sig.clone()
-                    } else {
-                        hex::encode(&deploy.deploy_id)
-                    };
-                    if let Some(transfers) = transfers_by_deploy.get(&deploy_id) {
+                    if let Some(transfers) = transfers_by_deploy.get(&deploy.sig) {
                         deploy.transfers = transfers.clone();
                     }
                 }
@@ -284,37 +249,27 @@ impl DeployService for DeployGrpcServiceV1Impl {
         std::result::Result<BlockInfoResponse, tonic::Status>,
     >;
 
-    /// Deploy a contract.
-    ///
-    /// Multi-sig-aware decode: the wire `DeployDataProto` may carry
-    /// additional cosigners (proto field 14) and a `primary_phlo_share`
-    /// (proto field 15). For legacy single-signature wire deploys
-    /// (`cosigners.is_empty()`), the decode produces a one-element
-    /// `Cosigned<DeployData>` envelope and downstream behavior is
-    /// byte-identical to the pre-multi-sig implementation. For multi-sig
-    /// wire deploys, the full canonical envelope is constructed via
-    /// `Cosigned::from_signed_data` (per-signer signature verification,
-    /// canonical pk-sort, no-duplicate check, Σ phlo_share == phlo_limit
-    /// enforced at construction).
+    /// Deploy a contract
     #[tracing::instrument(level = "info", skip(self, request))]
     async fn do_deploy(
         &self,
         request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
-        let cosigned_deploy =
-            match models::rust::casper::protocol::casper_message::DeployData::from_proto_cosigned(
+        // Convert DeployDataProto to Signed<DeployData>
+        let signed_deploy =
+            match models::rust::casper::protocol::casper_message::DeployData::from_proto(
                 request.into_inner(),
             ) {
-                Ok(c) => c,
+                Ok(signed) => signed,
                 Err(err_msg) => {
                     let error = Self::create_service_error(err_msg);
                     return Self::create_error_deploy_response(error);
                 }
             };
 
-        match BlockAPI::deploy_cosigned(
+        match BlockAPI::deploy(
             &self.engine_cell,
-            cosigned_deploy,
+            signed_deploy,
             &self.trigger_propose_f,
             self.is_node_read_only,
             &self.shard_id,
@@ -616,23 +571,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let request = request.into_inner();
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
-        let deploy_id =
-            match BlockAPI::deploy_lookup_id(&self.engine_cell, &request.deploy_id).await {
-                Ok(deploy_id) => deploy_id,
-                Err(error) => {
-                    return Ok(tonic::Response::new(FindDeployResponse {
-                        message: Some(models::casper::v1::find_deploy_response::Message::Error(
-                            error.into_service_error(),
-                        )),
-                        finalization_state: 0,
-                        rejection_count: 0,
-                    }));
-                }
-            };
 
         let mut attempt = 1;
         loop {
-            match BlockAPI::find_deploy(&self.engine_cell, &deploy_id).await {
+            match BlockAPI::find_deploy(&self.engine_cell, &request.deploy_id.to_vec()).await {
                 Ok(block_info) => {
                     let known_block_hash = hex::decode(&block_info.block_hash)
                         .ok()
@@ -640,7 +582,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
                     let (finalization_state, rejection_count) =
                         match BlockAPI::deploy_finalization_status_with_known_block(
                             &self.engine_cell,
-                            &deploy_id,
+                            &request.deploy_id.to_vec(),
                             known_block_hash.as_ref(),
                         )
                         .await
@@ -703,9 +645,35 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<PrivateNamePreviewQuery>,
     ) -> Result<tonic::Response<PrivateNamePreviewResponse>, tonic::Status> {
-        Ok(tonic::Response::new(private_name_preview_response(
-            request.into_inner(),
-        )))
+        let request = request.into_inner();
+        match BlockAPI::preview_private_names(
+            &request.user.to_vec(),
+            request.timestamp,
+            request.name_qty,
+        ) {
+            Ok(ids) => {
+                let ids_bytes: Vec<prost::bytes::Bytes> =
+                    ids.into_iter().map(|id| id.into()).collect();
+                let payload = models::casper::v1::PrivateNamePreviewPayload { ids: ids_bytes };
+                Ok(tonic::Response::new(PrivateNamePreviewResponse {
+                    message: Some(
+                        models::casper::v1::private_name_preview_response::Message::Payload(
+                            payload,
+                        ),
+                    ),
+                }))
+            }
+            Err(e) => {
+                error!("Deploy service method error preview_private_names: {}", e);
+                Ok(tonic::Response::new(PrivateNamePreviewResponse {
+                    message: Some(
+                        models::casper::v1::private_name_preview_response::Message::Error(
+                            e.into_service_error(),
+                        ),
+                    ),
+                }))
+            }
+        }
     }
 
     /// Get last finalized block
@@ -767,22 +735,9 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<DeployFinalizationStatusQuery>,
     ) -> Result<tonic::Response<DeployFinalizationStatusResponse>, tonic::Status> {
         let request = request.into_inner();
-        let deploy_id =
-            match BlockAPI::deploy_lookup_id(&self.engine_cell, &request.deploy_sig).await {
-                Ok(deploy_id) => deploy_id,
-                Err(error) => {
-                    return Ok(tonic::Response::new(DeployFinalizationStatusResponse {
-                        message: Some(
-                            models::casper::v1::deploy_finalization_status_response::Message::Error(
-                                error.into_service_error(),
-                            ),
-                        ),
-                    }));
-                }
-            };
         match casper::rust::api::block_api::BlockAPI::deploy_finalization_status(
             &self.engine_cell,
-            &deploy_id,
+            &request.deploy_sig,
         )
         .await
         {
@@ -793,8 +748,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
                             state: deploy_state_to_proto(status.state) as i32,
                             rejection_count: status.rejection_count,
                             latest_block_hash: status.latest_block_hash,
-                            finalized_floor_hash: status.finalized_floor_hash,
-                            finalized_floor_height: status.finalized_floor_height,
                         },
                     ),
                 ),
@@ -829,30 +782,30 @@ impl DeployService for DeployGrpcServiceV1Impl {
             Some(request.deployer_pubkey.as_ref())
         };
 
-        let result = BlockAPI::list_pending_deploys(&self.engine_cell, deployer)
-            .await
-            .and_then(|snapshot| {
-                let deploys = snapshot
+        match BlockAPI::list_pending_deploys(&self.engine_cell, deployer).await {
+            Ok(snapshot) => {
+                let deploys: Vec<PendingDeployInfo> = snapshot
                     .deploys
                     .into_iter()
-                    .map(|(envelope, is_rejected)| {
-                        Ok(PendingDeployInfo {
-                            deploy: Some(envelope.to_proto().map_err(eyre::Report::msg)?),
-                            is_rejected,
-                        })
+                    .map(|(signed, is_rejected)| PendingDeployInfo {
+                        deploy: Some(
+                            models::rust::casper::protocol::casper_message::DeployData::to_proto(
+                                signed,
+                            ),
+                        ),
+                        is_rejected,
                     })
-                    .collect::<Result<Vec<_>, eyre::Report>>()?;
-                Ok(PendingDeploysResponsePayload {
+                    .collect();
+                let payload = PendingDeploysResponsePayload {
                     deploys,
                     total_available: snapshot.total_available,
-                })
-            });
-        match result {
-            Ok(payload) => Ok(tonic::Response::new(PendingDeploysResponse {
-                message: Some(
-                    models::casper::v1::pending_deploys_response::Message::Payload(payload),
-                ),
-            })),
+                };
+                Ok(tonic::Response::new(PendingDeploysResponse {
+                    message: Some(
+                        models::casper::v1::pending_deploys_response::Message::Payload(payload),
+                    ),
+                }))
+            }
             Err(e) => {
                 error!("Deploy service method error get_pending_deploys: {}", e);
                 Ok(tonic::Response::new(PendingDeploysResponse {
@@ -1111,14 +1064,17 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
-        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
-        };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {
             0
+        };
+
+        // Advertise the floor admission and validity actually enforce — the
+        // chain-adopted value; local conf only until casper is up.
+        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().min_phlo_price,
+            None => self.min_phlo_price,
         };
 
         let status = Status {
@@ -1174,31 +1130,11 @@ mod tests {
     use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-    use crypto::rust::signatures::signed::{Cosigned, Cosigner};
     use models::rust::casper::protocol::casper_message::DeployData as DeployDataMessage;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use tokio_stream::StreamExt;
 
     use super::*;
-
-    #[test]
-    fn protocol_v6_private_name_preview_returns_the_error_branch() {
-        let response = private_name_preview_response(PrivateNamePreviewQuery {
-            user: prost::bytes::Bytes::from_static(&[2; 33]),
-            timestamp: 1,
-            name_qty: 1,
-        });
-
-        match response.message {
-            Some(models::casper::v1::private_name_preview_response::Message::Error(error)) => {
-                assert!(error
-                    .messages
-                    .iter()
-                    .any(|message| message.contains("authenticated deploy envelope")));
-            }
-            other => panic!("expected protocol-v6 preview error, got {other:?}"),
-        }
-    }
 
     struct StubNodeDiscovery;
 
@@ -1215,7 +1151,8 @@ mod tests {
 
     fn service() -> DeployGrpcServiceV1Impl {
         let local = PeerNode::new(
-            NodeIdentifier::new("0a0b0c".to_string()),
+            NodeIdentifier::new("0a0b0c0d00000000000000000000000000000000")
+                .expect("valid test node ID"),
             "localhost".to_string(),
             40400,
             40404,
@@ -1264,34 +1201,20 @@ mod tests {
     }
 
     fn signed_deploy_proto() -> DeployDataProto {
-        let algorithm = Secp256k1;
-        let (private_key, public_key) = algorithm.new_key_pair();
+        let (sk, _pk) = Secp256k1.new_key_pair();
         let deploy_data = DeployDataMessage {
             term: "Nil".to_string(),
-            language: "rholang".to_string(),
             time_stamp: 1,
+            phlo_price: 1,
+            phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
-            authority_presentations: Vec::new(),
         };
-        let mut signers = vec![Cosigner {
-            pk: public_key,
-            sig: prost::bytes::Bytes::new(),
-            sig_algorithm: Box::new(algorithm.clone()),
-        }];
-        let signing_hash = Cosigned::<DeployDataMessage>::envelope_signing_hash_for_presence(
-            &deploy_data,
-            &signers,
-            1,
-            &[1],
-            "secp256k1",
-        )
-        .unwrap();
-        signers[0].sig = algorithm.sign(&signing_hash, &private_key.bytes).into();
-        let envelope =
-            Cosigned::from_envelope_signed_data_threshold(deploy_data, signers, 1).unwrap();
-        DeployDataMessage::to_proto_cosigned(&envelope)
+        let signed =
+            crypto::rust::signatures::signed::Signed::create(deploy_data, Box::new(Secp256k1), sk)
+                .unwrap();
+        DeployDataMessage::to_proto(signed)
     }
 
     #[tokio::test]
@@ -1306,111 +1229,13 @@ mod tests {
                 assert!(!status.is_validator);
                 assert_eq!(status.last_finalized_block_number, -1);
                 assert_eq!(status.current_epoch, 0);
-                assert_eq!(status.min_phlo_price, 1);
             }
             other => panic!("expected Status, got {:?}", other),
         }
     }
 
-    async fn status_price_history(bootstrap: i64, history: &[Option<i64>]) {
-        use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
-        use casper::rust::engine::engine::{noop, Engine};
-        use casper::rust::engine::engine_with_casper::EngineWithCasper;
-
-        use crate::rust::api::web_api::{WebApi, WebApiImpl};
-
-        let mut grpc = service();
-        grpc.min_phlo_price = bootstrap;
-        let web = WebApiImpl::new(
-            grpc.api_max_blocks_limit,
-            grpc.dev_mode,
-            grpc.network_id.clone(),
-            grpc.shard_id.clone(),
-            bootstrap,
-            grpc.native_token_name.clone(),
-            grpc.native_token_symbol.clone(),
-            grpc.native_token_decimals,
-            grpc.is_node_read_only,
-            grpc.block_report_api.clone(),
-            grpc.transfer_unforgeable.clone(),
-            Arc::new(grpc.engine_cell.clone()),
-            grpc.rp_conf_cell.clone(),
-            grpc.connections_cell.clone(),
-            grpc.node_discovery.clone(),
-            None,
-            grpc.epoch_length,
-            0,
-            grpc.is_ready.clone(),
-        );
-        for adopted in history {
-            let engine: Arc<dyn Engine> = match adopted {
-                Some(price) => {
-                    let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
-                    snapshot.on_chain_state.shard_conf.min_phlo_price = *price;
-                    Arc::new(EngineWithCasper::new(Arc::new(
-                        TestCasperWithSnapshot::new(
-                            snapshot,
-                            models::rust::block_implicits::get_random_block_default(),
-                        ),
-                    )))
-                }
-                None => Arc::new(noop()),
-            };
-            grpc.engine_cell.set(engine).await;
-            let (grpc_result, web_result) =
-                tokio::join!(grpc.status(tonic::Request::new(())), web.status(),);
-            let grpc_price = match grpc_result.unwrap().into_inner().message.unwrap() {
-                models::casper::v1::status_response::Message::Status(status) => {
-                    status.min_phlo_price
-                }
-                other => panic!("expected Status, got {other:?}"),
-            };
-            let expected = adopted.unwrap_or(bootstrap);
-            assert_eq!(
-                grpc_price, expected,
-                "gRPC minimum must follow the current engine"
-            );
-            assert_eq!(
-                web_result.unwrap().min_phlo_price,
-                expected,
-                "HTTP minimum must follow the current engine"
-            );
-        }
-    }
-
     #[tokio::test]
-    async fn status_price_uses_adopted_values_across_engine_replacements() {
-        for bootstrap in [0, 1, 99, i64::MAX] {
-            status_price_history(bootstrap, &[
-                None,
-                Some(0),
-                Some(10),
-                Some(i64::MAX),
-                None,
-                Some(1),
-            ])
-            .await;
-        }
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
-
-        #[test]
-        fn status_price_refines_arbitrary_engine_histories(
-            bootstrap in 0i64..=i64::MAX,
-            history in proptest::collection::vec(proptest::option::of(0i64..=i64::MAX), 1..33),
-        ) {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(status_price_history(bootstrap, &history));
-        }
-    }
-
-    #[tokio::test]
-    async fn preview_private_names_rejects_unsigned_protocol_v6_requests() {
+    async fn preview_private_names_answers_with_ids() {
         let response = service()
             .preview_private_names(tonic::Request::new(PrivateNamePreviewQuery {
                 user: vec![1u8; 32].into(),
@@ -1420,13 +1245,11 @@ mod tests {
             .await
             .unwrap();
         match response.into_inner().message.unwrap() {
-            models::casper::v1::private_name_preview_response::Message::Error(error) => {
-                assert!(error
-                    .messages
-                    .iter()
-                    .any(|message| message.contains("authenticated deploy envelope")));
+            models::casper::v1::private_name_preview_response::Message::Payload(payload) => {
+                assert_eq!(payload.ids.len(), 2);
+                assert!(!payload.ids[0].is_empty());
             }
-            other => panic!("expected Error, got {:?}", other),
+            other => panic!("expected Payload, got {:?}", other),
         }
     }
 

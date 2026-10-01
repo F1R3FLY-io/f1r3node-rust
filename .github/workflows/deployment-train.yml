@@ -52,7 +52,7 @@ jobs:
       ci_run_id: ${{ steps.ci.outputs.ci_run_id }}
     steps:
       - name: Checkout trusted release controls
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: ci-control
@@ -193,7 +193,7 @@ jobs:
         run: echo "merge_sha=$(jq -r '.merge_sha' "$RUNNER_TEMP/train/train-record.json")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact merge source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ steps.exact.outputs.merge_sha }}
           path: head
@@ -415,7 +415,7 @@ jobs:
           echo "ci_run_id=$run_id" >> "$GITHUB_OUTPUT"
 
       - name: Upload train record
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: train-record
           path: |

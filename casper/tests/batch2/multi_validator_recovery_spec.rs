@@ -32,7 +32,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint_cosigned, compute_parents_post_state,
+    compute_deploys_checkpoint, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -41,7 +41,6 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -94,7 +93,7 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::ApprovedGenesis)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -125,10 +124,6 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
-            bond_generations: HashMap::from([
-                (validator_0.clone(), BondGeneration::GENESIS),
-                (validator_1.clone(), BondGeneration::GENESIS),
-            ]),
             active_validators: vec![validator_0.clone(), validator_1.clone()],
         };
         snapshot.deploys_in_scope = Arc::new(DashSet::new());
@@ -151,15 +146,10 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         None,
         Some(construct_deploy::DEFAULT_SEC.clone()),
         None,
-        Some(shard_name.clone()),
+        None,
     )
     .expect("build deploy_x");
-    let envelope_x = construct_deploy::envelope_from_deploy_data(
-        deploy_x.data.clone(),
-        Some(construct_deploy::DEFAULT_SEC.clone()),
-    )
-    .expect("build deploy_x envelope");
-    let sig_x = envelope_x.envelope_commitment().expect("deploy_x identity");
+    let sig_x = deploy_x.sig.clone();
 
     // Validator-unique markers. Each consumes the shared produce, which
     // creates the event-log dependency that puts marker and deploy_x
@@ -179,17 +169,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         None,
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         None,
-        Some(shard_name.clone()),
+        None,
     )
     .expect("build marker_v0");
-    let envelope_marker_v0 = construct_deploy::envelope_from_deploy_data(
-        marker_v0.data.clone(),
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
-    )
-    .expect("build marker_v0 envelope");
-    let sig_marker_v0 = envelope_marker_v0
-        .envelope_commitment()
-        .expect("marker_v0 identity");
+    let sig_marker_v0 = marker_v0.sig.clone();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
     let marker_v1 = construct_deploy::source_deploy_now_full(
@@ -198,17 +181,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         None,
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         None,
-        Some(shard_name.clone()),
+        None,
     )
     .expect("build marker_v1");
-    let envelope_marker_v1 = construct_deploy::envelope_from_deploy_data(
-        marker_v1.data.clone(),
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
-    )
-    .expect("build marker_v1 envelope");
-    let sig_marker_v1 = envelope_marker_v1
-        .envelope_commitment()
-        .expect("marker_v1 identity");
+    let sig_marker_v1 = marker_v1.sig.clone();
     assert_ne!(
         sig_marker_v0, sig_marker_v1,
         "validator-unique markers must have distinct sigs"
@@ -221,45 +197,50 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator_0.clone()),
-        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
+        Some(1),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty_from_cosigned(&envelope_x).unwrap(),
-            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v0).unwrap(),
+            ProcessedDeploy::empty(deploy_x.clone()),
+            ProcessedDeploy::empty(marker_v0.clone()),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r0, pd_r0, _, sys_pd_r0, bonds_r0) = compute_deploys_checkpoint_cosigned(
+    let checkpoint_r0 = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
-        vec![envelope_x.clone(), envelope_marker_v0],
+        proto_util::deploys(&r0_raw)
+            .into_iter()
+            .map(|d| d.deploy)
+            .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
         BlockData::from_block(&r0_raw),
         HashMap::new(),
         None,
+        None,
+        None,
     )
     .await
     .expect("compute R0 checkpoint");
-    for pd in &pd_r0 {
+    for pd in &checkpoint_r0.deploys {
         assert!(
             !pd.is_failed,
             "deploy in R0 must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.primary().sig[..8]),
+            hex::encode(&pd.deploy.sig[..8]),
             pd.system_deploy_error
         );
     }
     let mut r0 = r0_raw;
-    r0.body.state.post_state_hash = post_state_r0.clone();
-    r0.body.deploys = pd_r0;
-    r0.body.system_deploys = sys_pd_r0;
-    r0.body.state.bonds = bonds_r0;
+    r0.body.state.post_state_hash = checkpoint_r0.post_state_hash.clone();
+    r0.body.deploys = checkpoint_r0.deploys;
+    r0.body.system_deploys = checkpoint_r0.system_deploys;
+    r0.body.state.bonds = checkpoint_r0.bonds;
     block_store.put_block_message(&r0).expect("store R0");
     dag_storage.insert(&r0, InsertMode::Normal).expect("dag R0");
 
@@ -270,45 +251,50 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator_1.clone()),
-        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
+        Some(1),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty_from_cosigned(&envelope_x).unwrap(),
-            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v1).unwrap(),
+            ProcessedDeploy::empty(deploy_x.clone()),
+            ProcessedDeploy::empty(marker_v1.clone()),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r1, pd_r1, _, sys_pd_r1, bonds_r1) = compute_deploys_checkpoint_cosigned(
+    let checkpoint_r1 = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
-        vec![envelope_x, envelope_marker_v1],
+        proto_util::deploys(&r1_raw)
+            .into_iter()
+            .map(|d| d.deploy)
+            .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
         BlockData::from_block(&r1_raw),
         HashMap::new(),
         None,
+        None,
+        None,
     )
     .await
     .expect("compute R1 checkpoint");
-    for pd in &pd_r1 {
+    for pd in &checkpoint_r1.deploys {
         assert!(
             !pd.is_failed,
             "deploy in R1 must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.primary().sig[..8]),
+            hex::encode(&pd.deploy.sig[..8]),
             pd.system_deploy_error
         );
     }
     let mut r1 = r1_raw;
-    r1.body.state.post_state_hash = post_state_r1.clone();
-    r1.body.deploys = pd_r1;
-    r1.body.system_deploys = sys_pd_r1;
-    r1.body.state.bonds = bonds_r1;
+    r1.body.state.post_state_hash = checkpoint_r1.post_state_hash.clone();
+    r1.body.deploys = checkpoint_r1.deploys;
+    r1.body.system_deploys = checkpoint_r1.system_deploys;
+    r1.body.state.bonds = checkpoint_r1.bonds;
     block_store.put_block_message(&r1).expect("store R1");
     dag_storage.insert(&r1, InsertMode::Normal).expect("dag R1");
 
@@ -340,7 +326,6 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &snapshot,
         &rm,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         None,
         None,
@@ -348,10 +333,17 @@ for(@_v <- @"multi-validator-shared") { Nil }
     .await
     .expect("compute_parents_post_state over [R0, R1]");
 
-    let rejected_sigs = merged.rejected_user;
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
+    assert!(
+        merged.rejected_slashes.is_empty(),
+        "no system slashes are involved in this fixture; rejected_slashes \
+         must be empty (got {} entries)",
+        merged.rejected_slashes.len()
+    );
+
+    let rejected_set: HashSet<prost::bytes::Bytes> = merged
+        .rejected_user
         .iter()
-        .map(|rejected| prost::bytes::Bytes::copy_from_slice(rejected.deploy_id()))
+        .map(|record| record.sig.clone())
         .collect();
 
     // Dedup must keep the shared recovered sig out of the rejected
@@ -360,15 +352,12 @@ for(@_v <- @"multi-validator-shared") { Nil }
     // short-circuit — meaning the multi-validator-convergence dedup at
     // dag_merger.rs:153-235 is broken or has been removed.
     assert!(
-        rejected_sigs.iter().any(|rejected| {
-            rejected.deploy_id() == sig_x.as_ref()
-                && rejected.reason
-                    == models::rust::casper::protocol::casper_message::RejectedDeployReason::DuplicateOccurrence
-        }),
-        "the stale sig_x occurrence must be provenance-tombstoned. Got: {:?}",
-        rejected_sigs
+        !rejected_set.contains(&sig_x),
+        "sig_x must NOT appear in `rejected_user_deploys`. Got: {:?}",
+        merged
+            .rejected_user
             .iter()
-            .map(|s| hex::encode(&s.deploy_id()[..std::cmp::min(8, s.deploy_id().len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
 
@@ -390,9 +379,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
          fire, dedup did not retain a winning chain.",
         v0_orphaned,
         v1_orphaned,
-        rejected_sigs
+        merged
+            .rejected_user
             .iter()
-            .map(|s| hex::encode(&s.deploy_id()[..std::cmp::min(8, s.deploy_id().len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
 }

@@ -2,7 +2,7 @@ use crypto::rust::signatures::signed::{Cosigned, ToMessage};
 use prost::Message;
 
 use crate::casper::DeployDataProto;
-use crate::rust::casper::protocol::casper_message::DeployData;
+use crate::rust::cost_deploy_data::DeployData;
 use crate::rust::phlo_intent::{PhloFundingIntentLimits, PhloFundingIntentV1};
 use crate::rust::phlo_wire::{PhloWireEncoder, PhloWireLimits};
 

@@ -9,7 +9,6 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::test_instances::TransportLayerStub;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::public_key::PublicKey;
 use models::casper::Signature as ProtoSignature;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -137,15 +136,9 @@ impl ApproveBlockProtocolFactory {
         block_number: i64,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
-        max_cosigners_per_deploy: u32,
-        initial_phlogiston: i64,
-        epoch_phlogiston: i64,
-        protocol_version: i64,
-        client_fuel_allocations: Vec<(PublicKey, i64)>,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
-        resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -153,8 +146,6 @@ impl ApproveBlockProtocolFactory {
         connections_cell: Arc<ConnectionsCell>,
         conf: Arc<RPConf>,
     ) -> Result<ApproveBlockProtocolImpl<T>, CasperError> {
-        crate::rust::casper::ensure_supported_casper_protocol_version(protocol_version)?;
-
         tracing::info!(
             required_sigs = required_sigs,
             "Bootstrap configured required_sigs"
@@ -183,7 +174,6 @@ impl ApproveBlockProtocolFactory {
             .collect();
 
         let genesis = Genesis {
-            resource_policy,
             shard_id,
             timestamp,
             block_number,
@@ -194,23 +184,20 @@ impl ApproveBlockProtocolFactory {
                 epoch_length,
                 quarantine_length,
                 number_of_active_validators,
-                // Protocol-level finality threshold, baked into the PoS contract at
-                // genesis and read back by every node at startup — the consensus
-                // value the finalized-floor oracle runs on.
+                // Consensus values baked into the PoS contract at genesis and
+                // read back by every node at startup: the finality threshold
+                // the finalized-floor oracle runs on, and the parameters the
+                // validity rules fork on.
                 fault_tolerance_threshold_ppm,
                 max_parent_depth,
                 deploy_lifespan,
                 min_phlo_price,
                 pos_multi_sig_public_keys,
                 pos_multi_sig_quorum,
-                max_cosigners_per_deploy,
-                initial_phlogiston,
-                epoch_phlogiston,
             },
             vaults,
-            client_fuel_allocations,
             supply: i64::MAX,
-            version: protocol_version,
+            version: 1,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -375,6 +362,31 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         Ok(())
     }
 
+    async fn complete_if(
+        &self,
+        time: u64,
+        signatures: &HashSet<SignatureWrapper>,
+    ) -> Result<(), CasperError> {
+        if (time >= self.start + self.duration.as_millis() as u64
+            && signatures.len() >= self.required_sigs as usize)
+            || self.required_sigs == 0
+        {
+            Box::pin(self.complete_genesis_ceremony(signatures.clone())).await
+        } else {
+            tracing::info!(
+                "Failed to meet approval conditions. \
+                Signatures: {} of {} required. \
+                Duration {} ms of {} ms minimum. \
+                Continue broadcasting UnapprovedBlock...",
+                signatures.len(),
+                self.required_sigs,
+                time - self.start,
+                self.duration.as_millis()
+            );
+            Box::pin(self.internal_run()).await
+        }
+    }
+
     async fn complete_genesis_ceremony(
         &self,
         signatures: HashSet<SignatureWrapper>,
@@ -396,6 +408,21 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
 
         self.send_approved_block(&approved_block).await?;
         Ok(())
+    }
+
+    async fn internal_run(&self) -> Result<(), CasperError> {
+        self.send_unapproved_block().await?;
+        sleep(self.interval).await;
+
+        let current_time = ApproveBlockProtocolFactory::current_millis();
+        let signatures = {
+            let sigs_guard = self.sigs.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire signatures lock".to_string())
+            })?;
+            sigs_guard.clone()
+        };
+
+        self.complete_if(current_time, &signatures).await
     }
 
     pub async fn add_approval(&self, approval: BlockApproval) -> Result<(), CasperError> {
@@ -479,35 +506,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         );
 
         if self.required_sigs > 0 {
-            loop {
-                self.send_unapproved_block().await?;
-                sleep(self.interval).await;
-
-                let current_time = ApproveBlockProtocolFactory::current_millis();
-                let signatures = {
-                    let sigs_guard = self.sigs.lock().map_err(|_| {
-                        CasperError::RuntimeError("Failed to acquire signatures lock".to_string())
-                    })?;
-                    sigs_guard.clone()
-                };
-
-                if current_time >= self.start + self.duration.as_millis() as u64
-                    && signatures.len() >= self.required_sigs as usize
-                {
-                    return self.complete_genesis_ceremony(signatures).await;
-                }
-
-                tracing::info!(
-                    "Failed to meet approval conditions. \
-                    Signatures: {} of {} required. \
-                    Duration {} ms of {} ms minimum. \
-                    Continue broadcasting UnapprovedBlock...",
-                    signatures.len(),
-                    self.required_sigs,
-                    current_time - self.start,
-                    self.duration.as_millis()
-                );
-            }
+            self.internal_run().await
         } else {
             tracing::info!("Self-approving genesis block.");
             self.complete_genesis_ceremony(HashSet::new()).await?;

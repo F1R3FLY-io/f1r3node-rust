@@ -32,7 +32,6 @@ use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
@@ -44,7 +43,7 @@ fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
+        .map(|rd| rd.sig.clone())
         .collect()
 }
 
@@ -306,18 +305,8 @@ async fn stage_floor_covered_reinstatement() -> (
         )
         .expect("build contender f")
     };
-    let d_sig = Bytes::copy_from_slice(
-        nodes[0]
-            .canonical_deploy_id(&contender_d)
-            .expect("contender d identity")
-            .as_bytes(),
-    );
-    let f_sig = Bytes::copy_from_slice(
-        nodes[1]
-            .canonical_deploy_id(&contender_f)
-            .expect("contender f identity")
-            .as_bytes(),
-    );
+    let d_sig: Bytes = contender_d.sig.clone();
+    let f_sig: Bytes = contender_f.sig.clone();
     let c_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_d))
         .await
@@ -477,9 +466,6 @@ async fn stage_floor_covered_reinstatement() -> (
 async fn reinstated_effect_must_not_be_executed_again() {
     let (mut nodes, _shard_id, loser_sig, loser_cell, loser_deploy, m_block) =
         stage_floor_covered_reinstatement().await;
-    let loser_envelope = nodes[2]
-        .envelope_for_deploy(&loser_deploy)
-        .expect("protocol-v6 loser envelope");
 
     // The recovery plane returns the loser to nodes[2]'s stores (the
     // verified return routes are several — validate-side populate, owner
@@ -487,13 +473,13 @@ async fn reinstated_effect_must_not_be_executed_again() {
     nodes[2]
         .deploy_storage
         .lock()
-        .add_envelope_if_absent(loser_envelope.clone())
+        .add(vec![loser_deploy.clone()])
         .expect("inject loser into deploy storage");
     nodes[2]
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![crate::pending_envelope(loser_envelope)])
+        .add(vec![loser_deploy])
         .expect("inject loser into rejected buffer");
 
     // Drive the proposal through `create` on the FULL frontier: nodes[2]'s
@@ -513,13 +499,8 @@ async fn reinstated_effect_must_not_be_executed_again() {
     {
         snapshot.parents.push(m_block.clone());
     }
-    let loser_id = DeployLookupId::from_protocol_bytes(
-        snapshot.on_chain_state.shard_conf.casper_version,
-        &loser_sig,
-    )
-    .expect("protocol deploy identity");
-    snapshot.rejected_in_scope.insert(loser_id.clone());
-    snapshot.deploys_in_scope.insert(loser_id);
+    snapshot.rejected_in_scope.insert(loser_sig.clone());
+    snapshot.deploys_in_scope.insert(loser_sig.clone());
 
     let validator_identity = nodes[2]
         .validator_id_opt
@@ -536,7 +517,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
         rejected_buffer,
         &runtime_manager,
         &mut nodes[2].block_store,
-        true,
+        casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
     )
     .await
     .expect("create proposal B on the full frontier");
@@ -554,7 +535,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::current_deploy_id(&loser_sig))
+            .contains_sig(&loser_sig)
             .expect("buffer.contains_sig"),
         "a buffer entry whose effect is settled in the floor state must be \
          purged by the proposer's prepare"
@@ -578,7 +559,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy_id() == loser_sig.as_ref()),
+            .any(|pd| pd.deploy.sig == loser_sig),
         rejected_sigs(&b_block)
             .iter()
             .map(short)
@@ -645,7 +626,7 @@ async fn floor_covered_effect_survives_a_late_record() {
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create the joining merge J");
@@ -770,7 +751,7 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create the joining merge");

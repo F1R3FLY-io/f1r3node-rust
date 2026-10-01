@@ -27,8 +27,8 @@
 //     fix RMW-atomicity)
 //   • MC_SlashFlow             — full pipeline:
 //     sign-honest → sign-equivocating → record → slash
-//   • MC_TwoLevelSlashing      — A equivocates; B's neglect rejection
-//     creates no economic evidence in the normative configuration
+//   • MC_TwoLevelSlashing      — neglect closure: A equivocates,
+//     B cites A's invalid block without slashing → both slashed
 //   • MC_WithdrawFlow          — Bug-#10 withdrawal flow:
 //     withdraw-succeeds / withdraw-fails / retry-from-failed
 
@@ -135,10 +135,12 @@ pub fn apply_step(harness: &mut SlashingTestHarness, step: &TraceStep) -> StepRe
             }
         }
         "SignNeglecting" => {
-            // TwoLevelSlashing: B receives a NeglectedEquivocation
-            // rejection without new economic evidence.
+            // TwoLevelSlashing: B cites the offender's invalid block
+            // without slashing. The harness flags B as itself
+            // slashable via the catch-all (status = NeglectedEquivocation
+            // semantics at the harness projection).
             let neglecter_hash = harness.sign_block(other, seq);
-            let _ = harness.dispatch_with_status(neglecter_hash, Status::NeglectedEquivocation);
+            let _ = harness.dispatch_with_status(neglecter_hash, Status::SlashableOther);
             StepResult::Ok
         }
         // ─── WithdrawFlow ───

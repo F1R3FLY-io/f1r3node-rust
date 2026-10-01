@@ -63,7 +63,7 @@ trap 'exit 143' TERM
 
 critical_files=(
     crypto:crypto/src/rust/signatures/signed.rs
-    models:models/src/rust/casper/protocol/casper_message.rs
+    models:models/src/rust/cost_deploy_data.rs
     rholang:rholang/src/rust/interpreter/accounting/mod.rs
     rholang:rholang/src/rust/interpreter/accounting/authority.rs
     rholang:rholang/src/rust/interpreter/accounting/byte_accounting.rs
@@ -73,32 +73,9 @@ critical_files=(
     rholang:rholang/src/rust/interpreter/metering.rs
     rholang:rholang/src/rust/interpreter/reduce.rs
     rholang:rholang/src/rust/interpreter/rho_runtime.rs
-    casper:casper/src/rust/casper.rs
-    casper:casper/src/rust/engine/engine.rs
-    casper:casper/src/rust/engine/lfs_block_requester.rs
-    casper:casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs
-    casper:casper/src/rust/merging/conflict_set_merger.rs
-    casper:casper/src/rust/rholang/replay_runtime.rs
-    casper:casper/src/rust/rholang/runtime.rs
-    casper:casper/src/rust/util/construct_deploy.rs
-    casper:casper/src/rust/util/mergeable_channels_gc.rs
-    casper:casper/src/rust/util/rholang/acceptance.rs
-    casper:casper/src/rust/util/rholang/costacc/check_balance.rs
-    casper:casper/src/rust/util/rholang/costacc/close_block_deploy.rs
-    casper:casper/src/rust/util/rholang/costacc/redeem_deploy.rs
-    casper:casper/src/rust/util/rholang/costacc/slash_deploy.rs
-    casper:casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs
-    casper:casper/src/rust/util/rholang/costacc/vault_payer.rs
-    casper:casper/src/rust/util/rholang/interpreter_util.rs
-    casper:casper/src/rust/util/rholang/supply.rs
-    casper:casper/src/rust/util/rholang/runtime_manager.rs
-    casper:casper/src/rust/util/rholang/system_deploy_util.rs
-    casper:casper/src/rust/merging/deploy_chain_index.rs
 )
 
 stable_coverage_files=(
-    casper:casper/src/rust/engine/initializing.rs
-    casper:casper/src/rust/engine/running.rs
     rspace_plus_plus:rspace++/src/rspace/replay_rspace.rs
     rspace_plus_plus:rspace++/src/rspace/reporting_rspace.rs
     rspace_plus_plus:rspace++/src/rspace/rspace.rs
@@ -266,31 +243,6 @@ for package in "${packages[@]}"; do
     ACTIVE_COVERAGE_TARGET=""
 done
 
-stable_target="$COVERAGE_TARGET_ROOT/casper-engine-stable"
-ACTIVE_COVERAGE_TARGET="$stable_target"
-if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
-    CARGO_TARGET_DIR="$stable_target" cargo llvm-cov clean --workspace
-    test -d "$COVERAGE_SCRATCH"
-    CARGO_TARGET_DIR="$stable_target" cargo llvm-cov nextest \
-        --package casper \
-        --no-fail-fast \
-        --release \
-        --no-report \
-        --jobs "$COVERAGE_JOBS" \
-        --status-level fail \
-        --final-status-level fail \
-        --test mod \
-        -- engine::
-fi
-casper_stable_report="$OUT_DIR/casper-engine-stable.lcov"
-CARGO_TARGET_DIR="$stable_target" cargo llvm-cov report \
-    --package casper \
-    --release \
-    --lcov \
-    --output-path "$casper_stable_report"
-cleanup_coverage_target "$stable_target"
-ACTIVE_COVERAGE_TARGET=""
-
 rspace_stable_target="$COVERAGE_TARGET_ROOT/rspace-engine-stable"
 ACTIVE_COVERAGE_TARGET="$rspace_stable_target"
 if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
@@ -315,7 +267,6 @@ cleanup_coverage_target "$rspace_stable_target"
 ACTIVE_COVERAGE_TARGET=""
 
 declare -A stable_reports=(
-    [casper]="$casper_stable_report"
     [rspace_plus_plus]="$rspace_stable_report"
 )
 for entry in "${stable_coverage_files[@]}"; do

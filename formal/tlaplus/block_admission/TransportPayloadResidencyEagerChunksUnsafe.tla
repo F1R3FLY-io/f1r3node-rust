@@ -1,3 +1,0 @@
------------- MODULE TransportPayloadResidencyEagerChunksUnsafe ------------
-EXTENDS TransportPayloadResidency
-=============================================================================

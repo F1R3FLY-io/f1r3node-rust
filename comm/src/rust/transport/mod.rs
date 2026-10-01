@@ -1,4 +1,3 @@
-pub(crate) mod activity_gate;
 pub mod chunker;
 pub mod communication_response;
 pub mod f1r3fly_connector;
@@ -11,8 +10,9 @@ pub mod grpc_transport_client;
 pub mod grpc_transport_receiver;
 pub mod grpc_transport_server;
 pub mod hostname_trust_manager_factory;
+pub mod limited_buffer;
 pub mod messages;
-pub mod payload_budget;
+pub mod packet_ops;
 pub mod ssl_session_client_interceptor;
 pub mod ssl_session_server_interceptor;
 pub mod stream_handler;

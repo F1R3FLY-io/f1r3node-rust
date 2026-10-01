@@ -3,7 +3,7 @@ use prost::Message;
 
 use super::{check_canonical_funding, encode_signing_payload, FundedDeployLimits};
 use crate::casper::DeployDataProto;
-use crate::rust::casper::protocol::casper_message::DeployData;
+use crate::rust::cost_deploy_data::DeployData;
 
 pub const OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION: u32 = 0x0006_0003;
 pub const OFFERED_FUNDED_DEPLOY_INTENT_DOMAIN: &[u8] = b"f1r3node:offered-funded-deploy-intent:v1";

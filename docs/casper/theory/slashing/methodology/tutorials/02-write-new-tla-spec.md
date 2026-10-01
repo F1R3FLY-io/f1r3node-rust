@@ -93,8 +93,7 @@ See [`formal/tlaplus/slashing/EquivocationDetector.tla`](../../../../../../forma
 ## 4 · Verification step
 
 ```
-systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
-  tlc -workers 4 MC_<Name>.tla
+tlc -workers 12 MC_<Name>.tla
 ```
 
 Expected output ends with:

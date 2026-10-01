@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -34,7 +35,7 @@ mod tests {
     }
 
     impl TestFixture {
-        async fn new() -> Self {
+        fn new() -> Self {
             let hash = BlockHash::from(TEST_HASH_BYTES.to_vec());
             let timeout = Duration::from_secs(TIMEOUT_SECONDS);
             let local_peer = setup::peer_node("src", 40400);
@@ -44,11 +45,9 @@ mod tests {
             };
             let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
             let transport_layer = Arc::new(TransportLayerStub::new());
-            let mut manager =
-                rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
-            let buffer = block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage::new_from_kvm(&mut manager).await.unwrap();
+            let requested_blocks = Arc::new(Mutex::new(HashMap::new()));
             let block_retriever = BlockRetriever::new(
-                buffer,
+                requested_blocks,
                 transport_layer.clone(),
                 connections_cell.clone(),
                 rp_conf.clone(),
@@ -89,7 +88,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_keep_the_request_not_touch() {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - create a request that won't be timed out
@@ -133,7 +132,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_request_block_from_first_peer_on_a_waiting_list() {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - setup a timed out request with waiting list
@@ -153,7 +152,6 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list,
                         peer_requery_cursor: 0,
-                        retry_budget_quarantine_until: None,
                         requested_as_dependency: false,
                     };
 
@@ -183,7 +181,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_move_that_peer_from_the_waiting_list_to_the_requested_set() {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - setup a timed out request with waiting list
@@ -203,7 +201,6 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list,
                         peer_requery_cursor: 0,
-                        retry_budget_quarantine_until: None,
                         requested_as_dependency: false,
                     };
 
@@ -235,7 +232,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn timestamp_is_reset() {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - setup a timed out request with waiting list
@@ -255,7 +252,6 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list,
                         peer_requery_cursor: 0,
-                        retry_budget_quarantine_until: None,
                         requested_as_dependency: false,
                     };
 
@@ -313,7 +309,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_broadcast_has_block_request() {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - setup a timed out request with one peer left in waiting list
@@ -330,7 +326,6 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list: vec![last_peer.clone()], // One peer left in waiting list
                         peer_requery_cursor: 0,
-                        retry_budget_quarantine_until: None,
                         requested_as_dependency: false,
                     };
 
@@ -367,7 +362,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_not_send_requests_to_other_peers() {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - setup a timed out request with empty waiting list
@@ -383,7 +378,6 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list: Vec::new(), // Empty waiting list
                         peer_requery_cursor: 0,
-                        retry_budget_quarantine_until: None,
                         requested_as_dependency: false,
                     };
 
@@ -412,7 +406,7 @@ mod tests {
                 #[tokio::test]
                 async fn should_remove_the_entry_from_requested_block_lists_when_block_is_in_casper_buffer_and_after_timeout(
                 ) {
-                    let fixture = TestFixture::new().await;
+                    let fixture = TestFixture::new();
                     fixture.reset();
 
                     // Given - setup a timed out request that's in casper buffer with empty waiting list
@@ -428,7 +422,6 @@ mod tests {
                         in_casper_buffer: true, // Already in casper buffer
                         waiting_list: Vec::new(),
                         peer_requery_cursor: 0,
-                        retry_budget_quarantine_until: None,
                         requested_as_dependency: false,
                     };
 

@@ -77,9 +77,6 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     assert!(r.unwrap().errors.is_empty());
 
     let checkpoint = runtime.create_checkpoint().await;
-    // Updated 2026-08-13 for the authority-carrying continuation and datum
-    // schema. The name refers to this coordinated protocol baseline; further
-    // unintended drift remains a regression.
     let expected_hash = Blake2b256Hash::from_hex(
         "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
     );

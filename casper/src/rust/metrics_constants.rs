@@ -3,12 +3,8 @@ pub const CASPER_METRICS_SOURCE: &str = "f1r3fly.casper";
 pub const MERGING_METRICS_SOURCE: &str = "f1r3fly.casper.merging";
 pub const RUNNING_METRICS_SOURCE: &str = "f1r3fly.casper.running";
 pub const BLOCK_RETRIEVER_METRICS_SOURCE: &str = "f1r3fly.casper.block-retriever";
-pub const FINALIZATION_METRICS_SOURCE: &str = "f1r3fly.casper.finalization";
 pub const APPROVE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.casper.approve-block";
 pub const REPORT_REPLAY_METRICS_SOURCE: &str = "f1r3fly.casper.report-replay";
-pub const ESTIMATOR_METRICS_SOURCE: &str = "f1r3fly.casper.estimator";
-pub const TIPS0_METRICS_SOURCE: &str = "f1r3fly.casper.estimator.tips0";
-pub const TIPS1_METRICS_SOURCE: &str = "f1r3fly.casper.estimator.tips1";
 pub const VALIDATOR_METRICS_SOURCE: &str = "f1r3fly.casper.validator";
 pub const RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.rho-runtime";
 pub const REPLAY_RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.replay-rho-runtime";
@@ -22,23 +18,12 @@ pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRun
 
 // Casper counter metrics
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
+pub const BLOCK_INFLIGHT_CAP_DROP_METRIC: &str = "block.inflight-cap.drops";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
-pub const BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
-    "block.requests.capacity-deferred.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
-pub const BLOCK_REQUESTS_RETRY_QUARANTINES_METRIC: &str = "block.requests.retry-quarantines";
-pub const FINALIZATION_CERTIFICATE_REQUESTS_TOTAL_METRIC: &str =
-    "finalization.certificate.requests.total";
-pub const FINALIZATION_CERTIFICATE_REQUESTS_RETRIES_METRIC: &str =
-    "finalization.certificate.requests.retries";
-pub const FINALIZATION_CERTIFICATE_REQUESTS_CAPACITY_DEFERRED_METRIC: &str =
-    "finalization.certificate.requests.capacity-deferred";
-pub const FINALIZATION_CERTIFICATE_RETRIEVER_TRACKED_METRIC: &str =
-    "finalization.certificate.retriever.tracked";
-pub const SNAPSHOT_FINALIZATION_CAPTURE_RETRIES_METRIC: &str =
-    "finalization.snapshot.capture.retries";
+pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
 pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
     "block.retriever.dep-recovery-tracking.size";
 pub const BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC: &str =
@@ -52,14 +37,9 @@ pub const ACTIVE_VALIDATORS_CACHE_SIZE_METRIC: &str = "active-validators-cache.s
 pub const DEPLOYS_IN_SCOPE_SIZE_METRIC: &str = "deploys-in-scope.size";
 pub const DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC: &str = "deploys-in-scope.sig-bytes-estimate";
 pub const BLOCK_INDEX_CACHE_SIZE_METRIC: &str = "block-index-cache.size";
-pub const BLOCK_INDEX_CACHE_RETAINED_BYTES_METRIC: &str = "block-index-cache.retained-bytes";
 pub const PARENTS_POST_STATE_CACHE_SIZE_METRIC: &str = "parents-post-state-cache.size";
-pub const PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
-    "parent-frontier.capacity-deferred.total";
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
-pub const USER_DEPLOY_EXECUTIONS_METRIC: &str = "runtime.user-deploy.executions";
-pub const USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC: &str = "runtime.user-deploy.evaluation-attempts";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";
 pub const PROPOSER_QUEUE_REJECTED_TOTAL_METRIC: &str = "proposer.queue.rejected.total";
 pub const INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC: &str = "init.block-message.queue.pending";
@@ -71,8 +51,6 @@ pub const DAG_FINALIZED_BLOCKS_SIZE_METRIC: &str = "dag.finalized-blocks.size";
 pub const GENESIS_METRIC: &str = "genesis";
 pub const BLOCK_VALIDATION_SUCCESS_METRIC: &str = "block.validation.success";
 pub const BLOCK_VALIDATION_FAILED_METRIC: &str = "block.validation.failed";
-pub const BLOCK_VALIDATION_LOCAL_FAULT_DEFERRED_METRIC: &str =
-    "block.validation.local-fault-deferred";
 pub const CASPER_INIT_ATTEMPTS_METRIC: &str = "casper.init.attempts";
 pub const CASPER_INIT_RETRY_NO_APPROVED_BLOCK_METRIC: &str = "casper.init.retry.no-approved-block";
 pub const CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC: &str = "casper.init.approved-block.received";
@@ -81,13 +59,6 @@ pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
-pub const BLOCK_PROCESSING_ADMISSION_BYTES_METRIC: &str = "block-processing.admission.bytes";
-pub const BLOCK_PROCESSING_ADMISSION_BYTES_LIMIT_METRIC: &str =
-    "block-processing.admission.bytes-limit";
-pub const BLOCK_PROCESSING_ADMISSION_DEFERRED_TOTAL_METRIC: &str =
-    "block-processing.admission.deferred.total";
-pub const BLOCKS_IN_PROCESSING_SIZE_METRIC: &str = "block-processing.in-flight";
-pub const PROCESS_RSS_KB_METRIC: &str = "process.rss-kb";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";
@@ -109,6 +80,12 @@ pub const DAG_MERGE_SCOPE_METRIC: &str = "dag.merge.scope";
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
+pub const DAG_MERGE_REJECTION_SELECTION_TIME_METRIC: &str = "dag.merge.rejection-selection.time";
+pub const DAG_MERGE_RELATION_ITEMS_METRIC: &str = "dag.merge.relation.items";
+pub const DAG_MERGE_RELATION_BRANCHES_METRIC: &str = "dag.merge.relation.branches";
+pub const DAG_MERGE_CONFLICT_EDGES_METRIC: &str = "dag.merge.conflict.edges";
+pub const DAG_MERGE_REJECTION_OPTIONS_METRIC: &str = "dag.merge.rejection.options";
+pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-application.actions";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";
@@ -116,6 +93,8 @@ pub const CASPER_INIT_TIME_TO_RUNNING_METRIC: &str = "casper.init.time-to-runnin
 
 // Casper record/histogram metrics
 pub const BLOCK_SIZE_METRIC: &str = "block.size";
+pub const BLOCK_ARRIVAL_DEPTH_METRIC: &str = "block.arrival.depth";
+pub const BLOCK_ARRIVED_UNCITABLE_METRIC: &str = "block.arrived-uncitable";
 pub const BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC: &str = "block.download.end-to-end-time";
 pub const BLOCK_REPLAY_PHASE_RESET_TIME_METRIC: &str = "block.replay.phase.reset.time";
 pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC: &str =
@@ -124,6 +103,13 @@ pub const BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC: &str =
     "block.replay.phase.system-deploys.time";
 pub const BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC: &str =
     "block.replay.phase.create-checkpoint.time";
+pub const BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC: &str = "block.replay.phase.reset.calls";
+pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC: &str =
+    "block.replay.phase.user-deploys.work";
+pub const BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC: &str =
+    "block.replay.phase.system-deploys.work";
+pub const BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC: &str =
+    "block.replay.phase.create-checkpoint.calls";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC: &str =
     "block.replay.sysdeploy.checkpoint-mergeable.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC: &str = "block.replay.sysdeploy.rig.time";
@@ -208,24 +194,21 @@ pub const BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC: &str = "block.play.deploy.refund
 // Runtime spawn timing metrics
 pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
 pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
+pub const RUNTIME_SPAWN_REPLAY_CALLS_METRIC: &str = "runtime.spawn-replay.calls";
 
-// Block validation step time metrics
+// Block validation step time metrics (7 variants)
 pub const BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC: &str =
     "block.validation.step.block-summary.time";
 pub const BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC: &str =
     "block.validation.step.checkpoint.time";
-pub const BLOCK_VALIDATION_STEP_PRE_STATE_TIME_METRIC: &str =
-    "block.validation.step.pre-state.time";
 pub const BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC: &str =
     "block.validation.step.bonds-cache.time";
-pub const BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC: &str =
-    "block.validation.step.floor-authority.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC: &str =
     "block.validation.step.neglected-invalid-block.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.neglected-equivocation.time";
-pub const BLOCK_VALIDATION_STEP_SLASH_AUTHORIZATION_TIME_METRIC: &str =
-    "block.validation.step.slash-authorization.time";
+pub const BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC: &str =
+    "block.validation.step.phlo-price.time";
 pub const BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.simple-equivocation.time";
 
@@ -245,7 +228,6 @@ pub const DAG_MERGE_REJECTION_EXPANSION_FIRED_METRIC: &str = "dag.merge.rejectio
 // `compute_parents_post_state` internal breakdown.
 pub const COMPUTE_PARENTS_POST_STATE_FETCH_TIME_METRIC: &str =
     "compute-parents-post-state.fetch.time";
-pub const COMPUTE_PARENTS_POST_STATE_LCA_TIME_METRIC: &str = "compute-parents-post-state.lca.time";
 pub const COMPUTE_PARENTS_POST_STATE_BUFFER_ADMITS_TIME_METRIC: &str =
     "compute-parents-post-state.buffer-admits.time";
 
@@ -257,6 +239,24 @@ pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark-engaged";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark-not-ready";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-absence";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-hit";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-read-failure";
+pub const REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.fallback-scan";
+pub const REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.row-reads";
+pub const REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor.metadata-visits";
+pub const REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor.body-reads";
 pub const BLOCK_VALIDATION_BLOCK_NUMBER_TIME_METRIC: &str = "block.validation.block-number.time";
 pub const BLOCK_VALIDATION_FUTURE_TRANSACTION_TIME_METRIC: &str =
     "block.validation.future-transaction.time";
@@ -407,8 +407,6 @@ pub const BLOCK_RECEIVE_BUFFER_TIME_METRIC: &str = "block.receive-buffer.time";
 pub const MERGEABLE_CHANNELS_GC_TIME_METRIC: &str = "mergeable-channels.gc.time";
 
 // Casper tracing span names
-pub const TIPS0_SPAN: &str = "tips0";
-pub const TIPS1_SPAN: &str = "tips1";
 pub const DEPLOY_SPAN: &str = "deploy";
 pub const GET_BLOCK_SPAN: &str = "get-block";
 pub const CREATE_BLOCK_SPAN: &str = "create-block";

@@ -5,16 +5,29 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/scripts/check-cost-accounted-rho-loom.sh"
 
 cargo() {
-  [[ "$*" == "test --locked -p cost-accounting-loom-models" ]] || return 97
-  [[ "$RUSTFLAGS" == "--cfg loom -C target-cpu=native" ]] || return 96
-  [[ "$LOOM_MAX_PREEMPTIONS" == "$EXPECTED_PREEMPTIONS" ]] || return 95
-  case "$GATE_CASE" in
-    fail) return 101 ;;
-    empty) return 0 ;;
-    zero) printf '%s\n' 'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
-    ignored) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
-    filtered) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s' ;;
-    *) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
+  case "$*" in
+    'test --locked -p cost-accounting-loom-models')
+      [[ "$RUSTFLAGS" == "--cfg loom -C target-cpu=native" ]] || return 96
+      [[ "$LOOM_MAX_PREEMPTIONS" == "$EXPECTED_PREEMPTIONS" ]] || return 95
+      case "$GATE_CASE" in
+        fail) return 101 ;;
+        empty) return 0 ;;
+        zero) printf '%s\n' 'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
+        ignored) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
+        filtered) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s' ;;
+        *) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
+      esac ;;
+    'test --locked -p rspace_plus_plus --test native_history_loom' | \
+    'test --locked -p rspace_plus_plus --test native_cache_loom' | \
+    'test --locked -p rspace_plus_plus --test native_source_loom')
+      [[ "$GATE_CASE" != empty && "$GATE_CASE" != zero ]] || return 0
+      printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
+    'test --locked -p rspace_plus_plus --lib rspace::striped_locks::native::tests::loom_')
+      printf '%s\n' \
+        'test rspace::striped_locks::native::tests::loom_lock_preparation_respects_atomic_shared_budget ... ok' \
+        'test rspace::striped_locks::native::tests::loom_separate_budget_check_and_update_allows_unpaid_lock_preparation - should panic ... ok' \
+        'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
+    *) return 97 ;;
   esac
 }
 

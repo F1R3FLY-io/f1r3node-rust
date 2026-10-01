@@ -67,7 +67,7 @@ where
             .unwrap();
         dag.insert(
             &genesis_context.genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
         )
         .expect("Failed to insert genesis block into DAG");
 

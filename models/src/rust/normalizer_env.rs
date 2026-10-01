@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::{Cosigned, Signed, ToMessage};
 
-use super::casper::protocol::casper_message::DeployData;
 use super::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
@@ -87,7 +86,7 @@ fn build_cosigners_list_par(pks: &[&PublicKey]) -> Par {
     }])
 }
 
-pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String, Par> {
+pub fn normalizer_env_from_deploy<A>(deploy: &Signed<A>) -> HashMap<String, Par> {
     legacy_normalizer_env(&deploy.pk, &deploy.sig)
 }
 
@@ -146,7 +145,9 @@ fn legacy_normalizer_env(public_key: &PublicKey, signature: &[u8]) -> HashMap<St
 /// - `rho:system:cosigners` — full `List[DeployerId]` of every signer in
 ///   canonical order. This is the channel Rholang programs use to introspect
 ///   the full cosigner set.
-pub fn normalizer_env_from_cosigned_deploy(deploy: &Cosigned<DeployData>) -> HashMap<String, Par> {
+pub fn normalizer_env_from_cosigned_deploy<A: std::fmt::Debug + serde::Serialize + ToMessage>(
+    deploy: &Cosigned<A>,
+) -> HashMap<String, Par> {
     if !deploy.is_envelope_bound() {
         let mut env = legacy_normalizer_env(&deploy.primary().pk, &deploy.primary().sig);
         let signers = deploy
@@ -388,6 +389,7 @@ mod tests {
     use prost::bytes::Bytes;
 
     use super::*;
+    use crate::rust::cost_deploy_data::DeployData;
 
     fn signed_deploy_fixture() -> Signed<DeployData> {
         Signed {

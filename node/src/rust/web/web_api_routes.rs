@@ -8,8 +8,8 @@ use serde::Deserialize;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
-    WebApi,
+    DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
+    RhoDataResponse, WebApi,
 };
 use crate::rust::web::shared_handlers::{
     self, offload, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
@@ -38,6 +38,7 @@ impl WebApiRoutes {
     pub fn create_router() -> Router<AppState> {
         Router::new()
             .route("/status", get(shared_handlers::status_handler))
+            .route("/ready", get(ready_handler))
             .route("/prepare-deploy", get(prepare_deploy_get_handler))
             .route("/prepare-deploy", post(prepare_deploy_post_handler))
             .route("/deploy", post(shared_handlers::deploy_handler))
@@ -78,6 +79,25 @@ impl WebApiRoutes {
 
 #[utoipa::path(
     get,
+    path = "/api/ready",
+    responses(
+        (status = 200, description = "Casper is Running and the node can serve deploys", body = ReadyResponse),
+        (status = 503, description = "Casper has not finished initializing (`service_unavailable`)", body = ReadyResponse),
+    ),
+    tag = "Status"
+)]
+pub async fn ready_handler(State(app_state): State<AppState>) -> Response {
+    let ready = app_state.web_api.is_ready();
+    let code = if ready {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (code, Json(serde_json::json!({ "ready": ready }))).into_response()
+}
+
+#[utoipa::path(
+    get,
     path = "/api/prepare-deploy",
     responses(
         (status = 200, description = "Validator's next sequence number (`seqNumber`). This is the validator's internal block counter, not a field the deployer sets.", body = PrepareResponse),
@@ -98,9 +118,8 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     path = "/api/prepare-deploy",
     request_body = PrepareRequest,
     responses(
-        (status = 200, description = "Next deploy sequence number. Legacy protocols can also return pre-generated unforgeable names", body = PrepareResponse),
+        (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
-        (status = 409, description = "The active protocol does not support key-and-timestamp private-name preview (`private_name_preview_unavailable`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
@@ -631,6 +650,8 @@ mod tests {
                 None
             },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
+            phlo_price: if is_full { Some(10) } else { None },
+            phlo_limit: if is_full { Some(100000) } else { None },
             sig_algorithm: if is_full {
                 Some("secp256k1".to_string())
             } else {
@@ -644,6 +665,7 @@ mod tests {
     #[async_trait::async_trait]
     impl WebApi for StubWebApi {
         async fn status(&self) -> eyre::Result<ApiStatus> { unimplemented!() }
+        fn is_ready(&self) -> bool { unimplemented!() }
         async fn prepare_deploy(
             &self,
             _: Option<crate::rust::api::web_api::PrepareRequest>,
@@ -713,10 +735,11 @@ mod tests {
                 Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
                     term: "for (x <- ch) { return!(x) }".to_string(),
                     timestamp: 1770028092477,
+                    phlo_price: 1,
+                    phlo_limit: 100_000,
                     valid_after_block_number: 0,
                     shard_id: String::new(),
                     deployer: pk.to_string(),
-                    deploy_id: "aa11".to_string(),
                     sig: "aa11".to_string(),
                     sig_algorithm: "secp256k1".to_string(),
                     expiration_timestamp: None,
@@ -726,10 +749,11 @@ mod tests {
                     PendingDeployJson {
                         term: "Nil".to_string(),
                         timestamp: 1770028092477,
+                        phlo_price: 1,
+                        phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
                         deployer: "0487def456".to_string(),
-                        deploy_id: "aa11".to_string(),
                         sig: "aa11".to_string(),
                         sig_algorithm: "secp256k1".to_string(),
                         expiration_timestamp: None,
@@ -738,10 +762,11 @@ mod tests {
                     PendingDeployJson {
                         term: "@0!(42)".to_string(),
                         timestamp: 1770028092478,
+                        phlo_price: 1,
+                        phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
                         deployer: "0499abc789".to_string(),
-                        deploy_id: "bb22".to_string(),
                         sig: "bb22".to_string(),
                         sig_algorithm: "secp256k1".to_string(),
                         expiration_timestamp: None,
@@ -873,9 +898,8 @@ mod tests {
         // Full view includes deploy execution details
         assert_eq!(json["deployer"], "0487def456");
         assert!(json.get("term").is_some());
-        // D3 (DR-9): the deploy response no longer carries phloPrice / phloLimit.
-        assert!(json.get("phloPrice").is_none());
-        assert!(json.get("phloLimit").is_none());
+        assert!(json.get("phloPrice").is_some());
+        assert!(json.get("phloLimit").is_some());
         assert!(json.get("sigAlgorithm").is_some());
         assert!(json.get("transfers").is_some());
     }
@@ -1041,10 +1065,14 @@ mod router_tests {
 
     fn block_info() -> BlockInfoSerde { BlockInfoSerde::from(models::casper::BlockInfo::default()) }
 
-    struct CannedWebApi;
+    struct CannedWebApi {
+        is_ready: bool,
+    }
 
     #[async_trait::async_trait]
     impl WebApi for CannedWebApi {
+        fn is_ready(&self) -> bool { self.is_ready }
+
         async fn status(&self) -> eyre::Result<ApiStatus> {
             Ok(ApiStatus {
                 version: VersionInfo {
@@ -1064,7 +1092,7 @@ mod router_tests {
                 last_finalized_block_number: 5,
                 is_validator: false,
                 is_read_only: true,
-                is_ready: true,
+                is_ready: self.is_ready,
                 current_epoch: 0,
                 epoch_length: 100,
             })
@@ -1139,8 +1167,6 @@ mod router_tests {
                 state: "Finalized".to_string(),
                 rejection_count: 0,
                 latest_block_hash: Some("aa".to_string()),
-                finalized_floor_hash: Some("bb".to_string()),
-                finalized_floor_height: Some(1),
             })
         }
 
@@ -1255,7 +1281,9 @@ mod router_tests {
         }
     }
 
-    fn app_state() -> AppState {
+    fn app_state() -> AppState { app_state_with_readiness(true) }
+
+    fn app_state_with_readiness(is_ready: bool) -> AppState {
         let engine_cell = EngineCell::init();
         let block_report_api = BlockReportAPI::new(
             casper::rust::reporting_casper::noop(),
@@ -1270,7 +1298,8 @@ mod router_tests {
         );
 
         let local = PeerNode::new(
-            NodeIdentifier::new("0a0b0c".to_string()),
+            NodeIdentifier::new("0a0b0c0d00000000000000000000000000000000")
+                .expect("valid test node ID"),
             "localhost".to_string(),
             40400,
             40404,
@@ -1289,7 +1318,7 @@ mod router_tests {
 
         AppState::new(
             Arc::new(StubAdminWebApi),
-            Arc::new(CannedWebApi),
+            Arc::new(CannedWebApi { is_ready }),
             Arc::new(block_report_api),
             RPConfCell::new(rp_conf),
             Arc::new(ConnectionsCell::new()),
@@ -1342,6 +1371,35 @@ mod router_tests {
         assert_eq!(json["lastFinalizedBlockNumber"], 5);
     }
 
+    async fn ready_response(is_ready: bool) -> (StatusCode, serde_json::Value) {
+        let response = WebApiRoutes::create_router()
+            .with_state(app_state_with_readiness(is_ready))
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ready_route_reports_503_until_casper_running() {
+        let (status, json) = ready_response(false).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json["ready"], false);
+
+        let (status, json) = ready_response(true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["ready"], true);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn prepare_deploy_routes_answer_for_get_and_post() {
         let (status, json) = get_response("/prepare-deploy").await;
@@ -1370,11 +1428,11 @@ mod router_tests {
         let deploy_body = serde_json::json!({
             "data": {
                 "term": "Nil",
-                "language": "rholang",
                 "timestamp": 1,
+                "phloPrice": 1,
+                "phloLimit": 100,
                 "validAfterBlockNumber": 0,
                 "shardId": "root",
-                "authorityPresentations": [],
             },
             "deployer": "04aa",
             "signature": "bb",

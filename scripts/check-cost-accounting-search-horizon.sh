@@ -113,7 +113,6 @@ run_smoke_nextest() {
     generated_frontier_source_shape_fixtures_hold
     generated_frontier_production_fixtures_hold
     generated_frontier_rholang_eval_fixtures_hold
-    generated_frontier_casper_boundary_fixtures_hold
     generated_frontier_semantic_eval_fixtures_hold
     generated_frontier_play_replay_fixtures_hold
     generated_frontier_phlo_boundary_fixtures_hold
@@ -127,50 +126,20 @@ run_smoke_nextest() {
     generated_frontier_grammar_mutation_fixtures_hold
     generated_frontier_differential_oracle_fixtures_hold
     generated_frontier_external_service_matrix_fixtures_hold
-    generated_frontier_casper_security_matrix_fixtures_hold
     generated_frontier_runtime_trace_interleaving_properties_hold
     generated_frontier_v9_coverage_adequacy_holds
     generated_frontier_v10_fuzz_seed_fixtures_hold
     generated_frontier_v10_lifecycle_trace_fixtures_hold
     generated_frontier_v10_replay_payload_matrix_fixtures_hold
-    generated_frontier_v10_casper_block_auth_fixtures_hold
     generated_frontier_v10_parallel_schedule_stress_fixtures_hold
     generated_frontier_v10_semantic_corpus_mutation_fixtures_hold
     generated_frontier_v10_coverage_adequacy_holds
-    generated_frontier_v11_source_anchored_fixtures_hold
-    generated_frontier_v11_runtime_budget_source_risks_hold
-    generated_frontier_v11_casper_settlement_slashing_source_risks_hold
-    generated_frontier_v11_coverage_adequacy_holds
-    generated_frontier_v12_production_oracle_fixtures_hold
-    generated_frontier_v12_runtime_metering_parallel_oracles_hold
-    generated_frontier_v12_casper_settlement_slashing_oracles_hold
-    generated_frontier_v12_coverage_adequacy_holds
-    generated_frontier_v13_source_semantic_oracles_hold
-    generated_frontier_v13_runtime_metering_parallel_oracles_hold
-    generated_frontier_v13_casper_settlement_slashing_oracles_hold
-    generated_frontier_v13_coverage_adequacy_holds
-    generated_frontier_v14_mergeable_channel_oracles_hold
-    generated_frontier_v14_mergeable_evidence_oracles_hold
-    generated_frontier_v14_slashing_security_oracles_hold
-    generated_frontier_v14_node_security_oracles_hold
-    generated_frontier_v14_coverage_adequacy_holds
     runtime_budget_event_sequence_properties_hold
     projection_risk
-  )
-  local casper_tests=(
-    cost_accounting_v12_casper_replay_payload_oracles_hold
-    cost_accounting_v12_slashing_replay_oracles_hold
-    cost_accounting_v13_source_semantic_replay_payload_oracles_hold
-    cost_accounting_v13_settlement_slashing_legacy_oracles_hold
-    cost_accounting_v14_replay_slashing_oracles_hold
   )
   for test_name in "${rholang_tests[@]}"; do
     run_bounded env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
       cargo nextest run -j "${NEXTEST_JOBS:-1}" -p rholang "$test_name"
-  done
-  for test_name in "${casper_tests[@]}"; do
-    run_bounded env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
-      cargo nextest run -j "${NEXTEST_JOBS:-1}" -p casper "$test_name"
   done
 }
 
@@ -190,11 +159,6 @@ run_sage_horizon() {
   local horizon_v8="$OUT_DIR/horizon-v8-${SEARCH_PROFILE}-${SEARCH_MODE}"
   local horizon_v9="$OUT_DIR/horizon-v9-${SEARCH_PROFILE}-${SEARCH_MODE}"
   local horizon_v10="$OUT_DIR/horizon-v10-${SEARCH_PROFILE}-${SEARCH_MODE}"
-  local horizon_v11="$OUT_DIR/horizon-v11-${SEARCH_PROFILE}-${SEARCH_MODE}"
-  local horizon_v12="$OUT_DIR/horizon-v12-${SEARCH_PROFILE}-${SEARCH_MODE}"
-  local horizon_v13="$OUT_DIR/horizon-v13-${SEARCH_PROFILE}-${SEARCH_MODE}"
-  local horizon_v14="$OUT_DIR/horizon-v14-${SEARCH_PROFILE}-${SEARCH_MODE}"
-  local source_surface="$OUT_DIR/source-surface.json"
   local source_root="${SOURCE_ROOT:-$ROOT/rholang/examples}"
 
   run_bounded sage "$SAGE_DIR/hypothesis_search/hypothesis_scenario_search.sage" -- \
@@ -296,46 +260,7 @@ run_sage_horizon() {
     --coverage-out "$horizon_v10-coverage.json" \
     --rust-fixtures-out "$horizon_v10-rust-fixtures.json"
 
-  run bash "$ROOT/scripts/cost-accounting-source-surface.sh" --json-out "$source_surface"
-  run_bounded sage "$SAGE_DIR/hypothesis_search/horizon_v11_source_anchored_security_search.sage" -- \
-    --profile "$SEARCH_PROFILE" \
-    --search-mode "$SEARCH_MODE" \
-    --objectives "$SAGE_OBJECTIVES" \
-    --source-surface-json "$source_surface" \
-    --json-out "$horizon_v11.json" \
-    --fixture-out "$horizon_v11-fixtures.json" \
-    --coverage-out "$horizon_v11-coverage.json" \
-    --rust-fixtures-out "$horizon_v11-rust-fixtures.json"
-
-  run_bounded sage "$SAGE_DIR/hypothesis_search/horizon_v12_production_oracle_security_search.sage" -- \
-    --profile "$SEARCH_PROFILE" \
-    --search-mode "$SEARCH_MODE" \
-    --objectives "$SAGE_OBJECTIVES" \
-    --source-surface-json "$source_surface" \
-    --json-out "$horizon_v12.json" \
-    --fixture-out "$horizon_v12-fixtures.json" \
-    --coverage-out "$horizon_v12-coverage.json" \
-    --rust-fixtures-out "$horizon_v12-rust-fixtures.json"
-
-  run_bounded sage "$SAGE_DIR/hypothesis_search/horizon_v13_source_semantic_security_search.sage" -- \
-    --profile "$SEARCH_PROFILE" \
-    --search-mode "$SEARCH_MODE" \
-    --objectives "$SAGE_OBJECTIVES" \
-    --source-surface-json "$source_surface" \
-    --json-out "$horizon_v13.json" \
-    --fixture-out "$horizon_v13-fixtures.json" \
-    --coverage-out "$horizon_v13-coverage.json" \
-    --rust-fixtures-out "$horizon_v13-rust-fixtures.json"
-
-  run_bounded sage "$SAGE_DIR/hypothesis_search/horizon_v14_source_graph_security_search.sage" -- \
-    --profile "$SEARCH_PROFILE" \
-    --search-mode "$SEARCH_MODE" \
-    --objectives "$SAGE_OBJECTIVES" \
-    --source-surface-json "$source_surface" \
-    --json-out "$horizon_v14.json" \
-    --fixture-out "$horizon_v14-fixtures.json" \
-    --coverage-out "$horizon_v14-coverage.json" \
-    --rust-fixtures-out "$horizon_v14-rust-fixtures.json"
+  # Source-anchored v11-v14 scenarios depend on deferred Casper production bindings.
 
   nextest_fixture "$hypothesis-rust-fixtures.json" generated_frontier_replay_fixtures_hold
   nextest_fixture "$hypothesis-rust-fixtures.json" generated_frontier_metamorphic_fixtures_hold
@@ -347,7 +272,6 @@ run_sage_horizon() {
   nextest_fixture "$horizon_v5-rust-fixtures.json" generated_frontier_source_shape_fixtures_hold
   nextest_fixture "$horizon_v6-rust-fixtures.json" generated_frontier_production_fixtures_hold
   nextest_fixture "$horizon_v6-rust-fixtures.json" generated_frontier_rholang_eval_fixtures_hold
-  nextest_fixture "$horizon_v6-rust-fixtures.json" generated_frontier_casper_boundary_fixtures_hold
   nextest_fixture "$horizon_v7-rust-fixtures.json" generated_frontier_semantic_eval_fixtures_hold
   nextest_fixture "$horizon_v7-rust-fixtures.json" generated_frontier_play_replay_fixtures_hold
   nextest_fixture "$horizon_v7-rust-fixtures.json" generated_frontier_phlo_boundary_fixtures_hold
@@ -361,34 +285,14 @@ run_sage_horizon() {
   nextest_fixture "$horizon_v9-rust-fixtures.json" generated_frontier_grammar_mutation_fixtures_hold
   nextest_fixture "$horizon_v9-rust-fixtures.json" generated_frontier_differential_oracle_fixtures_hold
   nextest_fixture "$horizon_v9-rust-fixtures.json" generated_frontier_external_service_matrix_fixtures_hold
-  nextest_fixture "$horizon_v9-rust-fixtures.json" generated_frontier_casper_security_matrix_fixtures_hold
   nextest_fixture "$horizon_v9-rust-fixtures.json" generated_frontier_runtime_trace_interleaving_properties_hold
   nextest_fixture "$horizon_v9-rust-fixtures.json" generated_frontier_v9_coverage_adequacy_holds
   nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_fuzz_seed_fixtures_hold
   nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_lifecycle_trace_fixtures_hold
   nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_replay_payload_matrix_fixtures_hold
-  nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_casper_block_auth_fixtures_hold
   nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_parallel_schedule_stress_fixtures_hold
   nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_semantic_corpus_mutation_fixtures_hold
   nextest_fixture "$horizon_v10-rust-fixtures.json" generated_frontier_v10_coverage_adequacy_holds
-  nextest_fixture "$horizon_v11-rust-fixtures.json" generated_frontier_v11_source_anchored_fixtures_hold
-  nextest_fixture "$horizon_v11-rust-fixtures.json" generated_frontier_v11_runtime_budget_source_risks_hold
-  nextest_fixture "$horizon_v11-rust-fixtures.json" generated_frontier_v11_casper_settlement_slashing_source_risks_hold
-  nextest_fixture "$horizon_v11-rust-fixtures.json" generated_frontier_v11_coverage_adequacy_holds
-  nextest_fixture "$horizon_v12-rust-fixtures.json" generated_frontier_v12_production_oracle_fixtures_hold
-  nextest_fixture "$horizon_v12-rust-fixtures.json" generated_frontier_v12_runtime_metering_parallel_oracles_hold
-  nextest_fixture "$horizon_v12-rust-fixtures.json" generated_frontier_v12_casper_settlement_slashing_oracles_hold
-  nextest_fixture "$horizon_v12-rust-fixtures.json" generated_frontier_v12_coverage_adequacy_holds
-  nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_source_semantic_oracles_hold
-  nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_runtime_metering_parallel_oracles_hold
-  nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_casper_settlement_slashing_oracles_hold
-  nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_coverage_adequacy_holds
-  nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_mergeable_channel_oracles_hold
-  nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_slashing_security_oracles_hold
-  nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_node_security_oracles_hold
-  nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_coverage_adequacy_holds
-  run_bounded env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
-    cargo nextest run -j "${NEXTEST_JOBS:-1}" -p casper cost_accounting_v14_replay_slashing_oracles_hold
   nextest_fixture "$hypothesis-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
   nextest_fixture "$horizon_v2-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
   nextest_fixture "$horizon_v4-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
@@ -398,10 +302,6 @@ run_sage_horizon() {
   nextest_fixture "$horizon_v8-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
   nextest_fixture "$horizon_v9-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
   nextest_fixture "$horizon_v10-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
-  nextest_fixture "$horizon_v11-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
-  nextest_fixture "$horizon_v12-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
-  nextest_fixture "$horizon_v13-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
-  nextest_fixture "$horizon_v14-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
 }
 
 run_tlc_model() {

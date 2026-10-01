@@ -1,3 +1,0 @@
-------------- MODULE TransportPayloadResidencyDecodedOnlyUnsafe -------------
-EXTENDS TransportPayloadResidency
-=============================================================================

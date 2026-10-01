@@ -8,12 +8,12 @@ use crate::rust::effects::console_io::{console_io, decrypt_key_from_file};
 
 /// Check api-server settings whose invalid values have no safe interpretation.
 ///
-/// Validation runs through `ExploratoryDeployConfig::new` — the same constructor
+/// Validation runs through `ExploratoryDeployConfig::resolve` — the same path
 /// the runtime uses — so there is one set of rules rather than two that can
 /// drift. Running it here surfaces the failure at startup, before any storage is
 /// opened.
 pub fn check_api_server(conf: &NodeConf) -> Result<()> {
-    ExploratoryDeployConfig::new(
+    ExploratoryDeployConfig::resolve(
         conf.api_server.exploratory_deploy_max_concurrent,
         conf.api_server.exploratory_deploy_phlo_limit,
         conf.api_server.exploratory_deploy_execution_timeout,

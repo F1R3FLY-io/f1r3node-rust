@@ -1,10 +1,5 @@
 # Code owners for CI and its credential wiring.
 #
-# Scope is deliberately narrow. Workflow files and the scripts they invoke carry
-# the credential model — which jobs may read OCI and GitHub App secrets, and what
-# holds untrusted fork code back — so a change here can widen the blast radius
-# without touching a line of Rust. Everything else keeps the repository default.
-#
 # @F1R3FLY-io/ci-maintainers must retain at least `push` on this repository:
 # GitHub silently ignores code owners without write access, so a team demoted to
 # read would leave these paths effectively unowned with no error anywhere.
@@ -15,3 +10,14 @@
 /.github/workflows/  @F1R3FLY-io/ci-maintainers
 /.github/scripts/    @F1R3FLY-io/ci-maintainers
 /.github/CODEOWNERS  @F1R3FLY-io/ci-maintainers
+/deny.toml          @F1R3FLY-io/ci-maintainers
+/supply-chain/      @F1R3FLY-io/ci-maintainers
+/.cargo/            @F1R3FLY-io/ci-maintainers
+Cargo.toml          @F1R3FLY-io/ci-maintainers
+Cargo.lock          @F1R3FLY-io/ci-maintainers
+build.rs            @F1R3FLY-io/ci-maintainers
+Dockerfile          @F1R3FLY-io/ci-maintainers
+/Cross.toml         @F1R3FLY-io/ci-maintainers
+/rust-toolchain.toml @F1R3FLY-io/ci-maintainers
+/scripts/ci/        @F1R3FLY-io/ci-maintainers
+/scripts/supply-chain/ @F1R3FLY-io/ci-maintainers

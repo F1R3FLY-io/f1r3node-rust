@@ -269,6 +269,13 @@ pub struct RhoRuntimeImpl {
 }
 
 impl RhoRuntimeImpl {
+    pub async fn set_report_phase(
+        &self,
+        phase: rspace_plus_plus::rspace::reporting_rspace::ReportPhase,
+    ) {
+        self.reducer.space.set_report_phase(phase).await
+    }
+
     pub async fn evaluate_with_native_phlo(
         &mut self,
         term: &str,

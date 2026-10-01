@@ -2,7 +2,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::{Cosigned, Cosigner, ToMessage};
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::cost_deploy_data::DeployData;
 use models::rust::phlo_controls::{PhloControlsLimits, PhloControlsV1};
 use models::rust::phlo_intent::{PhloFundingIntentLimits, PhloFundingIntentV1};
 use models::rust::phlo_schedule::{PhloResourceClassV1, PhloScheduleV1};

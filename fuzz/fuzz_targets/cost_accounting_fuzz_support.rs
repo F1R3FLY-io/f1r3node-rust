@@ -1,18 +1,10 @@
 //! Shared helpers for cost-accounting fuzz targets.
 //!
 //! The builders stay deterministic and in-memory so each fuzz iteration checks
-//! production serialization, settlement, hashing, and runtime-budget paths
-//! without depending on disk state or cross-iteration caches.
+//! production runtime-budget and trace paths without depending on disk state.
 
 #![allow(dead_code)]
 
-use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::secp256k1_eth::Secp256k1Eth;
-use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, DeployData, F1r3flyState, Header, ProcessedDeploy,
-};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{
     BillableKind, BillableTokenEvent, RedexId, RuntimeBudget, SourcePath,
@@ -60,77 +52,4 @@ pub fn event_is_invalid(event: &BillableTokenEvent) -> bool {
             BillableKind::Primitive(name)
                 if name.len() > MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES
         )
-}
-
-// D3 (DR-9): a deploy carries no phlo escrow price/limit.
-pub fn deploy_data() -> DeployData {
-    DeployData {
-        term: "Nil".to_string(),
-        language: "rholang".to_string(),
-        time_stamp: 0,
-        valid_after_block_number: 0,
-        shard_id: "root".to_string(),
-        expiration_timestamp: None,
-        authority_presentations: Vec::new(),
-    }
-}
-
-pub fn signed_deploy(seed: u8) -> Signed<DeployData> {
-    let mut data = deploy_data();
-    data.time_stamp = i64::from(seed);
-    Signed::create(
-        data,
-        Box::new(Secp256k1Eth),
-        PrivateKey::from_bytes(&[1; 32]),
-    )
-    .expect("fixed secp256k1 private key must sign")
-}
-
-pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
-    let mut processed = ProcessedDeploy::empty(signed_deploy(seed)).unwrap();
-    processed.cost = PCost { cost };
-    processed.is_failed = failed;
-    processed.system_deploy_error = failed.then(|| "fuzz failure".to_string());
-    processed
-}
-
-pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
-    BlockMessage {
-        block_hash: Vec::<u8>::new().into(),
-        header: Header {
-            parents_hash_list: Vec::new(),
-            timestamp: 0,
-            version: 1,
-            extra_bytes: Vec::<u8>::new().into(),
-            sender_bond_generation: None,
-            objective_equivocation_evidence_delta: Vec::new(),
-            finalized_floor: None,
-        },
-        body: Body {
-            state: F1r3flyState {
-                pre_state_hash: vec![0; 32].into(),
-                post_state_hash: vec![1; 32].into(),
-                bonds: Vec::new(),
-                bond_generations: Vec::new(),
-                active_validators: Vec::new(),
-                block_number: 0,
-            },
-            deploys: vec![deploy],
-            rejected_deploys: Vec::new(),
-            rejected_state_effects: Vec::new(),
-            applied_state_effects: Vec::new(),
-            system_deploys: Vec::new(),
-            extra_bytes: Vec::<u8>::new().into(),
-            applied_from_scope: Vec::new(),
-            merge_base: Vec::<u8>::new().into(),
-        },
-        justifications: Vec::new(),
-        sender: vec![7; 65].into(),
-        seq_num: 0,
-        sig: Vec::<u8>::new().into(),
-        sig_algorithm: "secp256k1".to_string(),
-        shard_id: "root".to_string(),
-        extra_bytes: Vec::<u8>::new().into(),
-        finalized_floor_certificate: None,
-    }
 }

@@ -1,5 +1,10 @@
 # Formal Verification of Cost-Accounted Rho Calculus
 
+> **Branch scope.** Casper production tests and bindings described in this
+> record are preserved on `feature/casper-cost-accounting-completion`.
+> This branch verifies the cost models, Rholang, and native RSpace work;
+> references to deferred Casper evidence are not release claims for it.
+
 **A Mechanized Proof in Rocq 9.1.1 that Phlogiston Accounting
 Is Faithfully Encodable within Pure Rho Calculus**
 
@@ -417,7 +422,7 @@ The bound does not establish elapsed-time limits or recovery under permanent sto
 The checkpoint module derives readable new roots from contextual construction evidence and compatible physical writes.
 Its physical theorem preserves the exact 32-byte root identity and previously captured readable roots.
 This proof does not establish that the current native writers satisfy every premise.
-The [state-import record](finalized-floor/state-import-validity.md#checkpoint-construction-and-first-publication) lists the native gaps, regression results, and concurrent-model boundaries.
+The state-import record on the Casper completion branch lists the native gaps, regression results, and concurrent-model boundaries.
 The history-observation module separates physical storage reads from repeated logical traversal lookups.
 It derives checked-byte provenance and preserves successful lookup results as the attempt cache grows.
 Received-key absence retains its own observation record and still requires a transaction-time comparison.
@@ -463,7 +468,7 @@ Its composition theorem connects the exact operational cursor witness to typed r
 It checks compatible trailer handling and conflicting duplicate rejection without assuming hash injectivity.
 These results do not establish real storage latency bounds, whole-transfer liveness, or publication validity.
 They do not establish correctness of the current network importer.
-The [state-import record](finalized-floor/state-import-validity.md) states the implementation gaps and focused proof evidence.
+The state-import record on the Casper completion branch states the implementation gaps and focused proof evidence.
 
 **Claim boundary.** This document is the repo-local verification record.
 It does not modify the external paper. Its implementation-facing claims
@@ -4830,8 +4835,8 @@ only at the authenticated, canonical RSpace operations described below and is
 recomputed identically during replay. A transport rejection therefore delays
 or prevents admission of a payload; it cannot partially charge a process or
 create a validator-specific semantic cost. The complete host-memory boundary
-and its handoff to byte-bounded Casper admission are specified in
-[P2P Transport Resource and Completion Semantics](../../node/transport-resource-lifecycle.md).
+and its handoff to byte-bounded Casper admission are specified in the
+transport-resource contract on the Casper completion branch.
 
 ### A.1 Refinement boundary
 
@@ -5389,7 +5394,7 @@ publication. A later replay with the original store must publish successfully.
 The cache property test compares every result and eviction order against an
 independent ordered-list implementation. It also checks exact retained-byte totals.
 
-The [evidence-field properties](../../../casper/src/rust/util/rholang/replay_evidence_tests.rs)
+The evidence-field properties on the Casper completion branch
 check all sixteen funding-certificate fields and all fourteen witness fields.
 Each generated case checks every listed field, not one randomly selected field.
 Exhaustive Rust field patterns make additions to these message types require test updates.
@@ -5424,7 +5429,7 @@ Neither canceled waiting nor uncommitted replay may publish a cache entry.
 This test covers queued cancellation, not every active-execution cancellation
 boundary or process-crash boundary.
 
-The [replay lifecycle regressions](../../../casper/tests/util/rholang/replay_cache_lifecycle.rs)
+The replay lifecycle regressions on the Casper completion branch
 check additional production boundaries. Each test must observe its specified event.
 A timeout detects a stuck test. Elapsed time does not establish that an event occurred.
 

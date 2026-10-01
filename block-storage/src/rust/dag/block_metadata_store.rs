@@ -70,35 +70,6 @@ struct BlockInfo {
 }
 
 impl BlockMetadataStore {
-    pub(crate) fn raw_store(
-        &self,
-    ) -> &Arc<dyn shared::rust::store::key_value_store::KeyValueStore> {
-        self.store.raw_store()
-    }
-
-    pub(crate) fn encode_add(
-        &self,
-        block_metadata: &BlockMetadata,
-    ) -> Result<(Vec<u8>, Vec<u8>), KvStoreError> {
-        block_metadata
-            .validate()
-            .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
-        Ok((
-            self.store
-                .encode_key(&BlockHashSerde(block_metadata.block_hash.clone()))?,
-            self.store.encode_value(block_metadata)?,
-        ))
-    }
-
-    pub(crate) fn apply_committed_add(&mut self, block_metadata: BlockMetadata) {
-        let block_hash = block_metadata.block_hash.clone();
-        let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
-        self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
-            self.dag_state.clone(),
-            block_info,
-        ));
-    }
-
     fn prune_finalized_cache_if_needed(state: &mut DagState) {
         let len = state.finalized_block_set.len();
         if len <= FINALIZED_BLOCK_CACHE_MAX {
@@ -119,27 +90,29 @@ impl BlockMetadataStore {
 
     pub fn new(
         block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
-    ) -> Result<Self, KvStoreError> {
-        let stored_metadata = block_metadata_store
-            .collect(|(hash, metadata)| Some((hash.0.clone(), metadata.clone())))?;
-        let mut blocks_info_map = HashMap::with_capacity(stored_metadata.len());
-        for (hash, metadata) in stored_metadata {
-            metadata
-                .validate()
-                .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-            if hash != metadata.block_hash {
-                return Err(KvStoreError::SerializationError(
-                    "block metadata key does not match its certified block hash".to_string(),
-                ));
-            }
-            blocks_info_map.insert(hash.clone(), Self::block_metadata_to_info(&hash, &metadata));
-        }
+    ) -> Self {
+        let blocks_info_result = block_metadata_store
+            .collect(|(hash, metadata)| {
+                Some((
+                    hash.0.clone(),
+                    Self::block_metadata_to_info(&hash.0, metadata),
+                ))
+            })
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Warning: Failed to collect block metadata: {}. Continuing with empty store.",
+                    e
+                );
+                Vec::new()
+            });
+
+        let blocks_info_map = blocks_info_result.into_iter().collect::<HashMap<_, _>>();
         let dag_state = Self::recreate_in_memory_state(blocks_info_map);
 
-        Ok(Self {
+        Self {
             store: block_metadata_store,
             dag_state,
-        })
+        }
     }
 
     fn block_metadata_to_info(hash: &BlockHash, block_metadata: &BlockMetadata) -> BlockInfo {
@@ -156,16 +129,24 @@ impl BlockMetadataStore {
             main_parent,
             self_justification,
             block_num: block_metadata.block_number,
-            is_invalid: block_metadata.is_rejected(),
+            is_invalid: block_metadata.invalid,
             is_directly_finalized: block_metadata.directly_finalized,
             is_finalized: block_metadata.finalized,
         }
     }
 
     pub fn add(&mut self, block_metadata: BlockMetadata) -> Result<(), KvStoreError> {
-        let (key, value) = self.encode_add(&block_metadata)?;
-        self.store.raw_store().put_one(key, value)?;
-        self.apply_committed_add(block_metadata);
+        let block_hash = block_metadata.block_hash.clone();
+        let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
+
+        self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
+            self.dag_state.clone(),
+            block_info,
+        ));
+
+        // Update persistent block metadata store
+        self.store
+            .put_one(BlockHashSerde(block_hash), block_metadata)?;
 
         Ok(())
     }
@@ -187,74 +168,46 @@ impl BlockMetadataStore {
 
         // new values to persist
         let mut new_meta_for_df = self.store.get_unsafe(&BlockHashSerde(directly.clone()))?;
-        new_meta_for_df
-            .validate()
-            .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-        if new_meta_for_df.block_hash != directly {
-            return Err(KvStoreError::SerializationError(
-                "direct-finalization metadata key does not match its certified block hash"
-                    .to_string(),
-            ));
-        }
-        if new_meta_for_df.is_rejected() {
-            return Err(KvStoreError::InvalidArgument(
-                "cannot directly finalize a rejected certified block".to_string(),
-            ));
-        }
         new_meta_for_df.finalized = true;
         new_meta_for_df.directly_finalized = true;
         if ft_value > new_meta_for_df.fault_tolerance_value {
             new_meta_for_df.fault_tolerance_value = ft_value;
         }
 
-        let new_metas_for_if: Vec<(BlockHashSerde, BlockMetadata)> = indirectly_serde
+        let new_metas_for_if: Vec<(BlockHashSerde, BlockMetadata)> = cur_metas_for_if
             .into_iter()
-            .zip(cur_metas_for_if)
-            .map(|(key, mut v)| {
-                v.validate()
-                    .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-                if v.block_hash != key.0 {
-                    return Err(KvStoreError::SerializationError(
-                        "indirect-finalization metadata key does not match its certified block hash"
-                            .to_string(),
-                    ));
-                }
-                if v.is_rejected() {
-                    return Err(KvStoreError::InvalidArgument(
-                        "cannot indirectly finalize a rejected certified block".to_string(),
-                    ));
-                }
+            .map(|mut v| {
                 v.finalized = true;
                 if v.fault_tolerance_value < ft_value {
                     v.fault_tolerance_value = ft_value;
                 }
-                v.validate()
-                    .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-                Ok((key, v))
+                (BlockHashSerde(v.block_hash.clone()), v)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
 
-        new_meta_for_df
-            .validate()
-            .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-
-        let directly_finalized_number = new_meta_for_df.block_number;
-        let mut new_values = Vec::with_capacity(1 + new_metas_for_if.len());
-        new_values.push((BlockHashSerde(directly.clone()), new_meta_for_df));
-        new_values.extend(new_metas_for_if);
-        self.store.put(new_values)?;
-
+        // Add all blocks to finalized set
         let mut dag_state_guard = self.dag_state.write();
         for hash in indirectly {
             dag_state_guard.finalized_block_set.insert(hash);
         }
         dag_state_guard.finalized_block_set.insert(directly.clone());
+
+        // update lastFinalizedBlock only when current one is lower
         if dag_state_guard.last_finalized_block.is_none()
-            || dag_state_guard.last_finalized_block.as_ref().unwrap().1 <= directly_finalized_number
+            || dag_state_guard.last_finalized_block.as_ref().unwrap().1
+                <= new_meta_for_df.block_number
         {
-            dag_state_guard.last_finalized_block = Some((directly, directly_finalized_number));
+            dag_state_guard.last_finalized_block =
+                Some((directly.clone(), new_meta_for_df.block_number));
         }
         Self::prune_finalized_cache_if_needed(&mut dag_state_guard);
+        drop(dag_state_guard);
+
+        // persist new values all at once
+        let mut new_values = Vec::with_capacity(1 + new_metas_for_if.len());
+        new_values.push((BlockHashSerde(directly), new_meta_for_df));
+        new_values.extend(new_metas_for_if);
+        self.store.put(new_values)?;
 
         Ok(())
     }
@@ -295,20 +248,7 @@ impl BlockMetadataStore {
     }
 
     pub fn get(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
-        let metadata = self.store.get_one(&BlockHashSerde(hash.clone()))?;
-        metadata
-            .map(|metadata| {
-                metadata
-                    .validate()
-                    .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-                if metadata.block_hash != *hash {
-                    return Err(KvStoreError::SerializationError(
-                        "block metadata key does not match its certified block hash".to_string(),
-                    ));
-                }
-                Ok(metadata)
-            })
-            .transpose()
+        self.store.get_one(&BlockHashSerde(hash.clone()))
     }
 
     /// Test-only corruption helper: deletes the persisted row while the
@@ -499,20 +439,13 @@ mod tests {
     //! so no filesystem setup or teardown is required.
 
     use models::rust::block_implicits::get_random_block;
-    use models::rust::block_metadata::{
-        AdmissionRejectionReason, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
-        CERTIFIED_ADMISSION_PROTOCOL_VERSION,
-    };
-    use models::rust::bond_generation::BondGeneration;
-    use models::rust::casper::protocol::casper_message::{
-        BlockMessage, FinalizedFloorCommitment, Justification,
-    };
+    use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
     use super::*;
 
     fn block(number: i64, parents: Vec<BlockHash>) -> BlockMessage {
-        let mut block = get_random_block(
+        get_random_block(
             Some(number),
             None,
             None,
@@ -527,51 +460,15 @@ mod tests {
             Some(vec![]),
             None,
             None,
-        );
-        block.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
-        block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
-        block.header.finalized_floor = Some(FinalizedFloorCommitment {
-            floor_hash: block
-                .header
-                .parents_hash_list
-                .first()
-                .cloned()
-                .unwrap_or_else(|| block.block_hash.clone()),
-            floor_post_state_hash: block.body.state.pre_state_hash.clone(),
-            certificate_digest: BlockHash::from(vec![1; 32]),
-            authority_context_digest: BlockHash::from(vec![2; 32]),
-        });
-        block
+        )
     }
 
-    fn meta(block: &BlockMessage) -> BlockMetadata { certified_meta(block, false) }
-
-    fn certified_meta(block: &BlockMessage, rejected: bool) -> BlockMetadata {
-        let commitment = block.header.finalized_floor.as_ref().unwrap();
-        let authority = CertifiedSenderAuthority::new(
-            block,
-            commitment.floor_hash.clone(),
-            commitment.floor_post_state_hash.clone(),
-            commitment.authority_context_digest.clone(),
-            BondGeneration::GENESIS,
-            1,
-        )
-        .unwrap();
-        let outcome = if rejected {
-            CertifiedAdmissionOutcome::rejected(
-                block,
-                &authority,
-                AdmissionRejectionReason::InvalidTransaction,
-            )
-        } else {
-            CertifiedAdmissionOutcome::accepted(block, &authority)
-        }
-        .unwrap();
-        BlockMetadata::from_certified_block(block, None, None, &authority, &outcome).unwrap()
+    fn meta(block: &BlockMessage) -> BlockMetadata {
+        BlockMetadata::from_block(block, false, None, None)
     }
 
     fn store_over(kv: Arc<InMemoryKeyValueStore>) -> BlockMetadataStore {
-        BlockMetadataStore::new(KeyValueTypedStoreImpl::new(kv)).unwrap()
+        BlockMetadataStore::new(KeyValueTypedStoreImpl::new(kv))
     }
 
     #[test]
@@ -628,7 +525,9 @@ mod tests {
     fn invalid_blocks_stay_out_of_the_height_map() {
         let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
         let invalid = block(5, vec![]);
-        store.add(certified_meta(&invalid, true)).unwrap();
+        store
+            .add(BlockMetadata::from_block(&invalid, true, None, None))
+            .unwrap();
 
         assert!(store.contains(&invalid.block_hash));
         assert!(store.height_map().get(&5).is_none());

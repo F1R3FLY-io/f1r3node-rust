@@ -1,9 +1,9 @@
-//! Direct regression for the ucc round-0 erasure (session 1f9bbf8f),
-//! end-to-end through the real pipeline. The reachable geometry preserves
-//! the relevant concurrent state and finality conditions:
+//! Direct reproduction of the ucc round-0 erasure (session 1f9bbf8f),
+//! end-to-end through the real pipeline. The live geometry, faithfully:
 //!
-//! - independent validators carry the contender branches, and the stale
-//!   proposer extends one branch before it learns the other branch;
+//! - one proposer (v2) carries BOTH contender branches (sibling blocks on a
+//!   justification chain — the live shape: the rejecting merge sits on the
+//!   same proposer's spine as the carrier it rejects);
 //! - v2's spine grows tall over a STALE view (its stake cannot witness
 //!   anything alone, so its floor never leaves the genesis era), and the
 //!   rejecting merge R forms at the TOP of that spine — above where the
@@ -82,7 +82,7 @@ fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
+        .map(|rd| rd.sig.clone())
         .collect()
 }
 
@@ -107,7 +107,7 @@ async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<S
         .collect()
 }
 
-use super::staging::{mint_on_expected_snapshot, mint_on_parents, ExpectedParents};
+use super::staging::mint_on_parents;
 
 /// Assert the settled-effect invariant at a probe point: derive the floor
 /// of the view on `node` and require the loser's effect in the FLOOR
@@ -180,8 +180,9 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             .expect("process seed");
     }
 
-    // Independent validators create sibling contenders from S. The stale
-    // proposer extends B before it receives A, so both branches remain tips.
+    // Both conflicting contenders on v2, as SIBLING branches of S on one
+    // justification chain (the live shape). The first sibling has clean
+    // dependencies; the second cites the first.
     let contender_a = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::source_deploy_now_full(
@@ -197,12 +198,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
     let contender_b = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::source_deploy_now_full(
-            r#"for (@v <- @"race") {
-                 @"race"!("b") | @"XB"!(v) |
-                 @"pad1"!(1) | @"pad2"!(2) | @"pad3"!(3) | @"pad4"!(4) |
-                 @"pad5"!(5) | @"pad6"!(6) | @"pad7"!(7) | @"pad8"!(8)
-               }"#
-            .to_string(),
+            r#"for (@v <- @"race") { @"race"!("b") | @"XB"!(v) }"#.to_string(),
             None,
             None,
             Some(
@@ -215,27 +211,27 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         )
         .expect("contender b")
     };
-    let c_a = nodes[0]
+    let c_a = nodes[2]
         .add_block_from_deploys(std::slice::from_ref(&contender_a))
         .await
         .expect("contender-a carrier");
-    let contender_a_id = Bytes::copy_from_slice(c_a.body.deploys[0].deploy_id());
-    let contender_b_id = Bytes::copy_from_slice(
-        nodes[2]
-            .canonical_deploy_id(&contender_b)
-            .expect("contender b identity")
-            .as_bytes(),
-    );
+    // Sibling branch on the same parent S. Contender a leaves v2's pool
+    // first — deploys are retained until terminal, and c_a is outside the
+    // sibling's scope, so selection would otherwise double-include it.
     let c_b = {
+        nodes[2]
+            .deploy_storage
+            .lock()
+            .remove_by_sig(&contender_a.sig)
+            .expect("purge contender a from the pool");
         let mut snapshot = nodes[2].casper.get_snapshot().await.expect("snapshot");
         snapshot.max_block_num = s_block.body.state.block_number;
         snapshot.parents = vec![s_block.clone()];
-        assert!(matches!(
-            nodes[2]
-                .submit_deploy(contender_b.clone())
-                .expect("stage contender b"),
-            rspace_plus_plus::rspace::history::Either::Right(_)
-        ));
+        nodes[2]
+            .deploy_storage
+            .lock()
+            .add(vec![contender_b.clone()])
+            .expect("stage contender b");
         let validator_identity = nodes[2]
             .validator_id_opt
             .clone()
@@ -251,7 +247,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create sibling contender branch");
@@ -275,28 +271,24 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         v2_spine.push(v2_tip.clone());
     }
 
-    nodes[2]
-        .process_block(c_a.clone())
-        .await
-        .expect("deliver contender A after the stale spine");
-
     // R: the stale-based rejecting merge at the top of v2's spine,
     // adjudicating the contest against the pre-settlement base.
     let r_block = mint_on_parents(&mut nodes[2], vec![v2_tip.clone(), c_a.clone()], "R").await;
     let r_rejected = rejected_sigs(&r_block);
-    let a_lost = r_rejected.contains(&contender_a_id);
-    let b_lost = r_rejected.contains(&contender_b_id);
+    let a_lost = r_rejected.contains(&contender_a.sig);
+    let b_lost = r_rejected.contains(&contender_b.sig);
     assert!(
         a_lost ^ b_lost,
         "R must reject exactly one contender (rejected: {})",
         r_rejected.len()
     );
-    assert!(
-        a_lost,
-        "the cheaper independent contender A must be rejected"
-    );
-    let (carrier, carrier_deps, loser_cell): (BlockMessage, Vec<BlockMessage>, &str) =
-        (c_a.clone(), vec![], "XA");
+    let (carrier, carrier_deps, loser_cell): (BlockMessage, Vec<BlockMessage>, &str) = if a_lost {
+        (c_a.clone(), vec![], "XA")
+    } else {
+        // The rejected carrier is the second sibling; its justifications
+        // cite the first, which must travel with it.
+        (c_b.clone(), vec![c_a.clone()], "XB")
+    };
     tracing::info!(
         target: "repro",
         s = %hex::encode(&s_block.block_hash[..6]),
@@ -359,7 +351,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
     );
 
     // THE ERASURE ARRANGEMENT: the record side canonicalizes late. v1
-    // mints across R and the settlement branch, then v2 re-mints citing v1's block —
+    // mints on R (main parent), then v2 re-mints citing v1's block —
     // closing the v1↔v2 clique over R while NOTHING above R is witnessed:
     // R is now the top spine candidate, the exact live moment.
     let mut record_side: Vec<BlockMessage> = vec![c_a.clone(), c_b.clone()];
@@ -375,21 +367,14 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             }
         }
     }
-    let y1 = mint_on_expected_snapshot(
-        &mut nodes[1],
-        ExpectedParents::members(&[&r_block, &p2]),
-        "y1",
-    )
-    .await;
+    let y1 = mint_on_parents(&mut nodes[1], vec![r_block.clone(), p2.clone()], "y1").await;
     nodes[0].process_block(y1.clone()).await.expect("y1 to v0");
     nodes[2].process_block(y1.clone()).await.expect("y1 to v2");
     // y_v2 is a genuine MERGE (y1's branch and the withheld p3): its
     // derivation must choose a base, with R witnessed in v2's view as the
     // top spine candidate — the live erasing selection, now forced to
     // decide a real state.
-    let y_v2 =
-        mint_on_expected_snapshot(&mut nodes[2], ExpectedParents::members(&[&y1, &p3]), "y_v2")
-            .await;
+    let y_v2 = mint_on_parents(&mut nodes[2], vec![y1.clone(), p3.clone()], "y_v2").await;
     for i in [0usize, 1usize] {
         nodes[i]
             .process_block(y_v2.clone())

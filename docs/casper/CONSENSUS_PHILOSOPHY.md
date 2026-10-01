@@ -40,94 +40,49 @@ Four facts about the implementation shape every remedy. Function names are the s
 3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the state of the main parent does not hold the settled content of the floor, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the recorded justifications of the block.
 4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. The mechanism runs only on the proposer side. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
 
-Protocol 6 adds one candidate-specific boundary to fact 1.
-A declared parent must carry the block's signed finalized floor.
-The receiver still does not require equality with its local preferred frontier.
-Frozen justifications remain independent vote and authority inputs.
-
-Protocol 6 also makes restore-horizon handling identity-based. The canonical
-genesis hash can remain in a silent validator's exact slot when a restored node
-does not retain the genesis body. The node retains the slot and frozen stake.
-Any other missing latest-message body remains a dependency error. Node-local
-heldness cannot change a certified context.
-
 ### 4.1 Adversarial surface of the phase-1 mechanism
 
 Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the history that produces those losses. Principle P4 is unchanged because fork choice does not read the count. The count reaches only the three merge adjudication sites.
 
 **Cost of a manufactured loss.** A rejection record needs a conflicting winner on the same key. The rejected deploy does not pay execution cost. An attacker can also acquire rejection history against honest hot-key traffic. PR #216 does not yet define a price for this strategy.
 
-**Delay evidence.** The test `three_validator_neutral_base_applies_prior_loss_priority` shows that one recorded loss wins a later equal conflict. The test does not bound continued lead farming or all valid schedules.
+**Delay evidence.** The test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` shows that a fixed lead is consumed one round at a time. The test does not bound continued lead farming or all valid schedules.
 
 **Window bound.** A merge counts only kept records from the scope and base-lineage window. Records older than `deploy_lifespan` do not count.
 
 **Conflict scope.** Each deploy signature owns its prior-rejection count. A dependency chain uses the maximum count among its members. This rule prevents chain length from multiplying priority.
 
-**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. The production scan returns `BlockNotHeld` when required DAG metadata or a block body is absent.
+**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. A missing required block returns `BlockNotHeld` instead of an empty history. The test `scope_counts_fail_on_missing_visible_block` provides refusal evidence.
 
 **Ratified ordering.** Prior-rejection count strictly outranks cost. Cost and the deterministic content order decide equal-count cases. A fixed cap is not part of phase 1 because saturation can restore deterministic starvation.
 
 **Residual exposure and escalation.** Continued loss farming remains a known risk. Phase 1 does not guarantee termination for all valid schedules. Soak evidence controls later escalation.
 
-### 4.2 User Contract Concurrency gate
+### 4.2 User Contract Concurrency waiver
 
-User Contract Concurrency runs in dedicated amd64 jobs for the Docker and subprocess providers. The integration aggregators require both jobs.
+PR #299 waives User Contract Concurrency as a merge gate. The job is disabled, and the suite does not fail on starvation. The neutral-base integration test supplies the phase-1 system evidence.
 
-The suite checks strict finalization and node agreement for concurrent contracts. A missing terminal result or inconsistent finalized state fails the job.
+A follow-up change must enable the job and fail when contention expires a valid deploy. The acceptance gate must pass three consecutive runs.
 
 ### 4.3 Rejection-history scan budget
 
 The scan must stay `O(B + R)`. `B` is the unique block count, and `R` is the rejection-record count. The implementation must load each unique block body no more than once.
 
-A future benchmark must use a 256-block floor distance and a 512-block visible scope. Its p95 latency and peak memory must stay within 10 percent of `dev`.
+The benchmark uses a floor distance of 256 blocks and a visible scope of 512 blocks. The p95 latency and peak memory must stay within 10 percent of `dev`.
 
-No executable benchmark currently enforces this budget. Treat it as an open release criterion. Node-local timing must never control block validity or consensus admission.
+The benchmark is a release gate. Node-local timing must never control block validity or consensus admission.
 
-### 4.4 Repeat-deploy scan and the carrier-index fast path
+### 4.4 Repeat-deploy scan and the signature-index fast path
 
-The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block.
-Under sustained load, this scan is the residual cost of issue #24. The remedy
-is the [repeat-deploy carrier index](GLOSSARY.md#repeat-deploy-carrier-index).
+The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block. The scan is one measured issue #24 cost. The repeat-deploy signature index is its narrow fast path: a per-signature carrier record over valid, invalid, and approved blocks.
 
-The index records carrier blocks by protocol-tagged deploy identity. A legacy
-identity contains a signature. A protocol-v6 identity contains an envelope
-commitment. Equal payload bytes in these domains remain different keys.
+The fast path preserves the ratified predicate exactly. An index absence inside the expiration window skips the scan for that signature. An index hit routes to window and parent-scope verification, never directly to a verdict. An index read failure or an incomplete index falls back to the unchanged ancestor scan. This refusal rule follows the same principle as the `BlockNotHeld` precedent in section 4.1: unreadable history is no information, never an absence proof.
 
-The fast path preserves the ratified predicate. An in-window absence skips the
-scan for that deploy identity. A hit always routes to exact window and
-parent-scope verification. A fork-only carrier cannot invalidate a legal
-re-inclusion.
+A node-local index may decide a verdict only when it is a provably complete cache of the on-chain data that the ratified predicate reads. Completeness requires crash-safe write ordering (index entries before DAG visibility) and a persisted height watermark: the height since which every insert has recorded carriers on this database. The fast path engages only for scan windows that start at or above the watermark, so no backfill walk exists and no walk-completeness state exists to certify or to forge. The index lives in a dedicated store: it must never share a keyspace with rows that unverified wire data can key (the PR #382 review demonstrated a completeness-marker forgery through an unverified `rejected_deploys` signature landing in a shared table). The verdict-equivalence obligation is testable: index-served verdicts must equal scan-served verdicts for every block, and one test must pin engagement itself (a verdict reachable only through the skip).
 
-An index read failure routes to the same exact scan. Missing metadata or a
-missing block body then fails validation. Unreadable history is no information,
-not proof of absence. This rule follows the `BlockNotHeld` precedent in section
-4.1.
+The index is not a complete issue #24 repair. It removes one cost only: the ancestor scan for a signature that has no carrier in the expiration window. It does not reduce the scan for a signature with an index hit, the merge path, or the replay path. Run 33707959088 used the PR #382 revision and still had six completed finalization failures. Its worst iteration measured 171.5 ms in `repeat_deploy`, 752.6 ms in `merge_call`, and 965 ms in replay. The same iteration left 147 deploys unfinalized at the existing 45-second limit.
 
-Completeness requires crash-safe write ordering. Each insert records carrier
-rows before the block becomes visible in the in-memory DAG. Protocol-v6
-admission atomically commits all applicable carrier, metadata, occurrence, and
-lifecycle rows.
-Legacy admission writes carrier rows before metadata visibility.
-
-A persisted watermark records the first complete index height. The fast path
-engages only when the scan window starts at or above that watermark. Existing
-databases therefore need no backfill or forgeable backfill-completion marker.
-
-Finalized-floor advances prune rows below the expiration cutoff. Strided
-pruning can retain old rows, but it cannot remove rows in the active window.
-
-The persistent carrier index uses a dedicated store. It must not share a
-keyspace with rows keyed by unverified wire data. The exact scan uses a bounded,
-in-process decoded-identity cache. One block-store instance owns the cache, and
-its clones share the cache. That cache does not supply consensus authority.
-
-The verdict-equivalence obligation is testable. Index-served and scan-served
-verdicts must agree for every block. One test must also prove that the absence
-fast path skipped the exact scan.
-
-The formal basis is
-[`DeployIdentitySeparation`](theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement).
-That model prohibits legacy and v6 key aliasing after wire decoding.
+The remaining issue #24 work is the merge cost, the replay cost, and the residual `repeat_deploy` cost on index hits. A later repair must follow measured work. It must not infer fast-path engagement from total `repeat_deploy` time. Carrier-index counters, ancestor-read counts, merge sub-stage measurements, and replay sub-stage measurements must identify the remaining cost first.
 
 ## 5. The remedy ladder for base-bias starvation
 
@@ -141,12 +96,12 @@ The fork-choice tie-break is the stake score, then the ascending block hash. The
 - **Cons:** Liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets two or three attempts inside its 50-block window. The observed failure had exactly two rejections. An even chance per attempt leaves an expiry probability that is too high for a liveness claim.
 - **Verdict:** This option is necessary as the test-evidence component. It is not sufficient alone.
 
-### Option B1 — merged-frontier retry packaging (implemented)
+### Option B1 — merged-frontier retry packaging (recommended next step)
 
-The carrier owner packages a floor-authorized retry when the complete selected parent set covers every valid latest message. Each latest message can have a different covering parent. The candidate therefore uses the existing multi-parent merge without waiting for a serial coalescing block. An unseen contender can still race with the candidate. Loss-aware adjudication handles the adjudicable subset in that case.
+The owner packages a gated retry only when one selected parent covers all valid latest messages (the canonical predicate — see the glossary entry [Merged-frontier retry packaging](./GLOSSARY.md#merged-frontier-retry-packaging), which matches the implemented gate in `block_creator.rs`). The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
 
-- **Pros:** The policy is proposer-local. It needs no validation change, wire change, global lock, or validator serialization. Collective coverage preserves multi-parent concurrency. Parent order and latest-message order do not change the decision.
-- **Cons:** An incomplete selected frontier defers retry before the bounded lease expires. The lease bypasses only frontier readiness. It does not bypass floor authorization, owner custody, lifespan checks, or replay validation.
+- **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
+- **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
 
 ### Option B2 — per-key contender serialization
 
@@ -190,7 +145,7 @@ This option biases fork-choice scoring by starved-retry priority.
 
 ```mermaid
 flowchart TD
-    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\ncollective B1 parent coverage\n+ bounded retry lease]
+    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - proposed:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
     B1 -->|soak or SI evidence\nshows residual expiries| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
     C1 -->|still insufficient| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
     C2 -.-> C3[C3 fork-choice weights:\nrejected - griefing vector]
@@ -224,6 +179,16 @@ The ratified mandatory Correct by Construction scope contains these production a
 The required claims cover deterministic count derivation, unavailable-history refusal, total ordering, non-identity priority, and equal chain stamping.
 
 `interpreter_util.rs` already has the mandatory attribute. PR #299 defers the remaining attributes and formal discharge to PR #311. This deferral does not claim that tests prove Rust conformance.
+
+### 7.2 Correct by Construction scope for issue #24
+
+The issue #24 carrier fast path adds these mandatory production artifacts:
+
+- `casper/src/rust/validate.rs`
+- `block-storage/src/rust/dag/carrier_index.rs`
+- `block-storage/src/rust/dag/block_dag_key_value_storage.rs`
+
+`CLAIM-FINALITY-002` defines their carrier-index obligations. The claim remains pending until the production bridge and soak gate pass.
 
 ### Historical position: the F1R3FLY specialization
 
@@ -260,14 +225,29 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | Date | Decision | Status |
 |---|---|---|
 | 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order | Implemented in PR #299 with unit-test and integration evidence. |
-| 2026-08-20 | Phase 2: B1 merged-frontier packaging with rotating-proposer evidence | Implemented in PR #312. Liveness guarantee pending ratification. |
+| 2026-08-20 | Phase 2: B1 merged-frontier packaging with rotating-proposer evidence | Implemented in PR #312. Liveness guarantee pending ratification. One-parent coverage preserved on 2026-09-16 under [D-07](./design/decision-ledger/07-deploy-recovery-custody.md). Collective coverage deferred to a harness PR. |
 | 2026-08-22 | Prior rejection strictly outranks cost, and cost decides equal-count cases | Ratified for phase 1. |
 | 2026-08-22 | Each signature owns its count, and dependency-chain priority uses the maximum member count | Ratified for phase 1. |
 | 2026-08-22 | Rejection-option selection ranks options by their highest member count first, then by the count total, then by cost. A coalition of low-count chains cannot outweigh one chain with a higher count. | Implemented in PR #299 after multi-agent review. Pending ratification. |
-| 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
+| 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. The enforced gate in dedicated jobs is that follow-up ([D-11](./design/decision-ledger/11-cbc-fv-governance.md) sub-decision 11.10, 2026-09-16). |
 | 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
-| 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
-| 2026-09-01 | The repeat-deploy carrier index is a consensus-complete cache over valid, invalid, and approved blocks. Keys retain the protocol-tagged deploy identity. An in-window absence skips the ancestor scan. A hit or read failure routes to the exact scan. | Proposed in the issue #24 fast-path PR. Pending ratification. |
+| 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Benchmark pending. Gate requirement unchanged ([D-11](./design/decision-ledger/11-cbc-fv-governance.md) sub-decision 11.11, 2026-09-16). |
+| 2026-09-01 | The repeat-deploy signature index is a consensus-complete carrier cache over valid, invalid, and approved blocks. An in-window absence skips the ancestor scan, a hit requires scope verification, and a read failure falls back to the scan. | Implemented as an issue #24 fast path. Ratified on 2026-09-16 under [D-10](./design/decision-ledger/10-repeat-deploy-carrier-index.md) as a narrow fast path with its watermark, retention, and read-failure fallback. Protocol 7 keys it by a domain-separated deploy identity. Final issue resolution remains pending. |
+| 2026-09-03 | `validate.rs`, `carrier_index.rs`, and `block_dag_key_value_storage.rs` join the mandatory issue #24 CbC scope. | Ratified for `CLAIM-FINALITY-002` by the PR #387 approval and merge on 2026-09-06. Claim discharge remains pending until the differential and soak gates pass ([D-10](./design/decision-ledger/10-repeat-deploy-carrier-index.md)). |
+| 2026-09-05 | D-01: Protocol-version authority and activation. | Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-01](./design/decision-ledger/01-protocol-version-authority.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). Protocol 7 uses one authority chain and activates through a fresh genesis after FIP approval. Accounting authority version 8 is independent. |
+| 2026-09-05 | D-02: Certified finalized floor and authority committee. | Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-02](./design/decision-ledger/02-certified-floor-authority.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The `dev` committee and stake provenance stay. No signed floors, sidecars, or certificate retrieval. Ground truth 1 and R-COMM unchanged. |
+| 2026-09-05 | D-03: Fork choice over a certified context. | Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-03](./design/decision-ledger/03-fork-choice-certified-context.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The `dev` fork choice stays, including R-FILTER, the depth filter, and truncation. The finalized floor bounds the LCA walk. Differential tests must show unchanged head selection. |
+| 2026-09-05 | D-04: State-preserving finality and effect provenance, including threshold strictness. | Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-04](./design/decision-ledger/04-state-preserving-finality.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The `dev` containment gate, budgets, and divergence telemetry stay. The finality threshold is inclusive. No second certificate. |
+| 2026-09-05 | D-05: Durable finalization publication and its three consensus-visible invariants. | Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-05](./design/decision-ledger/05-finalization-publication.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). Five invariants ratified. The ledger architecture stays optional. Single-flight finalization stays the default. |
+| 2026-09-05 | D-06: Heartbeat intents and stale-LFB recovery leadership. | Ratified with deferrals 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-06](./design/decision-ledger/06-heartbeat-recovery-leadership.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). Typed intents, coalescing, permit revalidation, and stale-work rejection ratified. All-eligible recovery and frontier follow stay. Rotation, frontier-follow removal, and clock replacement deferred to a harness PR. |
+| 2026-09-05 | D-07: Exact-occurrence recovery, carrier-owner custody, and collective-coverage retry packaging. | Ratified with a deferred experiment 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-07](./design/decision-ledger/07-deploy-recovery-custody.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The `dev` recovery rules and one-parent coverage stay. Collective coverage and the other PR #216 recovery policies deferred to a harness PR. |
+| 2026-09-05 | D-08: Additive merge semantics, causal rejection closure, and locally replayed mergeable evidence. | Ratified with an activation condition 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-08](./design/decision-ledger/08-merge-algebra-and-rejection-records.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). Exact effect identity, causal rejection closure, admission-effect alignment, checked arithmetic, and local merge evidence ratified. Additive composition at protocol 7 after FIP approval, fresh genesis, differential tests, compatibility analysis, and conservation evidence. |
+| 2026-09-05 | D-09: Slash authorization from canonical evidence, validator lifetime identity, and the neglect penalty. | Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-09](./design/decision-ledger/09-slashing-authorization.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The `dev` truth table, recovery loop, activation-epoch protection, and neglect policy stay. Canonical evidence stays supplementary. The bisimilarity anchor stays. |
+| 2026-09-05 | D-10: Carrier-index key, models, and claim text. | Ratified with conditions 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-10](./design/decision-ledger/10-repeat-deploy-carrier-index.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The index, watermark, retention, fallback, and narrow role stay. Protocol 7 uses a domain-separated deploy identity. `CLAIM-FINALITY-002` stays pending until its gates pass. |
+| 2026-09-05 | D-11: CbC and FV governance after the cost-accounting work. | Ratified 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-11](./design/decision-ledger/11-cbc-fv-governance.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). The `dev` governance stays. Tiers of 2,000, 10,000, and 100,000 cases. Bisimilarity stays the slashing anchor. |
+| 2026-09-05 | D-12: Removal of the deploy cost fields `phloLimit` and `phloPrice` and their replacements. | Rejected 2026-09-16 by jeffrey-l-turner, with dylon and spreston8 ([D-12](./design/decision-ledger/12-deploy-cost-limits.md), [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933)). Protocol 7 requires both fields. Minimum-price validation, tags, and APIs stay. A token validity layer needs a FIP. Multi-wallet funding needs a separate normative mapping. |
+
+The 2026-09-05 rows compare `dev` with PR #216. The [decision ledger](./design/decision-ledger/README.md) holds each position, the options, the unification proposal, and the decision. Each row is one decision, so each row flips alone. A ratification meeting on 2026-09-16 decided every row, and each row links the meeting record as its proof. The specification edits that follow a decision are a separate change.
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).

@@ -53,7 +53,6 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),
-        accounting_context: node.casper.accounting_context.clone(),
         estimator: node.casper.estimator.clone(),
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
@@ -64,16 +63,9 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
-        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalization_schedule: std::sync::Arc::new(
-            casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
-        ),
-        certificate_verification_schedule: std::sync::Arc::new(
-            casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
-        ),
-        finalizer_task_in_progress: node.casper.finalizer_task_in_progress.clone(),
-        finalizer_task_queued: node.casper.finalizer_task_queued.clone(),
+        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -227,24 +219,19 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         produce_deploys.push(deploy);
     }
 
-    let b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[produce_deploys[0].clone()])
+    let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[produce_deploys[0].clone()])
         .await
         .unwrap();
 
-    let b2 = TestNode::propagate_block_to_one(&mut nodes, 1, 0, &[produce_deploys[1].clone()])
+    let _b2 = TestNode::propagate_block_to_one(&mut nodes, 1, 0, &[produce_deploys[1].clone()])
         .await
         .unwrap();
 
-    let b3 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[2].clone()])
+    let _b3 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[2].clone()])
         .await
         .unwrap();
 
     let b4 = TestNode::propagate_block_to_one(&mut nodes, 1, 0, &[produce_deploys[3].clone()])
-        .await
-        .unwrap();
-
-    nodes[0]
-        .settle_finalization(std::time::Duration::from_secs(30))
         .await
         .unwrap();
 
@@ -262,31 +249,13 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         .await
         .unwrap();
 
-    nodes[0]
-        .settle_finalization(std::time::Duration::from_secs(30))
-        .await
-        .unwrap();
-
     let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
-    let actual_name = [
-        ("b1", &b1),
-        ("b2", &b2),
-        ("b3", &b3),
-        ("b4", &b4),
-        ("b5", &b5),
-        ("b6", &b6),
-        ("b7", &b7),
-    ]
-    .into_iter()
-    .find_map(|(name, block)| (block.block_hash == last_finalized_block.block_hash).then_some(name))
-    .unwrap_or("unknown");
 
     let b4_block_hash = proto_util::hash_string(&b4);
     assert_eq!(
         proto_util::hash_string(&last_finalized_block),
         b4_block_hash,
-        "Expected last finalized block to be b4, got {actual_name} at height {}",
-        last_finalized_block.body.state.block_number
+        "Expected last finalized block to be b4"
     );
 
     let engine_cell = create_engine_cell(&nodes[0]).await;

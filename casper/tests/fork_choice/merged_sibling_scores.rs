@@ -9,11 +9,12 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
+use crate::helper::block_generator::{create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
 /// The specimen shape, reduced to its scoring core:
@@ -90,6 +91,7 @@ async fn merged_siblings_must_not_score_equal() {
                 None,
                 None,
                 None,
+                None,
             )
         };
 
@@ -143,7 +145,7 @@ async fn merged_siblings_must_not_score_equal() {
             &mut block_dag_storage,
         );
 
-        let dag = block_dag_storage
+        let mut dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let latest: HashMap<Validator, BlockHash> = HashMap::from([
@@ -152,7 +154,14 @@ async fn merged_siblings_must_not_score_equal() {
             (v3.clone(), m3.block_hash.clone()),
         ]);
 
-        let fork_choice = certified_fork_choice(&Estimator::apply(), &dag, &genesis, latest)
+        let fork_choice = Estimator::apply()
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest,
+                i32::MAX,
+                None,
+            )
             .await
             .expect("tips");
 

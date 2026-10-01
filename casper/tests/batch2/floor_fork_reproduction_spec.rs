@@ -4,11 +4,16 @@
 //! - two sibling blocks over the SAME frontier, each carrying one of two
 //!   conflicting contender deploys (the live `7cfec55673`/`2c479c6271` at
 //!   #52, each carrying one round-1 RMW add);
-//! - each owner extends its private sibling before sibling delivery;
-//! - a third validator receives both siblings and merges them in block Y;
-//! - each owner receives Y, merges Y into its private branch, and adds one
-//!   final witness block while the opposite branch remains withheld;
-//! - all blocks then cross-deliver, and a join uses both maximal branch tips.
+//! - a third validator MERGES both siblings (the live `ec591540df` — its
+//!   merge adjudicates the contest and rejects one chain with a record);
+//! - each contender's owner extends its OWN sibling's branch, citing the
+//!   merger — so each branch derivation sees its sibling backed by two of
+//!   three validators and freezes it as the finalized floor (the live
+//!   divergent freeze: 65 derivations landed on one sibling, 21 on the
+//!   other, each a legitimate in-view advancement);
+//! - a join block then merges the two branches. Its parents descend BOTH
+//!   siblings, and each inherited floor owes the other a contender sig it
+//!   does not contain — neither containment nor a pure-cut re-merge holds.
 //!
 //! Live outcome: every propose and the LFB derivation errored
 //! ("incompatible finalized fork"), block production halted at the join on
@@ -30,7 +35,6 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -65,7 +69,7 @@ fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
+        .map(|rd| rd.sig.clone())
         .collect()
 }
 
@@ -90,18 +94,7 @@ async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<S
         .collect()
 }
 
-async fn deliver_valid(node: &mut TestNode, block: &BlockMessage, label: &str) {
-    let status = node
-        .process_block(block.clone())
-        .await
-        .unwrap_or_else(|error| panic!("deliver[{label}] failed: {error}"));
-    assert!(
-        matches!(status, Either::Right(_)),
-        "deliver[{label}] rejected a protocol-valid block: {status:?}"
-    );
-}
-
-use super::staging::{mint_on_expected_snapshot, ExpectedParents};
+use super::staging::mint_on_parents;
 
 #[tokio::test]
 async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
@@ -126,7 +119,10 @@ async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
         .await
         .expect("seed block");
     for i in [0usize, 1usize] {
-        deliver_valid(&mut nodes[i], &seed_block, "seed").await;
+        nodes[i]
+            .process_block(seed_block.clone())
+            .await
+            .expect("process seed");
     }
 
     let contender_1 = {
@@ -172,45 +168,57 @@ async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
         s1.header.parents_hash_list, s2.header.parents_hash_list,
         "staging: the siblings must be minted over the SAME frontier"
     );
-
-    let a1 = mint_on_expected_snapshot(&mut nodes[0], ExpectedParents::ordered(&[&s1]), "A1").await;
-    let a2 = mint_on_expected_snapshot(&mut nodes[1], ExpectedParents::ordered(&[&s2]), "A2").await;
-
+    nodes[0].process_block(s2.clone()).await.expect("S2 to v1");
+    nodes[1].process_block(s1.clone()).await.expect("S1 to v2");
     for b in [&s1, &s2] {
-        deliver_valid(&mut nodes[2], b, "siblings to v3").await;
+        nodes[2]
+            .process_block((*b).clone())
+            .await
+            .expect("siblings to v3");
     }
 
-    let y =
-        mint_on_expected_snapshot(&mut nodes[2], ExpectedParents::members(&[&s1, &s2]), "Y").await;
+    // Y: the third validator merges both siblings (the live ec591540df) —
+    // its merge adjudicates the contest, rejecting exactly one chain.
+    let y = mint_on_parents(&mut nodes[2], vec![s1.clone(), s2.clone()], "Y").await;
     let y_rejected = rejected_sigs(&y);
-    let contender_1_id = Bytes::copy_from_slice(s1.body.deploys[0].deploy_id());
-    let contender_2_id = Bytes::copy_from_slice(s2.body.deploys[0].deploy_id());
-    let one_lost = y_rejected.contains(&contender_1_id) ^ y_rejected.contains(&contender_2_id);
+    let one_lost = y_rejected.contains(&contender_1.sig) ^ y_rejected.contains(&contender_2.sig);
     assert!(
         one_lost,
         "staging: Y's merge must reject exactly one contender chain \
          (rejected {})",
         y_rejected.len()
     );
-    deliver_valid(&mut nodes[0], &s2, "S2 to v1").await;
-    deliver_valid(&mut nodes[0], &y, "Y to v1").await;
-    deliver_valid(&mut nodes[1], &s1, "S1 to v2").await;
-    deliver_valid(&mut nodes[1], &y, "Y to v2").await;
-
-    let b1 =
-        mint_on_expected_snapshot(&mut nodes[0], ExpectedParents::members(&[&a1, &y]), "B1").await;
-    let b2 =
-        mint_on_expected_snapshot(&mut nodes[1], ExpectedParents::members(&[&a2, &y]), "B2").await;
-    let c1 = mint_on_expected_snapshot(&mut nodes[0], ExpectedParents::ordered(&[&b1]), "C1").await;
-    let c2 = mint_on_expected_snapshot(&mut nodes[1], ExpectedParents::ordered(&[&b2]), "C2").await;
-
-    for block in [&a1, &b1, &c1] {
-        deliver_valid(&mut nodes[1], block, "branch 1 to v2").await;
-        deliver_valid(&mut nodes[2], block, "branch 1 to v3").await;
+    for i in [0usize, 1usize] {
+        nodes[i]
+            .process_block(y.clone())
+            .await
+            .expect("Y delivered");
     }
-    for block in [&a2, &b2, &c2] {
-        deliver_valid(&mut nodes[0], block, "branch 2 to v1").await;
-        deliver_valid(&mut nodes[2], block, "branch 2 to v3").await;
+
+    // Branch extensions, in DISJOINT views (the live ingredient): each
+    // owner extends its OWN sibling citing Y, then immediately extends
+    // again — the second block's derivation runs over a snapshot whose
+    // latest messages already cite Y, closing the owner+v3 witnessing
+    // clique over the owner's sibling ONLY (the other owner's chain is
+    // still seed-era in this view, so the rival sibling has no clique).
+    // B1/B2 also descend BOTH siblings (via Y) — the live #53/#54 shape,
+    // where every parent of the join carries a fork-height floor and
+    // descends both branches. Nothing crosses between v1 and v2 until
+    // both branch floors are frozen.
+    let a1 = mint_on_parents(&mut nodes[0], vec![s1.clone()], "A1").await;
+    let b1 = mint_on_parents(&mut nodes[0], vec![a1.clone(), y.clone()], "B1").await;
+    let a2 = mint_on_parents(&mut nodes[1], vec![s2.clone()], "A2").await;
+    let b2 = mint_on_parents(&mut nodes[1], vec![a2.clone(), y.clone()], "B2").await;
+    for (blocks, skip) in [([&a1, &b1], 0usize), ([&a2, &b2], 1usize)] {
+        for b in blocks {
+            for (i, node) in nodes.iter_mut().enumerate() {
+                if i != skip {
+                    node.process_block((*b).clone())
+                        .await
+                        .expect("branch extension delivered");
+                }
+            }
+        }
     }
 
     // Diagnostic: record what each branch froze (the live run froze the two
@@ -218,7 +226,7 @@ async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
     {
         let dag = nodes[2].casper.block_dag().await.expect("dag");
         let thr = FtThreshold::from_f32_lossy(0.1);
-        for (label, hash) in [("C1", &c1.block_hash), ("C2", &c2.block_hash)] {
+        for (label, hash) in [("B1", &b1.block_hash), ("B2", &b2.block_hash)] {
             let frozen = floor_of_block(&dag, &nodes[2].block_store, hash, thr)
                 .await
                 .expect("floor_of_block");
@@ -232,11 +240,18 @@ async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
         }
     }
 
-    let join =
-        mint_on_expected_snapshot(&mut nodes[2], ExpectedParents::members(&[&c1, &c2]), "JOIN")
-            .await;
+    // THE JOIN — the live halt moment. On the certification-plural oracle
+    // both siblings are inherited fork-height floors here, each owing the
+    // other a contender sig, and create errors "incompatible finalized
+    // fork" (mint_on_parents panics with it). The shard must instead
+    // adjudicate: one sibling's certification wins, the join mints, and
+    // every node accepts it.
+    let join = mint_on_parents(&mut nodes[2], vec![b1.clone(), b2.clone()], "JOIN").await;
     for i in [0usize, 1usize] {
-        deliver_valid(&mut nodes[i], &join, "join").await;
+        nodes[i]
+            .process_block(join.clone())
+            .await
+            .expect("the adjudicated join must validate on every node");
     }
 
     // Liveness: mutual rounds must advance the floor PAST the sibling
@@ -252,15 +267,12 @@ async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
     let mut tip = join.clone();
     for round in 0..8i32 {
         let minter = (round % 3) as usize;
-        let next = mint_on_expected_snapshot(
-            &mut nodes[minter],
-            ExpectedParents::ordered(&[&tip]),
-            "liveness",
-        )
-        .await;
+        let next = mint_on_parents(&mut nodes[minter], vec![tip.clone()], "liveness").await;
         for (i, node) in nodes.iter_mut().enumerate() {
             if i != minter {
-                deliver_valid(node, &next, "liveness round delivery").await;
+                node.process_block(next.clone())
+                    .await
+                    .expect("liveness round delivery");
             }
         }
         tip = next;

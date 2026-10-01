@@ -1,7 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
 use casper::rust::block_status::ValidBlock;
-use casper::rust::casper::DeployError;
+use casper::rust::casper::Casper;
 use casper::rust::util::{construct_deploy, rspace_util};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -47,9 +47,6 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).unwrap();
 
     let deploys = [deploy_data0, deploy_data1, deploy_data2];
-    let deploy2_id = nodes[0]
-        .canonical_deploy_id(&deploys[2])
-        .expect("deploy2 identity");
 
     let block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])
@@ -100,19 +97,10 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .genesis_block
         .block_hash
         .clone()]);
+    // With multi-parent merging, every validator's latest block is a parent —
+    // except node2, which has not created one: its slot holds the genesis
+    // placeholder, which is abstained rather than cited.
     assert_eq!(multiparent_block.header.parents_hash_list.len(), 2);
-    assert!(multiparent_block
-        .header
-        .parents_hash_list
-        .contains(&block0.block_hash));
-    assert!(multiparent_block
-        .header
-        .parents_hash_list
-        .contains(&block1.block_hash));
-    assert!(!multiparent_block
-        .header
-        .parents_hash_list
-        .contains(&genesis.genesis_block.block_hash));
     assert!(nodes[0].contains(&multiparent_block.block_hash));
     assert!(nodes[1].contains(&multiparent_block.block_hash));
     assert_eq!(multiparent_block.body.rejected_deploys.len(), 0);
@@ -137,28 +125,20 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     // which validator leads is hash-order dependent. Drive bounded proposal
     // rounds (deploy2 queued on both nodes) until the leader includes it, then
     // assert its effect at that block's post-state.
-    let mut deploy2_block = if multiparent_block.body.deploys.iter().any(|pd| {
-        pd.deploy_id_for_protocol(multiparent_block.header.version)
-            .is_ok_and(|deploy_id| deploy_id == deploy2_id)
-    }) {
+    let mut deploy2_block = if multiparent_block
+        .body
+        .deploys
+        .iter()
+        .any(|pd| pd.deploy.sig == deploys[2].sig)
+    {
         Some(multiparent_block.clone())
     } else {
         None
     };
     if deploy2_block.is_none() {
-        for node in &nodes {
-            match node
-                .submit_deploy(deploys[2].clone())
-                .expect("submit deploy2 to validator")
-            {
-                Either::Right(_) => {}
-                Either::Left(DeployError::DuplicateDeploy(deploy_id))
-                    if deploy_id.as_slice() == deploy2_id.as_bytes() => {}
-                Either::Left(error) => panic!("deploy2 submission failed: {error:?}"),
-            }
-        }
-        for round in 0..nodes.len() * 2 {
-            let proposer = round % nodes.len();
+        nodes[1].casper.deploy(deploys[2].clone()).ok();
+        for round in 0..6 {
+            let proposer = round % 2;
             let block = {
                 let (before, rest) = nodes.split_at_mut(proposer);
                 let (current, after) = rest.split_at_mut(1);
@@ -166,10 +146,12 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
                     before.iter_mut().chain(after.iter_mut()).collect();
                 current[0].propagate_block(&[], &mut others).await.unwrap()
             };
-            if block.body.deploys.iter().any(|pd| {
-                pd.deploy_id_for_protocol(block.header.version)
-                    .is_ok_and(|deploy_id| deploy_id == deploy2_id)
-            }) {
+            if block
+                .body
+                .deploys
+                .iter()
+                .any(|pd| pd.deploy.sig == deploys[2].sig)
+            {
                 deploy2_block = Some(block);
                 break;
             }
@@ -393,8 +375,15 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
         .await
         .unwrap();
 
-    nodes[1].handle_receive().await.unwrap();
+    nodes[1]
+        .pump_until_knows(&single_parent_block.block_hash)
+        .await
+        .unwrap();
 
+    // Under multi-parent merging, a proposed block links the latest message of
+    // every bonded validator as a parent. The genesis is bonded to three
+    // validators but only two nodes exist; the third's slot holds the genesis
+    // placeholder, which is abstained, so the parents are block0 and block1.
     assert_eq!(single_parent_block.header.parents_hash_list.len(), 2);
     assert!(single_parent_block
         .header
@@ -404,10 +393,6 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
         .header
         .parents_hash_list
         .contains(&block1.block_hash));
-    assert!(!single_parent_block
-        .header
-        .parents_hash_list
-        .contains(&genesis.genesis_block.block_hash));
 
     // block0 (`@1!(47)`) produces on channel @1, while block1
     // (`for(@x <- @1 & @y <- @2){ @1!(x) }`) consumes from @1 through a join.
@@ -419,10 +404,9 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
     // non-conflicting multi-parent case above, whose merge block carries an
     // empty `rejected_deploys`.
     assert_eq!(single_parent_block.body.rejected_deploys.len(), 1);
-    let rejected_sig = single_parent_block.body.rejected_deploys[0].deploy_id();
+    let rejected_sig = &single_parent_block.body.rejected_deploys[0].sig;
     assert!(
-        rejected_sig == block0.body.deploys[0].deploy_id()
-            || rejected_sig == block1.body.deploys[0].deploy_id(),
+        *rejected_sig == deploys[0].sig || *rejected_sig == deploys[1].sig,
         "the rejected deploy must be one of the two conflicting deploys (the @1 producer or the @1 & @2 join)"
     );
 

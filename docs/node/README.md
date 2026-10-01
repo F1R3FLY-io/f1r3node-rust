@@ -1,4 +1,4 @@
-> Last updated: 2026-08-21
+> Last updated: 2026-04-21
 
 # Crate: node (Orchestrator/Entry Point)
 
@@ -13,17 +13,16 @@ main()
   -> Options::try_parse() (clap CLI)
   -> IF "run" subcommand:
        configuration::builder::build()  (HOCON + CLI merge)
-       create Zipkin exporter layer when metrics.zipkin is enabled
-       init_logging_with_layers(&cfg.logging, Some(&data_dir), layers)
+       init_logging(&cfg.logging, Some(&data_dir))
        check_host(), check_ports(), load_private_key_from_file()
-       initialize_diagnostics()  (Prometheus, InfluxDB, Sigar)
+       initialize_diagnostics()  (Prometheus, InfluxDB, Zipkin, Sigar)
        node_runtime::start()
          -> NodeIdentifier from TLS certificate
          -> setup_node_program()
               -> Initialize LMDB stores (block, DAG, casper buffer, deploy, eval, play, replay, reporting)
               -> Create RuntimeManager (play/replay) with history
               -> Create Estimator, ValidatorIdentity
-              -> Create count-and-byte-bounded block processor queue
+              -> Create block processor queue (mpsc::unbounded_channel)
               -> Create proposer queue (oneshot channels)
               -> Create API services and server instances
          -> Spawn concurrent tasks via JoinSet:
@@ -75,16 +74,15 @@ The following flags override HOCON configuration at startup. CLI flags always ta
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
-| `--heartbeat-enabled` | `casper.heartbeat.enabled = true` | Enable heartbeat block proposing for liveness |
-| `--heartbeat-disabled` | `casper.heartbeat.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
-| `--heartbeat-check-interval` | `casper.heartbeat.check-interval` | How often the heartbeat loop wakes; after the initial stall timeout, this is also the recovery-round interval |
-| `--heartbeat-max-lfb-age` | `casper.heartbeat.max-lfb-age` | Input to the one-time observed-LFB stall timeout, which is `max(max_lfb_age, check_interval)` |
-| `--heartbeat-self-propose-cooldown` | `casper.heartbeat.self-propose-cooldown` | Minimum interval between this validator's heartbeat proposals |
-| `--heartbeat-stale-recovery-min-interval` | `casper.heartbeat.stale-recovery-min-interval` | Minimum age of this validator's latest proposal before the pending-deploy recovery backstop may fire |
-| `--heartbeat-deploy-finalization-grace` | `casper.heartbeat.deploy-finalization-grace` | Grace window opened when pending deploys or a new user-deploy parent are observed; relaxes the pending-deploy lag cap |
-| `--heartbeat-advanced-pending-deploy-max-lag` | `casper.heartbeat.advanced.pending-deploy-max-lag` | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
-| `--heartbeat-advanced-deploy-recovery-max-lag` | `casper.heartbeat.advanced.deploy-recovery-max-lag` | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window |
-| `--heartbeat-advanced-empty-frontier-max-unfinalized-blocks` | `casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | EXPERIMENTAL. Exact unfinalized-DAG cap for idle empty recovery while this validator is already ahead |
+| `--heartbeat-enabled` | `casper.heartbeat_conf.enabled = true` | Enable heartbeat block proposing for liveness |
+| `--heartbeat-disabled` | `casper.heartbeat_conf.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
+| `--heartbeat-check-interval` | `casper.heartbeat_conf.check_interval` | How often the heartbeat loop wakes to evaluate its decision tree |
+| `--heartbeat-max-lfb-age` | `casper.heartbeat_conf.max_lfb_age` | LFB age threshold above which stale-LFB recovery may fire |
+| `--heartbeat-stale-recovery-min-interval` | `casper.heartbeat_conf.stale_recovery_min_interval` | Minimum LFB/frontier age before stale-recovery, leader-recovery, and pending-deploy backstop are allowed to fire |
+| `--heartbeat-deploy-finalization-grace` | `casper.heartbeat_conf.deploy_finalization_grace` | Grace window opened when pending deploys land; relaxes lag caps and bypasses self-propose-cooldown |
+| `--heartbeat-advanced-frontier-chase-max-lag` | `casper.heartbeat_conf.advanced.frontier_chase_max_lag` | EXPERIMENTAL. Max lag tolerated for frontier-chase proposals while ahead of LFB |
+| `--heartbeat-advanced-pending-deploy-max-lag` | `casper.heartbeat_conf.advanced.pending_deploy_max_lag` | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
+| `--heartbeat-advanced-deploy-recovery-max-lag` | `casper.heartbeat_conf.advanced.deploy_recovery_max_lag` | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window |
 | `--native-token-name` | `casper.genesis_block_data.native_token_name` | Native token display name (genesis-locked) |
 | `--native-token-symbol` | `casper.genesis_block_data.native_token_symbol` | Native token ticker symbol (genesis-locked) |
 | `--native-token-decimals` | `casper.genesis_block_data.native_token_decimals` | Native token decimal places, 0-18 (genesis-locked) |
@@ -97,7 +95,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 
 - `--ceremony-master-mode` unconditionally sets `casper.genesis_ceremony.ceremony_master_mode = true`.
 - `--disable-mergeable-channel-gc` / `--enable-mergeable-channel-gc` override `casper.enable_mergeable_channel_gc`. The disable flag is checked first; only if it is absent does the enable flag apply.
-- `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat.enabled`.
+- `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat_conf.enabled`.
 
 ## gRPC Services
 
@@ -147,6 +145,16 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
 - `epochLength` — blocks per epoch, from genesis configuration
+
+### `GET /api/ready`
+
+Readiness probe for orchestration.
+
+- Returns HTTP 200 `{"ready": true}` once Casper is Running and the node can serve deploys.
+- Returns HTTP 503 `{"ready": false}` while Casper is still initializing.
+- The container `HEALTHCHECK` and `docker/standalone.yml` use this endpoint, so `docker compose up --wait` and `depends_on: condition: service_healthy` block until the node is deploy-ready.
+- A node running the genesis ceremony reports `unhealthy` for the whole window (minutes to hours); raise `--wait-timeout` / probe `failureThreshold` accordingly.
+- The container `HEALTHCHECK` probes only the HTTP API. It no longer probes the gRPC API (port 40401) directly, so a failure isolated to the gRPC server does not fail the health check. `/api/ready` reflects Casper engine state shared by both servers, so this is expected to cover the common failure modes.
 
 ## View Parameters
 
@@ -207,8 +215,7 @@ Current epoch rewards from the PoS contract. Readonly only.
 
 ### `POST /api/estimate-cost`
 
-Estimate committed-COMM plus canonical RSpace byte cost without REV settlement.
-The estimate uses the target block protocol. This endpoint is read-only.
+Estimate phlogiston cost of Rholang code. Takes `{"term": "..."}`, returns `{"cost": 39, ...}`. Readonly only.
 
 ### `GET /api/validator/{pubkey}`
 
@@ -291,7 +298,7 @@ Events published during startup are buffered and replayed to clients that connec
 - Config validation failures (empty token name, invalid decimals)
 - Genesis ceremony failures (required signatures not met)
 - Token metadata verification mismatch (joiner config disagrees with on-chain state)
-- Mergeable-channel cache replay failures at bootstrap: a block missing from the block store, a replay error, or a post-state hash mismatch while repopulating the mergeable-channel cache. The cache is locally replay-derived because the synchronized block does not authenticate a peer's auxiliary merge vector. Legacy response payloads are ignored. A corrupt or partial block store therefore **fails startup loudly** rather than continuing with a silently incomplete cache; a node reaches Running only after exact local reconstruction succeeds.
+- Mergeable-channel cache replay failures at bootstrap: a block missing from the block store, a replay error, or a post-state hash mismatch while repopulating the mergeable-channel cache. A corrupt or partial block store now **fails startup loudly** rather than logging a warning and continuing with a silently incomplete cache — an incomplete cache is a consensus hazard once the node reaches the Running state, so a store that previously appeared to bootstrap successfully can now fail here.
 - Any runtime panic or unrecoverable error
 
 The error chain propagates cleanly: `verify_token_metadata_matches_config → Err(CasperError) → ? in casper_launch.launch() → ? in NodeRuntime::main() → handle_unrecoverable_errors → process::exit(1)`. Destructors fire in order; no mid-async process::exit calls.
@@ -300,7 +307,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 `bind_tcp_listener_with_retry()` in `servers_instances.rs` handles `AddrInUse` resilience for HTTP/Admin servers: 60 attempts with 500ms delay between retries.
 
-`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, min-phlo-price, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
+`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads; `min-phlo-price` is the exception, read from the running casper's chain-adopted shard conf per request so `/api/status` advertises the floor admission actually enforces. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
 
 ## Transfer Extraction
 
@@ -354,48 +361,22 @@ Both gRPC and REST APIs retry `find_deploy` on `DeployNotFoundError`:
 
 These values are hardcoded (previously configurable via `F1R3_*` env vars, removed in v0.4.10).
 
-Protocol-v6 lookup reads the constant-size canonical occurrence summary and
-then its single indexed block. Exact archived occurrence history is not scanned
-by this hot endpoint. A missing or mismatched canonical block fails closed as a
-storage-consistency error. Only an unindexed pre-v6 identifier uses the bounded
-recent-block compatibility scan.
-
 ## Runtime Instances
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
 
-Inbound block admission is bounded independently by message count and encoded
-bytes. The byte ceiling is the configured
-`protocol-server.grpc-max-recv-stream-message-size`, so every block the
-transport can accept can also be admitted when the budget is empty. A
-reservation covers both queue residence and in-flight replay. Temporary count
-or byte pressure releases the decoded payload and reopens an existing
-retriever request without evicting other unresolved work. A previously
-untracked block arriving while the finite request map is full can still enter
-the independently byte-bounded queue. If count or byte pressure prevents that
-admission, its payload is released and its hash becomes eligible again on a
-later announcement or dependency scan. A queue-coordinator mutex serializes
-startup and replay-completion dependency-buffer scans; the scanner checks
-deterministically ordered hashes while materializing only one full block at a
-time, then moves selected blocks into the byte-owning queue without cloning.
-Observe
-`block-processing.queue.pending`, `block-processing.admission.bytes`,
-`block-processing.admission.bytes-limit`, and
-`block-processing.admission.deferred.total{reason=...}` together with
-`block.requests.capacity-deferred.total`.
+### Block-processing bounds (compiled constants)
 
-The preceding P2P layer has its own finite byte/item, HTTP/2, handler, peer-map,
-and completion boundaries. It reports stream success only after a remote ACK,
-keeps accepted work alive across concurrent cleanup, and never contributes
-transport-local ordering or metadata to consensus state. See
-[P2P Transport Resource and Completion Semantics](transport-resource-lifecycle.md).
+The former `F1R3_*` block-processing env vars are gone — every bound is a
+named constant with a single definition. Current values:
 
-### Block-processing tuning env vars
-
-| Env var | Default | Purpose |
-|---------|--------:|---------|
-| `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `1` | Linux/glibc only: ask the allocator to return whole free replay and RSpace arena pages to the operating system after every N completed incoming block-processing tasks. The default closes the block-lifecycle allocation boundary on validators, joining validators, and read-only nodes; every local proposal attempt closes the corresponding creator boundary. Set a larger interval only after demonstrating that the resulting peak RSS remains within the deployment's memory envelope. `0` disables explicit trimming. See [Block-Heap Lifecycle and Reclamation](../casper/theory/cost-accounting-impl/block-heap-lifecycle.md). |
-| `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. |
+| Constant | Value | Purpose |
+|----------|------:|---------|
+| `MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks (one shared set; all admission gates use this one constant). **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later). |
+| `MALLOC_TRIM_INTERVAL_BLOCKS` | `64` | Linux/glibc only: `malloc_trim(0)` after every 64 processed blocks to return freed arena memory to the OS. |
+| `MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. |
+| `VALIDATION_ERROR_QUARANTINE_MS` | `120000` | Pacing of hard-validation-failure retries; a separate constant from the missing-dependency quarantine (they no longer alias). |
+| `VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. |
 
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 
@@ -403,37 +384,20 @@ transport-local ordering or metadata to consensus state. See
 
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
-| `heartbeat.enabled` | `true` | Enable the heartbeat proposer |
+| `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
 | `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
-| `heartbeat.max-lfb-age` | 15s | Input to the one-time observed-LFB stall timeout |
-| `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals |
-| `heartbeat.stale-recovery-min-interval` | 3s | Min age of this validator's latest proposal before the pending-deploy backstop may fire |
-| `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; relaxes lag caps |
+| `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
+| `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
+| `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
+| `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |
+| `heartbeat.advanced.frontier-chase-max-lag` | 20 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB (0 stops validators contributing under load) |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
 | `heartbeat.advanced.deploy-recovery-max-lag` | 64 | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window. Must be >= `pending-deploy-max-lag` to take effect (else collapses to that floor). |
-| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 64 | EXPERIMENTAL. Idle empty recovery stops at this exact unfinalized-DAG boundary when the validator is already ahead. |
+| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 12 | Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). Must satisfy hard finality-lag backpressure (8) < cap <= max-parent-depth (warned at startup on the local depth; re-judged against the chain-adopted depth at runtime). |
 
-**Deploy grace window**: When pending deploys or a new user-deploy parent are
-observed, a grace window opens (default 25s) and widens the pending-deploy lag cap
-from `pending-deploy-max-lag` to `deploy-recovery-max-lag`. It does not waive the
-self-propose cooldown.
+**Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
 
-**Observed-LFB rotating recovery**: Each heartbeat task measures monotonic elapsed
-time since it first observed the current LFB hash. Producer timestamps, frontier
-movement, and latest-message churn do not reset that clock. The first local
-recovery round opens after
-$`\max(\mathtt{max\mbox{-}lfb\mbox{-}age},\mathtt{check\mbox{-}interval})`$;
-later rounds open
-every `check-interval`. A delayed wake exposes the earliest uncompleted available
-round, so the task catches up in order without skipping a rotating leader. A
-nonleader completes that local round without proposing; a selected leader retains
-the round until the serialized proposer starts or succeeds. The unique leader is
-selected from the canonical snapshot committee by
-$`(\mathtt{nonnegative\_lfb\_height}+\mathtt{local\_round}) \bmod
-\mathtt{committee\_size}`$, so an offline leader
-is rotated past. Validators may occupy different local rounds. This scheduling
-does not change block validation or the mutual causal and state-preserving clique
-certificates required for finality.
+**Stale LFB recovery**: Open to every bonded validator — once the LFB and the validator's own last proposal are both older than `stale-recovery-min-interval`, it proposes one recovery block per interval. Certification needs mutual witnessing, so recovery is never gated on a leader or on height relations; a temporally idle validator also passes the empty-frontier width cap once per interval (the cap bounds churn to the recovery cadence, never to zero). Deterministic leader selection survives only for the one-shot multi-parent convergence proposal.
 
 ## Logging
 
@@ -450,12 +414,6 @@ Structured logging uses the `tracing` crate. The subscriber is initialised from 
 | `file.retention` | `14` | Number of rotated files to keep; `0` = unlimited |
 
 When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log`. The `logs/` subdirectory is created automatically. In Docker the data dir is `/var/lib/rnode`, so log files land at `/var/lib/rnode/logs/node.log`.
-
-Deploy-pool filtering emits aggregate counts. Debug records include at most
-eight deterministic deploy-ID prefixes per reason and report the omitted
-count. Routine future, expired, and already-in-scope filtering is not a warning
-condition, so an adversarial pool cannot create one warning or debug record per
-deploy.
 
 ### Precedence (highest wins)
 
@@ -494,18 +452,8 @@ The JSON layer emits one object per event with `span` and `spans` fields for tra
 `initialize_diagnostics()` sets up:
 - Prometheus (`/metrics` HTTP endpoint)
 - InfluxDB (HTTP batch and/or UDP reporters)
+- Zipkin (OpenTelemetry distributed tracing)
 - Sigar (CPU, memory, disk system metrics)
-
-Zipkin is initialized before the process-wide `tracing` subscriber so its
-OpenTelemetry layer shares the same span stream as stdout and file logging.
-Enable it with `metrics.zipkin = true` or `--zipkin`. The batch exporter uses
-an asynchronous Reqwest 0.12 client over Rustls, installs the B3 propagation
-format, and flushes the global tracer provider during orderly shutdown. Set
-`OTEL_EXPORTER_ZIPKIN_ENDPOINT` to the collector's v2 spans endpoint; the
-default is `http://127.0.0.1:9411/api/v2/spans`. Set
-`OTEL_EXPORTER_ZIPKIN_TIMEOUT` to the export timeout in milliseconds; the
-default is 10,000. Startup fails instead of advertising tracing when the
-exporter cannot be constructed.
 
 ## CLI Subcommands
 
@@ -514,7 +462,7 @@ exporter cannot be constructed.
 | `run` | Start node |
 | `eval FILE` | Execute Rholang file |
 | `repl` | Interactive REPL |
-| `deploy VALID_AFTER_BLOCK [KEY] [KEY_PATH] FILE SHARD` | Sign and deploy a contract; capacity comes from authenticated purses |
+| `deploy PHLO_LIMIT PHLO_PRICE ...` | Deploy contract |
 | `propose` | Trigger block proposal |
 | `show-block HASH` | Display block |
 | `show-blocks DEPTH` | Recent blocks |
@@ -530,6 +478,6 @@ exporter cannot be constructed.
 
 Integration tests in `tests/`: `rho_trie_traverser_test.rs`. Inline tests in `block_info_enricher.rs` (2 unit tests for transfer extraction logic).
 
-**See also:** [node/ crate README](../../node/README.md) | [Docker Setup](../../docker/README.md)
+**See also:** [Joining an Existing Network](joining-a-network.md) | [node/ crate README](../../node/README.md) | [Docker Setup](../../docker/README.md)
 
 [← Back to docs index](../README.md)

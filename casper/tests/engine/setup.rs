@@ -1,19 +1,18 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/Setup.scala
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-use block_storage::rust::deploy::pending_deploy::PendingDeploy;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::blocks::block_processing_queue::{
-    BlockProcessingIdentities, BlockProcessingQueueReceiver, BlockProcessingQueueSender,
-};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use casper::rust::engine::block_retriever;
@@ -30,20 +29,23 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::Signed;
+use dashmap::DashSet;
 use models::routing::Protocol;
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, DeployData, HasBlock,
 };
-use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
+use models::rust::equivocation_record::SequenceNumber;
+use models::rust::validator::ValidatorSerde;
 use prost::bytes::Bytes;
 use prost::Message;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
+use tokio::sync::mpsc;
 
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -68,8 +70,15 @@ pub struct TestFixture {
     pub engine: Running<TransportLayerStub>,
     // Scala: implicit val blockProcessingQueue = Queue.unbounded[Task, (Casper[Task], BlockMessage)]
     // Refactored to use mpsc channel - both sender and receiver kept for test inspection
-    pub block_processing_queue_tx: BlockProcessingQueueSender,
-    pub block_processing_queue_rx: Arc<tokio::sync::Mutex<BlockProcessingQueueReceiver>>,
+    pub block_processing_queue_tx:
+        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+    pub block_processing_queue_rx: Arc<
+        tokio::sync::Mutex<
+            mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+        >,
+    >,
+    // Test-only: Track blocks enqueued for processing (updated lazily on first check)
+    blocks_enqueued_for_processing: Arc<Mutex<HashSet<BlockHash>>>,
     // Scala Step 4: implicit val rspaceStateManager = RSpacePlusPlusStateManagerImpl(exporter, importer)
     pub rspace_state_manager: RSpaceStateManager,
     // Scala: implicit val runtimeManager = RuntimeManager[Task](rspace, replay, historyRepo, mStore, Genesis.NonNegativeMergeableTagName)
@@ -102,7 +111,7 @@ pub struct TestFixture {
     // Scala: val bap = BlockApproverProtocol.of[Task](validatorId, deployTimestamp, ...)
     pub bap: BlockApproverProtocol<TransportLayerStub>,
     // Scala: implicit val blockProcessingState = Ref.of[Task, Set[BlockHash]](Set.empty)
-    pub blocks_in_processing: Arc<BlockProcessingIdentities>,
+    pub blocks_in_processing: Arc<DashSet<BlockHash>>,
     // Scala: implicit val rpConf = createRPConfAsk[Task](local)
     pub rp_conf_ask: RPConf,
     // Scala: implicit val connectionsCell: ConnectionsCell[Task] = Cell.unsafe[Task, Connections](List(local))
@@ -125,9 +134,7 @@ pub struct TestFixture {
 }
 
 impl TestFixture {
-    pub async fn new() -> Self { Self::new_with_casper_blocks(Vec::new()).await }
-
-    pub async fn new_with_casper_blocks(blocks: Vec<(BlockMessage, bool)>) -> Self {
+    pub async fn new() -> Self {
         // Scala: val params @ (_, _, genesisParams) = GenesisBuilder.buildGenesisParameters()
         let mut genesis_builder = GenesisBuilder::new();
         let genesis_parameters_tuple =
@@ -192,7 +199,10 @@ impl TestFixture {
         // We simulate this by creating separate shared HashMaps for each "database name"
         let kvm_blockstorage = Arc::new(Mutex::new(HashMap::new()));
         let kvm_approved_block = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_finalization_certificates = Arc::new(Mutex::new(HashMap::new()));
+        let kvm_dagstorage_metadata = Arc::new(Mutex::new(HashMap::new()));
+        let kvm_dagstorage_latest_messages = Arc::new(Mutex::new(HashMap::new()));
+        let kvm_dagstorage_invalid_blocks = Arc::new(Mutex::new(HashMap::new()));
+        let kvm_dagstorage_equivocation_tracker = Arc::new(Mutex::new(HashMap::new()));
         let kvm_deploystorage = Arc::new(Mutex::new(HashMap::new()));
 
         // Scala: implicit val blockStore = KeyValueBlockStore[Task](kvm).unsafeRunSync(...)
@@ -203,14 +213,7 @@ impl TestFixture {
         let store_approved_block = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_approved_block.clone(),
         ));
-        let store_finalization_certificates = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_finalization_certificates,
-        ));
-        let block_store = KeyValueBlockStore::new_with_finalization_certificate_store(
-            store,
-            store_approved_block,
-            Some(store_finalization_certificates),
-        );
+        let block_store = KeyValueBlockStore::new(store, store_approved_block);
 
         // Scala: implicit val blockDagStorage = BlockDagKeyValueStorage.create(kvm).unsafeRunSync(...)
         // NOTE: Changed from KeyValueDagRepresentation to BlockDagKeyValueStorage because:
@@ -219,16 +222,54 @@ impl TestFixture {
         // - KeyValueDagRepresentation is just an in-memory snapshot
         // - GenesisValidator and Initializing need insert() to record blocks in DAG
         // - This matches Scala Setup.scala which creates BlockDagKeyValueStorage.create(kvm)
-        let mut dag_kvm = InMemoryStoreManager::new();
-        let block_dag_storage_unwrapped = BlockDagKeyValueStorage::new(&mut dag_kvm)
-            .await
-            .expect("Failed to create BlockDagStorage");
+        let metadata_store = Arc::new(MockKeyValueStore::with_shared_data(
+            kvm_dagstorage_metadata.clone(),
+        ));
+        let metadata_typed_store =
+            KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(metadata_store);
+        let block_metadata_store = BlockMetadataStore::new(metadata_typed_store);
+
+        let latest_messages_store = Arc::new(MockKeyValueStore::with_shared_data(
+            kvm_dagstorage_latest_messages.clone(),
+        ));
+        let latest_messages_typed_store =
+            KeyValueTypedStoreImpl::<ValidatorSerde, BlockHashSerde>::new(latest_messages_store);
+
+        let invalid_blocks_store = Arc::new(MockKeyValueStore::with_shared_data(
+            kvm_dagstorage_invalid_blocks.clone(),
+        ));
+        let invalid_blocks_typed_store =
+            KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(invalid_blocks_store);
+
+        let equivocation_tracker_store = Arc::new(MockKeyValueStore::with_shared_data(
+            kvm_dagstorage_equivocation_tracker.clone(),
+        ));
+        let equivocation_tracker_typed_store = KeyValueTypedStoreImpl::<
+            (ValidatorSerde, SequenceNumber),
+            BTreeSet<BlockHashSerde>,
+        >::new(equivocation_tracker_store);
+        let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
+
+        let block_dag_storage_unwrapped = BlockDagKeyValueStorage::from_parts(
+            Arc::new(parking_lot::RwLock::new(())),
+            latest_messages_typed_store,
+            Arc::new(parking_lot::RwLock::new(block_metadata_store)),
+            invalid_blocks_typed_store,
+            KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            equivocation_tracker,
+            Arc::new(AtomicU64::new(0)),
+        );
 
         // Insert genesis block into DAG storage (approved = true, invalid = false)
         block_dag_storage_unwrapped
             .insert(
                 &genesis,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
             )
             .expect("Failed to insert genesis into BlockDagStorage");
 
@@ -254,22 +295,18 @@ impl TestFixture {
         ));
         let deploy_storage_typed_store =
             KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(deploy_storage_store);
-        let envelope_storage_typed_store =
-            KeyValueTypedStoreImpl::<DeployIdV6, Cosigned<DeployData>>::new(Arc::new(
-                MockKeyValueStore::new(),
-            ));
-        let deploy_storage = KeyValueDeployStorage::from_legacy_stores(
-            deploy_storage_typed_store,
-            envelope_storage_typed_store,
-        );
+        let deploy_storage = KeyValueDeployStorage {
+            store: deploy_storage_typed_store,
+        };
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
         let rejected_buffer_typed_store =
-            KeyValueTypedStoreImpl::<DeployLookupId, PendingDeploy>::new(rejected_buffer_store);
-        let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
-            KeyValueRejectedDeployBuffer::from_legacy_store(rejected_buffer_typed_store),
-        ));
+            KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
+        let rejected_deploy_buffer =
+            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
+                store: rejected_buffer_typed_store,
+            }));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
         let estimator = Estimator::apply();
@@ -285,29 +322,24 @@ impl TestFixture {
         // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
         let runtime_manager_shared = Arc::new(runtime_manager);
 
-        let mut casper = NoOpsCasperEffect::new_with_shared_kvm(
+        let casper = NoOpsCasperEffect::new_with_shared_kvm(
             None, // estimator_func
             runtime_manager_shared.clone(),
             block_store.clone(),
             block_dag_representation,
             kvm_blockstorage.clone(),
         );
-        for (block, approved) in blocks {
-            casper.insert_block(block, approved);
-        }
 
         // Create mpsc channel for block processing queue (receiver kept for test inspection)
-        let (block_processing_queue_tx, block_processing_queue_rx) =
-            BlockProcessingQueueSender::channel(1024, 64 * 1024 * 1024)
-                .expect("block processing queue");
+        let (block_processing_queue_tx, block_processing_queue_rx) = mpsc::channel(1024);
 
         let approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
-            sigs: Vec::new(),
             floor_seed: None,
+            sigs: Vec::new(),
         };
 
         let approved_block_candidate = ApprovedBlockCandidate {
@@ -339,8 +371,7 @@ impl TestFixture {
         casper_shard_conf.synchrony_constraint_threshold = 0.0;
         casper_shard_conf.height_constraint_threshold = i64::MAX;
         casper_shard_conf.deploy_lifespan = 50;
-        casper_shard_conf.casper_version = casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
-        casper_shard_conf.config_version = 1;
+        casper_shard_conf.casper_version = 1;
         casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond;
         casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond;
         casper_shard_conf.epoch_length = genesis_params.proof_of_stake.epoch_length;
@@ -404,15 +435,9 @@ impl TestFixture {
                 .pos_multi_sig_public_keys
                 .clone(),
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
-            genesis_params.proof_of_stake.max_cosigners_per_deploy,
-            genesis_params.proof_of_stake.initial_phlogiston,
-            genesis_params.proof_of_stake.epoch_phlogiston,
-            casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-            genesis_params.client_fuel_allocations.clone(),
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
-            genesis_params.resource_policy.clone(),
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )
@@ -428,7 +453,7 @@ impl TestFixture {
         };
 
         // Scala: implicit val blockProcessingState = Ref.of[Task, Set[BlockHash]](Set.empty)
-        let blocks_in_processing = block_processing_queue_tx.identities();
+        let blocks_in_processing: Arc<DashSet<BlockHash>> = Arc::new(DashSet::new());
 
         // NOT in Scala Setup - created locally in each test as: implicit val eventBus = EventPublisher.noop[Task]
         // Rust: Create F1r3flyEvents with default capacity (equivalent to noop for tests)
@@ -438,8 +463,9 @@ impl TestFixture {
         // Rust: Create EngineCell with Engine::noop (equivalent to Scala)
         let engine_cell = Arc::new(EngineCell::init());
 
+        let requested_blocks = Arc::new(Mutex::new(HashMap::new()));
         let block_retriever = block_retriever::BlockRetriever::new(
-            casper_buffer_storage.clone(),
+            requested_blocks,
             transport_layer.clone(),
             connections_cell_for_retriever,
             rp_conf.clone(),
@@ -451,7 +477,7 @@ impl TestFixture {
 
         let engine = Running::new(
             block_processing_queue_tx.clone(),
-            blocks_in_processing.clone(),
+            Arc::new(DashSet::new()),
             casper_trait_object,
             approved_block,
             Arc::new(|| {
@@ -463,7 +489,6 @@ impl TestFixture {
             rp_conf.clone(),
             block_retriever.clone(),
             None,
-            None,
         );
 
         Self {
@@ -474,6 +499,7 @@ impl TestFixture {
             engine,
             block_processing_queue_tx,
             block_processing_queue_rx: Arc::new(tokio::sync::Mutex::new(block_processing_queue_rx)),
+            blocks_enqueued_for_processing: Arc::new(Mutex::new(HashSet::new())),
             rspace_state_manager,
             runtime_manager: runtime_manager_shared,
             estimator,
@@ -504,8 +530,40 @@ impl TestFixture {
         // which automatically closes LMDB file handles (matching Scala's finalizer behavior)
     }
 
-    pub fn is_block_admitted(&self, hash: &BlockHash) -> bool {
-        self.block_processing_queue_tx.identities().contains(hash)
+    /// Check if a block with the given hash is in the processing queue (for testing)
+    ///
+    /// This method syncs the tracking set with the mpsc channel by draining it,
+    /// updating the tracking set, and re-enqueuing all blocks. Subsequent calls
+    /// will use the cached tracking set unless the channel has new messages.
+    pub async fn is_block_in_processing_queue(&self, hash: &BlockHash) -> bool {
+        // Sync the tracking set with the channel
+        self.sync_block_tracking().await;
+
+        // Check the tracking set
+        self.blocks_enqueued_for_processing
+            .lock()
+            .unwrap()
+            .contains(hash)
+    }
+
+    /// Sync the tracking set with the mpsc channel by draining and re-enqueuing
+    #[allow(clippy::await_holding_lock)]
+    async fn sync_block_tracking(&self) {
+        let mut rx = self.block_processing_queue_rx.lock().await;
+        let mut tracking_set = self.blocks_enqueued_for_processing.lock().unwrap();
+        let mut blocks = Vec::new();
+
+        // Drain the queue and update tracking set
+        while let Ok((casper, block)) = rx.try_recv() {
+            tracking_set.insert(block.block_hash.clone());
+            blocks.push((casper, block));
+        }
+
+        // Re-enqueue all blocks to maintain queue state
+        for (casper, block) in blocks {
+            // Safe to ignore send errors in tests - if channel is closed, test is ending anyway
+            let _ = self.block_processing_queue_tx.send((casper, block)).await;
+        }
     }
 }
 

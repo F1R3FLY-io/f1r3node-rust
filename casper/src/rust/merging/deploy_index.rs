@@ -2,32 +2,27 @@
 
 use models::rust::casper::protocol::casper_message::Event;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
-use rspace_plus_plus::rspace::merger::state_change::StateChange;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd)]
 pub struct DeployIndex {
     pub deploy_id: prost::bytes::Bytes,
     pub cost: u64,
     pub event_log_index: EventLogIndex,
-    pub execution_index: u32,
-    pub state_changes: Option<StateChange>,
 }
 
 impl DeployIndex {
-    // This cost is required because rejection option selection rule depends on how much branch costs.
-    // For now system deploys do not have any weight, cost is 0.
+    // Rejection-option selection weighs branches by cost; system deploys
+    // carry none.
     pub const SYS_SLASH_DEPLOY_COST: u64 = 0;
     pub const SYS_CLOSE_BLOCK_DEPLOY_COST: u64 = 0;
     pub const SYS_EMPTY_DEPLOY_COST: u64 = 0;
-    // Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12) — like the
-    // other system deploys it carries no merge weight.
-    pub const SYS_REDEEM_DEPLOY_COST: u64 = 0;
 
-    // These are to be put in rejected set in blocks, so prefix format is defined for identification purposes.
-    pub const SYS_SLASH_DEPLOY_ID: &'static [u8] = &[1];
-    pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] = &[2];
-    pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[3];
-    pub const SYS_REDEEM_DEPLOY_ID: &'static [u8] = &[4];
+    // Trailing byte of a system deploy's 33-byte id, defined from the
+    // system-deploy markers `is_system_deploy_id` recognizes.
+    pub const SYS_SLASH_DEPLOY_ID: &'static [u8] = &[crate::rust::system_deploy::SLASH_MARKER];
+    pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] =
+        &[crate::rust::system_deploy::CLOSE_BLOCK_MARKER];
+    pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[crate::rust::system_deploy::HEARTBEAT_MARKER];
 
     pub fn new(
         sig: prost::bytes::Bytes,
@@ -41,8 +36,6 @@ impl DeployIndex {
             deploy_id: sig,
             cost,
             event_log_index,
-            execution_index: 0,
-            state_changes: None,
         }
     }
 }

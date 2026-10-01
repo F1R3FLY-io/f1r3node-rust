@@ -8,12 +8,14 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
+chrono = { workspace = true }
 crypto = { path = "../crypto" }
+dashmap = { workspace = true }
+flume = "0.11"
 hex = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 models = { path = "../models" }
-paste = "1.0"
 rand = { workspace = true }
 shared = { path = "../shared" }
 tokio = { workspace = true }
@@ -27,7 +29,7 @@ x509-parser = "0.16"
 thiserror = { workspace = true }
 p256 = { workspace = true, features = ["ecdsa"] }
 futures = { workspace = true }
-tower = { workspace = true, features = ["limit"] }
+tower = { workspace = true }
 http = { workspace = true }
 hyper = { version = "1.0", features = ["http1", "http2"] }
 tonic = { workspace = true, features = ["transport", "tls-webpki-roots"] }
@@ -40,8 +42,8 @@ local-ip-address = "0.6.5"
 reqwest = { workspace = true }
 metrics = { workspace = true }
 
+[dev-dependencies]
+paste = "1.0"
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }
-
-[dev-dependencies]
-proptest = { workspace = true }

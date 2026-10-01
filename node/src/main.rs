@@ -17,7 +17,7 @@ use node::rust::configuration::config_check::{
     check_api_server, check_host, check_ports, load_private_key_from_file,
 };
 use node::rust::configuration::{NodeConf, Options, Profile};
-use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
+use node::rust::effects::console_io::{console_io, decrypt_key_from_file, ConsoleIO};
 use node::rust::effects::repl_client::GrpcReplClient;
 use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
@@ -81,7 +81,7 @@ fn main() -> Result<()> {
         let _log_guards = init_logging(&logging_cfg, None)?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
-        run_cli(options, &rt)?;
+        run_cli(options, &rt, &mut console_io()?)?;
     }
 
     Ok(())
@@ -102,17 +102,7 @@ async fn start_node(options: Options) -> Result<()> {
     apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
 
     let data_dir = node_conf.storage.data_dir.clone();
-    let (extra_logging_layers, _zipkin_guard) = if node_conf.metrics.zipkin {
-        let (layer, guard) = node::rust::diagnostics::zipkin_reporter::create_zipkin_reporter()?;
-        (vec![layer], Some(guard))
-    } else {
-        (Vec::new(), None)
-    };
-    let _log_guards =
-        init_logging_with_layers(&node_conf.logging, Some(&data_dir), extra_logging_layers)?;
-    if node_conf.metrics.zipkin {
-        info!("Zipkin reporter initialized successfully.");
-    }
+    let _log_guards = init_logging(&node_conf.logging, Some(&data_dir))?;
 
     for w in deferred_warnings {
         warn!("{}", w);
@@ -142,45 +132,44 @@ async fn start_node(options: Options) -> Result<()> {
 }
 
 /// Executes CLI commands
-fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
+fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Result<()> {
     let (grpc_port, grpc_deploy_port) = if let Some(port) = options.grpc_port {
         (port, port)
     } else {
         (GRPC_INTERNAL_PORT, GRPC_EXTERNAL_PORT)
     };
 
-    let (repl_client, mut deploy_client, propose_client) = rt.block_on(async {
-        let repl_client = GrpcReplClient::new(
+    let repl_client = || {
+        rt.block_on(GrpcReplClient::new(
             options.grpc_host.clone(),
             grpc_port,
             options.grpc_max_recv_message_size as usize,
-        )
-        .await
-        .map_err(|e| eyre::eyre!("Failed to create REPL client: {}", e))?;
-
-        let deploy_client = GrpcDeployService::new(
+        ))
+        .map_err(|e| eyre::eyre!("Failed to create REPL client: {}", e))
+    };
+    let deploy_client = || {
+        rt.block_on(GrpcDeployService::new(
             &options.grpc_host,
             grpc_deploy_port,
             options.grpc_max_recv_message_size as usize,
-        )
-        .await?;
-
-        let propose_client = GrpcProposeService::new(
+        ))
+    };
+    let propose_client = || {
+        rt.block_on(GrpcProposeService::new(
             &options.grpc_host,
             grpc_port,
             options.grpc_max_recv_message_size as usize,
-        )
-        .await?;
-
-        eyre::Ok((repl_client, deploy_client, propose_client))
-    })?;
+        ))
+    };
 
     match options.subcommand {
         Some(command) => match command {
             OptionsSubCommand::Eval(eval_options) => {
+                let repl_client = repl_client()?;
+
                 ReplRuntime::new().eval_program(
                     rt,
-                    &mut console_io()?,
+                    console,
                     &repl_client,
                     eval_options.file_names,
                     eval_options.print_unmatched_sends_only,
@@ -190,32 +179,44 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok::<(), eyre::Error>(())
             }
             OptionsSubCommand::Repl => {
-                ReplRuntime::new().repl_program(rt, &mut console_io()?, &repl_client)?;
+                let repl_client = repl_client()?;
+
+                ReplRuntime::new().repl_program(rt, console, &repl_client)?;
 
                 Ok(())
             }
-            OptionsSubCommand::Deploy(deploy) => {
-                let valid_after_block = i64::try_from(deploy.valid_after_block_number)
-                    .map_err(|_| eyre::eyre!("valid-after block number exceeds i64::MAX"))?;
-                let private_key = get_private_key(
-                    deploy.private_key,
-                    deploy.private_key_path,
-                    &mut console_io()?,
-                )?;
+            OptionsSubCommand::Deploy {
+                phlo_limit,
+                phlo_price,
+                valid_after_block,
+                private_key,
+                private_key_path,
+                location,
+                shard_id,
+            } => {
+                let mut deploy_client = deploy_client()?;
+
+                let private_key = get_private_key(private_key, private_key_path, console)?;
                 rt.block_on(DeployRuntime::deploy_file_program(
                     &mut deploy_client,
+                    phlo_limit,
+                    phlo_price,
                     valid_after_block,
                     &private_key,
-                    &deploy.location,
-                    &deploy.shard_id,
+                    &location,
+                    &shard_id,
                 ));
                 Ok(())
             }
             OptionsSubCommand::FindDeploy { id } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::find_deploy(&mut deploy_client, &id));
                 Ok(())
             }
             OptionsSubCommand::Propose(propose_options) => {
+                let propose_client = propose_client()?;
+
                 rt.block_on(DeployRuntime::propose(
                     propose_client,
                     propose_options.print_unmatched_sends,
@@ -223,10 +224,14 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::ShowBlock { hash } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::get_block(&mut deploy_client, hash));
                 Ok(())
             }
             OptionsSubCommand::ShowBlocks { depth } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::get_blocks(&mut deploy_client, depth));
                 Ok(())
             }
@@ -234,6 +239,8 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 depth,
                 show_justification_lines,
             } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::visualize_dag(
                     &mut deploy_client,
                     depth,
@@ -242,26 +249,36 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::MachineVerifiableDag => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::machine_verifiable_dag(&mut deploy_client));
                 Ok(())
             }
             OptionsSubCommand::Keygen { path } => {
-                generate_key(&path, &mut console_io()?)?;
+                generate_key(&path, console)?;
                 Ok(())
             }
             OptionsSubCommand::LastFinalizedBlock => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::last_finalized_block(&mut deploy_client));
                 Ok(())
             }
             OptionsSubCommand::IsFinalized { hash } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::is_finalized(&mut deploy_client, hash));
                 Ok(())
             }
             OptionsSubCommand::BondStatus { public_key } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::bond_status(&mut deploy_client, &public_key));
                 Ok(())
             }
             OptionsSubCommand::ContAtName { names } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::listen_for_continuation_at_name(
                     &mut deploy_client,
                     names,
@@ -269,6 +286,8 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::Status => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::status(&mut deploy_client));
                 Ok(())
             }
@@ -288,14 +307,6 @@ pub fn init_logging(
     data_dir: Option<&std::path::Path>,
 ) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
     shared::rust::tracing_init::init(cfg, data_dir)
-}
-
-fn init_logging_with_layers(
-    cfg: &shared::rust::tracing_init::LoggingConfig,
-    data_dir: Option<&std::path::Path>,
-    extra_layers: Vec<shared::rust::tracing_init::BoxedTracingLayer>,
-) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
-    shared::rust::tracing_init::init_with_layers(cfg, data_dir, extra_layers)
 }
 
 fn apply_log_cli_overrides(options: &Options, cfg: &mut shared::rust::tracing_init::LoggingConfig) {
@@ -426,3 +437,6 @@ async fn log_configuration(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod keygen_test;

@@ -81,6 +81,7 @@ fn build_chain(
             Some(parent.body.state.post_state_hash.clone()),
             Some(i as i32),
             None,
+            None,
         );
         chain.push(block);
     }
@@ -332,6 +333,7 @@ async fn pre_state_included_for_multi_parent_block() {
             Some(chain[1].body.state.post_state_hash.clone()),
             Some(2_i32),
             None,
+            None,
         );
 
         // Multi-parent block at height 3. Its pre-state is the seeded merge
@@ -350,6 +352,7 @@ async fn pre_state_included_for_multi_parent_block() {
             None,
             Some(merge_intermediate.clone()),
             Some(3_i32),
+            None,
             None,
         );
 

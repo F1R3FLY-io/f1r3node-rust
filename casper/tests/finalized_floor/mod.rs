@@ -4,7 +4,7 @@
 // (scripts/check-finalized-floor-ALL.sh) via the `finalized_floor::` filter.
 //
 //   prop_ft_ppm_provenance — G2: θ_ppm provenance determinism + f32↔ppm round-trip.
-//   prop_bonds_from_floor   — P1: post-state cache and delayed floor authority.
+//   prop_bonds_from_floor   — P1: committee derivation PLAY ≡ REPLAY.
 //   recovery_no_double_apply — T-NDA: the production `canonical_won_sigs` recovery record
 //     applies a recovered effect at most once (Recovery.apply_idem / no_double_apply).
 
@@ -13,7 +13,6 @@
 //     plus the below-target ancestor-prefix red the walk refinement answers.
 
 mod horizon_read_abstention_spec;
-mod finalization_replay_properties;
 mod oracle_stall_replay_spec;
 mod prop_bonds_from_floor;
 mod prop_ft_ppm_provenance;

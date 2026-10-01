@@ -9,12 +9,13 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
+use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
 use crate::helper::{block_generator, block_util};
 use crate::util::rholang::resources::{
     generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
@@ -99,6 +100,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     let justifications_b3: HashMap<Validator, BlockHash> = [
@@ -117,6 +119,7 @@ fn create_dag_with_8_blocks(
         Some(v1.clone()),
         Some(bonds.clone()),
         Some(justifications_b3),
+        None,
         None,
         None,
         None,
@@ -150,6 +153,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     let justifications_b5: HashMap<Validator, BlockHash> = [
@@ -168,6 +172,7 @@ fn create_dag_with_8_blocks(
         Some(v2.clone()),
         Some(bonds.clone()),
         Some(justifications_b5),
+        None,
         None,
         None,
         None,
@@ -201,6 +206,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     let justifications_b7: HashMap<Validator, BlockHash> = [
@@ -219,6 +225,7 @@ fn create_dag_with_8_blocks(
         Some(v3.clone()),
         Some(bonds.clone()),
         Some(justifications_b7),
+        None,
         None,
         None,
         None,
@@ -251,6 +258,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     genesis
@@ -270,19 +278,21 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut block_dag_storage);
 
-    let dag = block_dag_storage
+    let mut dag = block_dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
-    let tips = block_generator::certified_fork_choice(
-        &estimator,
-        &dag,
-        &genesis,
-        dag.latest_message_hashes().into_iter().collect(),
-    )
-    .await
-    .unwrap();
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
+        .await
+        .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -324,19 +334,21 @@ async fn get_blocks_should_return_all_blocks() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
 
-    let dag = dag_storage
+    let mut dag = dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
-    let tips = block_generator::certified_fork_choice(
-        &estimator,
-        &dag,
-        &genesis,
-        dag.latest_message_hashes().into_iter().collect(),
-    )
-    .await
-    .unwrap();
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
+        .await
+        .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -376,19 +388,21 @@ async fn get_blocks_should_return_until_depth() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
 
-    let dag = dag_storage
+    let mut dag = dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
-    let tips = block_generator::certified_fork_choice(
-        &estimator,
-        &dag,
-        &genesis,
-        dag.latest_message_hashes().into_iter().collect(),
-    )
-    .await
-    .unwrap();
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
+        .await
+        .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -433,19 +447,21 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
 
-    let dag = dag_storage
+    let mut dag = dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
-    let tips = block_generator::certified_fork_choice(
-        &estimator,
-        &dag,
-        &genesis,
-        dag.latest_message_hashes().into_iter().collect(),
-    )
-    .await
-    .unwrap();
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
+        .await
+        .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -484,11 +500,8 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
 #[tokio::test]
 async fn every_api_entry_point_reports_a_missing_casper_instance() {
     use models::rhoapi::Par;
-    use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 
     let engine_cell = EngineCell::init();
-    let deploy_id =
-        DeployLookupId::V6(DeployIdV6::try_from(vec![1u8; DeployIdV6::LENGTH]).expect("deploy id"));
 
     assert!(BlockAPI::get_blocks(&engine_cell, 10, MAX_BLOCK_LIMIT)
         .await
@@ -511,7 +524,7 @@ async fn every_api_entry_point_reports_a_missing_casper_instance() {
             .await
             .is_err()
     );
-    assert!(BlockAPI::find_deploy(&engine_cell, &deploy_id)
+    assert!(BlockAPI::find_deploy(&engine_cell, &vec![1u8; 10])
         .await
         .is_err());
     assert!(BlockAPI::get_block(&engine_cell, "abcdef01").await.is_err());
@@ -520,7 +533,7 @@ async fn every_api_entry_point_reports_a_missing_casper_instance() {
         .await
         .is_err());
     assert!(
-        BlockAPI::deploy_finalization_status(&engine_cell, &deploy_id)
+        BlockAPI::deploy_finalization_status(&engine_cell, &[1u8; 8])
             .await
             .is_err()
     );
@@ -563,23 +576,19 @@ async fn every_api_entry_point_reports_a_missing_casper_instance() {
 #[test]
 fn preview_private_names_is_deterministic_and_clamped() {
     let deployer: Vec<u8> = vec![7u8; 33];
-    let protocol_version = casper::rust::casper::LEGACY_CASPER_PROTOCOL_VERSION;
 
-    let first = BlockAPI::preview_private_names(&deployer, 42, 3, protocol_version).unwrap();
-    let second = BlockAPI::preview_private_names(&deployer, 42, 3, protocol_version).unwrap();
+    let first = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
+    let second = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
     assert_eq!(first.len(), 3);
     assert_eq!(
         first, second,
         "the same deployer and timestamp must yield the same names"
     );
 
-    let different_time =
-        BlockAPI::preview_private_names(&deployer, 43, 3, protocol_version).unwrap();
+    let different_time = BlockAPI::preview_private_names(&deployer, 43, 3).unwrap();
     assert_ne!(first, different_time);
 
-    assert!(
-        BlockAPI::preview_private_names(&deployer, 42, -5, protocol_version)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(BlockAPI::preview_private_names(&deployer, 42, -5)
+        .unwrap()
+        .is_empty());
 }

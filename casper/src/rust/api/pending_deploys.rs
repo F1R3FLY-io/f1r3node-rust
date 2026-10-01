@@ -1,4 +1,5 @@
-use models::rust::deploy_envelope::DeployEnvelope;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::casper::protocol::casper_message::DeployData;
 
 /// Maximum number of pending deploys returned by a single
 /// `getPendingDeploys` call. The cap protects consumers from unbounded
@@ -12,7 +13,7 @@ pub const PENDING_DEPLOYS_MAX_RESULTS: usize = 1000;
 /// `rejected_deploy_buffer` (recovering after a merge conflict).
 #[derive(Clone, Debug)]
 pub struct PendingDeploysSnapshot {
-    pub deploys: Vec<(DeployEnvelope, bool)>,
+    pub deploys: Vec<(Signed<DeployData>, bool)>,
     /// Total count of pending deploys that matched the query before cap
     /// truncation was applied.
     pub total_available: u32,

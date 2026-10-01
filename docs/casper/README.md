@@ -18,10 +18,8 @@ replication.
 | Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
 | Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
 | Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
-| Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) |
-| Cost-accounting review | [Casper ratification status](./design/cost-accounting-ratification-status.md) |
-| PR 390 review | [Corrections and retained findings](./design/pr390-corrections-and-retained-findings.md) |
-| Buffer ownership | [Publication and retry ownership](./theory/finalized-floor/buffer-publication-ownership.md) |
+| Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) · [Cost-accounting CbC and FV reconciliation](./design/cost-accounting-cbc-fv-reconciliation.md) · [Decision ledger](./design/decision-ledger/README.md) (decided 2026-09-16) |
+| CbC claims | [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
 | Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
 
 Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).
@@ -145,12 +143,10 @@ pub struct CasperSnapshot {
 ## Fork Choice (LMD GHOST)
 
 **Estimator** implements Latest Message Driven Greedy Heaviest Observed Subtree:
-1. Capture one certified context with one exact slot per active validator
-2. Exclude ineligible identities without deleting their exact slots or stake
-3. Calculate the Lowest Common Ancestor (LCA) of all eligible messages
-4. Score each eligible message from the LCA downward
-5. Rank and select a non-conflicting subset with the highest score
-6. Apply `max_number_of_parents` and `max_parent_depth`
+1. Calculate Lowest Common Ancestor (LCA) of all latest messages
+2. Score each latest message from LCA downward
+3. Rank and select non-conflicting subset with highest score
+4. Constraints: `max_number_of_parents`, `max_parent_depth`
 
 ## Safety Oracle (Clique Oracle)
 
@@ -167,18 +163,11 @@ Computes normalized fault tolerance between -1.0 and 1.0:
 1. Find blocks with >50% stake agreement via main parent chain
 2. Execute Clique Oracle on candidates
 3. Output first block exceeding fault tolerance threshold, along with its computed FT value
-4. Compare-and-append one immutable finalization round against the durable head
-5. Project committed rounds into metadata in revision order, caching the normalized FT for the directly finalized block and all indirectly finalized ancestors
-6. Monotonically raise lower cached FT display values for previously finalized metadata during projection
-7. Apply deploy, cosigner, runtime-cache, and finalized-event effects with durable receipts; restart resumes the unfinished suffix
+4. Cache the normalized FT in `BlockMetadata.fault_tolerance_value` for the directly finalized block and all indirectly finalized ancestors
+5. Propagate FT to all previously-finalized blocks whose cached value is lower (`propagate_ft_to_finalized_blocks`). This covers orphaned branches in the multi-parent DAG and ensures all finalized blocks converge toward FT=1.0 as later rounds produce higher agreement.
+6. Guarded by `FinalizationInProgress` atomic bool (prevents snapshot creation during finalization)
 
-Immutable evaluations may overlap up to `finalizer.max-parallel-workers`. Only
-the constant-size head-and-round append and ordered metadata projection are
-linearized. `finalization_in_progress` is a reference count for overlapping
-effect application; snapshot construction remains concurrent and observes an
-internally consistent DAG representation.
-
-**FT caching**: The block API returns the cached FT for finalized blocks instead of recomputing via the clique oracle. Cached FT is monotonically non-decreasing — it only increases as later finalization rounds project higher values. Bulk endpoints (`get_blocks`, `show_main_chain`, `get_blocks_by_heights`) use a single DAG snapshot per response for internal consistency.
+**FT caching**: The block API returns the cached FT for finalized blocks instead of recomputing via the clique oracle. Cached FT is monotonically non-decreasing — it only increases as later finalization rounds propagate higher values. Bulk endpoints (`get_blocks`, `show_main_chain`, `get_blocks_by_heights`) use a single DAG snapshot per response for internal consistency.
 
 ## Equivocation Detection
 
@@ -204,23 +193,17 @@ internally consistent DAG representation.
 
 When a block has multiple parents (selected by the fork choice rule), the node must compute a merged post-state before executing new deploys. The merge procedure:
 
-1. **Select the certified floor** carried by the parent contexts.
-2. **Determine visible blocks** -- all parent-reachable blocks above the certified floor.
+1. **Find the LCA** (Lowest Common Ancestor) of the parent blocks in the DAG.
+2. **Determine visible blocks** -- all blocks between the LCA and the parents (exclusive of LCA, inclusive of parents).
 3. **Run ConflictSetMerger** -- collects deploys from visible blocks, detects conflicts (deploys touching overlapping channels), and resolves them deterministically.
 
-### Certified-Floor-Scoped Merge
+### LCA-Scoped Merge
 
-The merge scope is limited to blocks above the certified floor. The certified
-floor supplies the replay base and frozen authority. Each accepted parent delta
-is applied once in deterministic order. The merge preserves every active floor
-effect, including effects carried only through a secondary parent.
+The merge scope is limited to blocks at or above the LCA. Blocks below the LCA are common ancestors whose state is already reflected in the LCA's post-state -- replaying them would be redundant and expensive. Because the LCA is derived purely from DAG structure (parent pointers and block heights), every validator computes the same LCA for the same set of parent blocks.
 
 ### Determinism Constraint
 
-The merge scope cannot rely on local finalization status because validators can
-have different local views. Signed floor commitments and validated certificate
-contexts bind the floor. Identical certified contexts and parent closures
-therefore produce identical merge results.
+The merge scope cannot rely on local finalization status because different validators may have temporarily different finalized views. A validator that has finalized block B and one that has not must still compute the same merge result for identical parent sets. Using block height and LCA (both derived from the immutable DAG) ensures this.
 
 **Deterministic ordering**: Merge paths in `conflict_set_merger.rs` and casper-buffer eviction enforce deterministic tie-breaks to ensure consistent behavior across nodes.
 
@@ -238,24 +221,6 @@ When the conflict-set merger inspects a shared channel, it looks up the channel'
 `BitmaskOr` was added to handle a class of failure where two registry inserts from sibling blocks both touched the same `TreeHashMap` interior node. Without bitmask merging, one of the inserts would be rejected at multi-parent merge — even though the inserts were at different keys and logically commute. The regression is captured at unit level by `casper/tests/multi_node/bridge_contract_concurrent_merge.rs`.
 
 To diagnose a suspected merge rejection, run with `RUST_LOG=f1r3fly.merge.tag_check=trace` to see which channels match a `MergeType` and which do not.
-
-#### Derived evidence authentication
-
-The per-deployment mergeable-difference vector is derived evidence, not a block
-field. Each node therefore obtains it only from its own successful execution or
-replay. The cache key binds the block's pre-state, post-state, creator, sequence
-number, and canonical executed-payload digest. This prevents equivocations that
-share the old post-state/creator/sequence tuple from overwriting one another.
-Replay publishes the vector only after effect validation and exact final-state
-equality; rejection publishes no entry.
-
-Last-finalized-state synchronization transfers blocks and authenticated RSpace
-trie data but does not import peer-supplied merge vectors. The legacy request and
-response message types remain wire-decodable during rolling migration: a node
-with the requested block sends an empty response, and a synchronizing node
-ignores every response payload. A missing entry is reconstructed through local
-replay before merge. See [mergeable evidence
-authentication](theory/cost-accounting-impl/mergeable-evidence-authentication.md).
 
 #### Pitfalls when authoring contracts that use mergeable-tagged channels
 

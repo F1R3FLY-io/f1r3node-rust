@@ -4879,7 +4879,7 @@ mod funding_sig_tests {
         use crypto::rust::signatures::secp256k1::Secp256k1;
         use crypto::rust::signatures::signatures_alg::SignaturesAlg;
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
-        use models::rust::casper::protocol::casper_message::DeployData;
+        use models::rust::cost_deploy_data::DeployData;
 
         let secp = Secp256k1;
         let mut members = (0..3)

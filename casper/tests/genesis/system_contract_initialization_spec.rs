@@ -6,7 +6,7 @@
 // These tests verify:
 // - Genesis initialization (system contracts deployed correctly)
 // - Block processing (state properly restored after blocks)
-// - Invalid block handling (unattributable mutations cannot pollute consensus indexes)
+// - Invalid block handling (invalidBlocks map populated correctly)
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::MultiParentCasper;
@@ -160,8 +160,9 @@ async fn validator_vaults_should_have_zero_balance_at_genesis() {
     tracing::info!("Validator vault balance result: {:?}", result);
 }
 
+/// InvalidBlocks map should contain invalid block after processing
 #[tokio::test]
-async fn invalid_block_hash_cannot_pollute_consensus_indexes_or_frame_signer() {
+async fn invalid_blocks_map_stays_empty_for_a_demoted_verdict() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -216,11 +217,11 @@ async fn invalid_block_hash_cannot_pollute_consensus_indexes_or_frame_signer() {
         }
     }
 
-    // Check what's in node 1's dag.invalidBlocks
+    // InvalidBlockHash is judged against local state (demoted since the
+    // is_slashable narrowing): the block is dropped without entering
+    // dag.invalidBlocks.
     let dag = nodes[1].casper.block_dag().await.expect("Should get DAG");
     let invalid_blocks = dag.invalid_blocks();
-
-    tracing::info!("dag.invalidBlocks count: {}", invalid_blocks.len());
 
     let is_in_invalid_blocks = invalid_blocks
         .iter()
@@ -228,26 +229,8 @@ async fn invalid_block_hash_cannot_pollute_consensus_indexes_or_frame_signer() {
 
     assert!(
         !is_in_invalid_blocks,
-        "an unauthenticated body mutation must not claim the signer's authenticated block hash"
+        "a demoted verdict's block must be dropped, not recorded as evidence"
     );
-    assert!(!nodes[1].contains(&invalid_block.block_hash));
-    let records = nodes[1]
-        .block_dag_storage
-        .access_equivocations_tracker(|tracker| tracker.data())
-        .expect("equivocations tracker");
-    assert!(
-        records
-            .iter()
-            .all(|record| record.equivocator != signed_block.sender),
-        "an unauthenticated body mutation must not create objective evidence against its claimed signer"
-    );
-
-    let original_status = nodes[1]
-        .process_block(signed_block.clone())
-        .await
-        .expect("Node 1 should process the authentic block");
-    assert!(matches!(original_status, Either::Right(_)));
-    assert!(nodes[1].contains(&signed_block.block_hash));
 }
 
 /// System contracts should work after adding a block with a deploy

@@ -79,32 +79,48 @@ Each occurrence must have one canonical disposition in one merge scope.
 
 A terminal rejection must not become executable because local state later changes.
 
-The repeat-deploy carrier index must record every block carrier. This scope
-includes valid, invalid, and approved blocks. Each key must retain the legacy
-or protocol-v6 deploy-identity tag.
+The repeat-deploy carrier index must record every carrier of a block, over valid, invalid, and approved blocks, before the block becomes DAG-visible. The index must live in a dedicated store that no unverified wire data can key.
 
-Carrier rows must exist before the block becomes DAG-visible. Protocol-v6
-admission must commit all applicable carrier, metadata, occurrence, and
-lifecycle rows in one strict transaction. Legacy admission must write carrier
-rows before metadata visibility.
+An index absence is an absence proof only for scan windows that start at or above the persisted watermark. An index read failure must fall back to the ancestor scan.
 
-The persistent index must use a dedicated store. Unverified wire data must not
-key this store. Any decoded-identity cache owned by a block-store instance must
-remain bounded and non-authoritative. Only clones of that instance can share it.
+Index-served repeat-deploy verdicts must equal ancestor-scan verdicts for every block. Index retention must never drop an entry at or above any future scan window's start.
 
-An index absence proves absence only above the persisted watermark. An index
-hit must receive exact window and parent-scope verification. An index read
-failure must fall back to that ancestor scan.
+### Validation and finalization progress
 
-A missing scan dependency must fail validation. It must not become proof of
-absence. Index-served verdicts must equal ancestor-scan verdicts for every
-block.
+Each validation stage must state its work bound as a function of authenticated input size and configured protocol bounds.
 
-Pruning must retain each carrier at or above the active expiration cutoff.
-Strided pruning can retain older rows without changing the verdict.
+The carrier-index absence path must use at most one index probe for each distinct signature. It must read no ancestor body after engagement.
 
-[`DeployIdentitySeparation`](../theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement)
-defines the cross-protocol key-separation obligation.
+A carrier hit can use the reference ancestor scan until a scope-aware replacement has a discharged equivalence claim.
+
+Replay and merge optimizations must produce the same post-state root, rejected-deploy records, and validation verdict as their reference paths.
+
+Node-local time must not control block validity, admission, parent choice, or finality.
+
+The validation path must report these carrier-index counters:
+
+- watermark gate engaged
+- watermark gate not ready
+- index absence
+- index hit
+- index read failure
+- fallback scan
+- ancestor metadata visited
+- ancestor bodies read
+
+The merge path must report separate work and time measurements for scope construction, relation construction, conflict construction, rejection selection, and state application.
+
+The replay path must report separate work and time measurements for runtime creation, user deploys, system deploys, checkpoint, and reset.
+
+Counters and timers are diagnostic outputs. They are not authenticated consensus inputs.
+
+A candidate issue #24 repair must run with the carrier fast path forced on and forced off against identical generated DAG fixtures.
+
+The two modes must produce identical verdicts. The test must also prove that the absence path reads no ancestor bodies.
+
+A completed soak must use the repository's fixed workload profile and existing finalization limit. Infrastructure termination does not erase earlier product-test failures.
+
+Do not close issue #24 until completed soaks have no finalization-limit failures and the measured bottleneck has the claimed bound.
 
 ### Replay
 
@@ -176,6 +192,10 @@ flowchart LR
 ```
 
 The RED result must reproduce a production failure, a proof gap, or an expected model counterexample.
+
+A passing model for behavior that production already has is baseline evidence. It is not the RED test for a new repair.
+
+For issue #24, write one production-facing work-bound property after telemetry identifies the bottleneck. The property must fail current production for the expected reason.
 
 The GREEN result must include the production test and the related formal check.
 

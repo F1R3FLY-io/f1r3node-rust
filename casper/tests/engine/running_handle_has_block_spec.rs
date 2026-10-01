@@ -107,19 +107,16 @@ async fn block_retriever_should_store_on_a_waiting_list_and_dont_request_if_requ
             in_casper_buffer: false,
             waiting_list: vec![other_peer],
             peer_requery_cursor: 0,
-            retry_budget_quarantine_until: None,
             requested_as_dependency: false,
         });
         map
     };
 
-    for (hash, state) in request_state_before {
-        ctx.fixture
-            .block_retriever
-            .set_request_state_for_test(hash, state)
-            .await
-            .unwrap();
-    }
+    *ctx.fixture
+        .block_retriever
+        .requested_blocks()
+        .lock()
+        .unwrap() = request_state_before;
     // when
     ctx.fixture
         .engine
@@ -138,7 +135,12 @@ async fn block_retriever_should_store_on_a_waiting_list_and_dont_request_if_requ
         "Transport queue should be empty"
     );
 
-    let request_state_after = ctx.fixture.block_retriever.request_states();
+    let request_state_after = ctx
+        .fixture
+        .block_retriever
+        .requested_blocks()
+        .lock()
+        .unwrap();
     let state = request_state_after.get(&ctx.hash).unwrap();
     assert_eq!(
         state.waiting_list.len(),
@@ -164,19 +166,16 @@ async fn block_retriever_should_request_block_and_add_peer_to_waiting_list_if_pe
             in_casper_buffer: false,
             waiting_list: vec![],
             peer_requery_cursor: 0,
-            retry_budget_quarantine_until: None,
             requested_as_dependency: false,
         });
         map
     };
 
-    for (hash, state) in request_state_before {
-        ctx.fixture
-            .block_retriever
-            .set_request_state_for_test(hash, state)
-            .await
-            .unwrap();
-    }
+    *ctx.fixture
+        .block_retriever
+        .requested_blocks()
+        .lock()
+        .unwrap() = request_state_before;
 
     // when
     ctx.fixture
@@ -201,7 +200,12 @@ async fn block_retriever_should_request_block_and_add_peer_to_waiting_list_if_pe
     assert_eq!(peer, sender);
     assert_eq!(ctx.fixture.transport_layer.request_count(), 1);
 
-    let request_state_after = ctx.fixture.block_retriever.request_states();
+    let request_state_after = ctx
+        .fixture
+        .block_retriever
+        .requested_blocks()
+        .lock()
+        .unwrap();
     let state = request_state_after.get(&ctx.hash).unwrap();
     assert_eq!(
         state.waiting_list.len(),
@@ -221,7 +225,11 @@ async fn if_there_is_no_yet_an_entry_in_the_request_state_blocks_should_request_
     // given
     let sender = TestContext::peer_node("somePeer", 40400);
 
-    assert!(ctx.fixture.block_retriever.request_states().is_empty());
+    *ctx.fixture
+        .block_retriever
+        .requested_blocks()
+        .lock()
+        .unwrap() = HashMap::new();
 
     // when
     ctx.fixture
@@ -250,7 +258,12 @@ async fn if_there_is_no_yet_an_entry_in_the_request_state_blocks_should_request_
     assert_eq!(ctx.fixture.transport_layer.request_count(), 1);
 
     // assert RequestState informaton stored
-    let request_state_after = ctx.fixture.block_retriever.request_states();
+    let request_state_after = ctx
+        .fixture
+        .block_retriever
+        .requested_blocks()
+        .lock()
+        .unwrap();
     let state = request_state_after.get(&ctx.hash).unwrap();
     assert_eq!(
         state.waiting_list.len(),

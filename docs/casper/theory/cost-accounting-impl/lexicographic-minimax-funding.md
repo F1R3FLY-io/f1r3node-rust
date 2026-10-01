@@ -1503,7 +1503,8 @@ Let $`V=n+m+2`$ and $`E=n+e+m`$, where $`e`$ counts eligible payer-obligation pa
 The standard shortest-path algorithm has an $`O(VE^2)`$ operation bound, independent of monetary magnitudes.
 The graph uses $`O(V+E)`$ storage, while the complete output matrix requires $`O(nm)`$ storage.
 This bound does not establish acceptable performance for every configured cohort size.
-The final minimax solver still requires workload measurements and its own complexity analysis.
+The [fixed-funding rank bound](#native-fixed-funding-rank-work-bound) gives the current minimax call and space limits.
+Representative workload measurements remain necessary before release qualification.
 
 The required `HostWorkBudget` charges input scanning, residual-edge visits, path walks, verification, and a deterministic state-byte measure.
 The state measure covers residual edges, graph heads, parents, queue entries, output cells, output rows, certificate selection, and verifier totals.
@@ -3036,6 +3037,61 @@ Witness mutation tests change capacities, totals, eligibility, dimensions, and s
 Generated witness tests check wide-integer conservation, capacity bounds, selected-source saturation, and strict deficits through 129 sources.
 Budget-prefix tests require every insufficient budget to return an error without a partial witness.
 Classifier budget-prefix tests also cover preparation, transposed search, and certificate checking without substituting an economic policy.
+
+### Native fixed-funding rank work bound
+
+The native [`solve_fixed_funding_minimax_rank`](../../../../rholang/src/rust/interpreter/accounting/monetary_allocation/funding_minimax.rs) minimizes the sorted contribution vector for one fixed obligation set.
+Let $`n`$ count sources, $`m`$ count obligations, and $`e`$ count eligible source-to-obligation pairs.
+Let $`D`$ be the checked sum of the obligations, $`V=n+m+2`$, and $`E=n+e+m`$.
+These quantities describe the captured funding problem, not the number of authenticated owners in another candidate outcome.
+
+The algorithm has these bounded phases:
+
+```text
+Find one feasible assignment or return a verified deficit.
+If every source can fund every obligation:
+    Water-fill the fixed total and find one assignment with those exact source totals.
+Otherwise, while an unfrozen source remains:
+    Binary-search its next level with box-feasibility checks.
+    Test each donor-receiver pair for an exact one-unit transfer.
+    Test each donor-receiver pair for the freeze certificate.
+Certify the resulting rank at every distinct contribution breakpoint.
+```
+
+Each restricted outer pass freezes at least one source or returns `InvalidResult`.
+Consequently, a successful call makes at most $`n`$ outer passes.
+A binary search over a `u64` level makes at most 64 box checks per pass.
+Each pair loop makes at most $`n^2`$ ordinary feasibility calls per pass.
+The final certificate tests at most $`2n`$ contribution breakpoints.
+
+Let $`F=O(VE^2+nm)`$ bound one ordinary flow search and its verified output.
+This uses the shortest-augmenting-path bound stated above and includes the complete assignment matrix.
+For the boxes constructed by this minimax algorithm, every positive rebalance reduces the remaining frozen-source shortfall.
+[`FundingBox.v`](../../../../formal/rocq/cost_accounted_rho/theories/FundingBox.v) proves strict progress for a valid positive handoff.
+The native [`assert_transition`](../../../../rholang/src/rust/interpreter/accounting/monetary_allocation/funding_box_tests.rs) checks the exact shortfall decrease.
+These boxes fix totals from a feasible assignment, so their lower bounds sum to no more than $`D`$.
+That shortfall starts at no more than $`D`$ and never increases.
+One rebalance scans at most $`O(nm+n+m)`$ cells and verifies the resulting assignment.
+Thus one such box check has the conservative bound $`B=F+O(D(nm+n+m))`$.
+The bound includes an unsuccessful search, which returns a checked lower-deficit witness.
+
+The resulting bounds are:
+
+```math
+T_{\mathrm{restricted}}
+  = O\!\left((1+2n^3+2n)F+64nB\right),
+\qquad
+T_{\mathrm{all\text{-}to\text{-}all}}
+  = O\!\left((2+2n)F+64n\right),
+\qquad
+S = O(nm+V+E).
+```
+
+The space bound includes one residual graph, the assignment matrix, source vectors, and at most $`2n`$ stored obligation cuts.
+It excludes the caller's existing eligibility matrix and custody state.
+The restricted bound is finite but retains monetary-magnitude dependence through box rebalancing.
+The shared host-work budget rejects a call before it exceeds its configured work and state limits.
+These bounds do not prove a machine-level refinement of the Rust loops or acceptable throughput for every configured cohort.
 
 ## Relationship to the papers and Casper
 

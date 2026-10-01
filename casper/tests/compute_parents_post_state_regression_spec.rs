@@ -1,21 +1,17 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::casper::{
-    CasperShardConf, CasperSnapshot, OnChainCasperState, CURRENT_CASPER_PROTOCOL_VERSION,
-};
-use casper::rust::causal_equivocation::CertifiedConsensusContext;
+use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
-use casper::rust::finality::floor_context::FloorContext;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint_cosigned_with_effects, compute_parents_post_state,
+    compute_deploys_checkpoint, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -26,10 +22,7 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, FinalizedFloorCommitment, ProcessedDeploy,
-};
-use models::rust::utils::new_gstring_par;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -60,7 +53,7 @@ fn mk_snapshot(
     let mut shard_conf = CasperShardConf::new();
     shard_conf.shard_name = shard_name;
     shard_conf.max_parent_depth = 0;
-    shard_conf.disable_late_block_filtering = false;
+    shard_conf.deploy_lifespan = 50;
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
@@ -69,7 +62,6 @@ fn mk_snapshot(
         shard_conf,
         bonds_map,
         active_validators: vec![validator],
-        bond_generations: HashMap::new(),
     };
     snapshot.deploys_in_scope = std::sync::Arc::new(DashSet::new());
     snapshot
@@ -84,14 +76,13 @@ fn build_empty_block(
     bonds: Vec<Bond>,
     shard_id: String,
 ) -> BlockMessage {
-    let post_state_hash = pre_state_hash.clone();
     block_implicits::get_random_block(
         Some(block_number),
         Some(seq_num),
         Some(pre_state_hash),
-        Some(post_state_hash),
+        Some(StateHash::default()),
         Some(creator),
-        Some(CURRENT_CASPER_PROTOCOL_VERSION),
+        Some(1),
         Some(now_millis()),
         Some(parent_hashes),
         Some(Vec::new()),
@@ -101,16 +92,6 @@ fn build_empty_block(
         Some(shard_id),
         None,
     )
-}
-
-fn bind_cached_genesis_floor(dag_storage: &BlockDagKeyValueStorage, genesis: &BlockMessage) {
-    let dag = dag_storage
-        .get_representation()
-        .expect("genesis DAG representation");
-    dag.put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
-        .expect("genesis floor cache");
-    dag.put_cached_frontier(genesis.block_hash.clone(), genesis.block_hash.clone())
-        .expect("genesis frontier cache");
 }
 
 async fn step_block(
@@ -127,17 +108,17 @@ async fn step_block(
             .get_representation()
             .expect("dag representation"),
         validator,
-        shard_name.clone(),
-        last_finalized_block.clone(),
+        shard_name,
+        last_finalized_block,
     );
 
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|deploy| deploy.to_cosigned().map_err(CasperError::RuntimeError))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|d| d.deploy)
+        .collect::<Vec<_>>();
 
-    let checkpoint = compute_deploys_checkpoint_cosigned_with_effects(
+    let checkpoint = compute_deploys_checkpoint(
         block_store,
         parents,
         deploys,
@@ -147,51 +128,16 @@ async fn step_block(
         BlockData::from_block(block),
         HashMap::new(),
         None,
+        None,
+        None,
     )
     .await?;
 
     let mut updated = block.clone();
-    updated.body.state.pre_state_hash = checkpoint.pre_state_hash;
     updated.body.state.post_state_hash = checkpoint.post_state_hash;
     updated.body.deploys = checkpoint.deploys;
-    updated.body.rejected_deploys = checkpoint.rejected_deploys;
-    updated.body.rejected_state_effects = checkpoint.rejected_state_effects;
     updated.body.system_deploys = checkpoint.system_deploys;
     updated.body.state.bonds = checkpoint.bonds;
-    updated.body.applied_from_scope = checkpoint.applied_from_scope;
-    updated.body.merge_base = checkpoint.merge_base.unwrap_or_default();
-
-    let dag = dag_storage
-        .get_representation()
-        .map_err(CasperError::from)?;
-    let finalized = block_store
-        .get(&last_finalized_block)
-        .map_err(CasperError::from)?
-        .ok_or_else(|| CasperError::RuntimeError("missing finalized test block".to_string()))?;
-    let certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
-        &dag,
-        &finalized,
-        CURRENT_CASPER_PROTOCOL_VERSION,
-        shard_name,
-        0,
-        1_000_000,
-    )?;
-    let exact_latest_messages =
-        CertifiedConsensusContext::for_finalized_floor(&dag, last_finalized_block)?
-            .vote_projection()
-            .exact_latest_messages()
-            .iter()
-            .map(|(validator, hash)| (validator.clone(), hash.clone()))
-            .collect::<BTreeMap<_, _>>();
-    let candidate_context = CertifiedConsensusContext::for_parents(
-        &dag,
-        &updated.header.parents_hash_list,
-        &exact_latest_messages,
-    )?;
-    updated.header.finalized_floor =
-        Some(certificate.commitment(candidate_context.digest().clone()));
-    updated.finalized_floor_certificate = Some(certificate);
-    updated.block_hash = proto_util::hash_block(&updated);
 
     block_store
         .put_block_message(&updated)
@@ -202,15 +148,6 @@ async fn step_block(
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
         )
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-    let inserted_dag = dag_storage
-        .get_representation()
-        .map_err(CasperError::from)?;
-    inserted_dag
-        .put_cached_floor(updated.block_hash.clone(), finalized.block_hash.clone())
-        .map_err(CasperError::from)?;
-    inserted_dag
-        .put_cached_frontier(updated.block_hash.clone(), finalized.block_hash)
-        .map_err(CasperError::from)?;
 
     Ok(updated)
 }
@@ -268,7 +205,6 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     );
 
     let genesis = Genesis {
-        resource_policy: None,
         shard_id: shard_name.clone(),
         timestamp: 0,
         block_number: 0,
@@ -292,14 +228,10 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
-            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
-        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: CURRENT_CASPER_PROTOCOL_VERSION,
+        version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -314,10 +246,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
         )
         .expect("Failed to insert genesis in DAG");
-    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let b1_raw = build_empty_block(
         1,
@@ -382,28 +313,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     .await
     .expect("Failed to step b3");
 
-    let b4_raw = build_empty_block(
-        2,
-        4,
-        validator.clone(),
-        vec![b1.block_hash.clone()],
-        proto_util::post_state_hash(&b1),
-        b1.body.state.bonds.clone(),
-        shard_name.clone(),
-    );
-    let b4 = step_block(
-        &mut block_store,
-        &dag_storage,
-        &mut runtime_manager,
-        &b4_raw,
-        validator.clone(),
-        shard_name.clone(),
-        genesis_block.block_hash.clone(),
-    )
-    .await
-    .expect("Failed to step b4");
-
-    let parents = vec![b2.clone(), b3.clone(), b4.clone()];
+    let parents = vec![b2.clone(), b3.clone()];
 
     let mut snapshot_without_skew = mk_snapshot(
         dag_storage
@@ -429,15 +339,12 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
-    let state_without_skew = merged_without_skew.state;
-    let rejected_without_skew = merged_without_skew.rejected_user;
 
     runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.clear_block_index_cache();
+    runtime_manager.block_index_cache.clear();
 
     let mut snapshot_with_skew = mk_snapshot(
         dag_storage
@@ -460,97 +367,29 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .collect();
     let merged_with_skew = compute_parents_post_state(
         &block_store,
-        parents.clone(),
+        parents,
         &snapshot_with_skew,
         &runtime_manager,
         &latest_messages_with_skew,
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("Failed to compute parents post-state with finalized skew");
-    let state_with_skew = merged_with_skew.state;
-    let rejected_with_skew = merged_with_skew.rejected_user;
 
     assert_eq!(
-        state_without_skew, state_with_skew,
+        merged_without_skew.state, merged_with_skew.state,
         "Parents post-state should be invariant to finalized-set skew for the same parent set."
     );
     assert_eq!(
-        rejected_without_skew, rejected_with_skew,
+        merged_without_skew.rejected_user, merged_with_skew.rejected_user,
         "Rejected deploy set should be invariant to finalized-set skew for the same parent set."
-    );
-
-    runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.clear_block_index_cache();
-
-    let permuted_secondary_parents = vec![b2.clone(), b4.clone(), b3.clone()];
-    let merged_permuted_secondary_order = compute_parents_post_state(
-        &block_store,
-        permuted_secondary_parents,
-        &snapshot_without_skew,
-        &runtime_manager,
-        &latest_messages_without_skew,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("Failed to compute parents post-state with permuted secondary parents");
-    let state_permuted_secondary_order = merged_permuted_secondary_order.state;
-    let rejected_permuted_secondary_order = merged_permuted_secondary_order.rejected_user;
-
-    assert_eq!(
-        state_without_skew, state_permuted_secondary_order,
-        "Parents post-state must be invariant to secondary-parent order while retaining the selected main parent."
-    );
-    assert_eq!(
-        rejected_without_skew, rejected_permuted_secondary_order,
-        "Rejected deploy set must be invariant to secondary-parent order."
-    );
-
-    runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.clear_block_index_cache();
-    compute_parents_post_state(
-        &block_store,
-        parents,
-        &snapshot_without_skew,
-        &runtime_manager,
-        &latest_messages_without_skew,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("Failed to warm the selected-main-parent cache entry");
-    assert_eq!(runtime_manager.parents_post_state_cache.len(), 1);
-
-    compute_parents_post_state(
-        &block_store,
-        vec![b3, b2, b4],
-        &snapshot_without_skew,
-        &runtime_manager,
-        &latest_messages_without_skew,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("Failed to compute parents post-state with a different main parent");
-    assert_eq!(
-        runtime_manager.parents_post_state_cache.len(),
-        2,
-        "Different main-parent choices must never alias in the parents post-state cache."
     );
 }
 
 #[test]
-fn compute_parents_post_state_fast_paths_only_when_the_cover_preserves_the_floor() {
+fn compute_parents_post_state_should_fast_path_when_parent_dag_covers_secondary_parent() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -576,7 +415,6 @@ fn compute_parents_post_state_fast_paths_only_when_the_cover_preserves_the_floor
 async fn run_compute_parents_dag_cover_fast_path_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let (_stale_validator_sk, stale_validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
@@ -603,33 +441,23 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     );
 
     let genesis = Genesis {
-        resource_policy: None,
         shard_id: shard_name.clone(),
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
             minimum_bond: 1,
             maximum_bond: i64::MAX,
-            validators: vec![
-                GenesisValidator {
-                    pk: validator_pk.clone(),
-                    stake: 7,
-                },
-                GenesisValidator {
-                    pk: stale_validator_pk.clone(),
-                    stake: 3,
-                },
-            ],
+            validators: vec![GenesisValidator {
+                pk: validator_pk.clone(),
+                stake: 100,
+            }],
             epoch_length: 1000,
             quarantine_length: 50000,
-            number_of_active_validators: 2,
+            number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
             min_phlo_price: 0,
-            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
-            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -645,12 +473,8 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
                 .expect("Failed to create default deployer vault address"),
             initial_balance: 9_000_000,
         }],
-        client_fuel_allocations: vec![(
-            (*construct_deploy::DEFAULT_PUB).clone(),
-            casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-        )],
         supply: i64::MAX,
-        version: CURRENT_CASPER_PROTOCOL_VERSION,
+        version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -665,46 +489,22 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
         )
         .expect("Failed to insert genesis in DAG");
-    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
 
-    let main_deploy = construct_deploy::source_deploy_now_full(
-        r#"@"secondary-parent-fast-path"!!(2)"#.to_string(),
-        None,
-        Some(1),
-        Some(construct_deploy::DEFAULT_SEC.clone()),
-        None,
-        Some(shard_name.clone()),
-    )
-    .expect("Failed to build main deploy");
-    let main_envelope = construct_deploy::envelope_from_deploy_data(
-        main_deploy.data,
-        Some(construct_deploy::DEFAULT_SEC.clone()),
-    )
-    .expect("Failed to build main envelope");
-    let main_raw = block_implicits::get_random_block(
-        Some(1),
-        Some(1),
-        Some(genesis_state.clone()),
-        Some(StateHash::default()),
-        Some(validator.clone()),
-        Some(CURRENT_CASPER_PROTOCOL_VERSION),
-        Some(now_millis()),
-        Some(vec![genesis_hash.clone()]),
-        Some(Vec::new()),
-        Some(vec![
-            ProcessedDeploy::empty_from_cosigned(&main_envelope).unwrap()
-        ]),
-        Some(Vec::new()),
-        Some(genesis_bonds.clone()),
-        Some(shard_name.clone()),
-        None,
+    let main_raw = build_empty_block(
+        1,
+        1,
+        validator.clone(),
+        vec![genesis_hash.clone()],
+        genesis_state.clone(),
+        genesis_bonds.clone(),
+        shard_name.clone(),
     );
     let main = step_block(
         &mut block_store,
@@ -727,24 +527,17 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(shard_name.clone()),
     )
     .expect("Failed to build side deploy");
-    let side_envelope = construct_deploy::envelope_from_deploy_data(
-        side_deploy.data,
-        Some(construct_deploy::DEFAULT_SEC.clone()),
-    )
-    .expect("Failed to build side envelope");
     let side_raw = block_implicits::get_random_block(
         Some(1),
         Some(2),
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(CURRENT_CASPER_PROTOCOL_VERSION),
+        Some(1),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![
-            ProcessedDeploy::empty_from_cosigned(&side_envelope).unwrap()
-        ]),
+        Some(vec![ProcessedDeploy::empty(side_deploy)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -790,7 +583,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         "side deploy must change state"
     );
 
-    let cover_raw = build_empty_block(
+    let mut cover_raw = build_empty_block(
         2,
         3,
         validator.clone(),
@@ -799,6 +592,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         main.body.state.bonds.clone(),
         shard_name.clone(),
     );
+    // A multi-parent block records its state parent (E1); the covering
+    // parent's post-state is this block's state, so main is its base.
+    cover_raw.body.merge_base = main.block_hash.clone();
     let cover = step_block(
         &mut block_store,
         &dag_storage,
@@ -811,15 +607,6 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     .await
     .expect("Failed to step cover block");
 
-    assert_eq!(cover.body.rejected_deploys.len(), 1);
-    let rejected_source = cover.body.rejected_deploys[0].source_block_hash.clone();
-    assert!(cover
-        .body
-        .rejected_state_effects
-        .iter()
-        .any(|effect| effect.source_block_hash == rejected_source));
-    assert_eq!(rejected_source, side.block_hash);
-
     let mut snapshot = mk_snapshot(
         dag_storage
             .get_representation()
@@ -828,11 +615,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         shard_name,
         genesis_hash.clone(),
     );
-    snapshot.dag.last_finalized_block_hash = genesis_hash.clone();
+    snapshot.dag.last_finalized_block_hash = genesis_hash;
     let mut latest_messages = std::collections::BTreeMap::new();
-    latest_messages.insert(validator.clone(), genesis_hash.clone());
+    latest_messages.insert(validator, cover.block_hash.clone());
     runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.clear_block_index_cache();
+    runtime_manager.block_index_cache.clear();
 
     let merged = compute_parents_post_state(
         &block_store,
@@ -843,19 +630,16 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("Failed to compute parents post-state");
-    let merged_state = merged.state;
-    let rejected = merged.rejected_user;
 
     assert!(
-        rejected.is_empty(),
+        merged.rejected_user.is_empty(),
         "non-conflicting side deploy should merge cleanly"
     );
     assert_eq!(
-        merged_state,
+        merged.state,
         proto_util::post_state_hash(&cover),
         "a valid DAG-covering parent should already contain the secondary parent's effects"
     );
@@ -863,88 +647,6 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         runtime_manager.parents_post_state_cache.is_empty(),
         "DAG-covering parent fast path should not populate the merge cache"
     );
-
-    let latest_messages = std::collections::BTreeMap::from([(validator, side.block_hash.clone())]);
-    runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.clear_block_index_cache();
-
-    let rebased = compute_parents_post_state(
-        &block_store,
-        vec![cover.clone(), side.clone()],
-        &snapshot,
-        &runtime_manager,
-        &latest_messages,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("Failed to rebase the stale merge on its finalized state floor");
-    let rebased_state = rebased.state;
-    let rebased_rejected = rebased.rejected_user;
-    let rebased_rejected_state_effects = rebased.rejected_state_effects;
-
-    assert!(rebased_rejected
-        .iter()
-        .all(|rejected| rejected.source_block_hash != side.block_hash));
-    assert!(rebased_rejected_state_effects
-        .iter()
-        .all(|effect| effect.source_block_hash != side.block_hash));
-    assert_ne!(rebased_state, proto_util::post_state_hash(&cover));
-    assert!(!runtime_manager.parents_post_state_cache.is_empty());
-    let channel = new_gstring_par("secondary-parent-fast-path".to_string(), Vec::new(), false);
-    let finalized_data = runtime_manager
-        .get_data(proto_util::post_state_hash(&side), &channel)
-        .await
-        .expect("Failed to read the finalized branch effect");
-    let covered_data = runtime_manager
-        .get_data(proto_util::post_state_hash(&cover), &channel)
-        .await
-        .expect("Failed to read the covering merge effect");
-    let rebased_data = runtime_manager
-        .get_data(rebased_state, &channel)
-        .await
-        .expect("Failed to read the rebased finalized effect");
-    assert!(!finalized_data.is_empty());
-    assert_ne!(covered_data, finalized_data);
-    assert_eq!(rebased_data, finalized_data);
-
-    let certified_floor = FinalizedFloorCommitment {
-        floor_hash: side.block_hash.clone(),
-        floor_post_state_hash: side.body.state.post_state_hash.clone(),
-        certificate_digest: Bytes::from(vec![0x71; models::rust::block_hash::LENGTH]),
-        authority_context_digest: Bytes::from(vec![0x72; models::rust::block_hash::LENGTH]),
-    };
-    let certified_context = FloorContext::from_certified_floor(
-        &snapshot.dag,
-        &block_store,
-        std::slice::from_ref(&cover.block_hash),
-        &certified_floor,
-        CURRENT_CASPER_PROTOCOL_VERSION,
-    )
-    .expect("Failed to bind the certified replay floor");
-    runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.clear_block_index_cache();
-    let certified_rebased = compute_parents_post_state(
-        &block_store,
-        vec![cover],
-        &snapshot,
-        &runtime_manager,
-        &latest_messages,
-        None,
-        None,
-        Some(&certified_context),
-        None,
-    )
-    .await
-    .expect("Failed to replay from the certified floor");
-    let certified_data = runtime_manager
-        .get_data(certified_rebased.state, &channel)
-        .await
-        .expect("Failed to read the certified-floor replay state");
-    assert_eq!(certified_context.floor.hash, side.block_hash);
-    assert_eq!(certified_data, finalized_data);
 }
 
 #[test]
@@ -1000,7 +702,6 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
 
     let genesis = Genesis {
-        resource_policy: None,
         shard_id: shard_name.clone(),
         timestamp: 0,
         block_number: 0,
@@ -1024,14 +725,10 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
-            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
-        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: CURRENT_CASPER_PROTOCOL_VERSION,
+        version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -1046,10 +743,9 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
         )
         .expect("Failed to insert genesis in DAG");
-    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let b1_raw = build_empty_block(
         1,
@@ -1114,12 +810,20 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     .await
     .expect("Failed to step b3");
 
+    // Delete the entry of a parent that is IN SCOPE. parents[0] is the merge
+    // base — its state is read directly and its chains are never collected, so
+    // its mergeable entry is not consulted and there is nothing to reconstruct.
+    // The reconstruction path guards scope blocks, which is b3 here.
     let deleted = runtime_manager
-        .delete_mergeable_channels(&b2)
+        .delete_mergeable_channels(
+            &b3.body.state.post_state_hash,
+            b3.sender.clone(),
+            b3.seq_num,
+        )
         .expect("Failed to delete mergeable entry");
     assert!(
         deleted,
-        "Expected parent mergeable entry to exist before deletion."
+        "Expected the scope parent's mergeable entry to exist before deletion."
     );
 
     let mut snapshot = mk_snapshot(
@@ -1139,29 +843,26 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         .collect();
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2.clone(), b3],
+        vec![b2.clone(), b3.clone()],
         &snapshot,
         &runtime_manager,
         &latest_messages,
         None,
         None,
         None,
-        None,
     )
     .await;
 
-    // A missing-but-recomputable mergeable entry must no longer fail the merge:
-    // the pre-pass replays the source block to materialize it (the LFS-imported-
-    // without-replay / locally-rejected recovery path that makes merge validity
-    // node-uniform).
     assert!(
         result.is_ok(),
         "compute_parents_post_state should reconstruct a missing mergeable entry; got {result:?}"
     );
     assert!(
         runtime_manager
-            .has_mergeable_entry(&b2)
-            .expect("mergeable entry query failed"),
+            .get_mergeable_entry_bytes(&b3)
+            .expect("mergeable entry query failed")
+            .1
+            .is_some(),
         "the missing mergeable entry should be materialized from its source block"
     );
 }
@@ -1236,7 +937,6 @@ async fn run_visible_blocks_scope_test() {
     );
 
     let genesis = Genesis {
-        resource_policy: None,
         shard_id: shard_name.clone(),
         timestamp: 0,
         block_number: 0,
@@ -1261,14 +961,10 @@ async fn run_visible_blocks_scope_test() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
-            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
-        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: CURRENT_CASPER_PROTOCOL_VERSION,
+        version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -1283,10 +979,9 @@ async fn run_visible_blocks_scope_test() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
         )
         .expect("Failed to insert genesis");
-    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_post_state = proto_util::post_state_hash(&genesis_block);

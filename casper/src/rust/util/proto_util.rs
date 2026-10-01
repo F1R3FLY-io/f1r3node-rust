@@ -14,18 +14,14 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
+    ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
-
-mod dependency_readiness;
-#[cfg(test)]
-mod recovery_dependency_tests;
 
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
@@ -181,7 +177,7 @@ pub fn weight_from_validator_by_dag(
         .lookup(block_hash)?
         .ok_or_else(|| KvStoreError::MissingBlock {
             hash: block_hash.clone(),
-            context: " [weight_from_validator_by_dag: traversed block]".to_string(),
+            context: MissingBlockContext::new("weight_from_validator_by_dag: traversed block"),
         })?;
 
     // Try to get parent's weight for this validator
@@ -192,7 +188,9 @@ pub fn weight_from_validator_by_dag(
                 dag.lookup(parent_hash)?
                     .ok_or_else(|| KvStoreError::MissingBlock {
                         hash: parent_hash.clone(),
-                        context: " [weight_from_validator_by_dag: main parent]".to_string(),
+                        context: MissingBlockContext::new(
+                            "weight_from_validator_by_dag: main parent",
+                        ),
                     })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
@@ -267,22 +265,63 @@ pub fn get_parents_metadata(
         .map(|parent| {
             dag.lookup(parent)
                 .map_err(CasperError::from)?
-                .ok_or_else(|| CasperError::BlockNotHeld(parent.clone()))
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("get_parents_metadata"),
+                    )
+                })
         })
         .collect()
 }
 
-pub fn get_parent_metadatas_above_block_number(
+/// How a walk treats a parent this node does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnheldParent {
+    /// Verdict walks: surfaced as `BlockNotHeld` — a swallowed gap admits a
+    /// repeated deploy.
+    Surface,
+    /// Live-decision walks: settled ancestry below the restore horizon,
+    /// skipped with a warn. Under an undersized block floor the skip
+    /// under-fills the proposer's dedup window — self-harm, not a safety
+    /// hole.
+    SkipSettled,
+}
+
+pub fn parent_metadatas_above_block_number(
     block: &BlockMetadata,
     block_number: i64,
     dag: &KeyValueDagRepresentation,
+    on_unheld: UnheldParent,
 ) -> Result<Vec<BlockMetadata>, CasperError> {
-    get_parents_metadata(dag, block).map(|parents| {
-        parents
-            .into_iter()
-            .filter(|p| p.block_number >= block_number)
-            .collect()
-    })
+    let mut result = Vec::with_capacity(block.parents.len());
+    for parent in &block.parents {
+        match dag.lookup(parent).map_err(CasperError::from)? {
+            Some(meta) => {
+                if meta.block_number >= block_number {
+                    result.push(meta);
+                }
+            }
+            None => match on_unheld {
+                UnheldParent::Surface => {
+                    return Err(CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("parent_metadatas_above_block_number"),
+                    ))
+                }
+                UnheldParent::SkipSettled => {
+                    tracing::warn!(
+                        parent = %PrettyPrinter::build_string_bytes(parent),
+                        child = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        earliest_wanted = block_number,
+                        "in-scope walk skipped an unheld parent: settled ancestry below \
+                         a restore horizon, or an undersized block floor"
+                    );
+                }
+            },
+        }
+    }
+    Ok(result)
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
@@ -297,7 +336,7 @@ pub fn kept_rejected_records(block: &BlockMessage) -> impl Iterator<Item = &Reje
         .body
         .rejected_deploys
         .iter()
-        .filter(|record| !record.is_duplicate())
+        .filter(|record| !record.duplicate)
 }
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
@@ -375,9 +414,6 @@ pub fn to_latest_message(
 ) -> Result<std::collections::HashMap<Validator, BlockMetadata>, KvStoreError> {
     let mut latest_messages = std::collections::HashMap::new();
     for justification in justifications {
-        if dag.canonical_genesis_hash() == Some(&justification.latest_block_hash) {
-            continue;
-        }
         let block_metadata = dag.lookup(&justification.latest_block_hash)?;
         match block_metadata {
             Some(block_metadata) => {
@@ -400,9 +436,6 @@ pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
-        sender_bond_generation: None,
-        objective_equivocation_evidence_delta: Vec::new(),
-        finalized_floor: None,
     }
 }
 
@@ -425,7 +458,6 @@ pub fn unsigned_block_proto(
         sig_algorithm: "".to_string(),
         shard_id,
         extra_bytes: prost::bytes::Bytes::new(),
-        finalized_floor_certificate: None,
     };
 
     let hash = hash_block(&block);
@@ -433,7 +465,24 @@ pub fn unsigned_block_proto(
     block
 }
 
-pub fn hash_block(block: &BlockMessage) -> BlockHash { block.computed_block_hash() }
+pub fn hash_block(block: &BlockMessage) -> BlockHash {
+    use prost::Message;
+
+    let bytes: Vec<u8> = block
+        .header
+        .to_proto()
+        .encode_to_vec()
+        .into_iter()
+        .chain(block.body.to_proto().encode_to_vec().into_iter())
+        .chain(block.sender.clone().into_iter())
+        .chain(block.sig_algorithm.as_bytes().to_vec().into_iter())
+        .chain(block.seq_num.to_le_bytes().into_iter())
+        .chain(block.shard_id.as_bytes().to_vec().into_iter())
+        .chain(block.extra_bytes.clone().into_iter())
+        .collect();
+
+    Blake2b256::hash(bytes).into()
+}
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
     use prost::Message;
@@ -463,173 +512,16 @@ pub fn get_rholang_deploy_params(dd: &Signed<DeployData>) -> DeployParameters {
 }
 
 pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
-    parent_hashes(b)
-        .into_iter()
-        .chain(
-            b.justifications
-                .iter()
-                .map(|justification| justification.latest_block_hash.clone()),
-        )
-        .chain(
-            slash_evidence_dependencies_of(b)
-                .into_iter()
-                .flat_map(SlashEvidenceDependency::into_hashes),
-        )
-        .chain(
-            b.header
-                .objective_equivocation_evidence_delta
-                .iter()
-                .flat_map(|evidence| {
-                    [
-                        evidence.first_block_hash.clone(),
-                        evidence.second_block_hash.clone(),
-                    ]
-                }),
-        )
-        .chain(
-            b.finalized_floor_certificate
-                .iter()
-                .flat_map(|certificate| {
-                    certificate
-                        .exact_latest_messages
-                        .values()
-                        .map(|hash| hash.0.clone())
-                        .chain([
-                            certificate.predecessor_floor_hash.0.clone(),
-                            certificate.predecessor_certificate_block_hash.0.clone(),
-                            certificate.target_floor_hash.0.clone(),
-                        ])
-                        .filter(|hash| hash.iter().any(|byte| *byte != 0))
-                }),
-        )
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SlashEvidenceDependency {
-    LegacyUnary(BlockHash),
-    ObjectivePair { first: BlockHash, second: BlockHash },
-}
-
-impl SlashEvidenceDependency {
-    pub fn into_hashes(self) -> impl Iterator<Item = BlockHash> {
-        let (first, second) = match self {
-            Self::LegacyUnary(first) => (first, None),
-            Self::ObjectivePair { first, second } => (first, Some(second)),
-        };
-        std::iter::once(first).chain(second)
-    }
-}
-
-pub fn slash_evidence_dependencies_of(b: &BlockMessage) -> Vec<SlashEvidenceDependency> {
-    b.body
-        .system_deploys
+    let missing_parents: HashSet<BlockHash> = parent_hashes(b).into_iter().collect();
+    let missing_justifications: HashSet<BlockHash> = b
+        .justifications
         .iter()
-        .filter_map(|deploy| match deploy {
-            ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash,
-                        equivocation_block_hash,
-                        ..
-                    },
-                ..
-            } => Some(match equivocation_block_hash {
-                Some(second) => SlashEvidenceDependency::ObjectivePair {
-                    first: invalid_block_hash.clone(),
-                    second: second.clone(),
-                },
-                None => SlashEvidenceDependency::LegacyUnary(invalid_block_hash.clone()),
-            }),
-            _ => None,
-        })
+        .map(|j| j.latest_block_hash.clone())
+        .collect();
+
+    (missing_parents.union(&missing_justifications))
+        .cloned()
         .collect()
-}
-
-pub fn all_dependencies_have_admitted_metadata(
-    block: &BlockMessage,
-    dag: &KeyValueDagRepresentation,
-) -> Result<bool, KvStoreError> {
-    let (_, missing) = dependency_metadata_partition(block, dag)?;
-    Ok(missing.is_empty())
-}
-
-pub(crate) fn dependency_hashes_iter(block: &BlockMessage) -> impl Iterator<Item = &BlockHash> {
-    block
-        .header
-        .parents_hash_list
-        .iter()
-        .chain(
-            block
-                .justifications
-                .iter()
-                .map(|item| &item.latest_block_hash),
-        )
-        .chain(block.body.system_deploys.iter().flat_map(|deploy| {
-            match deploy {
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy:
-                        SystemDeployData::Slash {
-                            invalid_block_hash,
-                            equivocation_block_hash,
-                            ..
-                        },
-                    ..
-                } => Some(invalid_block_hash)
-                    .into_iter()
-                    .chain(equivocation_block_hash.as_ref()),
-                _ => None.into_iter().chain(None),
-            }
-        }))
-        .chain(
-            block
-                .header
-                .objective_equivocation_evidence_delta
-                .iter()
-                .flat_map(|evidence| [&evidence.first_block_hash, &evidence.second_block_hash]),
-        )
-        .chain(
-            block
-                .finalized_floor_certificate
-                .iter()
-                .flat_map(|certificate| {
-                    certificate
-                        .exact_latest_messages
-                        .values()
-                        .map(|hash| &hash.0)
-                        .chain([
-                            &certificate.predecessor_floor_hash.0,
-                            &certificate.predecessor_certificate_block_hash.0,
-                            &certificate.target_floor_hash.0,
-                        ])
-                        .filter(|hash| hash.iter().any(|byte| *byte != 0))
-                }),
-        )
-}
-
-pub(crate) fn dependencies_have_admitted_metadata<E>(
-    block: &BlockMessage,
-    mut lookup: impl FnMut(&BlockHash) -> Result<bool, E>,
-) -> Result<bool, E> {
-    dependency_readiness::all_observed(dependency_hashes_iter(block).map(&mut lookup))
-}
-
-pub fn dependency_metadata_partition(
-    block: &BlockMessage,
-    dag: &KeyValueDagRepresentation,
-) -> Result<(Vec<BlockHash>, Vec<BlockHash>), KvStoreError> {
-    let mut admitted = Vec::new();
-    let mut missing = Vec::new();
-    for dependency in dependencies_hashes_of(block) {
-        if dag.lookup(&dependency)?.is_some() {
-            admitted.push(dependency);
-        } else {
-            missing.push(dependency);
-        }
-    }
-    Ok((admitted, missing))
 }
 
 // Return hashes of all blocks that are yet to be seen by the passed in block
@@ -638,10 +530,7 @@ pub fn unseen_block_hashes(
     justifications: &Vec<Justification>,
     current_block_hash: Option<&BlockHash>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
-    let mut dags_latest_messages = dag.latest_messages()?;
-    if let Some(genesis_hash) = dag.canonical_genesis_hash() {
-        dags_latest_messages.retain(|_, metadata| metadata.block_hash != *genesis_hash);
-    }
+    let dags_latest_messages = dag.latest_messages()?;
     let blocks_latest_messages = to_latest_message(justifications, dag)?;
 
     // From input block perspective we want to find what latest messages are not seen
@@ -795,8 +684,6 @@ mod fork_choice_b1_repro_tests {
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-    use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
-    use models::rust::casper::protocol::casper_message::{F1r3flyState, StateEffectId};
     use parking_lot::RwLock as PlRwLock;
     use proptest::prelude::*;
     use prost::bytes::Bytes;
@@ -807,96 +694,28 @@ mod fork_choice_b1_repro_tests {
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
 
-    fn v(n: u8) -> Bytes { Bytes::from(vec![n; models::rust::validator::LENGTH]) }
-
-    #[test]
-    fn rejected_state_effect_identity_and_order_are_committed_by_block_hash() {
-        let body = Body {
-            state: F1r3flyState {
-                pre_state_hash: h(1),
-                post_state_hash: h(2),
-                bonds: Vec::new(),
-                bond_generations: Vec::new(),
-                active_validators: Vec::new(),
-                block_number: 1,
-            },
-            deploys: Vec::new(),
-            rejected_deploys: Vec::new(),
-            rejected_state_effects: Vec::new(),
-            applied_state_effects: Vec::new(),
-            system_deploys: Vec::new(),
-            extra_bytes: Bytes::new(),
-            applied_from_scope: Vec::new(),
-            merge_base: Bytes::new(),
-        };
-        let block = unsigned_block_proto(
-            body,
-            block_header(vec![h(0).to_vec()], 2, 1),
-            Vec::new(),
-            "root".to_string(),
-            None,
-        );
-        let original_hash = hash_block(&block);
-
-        let mut with_effects = block.clone();
-        with_effects.body.rejected_state_effects = vec![
-            StateEffectId {
-                source_block_hash: h(3),
-                execution_index: 1,
-            },
-            StateEffectId {
-                source_block_hash: h(4),
-                execution_index: 2,
-            },
-        ];
-        let effect_hash = hash_block(&with_effects);
-        assert_ne!(original_hash, effect_hash);
-
-        with_effects.body.rejected_state_effects.swap(0, 1);
-        assert_ne!(effect_hash, hash_block(&with_effects));
-    }
-
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
         wm.insert(v.clone(), 7i64);
-        crate::rust::test_metadata::certify(
-            BlockMetadata {
-                block_hash: hash,
-                post_state_hash: h(num as u8),
-                parents,
-                sender: v.clone(),
-                justifications: vec![],
-                weight_map: wm,
-                bond_generation_map: BTreeMap::from([(
-                    v.clone(),
-                    models::rust::bond_generation::BondGeneration::GENESIS,
-                )]),
-                active_validator_set: std::collections::BTreeSet::from([v.clone()]),
-                block_number: num,
-                sequence_number: num as i32,
-                admission_outcome: None,
-                directly_finalized: false,
-                finalized: false,
-                fault_tolerance_value: 0.0,
-                successful_state_effect_indices: Default::default(),
-                rejected_state_effects: Default::default(),
-                applied_state_effects: Default::default(),
-                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-                objective_equivocation_evidence_delta: Vec::new(),
-                sender_authority: None,
-                settled_history_admission: None,
-                finalized_floor_commitment: None,
-                admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
-                approved_genesis: false,
-                merge_base: Bytes::new(),
-            },
-            models::rust::bond_generation::BondGeneration::GENESIS,
-        )
+        BlockMetadata {
+            block_hash: hash,
+            parents,
+            sender: v.clone(),
+            justifications: vec![],
+            weight_map: wm,
+            block_number: num,
+            sequence_number: num as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
+        }
     }
 
     fn dag_with(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store).unwrap();
+        let mut bms = BlockMetadataStore::new(store);
         let mut dag_set = imbl::HashSet::new();
         let mut bnum = imbl::HashMap::new();
         let mut mp = imbl::HashMap::new();
@@ -912,7 +731,6 @@ mod fork_choice_b1_repro_tests {
         }
         KeyValueDagRepresentation {
             dag_set,
-            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -920,17 +738,9 @@ mod fork_choice_b1_repro_tests {
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
-            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
-            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-                InMemoryKeyValueStore::new(),
-            )))),
-            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
-                InMemoryKeyValueStore::new(),
-            ))
-            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
@@ -943,59 +753,6 @@ mod fork_choice_b1_repro_tests {
         }
     }
 
-    #[test]
-    fn latest_message_reporting_is_invariant_when_genesis_body_is_omitted() {
-        let genesis_hash = h(0);
-        let live_hash = h(1);
-        let live_validator = v(1);
-        let silent_validator = v(2);
-        let mut full = dag_with(vec![
-            md(genesis_hash.clone(), vec![], 0, &silent_validator),
-            md(live_hash.clone(), vec![], 1, &live_validator),
-        ]);
-        full.canonical_genesis_hash = Some(genesis_hash.clone());
-        full.latest_messages_map
-            .insert(live_validator.clone(), live_hash.clone());
-        full.latest_messages_map
-            .insert(silent_validator.clone(), genesis_hash.clone());
-        let mut restored = full.clone();
-        restored.dag_set.remove(&genesis_hash);
-        restored.block_number_map.remove(&genesis_hash);
-        let justifications = vec![
-            Justification {
-                validator: live_validator,
-                latest_block_hash: live_hash,
-            },
-            Justification {
-                validator: silent_validator,
-                latest_block_hash: genesis_hash,
-            },
-        ];
-
-        assert_eq!(
-            to_latest_message(&justifications, &full).unwrap(),
-            to_latest_message(&justifications, &restored).unwrap()
-        );
-        assert_eq!(
-            unseen_block_hashes(&full, &justifications, None).unwrap(),
-            unseen_block_hashes(&restored, &justifications, None).unwrap()
-        );
-    }
-
-    #[test]
-    fn latest_message_reporting_fails_for_noncanonical_missing_body() {
-        let validator = v(3);
-        let missing = h(9);
-        let dag = dag_with(Vec::new());
-        let justifications = vec![Justification {
-            validator,
-            latest_block_hash: missing,
-        }];
-
-        assert!(to_latest_message(&justifications, &dag).is_err());
-        assert!(unseen_block_hashes(&dag, &justifications, None).is_err());
-    }
-
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
     /// block's main parent can sit below the horizon — hash-only, never
     /// indexed. That absence is a statement about THIS node's sync, so it
@@ -1003,8 +760,8 @@ mod fork_choice_b1_repro_tests {
     /// defers the block for fetch-and-retry), never as a `KeyNotFound`
     /// processing failure that hard-fails admission.
     #[test]
-    fn weight_from_validator_missing_parent_is_typed_err() {
-        let v = Bytes::from(vec![9; models::rust::validator::LENGTH]);
+    fn a_main_parent_below_the_restore_horizon_is_a_missing_block() {
+        let v = h(9);
         let child = h(1);
         let missing = h(2); // below the horizon: referenced, never indexed
         let mut dag = dag_with(vec![md(child.clone(), vec![missing.clone()], 1, &v)]);
@@ -1017,13 +774,60 @@ mod fork_choice_b1_repro_tests {
             "unheld main parent must be MissingBlock naming the parent, got {err:?}"
         );
         // The deferral collapse the block pipeline routes on: the typed
-        // absence becomes BlockNotHeld, never a judged exception.
+        // absence becomes BlockNotHeld with the accessor tag riding along.
+        match crate::rust::errors::CasperError::from(err) {
+            crate::rust::errors::CasperError::BlockNotHeld(hash, site) => {
+                assert_eq!(hash, missing);
+                assert!(
+                    !site.accessor().is_empty(),
+                    "the accessor tag must survive the collapse, got {site:?}"
+                );
+            }
+            other => panic!("MissingBlock must collapse to BlockNotHeld, got {other:?}"),
+        }
+    }
+
+    /// The live-decision policy skips a sub-horizon parent instead of
+    /// erroring; the held sibling and the number filter are unaffected.
+    #[test]
+    fn in_scope_walk_skips_an_unheld_parent_and_keeps_the_held_window() {
+        let v = h(9);
+        let held_parent = h(4);
+        let missing_parent = h(2); // below the horizon: referenced, never indexed
+        let child = h(1);
+        let held_meta = md(held_parent.clone(), vec![], 5, &v);
+        let child_meta = md(
+            child.clone(),
+            vec![held_parent.clone(), missing_parent.clone()],
+            6,
+            &v,
+        );
+        let dag = dag_with(vec![held_meta, child_meta.clone()]);
+
+        let in_window =
+            parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert_eq!(
+            in_window.iter().map(|m| &m.block_hash).collect::<Vec<_>>(),
+            vec![&held_parent],
+            "the held parent survives; the unheld one is silently settled"
+        );
+
+        let above_window =
+            parent_metadatas_above_block_number(&child_meta, 6, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert!(
+            above_window.is_empty(),
+            "the number filter still bounds the held parent"
+        );
+
+        // The verdict policy refuses the same DAG.
         assert!(
             matches!(
-                crate::rust::errors::CasperError::from(err),
-                crate::rust::errors::CasperError::BlockNotHeld(hash) if hash == missing
+                parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),
+                Err(crate::rust::errors::CasperError::BlockNotHeld(ref h, _)) if *h == missing_parent
             ),
-            "MissingBlock must collapse to BlockNotHeld for the deferral path"
+            "the verdict walk must surface the unheld parent"
         );
     }
 
@@ -1063,7 +867,7 @@ mod fork_choice_b1_repro_tests {
 
     #[test]
     fn slashed_block_senders_is_view_independent_g1() {
-        let (va, vb, vc) = (v(50), v(51), v(52));
+        let (va, vb, vc) = (h(50), h(51), h(52));
         let (b1, b2, b3) = (h(1), h(2), h(3));
         let blocks = vec![
             md(b1.clone(), vec![], 1, &va),
@@ -1123,7 +927,7 @@ mod fork_choice_b1_repro_tests {
                 .map(|i| {
                     let hash = h((i + 1) as u8);
                     let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
-                    let sender = v(100 + senders[i]);
+                    let sender = h(100 + senders[i]);
                     md(hash, parents, (i + 1) as i64, &sender)
                 })
                 .collect();
@@ -1151,7 +955,7 @@ mod fork_choice_b1_repro_tests {
             let mut expected = std::collections::HashMap::new();
             for i in 0..n {
                 if *slashed_flags.get(i).unwrap_or(&false) {
-                    expected.insert(h((i + 1) as u8), v(100 + senders[i]));
+                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
                 }
             }
             prop_assert_eq!(&map_a, &expected);

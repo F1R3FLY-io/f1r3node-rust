@@ -1,7 +1,6 @@
 new
   rl(`rho:registry:lookup`), RhoSpecCh,
   getBlockData(`rho:block:data`),
-  setBlockData(`rho:test:block:data:set`),
   stdlog(`rho:io:stdlog`),
   test_get_block_data
 in {
@@ -14,18 +13,15 @@ in {
   } |
 
   contract test_get_block_data(rhoSpec, _, ackCh) = {
-    new retCh, setCh in {
+    new retCh in {
       getBlockData!(*retCh) |
       for (@blockNumber, @timestamp, @sender <- retCh) {
-        setBlockData!("blockNumber", 1, *setCh) |
-        for (_ <- setCh) {
-          rhoSpec!("assertMany",
-            [
-              ((0, "==", timestamp), "timestamp is zero"),
-              ((0, "==", blockNumber), "the blocknumber is zero"),
-              (("00".hexToBytes(), "==", sender), "sender is 0x00")
-            ], *ackCh)
-        }
+        rhoSpec!("assertMany",
+          [
+            ((0, "==", timestamp), "timestamp is zero"),
+            ((0, "==", blockNumber), "the blocknumber is zero"),
+            (("00".hexToBytes(), "==", sender), "sender is 0x00")
+          ], *ackCh)
       }
     }
   }

@@ -5,18 +5,20 @@
 // purged, and nothing excluded the still-buffered block from the next
 // dependency-free harvest.
 //
-//   validation_failures_are_bounded_and_preserve_buffer_evidence — every
-//   failure quarantines the hash and retains its dependency graph.
+//   validation_failures_are_bounded_and_end_in_purge — every failure below
+//   the cap quarantines the hash (pacing the harvest); the cap'th failure
+//   demands purge, and acting on it empties the buffer.
 //
 //   a_success_clears_the_failure_ledger — a settled verdict resets both the
 //   attempt count and the quarantine.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use casper::rust::blocks::block_processor::{
-    validation_error_attempts_max, BlockProcessorDependencies, ValidationFailureDisposition,
+    BlockProcessorDependencies, ValidationFailureDisposition, VALIDATION_ERROR_ATTEMPTS_MAX,
 };
 use casper::rust::engine::block_retriever::BlockRetriever;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
@@ -40,35 +42,30 @@ async fn dependencies() -> BlockProcessorDependencies<TransportLayerStub> {
     let retriever_connections = ConnectionsCell {
         peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer.clone()]))),
     };
+    let block_retriever = BlockRetriever::new(
+        Arc::new(Mutex::new(HashMap::new())),
+        transport.clone(),
+        retriever_connections,
+        rp_conf.clone(),
+    );
 
     let (block_store, _indexed_dag_storage, casper_buffer) = with_storage(|bs, ids| async move {
         let mut kvm = InMemoryStoreManager::new();
         let store = kvm.store("parents-map".to_string()).await.unwrap();
         let typed_store = KeyValueTypedStoreImpl::new(store);
-        let cb = CasperBufferKeyValueStorage::new_from_kv_store(
-            typed_store,
-            kvm.store(CasperBufferKeyValueStorage::PENDING_POLICY_NAMESPACE.into())
-                .await
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        let cb = CasperBufferKeyValueStorage::new_from_kv_store(typed_store)
+            .await
+            .unwrap();
         (bs, ids, cb)
     })
     .await;
-
-    let block_retriever = BlockRetriever::new(
-        casper_buffer.clone(),
-        transport.clone(),
-        retriever_connections,
-        rp_conf.clone(),
-    );
 
     let mut dag_kvm = InMemoryStoreManager::new();
     let dag_storage = BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap();
 
     BlockProcessorDependencies::new(
         block_store,
+        casper_buffer,
         dag_storage,
         block_retriever,
         transport,
@@ -76,18 +73,17 @@ async fn dependencies() -> BlockProcessorDependencies<TransportLayerStub> {
         rp_conf,
         None,
     )
-    .unwrap()
 }
 
 #[tokio::test]
-async fn validation_failures_are_bounded_and_preserve_buffer_evidence() {
+async fn validation_failures_are_bounded_and_end_in_purge() {
     let deps = dependencies().await;
     let block = get_random_block_default();
     deps.commit_to_buffer(&block, None).await.unwrap();
     let serde_hash = BlockHashSerde(block.block_hash.clone());
     assert!(deps.casper_buffer().is_pendant(&serde_hash));
 
-    let max = validation_error_attempts_max();
+    let max = VALIDATION_ERROR_ATTEMPTS_MAX;
     for attempt in 1..max {
         assert_eq!(
             deps.note_validation_failure(&block.block_hash).unwrap(),
@@ -103,17 +99,15 @@ async fn validation_failures_are_bounded_and_preserve_buffer_evidence() {
     }
     assert_eq!(
         deps.note_validation_failure(&block.block_hash).unwrap(),
-        ValidationFailureDisposition::RetainAndQuarantine,
-        "the cap'th consecutive failure must start a paced retry episode",
+        ValidationFailureDisposition::PurgeAndQuarantine,
+        "the cap'th consecutive failure must end the retry loop",
     );
+
+    deps.remove_from_buffer(&block).await.unwrap();
+    deps.ack_processed(&block).await.unwrap();
     assert!(
-        deps.casper_buffer().is_pendant(&serde_hash),
-        "local validation failure must not delete dependency evidence",
-    );
-    assert_eq!(
-        deps.note_validation_failure(&block.block_hash).unwrap(),
-        ValidationFailureDisposition::RetainAndQuarantine,
-        "time cannot reset the saturated failure count",
+        !deps.casper_buffer().is_pendant(&serde_hash),
+        "after the demanded purge the block is no longer harvestable",
     );
 }
 

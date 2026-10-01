@@ -70,9 +70,9 @@ fn block_event(
         .iter()
         .map(|pd| {
             DeployEvent::new(
-                hex::encode(pd.deploy_id()),
+                hex::encode(pd.deploy.sig.clone()),
                 pd.cost.cost as i64,
-                hex::encode(pd.primary().pk.bytes.clone()),
+                hex::encode(pd.deploy.pk.bytes.clone()),
                 pd.is_failed,
             )
         })

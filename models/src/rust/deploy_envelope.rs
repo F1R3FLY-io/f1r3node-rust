@@ -8,7 +8,7 @@ use prost::Message;
 
 use crate::casper::authorization_policy_v61::Policy;
 use crate::casper::{CompoundSigner, DeployDataProto};
-use crate::rust::casper::protocol::casper_message::DeployData;
+use crate::rust::cost_deploy_data::DeployData;
 use crate::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use crate::rust::signed_phlo_deploy::{
     FundedDeploy, FundedDeployLimits, OfferedFundedDeploy, FUNDED_DEPLOY_AUTHORIZATION_VERSION,

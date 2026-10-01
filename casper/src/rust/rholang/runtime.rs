@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::mem;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -10,16 +11,12 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed};
-use models::casper::{
-    CostAuthorityByteEventProto, CostAuthorityEventProto, CostAuthorityResourceProto,
-    CostAuthorityWitnessProto,
-};
+use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, GPrincipalId, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
+    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -27,187 +24,42 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use models::rust::deploy_envelope::DeployEnvelope;
-use models::rust::host_work::HostWorkLimits;
+use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
-use prost::bytes::Bytes;
-use prost::Message;
-use rholang::rust::interpreter::accounting;
-use rholang::rust::interpreter::accounting::authority::{
-    stack_transfer_event_id, AuthorityBornStack, AuthorityEvent, AuthorityStackBirth,
-    ResourceMultiset,
-};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
-use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
-    BlockData, DeployAuthority, DeployData as SystemProcessDeployData,
+    BlockData, DeployData as SystemProcessDeployData,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
-use rspace_plus_plus::rspace::trace::event::{Event as RSpaceEvent, IOEvent};
-
-#[path = "runtime/deploy_context.rs"]
-mod deploy_context;
-use deploy_context::RuntimeDeployRef;
-
-#[derive(Clone, Copy)]
-enum DefaultCostAuthority {
-    Funders,
-    Unit,
-}
-
-#[derive(Clone, Copy)]
-enum AuthorityTraceItem {
-    Comm([u8; 32]),
-    Produce([u8; 32]),
-}
-
-fn causal_authority_events_from_trace(
-    trace: impl IntoIterator<Item = AuthorityTraceItem>,
-    events: &[AuthorityEvent<[u8; 32]>],
-    require_authority_for_every_comm: bool,
-) -> Result<Vec<AuthorityEvent<[u8; 32]>>, CasperError> {
-    let trace = trace.into_iter().collect::<Vec<_>>();
-    let mut by_identity = BTreeMap::new();
-    for event in events {
-        if by_identity.insert(event.event_id, event.clone()).is_some() {
-            return Err(CasperError::InvalidCostSettlement(
-                "authority execution produced a duplicate COMM identity".to_string(),
-            ));
-        }
-    }
-    let mut ordered = Vec::with_capacity(events.len());
-    for item in trace.iter().copied() {
-        match item {
-            AuthorityTraceItem::Comm(identity) => match by_identity.remove(&identity) {
-                Some(event) => ordered.push(event),
-                None if require_authority_for_every_comm => {
-                    return Err(CasperError::InvalidCostSettlement(
-                        "committed COMM trace is missing its authority event".to_string(),
-                    ));
-                }
-                None => {}
-            },
-            AuthorityTraceItem::Produce(produce_hash) => {
-                let mut cell_index = 0u64;
-                loop {
-                    let identity = stack_transfer_event_id(&produce_hash, cell_index);
-                    let Some(event) = by_identity.remove(&identity) else {
-                        break;
-                    };
-                    ordered.push(event);
-                    cell_index = cell_index.checked_add(1).ok_or_else(|| {
-                        CasperError::InvalidCostSettlement(
-                            "cost-stack transfer index overflow".to_string(),
-                        )
-                    })?;
-                }
-            }
-        }
-    }
-    if !by_identity.is_empty() {
-        let missing = by_identity
-            .keys()
-            .take(8)
-            .map(hex::encode)
-            .collect::<Vec<_>>()
-            .join(",");
-        return Err(CasperError::InvalidCostSettlement(format!(
-            "authority execution contains {} event(s) absent from the committed RSpace trace: {}",
-            by_identity.len(),
-            missing
-        )));
-    }
-    Ok(ordered)
-}
-
-pub(crate) fn causal_authority_events(
-    deploy_log: &[RSpaceEvent],
-    events: &[AuthorityEvent<[u8; 32]>],
-) -> Result<Vec<AuthorityEvent<[u8; 32]>>, CasperError> {
-    causal_authority_events_from_trace(authority_trace_items(deploy_log), events, true)
-}
-
-pub(crate) fn causal_authority_events_from_lifecycle_trace(
-    deploy_log: &[RSpaceEvent],
-    events: &[AuthorityEvent<[u8; 32]>],
-) -> Result<Vec<AuthorityEvent<[u8; 32]>>, CasperError> {
-    causal_authority_events_from_trace(authority_trace_items(deploy_log), events, false)
-}
-
-fn authority_trace_items(deploy_log: &[RSpaceEvent]) -> Vec<AuthorityTraceItem> {
-    let mut trace = Vec::new();
-    for event in deploy_log {
-        match event {
-            RSpaceEvent::Comm(comm) => {
-                trace.extend(comm.produces.iter().map(|produce| {
-                    AuthorityTraceItem::Produce(
-                        produce
-                            .hash
-                            .bytes()
-                            .try_into()
-                            .expect("RSpace produce identity length"),
-                    )
-                }));
-                trace.push(AuthorityTraceItem::Comm(
-                    comm.cost_identity()
-                        .bytes()
-                        .try_into()
-                        .expect("COMM identity length"),
-                ));
-            }
-            RSpaceEvent::IoEvent(IOEvent::Produce(produce)) => {
-                trace.push(AuthorityTraceItem::Produce(
-                    produce
-                        .hash
-                        .bytes()
-                        .try_into()
-                        .expect("RSpace produce identity length"),
-                ));
-            }
-            RSpaceEvent::IoEvent(IOEvent::Consume(_)) => {}
-        }
-    }
-    trace
-}
-
-fn authority_resources_to_proto(
-    resources: &rholang::rust::interpreter::accounting::authority::ResourceMultiset<[u8; 32]>,
-) -> Vec<CostAuthorityResourceProto> {
-    resources
-        .0
-        .iter()
-        .map(|(key, amount)| CostAuthorityResourceProto {
-            key: key.to_vec().into(),
-            amount: *amount,
-        })
-        .collect()
-}
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
+    BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC,
+    BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
     EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
     EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
+use crate::rust::rholang::types::eval_collector::EvalCollector;
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_result::SystemDeployResult;
@@ -215,7 +67,7 @@ use crate::rust::util::rholang::system_deploy_user_error::{
     SystemDeployPlatformFailure, SystemDeployUserError,
 };
 use crate::rust::util::rholang::tools::Tools;
-use crate::rust::util::rholang::{interpreter_util, supply};
+use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 /// Process-wide ephemeral identity to sign exploratory deploys.
 /// The key pair is generated randomly once per node process, so values derived
@@ -229,21 +81,10 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
-    user_execution_origin: &'static str,
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self {
-        Self {
-            runtime,
-            user_execution_origin: "unattributed",
-        }
-    }
-
-    pub(crate) fn with_user_execution_origin(mut self, origin: &'static str) -> Self {
-        self.user_execution_origin = origin;
-        self
-    }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
 }
 
 #[allow(type_alias_bounds)]
@@ -258,26 +99,19 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
     }
 }
 
-/// Diagnostic label for a system deploy (closeBlock / slash / checkBalance /
-/// redeem — precharge/refund no longer exist under the in-calculus cost
-/// accounting, D3). Called lazily inside tracing field evaluation, so it
-/// costs nothing unless the event is enabled.
+/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
+/// refund). Called lazily inside tracing field evaluation, so it costs nothing
+/// unless the event is enabled.
 fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
     let any = sd.as_any();
     if any.downcast_ref::<CloseBlockDeploy>().is_some() {
         "closeBlock"
     } else if any.downcast_ref::<SlashDeploy>().is_some() {
         "slash"
-    } else if any
-        .downcast_ref::<crate::rust::util::rholang::costacc::check_balance::CheckBalance>()
-        .is_some()
-    {
-        "checkBalance"
-    } else if any
-        .downcast_ref::<crate::rust::util::rholang::costacc::redeem_deploy::RedeemDeploy>()
-        .is_some()
-    {
-        "redeem"
+    } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
+        "precharge"
+    } else if any.downcast_ref::<RefundDeploy>().is_some() {
+        "refund"
     } else {
         "other"
     }
@@ -301,107 +135,6 @@ impl RuntimeOps {
 
     /* Compute state with deploys (genesis block) and System deploys (regular block) */
 
-    /// Multi-sig-aware variant of [`Self::compute_state`]. Takes
-    /// `Vec<Cosigned<DeployData>>` so multi-signature deploys execute
-    /// through signed-source metering and realized settlement at
-    /// `play_deploys_for_state_cosigned`. For legacy single-signature
-    /// deploys (1-element Cosigned envelopes), behavior is byte-identical.
-    pub async fn compute_state_cosigned(
-        &mut self,
-        start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
-        system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
-        block_data: BlockData,
-        invalid_blocks: HashMap<BlockHash, Validator>,
-    ) -> Result<
-        (
-            StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
-            Vec<(ProcessedSystemDeploy, NumberChannelsEndVal)>,
-        ),
-        CasperError,
-    > {
-        tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-cosigned-started");
-        self.runtime.set_block_data(block_data.clone()).await;
-        self.runtime.set_invalid_blocks(invalid_blocks).await;
-
-        let (start_hash, processed_deploys) = self
-            .play_deploys_for_state_cosigned(start_hash, terms)
-            .await?;
-
-        let (current_hash, processed_system_deploys) = self
-            .play_system_deploys_for_state(&start_hash, system_deploys)
-            .await?;
-
-        Ok((current_hash, processed_deploys, processed_system_deploys))
-    }
-
-    pub(crate) async fn play_system_deploys_for_state(
-        &mut self,
-        start_hash: &StateHash,
-        system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
-    ) -> Result<
-        (
-            StateHash,
-            Vec<(ProcessedSystemDeploy, NumberChannelsEndVal)>,
-        ),
-        CasperError,
-    > {
-        let mut current_hash = start_hash.clone();
-        let mut processed_system_deploys = Vec::with_capacity(system_deploys.len());
-        for system_deploy_enum in system_deploys.into_iter() {
-            let result = match system_deploy_enum {
-                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Slash(
-                    mut slash_deploy,
-                ) => {
-                    self.play_system_deploy(&current_hash, &mut slash_deploy)
-                        .await?
-                }
-                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                    mut close_deploy,
-                ) => {
-                    self.play_system_deploy(&current_hash, &mut close_deploy)
-                        .await?
-                }
-                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Redeem(
-                    mut redeem_deploy,
-                ) => {
-                    self.play_system_deploy(&current_hash, &mut redeem_deploy)
-                        .await?
-                }
-            };
-            match result {
-                SystemDeployResult::PlaySucceeded {
-                    state_hash,
-                    processed_system_deploy,
-                    mergeable_channels,
-                    result: _,
-                } => {
-                    processed_system_deploys.push((processed_system_deploy, mergeable_channels));
-                    current_hash = state_hash;
-                }
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy: ProcessedSystemDeploy::Failed { error_msg, .. },
-                } => {
-                    return Err(CasperError::RuntimeError(format!(
-                        "Unexpected system error during cosigned play of system deploy: {}",
-                        error_msg
-                    )));
-                }
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy: ProcessedSystemDeploy::Succeeded { .. },
-                } => {
-                    return Err(CasperError::RuntimeError(
-                        "Unreachable code path. This is likely caused by a bug in the runtime."
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-
-        Ok((current_hash, processed_system_deploys))
-    }
-
     /**
      * Evaluates deploys and System deploys with checkpoint to get final state hash
      */
@@ -412,6 +145,7 @@ impl RuntimeOps {
         system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -448,8 +182,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_invalid_blocks", rss_kb);
         }
 
-        let (start_hash, processed_deploys) =
-            self.play_deploys_for_state(start_hash, terms).await?;
+        let (start_hash, processed_deploys) = self
+            .play_deploys_for_state(start_hash, terms, play_budget)
+            .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_play_deploys_for_state", rss_kb);
         }
@@ -470,12 +205,6 @@ impl RuntimeOps {
                     mut close_deploy,
                 ) => {
                     self.play_system_deploy(&current_hash, &mut close_deploy)
-                        .await?
-                }
-                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Redeem(
-                    mut redeem_deploy,
-                ) => {
-                    self.play_system_deploy(&current_hash, &mut redeem_deploy)
                         .await?
                 }
             };
@@ -523,7 +252,7 @@ impl RuntimeOps {
      */
     pub async fn compute_genesis(
         &mut self,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        terms: Vec<Signed<DeployData>>,
         block_time: i64,
         block_number: i64,
     ) -> Result<
@@ -551,8 +280,7 @@ impl RuntimeOps {
             .play_deploys_for_genesis(&genesis_pre_state_hash, terms)
             .await?;
 
-        let (_, processed_deploys) = play_result;
-        let post_state_hash = self.runtime.create_checkpoint().await.root.to_bytes_prost();
+        let (post_state_hash, processed_deploys) = play_result;
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-genesis-finished");
         Ok((genesis_pre_state_hash, post_state_hash, processed_deploys))
     }
@@ -561,738 +289,12 @@ impl RuntimeOps {
 
     /**
      * Evaluates deploys on root hash with checkpoint to get final state hash
-     * */
-    /// Multi-signature-aware variant of [`Self::play_deploys_for_state`].
-    /// Accepts `Vec<Cosigned<DeployData>>` so multi-signature deploys preserve
-    /// their complete authority envelope through execution and realized-cost
-    /// settlement. For legacy single-signature deploys (1-element Cosigned
-    /// envelopes), behavior is byte-identical to `play_deploys_for_state`.
-    pub async fn play_deploys_for_state_cosigned(
-        &mut self,
-        start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
-    ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
-        let (state, processed, exhausted) = self
-            .play_deploys_for_state_cosigned_internal(start_hash, terms, false, None)
-            .await?;
-        debug_assert!(exhausted.is_empty());
-        Ok((state, processed))
-    }
-
-    pub(crate) async fn state_bound_cost_evidence_for_state_cosigned(
-        &mut self,
-        start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
-        fee_recipient: &PublicKey,
-    ) -> Result<
-        (
-            StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
-            crate::rust::util::rholang::acceptance::AdmissionOutcome,
-        ),
-        CasperError,
-    > {
-        self.state_bound_cost_evidence_for_state_cosigned_internal(
-            start_hash,
-            terms,
-            fee_recipient,
-            None,
-        )
-        .await
-    }
-
-    pub async fn state_bound_cost_evidence_for_state_cosigned_with_host_work(
-        &mut self,
-        start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
-        fee_recipient: &PublicKey,
-        host_work_limits: HostWorkLimits,
-    ) -> Result<
-        (
-            StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
-            crate::rust::util::rholang::acceptance::AdmissionOutcome,
-        ),
-        CasperError,
-    > {
-        self.state_bound_cost_evidence_for_state_cosigned_internal(
-            start_hash,
-            terms,
-            fee_recipient,
-            Some(host_work_limits),
-        )
-        .await
-    }
-
-    async fn state_bound_cost_evidence_for_state_cosigned_internal(
-        &mut self,
-        start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
-        fee_recipient: &PublicKey,
-        host_work_limits: Option<HostWorkLimits>,
-    ) -> Result<
-        (
-            StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
-            crate::rust::util::rholang::acceptance::AdmissionOutcome,
-        ),
-        CasperError,
-    > {
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
-            .await?;
-        let mut current_root = start_hash.clone();
-        let mut accepted = Vec::with_capacity(terms.len());
-        let mut outcome = crate::rust::util::rholang::acceptance::AdmissionOutcome::default();
-        let mut closed_groups = std::collections::BTreeSet::new();
-        let fee_vault_address =
-            rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(
-                fee_recipient,
-            )
-            .ok_or_else(|| {
-                CasperError::InvalidCostSettlement(
-                    "block proposer has no canonical SystemVault address".to_string(),
-                )
-            })?;
-        let fee_address = fee_vault_address.to_base58();
-        let handler_fuel_query = Compiler::source_to_adt(
-            &crate::rust::util::rholang::costacc::vault_payer::validator_fuel_balance_query_source(
-                &fee_vault_address,
-            ),
-        )
-        .map_err(CasperError::InterpreterError)?;
-        let mut handler_fuel_exhausted = false;
-
-        for cosigned in terms {
-            let host_work = host_work_limits.map(HostWorkBudget::new);
-            if handler_fuel_exhausted {
-                outcome
-                    .deferred
-                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
-                        &cosigned,
-                    ));
-                continue;
-            }
-            let handler_fuel =
-                crate::rust::util::rholang::acceptance::decode_validator_fuel_balance(
-                    &self
-                        .play_query_par_current_strict(handler_fuel_query.clone())
-                        .await?,
-                )?;
-            if handler_fuel < crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY
-            {
-                handler_fuel_exhausted = true;
-                outcome
-                    .deferred
-                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
-                        &cosigned,
-                    ));
-                continue;
-            }
-            let group_key = accounting::funding_sig(&cosigned).lane_hash();
-            if closed_groups.contains(&group_key) {
-                outcome
-                    .rejected
-                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
-                        &cosigned,
-                    ));
-                continue;
-            }
-            let pre_state_root: [u8; 32] = current_root.as_ref().try_into().map_err(|_| {
-                CasperError::InvalidCostSettlement(
-                    "authority reservation pre-state is not Blake2b-256".to_string(),
-                )
-            })?;
-            let mut frontier_by_encoding = BTreeMap::new();
-            let mut previous_capacity = None;
-            let discovered = loop {
-                let frontier = frontier_by_encoding.values().cloned().collect::<Vec<_>>();
-                let capacity = {
-                    let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
-                        runtime_ops: self,
-                        pre_state_root,
-                    };
-                    crate::rust::util::rholang::acceptance::state_bound_execution_cap_with_frontier_and_host_work(
-                        &cosigned, &frontier, &reader, host_work.as_ref(),
-                    )
-                    .await
-                };
-                let capacity = match capacity {
-                    Ok(capacity) => capacity,
-                    Err(CasperError::InvalidCostSettlement(reason)) => {
-                        tracing::debug!(reason, "state-bound capacity derivation rejected deploy");
-                        break None;
-                    }
-                    Err(error) => return Err(error),
-                };
-                if previous_capacity.is_some_and(|previous| capacity <= previous) {
-                    tracing::debug!(capacity, "state-bound frontier did not increase capacity");
-                    break None;
-                }
-                previous_capacity = Some(capacity);
-                let evaluated = self
-                    .process_deploy_cosigned_with_budget_and_authority_mode_and_host_work(
-                        cosigned.clone(),
-                        Cost::create(capacity, "state-bound authority capacity"),
-                        None,
-                        DefaultCostAuthority::Funders,
-                        false,
-                        host_work.clone(),
-                    )
-                    .await;
-                let (processed, user_mergeable, exhausted) = match evaluated {
-                    Ok(result) => result,
-                    Err(CasperError::InterpreterError(InterpreterError::HostWorkRejected)) => {
-                        break None;
-                    }
-                    Err(error) => return Err(error),
-                };
-                if exhausted {
-                    let before = frontier_by_encoding.len();
-                    for authority in self.runtime.cost.authority_frontier() {
-                        frontier_by_encoding.insert(authority.encode_to_vec(), authority);
-                    }
-                    self.runtime
-                        .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
-                        .await?;
-                    if frontier_by_encoding.len() == before {
-                        tracing::debug!(
-                            capacity,
-                            "state-bound exhaustion exposed no new authenticated authority"
-                        );
-                        break None;
-                    }
-                    continue;
-                }
-
-                let mut witness_proto = processed
-                    .authority_cost_witness
-                    .as_ref()
-                    .ok_or_else(|| {
-                        CasperError::InvalidCostSettlement(
-                            "state-bound execution is missing its authority witness".to_string(),
-                        )
-                    })?
-                    .clone();
-                if witness_proto.pre_state_root.is_empty() {
-                    witness_proto.pre_state_root = pre_state_root.to_vec().into();
-                }
-                let checkpoint = self.runtime.create_checkpoint().await;
-                let user_post_state = checkpoint.root.to_bytes_prost();
-                if witness_proto.post_state_root.is_empty() {
-                    witness_proto.post_state_root = user_post_state.clone();
-                }
-                let decoded = crate::rust::util::rholang::acceptance::authority_witness_from_proto_with_host_work(
-                    &witness_proto,
-                    true,
-                    host_work.as_ref(),
-                );
-                let mut witness = match decoded {
-                    Ok(witness) => witness,
-                    Err(CasperError::InvalidCostSettlement(reason))
-                        if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) =>
-                    {
-                        tracing::debug!(reason, "state-bound host-work budget rejected deploy");
-                        break None;
-                    }
-                    Err(error) => return Err(error),
-                };
-                witness.pre_state_root = pre_state_root;
-                witness.post_state_root = user_post_state.as_ref().try_into().map_err(|_| {
-                    CasperError::InvalidCostSettlement(
-                        "state-bound user post-state is not Blake2b-256".to_string(),
-                    )
-                })?;
-                break Some((processed, user_mergeable, witness, user_post_state));
-            };
-
-            let Some((mut processed, user_mergeable, mut witness, user_post_state)) = discovered
-            else {
-                self.runtime
-                    .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
-                    .await?;
-                closed_groups.insert(group_key);
-                outcome
-                    .rejected
-                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
-                        &cosigned,
-                    ));
-                continue;
-            };
-
-            self.runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
-                .await?;
-            let prepared = {
-                let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
-                    runtime_ops: self,
-                    pre_state_root,
-                };
-                crate::rust::util::rholang::acceptance::prepare_state_bound_authority_reservation_with_host_work(
-                    &cosigned,
-                    &witness,
-                    &reader,
-                    &fee_recipient.bytes,
-                    host_work.as_ref(),
-                )
-                .await
-            };
-            let prepared = match prepared {
-                Ok(prepared) => prepared,
-                Err(CasperError::InvalidCostSettlement(reason)) => {
-                    tracing::debug!(reason, "state-bound physical reservation rejected deploy");
-                    closed_groups.insert(group_key);
-                    outcome.rejected.push(
-                        crate::rust::util::rholang::acceptance::admission_deploy_id(&cosigned),
-                    );
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            self.runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&user_post_state))
-                .await?;
-
-            let lifecycle = async {
-                let reserved_resources = prepared
-                    .certificate
-                    .allocation
-                    .checked_add(&prepared.certificate.byte_allocation)
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
-                    .checked_add(&prepared.certificate.fee_allocation)
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                let mut reserve_allocations = Vec::new();
-                for (key, amount) in &reserved_resources.0 {
-                    let signature = prepared.signatures.get(key).ok_or_else(|| {
-                        CasperError::InvalidCostSettlement(
-                            "vault reservation references an unresolved signature".to_string(),
-                        )
-                    })?;
-                    let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(
-                        signature,
-                    )
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                    reserve_allocations.push(
-                        crate::rust::util::rholang::costacc::vault_cost_deploy::VaultAllocation::new(
-                            payer.address.to_base58(),
-                            i64::try_from(*amount).map_err(|_| {
-                                CasperError::InvalidCostSettlement(
-                                    "vault reservation exceeds the platform range".to_string(),
-                                )
-                            })?,
-                        )?,
-                    );
-                }
-                reserve_allocations.push(
-                    crate::rust::util::rholang::costacc::vault_cost_deploy::VaultAllocation::validator_fuel(
-                        fee_address.clone(),
-                        crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY,
-                    )?,
-                );
-                let mut mergeable = user_mergeable;
-                let mut reserved_inventory = prepared.reserved_inventory()?;
-                let mut settlement_signatures = prepared.signatures.clone();
-                for birth in &witness.born_stacks {
-                    if reserved_inventory
-                        .stacks
-                        .insert(birth.stack_id, birth.cells.clone())
-                        .is_some()
-                        || reserved_inventory
-                            .born_stacks
-                            .insert(birth.stack_id, birth.produce_hash)
-                            .is_some()
-                    {
-                        return Err(CasperError::InvalidCostSettlement(
-                            "born authority stack collides with reserved inventory".to_string(),
-                        ));
-                    }
-                    for cell in &birth.cells {
-                        let signature = rholang::rust::interpreter::accounting::authority::canonical_cost_signature(cell)
-                            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                        let key = rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&signature)
-                            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
-                            .lane_hash();
-                        match settlement_signatures.get(&key) {
-                            Some(existing) if existing != &signature => {
-                                return Err(CasperError::InvalidCostSettlement(
-                                    "born authority stack signature collides with its lane"
-                                        .to_string(),
-                                ));
-                            }
-                            Some(_) => {}
-                            None => {
-                                settlement_signatures.insert(key, signature);
-                            }
-                        }
-                    }
-                }
-                let physical_settlement = rholang::rust::interpreter::accounting::authority::allocate_physical_settlement_with_host_work(
-                    &witness.events,
-                    &settlement_signatures,
-                    &reserved_inventory,
-                    host_work.as_ref(),
-                )
-                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                rholang::rust::interpreter::accounting::authority::verify_physical_settlement(
-                    &witness.events,
-                    &settlement_signatures,
-                    &reserved_inventory,
-                    &physical_settlement.draws,
-                )
-                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                if physical_settlement != prepared.maximum_cost_settlement {
-                    return Err(CasperError::InvalidCostSettlement(
-                        "retained state-bound execution changed its physical authority settlement"
-                            .to_string(),
-                    ));
-                }
-                let after_cost = prepared
-                    .inventory
-                    .balances
-                    .checked_sub(&physical_settlement.custody_debit)
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                let byte_settlement = rholang::rust::interpreter::accounting::authority::allocate_quantitative_events_with_custody(
-                    &witness.byte_events,
-                    &after_cost,
-                    &prepared.inventory.balance_custody,
-                )
-                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                if byte_settlement.logical_debit != prepared.certificate.byte_allocation {
-                    return Err(CasperError::InvalidCostSettlement(
-                        "retained state-bound execution changed its quantitative byte settlement"
-                            .to_string(),
-                    ));
-                }
-
-                let mut settlement_stacks = prepared
-                    .purse_stacks
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                settlement_stacks.extend(
-                    self.resolve_authority_born_purse_stacks(&witness.born_stacks)
-                        .await?,
-                );
-                supply::apply_stack_pops(
-                    self,
-                    &settlement_stacks,
-                    &physical_settlement.stack_pops,
-                )
-                .await?;
-                let stack_log = self
-                    .runtime
-                    .take_event_log()
-                    .await
-                    .into_iter()
-                    .map(event_converter::to_casper_event)
-                    .collect::<Vec<_>>();
-
-                let mut settlements = Vec::new();
-                for (key, reserved_amount) in &reserved_resources.0 {
-                    let signature = prepared.signatures.get(key).ok_or_else(|| {
-                        CasperError::InvalidCostSettlement(
-                            "vault settlement references an unresolved signature".to_string(),
-                        )
-                    })?;
-                    let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(
-                        signature,
-                    )
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                    let burn = physical_settlement.balance_debit.get(key);
-                    let byte_burn = byte_settlement.logical_debit.get(key);
-                    let fee = prepared.certificate.fee_allocation.get(key);
-                    let total_burn = burn.checked_add(byte_burn).ok_or_else(|| {
-                        CasperError::InvalidCostSettlement(
-                            "actual vault burn overflows u64".to_string(),
-                        )
-                    })?;
-                    if total_burn
-                        .checked_add(fee)
-                        .is_none_or(|total| total > *reserved_amount)
-                    {
-                        return Err(CasperError::InvalidCostSettlement(
-                            "actual vault settlement exceeds its reservation".to_string(),
-                        ));
-                    }
-                    settlements.push(
-                        crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::new(
-                            payer.address.to_base58(),
-                            i64::try_from(total_burn).map_err(|_| {
-                                CasperError::InvalidCostSettlement(
-                                    "vault burn exceeds the platform range".to_string(),
-                                )
-                            })?,
-                            i64::try_from(fee).map_err(|_| {
-                                CasperError::InvalidCostSettlement(
-                                    "vault fee exceeds the platform range".to_string(),
-                                )
-                            })?,
-                        )?,
-                    );
-                }
-                settlements.push(
-                    crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::validator_fuel(
-                        fee_address.clone(),
-                        crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY,
-                    )?,
-                );
-                let mut apply =
-                    crate::rust::util::rholang::costacc::vault_cost_deploy::ApplyCostDeploy::new(
-                        prepared.certificate.reservation_id,
-                        reserve_allocations,
-                        settlements,
-                        fee_address.clone(),
-                        crate::rust::util::rholang::costacc::vault_cost_deploy::lifecycle_random(
-                            &prepared.certificate.reservation_id,
-                            1,
-                        ),
-                    )?;
-                let fee_plan = crate::rust::util::rholang::acceptance::monetary_fee::required_fee_plan(&prepared.certificate)?;
-                apply = apply.with_fee_cursor(
-                    fee_plan.transition().map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
-                    fee_plan.payer_count(),
-                )?;
-                let (apply_log, apply_result, apply_mergeable) =
-                    self.play_system_deploy_internal(&mut apply).await?;
-                if let Either::Left(error) = apply_result {
-                    tracing::debug!(
-                        error = ?error,
-                        "state-bound atomic vault application rejected deploy"
-                    );
-                    return Ok(None);
-                }
-                mergeable.extend(apply_mergeable);
-
-                witness.certificate_id = prepared.certificate.certificate_id();
-                witness.pre_state_root = pre_state_root;
-                witness.settlement = physical_settlement.balance_debit.clone();
-                witness.byte_settlement = byte_settlement.logical_debit;
-                witness.physical_draws = physical_settlement.draws;
-                witness
-                    .verify_event_authorities()
-                    .and_then(|_| {
-                        witness.verify_with_settlement(
-                            &prepared.certificate,
-                            |_, _, _| Ok(witness.settlement.clone()),
-                        )
-                    })
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-
-                let mut lifecycle_log = std::mem::take(&mut processed.deploy_log);
-                lifecycle_log.extend(stack_log);
-                lifecycle_log.extend(apply_log);
-                processed.deploy_log = lifecycle_log;
-                processed.authority_funding_certificate = Some(
-                    crate::rust::util::rholang::acceptance::authority_certificate_to_proto(
-                        &prepared.certificate,
-                    ),
-                );
-                processed.authority_cost_witness = Some(
-                    crate::rust::util::rholang::acceptance::authority_witness_to_proto(&witness),
-                );
-                Ok(Some((processed, mergeable, witness)))
-            }
-            .await;
-
-            let Some((mut processed, mergeable, mut witness)) = (match lifecycle {
-                Ok(result) => result,
-                Err(error) if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) => {
-                    tracing::debug!(
-                        reason = %error,
-                        "state-bound host-work budget rejected settlement"
-                    );
-                    None
-                }
-                Err(error) => {
-                    self.runtime
-                        .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
-                        .await?;
-                    return Err(error);
-                }
-            }) else {
-                self.runtime
-                    .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
-                    .await?;
-                closed_groups.insert(group_key);
-                outcome
-                    .rejected
-                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
-                        &cosigned,
-                    ));
-                continue;
-            };
-
-            let mergeable = self.get_number_channels_data(&mergeable).await?;
-            let checkpoint = self.runtime.create_checkpoint().await;
-            let next_root = checkpoint.root.to_bytes_prost();
-            processed.pre_state_hash = current_root;
-            processed.post_state_hash = next_root.clone();
-            witness.post_state_root = next_root.as_ref().try_into().map_err(|_| {
-                CasperError::InvalidCostSettlement(
-                    "authority settlement post-state is not Blake2b-256".to_string(),
-                )
-            })?;
-            processed.authority_cost_witness =
-                Some(crate::rust::util::rholang::acceptance::authority_witness_to_proto(&witness));
-            current_root = next_root;
-            for (stack_id, pop_count) in &prepared.maximum_cost_settlement.stack_pops {
-                let total = outcome.stack_pops.entry(*stack_id).or_default();
-                *total = total.checked_add(*pop_count).ok_or_else(|| {
-                    CasperError::InvalidCostSettlement(
-                        "authority stack pop count overflow".to_string(),
-                    )
-                })?;
-            }
-            for (stack_id, stack) in &prepared.purse_stacks {
-                if outcome
-                    .purse_stacks
-                    .insert(*stack_id, stack.clone())
-                    .is_some()
-                {
-                    return Err(CasperError::InvalidCostSettlement(
-                        "committed authority outcome contains a duplicate stack identity"
-                            .to_string(),
-                    ));
-                }
-            }
-            let channels = prepared
-                .signatures
-                .iter()
-                .map(|(key, signature)| {
-                    let funding =
-                        rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
-                            signature,
-                        )
-                        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                    Ok((*key, supply::supply_channel(&funding)))
-                })
-                .collect::<Result<BTreeMap<_, _>, CasperError>>()?;
-            crate::rust::util::rholang::acceptance::record_authority_debits(
-                &mut outcome.debits,
-                &prepared.maximum_cost_settlement.balance_debit,
-                &channels,
-            )?;
-            crate::rust::util::rholang::acceptance::record_authority_debits(
-                &mut outcome.debits,
-                &prepared.certificate.byte_allocation,
-                &channels,
-            )?;
-            crate::rust::util::rholang::acceptance::record_authority_debits(
-                &mut outcome.fee_debits,
-                &prepared.certificate.fee_allocation,
-                &channels,
-            )?;
-            outcome.admitted.push(cosigned);
-            accepted.push((processed, mergeable));
-        }
-
-        Ok((current_root, accepted, outcome))
-    }
-
-    async fn play_deploys_for_state_cosigned_internal(
-        &mut self,
-        start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
-        retain_exhausted: bool,
-        execution_caps: Option<&[i64]>,
-    ) -> Result<
-        (
-            StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
-            Vec<Bytes>,
-        ),
-        CasperError,
-    > {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "play_deploys_for_state_cosigned.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    step, curr, curr as i64 - prev as i64, curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-
-        tracing::info!(target: "f1r3fly.casper.play-deploys-cosigned", "play-deploys-cosigned-started");
-        log_mem_step("start");
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
-            .await?;
-        log_mem_step("after_reset");
-
-        if execution_caps.is_some_and(|caps| caps.len() != terms.len()) {
-            return Err(CasperError::InvalidCostSettlement(
-                "authority-derived execution capacity count differs from the deploy count"
-                    .to_string(),
-            ));
-        }
-
-        let mut res = Vec::with_capacity(terms.len());
-        let mut exhausted = Vec::new();
-        let mut current_root = start_hash.clone();
-        for (idx, cosigned) in terms.into_iter().enumerate() {
-            if mem_profile_enabled {
-                let before = format!("before_deploy_{}", idx + 1);
-                log_mem_step(&before);
-            }
-            let primary_sig = cosigned.primary().sig.clone();
-            let budget = execution_caps
-                .map(|caps| Cost::create(caps[idx], "authority-derived execution capacity"))
-                .unwrap_or_else(Cost::unsafe_max);
-            let (mut processed, mergeable, did_exhaust) = self
-                .process_deploy_cosigned_with_budget_and_authority(cosigned, budget, None, true)
-                .await?;
-            if did_exhaust {
-                if !retain_exhausted {
-                    return Err(CasperError::InvalidCostSettlement(format!(
-                        "admitted deploy {} exhausted its state-bound execution capacity",
-                        hex::encode(&primary_sig)
-                    )));
-                }
-                exhausted.push(primary_sig);
-            }
-            let mergeable = self.get_number_channels_data(&mergeable).await?;
-            let checkpoint = self.runtime.create_checkpoint().await;
-            let next_root = checkpoint.root.to_bytes_prost();
-            processed.pre_state_hash = current_root;
-            processed.post_state_hash = next_root.clone();
-            if let Some(witness) = processed.authority_cost_witness.as_mut() {
-                witness.pre_state_root = processed.pre_state_hash.clone();
-                witness.post_state_root = processed.post_state_hash.clone();
-            }
-            current_root = next_root;
-            res.push((processed, mergeable));
-            if mem_profile_enabled {
-                let after = format!("after_deploy_{}", idx + 1);
-                log_mem_step(&after);
-            }
-        }
-
-        log_mem_step("after_final_checkpoint");
-        Ok((current_root, res, exhausted))
-    }
-
+     */
     pub async fn play_deploys_for_state(
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
@@ -1306,16 +308,27 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
         }
 
-        let mut res = Vec::with_capacity(terms.len());
-        let mut current_root = start_hash.clone();
+        // Checked after each deploy, so one always plays and a spent budget
+        // defers the rest to the next proposal; the block carries exactly
+        // the played prefix.
+        let budget_started = std::time::Instant::now();
+        let total_terms = terms.len();
+        let mut res = Vec::with_capacity(total_terms);
         for deploy in terms {
-            let (mut processed, mergeable) = self.play_ordinary_deploy(deploy).await?;
-            let checkpoint = self.runtime.create_checkpoint().await;
-            let next_root = checkpoint.root.to_bytes_prost();
-            processed.pre_state_hash = current_root;
-            processed.post_state_hash = next_root.clone();
-            current_root = next_root;
-            res.push((processed, mergeable));
+            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            if let Some(budget) = play_budget {
+                if budget_started.elapsed() >= budget && res.len() < total_terms {
+                    tracing::info!(
+                        target: "f1r3fly.casper.play_deploys",
+                        executed = res.len(),
+                        deferred = total_terms - res.len(),
+                        budget_ms = budget.as_millis() as u64,
+                        elapsed_ms = budget_started.elapsed().as_millis() as u64,
+                        "play budget spent: remaining deploys deferred to a later proposal"
+                    );
+                    break;
+                }
+            }
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -1324,19 +337,21 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_create_checkpoint", rss_kb);
         }
+        let final_checkpoint = self.runtime.create_checkpoint().await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_create_checkpoint", rss_kb);
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_root_to_bytes", rss_kb);
         }
+        let final_root = final_checkpoint.root.to_bytes_prost();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_root_to_bytes", rss_kb);
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint", rss_kb);
         }
-        Ok((current_root, res))
+        Ok((final_root, res))
     }
 
     /**
@@ -1345,7 +360,7 @@ impl RuntimeOps {
     pub async fn play_deploys_for_genesis(
         &mut self,
         start_hash: &StateHash,
-        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        terms: Vec<Signed<DeployData>>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys_genesis", "play-deploys-genesis-started");
@@ -1354,409 +369,228 @@ impl RuntimeOps {
             .await?;
 
         let mut res = Vec::with_capacity(terms.len());
-        let mut current_root = start_hash.clone();
-        for cosigned in terms {
-            let (mut processed, mergeable, _) = self
-                .process_deploy_cosigned_with_budget_and_authority_mode(
-                    cosigned,
-                    Cost::unsafe_max(),
-                    None,
-                    DefaultCostAuthority::Unit,
-                    true,
-                )
-                .await?;
-            let mergeable = self.get_number_channels_data(&mergeable).await?;
-            let checkpoint = self.runtime.create_checkpoint().await;
-            let next_root = checkpoint.root.to_bytes_prost();
-            processed.pre_state_hash = current_root;
-            processed.post_state_hash = next_root.clone();
-            current_root = next_root;
-            res.push((processed, mergeable));
+        for deploy in terms {
+            res.push(self.process_deploy_with_mergeable_data(deploy).await?);
         }
-        Ok((current_root, res))
+
+        let final_checkpoint = self.runtime.create_checkpoint().await;
+        Ok((final_checkpoint.root.to_bytes_prost(), res))
     }
 
-    /// Evaluates a legacy single-signature deploy under the canonical
-    /// reservation and realized-cost settlement protocol. The adapter preserves
-    /// the deploy identifier and cost trace by uplifting to a one-signer
-    /// `Cosigned<DeployData>` envelope and delegating to the canonical path.
-    pub async fn play_ordinary_deploy(
+    /**
+     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
+     */
+    pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-            .map_err(|e| {
-                CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
-            })?;
-        self.play_ordinary_deploy_cosigned(cosigned).await
+        // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
+        tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
+        let mut eval_collector_state = EvalCollector::new();
+
+        let deploy_pk = deploy.pk.bytes.clone();
+        let deploy_pk_hex = hex::encode(&deploy_pk);
+        let deploy_sig_hex = hex::encode(&deploy.sig);
+        let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
+        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
+
+        // Evaluates Pre-charge system deploy
+        let pre_charge_result = {
+            // Using tracing events for async - Span[F].traceI("precharge") from Scala
+            tracing::debug!(target: "f1r3fly.casper.precharge", "precharge-started");
+            tracing::debug!(
+                "PreCharging {} for {}",
+                deploy_pk_hex.as_str(),
+                deploy.data.total_phlo_charge()
+            );
+            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_precharge_internal", rss_kb);
+            }
+            let precharge_start = Instant::now();
+            let (event_log, result, mergeable_channels) = self
+                .play_system_deploy_internal(&mut PreChargeDeploy {
+                    charge_amount: deploy.data.total_phlo_charge(),
+                    pk: deploy.pk.clone(),
+                    rand: pre_charge_rand,
+                })
+                .await?;
+            metrics::histogram!(BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(precharge_start.elapsed().as_secs_f64());
+            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_internal", rss_kb);
+            }
+            eval_collector_state.add(event_log, mergeable_channels);
+            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_collect", rss_kb);
+            }
+            result
+        };
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge", rss_kb);
+        }
+
+        match pre_charge_result {
+            Either::Right(_) => {
+                // Evaluates user deploy
+                let pd = {
+                    // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
+                    tracing::debug!(target: "f1r3fly.casper.user_deploy", "user-deploy-started");
+                    tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
+                    // Evaluates user deploy and append event log to local state
+                    {
+                        let evaluate_start = Instant::now();
+                        let (mut pd, mc) = self.process_deploy(deploy).await?;
+                        metrics::histogram!(BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(evaluate_start.elapsed().as_secs_f64());
+                        let deploy_log = mem::take(&mut pd.deploy_log);
+                        eval_collector_state.add(deploy_log, mc);
+                        pd
+                    }
+                };
+                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_user_deploy", rss_kb);
+                }
+
+                // Evaluates Refund system deploy
+                let refund_result = {
+                    // Using tracing events for async - Span[F].traceI("refund") from Scala
+                    tracing::debug!(target: "f1r3fly.casper.refund", "refund-started");
+                    tracing::debug!(
+                        "Refunding {} with {}",
+                        deploy_pk_hex.as_str(),
+                        pd.refund_amount()
+                    );
+                    let refund_start = Instant::now();
+                    let (event_log, result, mergeable_channels) = self
+                        .play_system_deploy_internal(&mut RefundDeploy {
+                            refund_amount: pd.refund_amount(),
+                            rand: refund_rand,
+                        })
+                        .await?;
+                    metrics::histogram!(BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                        .record(refund_start.elapsed().as_secs_f64());
+                    eval_collector_state.add(event_log, mergeable_channels);
+                    result
+                };
+                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_refund", rss_kb);
+                }
+
+                match refund_result {
+                    Either::Right(_) => {
+                        // Get mergeable channels data
+                        let mergeable_channels_data = self
+                            .get_number_channels_data(&eval_collector_state.mergeable_channels)
+                            .await?;
+
+                        let deploy_log = mem::take(&mut eval_collector_state.event_log);
+                        if let Some(rss_kb) =
+                            crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
+                        {
+                            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_collect_result", rss_kb);
+                        }
+
+                        Ok((
+                            ProcessedDeploy { deploy_log, ..pd },
+                            mergeable_channels_data,
+                        ))
+                    }
+
+                    Either::Left(error) => {
+                        // If Pre-charge succeeds and Refund fails, it's a platform error.
+                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
+                        let refund_amount = pd.refund_amount();
+                        let failure_context = format!(
+                            "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
+                            error.error_message,
+                            deploy_sig_hex,
+                            deploy_pk_hex.as_str(),
+                            refund_amount
+                        );
+                        metrics::counter!(
+                            "casper_runtime_refund_failures_total",
+                            "source" => CASPER_METRICS_SOURCE
+                        )
+                        .increment(1);
+                        tracing::warn!("Refund failure '{}'", failure_context);
+                        Err(CasperError::SystemRuntimeError(
+                            SystemDeployPlatformFailure::GasRefundFailure(failure_context),
+                        ))
+                    }
+                }
+            }
+
+            Either::Left(error) => {
+                tracing::error!(error = %error.error_message, "pre-charge evaluation failed");
+
+                // Handle evaluation errors from PreCharge
+                // - assigning 0 cost - replay should reach the same state
+                let mut empty_pd = ProcessedDeploy::empty(deploy);
+                empty_pd.is_failed = true;
+                empty_pd.system_deploy_error = Some(error.error_message);
+
+                // Update result with accumulated event logs
+                // Get mergeable channels data
+                let mergeable_channels_data = self
+                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
+                    .await?;
+
+                let deploy_log = mem::take(&mut eval_collector_state.event_log);
+
+                Ok((
+                    ProcessedDeploy {
+                        deploy_log,
+                        ..empty_pd
+                    },
+                    mergeable_channels_data,
+                ))
+            }
+        }
     }
 
-    /// Multi-signature aware deploy execution with cost accounting.
-    ///
-    /// D3 (DR-9, OD-1/OD-2): the singular-phlo escrow model is REMOVED. There
-    /// is no per-cosigner pre-charge/refund fan-out. Production admission first
-    /// evaluates the candidate once with the finite capacity derived from its
-    /// authority supply and retains that execution as the block witness.
-    /// Exhaustion is a rejection and cannot become a certificate. An admitted
-    /// deploy therefore has exact state-bound evidence that its complete cost
-    /// fits the capacity, while `total_cost()` records the canonical RSpace
-    /// introduction, payload-transfer, trace-byte, and COMM execution cost. The
-    /// single supply decrement is applied at block close after that witnessed
-    /// user state.
-    ///
-    /// This is now a thin wrapper over [`Self::process_deploy_cosigned`] (which
-    /// owns the INNER soft-checkpoint that rolls back a FAILED user deploy's
-    /// effects), plus the mergeable-channel data collection. `cost` on the
-    /// returned `ProcessedDeploy` is the canonical weighted `total_cost()`.
-    pub async fn play_ordinary_deploy_cosigned(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        tracing::debug!(target: "f1r3fly.casper.play-deploy", "play-deploy-started");
-        let primary_pk_hex = hex::encode(&cosigned.primary().pk.bytes);
-
-        // USER DEPLOY (owns its own inner soft-checkpoint for failed-deploy
-        // rollback). The admission gate certified and reserved authority; the
-        // realized debit is checked and applied at block close.
-        tracing::debug!(target: "f1r3fly.casper.user-deploy",
-            "user-deploy-started primary_pk={}", primary_pk_hex);
-        let (pd, mc) = self.process_deploy_cosigned(cosigned).await?;
-
-        let mut mergeable: HashMap<Par, MergeType> = HashMap::new();
-        mergeable.extend(mc);
-        let mergeable_channels_data = self.get_number_channels_data(&mergeable).await?;
-        Ok((pd, mergeable_channels_data))
-    }
-
-    /// Legacy single-signature user-deploy execution. Uplifts to
-    /// `Cosigned<DeployData>` and delegates to [`Self::process_deploy_cosigned`]
-    /// for byte-identical observable behavior.
     pub async fn process_deploy(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-            .map_err(|e| {
-                CasperError::RuntimeError(format!(
-                    "legacy uplift to Cosigned failed in process_deploy: {e}"
-                ))
-            })?;
-        self.process_deploy_cosigned(cosigned).await
-    }
-
-    /// Multi-signature aware user-deploy execution. Keeps the INNER
-    /// soft-checkpoint that wraps the user deploy ONLY — on user-deploy errors
-    /// the inner scope reverts the user deploy's effects so a failed deploy
-    /// leaves no residue. Admission has reserved authority against Σ⟦s⟧, but
-    /// settlement is deferred until the realized cost is known.
-    ///
-    /// `cost` on the returned `ProcessedDeploy` is the canonical weighted
-    /// `total_cost()`: one execution unit per committed COMM plus quantitative
-    /// introduction, payload-transfer, and trace bytes. The
-    pub async fn process_deploy_cosigned(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        let (processed, mergeable, _) = self
-            .process_deploy_cosigned_with_budget(cosigned, Cost::unsafe_max())
-            .await?;
-        Ok((processed, mergeable))
-    }
-
-    async fn process_deploy_cosigned_with_budget(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
-        self.process_deploy_cosigned_with_budget_and_authority(cosigned, budget, None, true)
-            .await
-    }
-
-    async fn process_deploy_cosigned_with_budget_and_authority(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        report_exhaustion: bool,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
-        self.process_deploy_cosigned_with_budget_and_authority_mode(
-            cosigned,
-            budget,
-            authority_allocation,
-            DefaultCostAuthority::Funders,
-            report_exhaustion,
-        )
-        .await
-    }
-
-    async fn process_deploy_cosigned_with_budget_and_authority_mode(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        default_authority: DefaultCostAuthority,
-        report_exhaustion: bool,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
-        self.process_deploy_cosigned_with_budget_and_authority_mode_and_host_work(
-            cosigned,
-            budget,
-            authority_allocation,
-            default_authority,
-            report_exhaustion,
-            None,
-        )
-        .await
-    }
-
-    async fn process_deploy_cosigned_with_budget_and_authority_mode_and_host_work(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        default_authority: DefaultCostAuthority,
-        report_exhaustion: bool,
-        host_work: Option<HostWorkBudget>,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
-        let envelope =
-            DeployEnvelope::from_body_envelope(cosigned).map_err(CasperError::RuntimeError)?;
-        let (processed, evaluation, exhausted) = self
-            .process_envelope_with_budget_and_authority_mode_and_host_work(
-                envelope,
-                budget,
-                authority_allocation,
-                default_authority,
-                report_exhaustion,
-                host_work,
-            )
-            .await?;
-        Ok((processed, evaluation.mergeable, exhausted))
-    }
-
-    async fn process_envelope_with_budget_and_authority_mode_and_host_work(
-        &mut self,
-        envelope: DeployEnvelope,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        default_authority: DefaultCostAuthority,
-        report_exhaustion: bool,
-        host_work: Option<HostWorkBudget>,
-    ) -> Result<(ProcessedDeploy, EvaluateResult, bool), CasperError> {
-        // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
-        // deploy it reverts that deploy's effects (D3: no pre-charge state).
-        let mut deploy_result = ProcessedDeploy::from_envelope(envelope);
+        // Keep a soft checkpoint before user deploy execution so failed deploy rollback
+        // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
 
-        let eval_result = match self
-            .evaluate_runtime_deploy(
-                RuntimeDeployRef::Retained(deploy_result.envelope()),
-                budget,
-                authority_allocation,
-                default_authority,
-                host_work,
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                self.runtime.revert_to_soft_checkpoint(fallback).await;
-                return Err(error);
-            }
-        };
+        // Evaluate deploy
+        let eval_result = self.evaluate(&deploy).await?;
 
         let deploy_log = self.runtime.take_event_log().await;
-        let authority_events =
-            match causal_authority_events(&deploy_log, &eval_result.authority_events) {
-                Ok(events) => events,
-                Err(error) => {
-                    self.runtime.revert_to_soft_checkpoint(fallback).await;
-                    return Err(error);
-                }
-            };
 
         let eval_succeeded = eval_result.errors.is_empty();
-        let born_stacks = if eval_succeeded {
-            match self
-                .resolve_authority_stack_births(&eval_result.authority_stack_births)
-                .await
-            {
-                Ok(births) => births,
-                Err(error) => {
-                    self.runtime.revert_to_soft_checkpoint(fallback).await;
-                    return Err(error);
-                }
-            }
-        } else {
-            Vec::new()
-        };
-        let exhausted = eval_result
-            .errors
-            .iter()
-            .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError));
+        let deploy_sig = deploy.sig.clone();
 
-        let deploy_log = deploy_log
-            .into_iter()
-            .map(event_converter::to_casper_event)
-            .collect::<Vec<_>>();
-        deploy_result.cost = Cost::to_proto(eval_result.cost.clone());
-        deploy_result.deploy_log = deploy_log;
-        deploy_result.is_failed = !eval_succeeded;
-        deploy_result.authority_cost_witness = Some(CostAuthorityWitnessProto {
-                protocol_version: rholang::rust::interpreter::accounting::authority::AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
-                certificate_id: Bytes::new(),
-                pre_state_root: Bytes::new(),
-                post_state_root: Bytes::new(),
-                events: authority_events
-                    .iter()
-                    .map(|event| CostAuthorityEventProto {
-                        event_id: event.event_id.to_vec().into(),
-                        debit: authority_resources_to_proto(&event.debit),
-                        authority: Some(event.authority.clone()),
-                    })
-                    .collect(),
-                realized: authority_resources_to_proto(&eval_result.authority_realized),
-                settlement: Vec::new(),
-                physical_draws: Vec::new(),
-                born_stacks: born_stacks
-                    .iter()
-                    .map(|birth| models::casper::CostAuthorityBornStackProto {
-                        stack_id: birth.stack_id.to_vec().into(),
-                        produce_hash: birth.produce_hash.to_vec().into(),
-                        cells: birth.cells.clone(),
-                    })
-                    .collect(),
-                byte_cost_schedule_version: rholang::rust::interpreter::accounting::byte_accounting::BYTE_COST_SCHEDULE_VERSION,
-                byte_cost_schedule_digest: rholang::rust::interpreter::accounting::byte_accounting::byte_cost_schedule_digest().to_vec().into(),
-                byte_events: eval_result
-                    .authority_byte_events
-                    .iter()
-                    .map(|event| CostAuthorityByteEventProto {
-                        event_id: event.event_id.to_vec().into(),
-                        kind: i32::from(event.kind.tag()),
-                        authority: Some(event.authority.clone()),
-                        amount: event.amount,
-                    })
-                    .collect(),
-                byte_cost: eval_result.quantitative_byte_cost,
-                byte_settlement: Vec::new(),
-            });
+        let deploy_result = ProcessedDeploy {
+            deploy,
+            cost: Cost::to_proto(eval_result.cost),
+            deploy_log: deploy_log
+                .into_iter()
+                .map(|event| event_converter::to_casper_event(event))
+                .collect(),
+            is_failed: !eval_succeeded,
+            system_deploy_error: None,
+        };
 
         if !eval_succeeded {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
-            if !exhausted || report_exhaustion {
-                interpreter_util::print_deploy_errors(
-                    &Bytes::copy_from_slice(deploy_result.typed_deploy_id().as_bytes()),
-                    &eval_result.errors,
-                );
-            }
+            interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
         }
 
-        Ok((deploy_result, eval_result, exhausted))
+        Ok((deploy_result, eval_result.mergeable))
     }
 
-    pub(crate) async fn resolve_authority_stack_births(
-        &self,
-        births: &[AuthorityStackBirth],
-    ) -> Result<Vec<AuthorityBornStack>, CasperError> {
-        let mut resolved = Vec::with_capacity(births.len());
-        for birth in births {
-            let head = birth.cells.first().ok_or_else(|| {
-                CasperError::InvalidCostSettlement(
-                    "authority stack birth has no resource cells".to_string(),
-                )
-            })?;
-            let signature =
-                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(head)
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-            let channel = supply::supply_channel(&signature);
-            let data = self.get_data_datums(&channel).await;
-            let inventory = supply::decode_purse_inventory(&data, head)?;
-            let matches = inventory
-                .stacks
-                .into_iter()
-                .filter(|stack| {
-                    stack.source_hash == birth.produce_hash && stack.stack.cells == birth.cells
-                })
-                .collect::<Vec<_>>();
-            let [stack] = matches.as_slice() else {
-                return Err(CasperError::InvalidCostSettlement(
-                    "authority stack birth does not identify exactly one live resource".to_string(),
-                ));
-            };
-            resolved.push(AuthorityBornStack {
-                stack_id: stack.instance_id,
-                produce_hash: birth.produce_hash,
-                cells: birth.cells.clone(),
-            });
-        }
-        resolved.sort_by_key(|birth| birth.stack_id);
-        if resolved
-            .windows(2)
-            .any(|pair| pair[0].stack_id == pair[1].stack_id)
-        {
-            return Err(CasperError::InvalidCostSettlement(
-                "authority stack births contain a duplicate resource identity".to_string(),
-            ));
-        }
-        Ok(resolved)
-    }
-
-    pub(crate) async fn resolve_authority_born_purse_stacks(
-        &self,
-        births: &[AuthorityBornStack],
-    ) -> Result<Vec<supply::PurseStack>, CasperError> {
-        let mut resolved = Vec::with_capacity(births.len());
-        for birth in births {
-            let head = birth.cells.first().ok_or_else(|| {
-                CasperError::InvalidCostSettlement(
-                    "authority born stack has no resource cells".to_string(),
-                )
-            })?;
-            let signature =
-                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(head)
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-            let channel = supply::supply_channel(&signature);
-            let data = self.get_data_datums(&channel).await;
-            let inventory = supply::decode_purse_inventory(&data, head)?;
-            let matches = inventory
-                .stacks
-                .into_iter()
-                .filter(|stack| {
-                    stack.instance_id == birth.stack_id
-                        && stack.source_hash == birth.produce_hash
-                        && stack.stack.cells == birth.cells
-                })
-                .collect::<Vec<_>>();
-            let [stack] = matches.as_slice() else {
-                return Err(CasperError::InvalidCostSettlement(
-                    "authority born stack is absent or differs from its witness".to_string(),
-                ));
-            };
-            resolved.push(stack.clone());
-        }
-        Ok(resolved)
-    }
-
-    /// Legacy single-signature variant. Thin wrapper around
-    /// [`Self::process_deploy_with_mergeable_data_cosigned`].
     pub async fn process_deploy_with_mergeable_data(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-            .map_err(|e| {
-                CasperError::RuntimeError(format!(
-                    "legacy uplift to Cosigned failed in process_deploy_with_mergeable_data: {e}"
-                ))
-            })?;
-        self.process_deploy_with_mergeable_data_cosigned(cosigned)
-            .await
-    }
-
-    pub async fn process_deploy_with_mergeable_data_cosigned(
-        &mut self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let (pd, merge_chs) = self.process_deploy_cosigned(cosigned).await?;
+        let (pd, merge_chs) = self.process_deploy(deploy).await?;
         let data = self.get_number_channels_data(&merge_chs).await?;
         Ok((pd, data))
     }
@@ -1847,74 +681,36 @@ impl RuntimeOps {
         state_hash: &StateHash,
         system_deploy: &mut S,
     ) -> Result<SystemDeployResult<S::Result>, CasperError> {
-        let pre_state_root = Blake2b256Hash::from_bytes_prost(state_hash);
-        self.runtime.reset(&pre_state_root).await?;
+        self.runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
+            .await?;
 
-        let (event_log, result, mergeable_channels) = match self
-            .play_system_deploy_internal(system_deploy)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                let _ = self.runtime.take_event_log().await;
-                self.runtime.reset(&pre_state_root).await.map_err(|rollback_error| {
-                        CasperError::RuntimeError(format!(
-                            "system deploy failed ({error}); restoring its pre-state failed: {rollback_error}"
-                        ))
-                    })?;
-                return Err(error);
-            }
+        let (event_log, result, mergeable_channels) =
+            self.play_system_deploy_internal(system_deploy).await?;
+
+        let final_state_hash = {
+            let checkpoint = self.runtime.create_checkpoint().await;
+            checkpoint.root.to_bytes_prost()
         };
 
         match result {
             Either::Right(system_deploy_result) => {
-                let mcl = match self.get_number_channels_data(&mergeable_channels).await {
-                    Ok(channels) => channels,
-                    Err(error) => {
-                        self.runtime.reset(&pre_state_root).await.map_err(|rollback_error| {
-                            CasperError::RuntimeError(format!(
-                                "system deploy post-evaluation failed ({error}); restoring its pre-state failed: {rollback_error}"
-                            ))
-                        })?;
-                        return Err(error);
-                    }
-                };
-                let final_state_hash = {
-                    let checkpoint = self.runtime.create_checkpoint().await;
-                    checkpoint.root.to_bytes_prost()
-                };
+                let mcl = self.get_number_channels_data(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
                     invalid_block_hash,
-                    equivocation_block_hash,
                     pk,
                     target_activation_epoch,
-                    target_bond_generation,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
-                    let system_deploy = if let Some(equivocation_block_hash) =
-                        equivocation_block_hash
-                    {
-                        SystemDeployData::create_equivocation_slash(
-                            invalid_block_hash.clone(),
-                            equivocation_block_hash.clone(),
-                            pk.clone(),
-                            *target_activation_epoch,
-                            *target_bond_generation,
-                        )
-                    } else {
+                    Ok(SystemDeployResult::play_succeeded(
+                        final_state_hash,
+                        event_log,
                         SystemDeployData::create_slash(
                             invalid_block_hash.clone(),
                             pk.clone(),
                             *target_activation_epoch,
-                            *target_bond_generation,
-                        )
-                    };
-                    Ok(SystemDeployResult::play_succeeded(
-                        state_hash.clone(),
-                        final_state_hash,
-                        event_log,
-                        system_deploy,
+                        ),
                         mcl,
                         system_deploy_result,
                     ))
@@ -1922,54 +718,14 @@ impl RuntimeOps {
                     system_deploy.as_any().downcast_ref::<CloseBlockDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
-                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_close(),
                         mcl,
                         system_deploy_result,
                     ))
-                } else if let Some(redeem) = system_deploy
-                    .as_any()
-                    .downcast_ref::<crate::rust::util::rholang::costacc::redeem_deploy::RedeemDeploy>()
-                {
-                    // Cost-Accounted Rho Stage-C redemption: persist the FULL
-                    // authorization material (validator, outcome, multisig
-                    // keyset/quorum, cosigner authorizations) so replay re-runs
-                    // the DR-12 quorum verification byte-identically to play.
-                    use crate::rust::util::rholang::costacc::redeem_deploy::RedemptionOutcome;
-                    let (outcome_tag, penalty) = match &redeem.outcome {
-                        RedemptionOutcome::Vindicated => ("Vindicated".to_string(), 0_i64),
-                        RedemptionOutcome::Guilty { penalty } => ("Guilty".to_string(), *penalty),
-                        RedemptionOutcome::Burned => ("Burned".to_string(), 0_i64),
-                    };
-                    let authorizations = redeem
-                        .authorizations
-                        .iter()
-                        .map(|a| models::rust::casper::protocol::casper_message::RedemptionAuthorizationData {
-                            public_key: a.public_key.clone().into(),
-                            signature: a.signature.clone().into(),
-                        })
-                        .collect();
-                    Ok(SystemDeployResult::play_succeeded(
-                        state_hash.clone(),
-                        final_state_hash,
-                        event_log,
-                        SystemDeployData::create_redeem(
-                            redeem.validator_pk.clone().into(),
-                            redeem.target_bond_generation,
-                            outcome_tag,
-                            penalty,
-                            redeem.pos_multi_sig_public_keys.clone(),
-                            redeem.pos_multi_sig_quorum,
-                            authorizations,
-                        ),
-                        mcl,
-                        system_deploy_result,
-                    ))
                 } else {
                     Ok(SystemDeployResult::play_succeeded(
-                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::Empty,
@@ -1979,15 +735,7 @@ impl RuntimeOps {
                 }
             }
 
-            Either::Left(usr_err) => {
-                self.runtime.reset(&pre_state_root).await.map_err(|rollback_error| {
-                    CasperError::RuntimeError(format!(
-                        "system deploy was rejected ({}); restoring its pre-state failed: {rollback_error}",
-                        usr_err.error_message
-                    ))
-                })?;
-                Ok(SystemDeployResult::play_failed(event_log, usr_err))
-            }
+            Either::Left(usr_err) => Ok(SystemDeployResult::play_failed(event_log, usr_err)),
         }
     }
 
@@ -2020,7 +768,7 @@ impl RuntimeOps {
         let log = log
             .into_iter()
             .map(event_converter::to_casper_event)
-            .collect::<Vec<_>>();
+            .collect();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_convert_event_log", rss_kb);
         }
@@ -2084,9 +832,16 @@ impl RuntimeOps {
                     ),
                 )),
             },
-            None => Err(CasperError::SystemRuntimeError(
-                SystemDeployPlatformFailure::ConsumeFailed,
-            )),
+            None => {
+                // INSTRUMENT (temporary): dump the leftover replay COMMs — names
+                // the consume the closeBlock stalled on at replay.
+                if let Err(e) = self.runtime.check_replay_data().await {
+                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                }
+                Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::ConsumeFailed,
+                ))
+            }
         }?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_match_result", rss_kb);
@@ -2102,7 +857,12 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates exploratory (read-only) deploy
+     * Evaluates exploratory (read-only) deploy.
+     *
+     * `phlo_limit` is always supplied by the caller: `RuntimeManager` passes the
+     * operator-configured ceiling, and test callers state their own. There is no
+     * compiled-in default, so no call site can diverge from the operator's
+     * configuration without saying so.
      */
     pub async fn play_exploratory_deploy_with_phlo_limit(
         &mut self,
@@ -2111,151 +871,15 @@ impl RuntimeOps {
         deployer: Option<PublicKey>,
         phlo_limit: i64,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        let data = DeployData {
-            term,
-            language: "rholang".to_string(),
-            time_stamp: 0,
-            valid_after_block_number: 0,
-            shard_id: String::new(),
-            expiration_timestamp: None,
-            authority_presentations: Vec::new(),
-        };
-        let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
-        let deploy = Signed::create_unbound(
-            data,
-            deployer.unwrap_or(ephemeral_pk),
-            ephemeral_sk,
-            Box::new(Secp256k1),
-        )?;
-        let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
-        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: rand.next().into_iter().map(|b| b as u8).collect(),
-            })),
-        }]);
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(hash))
-            .await?;
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-            .map_err(|error| {
-                CasperError::RuntimeError(format!(
-                    "exploratory deploy uplift to Cosigned failed: {error}"
-                ))
-            })?;
-        let eval_res = self
-            .evaluate_cosigned_with_budget(
-                &cosigned,
-                Cost::create(phlo_limit.max(0), "exploratory deploy limit"),
-            )
-            .await?;
-        if !eval_res.errors.is_empty() {
-            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
-        }
-        let cost = eval_res.cost.value.max(0) as u64;
-        Ok((self.get_data_par(&return_name).await, cost))
-    }
-
-    pub async fn play_exploratory_deploy_v61_with_phlo_limit(
-        &mut self,
-        term: String,
-        hash: &StateHash,
-        deployer: Option<PublicKey>,
-        shard_id: String,
-        phlo_limit: i64,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
-        let data = DeployData {
-            term,
-            language: "rholang".to_string(),
-            time_stamp: 0,
-            valid_after_block_number: 0,
-            shard_id,
-            expiration_timestamp: None,
-            authority_presentations: Vec::new(),
-        };
-        let (_, ephemeral_pk) = exploratory_key_pair().clone();
-        let public_key = deployer.unwrap_or(ephemeral_pk);
-        let signer = Cosigner {
-            pk: public_key.clone(),
-            sig: Bytes::new(),
-            sig_algorithm: Box::new(Secp256k1),
-        };
-        let commitment =
-            Cosigned::<DeployData>::envelope_commitment_for_presence(&data, &[signer], 1, &[1])
-                .map_err(|error| {
-                    CasperError::RuntimeError(format!(
-                        "protocol-v6 exploratory identity construction failed: {error}"
-                    ))
-                })?;
-        let deploy_id: [u8; 32] = commitment
-            .as_ref()
-            .try_into()
-            .expect("protocol-v6 deploy identity width");
-        let mut seed = b"f1r3node:user-deploy-unforgeable:v6".to_vec();
-        seed.extend_from_slice(&deploy_id);
-        let mut return_rand = Tools::rng(&seed);
-        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: return_rand.next().into_iter().map(|b| b as u8).collect(),
-            })),
-        }]);
-
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(hash))
-            .await?;
-        self.runtime
-            .set_deploy_data(SystemProcessDeployData {
-                timestamp: data.time_stamp,
-                authority: DeployAuthority::Principal(GPrincipalId {
-                    key_family: 1,
-                    public_key: public_key.bytes.to_vec(),
-                }),
-                deploy_id: deploy_id.to_vec(),
-            })
-            .await;
-        self.runtime.cost.set_unmetered(false);
-        self.runtime.cost.set_deploy_id_funded(
-            deploy_id,
-            accounting::funding_sig_single(&accounting::principal_ground_v61(&public_key.bytes)),
-        );
-        let normalizer_env = models::rust::normalizer_env::normalizer_env_from_v61_single_signer(
-            &deploy_id,
-            &public_key,
-        );
-        let eval_res = self
-            .runtime
-            .evaluate_with_authority(
-                &data.term,
-                Cost::create(phlo_limit.max(0), "exploratory deploy limit"),
-                normalizer_env,
-                Tools::rng(&seed),
-                None,
-            )
-            .await
-            .map_err(CasperError::InterpreterError)?;
-        if !eval_res.errors.is_empty() {
-            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
-        }
-        let cost = eval_res.cost.value.max(0) as u64;
-        Ok((self.get_data_par(&return_name).await, cost))
-    }
-
-    pub async fn play_exploratory_deploy(
-        &mut self,
-        term: String,
-        hash: &StateHash,
-        deployer: Option<PublicKey>,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            // D3: a deploy carries no phlo price/limit — exploratory execution
-            // is metered by the in-calculus cost accounting, not a deploy field.
             let data = DeployData {
                 term,
-                language: "rholang".to_string(),
                 time_stamp: 0,
+                phlo_price: 1,
+                phlo_limit,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
-                authority_presentations: Vec::new(),
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
@@ -2308,36 +932,6 @@ impl RuntimeOps {
         hash: &StateHash,
     ) -> Result<Vec<Par>, CasperError> {
         self.play_exploratory_par_with_mode(par, hash, true).await
-    }
-
-    pub async fn play_query_par_current_strict(&self, par: Par) -> Result<Vec<Par>, CasperError> {
-        if self.runtime.reducer.space.is_replay().await {
-            return Err(CasperError::InvalidCostSettlement(
-                "current-state queries cannot execute inside an active replay runtime".to_string(),
-            ));
-        }
-        let mut runtime = self.runtime.clone();
-        let fallback = runtime.create_soft_checkpoint().await;
-        let rand = Blake2b512Random::create_from_bytes(&[0u8; 128]);
-        let mut return_rand = rand.clone();
-        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: return_rand.next().into_iter().map(|b| b as u8).collect(),
-            })),
-        }]);
-        let result = {
-            let _unmetered_scope = runtime.cost.enter_unmetered_scope();
-            match runtime.inj(par, Env::new(), rand).await {
-                Ok(()) => Ok(RuntimeOps::new(runtime.clone())
-                    .get_data_par(&return_name)
-                    .await),
-                Err(error) => Err(CasperError::RuntimeError(format!(
-                    "current-state query execution failed: {error:?}"
-                ))),
-            }
-        };
-        runtime.revert_to_soft_checkpoint(fallback).await;
-        result
     }
 
     async fn play_exploratory_par_with_mode(
@@ -2440,17 +1034,15 @@ impl RuntimeOps {
     {
         let fallback = self.runtime.create_soft_checkpoint().await;
 
-        match action().await {
-            Ok((value, true)) => Ok(value),
-            Ok((value, false)) => {
-                self.runtime.revert_to_soft_checkpoint(fallback).await;
-                Ok(value)
-            }
-            Err(error) => {
-                self.runtime.revert_to_soft_checkpoint(fallback).await;
-                Err(error)
-            }
+        // Execute action
+        let (a, success) = action().await?;
+
+        // Revert the state if failed
+        if !success {
+            self.runtime.revert_to_soft_checkpoint(fallback).await;
         }
+
+        Ok(a)
     }
 
     /* Evaluates and captures results */
@@ -2470,32 +1062,10 @@ impl RuntimeOps {
             })),
         }]);
 
-        let (data, _token_cost) = self
+        let (data, _cost) = self
             .capture_results_with_name(start, deploy, &return_name)
             .await?;
         Ok(data)
-    }
-
-    pub async fn capture_results_cosigned(
-        &mut self,
-        start: &StateHash,
-        deploy: &Cosigned<DeployData>,
-    ) -> Result<Vec<Par>, CasperError> {
-        let mut rand = Tools::user_deploy_rng(deploy);
-        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: rand.next().into_iter().map(|b| b as u8).collect(),
-            })),
-        }]);
-
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(start))
-            .await?;
-        let eval_res = self.evaluate_cosigned(deploy).await?;
-        if !eval_res.errors.is_empty() {
-            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
-        }
-        Ok(self.get_data_par(&return_name).await)
     }
 
     pub async fn capture_results_with_name(
@@ -2528,169 +1098,22 @@ impl RuntimeOps {
 
     /* Evaluates Rholang source code */
 
-    /// Legacy single-signature evaluate. Preserves byte-identical
-    /// observable behavior for existing on-chain deploys (same `deploy_id`,
-    /// same `Sig::Quote` value, same normalizer env). Multi-signature
-    /// dispatch happens in [`Self::evaluate_cosigned`] which this
-    /// method delegates to via legacy uplift.
     pub async fn evaluate(
         &mut self,
         deploy: &Signed<DeployData>,
     ) -> Result<EvaluateResult, CasperError> {
-        let cosigned =
-            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy.clone())
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                        "legacy uplift to Cosigned failed in evaluate: {e}"
-                    ))
-                })?;
-        self.evaluate_cosigned(&cosigned).await
-    }
+        let deploy_data = SystemProcessDeployData::from_deploy(deploy);
+        self.runtime.set_deploy_data(deploy_data).await;
 
-    pub(crate) async fn evaluate_genesis(
-        &mut self,
-        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<EvaluateResult, CasperError> {
-        self.evaluate_cosigned_with_budget_and_authority_mode(
-            cosigned,
-            Cost::unsafe_max(),
-            None,
-            DefaultCostAuthority::Unit,
-            None,
-        )
-        .await
-    }
-
-    /// Multi-signature aware deploy evaluation. Single source of truth for
-    /// the signature install + normalizer-env construction logic.
-    ///
-    /// Single-sig deploys (`!cosigned.is_compound()`) route through the
-    /// legacy `set_deploy_signature` (legacy `DEPLOY_SIGNATURE_DOMAIN`) so
-    /// existing on-chain deploy_ids are preserved bit-for-bit. Multi-sig
-    /// deploys route through `set_deploy_signatures` (compound domain
-    /// separator) folding all signers into a left-associated `Sig::And` tree.
-    ///
-    /// The normalizer env is built via `normalizer_env_from_cosigned_deploy`
-    /// in both cases — for single-sig that produces a one-element
-    /// `rho:system:cosigners` list, observably equivalent to the legacy
-    /// `normalizer_env_from_deploy(signed)` output (Cosigned uplift
-    /// equivalence verified by
-    /// `cosigned_envelope_legacy_uplift_yields_single_element_cosigners`).
-    pub async fn evaluate_cosigned(
-        &mut self,
-        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<EvaluateResult, CasperError> {
-        self.evaluate_cosigned_with_budget(cosigned, Cost::unsafe_max())
-            .await
-    }
-
-    pub(crate) async fn evaluate_cosigned_with_budget(
-        &mut self,
-        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-    ) -> Result<EvaluateResult, CasperError> {
-        self.evaluate_cosigned_with_budget_and_authority(cosigned, budget, None)
-            .await
-    }
-
-    pub(crate) async fn evaluate_cosigned_with_budget_and_authority(
-        &mut self,
-        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-    ) -> Result<EvaluateResult, CasperError> {
-        self.evaluate_cosigned_with_budget_and_authority_mode(
-            cosigned,
-            budget,
-            authority_allocation,
-            DefaultCostAuthority::Funders,
-            None,
-        )
-        .await
-    }
-
-    pub(crate) async fn evaluate_replay_envelope(
-        &mut self,
-        envelope: &DeployEnvelope,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        host_work: Option<HostWorkBudget>,
-    ) -> Result<EvaluateResult, CasperError> {
-        let deploy = match envelope.view() {
-            models::rust::deploy_envelope::DeployEnvelopeRef::Legacy(body) => {
-                RuntimeDeployRef::Body(body)
-            }
-            _ => RuntimeDeployRef::Retained(envelope),
-        };
-        self.evaluate_runtime_deploy(
-            deploy,
-            budget,
-            authority_allocation,
-            DefaultCostAuthority::Funders,
-            host_work,
-        )
-        .await
-    }
-
-    async fn evaluate_cosigned_with_budget_and_authority_mode(
-        &mut self,
-        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        default_authority: DefaultCostAuthority,
-        host_work: Option<HostWorkBudget>,
-    ) -> Result<EvaluateResult, CasperError> {
-        self.evaluate_runtime_deploy(
-            RuntimeDeployRef::Body(cosigned),
-            budget,
-            authority_allocation,
-            default_authority,
-            host_work,
-        )
-        .await
-    }
-
-    async fn evaluate_runtime_deploy(
-        &mut self,
-        deploy: RuntimeDeployRef<'_>,
-        budget: Cost,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        default_authority: DefaultCostAuthority,
-        host_work: Option<HostWorkBudget>,
-    ) -> Result<EvaluateResult, CasperError> {
-        self.prepare_runtime_deploy(deploy, default_authority).await;
-
-        // Production bounded play and replay pass the same finite
-        // authority-derived capacity here. The unbounded default remains only
-        // for non-consensus exploratory and system-facing callers that do not
-        // produce an admitted user-deploy certificate.
-        let normalizer_env = deploy.normalizer_env();
-        let initial_rand = deploy.rng();
-        let result = match host_work {
-            Some(host_work) => {
-                self.runtime
-                    .evaluate_with_authority_and_host_work_budget(
-                        &deploy.body().term,
-                        budget,
-                        normalizer_env,
-                        initial_rand,
-                        authority_allocation,
-                        host_work,
-                    )
-                    .await
-            }
-            None => {
-                self.runtime
-                    .evaluate_with_authority(
-                        &deploy.body().term,
-                        budget,
-                        normalizer_env,
-                        initial_rand,
-                        authority_allocation,
-                    )
-                    .await
-            }
-        };
+        let result = self
+            .runtime
+            .evaluate(
+                &deploy.data.term,
+                Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
+                normalizer_env_from_deploy(deploy),
+                Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
+            )
+            .await;
 
         match result {
             Ok(eval_result) => Ok(eval_result),
@@ -2698,60 +1121,10 @@ impl RuntimeOps {
         }
     }
 
-    pub(crate) async fn evaluate_native_envelope(
-        &mut self,
-        envelope: &DeployEnvelope,
-        config: accounting::NativeRuntimeConfig,
-    ) -> Result<EvaluateResult, CasperError> {
-        let deploy = RuntimeDeployRef::Retained(envelope);
-        self.prepare_runtime_deploy(deploy, DefaultCostAuthority::Funders)
-            .await;
-        self.runtime
-            .evaluate_with_native_phlo(
-                &deploy.body().term,
-                deploy.normalizer_env(),
-                deploy.rng(),
-                None,
-                config,
-            )
-            .await
-            .map_err(CasperError::InterpreterError)
-    }
-
-    async fn prepare_runtime_deploy(
-        &self,
-        deploy: RuntimeDeployRef<'_>,
-        default_authority: DefaultCostAuthority,
-    ) {
-        self.runtime.set_deploy_data(deploy.metadata()).await;
-        self.runtime.cost.set_unmetered(false);
-
-        // Decouple the wire-signature deploy identity from the funding
-        // authority: verified signer public keys select canonical SystemVault
-        // payers, while nested signed regions and located stacks refine the
-        // authority during reduction. `funding_sig` is the shared derivation
-        // used by admission and replay and excludes unsigned threshold
-        // placeholders.
-        match default_authority {
-            DefaultCostAuthority::Funders => {
-                deploy.install_authority(&self.runtime.cost);
-            }
-            DefaultCostAuthority::Unit => self.runtime.cost.reset_for_system_deploy(),
-        }
-
-        metrics::counter!(
-            crate::rust::metrics_constants::USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC,
-            "source" => CASPER_METRICS_SOURCE,
-            "origin" => self.user_execution_origin
-        )
-        .increment(1);
-    }
-
     pub async fn evaluate_system_source<S: SystemDeployTrait>(
         &mut self,
         system_deploy: &mut S,
     ) -> Result<EvaluateResult, CasperError> {
-        self.runtime.cost.reset_for_system_deploy();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
@@ -2775,25 +1148,16 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_runtime_evaluate", rss_kb);
         }
         let wrapper_pre = wrapper_pre_start.elapsed();
-        let result = {
-            // System deploys perform protocol maintenance and settlement work
-            // outside user-runtime metering. The scoped guard is deliberately
-            // used here so panics, early returns, and async errors cannot leak
-            // unmetered mode into the next user deploy.
-            let _unmetered_scope = self.runtime.cost.enter_unmetered_scope();
-            self.runtime
-                .evaluate(
-                    S::source(),
-                    Cost::unsafe_max(),
-                    env,
-                    // `evaluate` owns the random seed state for this run, so the
-                    // cloned deploy seed is passed by value with the rest of the
-                    // immutable system-deploy inputs.
-                    rand,
-                )
-                .await
-        };
-        let result = result?;
+        let result = self
+            .runtime
+            .evaluate(
+                S::source(),
+                Cost::unsafe_max(),
+                env,
+                // TODO: Review this clone and whether to pass mut ref down into evaluate
+                rand,
+            )
+            .await?;
         let wrapper_post_start = Instant::now();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_runtime_evaluate", rss_kb);
@@ -2814,13 +1178,6 @@ impl RuntimeOps {
             .into_iter()
             .flat_map(|datum| datum.a.pars)
             .collect()
-    }
-
-    pub async fn get_data_datums(
-        &self,
-        channel: &Par,
-    ) -> Vec<rspace_plus_plus::rspace::internal::Datum<ListParWithRandom>> {
-        self.runtime.get_data(channel).await
     }
 
     pub async fn get_continuation_par(&self, channels: Vec<Par>) -> Vec<(Vec<BindPattern>, Par)> {
@@ -2924,25 +1281,6 @@ impl RuntimeOps {
         Self::to_bond_vec(bonds_pars[0].to_owned())
     }
 
-    pub async fn compute_bond_generations(
-        &mut self,
-        hash: &StateHash,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
-        let generation_pars = self
-            .play_exploratory_par(Self::bond_generations_query_par().clone(), hash)
-            .await?;
-
-        if generation_pars.len() != 1 {
-            return Err(CasperError::RuntimeError(format!(
-                "Incorrect number of bond-generation results for state {}: {}",
-                PrettyPrinter::build_string_bytes(hash),
-                generation_pars.len()
-            )));
-        }
-
-        Self::to_bond_generation_map(generation_pars[0].to_owned())
-    }
-
     fn activate_validator_query_source() -> String {
         r#"
           new return, rl(`rho:registry:lookup`), poSCh in {
@@ -3023,65 +1361,40 @@ impl RuntimeOps {
         }
     }
 
+    fn fault_tolerance_ppm_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getFaultToleranceThresholdPpm", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn fault_tolerance_ppm_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
+                .expect("Failed to compile fault tolerance ppm query source")
+        })
+    }
+
+    /// The on-chain consensus parameters `(max-parent-depth, deploy-lifespan,
+    /// min-phlo-price)` baked into the PoS contract at `start_hash`. Returns
+    /// `None` when the contract does not expose the getter (a chain whose
+    /// genesis predates the parameters).
     pub async fn get_consensus_parameters(
         &mut self,
         start_hash: &StateHash,
     ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+        // STRICT query — same rationale as the protocol-FTT read: a runtime
+        // failure must fail startup, never degrade into the local-config arm.
         let pars = self
             .play_exploratory_par_strict(Self::consensus_parameters_query_par().clone(), start_hash)
             .await?;
 
-        Self::decode_consensus_parameters(&pars, start_hash)
-    }
-
-    pub async fn get_genesis_resource_policy(
-        &mut self,
-        start_hash: &StateHash,
-    ) -> Result<models::rust::phlo_schedule::PhloGenesisPolicy, CasperError> {
-        static QUERY: OnceLock<Par> = OnceLock::new();
-        let query = QUERY.get_or_init(|| {
-            Compiler::source_to_adt(
-                r#"new ret, lookup(`rho:registry:lookup`), channel in {
-                lookup!(`rho:system:tokenMetadata`, *channel) |
-                for (@(_, metadata) <- channel) { @metadata!("resourcePolicy", *ret) }
-            }"#,
-            )
-            .expect("genesis resource policy query must compile")
-        });
-        let pars = self
-            .play_exploratory_par_strict(query.clone(), start_hash)
-            .await?;
-        let [par] = pars.as_slice() else {
-            return Err(CasperError::RuntimeError(
-                "genesis must return exactly one resource policy".to_string(),
-            ));
-        };
-        if par.exprs.len() != 1
-            || *par
-                != (Par {
-                    exprs: par.exprs.clone(),
-                    ..Par::default()
-                })
-        {
-            return Err(CasperError::RuntimeError(
-                "genesis resource policy must be a byte array".to_string(),
-            ));
-        }
-        match par.exprs[0].expr_instance.as_ref() {
-            Some(ExprInstance::GByteArray(bytes)) => {
-                models::rust::phlo_schedule::PhloGenesisPolicy::decode(bytes)
-                    .map_err(|error| CasperError::RuntimeError(error.to_string()))
-            }
-            _ => Err(CasperError::RuntimeError(
-                "genesis resource policy must be a byte array".to_string(),
-            )),
-        }
-    }
-
-    fn decode_consensus_parameters(
-        pars: &[Par],
-        start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
         if pars.is_empty() {
             tracing::warn!(
                 "No result from getConsensusParameters query for state {}; \
@@ -3117,8 +1430,27 @@ impl RuntimeOps {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
                 let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
-                crate::rust::casper_conf::validate_chain_parameter_values(mpd, lifespan, min_phlo)
-                    .map_err(|detail| bad(&detail))?;
+                // RANGE GATES at the single read choke point. The parent-spread
+                // rule takes mpd as i32 (i32::MAX = depth check disabled); a
+                // window of zero or less inverts the expiry and repeat rules;
+                // a negative floor price rejects every deploy.
+                if !(1..=i32::MAX as i64).contains(&mpd) {
+                    return Err(bad(&format!(
+                        "maxParentDepth out of range [1, i32::MAX]: {mpd}"
+                    )));
+                }
+                // Capped at i32::MAX because the narrowest consumer (the
+                // expiry rule's expiration_threshold) is i32.
+                if !(1..=i32::MAX as i64).contains(&lifespan) {
+                    return Err(bad(&format!(
+                        "deployLifespan out of range [1, i32::MAX]: {lifespan}"
+                    )));
+                }
+                if min_phlo < 0 {
+                    return Err(bad(&format!(
+                        "minPhloPrice out of range [0, i64::MAX]: {min_phlo}"
+                    )));
+                }
                 Ok(Some((mpd as i32, lifespan, min_phlo)))
             }
             other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
@@ -3142,26 +1474,6 @@ impl RuntimeOps {
         QUERY.get_or_init(|| {
             Compiler::source_to_adt(&Self::consensus_parameters_query_source())
                 .expect("Failed to compile consensus parameters query source")
-        })
-    }
-
-    fn fault_tolerance_ppm_query_source() -> String {
-        r#"
-          new return, rl(`rho:registry:lookup`), poSCh in {
-          rl!(`rho:system:pos`, *poSCh) |
-          for(@(_, PoS) <- poSCh) {
-            @PoS!("getFaultToleranceThresholdPpm", *return)
-          }
-        }
-      "#
-        .to_string()
-    }
-
-    fn fault_tolerance_ppm_query_par() -> &'static Par {
-        static QUERY: OnceLock<Par> = OnceLock::new();
-        QUERY.get_or_init(|| {
-            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
-                .expect("Failed to compile fault tolerance ppm query source")
         })
     }
 
@@ -3190,26 +1502,6 @@ impl RuntimeOps {
         QUERY.get_or_init(|| {
             Compiler::source_to_adt(&Self::bonds_query_source())
                 .expect("Failed to compile bonds query source")
-        })
-    }
-
-    fn bond_generations_query_source() -> String {
-        r#"
-        new return, rl(`rho:registry:lookup`), poSCh in {
-          rl!(`rho:system:pos`, *poSCh) |
-          for(@(_, PoS) <- poSCh) {
-            @PoS!("getBondGenerations", *return)
-          }
-        }
-      "#
-        .to_string()
-    }
-
-    fn bond_generations_query_par() -> &'static Par {
-        static QUERY: OnceLock<Par> = OnceLock::new();
-        QUERY.get_or_init(|| {
-            Compiler::source_to_adt(&Self::bond_generations_query_source())
-                .expect("Failed to compile bond-generations query source")
         })
     }
 
@@ -3282,54 +1574,7 @@ impl RuntimeOps {
         })
         .collect::<Result<Vec<_>, _>>()
     }
-
-    fn to_bond_generation_map(
-        generations_map: Par,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
-        if generations_map.exprs.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let ps = match generations_map.exprs[0].expr_instance.as_ref().unwrap() {
-            ExprInstance::EMapBody(map) => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
-            _ => SortedParMap::create_from_empty(),
-        };
-
-        ps.map_iter(|(validator, generation)| {
-            if validator.exprs.len() != 1 || generation.exprs.len() != 1 {
-                return Err(CasperError::RuntimeError(
-                    "Malformed bond-generation map entry".to_string(),
-                ));
-            }
-            let validator = match validator.exprs[0].expr_instance.as_ref().unwrap() {
-                ExprInstance::GByteArray(value) => value.clone().into(),
-                _ => {
-                    return Err(CasperError::RuntimeError(
-                        "Expected GByteArray in bond-generation validator".to_string(),
-                    ))
-                }
-            };
-            let generation = match generation.exprs[0].expr_instance.as_ref().unwrap() {
-                ExprInstance::GInt(value) if *value >= 0 => *value,
-                _ => {
-                    return Err(CasperError::RuntimeError(
-                        "Expected nonnegative GInt in bond-generation value".to_string(),
-                    ))
-                }
-            };
-            Ok((validator, generation))
-        })
-        .collect()
-    }
 }
-
-#[cfg(test)]
-#[path = "consensus_parameter_tests.rs"]
-mod consensus_parameter_tests;
-
-#[cfg(test)]
-#[path = "runtime/envelope_tests.rs"]
-mod envelope_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3372,171 +1617,5 @@ mod tests {
         let folded = RuntimeOps::fold_bitmask_or(&[neg, pos]).unwrap();
         assert_eq!(folded as u64, (neg as u64) | (pos as u64));
         assert_ne!(folded & i64::MIN, 0, "sign bit must remain set");
-    }
-
-    fn authority_event(identity: u8) -> AuthorityEvent<[u8; 32]> {
-        AuthorityEvent {
-            event_id: [identity; 32],
-            authority: models::rhoapi::CostAuthority::default(),
-            debit: ResourceMultiset::default(),
-        }
-    }
-
-    #[test]
-    fn authority_events_follow_committed_causal_order() {
-        let events = vec![authority_event(1), authority_event(2)];
-        let ordered = causal_authority_events_from_trace(
-            [
-                AuthorityTraceItem::Comm([2; 32]),
-                AuthorityTraceItem::Comm([1; 32]),
-            ],
-            &events,
-            true,
-        )
-        .unwrap();
-
-        assert_eq!(ordered[0].event_id, [2; 32]);
-        assert_eq!(ordered[1].event_id, [1; 32]);
-    }
-
-    #[test]
-    fn authority_event_order_requires_an_exact_identity_bijection() {
-        let events = vec![authority_event(1), authority_event(2)];
-
-        assert!(causal_authority_events_from_trace(
-            [AuthorityTraceItem::Comm([1; 32])],
-            &events,
-            true,
-        )
-        .is_err());
-        assert!(causal_authority_events_from_trace(
-            [
-                AuthorityTraceItem::Comm([1; 32]),
-                AuthorityTraceItem::Comm([3; 32]),
-            ],
-            &events,
-            true,
-        )
-        .is_err());
-        assert!(causal_authority_events_from_trace(
-            [
-                AuthorityTraceItem::Comm([1; 32]),
-                AuthorityTraceItem::Comm([2; 32]),
-            ],
-            &[authority_event(1), authority_event(1)],
-            true,
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn authority_events_select_the_user_subset_from_a_lifecycle_trace() {
-        let events = vec![authority_event(1), authority_event(2)];
-        let ordered = causal_authority_events_from_trace(
-            [
-                AuthorityTraceItem::Comm([9; 32]),
-                AuthorityTraceItem::Comm([2; 32]),
-                AuthorityTraceItem::Comm([8; 32]),
-                AuthorityTraceItem::Comm([1; 32]),
-            ],
-            &events,
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            ordered
-                .iter()
-                .map(|event| event.event_id)
-                .collect::<Vec<_>>(),
-            vec![[2; 32], [1; 32]]
-        );
-        assert!(causal_authority_events_from_trace(
-            [AuthorityTraceItem::Comm([9; 32])],
-            &events,
-            false,
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn stack_transfer_events_follow_their_produce_before_later_comms() {
-        let produce_hash = [7; 32];
-        let first = stack_transfer_event_id(&produce_hash, 0);
-        let second = stack_transfer_event_id(&produce_hash, 1);
-        let comm = [9; 32];
-        let events = vec![
-            AuthorityEvent {
-                event_id: comm,
-                authority: models::rhoapi::CostAuthority::default(),
-                debit: ResourceMultiset::default(),
-            },
-            AuthorityEvent {
-                event_id: second,
-                authority: models::rhoapi::CostAuthority::default(),
-                debit: ResourceMultiset::default(),
-            },
-            AuthorityEvent {
-                event_id: first,
-                authority: models::rhoapi::CostAuthority::default(),
-                debit: ResourceMultiset::default(),
-            },
-        ];
-        let ordered = causal_authority_events_from_trace(
-            [
-                AuthorityTraceItem::Produce(produce_hash),
-                AuthorityTraceItem::Comm(comm),
-            ],
-            &events,
-            true,
-        )
-        .unwrap();
-
-        assert_eq!(
-            ordered
-                .iter()
-                .map(|event| event.event_id)
-                .collect::<Vec<_>>(),
-            vec![first, second, comm]
-        );
-    }
-
-    #[test]
-    fn matched_produces_precede_their_comm_in_the_authority_trace() {
-        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-        use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
-
-        let first = Produce::new(
-            Blake2b256Hash::new(b"channel-a"),
-            Blake2b256Hash::new(b"produce-a"),
-            false,
-        );
-        let second = Produce::new(
-            Blake2b256Hash::new(b"channel-b"),
-            Blake2b256Hash::new(b"produce-b"),
-            false,
-        );
-        let comm = COMM {
-            consume: Consume {
-                channel_hashes: vec![Blake2b256Hash::new(b"channel-a")],
-                hash: Blake2b256Hash::new(b"consume"),
-                persistent: false,
-            },
-            produces: vec![first.clone(), second.clone()],
-            peeks: std::collections::BTreeSet::new(),
-            times_repeated: BTreeMap::from([(first.clone(), 1), (second.clone(), 1)]),
-        };
-        let comm_identity: [u8; 32] = comm.cost_identity().bytes().try_into().unwrap();
-
-        let trace = authority_trace_items(&[RSpaceEvent::Comm(comm)]);
-        assert!(matches!(
-            trace.as_slice(),
-            [
-                AuthorityTraceItem::Produce(first_hash),
-                AuthorityTraceItem::Produce(second_hash),
-                AuthorityTraceItem::Comm(actual_comm)
-            ] if first_hash == first.hash.bytes().as_slice()
-                && second_hash == second.hash.bytes().as_slice()
-                && actual_comm == &comm_identity
-        ));
     }
 }

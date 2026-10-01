@@ -5,11 +5,7 @@
 // buffer populate — a side effect of the merge, not part of the cached
 // value — is silently skipped, and a merge-rejected deploy never becomes
 // re-proposable. The cache key must therefore distinguish bufferless from
-// buffered computations.
-//
-// The collision is real under defaults: `disable_late_block_filtering`
-// defaults to true (casper.rs `CasperShardConf::new`) and the exploratory
-// path overrides it to Some(true), so the flag cannot separate the keys.
+// buffered computations — no other key component separates the two paths.
 
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
@@ -160,7 +156,6 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             &snapshot,
             &nodes[1].runtime_manager,
             &latest_messages,
-            Some(true),
             None,
             None,
             None,
@@ -172,13 +167,13 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
         .first()
         .cloned()
         .expect("the conflicting RMWs must produce a merge rejection");
-    let rejected_sig = Bytes::copy_from_slice(rejected_record.deploy_id());
+    let rejected_sig: Bytes = rejected_record.sig.clone();
     assert!(
         !nodes[1]
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .contains_sig(&rejected_sig)
             .expect("buffer.contains_sig"),
         "the bufferless computation must not have populated the buffer"
     );
@@ -189,7 +184,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
     // cache not shadowing the populate.
     let owner: Bytes = nodes[1]
         .block_store
-        .get(&rejected_record.source_block_hash)
+        .get(&rejected_record.carrier)
         .expect("carrier read")
         .expect("carrier block present")
         .sender
@@ -202,7 +197,6 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             &snapshot,
             &nodes[1].runtime_manager,
             &latest_messages,
-            None,
             Some(&nodes[1].rejected_deploy_buffer),
             None,
             Some(&owner),
@@ -210,10 +204,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
         .await
         .expect("validate-style merge (buffer attached)");
     let sigs = |records: &[models::rust::casper::protocol::casper_message::RejectedDeploy]| {
-        records
-            .iter()
-            .map(|r| Bytes::copy_from_slice(r.deploy_id()))
-            .collect::<Vec<_>>()
+        records.iter().map(|r| r.sig.clone()).collect::<Vec<_>>()
     };
     assert_eq!(
         sigs(&validate_merged.rejected_user),
@@ -225,7 +216,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .contains_sig(&rejected_sig)
             .expect("buffer.contains_sig"),
         "the buffered computation must populate the rejected-deploy buffer \
          even when a bufferless computation already seeded the cache"

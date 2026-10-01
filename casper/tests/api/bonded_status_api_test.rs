@@ -74,7 +74,6 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),
-        accounting_context: node.casper.accounting_context.clone(),
         estimator: node.casper.estimator.clone(),
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
@@ -85,16 +84,9 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
-        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalization_schedule: std::sync::Arc::new(
-            casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
-        ),
-        certificate_verification_schedule: std::sync::Arc::new(
-            casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
-        ),
-        finalizer_task_in_progress: node.casper.finalizer_task_in_progress.clone(),
-        finalizer_task_queued: node.casper.finalizer_task_queued.clone(),
+        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(

@@ -1,3 +1,0 @@
--------------------- MODULE BlockPayloadOwnershipResultUnsafe --------------------
-EXTENDS BlockPayloadOwnership
-=============================================================================

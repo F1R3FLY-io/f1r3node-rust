@@ -2,36 +2,30 @@
 
 use std::collections::HashMap;
 
-use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
-use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy, ValidatorBondGeneration,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
-use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 use super::contracts::proof_of_stake::ProofOfStake;
 use super::contracts::standard_deploys;
 use super::contracts::vault::Vault;
-use super::contracts::vaults_generator::GenesisVaultAllocation;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Genesis {
-    pub resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
     pub shard_id: String,
     pub timestamp: i64,
     pub block_number: i64,
     pub proof_of_stake: ProofOfStake,
     pub vaults: Vec<Vault>,
-    pub client_fuel_allocations: Vec<(PublicKey, i64)>,
     pub supply: i64,
     pub version: i64,
     /// Full display name of the native token (e.g. "F1R3CAP"). Baked into
@@ -44,139 +38,6 @@ pub struct Genesis {
 }
 
 impl Genesis {
-    pub fn vaults_with_protocol_funding(
-        proof_of_stake: &ProofOfStake,
-        vaults: &[Vault],
-        client_fuel_allocations: &[(PublicKey, i64)],
-    ) -> Result<Vec<GenesisVaultAllocation>, CasperError> {
-        Self::validate_cost_accounting_parameters(proof_of_stake, client_fuel_allocations)?;
-        let mut balances = std::collections::BTreeMap::<String, (VaultAddress, u64, u64)>::new();
-        for vault in vaults {
-            let entry = balances
-                .entry(vault.vault_address.to_base58())
-                .or_insert_with(|| (vault.vault_address.clone(), 0, 0));
-            entry.1 = entry.1.checked_add(vault.initial_balance).ok_or_else(|| {
-                CasperError::RuntimeError("genesis vault balance overflow".to_string())
-            })?;
-        }
-        let initial_phlogiston =
-            u64::try_from(proof_of_stake.initial_phlogiston).map_err(|_| {
-                CasperError::RuntimeError("initial_phlogiston must be non-negative".to_string())
-            })?;
-        for validator in &proof_of_stake.validators {
-            let address = VaultAddress::from_public_key(&validator.pk).ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "validator public key has no native vault address".to_string(),
-                )
-            })?;
-            let entry = balances
-                .entry(address.to_base58())
-                .or_insert_with(|| (address, 0, 0));
-            entry.2 = entry.2.checked_add(initial_phlogiston).ok_or_else(|| {
-                CasperError::RuntimeError("genesis validator fuel balance overflow".to_string())
-            })?;
-        }
-        for (public_key, amount) in client_fuel_allocations {
-            let address = VaultAddress::from_public_key(public_key).ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "client public key has no native vault address".to_string(),
-                )
-            })?;
-            let amount = u64::try_from(*amount).map_err(|_| {
-                CasperError::RuntimeError("client fuel allocation must be non-negative".to_string())
-            })?;
-            let entry = balances
-                .entry(address.to_base58())
-                .or_insert_with(|| (address, 0, 0));
-            entry.1 = entry.1.checked_add(amount).ok_or_else(|| {
-                CasperError::RuntimeError("genesis client fuel balance overflow".to_string())
-            })?;
-        }
-        Ok(balances
-            .into_values()
-            .map(|(vault_address, general_balance, validator_fuel_balance)| {
-                GenesisVaultAllocation {
-                    vault_address,
-                    general_balance,
-                    validator_fuel_balance,
-                }
-            })
-            .collect())
-    }
-
-    pub fn validate_cost_accounting_parameters(
-        proof_of_stake: &ProofOfStake,
-        client_fuel_allocations: &[(PublicKey, i64)],
-    ) -> Result<(), CasperError> {
-        crate::rust::casper_conf::validate_chain_parameter_values(
-            i64::from(proof_of_stake.max_parent_depth),
-            proof_of_stake.deploy_lifespan,
-            proof_of_stake.min_phlo_price,
-        )
-        .map_err(CasperError::RuntimeError)?;
-        if proof_of_stake.epoch_length <= 0 {
-            return Err(CasperError::RuntimeError(format!(
-                "epoch_length must be positive; got {}",
-                proof_of_stake.epoch_length
-            )));
-        }
-        if proof_of_stake.max_cosigners_per_deploy == 0 {
-            return Err(CasperError::RuntimeError(
-                "max_cosigners_per_deploy must be at least 1".to_string(),
-            ));
-        }
-        if proof_of_stake.initial_phlogiston < 0 {
-            return Err(CasperError::RuntimeError(format!(
-                "initial_phlogiston must be non-negative; got {}",
-                proof_of_stake.initial_phlogiston
-            )));
-        }
-        if proof_of_stake.epoch_phlogiston < 0 {
-            return Err(CasperError::RuntimeError(format!(
-                "epoch_phlogiston must be non-negative; got {}",
-                proof_of_stake.epoch_phlogiston
-            )));
-        }
-        let mut validator_identities = std::collections::BTreeSet::new();
-        let mut validator_addresses = std::collections::BTreeSet::new();
-        for validator in &proof_of_stake.validators {
-            if validator.pk.bytes.is_empty() {
-                return Err(CasperError::RuntimeError(
-                    "validator public key must be non-empty".to_string(),
-                ));
-            }
-            let address = VaultAddress::from_public_key(&validator.pk).ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "validator public key has no native vault address".to_string(),
-                )
-            })?;
-            if !validator_identities.insert(validator.pk.bytes.clone())
-                || !validator_addresses.insert(address.to_base58())
-            {
-                return Err(CasperError::RuntimeError(
-                    "genesis validators contain a duplicate identity".to_string(),
-                ));
-            }
-        }
-        for (public_key, amount) in client_fuel_allocations {
-            if public_key.bytes.is_empty() {
-                return Err(CasperError::RuntimeError(
-                    "client public key must be non-empty".to_string(),
-                ));
-            }
-            if *amount < 0 {
-                return Err(CasperError::RuntimeError(format!(
-                    "client fuel allocation must be non-negative; got {amount}"
-                )));
-            }
-            VaultAddress::from_public_key(public_key).ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "client public key has no native vault address".to_string(),
-                )
-            })?;
-        }
-        Ok(())
-    }
     pub fn non_negative_mergeable_tag_name() -> Par {
         mergeable_tags::non_negative_mergeable_tag_name()
     }
@@ -192,13 +53,12 @@ impl Genesis {
     pub fn default_blessed_terms_with_timestamp(
         timestamp: i64,
         pos_params: &ProofOfStake,
-        vaults: &[GenesisVaultAllocation],
+        vaults: &Vec<Vault>,
         supply: i64,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
-        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -235,36 +95,25 @@ impl Genesis {
         let either = standard_deploys::either(shard_id);
         let non_negative_number = standard_deploys::non_negative_number(shard_id);
         let make_mint = standard_deploys::make_mint(shard_id);
-        // Cost-Accounted Rho Stage D: the blessed `Exchange` (rho:lang:exchange)
-        // — the spec's conserving 1:1 token swap (tex:3061-3084). Like
-        // `make_mint` it depends on nothing beyond Registry, so it is deployed
-        // right after the mint; the closeBlock per-epoch fee→v conversion
-        // (PoS.rhox) and #13 clients resolve it via its `rho:lang:exchange`
-        // shorthand.
-        let exchange = standard_deploys::exchange(shard_id);
         let auth_key = standard_deploys::auth_key(shard_id);
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
-        let token_metadata = standard_deploys::token_metadata_with_policy(
+        let token_metadata = standard_deploys::token_metadata(
             native_token_name,
             native_token_symbol,
             native_token_decimals,
             shard_id,
-            resource_policy,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
-        let capabilities_registry = standard_deploys::capabilities_registry(shard_id);
 
-        let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(versioned_registry);
         all_deploys.push(list_ops);
         all_deploys.push(either);
         all_deploys.push(non_negative_number);
         all_deploys.push(make_mint);
-        // Stage D blessed Exchange, immediately after the mint (see binding above).
-        all_deploys.push(exchange);
         all_deploys.push(auth_key);
         all_deploys.push(system_vault);
         all_deploys.push(multi_sig_system_vault);
@@ -272,23 +121,18 @@ impl Genesis {
         all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
-        // Phase 3 LL-rich algebra: capability registry for Bang/Lolly.
-        // Deployed last among system contracts because it has no
-        // dependencies on any other genesis deploy.
-        all_deploys.push(capabilities_registry);
 
         all_deploys
     }
 
     pub fn default_blessed_terms(
         pos_params: &ProofOfStake,
-        vaults: &[GenesisVaultAllocation],
+        vaults: &Vec<Vault>,
         supply: i64,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
-        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
@@ -301,7 +145,6 @@ impl Genesis {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
-            resource_policy,
         )
     }
 
@@ -309,35 +152,15 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        if let Some(policy) = &genesis.resource_policy {
-            policy
-                .validate_context(
-                    genesis.version,
-                    &genesis.shard_id,
-                    genesis.native_token_decimals,
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
-        let funded_vaults = Self::vaults_with_protocol_funding(
-            &genesis.proof_of_stake,
-            &genesis.vaults,
-            &genesis.client_fuel_allocations,
-        )?;
         let blessed_terms = Self::default_blessed_terms(
             &genesis.proof_of_stake,
-            &funded_vaults,
+            &genesis.vaults,
             genesis.supply,
             &genesis.shard_id,
             &genesis.native_token_name,
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
-            genesis.resource_policy.as_ref(),
         );
-        let blessed_terms = blessed_terms
-            .into_iter()
-            .map(|deploy| standard_deploys::protocol_envelope(deploy, genesis.version))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CasperError::RuntimeError)?;
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
             .compute_genesis(blessed_terms, genesis.timestamp, genesis.block_number)
@@ -360,8 +183,6 @@ impl Genesis {
             post_state_hash: state_hash,
             block_number: genesis.block_number,
             bonds: Self::bonds_proto(&genesis.proof_of_stake),
-            bond_generations: Self::bond_generations_proto(&genesis.proof_of_stake),
-            active_validators: Self::active_validators_proto(&genesis.proof_of_stake),
         };
 
         let failed_deploys: Vec<_> = processed_deploys
@@ -375,9 +196,12 @@ impl Genesis {
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
             .map(|mut deploy| {
-                crate::rust::util::event_converter::canonicalize_casper_events(
-                    &mut deploy.deploy_log,
-                );
+                use prost::Message;
+                deploy.deploy_log.sort_by(|a, b| {
+                    let a_bytes = a.to_proto().encode_to_vec();
+                    let b_bytes = b.to_proto().encode_to_vec();
+                    a_bytes.cmp(&b_bytes)
+                });
                 deploy
             })
             .collect();
@@ -386,8 +210,6 @@ impl Genesis {
             state,
             deploys: sorted_deploys,
             rejected_deploys: Vec::new(),
-            rejected_state_effects: Vec::new(),
-            applied_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
             applied_from_scope: Vec::new(),
@@ -414,29 +236,5 @@ impl Genesis {
                 stake,
             })
             .collect()
-    }
-
-    fn bond_generations_proto(proof_of_stake: &ProofOfStake) -> Vec<ValidatorBondGeneration> {
-        let mut generations = proof_of_stake
-            .validators
-            .iter()
-            .map(|validator| ValidatorBondGeneration {
-                validator: validator.pk.bytes.clone().into(),
-                generation: BondGeneration::GENESIS,
-            })
-            .collect::<Vec<_>>();
-        generations.sort_unstable();
-        generations
-    }
-
-    fn active_validators_proto(proof_of_stake: &ProofOfStake) -> Vec<Bytes> {
-        let mut validators = proof_of_stake
-            .validators
-            .iter()
-            .map(|validator| Bytes::copy_from_slice(&validator.pk.bytes))
-            .collect::<Vec<_>>();
-        validators.sort_unstable();
-        validators.truncate(proof_of_stake.number_of_active_validators as usize);
-        validators
     }
 }

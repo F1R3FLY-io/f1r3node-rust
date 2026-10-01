@@ -34,11 +34,6 @@ pub struct ProposeSuccess {
 #[derive(Debug, Clone)]
 pub enum ProposeFailure {
     NoNewDeploys,
-    RecoveryDeferred(RecoveryDeferralReason),
-    ParentFrontierCapacityExceeded {
-        configured_cap: usize,
-        required_parents: usize,
-    },
     InternalDeployError,
     BugError,
     /// The propose walk needed a block this node does not hold. This is
@@ -72,18 +67,10 @@ pub enum CheckProposeConstraintsFailure {
 #[derive(Debug, Clone)]
 pub enum BlockCreatorResult {
     NoNewDeploys,
-    RecoveryDeferred(RecoveryDeferralReason),
     /// The created block together with the pre- and post-state hashes that were computed
     /// during `compute_deploys_checkpoint`. Carrying these hashes avoids re-running the
     /// expensive checkpoint replay during self-validation.
     Created(BlockMessage, Bytes, Bytes),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryDeferralReason {
-    IncompleteCertifiedCommitteeSlots,
-    InactiveCertifiedValidator,
-    StaleRecoveryPermit,
 }
 
 impl CheckProposeConstraintsResult {
@@ -163,29 +150,10 @@ impl ProposeResult {
             ProposeStatus::Failure(ProposeFailure::NoNewDeploys)
         )
     }
-
-    pub fn is_recovery_deferred(&self) -> bool {
-        matches!(
-            self.propose_status,
-            ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
-        )
-    }
-
-    pub fn is_deferred(&self) -> bool {
-        matches!(
-            self.propose_status,
-            ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
-                | ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded { .. })
-        )
-    }
 }
 
 impl BlockCreatorResult {
     pub fn no_new_deploys() -> Self { BlockCreatorResult::NoNewDeploys }
-
-    pub fn recovery_deferred(reason: RecoveryDeferralReason) -> Self {
-        BlockCreatorResult::RecoveryDeferred(reason)
-    }
 
     pub fn created(b: BlockMessage, pre_state_hash: Bytes, post_state_hash: Bytes) -> Self {
         BlockCreatorResult::Created(b, pre_state_hash, post_state_hash)
@@ -198,16 +166,6 @@ impl fmt::Display for ProposeStatus {
             ProposeStatus::Success(r) => write!(f, "Propose succeed: {:?}", r.result),
             ProposeStatus::Failure(failure) => match failure {
                 ProposeFailure::NoNewDeploys => write!(f, "Proposal failed: NoNewDeploys. No unprocessed deploys in pool. If you just deployed, the deploy may have already been included by the auto-proposer."),
-                ProposeFailure::RecoveryDeferred(reason) => {
-                    write!(f, "Proposal deferred: {}", reason)
-                }
-                ProposeFailure::ParentFrontierCapacityExceeded {
-                    configured_cap,
-                    required_parents,
-                } => write!(
-                    f,
-                    "Proposal deferred: exact parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap}"
-                ),
                 ProposeFailure::InternalDeployError => {
                     write!(f, "Proposal failed: internal deploy error")
                 }
@@ -243,40 +201,5 @@ impl fmt::Display for ProposeStatus {
                 },
             },
         }
-    }
-}
-
-impl fmt::Display for RecoveryDeferralReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots => {
-                write!(f, "certified committee latest-message slots are incomplete")
-            }
-            RecoveryDeferralReason::InactiveCertifiedValidator => {
-                write!(f, "proposer is inactive in the certified committee")
-            }
-            RecoveryDeferralReason::StaleRecoveryPermit => {
-                write!(f, "finality-recovery permit is stale")
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parent_frontier_capacity_is_a_non_recovery_deferral() {
-        let result = ProposeResult::failure(ProposeFailure::ParentFrontierCapacityExceeded {
-            configured_cap: 2,
-            required_parents: 3,
-        });
-        assert!(result.is_deferred());
-        assert!(!result.is_recovery_deferred());
-        assert_eq!(
-            result.propose_status.to_string(),
-            "Proposal deferred: exact parent frontier requires 3 parents but max-number-of-parents is 2"
-        );
     }
 }

@@ -21,32 +21,6 @@ const COOPERATIVE_YIELD_TIMESLICE_MS: u64 = 1;
 const MAX_SELF_JUSTIFICATION_CACHE_ENTRIES: usize = 10_000;
 const MAX_ANCESTOR_CACHE_ENTRIES: usize = 10_000;
 
-fn active_weight_map(weights: &BTreeMap<V, i64>, active_validators: &BTreeSet<V>) -> WeightMap {
-    weights
-        .iter()
-        .filter(|(validator, stake)| **stake > 0 && active_validators.contains(*validator))
-        .map(|(validator, stake)| (validator.clone(), *stake))
-        .collect()
-}
-
-fn certified_active_weight_map(
-    target_msg: &M,
-    authority_floor_hash: &M,
-    claimed_floor_post_state_hash: &[u8],
-    stored_floor_post_state_hash: &[u8],
-    weights: &BTreeMap<V, i64>,
-    active_validators: &BTreeSet<V>,
-) -> Result<WeightMap, KvStoreError> {
-    if stored_floor_post_state_hash != claimed_floor_post_state_hash {
-        return Err(KvStoreError::InvalidArgument(format!(
-            "target {} certifies authority floor {} with a mismatched post-state hash",
-            hex::encode(target_msg),
-            hex::encode(authority_floor_hash)
-        )));
-    }
-    Ok(active_weight_map(weights, active_validators))
-}
-
 /// Denominator of the on-chain fault-tolerance threshold, in parts-per-million
 /// (ppm). The threshold θ is stored on-chain as an `i64` ppm numerator with this
 /// fixed denominator, so θ = num / 1_000_000.
@@ -85,9 +59,10 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// The durable floor and LFB use `(2q−S)/S > θ`. Cleared of denominators
-/// (S, den > 0), the test is `2·q·den > S·(den+num)`. `i128` keeps both
-/// sides exact for
+/// `strict=false` ⇒ (2q−S)/S ≥ θ — every production decision site (the LFB
+/// is the floor of the live view, one clock); `strict=true` ⇒ > θ, retained
+/// in the API and its unit pins only. Cleared of denominators (S, den > 0), the test is
+/// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
 ///
@@ -95,19 +70,22 @@ impl FtThreshold {
 /// comparison and activates ATOMICALLY with the unreleased branch — every
 /// validator runs the branch binary together, so there is no mixed-version
 /// window and no on-chain activation parameter is required.
-pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64) -> bool {
-    // Domain: the doc-contract is 0 ≤ num ≤ den (θ ∈ [0,1]), but the on-chain ppm
-    // is range-checked to [-den, den] (token_metadata_check.rs) and some callers
-    // pass a negative sentinel θ (e.g. -1.0 "finalize on any majority clique"), so
-    // the lower bound is -den here. The comparison math below is unchanged and is
-    // exact across the full [-den, den] range.
-    debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
+pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
+    // Domain (den > 0, s > 0, q ∈ [0, s], num ∈ [-den, den]) is discharged by
+    // the callers: den is the fixed ppm constant, the oracle short-circuits
+    // non-positive stake, q is a clique weight within total stake, and the
+    // on-chain ppm is range-gated typed at its single read choke point
+    // (`runtime.rs`). The comparison math is exact across [-den, den].
     if (agreeing as i128) * 2 <= s as i128 {
         return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
     }
     let lhs = 2i128 * q as i128 * den as i128;
     let rhs = s as i128 * (den as i128 + num as i128);
-    lhs > rhs
+    if strict {
+        lhs > rhs
+    } else {
+        lhs >= rhs
+    }
 }
 
 pub struct CliqueOracleRunCache {
@@ -147,35 +125,22 @@ impl CliqueOracle {
         map.insert(key, value);
     }
 
+    /// weight map of main parent (fallbacks to message itself if no parents)
+    /// TODO - why not use local weight map but seek for parent?
+    /// P.S. This is related to the fact that we create latest message for newly bonded validator
+    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
+    /// put behind this message. So here is one more place where this logic makes things more complex.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
     ) -> Result<WeightMap, KvStoreError> {
-        let target = dag.lookup_unsafe(target_msg)?;
-        if target.approved_genesis {
-            return Ok(active_weight_map(
-                &target.weight_map,
-                &target.active_validator_set,
-            ));
-        }
-        if !target.is_accepted() {
-            return Ok(HashMap::new());
-        }
-        let authority = target.sender_authority.as_ref().ok_or_else(|| {
-            KvStoreError::InvalidArgument(format!(
-                "accepted target {} has no certified sender authority",
-                hex::encode(target_msg)
-            ))
-        })?;
-        let authority_floor = dag.lookup_unsafe(authority.authority_floor_hash())?;
-        certified_active_weight_map(
-            target_msg,
-            authority.authority_floor_hash(),
-            authority.authority_floor_post_state_hash(),
-            &authority_floor.post_state_hash,
-            &authority_floor.weight_map,
-            &authority_floor.active_validator_set,
-        )
+        dag.lookup_unsafe(target_msg)
+            .and_then(|meta| match meta.parents.first() {
+                Some(main_parent) => dag
+                    .lookup_unsafe(main_parent)
+                    .map(|parent_meta| parent_meta.weight_map.into_iter().collect()),
+                None => Ok(meta.weight_map.into_iter().collect()),
+            })
     }
 
     /// If two validators will never have disagreement on target message
@@ -208,12 +173,7 @@ impl CliqueOracle {
         lm_a_j_b: &M,
         dag: &KeyValueDagRepresentation,
         target_msg: &M,
-        yield_check_interval: usize,
-        yield_timeslice: Duration,
-        self_justification_cache: &mut BTreeMap<M, Option<M>>,
-        ancestor_cache: &mut BTreeMap<(M, M), bool>,
-        max_self_justification_cache_entries: usize,
-        max_ancestor_cache_entries: usize,
+        run_cache: &mut CliqueOracleRunCache,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
         async fn might_eventually_disagree(
@@ -221,38 +181,35 @@ impl CliqueOracle {
             lm_a_j_b: &M,
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
-            self_justification_cache: &mut BTreeMap<M, Option<M>>,
-            ancestor_cache: &mut BTreeMap<(M, M), bool>,
-            yield_check_interval: usize,
-            yield_timeslice: Duration,
-            max_self_justification_cache_entries: usize,
-            max_ancestor_cache_entries: usize,
+            run_cache: &mut CliqueOracleRunCache,
         ) -> Result<bool, KvStoreError> {
+            let yield_check_interval = run_cache.yield_check_interval;
+            let yield_timeslice = run_cache.yield_timeslice;
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
             // TODO not completely clear why try to use self justification and not just message itself
-            let stopper = if let Some(cached) = self_justification_cache.get(lm_a_j_b) {
+            let stopper = if let Some(cached) = run_cache.self_justification_cache.get(lm_a_j_b) {
                 cached.clone().unwrap_or_else(|| lm_a_j_b.clone())
             } else {
                 let value = dag.self_justification(lm_a_j_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_a_j_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value.unwrap_or_else(|| lm_a_j_b.clone())
             };
 
             // Traverse only until stopper instead of materializing full history to genesis.
-            let mut current = if let Some(cached) = self_justification_cache.get(lm_b) {
+            let mut current = if let Some(cached) = run_cache.self_justification_cache.get(lm_b) {
                 cached.clone()
             } else {
                 let value = dag.self_justification(lm_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value
             };
@@ -292,40 +249,41 @@ impl CliqueOracle {
                 // reaching below the candidate froze finality for 851 s in
                 // CI (stall instance i5, run 32397055615 — see
                 // tests/finalized_floor/oracle_stall_replay_spec.rs).
-                //
+
                 // (`ancestor_cache` memoizes the per-(target, hash) verdict:
                 // true = this visited block does not veto.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let no_disagreement = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
-                    *cached
-                } else {
-                    let visited_height = dag.lookup_unsafe(&hash)?.block_number;
-                    let value = if visited_height < target_height {
-                        dag.is_in_main_chain(&hash, target_msg)?
+                let no_disagreement =
+                    if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
+                        *cached
                     } else {
-                        dag.is_in_main_chain(target_msg, &hash)?
+                        let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                        let value = if visited_height < target_height {
+                            dag.is_in_main_chain(&hash, target_msg)?
+                        } else {
+                            dag.is_in_main_chain(target_msg, &hash)?
+                        };
+                        CliqueOracle::bounded_cache_insert(
+                            &mut run_cache.ancestor_cache,
+                            ancestor_key,
+                            value,
+                            run_cache.max_ancestor_cache_entries,
+                        );
+                        value
                     };
-                    CliqueOracle::bounded_cache_insert(
-                        ancestor_cache,
-                        ancestor_key,
-                        value,
-                        max_ancestor_cache_entries,
-                    );
-                    value
-                };
                 if !no_disagreement {
                     return Ok(true);
                 }
 
-                current = if let Some(cached) = self_justification_cache.get(&hash) {
+                current = if let Some(cached) = run_cache.self_justification_cache.get(&hash) {
                     cached.clone()
                 } else {
                     let value = dag.self_justification(&hash)?;
                     CliqueOracle::bounded_cache_insert(
-                        self_justification_cache,
+                        &mut run_cache.self_justification_cache,
                         hash,
                         value.clone(),
-                        max_self_justification_cache_entries,
+                        run_cache.max_self_justification_cache_entries,
                     );
                     value
                 };
@@ -333,20 +291,9 @@ impl CliqueOracle {
             Ok(false)
         }
 
-        might_eventually_disagree(
-            lm_b,
-            lm_a_j_b,
-            dag,
-            target_msg,
-            self_justification_cache,
-            ancestor_cache,
-            yield_check_interval,
-            yield_timeslice,
-            max_self_justification_cache_entries,
-            max_ancestor_cache_entries,
-        )
-        .await
-        .map(|r| !r)
+        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, run_cache)
+            .await
+            .map(|r| !r)
     }
 
     async fn compute_max_clique_weight(
@@ -451,29 +398,11 @@ impl CliqueOracle {
                         continue;
                     };
                     let no_a_b_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_b,
-                        lm_a_j_b,
-                        dag,
-                        target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        lm_b, lm_a_j_b, dag, target_msg, run_cache,
                     )
                     .await?;
                     let no_b_a_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_a,
-                        lm_b_j_a,
-                        dag,
-                        target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        lm_a, lm_b_j_a, dag, target_msg, run_cache,
                     )
                     .await?;
 
@@ -585,13 +514,22 @@ impl CliqueOracle {
             // at one height and every join derivation refuses forever (the
             // ucc 00e6a2e3 consensus halt). Matches the Scala reference
             // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
+            //
+            // An unheld hash in the walk resolves to false DETERMINISTICALLY,
+            // not node-locally: any unheld hash reachable from held
+            // references sits below the restore horizon (above-horizon
+            // dependencies are fetched before admission; the LFS restore
+            // inserts the anchor and above), hence below every held
+            // candidate — a fully-held node's walk returns false at the
+            // same point by height comparison alone. The verdict is
+            // bit-identical with or without the block.
             let Some(hash) = latest_messages.get(validator) else {
                 return Ok(false);
             };
-            if hash != message && dag.canonical_genesis_hash() == Some(hash) {
-                return Ok(false);
+            match dag.is_in_main_chain(message, hash) {
+                Err(KvStoreError::MissingBlock { .. }) => Ok(false),
+                other => other,
             }
-            dag.is_in_main_chain(message, hash)
         }
 
         let mut agreeing_map = HashMap::new();
@@ -607,8 +545,8 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den > S·(den+num)` (see [`ft_decides_exact`]).
-    /// Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); every
+    /// production caller passes `strict=false` (≥). Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(
@@ -616,6 +554,7 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         latest_messages: &BTreeMap<V, M>,
         ftt: FtThreshold,
+        strict: bool,
     ) -> Result<bool, KvStoreError> {
         // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
         if !dag.contains(target_msg) {
@@ -650,7 +589,14 @@ impl CliqueOracle {
             latest_messages,
         )
         .await?;
-        let decision = ft_decides_exact(agreeing, max_clique_weight, total_stake, ftt.num, ftt.den);
+        let decision = ft_decides_exact(
+            agreeing,
+            max_clique_weight,
+            total_stake,
+            ftt.num,
+            ftt.den,
+            strict,
+        );
         if tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
             let snapshot: Vec<String> = latest_messages
                 .iter()
@@ -681,45 +627,6 @@ impl CliqueOracle {
         Ok(decision)
     }
 
-    /// Finalizer decision + display value in one clique pass. Computes the max
-    /// clique weight `q` and total stake `S` once and returns `(decision,
-    /// ft_value)` where `decision` is the EXACT verdict
-    /// [`ft_decides_exact`]`(agreeing, q, S, num, den)` and `ft_value` =
-    /// (2q−S)/S as `f32` for display/telemetry only. The `agreeing ≤ S/2`
-    /// short-circuit returns `(false, MIN_FAULT_TOLERANCE)`, matching
-    /// [`CliqueOracle::compute_output_with_cache`].
-    pub async fn compute_decision_with_cache(
-        target_msg: &M,
-        message_weight_map: &WeightMap,
-        agreeing_weight_map: &WeightMap,
-        dag: &KeyValueDagRepresentation,
-        run_cache: &mut CliqueOracleRunCache,
-        latest_messages: &BTreeMap<V, M>,
-        num: i64,
-        den: i64,
-    ) -> Result<(bool, f32), KvStoreError> {
-        let total_stake = message_weight_map.values().sum::<i64>();
-        assert!(total_stake > 0, "Long overflow when computing total stake");
-        let agreeing = agreeing_weight_map.values().sum::<i64>();
-        if (agreeing as i128) * 2 <= total_stake as i128 {
-            return Ok((false, MIN_FAULT_TOLERANCE));
-        }
-        let max_clique_weight = CliqueOracle::compute_max_clique_weight(
-            target_msg,
-            agreeing_weight_map,
-            dag,
-            run_cache,
-            latest_messages,
-        )
-        .await?;
-        // Display value only: identical formula to compute_output_with_cache.
-        let ft_value = (max_clique_weight as f32 * 2.0 - total_stake as f32) / total_stake as f32;
-        Ok((
-            ft_decides_exact(agreeing, max_clique_weight, total_stake, num, den),
-            ft_value,
-        ))
-    }
-
     /// Deterministic fault tolerance over a FROZEN latest-message snapshot.
     ///
     /// Every "validator V's latest message" read is resolved from `latest_messages`
@@ -746,6 +653,24 @@ impl CliqueOracle {
             if full_weight_map.values().sum::<i64>() <= 0 {
                 return Ok(MIN_FAULT_TOLERANCE);
             }
+            // A latest message this node does not hold (a stale slot below an
+            // LFS restore horizon) abstains its validator: it can neither
+            // agree nor witness, and erroring here would fail every
+            // fault-tolerance read on the node. Abstention only ever
+            // understates the clique.
+            let mut held_latest_messages = BTreeMap::new();
+            for (validator, hash) in latest_messages.iter() {
+                if dag.lookup(hash)?.is_some() {
+                    held_latest_messages.insert(validator.clone(), hash.clone());
+                } else {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.safety.clique_oracle",
+                        "abstaining validator with unheld latest message {:?}",
+                        hash
+                    );
+                }
+            }
+            let latest_messages = &held_latest_messages;
             let agreeing_weight_map =
                 Self::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
                     .await?;
@@ -798,52 +723,14 @@ impl CliqueOracle {
 mod ft_decides_exact_tests {
     //! Unit tests for the exact-integer finalization DECISION (`ft_decides_exact`)
     //! and the `FtThreshold` newtype. The exact test replaces the imprecise `f32`
-    //! comparison `(2q−S)/S > θ`; these confirm it matches `f32` where `f32` is
-    //! exact, rejects exact threshold ties, and never overflows.
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-    use block_storage::rust::dag::block_dag_key_value_storage::{
-        BlockDagKeyValueStorage, InsertMode,
-    };
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use models::rust::block_implicits::get_random_block;
-    use models::rust::casper::protocol::casper_message::Bond;
-    use proptest::prelude::*;
-    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-
-    use super::{
-        active_weight_map, certified_active_weight_map, ft_decides_exact, CliqueOracle,
-        FtThreshold, KvStoreError, FT_PPM_DEN,
-    };
-
-    fn validator(id: u8) -> prost::bytes::Bytes { prost::bytes::Bytes::from(vec![id; 33]) }
-
-    fn threshold_case() -> impl Strategy<Value = (i64, i64, i64)> {
-        (1i64..257, 1i64..65)
-            .prop_flat_map(|(stake, den)| (-den..=den).prop_map(move |num| (stake, num, den)))
-    }
-
-    fn hard_gate_case() -> impl Strategy<Value = (i64, i64, i64, i64, i64)> {
-        threshold_case().prop_flat_map(|(stake, num, den)| {
-            (0i64..=stake, 0i64..=(stake / 2))
-                .prop_map(move |(clique, agreeing)| (agreeing, clique, stake, num, den))
-        })
-    }
-
-    fn two_certificate_case() -> impl Strategy<Value = (i64, i64, i64, i64, i64)> {
-        (1i64..257, 1i64..65)
-            .prop_flat_map(|(stake, den)| (-den..den).prop_map(move |num| (stake, num, den)))
-            .prop_flat_map(|(stake, num, den)| {
-                let q_min = ((stake as i128 * (den + num) as i128) / (2 * den) as i128 + 1) as i64;
-                (q_min..=stake, q_min..=stake)
-                    .prop_map(move |(left, right)| (stake, num, den, left, right))
-            })
-    }
+    //! comparison `(2q−S)/S ⋛ θ`; these confirm it matches `f32` where `f32` is
+    //! exact, pins the ≥-vs-> semantics at an exact tie, and never overflows.
+    use super::{ft_decides_exact, FtThreshold, FT_PPM_DEN};
 
     /// On small stakes the exact rule matches the naive `f32` comparison
-    /// `(2q−S)/S > θ` at every grid point where `f32` is exact (dyadic S and θ),
+    /// `(2q−S)/S ⋛ θ` at every grid point where `f32` is exact (dyadic S and θ),
     /// confirming the DECISION is unchanged on the common case. Exact ties are
-    /// excluded here and pinned down by `boundary_tie_is_not_finalized`.
+    /// excluded here and pinned down by `boundary_tie_ge_finalizes_gt_does_not`.
     #[test]
     fn small_stake_matches_f32_rule_on_dyadic_grid() {
         let den = FT_PPM_DEN;
@@ -862,7 +749,12 @@ mod ft_decides_exact_tests {
                     // Full agreement (agreeing = S) so the >S/2 gate always passes,
                     // isolating the θ comparison.
                     assert_eq!(
-                        ft_decides_exact(s, q, s, num, den),
+                        ft_decides_exact(s, q, s, num, den, false),
+                        ratio >= theta,
+                        ">= mismatch q={q} s={s} num={num}"
+                    );
+                    assert_eq!(
+                        ft_decides_exact(s, q, s, num, den, true),
                         ratio > theta,
                         "> mismatch q={q} s={s} num={num}"
                     );
@@ -871,11 +763,12 @@ mod ft_decides_exact_tests {
         }
     }
 
-    /// A large-stake exact tie `2q·den == S·(den+num)` is not finalized. Built so
-    /// the tie is exact: S = 2·den, q = den+num ⇒
+    /// A large-stake exact tie `2q·den == S·(den+num)` finalizes under ≥ (floor)
+    /// but NOT under > (LFB finalizer) — the precise boundary the `f32` path could
+    /// not resolve. Built so the tie is exact: S = 2·den, q = den+num ⇒
     /// 2q·den = 2(den+num)·den = S·(den+num).
     #[test]
-    fn boundary_tie_is_not_finalized() {
+    fn boundary_tie_ge_finalizes_gt_does_not() {
         let den = FT_PPM_DEN;
         let num = 333_333;
         let s = 2 * den; // 2_000_000
@@ -885,16 +778,15 @@ mod ft_decides_exact_tests {
             s as i128 * (den as i128 + num as i128),
             "test setup must produce an exact tie"
         );
-        assert!(!ft_decides_exact(s, q, s, num, den));
-    }
-
-    #[test]
-    fn four_validator_boundary_requires_clique_above_half() {
-        let den = FT_PPM_DEN;
-        let total_stake = 16;
-        let agreeing_stake = 9;
-        assert!(!ft_decides_exact(agreeing_stake, 8, total_stake, 0, den,));
-        assert!(ft_decides_exact(agreeing_stake, 9, total_stake, 0, den,));
+        // agreeing = S so the >S/2 gate passes; the tie is decided purely by strict.
+        assert!(
+            ft_decides_exact(s, q, s, num, den, false),
+            "exact tie must finalize under >= (floor)"
+        );
+        assert!(
+            !ft_decides_exact(s, q, s, num, den, true),
+            "exact tie must NOT finalize under > (LFB finalizer)"
+        );
     }
 
     /// The `2·agreeing == S` knife-edge (exactly half agree) is NOT finalized: the
@@ -905,7 +797,28 @@ mod ft_decides_exact_tests {
         let den = FT_PPM_DEN;
         let s = 10i64;
         let agreeing = 5i64; // 2·5 == 10 == S
-        assert!(!ft_decides_exact(agreeing, s, s, 0, den));
+        assert!(!ft_decides_exact(agreeing, s, s, 0, den, false));
+        assert!(!ft_decides_exact(agreeing, s, s, 0, den, true));
+    }
+
+    /// At θ = 0 the rule is `q ≥ S/2`, which two DISJOINT cliques can satisfy
+    /// at once — each certifying a different sibling from its own snapshot,
+    /// neither validator equivocating. The `agreeing > S/2` gate does not stop
+    /// it: agreeing is per-snapshot, the clique is the safety-relevant weight.
+    /// Any positive θ forces `q > S/2`, so the cliques must overlap.
+    #[test]
+    fn two_disjoint_half_cliques_both_certify_at_zero_but_not_above_it() {
+        let den = FT_PPM_DEN;
+        let s = 100i64;
+        // Three of four equal validators agree in each snapshot; the certifying
+        // cliques are {v1,v2} and {v3,v4}, disjoint, 50 each.
+        let (agreeing, q) = (75i64, 50i64);
+
+        assert!(ft_decides_exact(agreeing, q, s, 0, den, false));
+        assert!(
+            !ft_decides_exact(agreeing, q, s, 1, den, false),
+            "one ppm above zero already forces the cliques to overlap"
+        );
     }
 
     /// i64::MAX-scale q and S must not overflow: `2·q·den ≈ 2^84` exceeds i64 but
@@ -916,10 +829,11 @@ mod ft_decides_exact_tests {
         let num = 500_000;
         let s = i64::MAX;
         let q = i64::MAX; // q ≤ S; full clique ⇒ (2S−S)/S = 1 ≥ θ and > θ (θ < 1)
-        assert!(ft_decides_exact(s, q, s, num, den));
+        assert!(ft_decides_exact(s, q, s, num, den, false));
+        assert!(ft_decides_exact(s, q, s, num, den, true));
         // 2·agreeing near i64::MAX in the early-return path: 2·(MAX/2) < MAX ⇒ false.
         let half = i64::MAX / 2;
-        assert!(!ft_decides_exact(half, q, s, num, den));
+        assert!(!ft_decides_exact(half, q, s, num, den, true));
     }
 
     /// Negative-θ sentinel (θ = -1.0 "finalize on any majority clique"): with the
@@ -931,10 +845,13 @@ mod ft_decides_exact_tests {
         let s = 10i64;
         let agreeing = 10i64; // 2·10 > 10 ⇒ gate passes
         assert!(
-            ft_decides_exact(agreeing, 1, s, num, den),
+            ft_decides_exact(agreeing, 1, s, num, den, true),
             "q=1>0 finalizes"
         );
-        assert!(!ft_decides_exact(agreeing, 0, s, num, den), "q=0 does not");
+        assert!(
+            !ft_decides_exact(agreeing, 0, s, num, den, true),
+            "q=0 does not"
+        );
     }
 
     #[test]
@@ -945,292 +862,5 @@ mod ft_decides_exact_tests {
         assert_eq!(FtThreshold::from_f32_lossy(0.5).num, 500_000);
         assert_eq!(FtThreshold::from_f32_lossy(-1.0).num, -1_000_000);
         assert_eq!(FtThreshold::from_f32_lossy(-1.0).den, FT_PPM_DEN);
-    }
-
-    #[test]
-    fn inactive_bonds_do_not_enter_the_finality_denominator() {
-        let active = validator(1);
-        let inactive = validator(2);
-        let weights = BTreeMap::from([(active.clone(), 60), (inactive, 10_000)]);
-        let committee = active_weight_map(&weights, &BTreeSet::from([active.clone()]));
-        assert_eq!(committee, HashMap::from([(active, 60)]));
-    }
-
-    #[tokio::test]
-    async fn certified_authority_floor_controls_the_finality_denominator() {
-        let active = prost::bytes::Bytes::from(vec![1; models::rust::validator::LENGTH]);
-        let inactive = prost::bytes::Bytes::from(vec![2; models::rust::validator::LENGTH]);
-        let bonds = vec![
-            Bond {
-                validator: active.clone(),
-                stake: 60,
-            },
-            Bond {
-                validator: inactive,
-                stake: 10_000,
-            },
-        ];
-        let mut manager = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)
-            .await
-            .expect("block store");
-        let dag_store = BlockDagKeyValueStorage::new(&mut manager)
-            .await
-            .expect("DAG store");
-        let mut genesis = get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            Some(active.clone()),
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(bonds.clone()),
-            Some("root".to_string()),
-            None,
-        );
-        genesis.body.state.active_validators = vec![active.clone()];
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
-        dag_store
-            .insert(&genesis, InsertMode::ApprovedGenesis)
-            .expect("insert genesis");
-
-        let prospective = prost::bytes::Bytes::from(vec![3; models::rust::validator::LENGTH]);
-        let parent_bonds = vec![
-            Bond {
-                validator: active.clone(),
-                stake: 60,
-            },
-            Bond {
-                validator: prospective.clone(),
-                stake: 10_000,
-            },
-        ];
-        let parent = get_random_block(
-            Some(1),
-            Some(1),
-            Some(genesis.body.state.post_state_hash.clone()),
-            None,
-            Some(active.clone()),
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(parent_bonds.clone()),
-            Some("root".to_string()),
-            None,
-        );
-        let mut parent = parent;
-        parent.body.state.active_validators = vec![active.clone(), prospective];
-        block_store
-            .put_block_message(&parent)
-            .expect("store parent");
-        dag_store
-            .insert(&parent, InsertMode::Normal)
-            .expect("insert parent");
-
-        let mut child = get_random_block(
-            Some(2),
-            Some(2),
-            Some(genesis.body.state.post_state_hash.clone()),
-            None,
-            Some(active.clone()),
-            None,
-            Some(2),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(parent_bonds),
-            Some("root".to_string()),
-            None,
-        );
-        child.header.parents_hash_list = vec![parent.block_hash.clone()];
-        block_store.put_block_message(&child).expect("store child");
-        dag_store
-            .insert(&child, InsertMode::Normal)
-            .expect("insert child");
-        let dag = dag_store.get_representation().expect("DAG");
-
-        let denominator = CliqueOracle::get_corresponding_weight_map(&child.block_hash, &dag)
-            .await
-            .expect("weight map");
-        assert_eq!(denominator, HashMap::from([(active.clone(), 60)]));
-
-        let wrong_state = prost::bytes::Bytes::from(vec![91; models::rust::block_hash::LENGTH]);
-        let mismatched = get_random_block(
-            Some(2),
-            Some(2),
-            Some(wrong_state),
-            None,
-            Some(active),
-            None,
-            Some(2),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(bonds),
-            Some("root".to_string()),
-            None,
-        );
-        block_store
-            .put_block_message(&mismatched)
-            .expect("store mismatched target");
-        dag_store
-            .insert(&mismatched, InsertMode::Normal)
-            .expect("insert mismatched target");
-        let dag = dag_store.get_representation().expect("DAG");
-        let error = CliqueOracle::get_corresponding_weight_map(&mismatched.block_hash, &dag)
-            .await
-            .expect_err("mismatched floor state must fail closed");
-        assert_eq!(
-            error,
-            KvStoreError::InvalidArgument(format!(
-                "target {} certifies authority floor {} with a mismatched post-state hash",
-                hex::encode(&mismatched.block_hash),
-                hex::encode(&genesis.block_hash)
-            ))
-        );
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
-
-        #[test]
-        fn strict_clique_minimum_matches_the_exact_integer_region(
-            (stake, num, den) in threshold_case(),
-        ) {
-            let numerator = stake as i128 * (den + num) as i128;
-            let denominator = (2 * den) as i128;
-            let q_min = (numerator / denominator + 1) as i64;
-            for clique in 0..=stake {
-                prop_assert_eq!(
-                    ft_decides_exact(stake, clique, stake, num, den),
-                    clique >= q_min,
-                );
-            }
-        }
-
-        #[test]
-        fn independent_agreeing_majority_gate_rejects_half_or_less(
-            (agreeing, clique, stake, num, den) in hard_gate_case(),
-        ) {
-            prop_assert!(!ft_decides_exact(
-                agreeing,
-                clique,
-                stake,
-                num,
-                den,
-            ));
-        }
-
-        #[test]
-        fn two_certificates_force_overlap_above_the_fault_budget(
-            (stake, num, den, left, right) in two_certificate_case(),
-        ) {
-            prop_assert!(ft_decides_exact(stake, left, stake, num, den));
-            prop_assert!(ft_decides_exact(stake, right, stake, num, den));
-            let overlap = (left + right - stake).max(0);
-            prop_assert!(overlap as i128 * den as i128 > stake as i128 * num as i128);
-        }
-
-        #[test]
-        fn active_committee_is_independent_of_inactive_stake(
-            entries in proptest::collection::vec((any::<u8>(), -8i64..=2048, any::<bool>()), 0..64),
-            replacement in -8i64..=2048,
-        ) {
-            let mut weights = BTreeMap::new();
-            let mut active = BTreeSet::new();
-            for (id, stake, is_active) in entries {
-                let validator = validator(id);
-                weights.insert(validator.clone(), stake);
-                if is_active {
-                    active.insert(validator);
-                }
-            }
-            let expected = active_weight_map(&weights, &active);
-            for validator in weights.keys().filter(|validator| !active.contains(*validator)).cloned().collect::<Vec<_>>() {
-                weights.insert(validator, replacement);
-            }
-            prop_assert_eq!(active_weight_map(&weights, &active), expected);
-        }
-
-        #[test]
-        fn active_committee_contains_exactly_positive_active_bonds(
-            entries in proptest::collection::vec((any::<u8>(), -8i64..=2048, any::<bool>()), 0..64),
-        ) {
-            let mut weights = BTreeMap::new();
-            let mut active = BTreeSet::new();
-            for (id, stake, is_active) in entries {
-                let validator = validator(id);
-                weights.insert(validator.clone(), stake);
-                if is_active {
-                    active.insert(validator);
-                }
-            }
-            let committee = active_weight_map(&weights, &active);
-            prop_assert!(committee.iter().all(|(validator, stake)| active.contains(validator) && *stake > 0));
-            for (validator, stake) in weights {
-                prop_assert_eq!(committee.get(&validator).copied(), (active.contains(&validator) && stake > 0).then_some(stake));
-            }
-        }
-
-        #[test]
-        fn certified_committee_requires_the_exact_floor_state_pair(
-            entries in proptest::collection::vec((any::<u8>(), -8i64..=2048, any::<bool>()), 0..64),
-            state in any::<[u8; 32]>(),
-            matching in any::<bool>(),
-            target_a in any::<[u8; 32]>(),
-            target_b in any::<[u8; 32]>(),
-            floor_a in any::<[u8; 32]>(),
-            floor_b in any::<[u8; 32]>(),
-        ) {
-            let mut weights = BTreeMap::new();
-            let mut active = BTreeSet::new();
-            for (id, stake, is_active) in entries {
-                let validator = validator(id);
-                weights.insert(validator.clone(), stake);
-                if is_active {
-                    active.insert(validator);
-                }
-            }
-            let mut claim = state;
-            if !matching {
-                claim[0] ^= 1;
-            }
-            let expected = active_weight_map(&weights, &active);
-            let left = certified_active_weight_map(
-                &prost::bytes::Bytes::copy_from_slice(&target_a),
-                &prost::bytes::Bytes::copy_from_slice(&floor_a),
-                &claim,
-                &state,
-                &weights,
-                &active,
-            );
-            let right = certified_active_weight_map(
-                &prost::bytes::Bytes::copy_from_slice(&target_b),
-                &prost::bytes::Bytes::copy_from_slice(&floor_b),
-                &claim,
-                &state,
-                &weights,
-                &active,
-            );
-            if matching {
-                prop_assert_eq!(left.as_ref().ok(), Some(&expected));
-                prop_assert_eq!(right.as_ref().ok(), Some(&expected));
-            } else {
-                prop_assert!(matches!(left, Err(KvStoreError::InvalidArgument(_))));
-                prop_assert!(matches!(right, Err(KvStoreError::InvalidArgument(_))));
-            }
-        }
     }
 }

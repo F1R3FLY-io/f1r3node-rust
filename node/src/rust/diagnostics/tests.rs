@@ -33,6 +33,7 @@ mod tests {
             max_number_of_parents: 2147483647,
             max_parent_depth: 100,
             deploy_lifespan: 50,
+            deploy_play_budget: Duration::ZERO,
             fork_choice_stale_threshold: Duration::from_secs(30 * 60),
             fork_choice_check_if_stale_interval: Duration::from_secs(30),
             synchrony_constraint_threshold: 0.0,
@@ -43,7 +44,6 @@ mod tests {
                 drop_peer_after_retries: 5,
             },
             genesis_block_data: GenesisBlockData {
-                resource_policy: None,
                 genesis_data_dir: "/tmp/genesis".to_string(),
                 bonds_file: "bonds.txt".to_string(),
                 wallets_file: "wallets.txt".to_string(),
@@ -56,12 +56,6 @@ mod tests {
                 genesis_block_number: 0,
                 pos_multi_sig_public_keys: vec![],
                 pos_multi_sig_quorum: 0,
-                max_cosigners_per_deploy:
-                    casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
-                // Task #13b: default EMPTY genesis client funding-slot list.
-                client_fuel_allocations: Vec::new(),
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,
@@ -82,7 +76,6 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             },
-            disable_late_block_filtering: true,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,

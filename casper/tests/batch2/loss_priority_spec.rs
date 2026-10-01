@@ -12,7 +12,7 @@
 // (`InvalidRejectedDeploy`), so cross-node acceptance proves the proposer and
 // validators computed identical rejection sets from the same on-DAG data.
 
-use casper::rust::casper::MultiParentCasper;
+use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
@@ -23,7 +23,7 @@ use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
-use super::staging::{mint_on_expected_snapshot, mint_on_parents, ExpectedParents};
+use super::staging::mint_on_parents;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -50,11 +50,12 @@ fn cheap_write(key: &str, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData
     .expect("build cheap write")
 }
 
-/// Strictly costlier same-cell write: an extra private communication makes the
-/// current compute-and-byte schedule prefer it.
+/// Strictly costlier same-cell write: extra arithmetic buys enough phlo cost
+/// that the content ordering (total cost first) always prefers it.
 fn costly_write(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
     let rho = format!(
-        r#"new meter in {{ meter!("content-priority-cost") | for (_ <- meter) {{ Nil }} }} |
+        r#"match ((1 + 2) * (3 + 4) + (5 * 6)) % 7 {{ _ => Nil }} |
+           match ((7 + 8) * (9 + 10) + (11 * 12)) % 13 {{ _ => Nil }} |
            for (@m <- @"m") {{ @"m"!(m.set("{}", {})) }}"#,
         key, val
     );
@@ -67,13 +68,6 @@ fn costly_write(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed
         Some(shard_id.to_string()),
     )
     .expect("build costly write")
-}
-
-fn envelope_id(node: &TestNode, deploy: &Signed<DeployData>) -> prost::bytes::Bytes {
-    node.envelope_for_deploy(deploy)
-        .expect("build protocol-v6 envelope")
-        .envelope_commitment()
-        .expect("protocol-v6 deploy identity")
 }
 
 fn par_to_i64(p: &Par) -> Option<i64> {
@@ -122,7 +116,7 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].submit_deploy(init).expect("init deploy");
+    nodes[0].casper.deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut() {
         node.process_block(init_block.clone())
@@ -131,14 +125,15 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
     }
 
     let starved = cheap_write("starved", &starved_sec, &shard_id);
-    let starved_id = envelope_id(&nodes[0], &starved);
-    nodes[0].submit_deploy(starved).expect("starved deploy");
+    let starved_sig = starved.sig.clone();
+    nodes[0].casper.deploy(starved).expect("starved deploy");
     let starved_sibling =
         mint_on_parents(&mut nodes[0], vec![init_block.clone()], "starved sibling").await;
 
     let first_contender = costly_write("first", 1, &contender_sec, &shard_id);
     nodes[1]
-        .submit_deploy(first_contender)
+        .casper
+        .deploy(first_contender)
         .expect("first contender deploy");
     let contender_sibling =
         mint_on_parents(&mut nodes[1], vec![init_block.clone()], "contender sibling").await;
@@ -158,9 +153,9 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         }
     }
 
-    let first_merge = mint_on_expected_snapshot(
+    let first_merge = mint_on_parents(
         &mut nodes[2],
-        ExpectedParents::members(&[&neutral_sibling, &starved_sibling, &contender_sibling]),
+        vec![neutral_sibling.clone(), starved_sibling, contender_sibling],
         "first neutral-base merge",
     )
     .await;
@@ -177,7 +172,7 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         .body
         .rejected_deploys
         .iter()
-        .any(|record| record.deploy_id() == starved_id.as_ref()));
+        .any(|record| record.sig == starved_sig));
 
     let first_merge_height = first_merge.body.state.block_number;
     let mut gate_tip = None;
@@ -224,12 +219,13 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         .body
         .deploys
         .iter()
-        .any(|processed| processed.deploy_id() == &starved_id));
+        .any(|processed| processed.deploy.sig == starved_sig));
 
     let second_contender = costly_write("second", 2, &contender_sec, &shard_id);
-    let second_contender_id = envelope_id(&nodes[1], &second_contender);
+    let second_contender_sig = second_contender.sig.clone();
     nodes[1]
-        .submit_deploy(second_contender)
+        .casper
+        .deploy(second_contender)
         .expect("second contender deploy");
     let second_contender_sibling = mint_on_parents(
         &mut nodes[1],
@@ -254,13 +250,13 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         }
     }
 
-    let second_merge = mint_on_expected_snapshot(
+    let second_merge = mint_on_parents(
         &mut nodes[2],
-        ExpectedParents::members(&[
-            &second_neutral_sibling,
-            &retry_sibling,
-            &second_contender_sibling,
-        ]),
+        vec![
+            second_neutral_sibling.clone(),
+            retry_sibling,
+            second_contender_sibling,
+        ],
         "second neutral-base merge",
     )
     .await;
@@ -278,12 +274,12 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         .body
         .rejected_deploys
         .iter()
-        .any(|record| record.deploy_id() == starved_id.as_ref()));
+        .any(|record| record.sig == starved_sig));
     assert!(second_merge
         .body
         .rejected_deploys
         .iter()
-        .any(|record| record.deploy_id() == second_contender_id.as_ref()));
+        .any(|record| record.sig == second_contender_sig));
     assert!(
         key_landed(
             &nodes[2],
@@ -321,7 +317,7 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].submit_deploy(init).expect("init deploy");
+    nodes[0].casper.deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut() {
         node.process_block(init_block.clone())
@@ -332,7 +328,7 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
     // Round 1: the cheap write meets a costlier contender; the merge must
     // reject the cheap write on content order and record it.
     let starved = cheap_write("starved", &starved_sec, &shard_id);
-    let starved_id = envelope_id(&nodes[0], &starved);
+    let starved_sig = starved.sig.clone();
     let sibling_starved = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&starved))
         .await
@@ -364,8 +360,9 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
             .body
             .rejected_deploys
             .iter()
-            .any(|r| r.deploy_id() == starved_id.as_ref()),
-        "FIXTURE: round 1 must reject the cheap write on content order"
+            .any(|r| r.sig == starved_sig),
+        "FIXTURE: round 1 must reject the cheap write on content order; \
+         raise the contender's arithmetic cost if this fails"
     );
 
     // Contention rounds, in the racing shape the Heavy Pipeline observed:
@@ -382,7 +379,7 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
             &contender_sec,
             &shard_id,
         );
-        nodes[1].submit_deploy(contender).expect("contender deploy");
+        nodes[1].casper.deploy(contender).expect("contender deploy");
         let contender_block = nodes[1]
             .create_block_unsafe(&[])
             .await
@@ -414,12 +411,12 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy_id() == &starved_id);
+            .any(|pd| pd.deploy.sig == starved_sig);
         let merge_rejected_starved = merge
             .body
             .rejected_deploys
             .iter()
-            .any(|r| r.deploy_id() == starved_id.as_ref());
+            .any(|r| r.sig == starved_sig);
         let landed = key_landed(&nodes[1], &merge.body.state.post_state_hash, "starved").await;
         println!(
             "ROUND {}: retry_aboard_owner_block={} merge_rejected_starved={} merge_records={} landed={}",
@@ -466,7 +463,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
         Some(shard_id.clone()),
     )
     .expect("build init");
-    nodes[0].submit_deploy(init).expect("init deploy");
+    nodes[0].casper.deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
     for node in nodes.iter_mut() {
         node.process_block(init_block.clone())
@@ -475,7 +472,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
     }
 
     let starved = cheap_write("starved", &starved_sec, &shard_id);
-    let starved_id = envelope_id(&nodes[0], &starved);
+    let starved_sig = starved.sig.clone();
     let sibling_starved = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&starved))
         .await
@@ -507,8 +504,9 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             .body
             .rejected_deploys
             .iter()
-            .any(|r| r.deploy_id() == starved_id.as_ref()),
-        "FIXTURE: round 1 must reject the cheap write on content order"
+            .any(|r| r.sig == starved_sig),
+        "FIXTURE: round 1 must reject the cheap write on content order; \
+         raise the contender's arithmetic cost if this fails"
     );
 
     let mut rejected_again = false;
@@ -519,7 +517,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             &contender_sec,
             &shard_id,
         );
-        nodes[1].submit_deploy(contender).expect("contender deploy");
+        nodes[1].casper.deploy(contender).expect("contender deploy");
         let contender_block = nodes[1]
             .create_block_unsafe(&[])
             .await
@@ -549,7 +547,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             .body
             .rejected_deploys
             .iter()
-            .any(|rejected| rejected.deploy_id() == starved_id.as_ref());
+            .any(|rejected| rejected.sig == starved_sig);
     }
     assert!(
         rejected_again,
@@ -566,7 +564,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             &contender_sec,
             &shard_id,
         );
-        nodes[1].submit_deploy(contender).expect("contender deploy");
+        nodes[1].casper.deploy(contender).expect("contender deploy");
         let contender_block = nodes[1]
             .create_block_unsafe(&[])
             .await
@@ -589,7 +587,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             .body
             .deploys
             .iter()
-            .any(|processed| processed.deploy_id() == &starved_id)
+            .any(|processed| processed.deploy.sig == starved_sig)
         {
             first_eligible_round.get_or_insert(round);
         }

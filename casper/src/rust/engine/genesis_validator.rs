@@ -15,18 +15,19 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
+use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, ApprovedBlockRequest, CasperMessage, NoApprovedBlockAvailable, UnapprovedBlock,
+    ApprovedBlock, ApprovedBlockRequest, BlockMessage, CasperMessage, NoApprovedBlockAvailable,
+    UnapprovedBlock,
 };
+use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::sync::mpsc;
 
-use crate::rust::blocks::block_processing_queue::{
-    BlockProcessingIdentities, BlockProcessingQueueSender,
-};
-use crate::rust::casper::CasperShardConf;
+use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
@@ -40,8 +41,9 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
-    block_processing_queue_tx: BlockProcessingQueueSender,
-    blocks_in_processing: Arc<BlockProcessingIdentities>,
+    block_processing_queue_tx:
+        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+    blocks_in_processing: Arc<DashSet<BlockHash>>,
     casper_shard_conf: CasperShardConf,
     validator_id: ValidatorIdentity,
     block_approver: BlockApproverProtocol<T>,
@@ -66,6 +68,7 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Bounded set of seen UnapprovedBlock candidates to avoid unbounded memory growth.
     seen_candidates: Arc<Mutex<SeenCandidates>>,
+    approved_block_pull_last: Arc<Mutex<Option<std::time::Instant>>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Handed through to Initializing on late-joiner recovery: a genesis
@@ -119,8 +122,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// to enable cloning from TestFixture and proper ownership transfer to Initializing.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        block_processing_queue_tx: BlockProcessingQueueSender,
-        blocks_in_processing: Arc<BlockProcessingIdentities>,
+        block_processing_queue_tx: mpsc::Sender<(
+            Arc<dyn MultiParentCasper + Send + Sync>,
+            BlockMessage,
+        )>,
+        blocks_in_processing: Arc<DashSet<BlockHash>>,
         casper_shard_conf: CasperShardConf,
         validator_id: ValidatorIdentity,
         block_approver: BlockApproverProtocol<T>,
@@ -170,6 +176,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             seen_candidates: Arc::new(Mutex::new(SeenCandidates::new(
                 genesis_seen_candidates_max_entries(),
             ))),
+            approved_block_pull_last: Arc::new(Mutex::new(None)),
             heartbeat_signal_ref,
             state_items_tx,
         }
@@ -223,7 +230,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.block_processing_queue_tx,
             &self.blocks_in_processing,
             &self.casper_shard_conf,
-            self.block_approver.required_sigs,
             &validator_id_opt,
             init,
             true,
@@ -285,7 +291,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.block_processing_queue_tx,
             &self.blocks_in_processing,
             &self.casper_shard_conf,
-            self.block_approver.required_sigs,
             &validator_id_opt,
             init,
             true,
@@ -315,6 +320,46 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
     async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+
+    /// A validator that missed the ceremony's pushed messages pulls the
+    /// ApprovedBlock from bootstrap; the response takes the existing
+    /// `handle_approved_block_late` recovery. One send per throttle
+    /// interval — the casper loop awaits this tick inline, so a retrying
+    /// send against an unreachable bootstrap would stall the loop.
+    async fn on_no_casper_tick(&self) -> Result<(), CasperError> {
+        const APPROVED_BLOCK_PULL_INTERVAL: std::time::Duration =
+            std::time::Duration::from_secs(10);
+        {
+            let mut last = self.approved_block_pull_last.lock().unwrap();
+            if let Some(at) = *last {
+                if at.elapsed() < APPROVED_BLOCK_PULL_INTERVAL {
+                    return Ok(());
+                }
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        let Some(bootstrap) = self.rp_conf_ask.bootstrap.clone() else {
+            return Ok(());
+        };
+        tracing::info!(
+            "Genesis validator has seen no ceremony message; pulling the \
+             ApprovedBlock from bootstrap"
+        );
+        let packet = models::casper::ApprovedBlockRequestProto {
+            identifier: "".to_string(),
+            trim_state: true,
+        }
+        .mk_packet();
+        let msg = comm::rust::rp::protocol_helper::packet(
+            &self.rp_conf_ask.local,
+            &self.rp_conf_ask.network_id,
+            packet,
+        );
+        if let Err(err) = self.transport_layer.send(&bootstrap, &msg).await {
+            tracing::warn!("ApprovedBlock pull from bootstrap failed: {}", err);
+        }
+        Ok(())
+    }
 
     /// Scala equivalent: `override def handle(peer: PeerNode, msg: CasperMessage): F[Unit]`
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {

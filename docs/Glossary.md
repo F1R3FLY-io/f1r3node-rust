@@ -1,162 +1,5 @@
 # Glossary
 
-## Prepaid discharge
-
-A prepaid discharge consumes an eligible prepaid resource occurrence to satisfy a compatible resource obligation.
-Compatibility includes authority, location, resource class, and applicable acquisition terms.
-See the [typed prepaid-discharge proof](casper/theory/cost-accounting-impl/funding-settlement-design-review.md#typed-prepaid-discharge-proof).
-
-## Monetary allocation terms
-
-### Payer cohort
-
-A payer cohort is the canonically ordered set of authorized physical purses for one monetary allocation scope.
-Different logical names for the same purse share one allocation position.
-See [rotating monetary allocation](casper/theory/cost-accounting-impl/rotating-monetary-allocation.md).
-
-### Residual cursor
-
-A residual cursor identifies the first payer position considered for indivisible units after equal allocation subject to capacity limits.
-It is distinct from an iterator cursor used to traverse stored keys.
-
-### Resource vector
-
-A resource vector records measured quantities for separate resource classes, such as COMM events and transferred bytes.
-Its quantities remain distinct from monetary prices and signature-specific authority requirements.
-
-### Raw byte observation
-
-A raw byte observation pairs accepted byte measurements with their optional legacy charge and event authority.
-It records evidence, not spendable funds.
-See [raw byte observations](casper/theory/cost-accounting-impl/raw-byte-observations.md).
-
-### Native budget trace
-
-A native budget trace records charge attempts and their decisions in original accounting order.
-Each attempt identifies its execution session, causal operation path, accounting stage, and exact observation.
-The checked trace preserves budget decisions during replay. Separate RSpace evidence must establish source authenticity and valid matching order.
-See the [native attempt replay contract](casper/theory/cost-accounting-impl/observed-funding-outcome.md#native-attempt-replay-contract).
-
-### Price schedule
-
-A price schedule defines resource weights, monetary prices, the settlement asset, and fixed fees for an identified protocol context.
-The [signed phlo proposal](casper/theory/cost-accounting-impl/signed-phlo-contract-proposal.md) describes proposed schedule commitments.
-That proposal does not approve a production tariff.
-
-### Exposure limit
-
-An exposure limit bounds the maximum debit that a purse authorizes for a specified obligation and asset.
-A purse balance can exceed this limit without authorizing a larger debit.
-
-### Conversion quote
-
-A conversion quote specifies an exchange's input assets, output assets, amounts, recipients, validity conditions, and rounding rules.
-An exchange quote does not define the shard's resource price schedule.
-
-### Funding consent
-
-Funding consent identifies the authorized owners, applicable price ceilings, signed resource limits, and permitted funding terms for a draw.
-Ownership changes must not silently replace consent already captured by a reservation.
-See [ownership transfer and funding consent](casper/theory/cost-accounting-impl/ownership-transfer-consent.md).
-
-### Offered price
-
-The offered price is the exact unit price specified by a deploy's signed `phloPrice` field.
-The selected schedule must charge this price under the upstream-compatible funding contract.
-The chain minimum and each required owner ceiling constrain the offer independently.
-
-### Owner price ceiling
-
-An owner price ceiling is the maximum unit price permitted by one applicable signed funding authorization.
-It does not select the actual price or weight the owner's allocation.
-Every required owner ceiling must permit the offered price.
-See [signed price consent](casper/theory/cost-accounting-impl/signed-price-consent.md).
-
-### Authorization generation
-
-An authorization generation distinguishes successive authorizations for the same funding right in the abstract consent model.
-Returning to previous owners does not restore an earlier generation.
-This model term does not specify a production counter format.
-
-### Collision bucket
-
-A collision bucket stores map entries whose keys share the trie's selected hash prefix.
-Updating one entry must preserve all other entries, including entries whose value is `Nil`.
-See [atomic trie update or insertion](casper/theory/cost-accounting-impl/atomic-trie-upsert.md).
-
-## Recovery service terms
-
-### Durable owner
-
-A durable owner is a stored buffer row that makes an unresolved block discoverable for another processing attempt.
-See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
-
-### Request owner
-
-A request owner is a request-tracker entry that retains an unresolved block identity.
-Ownership does not by itself establish retry eligibility or eventual service.
-See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
-
-### Worker lease
-
-A worker lease retains a block's local identity claim and byte reservation during queueing and processing.
-See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
-
-### Retry-ready entry
-
-A retry-ready entry has `received=false` and remains subject to the existing retry budget, quarantine, and cooldowns.
-See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
-
-### Service lane
-
-A service lane is one input source that an actor can select for work.
-The runtime state requester has chunk, command, and retry-timer service lanes.
-See the [recovery actor specification](casper/theory/finalized-floor/recovery-actor-service.md).
-
-### Block payload reservation
-
-A block payload reservation holds encoded-byte capacity while a queue or worker owns the corresponding admitted block.
-This local resource limit is not a token charge or a consensus validity rule.
-See the [ownership specification](casper/theory/finalized-floor/payload-reservation-ownership.md).
-
-### Buffered identity
-
-A buffered identity identifies a block with its own durable buffer row.
-The row can have an empty parent set.
-A referenced missing root does not have an independent row unless the node also buffers that block.
-
-### Candidate index
-
-A candidate index holds live block identities in a rotating examination order.
-It does not establish admission eligibility or consensus validity.
-See the [candidate specification](casper/theory/finalized-floor/buffer-candidate-rotation.md).
-
-### Age epoch
-
-An age epoch is the time origin for measuring a buffer identity's waiting time.
-Restored buffer identities use the current startup time as their age epoch.
-
-### Admission identity
-
-An admission identity gives one queue item or worker exclusive local ownership of a block hash.
-Its private token prevents an old owner from clearing a replacement owner.
-See the [identity specification](casper/theory/finalized-floor/admission-identity-ownership.md).
-
-### Startup snapshot
-
-A startup snapshot retains the dependency-free hash membership captured for one initialization request.
-Later buffer changes do not change that membership.
-The snapshot does not establish current admission eligibility.
-See the [snapshot specification](casper/theory/finalized-floor/startup-snapshot-semantics.md).
-
-### Ordered snapshot
-
-An ordered snapshot retains a shared immutable set root and visits its keys through an exclusive key cursor.
-Each cursor step excludes the previous key.
-This representation avoids copying the complete hash set during capture or one cursor step.
-
-## Existing terminology
-
 > This glossary is **load-bearing**: documentation, design decisions
 > (`docs/casper/theory/slashing/design/15-decision-records.md`), TDD plans
 > (`docs/tdd-plans/`), and code review notes cite its anchors directly.
@@ -218,68 +61,6 @@ The protocol version must bind one schedule for all validating nodes.
 **Preferred usage.** Use this term for the complete versioned mapping.
 *Avoid*: host-work limit, when the text refers to more than one dimension.
 
-### Failed-body settlement
-
-See [Failed-body settlement](casper/GLOSSARY.md#failed-body-settlement) in the
-Casper glossary.
-
-### Adopted lifecycle state
-
-See [Adopted lifecycle state](casper/GLOSSARY.md#adopted-lifecycle-state) in the
-Casper glossary.
-
-### State-effect identity
-
-See [State-effect identity](casper/GLOSSARY.md#state-effect-identity) in the
-Casper glossary.
-
-### Exact state containment
-
-See [Exact state containment](casper/GLOSSARY.md#exact-state-containment) in the
-Casper glossary.
-
-### State witness
-
-See [State witness](casper/GLOSSARY.md#state-witness) in the Casper glossary.
-
-### Settled floor set
-
-See [Settled floor set](casper/GLOSSARY.md#settled-floor-set) in the Casper
-glossary.
-
-### Settled-history admission proof
-
-See [Settled-history admission proof](casper/GLOSSARY.md#settled-history-admission-proof) in the Casper glossary.
-
-### Settled-history admission ticket
-
-See [Settled-history admission ticket](casper/GLOSSARY.md#settled-history-admission-ticket) in the Casper glossary.
-
-### Certified replay floor
-
-See [Certified replay floor](casper/GLOSSARY.md#certified-replay-floor) in the
-Casper glossary.
-
-### Validator fuel
-
-See [Validator fuel](casper/GLOSSARY.md#validator-fuel) in the Casper glossary.
-
-### Retained execution result
-
-See [Retained execution result](casper/GLOSSARY.md#retained-execution-result)
-in the Casper glossary.
-
-### Replay economic snapshot
-
-See [Replay economic snapshot](casper/GLOSSARY.md#replay-economic-snapshot) in
-the Casper glossary.
-
-### Certified checkpoint attempt
-
-See [Certified checkpoint attempt](casper/GLOSSARY.md#certified-checkpoint-attempt)
-in the Casper glossary.
-
-
 ### Release candidate
 
 A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
@@ -327,6 +108,12 @@ The 60h stability soak is the fixed 60-hour pre-promotion soak of one release ca
 The dev integration soak is the scheduled variable-length soak of the `dev` integration branch. It publishes regression data and does not gate a release.
 
 **Preferred usage.** Use this term for the scheduled integration-branch soak. *Avoid*: daily soak. The machine series key keeps the legacy value `daily` until a separate identifier migration. *Distinguish from* the [60h stability soak](#60h-stability-soak): integration monitoring versus a release gate.
+
+### Committed outcome
+
+A committed outcome is an iteration control result that the soak driver records through `.soak-state` replacement. The record contains the iteration counter, failure counter, and iteration state.
+
+This term does not establish power-loss durability, artifact upload, or a committed blockchain transaction.
 
 ### Test net
 
@@ -403,6 +190,42 @@ dashboard reports p95 and maximum run aggregates in blocks.
 state. *Distinguish from* finalization distance from the block graph tip.
 *Avoid*: block height and finalization latency.
 
+### Correct by Construction
+
+Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
+
+**Preferred usage.** Use CbC for this verification process. Distinguish it from CBC Casper, which names the consensus protocol.
+
+### Work bound
+
+A work bound limits counted operations as a function of input size and explicit operating assumptions. A work bound does not directly establish elapsed time.
+
+**Preferred usage.** Name the counted operation, input dimensions, and assumptions. Distinguish a work bound from a finalization deadline.
+
+### Disk hygiene
+
+Disk hygiene removes eligible inactive files and caches between soak iterations. Disk hygiene must preserve active node state and required evidence.
+
+**Preferred usage.** Use this term for preventive cleanup. Distinguish disk hygiene from emergency writer termination by the disk guardian.
+
+### Disk admission
+
+Disk admission decides whether a soak iteration can start from the latest free-space sample. With protection enabled, the post-hygiene sample must reach floor plus band.
+
+**Preferred usage.** Use this term for the iteration-boundary decision. Distinguish it from mid-iteration protection and full-duration disk safety.
+
+### Disk probe
+
+A disk probe reads free space for the soak output filesystem. A missing sample does not establish available space.
+
+**Preferred usage.** Use this term for the measurement operation, not the admission decision or a disk guardian.
+
+### Disk guardian
+
+The disk guardian monitors free disk during a soak iteration. The disk guardian triggers protection when the configured disk conditions require a stop.
+
+**Preferred usage.** Use this term for the concurrent protection process. A guardian event does not establish that every writer stopped or that the runner survived.
+
 ### Verification tier
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#verification-tier).
@@ -438,30 +261,6 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#liveness-configurati
 ### Equivocation
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#equivocation).
-
-### Bond generation
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#bond-generation).
-
-### Complete bond ledger
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#complete-bond-ledger).
-
-### Active validator set
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#active-validator-set).
-
-### Activation boundary
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#activation-boundary).
-
-### Validator lifetime
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#validator-lifetime).
-
-### Mint frontier
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#mint-frontier).
 
 ### Equivocation detector
 
@@ -503,16 +302,6 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#test-node).
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#rejected-deploy-buffer).
 
-### Dependency evidence
-
-Dependency evidence is the retained relation between unresolved work and its
-missing prerequisite. Retry pacing cannot remove this relation.
-
-### Request quarantine
-
-Request quarantine is a bounded interval that suppresses network retries for
-one tracked dependency. It does not remove dependency evidence.
-
 ### Merge scope
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#merge-scope).
@@ -536,18 +325,6 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#kept-rejection-recor
 ### Carrier
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#carrier).
-
-### Occurrence carrier
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#occurrence-carrier).
-
-### Finalized state anchor
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#finalized-state-anchor).
-
-### Archive representative
-
-This term moved to the [Casper glossary](casper/GLOSSARY.md#archive-representative).
 
 ### Retry gate
 
@@ -707,128 +484,6 @@ conflated: [implementation tiers](#implementation-tier)
 [verification tiers](#verification-tier) (PR-gate/nightly/exhaustive — CI
 budget classes in the formal-verification stack entry).
 
-## Evaluation attempt
-
-An evaluation attempt invokes the user evaluator. Authority discovery can make
-several attempts before the runtime retains one successful result. Attempt
-counts include failed evaluations and differ from accepted-result counts.
-
-## Replay cache context
-
-The replay cache context identifies runtime inputs outside the pre-state and
-processed replay payload. It includes the sender, sequence number, timestamp,
-height, and invalid-block map.
-
-**Preferred usage:** Use "replay cache context" for these inputs. Do not use
-the term for same-call retained admission or the persisted replay-payload hash.
-
-## Startup context identity
-
-A startup context identity identifies one engine publication for local recovery.
-The recovery controller must not confuse retained handles from an old publication with the current context.
-
-## Startup request identity
-
-A startup request identity identifies one initialization request within its startup context.
-The request identity must remain distinct from the block hash, deploy identity, and validator identity.
-
-## Startup ticket
-
-A startup ticket owns one initialization request through scan completion, optional callback authorization, and the startup-success commit.
-Cancellation affects only the matching context and request identities.
-It does not revoke already authorized work or a committed result.
-
-## Read tape
-
-A read tape records the completed history callbacks from one state-import traversal, in execution order.
-Each record contains the requested key, the observation cache at that callback, and the classified lookup result.
-Repeated callbacks can share one physical storage observation.
-The verifier must not remove failed records or search later records for a replacement.
-
-## Cold replay
-
-Cold replay executes the recorded effects without a replay-cache shortcut.
-It checks execution against the specified pre-state and runtime context.
-
-## Numeric merge
-
-A numeric merge reconstructs a tagged numeric channel from retained state effects.
-Integer-add and bitmask-OR channels use different value calculations.
-Both calculations must preserve the accounting authority of retained contributions.
-
-## Retained region
-
-A retained region is an accounting region carried by a retained output contribution.
-Different region identities remain distinct when their funding signatures are equal.
-Repeated copies of the same region identity do not add another obligation.
-
-## Persistent allowance
-
-A persistent allowance limits cumulative authorized funding across executions.
-Its accounting identity remains stable across ownership transfers.
-Wallet deposits increase backing, but they do not automatically increase the allowance.
-The [allowance record](casper/theory/cost-accounting-impl/persistent-funding-allowance.md) defines its available, reserved, consumed, and issued quantities.
-
-## Backing source
-
-A backing source is authenticated custody or a prepaid resource that can satisfy a specified funding obligation.
-Different logical funding lanes can refer to the same physical source.
-Those lanes must not count the source balance more than once.
-
-## Funding eligibility
-
-Funding eligibility specifies which backing sources can fund which obligations under captured authority, scope, and consent.
-Monetary capacity alone does not establish funding eligibility.
-
-## All-to-all funding
-
-An all-to-all funding domain has exactly the capped simplex's feasible contribution vectors under its captured terms.
-Complete edge eligibility is sufficient in the independent fixed-flow domain, but redundant missing edges do not necessarily restrict contributions.
-The solver must establish that domain equality before it uses unrestricted monetary allocation.
-The [settlement design review](casper/theory/cost-accounting-impl/funding-settlement-design-review.md) explains restricted funding and its separate reservation requirements.
-
-## Lexicographic minimax
-
-Lexicographic minimax minimizes the largest contribution, then each successive contribution, over feasible allocations of the same total obligation.
-It compares contribution vectors sorted from largest to smallest without changing their associated purse identities.
-See the [restricted-funding decision](casper/theory/cost-accounting-impl/lexicographic-minimax-funding.md).
-
-## Funding deficit
-
-A funding deficit occurs when selected obligations require more funding than all their eligible physical sources can supply.
-A checked deficit certificate proves that the fixed funding problem has no valid assignment.
-See the [certificate contract](casper/theory/cost-accounting-impl/lexicographic-minimax-funding.md#restricted-funding-rejection-certificate).
-
-## Funding box
-
-A funding box specifies a lower and upper contribution bound for each physical source.
-Equal bounds fix a source's contribution exactly.
-The [bounded-row solver](casper/theory/cost-accounting-impl/bounded-funding-feasibility.md) preserves exact obligations while it satisfies these bounds.
-
-## Contribution excess
-
-Contribution excess is the sum of contributions above a specified nonnegative threshold.
-Each source contributes only the amount by which its contribution exceeds that threshold.
-The [minimax certificate](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#independent-optimality-evidence) uses this quantity to verify the full descending rank.
-
-## Minimax certificate
-
-A minimax certificate contains cut evidence for every distinct positive contribution level in a candidate assignment.
-Each cut proves a lower bound on contribution excess.
-Equality with those bounds proves that no feasible assignment has a smaller descending lexicographic rank.
-The certificate does not select the economic tie between equally ranked assignments.
-
-## Optimal domain
-
-An optimal domain contains every feasible assignment with the minimum descending contribution rank, and no other assignment.
-The [fixed-flow construction](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#exact-optimal-domain) derives this domain from independently checked tight cuts.
-
-## Prefix certificate
-
-A prefix certificate proves that a selected contribution cannot increase while earlier priority choices remain fixed.
-Later contributions remain free within the captured optimal domain.
-The [cyclic selector](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#cyclic-contribution-ties) checks each maximum against an upper bound or a funding deficit.
-
 ## Usage Notes
 
 - Canonical terms are case-sensitive; the **Preferred usage** statement is
@@ -842,6 +497,64 @@ The [cyclic selector](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#c
 - Mathematical symbols, acronyms, LTS labels, and theorem names resolve in
   [02-glossary-and-notation.md](casper/theory/slashing/design/02-glossary-and-notation.md)
   until the planned unification lands.
+
+## Docker owner label
+
+The **Docker owner label** associates a container with the driver instance that creates it through the workload Docker wrapper.
+The label key is `io.f1r3fly.soak.owner`.
+
+**Preferred usage:** Use this term for creation metadata that the shared Docker stop helper checks before selecting a container.
+Do not use a name prefix or fixture label as a substitute.
+The label is not authorization against an actor who can control Docker or forge metadata.
+
+### Process identity
+
+A **process identity** is a numeric process identifier paired with the start time that the proc filesystem reports for it.
+A reused identifier carries a later start time, so a check against the recorded identity does not pass for a replacement process.
+The soak driver and its fixtures use it in bash in place of a kernel process handle (`pidfd`), which bash cannot open.
+
+**Preferred usage:** Use this term when the stop helper, the crash monitor, or a fixture signals a process or confirms that it is gone.
+Do not treat a process name or numeric identifier alone as equivalent ownership evidence.
+A signal after an identity check is a check-then-act, not a handle operation, and the driver records that limit.
+
+### Crash monitor
+
+A **crash monitor** is an independent process that waits for the soak driver to exit.
+It requests an ownership-checked writer stop when the driver has no valid exit-handling acknowledgment.
+
+**Preferred usage:** Use this term for the process-crash response, not the periodic host guardian.
+An exit-handling acknowledgment does not confirm writer termination.
+
+### Controller loss
+
+**Controller loss** means that both the soak driver and crash monitor exit during active work.
+Controller loss does not establish workload termination.
+
+**Preferred usage:** Use this term for the combined failure tested by B44.
+State which independent supervisor must survive when a containment design depends on that supervisor.
+
+### Run domain
+
+A **run domain** is the proposed, exclusively owned containment boundary for one soak run and its workload launch services.
+The run domain includes native writers, Docker writers, and the services that can create those writers.
+
+**Preferred usage:** Use this term for the complete containment boundary, not a process group or an ownership label.
+A configured run domain does not establish confirmed termination.
+
+### Run-domain record
+
+A **run-domain record** is a root-owned file that names the unit, cgroup, and uid the trusted launcher placed the soak driver in.
+The driver compares the record with its own kernel cgroup view and uid before it admits work.
+
+**Preferred usage:** Use this term for the launcher-written placement record, not for an environment variable or a caller-supplied marker.
+A matching record establishes placement, not exclusive run-domain ownership or confirmed termination.
+
+### Creation fence
+
+A **creation fence** prevents further workload execution after closure, including execution from requests accepted before closure.
+
+**Preferred usage:** Identify the mechanism that enforces the creation fence.
+A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
 
 ## Maintenance
 

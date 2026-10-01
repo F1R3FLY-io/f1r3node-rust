@@ -245,6 +245,32 @@ fn test_normalize_public_key_coordinates() {
 }
 
 #[test]
+fn test_normalize_public_key_coordinates_keeps_leading_zero_coordinate_byte() {
+    let mut coordinates = vec![0u8; 64];
+    coordinates[63] = 1;
+
+    let passthrough =
+        CertificateHelper::normalize_public_key_coordinates(coordinates.clone()).unwrap();
+    assert_eq!(passthrough, coordinates);
+
+    let mut sec1 = vec![0x04u8];
+    sec1.extend_from_slice(&coordinates);
+    let normalized = CertificateHelper::normalize_public_key_coordinates(sec1.clone()).unwrap();
+    assert_eq!(normalized, coordinates);
+
+    let mut der_style = vec![0u8];
+    der_style.extend_from_slice(&sec1);
+    let normalized_der = CertificateHelper::normalize_public_key_coordinates(der_style).unwrap();
+    assert_eq!(normalized_der, coordinates);
+
+    let mut unused_bits_only = vec![0u8];
+    unused_bits_only.extend_from_slice(&coordinates);
+    let normalized_raw =
+        CertificateHelper::normalize_public_key_coordinates(unused_bits_only).unwrap();
+    assert_eq!(normalized_raw, coordinates);
+}
+
+#[test]
 fn test_generated_certificate_parses_from_der_and_pem() {
     let (secret_key, public_key) = CertificateHelper::generate_key_pair();
     let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
@@ -299,6 +325,28 @@ fn test_print_private_key_from_secret_roundtrips_through_read_key_pair() {
         parsed_public.to_encoded_point(false),
         public_key.to_encoded_point(false)
     );
+}
+
+#[test]
+fn test_read_key_pair_keeps_base64_body_lines_containing_key() {
+    let pem = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBTKEY6yp79c5dbNy\n\
+hUWSBmo9phQ452/PK1BotDnn9MihRANCAAQZMJSYyZI8LFWGt9m1i3iG32JY+rFv\n\
+tWB90bq4vpoJJMbKQl6ZoXhmeTtpOFxgJ9KMY7lfUz+MKa88M8XSn7Y5\n\
+-----END PRIVATE KEY-----";
+    assert!(pem
+        .lines()
+        .any(|line| !line.starts_with("-----") && line.contains("KEY")));
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let key_path = temp_dir.path().join("key.pem");
+    std::fs::write(&key_path, pem).expect("failed to write key file");
+
+    let (parsed_secret, _) = CertificateHelper::read_key_pair(key_path.to_str().unwrap())
+        .expect("body lines containing KEY must not be dropped");
+    let reprinted = CertificatePrinter::print_private_key_from_secret(&parsed_secret)
+        .expect("private key printing should succeed");
+    assert_eq!(reprinted, pem);
 }
 
 #[test]

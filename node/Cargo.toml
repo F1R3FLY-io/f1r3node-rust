@@ -36,7 +36,9 @@ hex = { workspace = true }
 parking_lot = "0.12"
 num-bigint = { workspace = true }
 clap = { workspace = true }
-hocon = "0.9.0"
+# url-support pulls reqwest 0.11 and the rustls 0.21 chain flagged by Dependabot. The
+# node config loader reads only local and embedded files, so URL includes stay off.
+hocon = { version = "0.9.0", default-features = false, features = ["serde-support"] }
 eyre = { workspace = true }
 humantime = { workspace = true }
 byte-unit = "5.1.6"
@@ -50,12 +52,7 @@ rustyline = "13.0"
 rpassword = "7.4"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = "0.21"
 tracing-log = { workspace = true }
-bytes = { workspace = true }
-http_02 = { package = "http", version = "0.2" }
-opentelemetry-http = { version = "0.9", default-features = false }
-reqwest = { workspace = true, default-features = false, features = ["rustls-tls"] }
 dashmap = { workspace = true }
 regex = { workspace = true }
 rand = { workspace = true }
@@ -70,13 +67,11 @@ tokio-tungstenite = "0.28"
 futures-util = "0.3"
 tokio-stream = { workspace = true }
 utoipa = { workspace = true, features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 # Metrics dependencies (analog of Scala's Kamon + NewPrometheusReporter)
 metrics = { workspace = true }
 metrics-exporter-prometheus = "0.15"
 metrics-exporter-influx = "0.2.2"
-opentelemetry = { version = "0.20", features = ["rt-tokio"] }
-opentelemetry-zipkin = { version = "0.18", default-features = false }
 sysinfo = "0.28"
 tonic-reflection = "0.14"
 
@@ -87,7 +82,6 @@ casper = { path = "../casper", features = ["test-utils"] }
 tower = { workspace = true }
 serial_test = { workspace = true }
 proptest = { workspace = true }
-loom = "=0.7.2"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

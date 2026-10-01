@@ -1,15 +1,13 @@
 // See casper/src/test/scala/coop/rchain/casper/util/rholang/Resources.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
-use std::process;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
-use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
@@ -37,37 +35,6 @@ use crate::init_logger;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
-static SHARED_LMDB_CLEANUP_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-#[cfg(unix)]
-unsafe extern "C" {
-    fn atexit(callback: extern "C" fn()) -> std::os::raw::c_int;
-}
-
-extern "C" fn cleanup_shared_lmdb_at_exit() {
-    if let Some(path) = SHARED_LMDB_CLEANUP_PATH.get() {
-        let _ = std::fs::remove_dir_all(path);
-    }
-}
-
-fn shared_lmdb_scratch_root() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("target/casper-test-scratch");
-    std::fs::create_dir_all(&root).expect("Failed to create Casper test scratch root");
-    root
-}
-
-fn register_shared_lmdb_cleanup(path: &std::path::Path) {
-    if SHARED_LMDB_CLEANUP_PATH.set(path.to_path_buf()).is_ok() {
-        #[cfg(unix)]
-        {
-            let status = unsafe { atexit(cleanup_shared_lmdb_at_exit) };
-            assert_eq!(status, 0, "Failed to register shared LMDB cleanup");
-        }
-    }
-}
 
 // Shared LMDB environment for all tests.
 //
@@ -78,17 +45,15 @@ fn register_shared_lmdb_cleanup(path: &std::path::Path) {
 //
 // Resource Management:
 // - Single LMDB environment instead of 300+ separate environments
-// - Normal-exit cleanup despite static test-harness ownership
+// - Automatic cleanup when TempDir is dropped (at program exit)
 // - Global lock ensures test isolation when using shared LMDB
 lazy_static! {
     static ref SHARED_LMDB_ENV: (PathBuf, TempDir) = {
-        let prefix = format!("casper-shared-lmdb-{}-", process::id());
         let temp_dir = Builder::new()
-            .prefix(&prefix)
-            .tempdir_in(shared_lmdb_scratch_root())
+            .prefix("casper-shared-lmdb-")
+            .tempdir()
             .expect("Failed to create shared LMDB temp dir");
         let path = temp_dir.path().to_path_buf();
-        register_shared_lmdb_cleanup(&path);
         (path, temp_dir)
     };
 
@@ -321,7 +286,7 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
         .map_err(|e| CasperError::RuntimeError(format!("Failed to create DAG storage: {:?}", e)))?;
     new_dag_storage.insert(
         &genesis_context.genesis_block,
-        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
     )?;
 
     Ok(new_kvm)
@@ -372,8 +337,75 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-    BlockDagKeyValueStorage::new(kvm).await
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+    use models::rust::block_hash::BlockHashSerde;
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::equivocation_record::SequenceNumber;
+    use models::rust::validator::ValidatorSerde;
+    use parking_lot::RwLock;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get block-metadata store: {:?}",
+            e
+        ))
+    })?;
+    let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
+        KeyValueTypedStoreImpl::new(block_metadata_kv_store);
+    let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
+
+    let equivocation_tracker_kv_store = kvm
+        .store("equivocation-tracker".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get equivocation-tracker store: {:?}",
+                e
+            ))
+        })?;
+    let equivocation_tracker_db: KeyValueTypedStoreImpl<
+        (ValidatorSerde, SequenceNumber),
+        BTreeSet<BlockHashSerde>,
+    > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
+    let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
+
+    let latest_messages_kv_store = kvm
+        .store("latest-messages".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get latest-messages store: {:?}",
+                e
+            ))
+        })?;
+    let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
+        KeyValueTypedStoreImpl::new(latest_messages_kv_store);
+
+    let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get invalid-blocks store: {:?}",
+            e
+        ))
+    })?;
+    let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
+        KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
+
+    Ok(BlockDagKeyValueStorage::from_parts(
+        Arc::new(RwLock::new(())),
+        latest_messages_db,
+        Arc::new(RwLock::new(block_metadata_store)),
+        invalid_blocks_db,
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        equivocation_tracker_store,
+        Arc::new(AtomicU64::new(0)),
+    ))
 }
 
 pub async fn key_value_deploy_storage_from_dyn(
@@ -383,9 +415,8 @@ pub async fn key_value_deploy_storage_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use crypto::rust::signatures::signed::{Cosigned, Signed};
+    use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::DeployData;
-    use models::rust::deploy_id::DeployIdV6;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
     use shared::rust::ByteString;
 
@@ -397,22 +428,10 @@ pub async fn key_value_deploy_storage_from_dyn(
     })?;
     let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-    let envelope_storage_kv_store = kvm
-        .store("deploy_envelope_storage_v6".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get deploy envelope storage: {:?}",
-                e
-            ))
-        })?;
-    let envelope_storage_db: KeyValueTypedStoreImpl<DeployIdV6, Cosigned<DeployData>> =
-        KeyValueTypedStoreImpl::new(envelope_storage_kv_store);
 
-    Ok(KeyValueDeployStorage::from_legacy_stores(
-        deploy_storage_db,
-        envelope_storage_db,
-    ))
+    Ok(KeyValueDeployStorage {
+        store: deploy_storage_db,
+    })
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
@@ -422,9 +441,10 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-    use block_storage::rust::deploy::pending_deploy::PendingDeploy;
-    use models::rust::deploy_id::DeployLookupId;
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::casper::protocol::casper_message::DeployData;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use shared::rust::ByteString;
 
     let buffer_kv_store = kvm
         .store("rejected_deploy_buffer".to_string())
@@ -435,10 +455,10 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
                 e
             ))
         })?;
-    let buffer_db: KeyValueTypedStoreImpl<DeployLookupId, PendingDeploy> =
+    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(buffer_kv_store);
 
-    Ok(KeyValueRejectedDeployBuffer::from_legacy_store(buffer_db))
+    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
 }
 
 pub async fn casper_buffer_storage_from_dyn(
@@ -447,9 +467,22 @@ pub async fn casper_buffer_storage_from_dyn(
     block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+    use std::collections::HashSet;
 
-    CasperBufferKeyValueStorage::new_from_kvm(kvm)
+    use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+    use models::rust::block_hash::BlockHashSerde;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    let parents_store_kv = kvm.store("parents-map".to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get parents-map store: {:?}",
+            e
+        ))
+    })?;
+    let parents_store: KeyValueTypedStoreImpl<BlockHashSerde, HashSet<BlockHashSerde>> =
+        KeyValueTypedStoreImpl::new(parents_store_kv);
+
+    CasperBufferKeyValueStorage::new_from_kv_store(parents_store)
         .await
         .map_err(|e| {
             shared::rust::store::key_value_store::KvStoreError::IoError(format!(
@@ -519,7 +552,6 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
 
     KeyValueDagRepresentation {
         dag_set: imbl::HashSet::new(),
-        canonical_genesis_hash: None,
         latest_messages_map: imbl::HashMap::new(),
         child_map: imbl::HashMap::new(),
         height_map: imbl::OrdMap::new(),
@@ -527,22 +559,14 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
-        equivocation_observations: imbl::HashMap::new(),
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
-        block_metadata_index: Arc::new(RwLock::new(
-            BlockMetadataStore::new(block_metadata_store).unwrap(),
-        )),
-        deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        )))),
-        deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
-            InMemoryKeyValueStore::new(),
-        ))
-        .expect("deploy occurrence store"),
+        block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(block_metadata_store))),
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
+        lifecycle: Arc::new(RwLock::new(
+            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
         carrier_index: Arc::new(RwLock::new(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
@@ -555,60 +579,17 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: Vec::new(),
         parents: Vec::new(),
-        justifications: Vec::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
         max_seq_nums: HashMap::new(),
-        finalized_floor_bonds: Vec::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),
-            bond_generations: HashMap::new(),
             active_validators: Vec::new(),
         },
-        consensus_context:
-            casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
-        finalized_floor_certificate: None,
-    }
-}
-
-#[cfg(test)]
-mod shared_lmdb_cleanup_tests {
-    use super::*;
-
-    const CHILD_RESULT: &str = "F1R3_SHARED_LMDB_CLEANUP_CHILD_RESULT";
-
-    #[test]
-    fn shared_lmdb_is_disk_backed_and_removed_when_the_test_process_exits() {
-        if let Some(result_path) = std::env::var_os(CHILD_RESULT) {
-            let result_path = PathBuf::from(result_path);
-            assert!(result_path.starts_with(shared_lmdb_scratch_root()));
-            let shared_path = get_shared_lmdb_path();
-            assert!(shared_path.starts_with(shared_lmdb_scratch_root()));
-            std::fs::write(&result_path, shared_path.to_string_lossy().as_bytes()).unwrap();
-            return;
-        }
-
-        let result_path = shared_lmdb_scratch_root().join(format!(
-            "cleanup-result-{}-{}.txt",
-            process::id(),
-            Uuid::new_v4()
-        ));
-        let status = process::Command::new(std::env::current_exe().unwrap())
-            .arg("shared_lmdb_is_disk_backed_and_removed_when_the_test_process_exits")
-            .arg("--test-threads=1")
-            .env(CHILD_RESULT, &result_path)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let shared_path = PathBuf::from(std::fs::read_to_string(&result_path).unwrap());
-        std::fs::remove_file(result_path).unwrap();
-        assert!(shared_path.starts_with(shared_lmdb_scratch_root()));
-        assert!(!shared_path.exists());
     }
 }

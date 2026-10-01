@@ -734,6 +734,99 @@ proptest! {
   }
 }
 
+#[test]
+fn bitmap_backed_maps_preserve_snapshots_across_dense_and_colliding_keys() {
+    #[derive(Default)]
+    struct BitmapTestHasher(u64);
+
+    impl std::hash::Hasher for BitmapTestHasher {
+        fn finish(&self) -> u64 { self.0 & 0xff }
+
+        fn write(&mut self, bytes: &[u8]) {
+            self.0 = bytes
+                .iter()
+                .fold(0u64, |hash, byte| hash.wrapping_mul(256).wrapping_add(u64::from(*byte)));
+        }
+
+        fn write_u64(&mut self, value: u64) { self.0 = value; }
+    }
+
+    for shift in [0, 8] {
+        let mut actual = imbl::GenericHashMap::<
+            u64,
+            u64,
+            std::hash::BuildHasherDefault<BitmapTestHasher>,
+            imbl::shared_ptr::DefaultSharedPtr,
+        >::default();
+        let mut expected = HashMap::new();
+        for index in 0..257u64 {
+            let key = index << shift;
+            assert_eq!(actual.insert(key, index), expected.insert(key, index));
+        }
+        let snapshot = actual.clone();
+        let expected_snapshot = expected.clone();
+        for index in 0..257u64 {
+            let key = index << shift;
+            if index % 2 == 0 {
+                assert_eq!(actual.remove(&key), expected.remove(&key));
+            } else {
+                assert_eq!(actual.insert(key, index + 1), expected.insert(key, index + 1));
+            }
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(actual.get(&key), expected.get(&key));
+        }
+        assert_eq!(
+            actual
+                .iter()
+                .map(|(&k, &v)| (k, v))
+                .collect::<HashMap<_, _>>(),
+            expected
+        );
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|(&k, &v)| (k, v))
+                .collect::<HashMap<_, _>>(),
+            expected_snapshot
+        );
+        for key in expected.keys() {
+            assert_eq!(actual.remove(key), expected.get(key).copied());
+        }
+        assert!(actual.is_empty());
+        assert_eq!(actual.iter().next(), None);
+        assert_eq!(actual.insert(0, 1), None);
+        assert_eq!(actual.get(&0), Some(&1));
+        assert_eq!(snapshot.get(&0), Some(&0));
+    }
+}
+
+#[test]
+fn bitmap_backed_hot_store_restores_large_snapshots_after_removal_and_clear() {
+    let (_, hot_store) = fixture();
+    let initial: HashMap<_, _> = (0..1024)
+        .map(|index| (format!("channel-{index}"), vec![Datum::<String>::default()]))
+        .collect();
+    for (channel, data) in &initial {
+        hot_store.put_datum(channel, data[0].clone());
+    }
+    let snapshot = hot_store.snapshot();
+    assert_eq!(snapshot.data_flat(), initial);
+
+    for channel in initial.keys() {
+        hot_store.remove_datum(channel, 0).unwrap();
+        assert!(hot_store.get_data(channel).is_empty());
+    }
+    assert_eq!(snapshot.data_flat(), initial);
+    hot_store.clear();
+    assert!(hot_store.snapshot().data_flat().is_empty());
+    hot_store.set_state(snapshot.clone());
+    assert_eq!(hot_store.snapshot().data_flat(), initial);
+    for (channel, data) in &initial {
+        assert_eq!(hot_store.get_data(channel), *data);
+    }
+    assert_eq!(snapshot.data_flat(), initial);
+}
+
 fn check_removal_works_or_fails_on_error<T>(
     res: Option<()>,
     actual: Vec<T>,

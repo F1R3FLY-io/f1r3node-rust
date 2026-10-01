@@ -9,6 +9,7 @@ use tonic::transport::Server as TonicServer;
 
 const GRPC_BIND_RETRY_ATTEMPTS: usize = 60;
 const GRPC_BIND_RETRY_DELAY: Duration = Duration::from_millis(500);
+const GRPC_SHUTDOWN_GRACE: Duration = Duration::from_millis(1000);
 
 /// Bind a TCP listener with retry logic to handle TIME_WAIT sockets.
 /// Matches the HTTP server retry pattern in servers_instances.rs.
@@ -145,7 +146,7 @@ impl GrpcServer {
 
             if let Some(server_future) = self.server_future.take() {
                 // Attempt graceful shutdown with timeout
-                match timeout(Duration::from_millis(1000), server_future).await {
+                match timeout(GRPC_SHUTDOWN_GRACE, server_future).await {
                     Ok(result) => {
                         // Server shut down within timeout
                         result??;

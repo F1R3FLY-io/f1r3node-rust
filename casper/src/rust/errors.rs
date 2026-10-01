@@ -5,7 +5,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 
 use super::slashing_authorization::SlashAuthError;
 use super::util::rholang::replay_failure::ReplayFailure;
@@ -16,7 +16,6 @@ pub enum CasperError {
     InterpreterError(InterpreterError),
     KvStoreError(KvStoreError),
     RuntimeError(String),
-    InvalidCostSettlement(String),
     SystemRuntimeError(SystemDeployPlatformFailure),
     SigningError(String),
     ReplayFailure(ReplayFailure),
@@ -29,42 +28,14 @@ pub enum CasperError {
     /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
     /// reason instead of grepping a stringified error.
     SlashAuth(SlashAuthError),
-    /// Legacy wire-compatible error for a per-cosigner funding failure.
-    /// New cost-accounted blocks reject insufficient aggregate authority at
-    /// admission before execution.
-    InsufficientPhloByCosigner {
-        signer_index: usize,
-        pk_hex: String,
-        message: String,
-    },
-    /// Runtime-layer detection of a duplicate cosigner.
-    /// Unreachable if `Cosigned::from_signed_data`'s no-duplicate invariant
-    /// holds (the envelope rejects duplicate `pk`s at construction); surfaced
-    /// here for debuggability if a future code path bypasses that invariant.
-    DuplicateCosignerCharge {
-        pk_hex: String,
-    },
-    ParentFrontierCapacityExceeded {
-        configured_cap: usize,
-        required_parents: usize,
-        effective_committee: usize,
-        unique_causal_tips: usize,
-        floor_backstop_added: bool,
-        expired_tip_count: usize,
-    },
-    CertificateVerificationWorkExceeded {
-        limit: usize,
-    },
-    UnsupportedProtocolVersion {
-        version: i64,
-    },
     /// A walk needed a block this node does not hold. It is a statement about
     /// this node's history, never about the block being judged: a node whose
     /// history is truncated below its sync anchor legitimately lacks blocks its
     /// peers have. Carried as a variant rather than a message so the block
     /// processor can request the named block and retry, instead of folding it
     /// into the storage-failure class that becomes a slashable verdict.
-    BlockNotHeld(BlockHash),
+    /// The second field names the walk that tripped.
+    BlockNotHeld(BlockHash, MissingBlockContext),
     /// The floor derivation found finalized candidates that are mutually
     /// incompatible (same-height certified siblings with no containment and
     /// no re-merge). Under a BFT threshold (θ ≥ 0) this is impossible
@@ -83,9 +54,6 @@ impl fmt::Display for CasperError {
             CasperError::InterpreterError(error) => write!(f, "Interpreter error: {}", error),
             CasperError::KvStoreError(error) => write!(f, "KvStore error: {}", error),
             CasperError::RuntimeError(error) => write!(f, "Runtime error: {}", error),
-            CasperError::InvalidCostSettlement(error) => {
-                write!(f, "Invalid cost settlement: {}", error)
-            }
             CasperError::SystemRuntimeError(error) => write!(f, "System runtime error: {}", error),
             CasperError::SigningError(error) => write!(f, "Signing error: {}", error),
             CasperError::ReplayFailure(error) => write!(f, "Replay failure: {}", error),
@@ -94,43 +62,11 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
-            CasperError::InsufficientPhloByCosigner {
-                signer_index,
-                pk_hex,
-                message,
-            } => write!(
+            CasperError::BlockNotHeld(hash, site) => write!(
                 f,
-                "Insufficient phlo by cosigner at index {} (pk={}): {}",
-                signer_index, pk_hex, message
-            ),
-            CasperError::DuplicateCosignerCharge { pk_hex } => write!(
-                f,
-                "Duplicate cosigner charge attempted for pk={} \
-                 (Cosigned envelope dedup invariant violated)",
-                pk_hex
-            ),
-            CasperError::ParentFrontierCapacityExceeded {
-                configured_cap,
-                required_parents,
-                effective_committee,
-                unique_causal_tips,
-                floor_backstop_added,
-                expired_tip_count,
-            } => write!(
-                f,
-                "Parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap} (effective committee={effective_committee}, unique causal tips={unique_causal_tips}, floor backstop added={floor_backstop_added}, expired tips={expired_tip_count})"
-            ),
-            CasperError::CertificateVerificationWorkExceeded { limit } => write!(
-                f,
-                "Finalization certificate verification exceeds the deterministic DAG coverage limit {limit}"
-            ),
-            CasperError::UnsupportedProtocolVersion { version } => {
-                write!(f, "Unsupported Casper protocol version: {}", version)
-            }
-            CasperError::BlockNotHeld(hash) => write!(
-                f,
-                "block not held by this node: {} — its history does not reach that block",
-                PrettyPrinter::build_string_bytes(hash)
+                "block not held by this node: {} — its history does not reach that block [{}]",
+                PrettyPrinter::build_string_bytes(hash),
+                site.accessor()
             ),
             // The detail is self-describing ("finalized-floor safety
             // violation: ... — incompatible finalized fork"), and harness
@@ -153,7 +89,7 @@ impl CasperError {
 
         matches!(
             self,
-            CasperError::BlockNotHeld(_)
+            CasperError::BlockNotHeld(..)
                 | CasperError::InterpreterError(InterpreterError::RSpaceError(
                     RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(_))),
                 ))
@@ -180,7 +116,9 @@ impl From<InterpreterError> for CasperError {
 impl From<KvStoreError> for CasperError {
     fn from(error: KvStoreError) -> Self {
         match error {
-            KvStoreError::MissingBlock { hash, .. } => CasperError::BlockNotHeld(hash),
+            KvStoreError::MissingBlock { hash, context } => {
+                CasperError::BlockNotHeld(hash, context)
+            }
             other => CasperError::KvStoreError(other),
         }
     }
@@ -202,6 +140,13 @@ impl From<CommError> for CasperError {
 /// replaces, but without the per-site boilerplate.
 impl From<String> for CasperError {
     fn from(error: String) -> Self { CasperError::RuntimeError(error) }
+}
+
+/// Conversion from a poisoned `std::sync::Mutex` / `RwLock` guard. Lets
+/// `?` propagate a lock-acquisition failure directly instead of the
+/// per-site `.map_err(|e| CasperError::LockError(e.to_string()))?`.
+impl<T> From<std::sync::PoisonError<T>> for CasperError {
+    fn from(error: std::sync::PoisonError<T>) -> Self { CasperError::LockError(error.to_string()) }
 }
 
 /// Conversion from `std::time::SystemTimeError`. Wraps the underlying

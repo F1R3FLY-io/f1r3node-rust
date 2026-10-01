@@ -108,7 +108,7 @@ Proof.
     lia.
 Qed.
 
-Theorem funding_rejection_close_block_regression :
+Theorem admission_rejection_close_block_regression :
   forall record_id,
     required_merge_metadata
       [{| user_record_id := record_id;
@@ -126,4 +126,4 @@ Print Assumptions admission_rejected_has_no_effect_slot.
 Print Assumptions executed_failure_retains_effect_slot.
 Print Assumptions effect_projection_permutation_length.
 Print Assumptions aligned_metadata_splits_exactly.
-Print Assumptions funding_rejection_close_block_regression.
+Print Assumptions admission_rejection_close_block_regression.

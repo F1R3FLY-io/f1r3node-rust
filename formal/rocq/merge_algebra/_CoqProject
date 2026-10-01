@@ -45,5 +45,4 @@ theories/KeepOneOrder.v
 theories/ChannelNetting.v
 theories/ConflictSoundness.v
 theories/EventLogSplit.v
-theories/MergeTagBinding.v
 theories/MainTheorem.v

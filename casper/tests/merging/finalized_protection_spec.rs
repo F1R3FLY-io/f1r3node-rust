@@ -27,14 +27,13 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
-use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
 use casper::rust::errors::CasperError;
-use casper::rust::merging::dag_merger::{self, MergeOccurrenceContext};
+use casper::rust::merging::dag_merger;
 use casper::rust::merging::deploy_chain_index::{DeployChainIndex, DeployIdWithCost};
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use parking_lot::RwLock as PlRwLock;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -112,7 +111,7 @@ fn chain_from(
 ) -> DeployChainIndex {
     let mut deploys = HashSet::new();
     deploys.insert(DeployIdWithCost {
-        deploy_id: Bytes::from(vec![deploy_byte; 32]),
+        deploy_id: Bytes::from(vec![deploy_byte]),
         cost,
     });
     DeployChainIndex::from_parts(
@@ -168,7 +167,6 @@ fn dag_with_finalized_sibling(
 
     KeyValueDagRepresentation {
         dag_set,
-        canonical_genesis_hash: None,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
         height_map,
@@ -176,22 +174,9 @@ fn dag_with_finalized_sibling(
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
-        equivocation_observations: imbl::HashMap::new(),
         last_finalized_block_hash: finalized_sibling.clone(),
         finalized_blocks_set,
-        block_metadata_index: Arc::new(PlRwLock::new(
-            BlockMetadataStore::new(metadata_store).expect("metadata store"),
-        )),
-        deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::<
-            DeployId,
-            BlockHashSerde,
-        >::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        )))),
-        deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
-            InMemoryKeyValueStore::new(),
-        ))
-        .expect("deploy occurrence store"),
+        block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(metadata_store))),
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
@@ -238,7 +223,7 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
     let finalized_sibling_for_index = finalized_sibling.clone();
     let contender_for_index_hash = contender.clone();
 
-    let result = dag_merger::merge(
+    let (_state, rejected, _mergeable, _applied) = dag_merger::merge(
         &dag,
         &base,
         &base_post_state,
@@ -254,19 +239,16 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
         &history_repo,
         |chain: &DeployChainIndex| chain.deploys_with_cost.0.iter().map(|d| d.cost).sum(),
         Some(scope),
-        false,
         1,
         50,
         &|_| Ok(false),
         &|sig| Ok(sig[0] == FINALIZED_DEPLOY),
         &HashSet::new(),
         &std::collections::HashMap::new(),
-        &MergeOccurrenceContext::default(),
     )
     .expect("merge");
-    let rejected = result.rejected_deploys;
 
-    let rejected_ids: VecDeque<u8> = rejected.iter().map(|r| r.deploy_id()[0]).collect();
+    let rejected_ids: VecDeque<u8> = rejected.iter().map(|r| r.sig[0]).collect();
     assert!(
         !rejected_ids.contains(&FINALIZED_DEPLOY),
         "a deploy whose carrier block is FINALIZED must never be rejected by \
@@ -323,7 +305,7 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
     let settled_sibling_for_index = settled_sibling.clone();
     let late_contender_for_index = late_contender.clone();
 
-    let result = dag_merger::merge(
+    let (_state, rejected, _mergeable, _applied) = dag_merger::merge(
         &dag,
         &base,
         &base_post_state,
@@ -339,19 +321,16 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
         &history_repo,
         |chain: &DeployChainIndex| chain.deploys_with_cost.0.iter().map(|d| d.cost).sum(),
         Some(scope),
-        false,
         5,
         5,
         &|_| Ok(false),
         &|sig| Ok(sig[0] == SETTLED_DEPLOY),
         &HashSet::new(),
         &std::collections::HashMap::new(),
-        &MergeOccurrenceContext::default(),
     )
     .expect("merge");
-    let rejected = result.rejected_deploys;
 
-    let rejected_ids: VecDeque<u8> = rejected.iter().map(|r| r.deploy_id()[0]).collect();
+    let rejected_ids: VecDeque<u8> = rejected.iter().map(|r| r.sig[0]).collect();
     assert!(
         !rejected_ids.contains(&SETTLED_DEPLOY),
         "a settled carrier's deploy must be exempt from the validity-window \

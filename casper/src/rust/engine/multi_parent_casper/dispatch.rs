@@ -8,32 +8,29 @@
 //! method is 2–4 lines) so the file is reviewable as a single concern
 //! ("how the casper engine binds into its public protocol surface").
 
-use std::sync::atomic::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId, KeyValueDagRepresentation,
-};
+use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::deploy_envelope::DeployEnvelope;
+use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 
 use super::types::MultiParentCasperImpl;
-use crate::rust::block_status::{CertifiedBlockValidation, InvalidBlock};
+use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
 use crate::rust::engine::block_retriever::AdmitHashReason;
 use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -48,10 +45,6 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         super::snapshot::compute_snapshot(self).await
-    }
-
-    fn request_finalization(&self) -> Result<(), CasperError> {
-        super::finalization_runner::request_finalization(self)
     }
 
     fn contains(&self, hash: &BlockHash) -> bool {
@@ -77,13 +70,6 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_deploy(self, deploy)
     }
 
-    fn deploy_cosigned(
-        &self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<Either<DeployError, DeployId>, CasperError> {
-        super::block_admission::admit_deploy_cosigned(self, cosigned)
-    }
-
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,
@@ -93,18 +79,12 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
     fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
 
-    fn recovery_sync_active(&self) -> bool { self.recovery_sync_active.load(Ordering::Acquire) }
-
-    fn set_recovery_sync_active(&self, active: bool) {
-        self.recovery_sync_active.store(active, Ordering::Release);
-    }
-
     #[tracing::instrument(level = "info", skip(self, block, snapshot), fields(block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash)))]
     async fn validate(
         &self,
         block: &BlockMessage,
         snapshot: &mut CasperSnapshot,
-    ) -> Result<CertifiedBlockValidation, CasperError> {
+    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
         super::validation_dispatcher::dispatch_validate(self, block, snapshot).await
     }
 
@@ -114,7 +94,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         snapshot: &mut CasperSnapshot,
         pre_state_hash: Bytes,
         post_state_hash: Bytes,
-    ) -> Result<CertifiedBlockValidation, CasperError> {
+    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
         super::validation_dispatcher::dispatch_validate_self_created(
             self,
             block,
@@ -129,10 +109,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
-        certificate: &CertifiedSenderAuthority,
-        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        super::block_admission::admit_handle_valid_block(self, block, certificate, outcome).await
+        super::block_admission::admit_handle_valid_block(self, block).await
     }
 
     fn handle_invalid_block(
@@ -140,71 +118,21 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         block: &BlockMessage,
         status: &InvalidBlock,
         dag: &KeyValueDagRepresentation,
-        certificate: &CertifiedSenderAuthority,
-        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        super::validation_dispatcher::dispatch_handle_invalid_block(
-            self,
-            block,
-            status,
-            dag,
-            certificate,
-            outcome,
-        )
+        super::validation_dispatcher::dispatch_handle_invalid_block(self, block, status, dag)
     }
 
     fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
         super::buffer_resolver::buffer_get_dependency_free_from_buffer(self)
     }
 
-    fn get_dependency_free_hashes_from_buffer(&self) -> Result<Vec<BlockHash>, CasperError> {
-        super::buffer_resolver::buffer_get_dependency_free_hashes_from_buffer(self)
-    }
-
     fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
         super::buffer_resolver::buffer_get_all_from_buffer(self)
-    }
-
-    fn resolve_finalization_certificate_dependency(
-        &self,
-        digest: &BlockHash,
-    ) -> Result<(), CasperError> {
-        self.casper_buffer_storage
-            .resolve_certificate_dependency(BlockHashSerde(digest.clone()))?;
-        Ok(())
-    }
-
-    fn remove_buffered_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
-        self.casper_buffer_storage
-            .remove(BlockHashSerde(hash.clone()))?;
-        Ok(())
     }
 }
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImpl<T> {
-    fn retry_candidate_count(&self) -> usize { self.casper_buffer_storage.scan_candidate_count() }
-
-    fn next_retry_candidate(&self) -> Option<BlockHash> {
-        self.casper_buffer_storage
-            .next_scan_candidate()
-            .map(|hash| hash.0)
-    }
-
-    fn prepare_retry_candidate(
-        &self,
-        hash: &BlockHash,
-    ) -> Result<crate::rust::casper::RetryCandidate, CasperError> {
-        super::buffer_resolver::prepare_retry_candidate(self, hash)
-    }
-
-    fn prepare_startup_candidate(
-        &self,
-        hash: &BlockHash,
-    ) -> Result<crate::rust::casper::RetryCandidate, CasperError> {
-        super::buffer_resolver::prepare_startup_candidate(self, hash)
-    }
-
     async fn fetch_dependencies(&self) -> Result<(), CasperError> {
         // Get pendants from CasperBuffer
         let pendants = self.casper_buffer_storage.get_pendants();
@@ -223,71 +151,46 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             pendants_unseen.len()
         );
 
-        let mut first_dispatch_error = None;
         for dependency in pendants_unseen {
             tracing::debug!(
                 "Sending dependency {} to BlockRetriever",
                 PrettyPrinter::build_string_bytes(&dependency)
             );
 
-            if let Err(error) = self
-                .block_retriever
+            self.block_retriever
                 .admit_hash(
                     dependency,
                     None,
                     AdmitHashReason::MissingDependencyRequested,
                 )
-                .await
-            {
-                first_dispatch_error.get_or_insert(error);
-            }
+                .await?;
         }
 
-        let certificate_dependencies = self
-            .casper_buffer_storage
-            .get_missing_certificate_dependencies();
-        let mut ordered_certificate_digests = certificate_dependencies
-            .iter()
-            .map(|digest| digest.0.clone())
-            .collect::<Vec<_>>();
-        ordered_certificate_digests.sort();
-        let active_certificate_digests = ordered_certificate_digests
-            .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<BlockHash>>();
-        self.block_retriever
-            .retain_active_finalization_certificate_requests(&active_certificate_digests)?;
-        for digest in ordered_certificate_digests {
-            if self
-                .block_store
-                .get_finalization_certificate(&digest)?
-                .is_some()
-            {
-                self.casper_buffer_storage
-                    .resolve_certificate_dependency(BlockHashSerde(digest.clone()))?;
-                self.block_retriever
-                    .complete_finalization_certificate_request(&digest)?;
-            } else {
-                if let Err(error) = self.block_retriever.track_finalization_certificate(digest) {
-                    first_dispatch_error.get_or_insert(error);
-                }
-            }
-        }
-        if let Err(error) = self
-            .block_retriever
-            .request_tracked_finalization_certificates()
-            .await
-        {
-            first_dispatch_error.get_or_insert(error);
-        }
-        first_dispatch_error.map_or(Ok(()), Err)
+        Ok(())
     }
 
-    fn normalized_initial_fault(&self, target: &BlockHash) -> Result<f32, CasperError> {
-        let dag = self.block_dag_storage.get_representation()?;
-        let context =
-            crate::rust::causal_equivocation::CertifiedConsensusContext::for_target(&dag, target)?;
-        Ok(context.normalized_initial_fault())
+    fn normalized_initial_fault(
+        &self,
+        weights: HashMap<Validator, u64>,
+    ) -> Result<f32, CasperError> {
+        let equivocating_weight =
+            self.block_dag_storage
+                .access_equivocations_tracker(|tracker| {
+                    let equivocation_records = tracker.data()?;
+                    let equivocating_weight: u64 = equivocation_records
+                        .iter()
+                        .map(|record| &record.equivocator)
+                        .filter_map(|equivocator| weights.get(equivocator))
+                        .sum();
+                    Ok(equivocating_weight)
+                })?;
+
+        let total_weight: u64 = weights.values().sum();
+        if total_weight == 0 {
+            Ok(0.0)
+        } else {
+            Ok(equivocating_weight as f32 / total_weight as f32)
+        }
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
@@ -317,31 +220,13 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
-    async fn accounting_context(&self) -> Result<Arc<AdoptedResourcePolicy>, CasperError> {
-        self.accounting_context
-            .get_or_try_init(|| async {
-                AdoptedResourcePolicy::load(
-                    &self.runtime_manager,
-                    &self.approved_block,
-                    &self.casper_shard_conf,
-                )
-                .await
-                .map(Arc::new)
-            })
-            .await
-            .cloned()
-    }
-
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
 
-    fn rejected_deploy_buffer_contains(
-        &self,
-        deploy_id: &models::rust::deploy_id::DeployLookupId,
-    ) -> Result<bool, CasperError> {
+    fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
         self.rejected_deploy_buffer
             .lock()
             .map_err(|e| CasperError::LockError(e.to_string()))?
-            .contains_id(deploy_id)
+            .contains_sig(sig)
             .map_err(Into::into)
     }
 
@@ -363,7 +248,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .await
     }
 
-    async fn list_pending_deploys(&self) -> Result<Vec<(DeployEnvelope, bool)>, CasperError> {
+    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
         super::block_admission::admit_list_pending_deploys(self).await
     }
 }

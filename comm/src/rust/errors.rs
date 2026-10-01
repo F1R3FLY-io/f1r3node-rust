@@ -22,6 +22,7 @@ pub enum CommError {
     MalformedMessage(String),
     CouldNotConnectToBootstrap,
     InternalCommunicationError(String),
+    DnsResolutionFailed(String, String),
     TimeOut,
     UpstreamNotAvailable,
     UnexpectedMessage(String),
@@ -31,7 +32,6 @@ pub enum CommError {
     UnableToRestorePacket(String, String),
     ConfigError(String),
     CasperError(String),
-    ResourceExhausted(String),
 }
 
 impl fmt::Display for CommError {
@@ -52,6 +52,9 @@ impl fmt::Display for CommError {
             CommError::InternalCommunicationError(msg) => {
                 write!(f, "Internal communication error. {}", msg)
             }
+            CommError::DnsResolutionFailed(host, reason) => {
+                write!(f, "Failed to resolve hostname '{}': {}", host, reason)
+            }
             CommError::UnknownProtocolError(msg) => write!(f, "Unknown protocol error. {}", msg),
             CommError::UnableToStorePacket(p, er) => {
                 write!(f, "Could not serialize packet {}. Error message: {}", p, er)
@@ -65,7 +68,6 @@ impl fmt::Display for CommError {
             CommError::ParseError(msg) => write!(f, "Parse error: {}", msg),
             CommError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
             CommError::CasperError(msg) => write!(f, "Casper error: {}", msg),
-            CommError::ResourceExhausted(msg) => write!(f, "Resource exhausted: {}", msg),
             _ => write!(f, "{:?}", self),
         }
     }

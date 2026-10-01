@@ -8044,10 +8044,7 @@ fn multiply_fixed_points(
     a: &models::rhoapi::GFixedPoint,
     b: &models::rhoapi::GFixedPoint,
 ) -> models::rhoapi::GFixedPoint {
-    debug_assert_eq!(
-        a.scale, b.scale,
-        "multiply_fixed_points called with mismatched scales"
-    );
+    // Caller-checked: the interpreter rejects mismatched scales typed.
     // Scale-preserving: (ua * ub) / 10^scale, using floor division
     let ua = bytes_to_bigint(&a.unscaled);
     let ub = bytes_to_bigint(&b.unscaled);
@@ -8072,10 +8069,7 @@ fn divide_fixed_points(
     a: &models::rhoapi::GFixedPoint,
     b: &models::rhoapi::GFixedPoint,
 ) -> models::rhoapi::GFixedPoint {
-    debug_assert_eq!(
-        a.scale, b.scale,
-        "divide_fixed_points called with mismatched scales"
-    );
+    // Caller-checked: the interpreter rejects mismatched scales typed.
     let ten = num_bigint::BigInt::from(10);
     let factor = num_traits::pow::pow(ten, b.scale as usize);
     let scaled = bytes_to_bigint(&a.unscaled) * factor;

@@ -1,11 +1,5 @@
 # 01 · Differential testing — Rust vs. Scala
 
-> **Historical scope.** This chapter describes the Scala-to-Rust migration
-> oracle. DR-6 retired Scala as a current conformance target after the
-> cost-accounted Rust architecture became structurally incomparable. Current
-> differential verification compares the Rust harness, Rocq-derived oracle,
-> and production adapter.
-
 > *“The test of a first-rate intelligence is the ability to hold two
 > opposed ideas in mind at the same time, and still retain the ability
 > to function.”* — F. Scott Fitzgerald, *The Crack-Up*, 1936.
@@ -186,8 +180,8 @@ state space tested; see
 is the headline output of this model. It is **negative** evidence —
 no `unexpected` witness exists in the searched bound — which the
 methodology accepts as corroborating but not conclusive. The
-former conclusive answer was the now-retired Rocq theorem T-15. The finding is
-historical corroboration, not a current proof obligation.
+conclusive answer is the Rocq theorem T-15 (Rust ≈ Scala under
+random workload).
 
 ### 4.2 The cost of the differential search
 

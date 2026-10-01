@@ -7,3 +7,4 @@ mod minority_fork_recovery_spec;
 mod multi_parent_casper_reporting_spec;
 mod multi_parent_casper_rholang_spec;
 mod multi_parent_casper_smoke_spec;
+mod precharge_report_shape_spec;

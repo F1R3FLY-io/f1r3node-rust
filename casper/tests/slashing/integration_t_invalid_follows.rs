@@ -3,15 +3,21 @@
 // `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
-// Integration test — Tier 1 production-path verification of
-// `InvalidFollows` rejection persistence without economic evidence.
+// Integration test — Tier 1 production-path verification of the
+// `InvalidFollows` arm of the dispatcher's `is_slashable()`
+// catch-all (Bug #3 fix).
 //
 // UC-29 from docs/casper/theory/slashing/slashing-specification.md §12.
-// Theorem citation: T-9.3
-// (`certified_non_slashable_rejection_preserves_evidence`).
+// Theorem citation: T-9.3 (catch-all dispatcher), Rocq
+// formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
-// Validation order: block_summary's `justifications_well_formed`
-// rejects duplicate validator entries before parent and sequence checks.
+// Validation order: block_summary's `justification_follows`
+// (validate.rs:820) checks that the set of validators in the
+// justifications equals the set of bonded validators in the main
+// parent. Clearing all justifications gives an empty justified set
+// — bonded set has 3 entries (v0, v1, v2) — line 860 returns
+// `InvalidFollows`. parents_hash_list stays intact so the earlier
+// "missing main parent" arm at line 833 does NOT fire.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
@@ -41,12 +47,8 @@ async fn integration_t_invalid_follows() {
 
     let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d1], |b| {
-        let duplicate = b
-            .justifications
-            .first()
-            .cloned()
-            .expect("proposed block must have a justification");
-        b.justifications.push(duplicate);
+        // Clear all justifications. Bonded set ≠ justified set.
+        b.justifications.clear();
     })
     .await
     .expect("propose_with_block_mutation");

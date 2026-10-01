@@ -2,17 +2,17 @@
 // Imports needed for function signature and return type
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use casper::rust::blocks::block_processing_queue::{
-    BlockProcessingQueueReceiver, BlockProcessingQueueSender,
-};
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
+use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
@@ -21,7 +21,8 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::casper::protocol::casper_message::ApprovedBlock;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, trace, warn};
@@ -29,15 +30,26 @@ use tracing::{debug, info, trace, warn};
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::web_api::WebApi;
 use crate::rust::configuration::NodeConf;
-use crate::rust::instances::proposer_coalescer::{
-    AdmissionOutcome, ProposalRequestKind, ProposerCoalescer,
-};
-use crate::rust::instances::proposer_instance::ProposeQueueEntry;
 use crate::rust::runtime::api_servers::APIServers;
 use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
 use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
 
+const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
 const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
+
+const _: () = assert!(
+    casper::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING
+        <= BLOCK_PROCESSOR_QUEUE_MAX_PENDING
+);
+
+type ProposerQueueEntry = (
+    Arc<dyn Casper + Send + Sync>,
+    bool,
+    oneshot::Sender<ProposerResult>,
+    u8,
+);
+
+fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
 fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
@@ -45,10 +57,11 @@ fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool
     is_node_read_only || dev_mode
 }
 
-pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
+pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
     transport_layer: Arc<T>,
+    block_retriever: BlockRetriever<T>,
     conf: NodeConf,
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
@@ -65,12 +78,15 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         Arc<dyn WebApi + Send + Sync + 'static>,
         Arc<dyn AdminWebApi + Send + Sync + 'static>,
         Option<ProductionProposer<T>>,
-        mpsc::Receiver<ProposeQueueEntry>,
+        mpsc::Receiver<ProposerQueueEntry>,
+        mpsc::Sender<ProposerQueueEntry>,
+        Arc<AtomicUsize>,
+        usize,
         Option<Arc<RwLock<ProposerState>>>,
         BlockProcessor<T>,
-        Arc<casper::rust::blocks::block_processing_queue::BlockProcessingIdentities>,
-        BlockProcessingQueueSender,
-        BlockProcessingQueueReceiver,
+        Arc<dashmap::DashSet<BlockHash>>,
+        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+        mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
         Option<Arc<ProposeFunction>>,
         Arc<casper::rust::api::block_report_api::BlockReportAPI>,
         block_storage::rust::key_value_block_store::KeyValueBlockStore,
@@ -113,7 +129,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     if lfb_require_migration {
         use tracing::info;
 
-        info!("Checking whether legacy LastFinalizedStorage can enter protocol-v5 storage.");
+        info!("Migrating LastFinalizedStorage to BlockDagStorage.");
         last_finalized_storage
             .migrate_lfb(&mut rnode_store_manager, &block_store)
             .await?;
@@ -130,14 +146,13 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
-    // First-boot repeat-deploy carrier-index watermark (same pattern as
-    // the LFB migration above): records the height since which every
-    // insert records carriers, which gates the fast path's absence
-    // proofs. No backfill walk exists — blocks below the watermark are
-    // never claimed.
+    // Repeat-deploy carrier-index watermark (same pattern as the LFB
+    // migration above): the height since which every insert records carriers,
+    // which gates the fast path's absence proofs. An empty database gets none
+    // here — the history root is not known until genesis or restore completes.
     let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
     info!(
-        carrier_index_watermark,
+        carrier_index_watermark = ?carrier_index_watermark,
         "repeat-deploy carrier index checked"
     );
 
@@ -147,13 +162,6 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
 
         CasperBufferKeyValueStorage::new_from_kvm(&mut rnode_store_manager).await?
     };
-
-    let block_retriever = BlockRetriever::new(
-        casper_buffer_storage.clone(),
-        transport_layer.clone(),
-        rp_connections.clone(),
-        rp_conf_cell.read()?,
-    );
 
     // Deploy storage
     let (deploy_storage, deploy_storage_arc) = {
@@ -181,12 +189,8 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         CliqueOracleImpl
     };
 
-    // Estimator
-    let estimator = {
-        use casper::rust::estimator::Estimator;
-
-        Estimator::apply()
-    };
+    // Estimator (stateless; parent bounds come from the shard conf per call)
+    let estimator = casper::rust::estimator::Estimator::apply();
 
     // Determine if this node is a validator
     let is_validator = conf.casper.validator_private_key.is_some();
@@ -256,11 +260,19 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             mergeable_store,
             Arc::new(Genesis::default_mergeable_tags()),
             external_services.clone(),
-            ExploratoryDeployConfig::new(
-                conf.api_server.exploratory_deploy_max_concurrent,
-                conf.api_server.exploratory_deploy_phlo_limit,
-                conf.api_server.exploratory_deploy_execution_timeout,
-            )?,
+            {
+                let exploratory = ExploratoryDeployConfig::resolve(
+                    conf.api_server.exploratory_deploy_max_concurrent,
+                    conf.api_server.exploratory_deploy_phlo_limit,
+                    conf.api_server.exploratory_deploy_execution_timeout,
+                )?;
+                tracing::info!(
+                    max_concurrent = exploratory.max_concurrent,
+                    derived = conf.api_server.exploratory_deploy_max_concurrent == 0,
+                    "exploratory-deploy concurrency resolved"
+                );
+                exploratory
+            },
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
@@ -279,7 +291,6 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_store,
                 &block_dag_storage,
                 runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
@@ -309,18 +320,40 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
     // to consumer (BlockProcessorInstance)
     let block_processor_queue_max_pending = block_processor_queue_max_pending();
-    let block_processor_max_bytes =
-        usize::try_from(conf.protocol_server.grpc_max_recv_stream_message_size).map_err(|_| {
-            CasperError::Other("protocol stream-size limit exceeds usize".to_string())
-        })?;
-    let (block_processor_queue_tx, block_processor_queue_rx) = BlockProcessingQueueSender::channel(
-        block_processor_queue_max_pending,
-        block_processor_max_bytes,
+    let (block_processor_queue_tx, block_processor_queue_rx) =
+        mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(
+            block_processor_queue_max_pending,
+        );
+
+    // Queue depth is where memory pressure moves when parallel drain is
+    // bounded, so it must be observable alongside block-processing.active.
+    // Sampled from the channel's own permit accounting via a WeakSender so
+    // the sampler can never hold the queue open past the last real producer.
+    metrics::gauge!(
+        BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
     )
-    .map_err(|error| CasperError::Other(error.to_string()))?;
+    .set(0.0);
+    let block_processor_queue_watch = block_processor_queue_tx.downgrade();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let Some(queue_tx) = block_processor_queue_watch.upgrade() else {
+                break;
+            };
+            let pending = queue_tx.max_capacity().saturating_sub(queue_tx.capacity());
+            metrics::gauge!(
+                BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+            )
+            .set(pending as f64);
+        }
+    });
 
     // Block processing state - set of items currently in processing
-    let block_processor_state_ref = block_processor_queue_tx.identities();
+    let block_processor_state_ref = Arc::new(dashmap::DashSet::<BlockHash>::new());
 
     // Read RPConf once for use in multiple places
     let rp_conf = rp_conf_cell
@@ -347,13 +380,14 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     // Block processor
     let block_processor = casper::rust::blocks::block_processor::new_block_processor(
         block_store.clone(),
+        casper_buffer_storage.clone(),
         block_dag_storage.clone(),
         block_retriever.clone(),
         transport_layer.clone(),
         rp_connections.clone(),
         rp_conf.clone(),
         Some(state_requester_handles.fetch_tx.clone()),
-    )?;
+    );
 
     // Proposer instance
     let validator_identity_opt = {
@@ -402,61 +436,69 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         None => info!("Running without proposer"),
     }
 
+    // Propose request is a tuple - Casper, async flag and deferred proposer result that will be resolved by proposer
+    let proposer_queue_pending = Arc::new(AtomicUsize::new(0));
+    let proposer_queue_max_pending = proposer_queue_max_pending();
     metrics::gauge!(
         PROPOSER_QUEUE_PENDING_METRIC,
         "source" => VALIDATOR_METRICS_SOURCE
     )
     .set(0.0);
 
-    let (proposer_queue_tx, proposer_queue_rx) = mpsc::channel::<ProposeQueueEntry>(1);
-    let proposer_coalescer = Arc::new(ProposerCoalescer::new());
+    let (proposer_queue_tx, proposer_queue_rx) =
+        mpsc::channel::<ProposerQueueEntry>(proposer_queue_max_pending);
 
     // Trigger propose function - wraps proposerQueue to provide propose functionality
     let trigger_propose_f_opt: Option<Arc<ProposeFunction>> = if proposer.is_some() {
         let queue_tx = proposer_queue_tx.clone();
-        let coalescer = proposer_coalescer.clone();
+        let queue_pending = proposer_queue_pending.clone();
+        let queue_max_pending = proposer_queue_max_pending;
         Some(Arc::new(
-            move |request_kind: casper::rust::ProposeRequestKind| {
+            move |casper: Arc<dyn MultiParentCasper + Send + Sync>, is_async: bool| {
                 let queue_tx = queue_tx.clone();
-                let coalescer = coalescer.clone();
+                let queue_pending = queue_pending.clone();
+                // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper extends Casper)
+                let casper_for_queue: Arc<dyn Casper + Send + Sync> = casper;
 
                 Box::pin(async move {
-                    match coalescer.try_admit(ProposalRequestKind::from(&request_kind)) {
-                        AdmissionOutcome::Coalesced => return Ok(ProposerResult::empty()),
-                        AdmissionOutcome::Busy => {
-                            metrics::counter!(
-                                PROPOSER_QUEUE_REJECTED_TOTAL_METRIC,
-                                "source" => VALIDATOR_METRICS_SOURCE
-                            )
-                            .increment(1);
-                            return Ok(ProposerResult::empty());
-                        }
-                        AdmissionOutcome::Acquired => {}
+                    debug!(async_mode = is_async, "Propose request enqueued");
+
+                    // Guard against unbounded queue growth under high deploy/autopropose load.
+                    let enqueue_reserved = queue_pending
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                            (curr < queue_max_pending).then_some(curr + 1)
+                        })
+                        .is_ok();
+                    if !enqueue_reserved {
+                        metrics::counter!(
+                            PROPOSER_QUEUE_REJECTED_TOTAL_METRIC,
+                            "source" => VALIDATOR_METRICS_SOURCE
+                        )
+                        .increment(1);
+                        return Ok(ProposerResult::empty());
                     }
-                    debug!(?request_kind, "Propose request admitted");
                     metrics::gauge!(
                         PROPOSER_QUEUE_PENDING_METRIC,
                         "source" => VALIDATOR_METRICS_SOURCE
                     )
-                    .set(1.0);
+                    .set(queue_pending.load(Ordering::Relaxed) as f64);
 
+                    // Create oneshot channel
                     let (result_tx, result_rx) = oneshot::channel::<ProposerResult>();
+
+                    // Send to proposer queue
                     match queue_tx
-                        .send(ProposeQueueEntry {
-                            request_kind,
-                            result_sender: result_tx,
-                            coalescer: coalescer.clone(),
-                        })
+                        .send((casper_for_queue, is_async, result_tx, 0))
                         .await
                     {
                         Ok(()) => {}
                         Err(e) => {
-                            coalescer.cancel();
+                            let _ = queue_pending.fetch_sub(1, Ordering::AcqRel);
                             metrics::gauge!(
                                 PROPOSER_QUEUE_PENDING_METRIC,
                                 "source" => VALIDATOR_METRICS_SOURCE
                             )
-                            .set(0.0);
+                            .set(queue_pending.load(Ordering::Relaxed) as f64);
                             return Err(CasperError::Other(format!(
                                 "Failed to send to proposer queue: {}",
                                 e
@@ -688,14 +730,12 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         trace!("Casper loop tick");
         let engine_cell_clone = engine_cell.clone();
         let block_retriever_clone = block_retriever.clone();
-        let block_processing_queue_tx_clone = block_processor_queue_tx.clone();
         let requested_blocks_timeout = conf.casper.requested_blocks_timeout;
         let casper_loop_interval = conf.casper.casper_loop_interval;
 
         move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
             let engine_cell = engine_cell_clone.clone();
             let block_retriever = block_retriever_clone.clone();
-            let block_processing_queue_tx = block_processing_queue_tx_clone.clone();
 
             Box::pin(async move {
                 // Read the engine from engine cell
@@ -707,9 +747,11 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                     if let Err(err) = casper.fetch_dependencies().await {
                         tracing::warn!("Casper dependency fetch failed: {}", err);
                     }
-                    block_processing_queue_tx.recovery().signal().request(false);
                 } else {
                     warn!("Casper engine present but Casper not initialized yet");
+                    if let Err(err) = engine.on_no_casper_tick().await {
+                        warn!("no-casper tick failed: {}", err);
+                    }
                 }
 
                 // Maintain RequestedBlocks for Casper
@@ -880,6 +922,11 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                     // Sleep for the configured interval
                     tokio::time::sleep(gc_interval).await;
 
+                    // The GC anchors deletion on a finalized floor, so it must
+                    // run on the SAME shard conf as consensus — the running
+                    // casper's (chain-adopted at hash_set_casper), never a
+                    // second locally-derived copy. No casper yet = no floor to
+                    // anchor on; skip the pass.
                     let engine = gc_engine_cell.get().await;
                     let Some(gc_casper) = engine.with_casper() else {
                         tracing::debug!(
@@ -954,6 +1001,9 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         Arc::new(admin_web_api),
         proposer,
         proposer_queue_rx,
+        proposer_queue_tx,
+        proposer_queue_pending,
+        proposer_queue_max_pending,
         proposer_state_ref_opt_for_return,
         block_processor,
         block_processor_state_ref,

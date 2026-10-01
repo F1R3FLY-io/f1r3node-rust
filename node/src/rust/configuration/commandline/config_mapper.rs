@@ -370,13 +370,17 @@ impl ConfigMapper<Options> for NodeConf {
                 &mut self.casper.heartbeat_conf.self_propose_cooldown,
                 run.heartbeat_self_propose_cooldown,
             );
-            Self::try_override_value(
+            Self::try_override_option(
                 &mut self.casper.heartbeat_conf.stale_recovery_min_interval,
                 run.heartbeat_stale_recovery_min_interval,
             );
             Self::try_override_value(
                 &mut self.casper.heartbeat_conf.deploy_finalization_grace,
                 run.heartbeat_deploy_finalization_grace,
+            );
+            Self::try_override_value(
+                &mut self.casper.heartbeat_conf.advanced.frontier_chase_max_lag,
+                run.heartbeat_advanced_frontier_chase_max_lag,
             );
             Self::try_override_value(
                 &mut self.casper.heartbeat_conf.advanced.pending_deploy_max_lag,
@@ -518,6 +522,7 @@ mod tests {
         "--heartbeat-self-propose-cooldown=555555seconds",
         "--heartbeat-stale-recovery-min-interval=333333seconds",
         "--heartbeat-deploy-finalization-grace=444444seconds",
+        "--heartbeat-advanced-frontier-chase-max-lag=111",
         "--heartbeat-advanced-pending-deploy-max-lag=222",
         "--heartbeat-advanced-deploy-recovery-max-lag=333",
         "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks=444",
@@ -570,6 +575,7 @@ mod tests {
         // rejects negative integers; a negative cap would silently
         // disable the corresponding code path in the proposer.
         for flag in &[
+            "--heartbeat-advanced-frontier-chase-max-lag",
             "--heartbeat-advanced-pending-deploy-max-lag",
             "--heartbeat-advanced-deploy-recovery-max-lag",
             "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
@@ -700,6 +706,7 @@ mod tests {
                 heartbeat_self_propose_cooldown: Some(Duration::from_secs(555555)),
                 heartbeat_stale_recovery_min_interval: Some(Duration::from_secs(333333)),
                 heartbeat_deploy_finalization_grace: Some(Duration::from_secs(444444)),
+                heartbeat_advanced_frontier_chase_max_lag: Some(111),
                 heartbeat_advanced_pending_deploy_max_lag: Some(222),
                 heartbeat_advanced_deploy_recovery_max_lag: Some(333),
                 heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
@@ -785,6 +792,7 @@ mod tests {
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
                 deploy_lifespan: 50,
+                deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
                 synchrony_constraint_threshold: 0.0,
@@ -795,7 +803,6 @@ mod tests {
                     drop_peer_after_retries: 4,
                 },
                 genesis_block_data: casper::rust::casper_conf::GenesisBlockData {
-                    resource_policy: None,
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),
@@ -807,13 +814,6 @@ mod tests {
                     genesis_block_number: 0,
                     pos_multi_sig_public_keys: vec![],
                     pos_multi_sig_quorum: 0,
-                    max_cosigners_per_deploy:
-                        casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                    initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                    epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
-                    // Task #13b: default EMPTY genesis client funding-slot list
-                    // (back-compat — no client `Σ⟦c⟧` seed unless configured).
-                    client_fuel_allocations: Vec::new(),
                     deploy_timestamp: None,
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),
@@ -835,7 +835,6 @@ mod tests {
                     self_propose_cooldown: Duration::from_secs(15),
                     ..casper::rust::casper_conf::HeartbeatConf::default()
                 },
-                disable_late_block_filtering: true,
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
@@ -1077,7 +1076,7 @@ mod tests {
                 .casper
                 .heartbeat_conf
                 .stale_recovery_min_interval,
-            Duration::from_secs(333333)
+            Some(Duration::from_secs(333333))
         );
         assert_eq!(
             default_config
@@ -1085,6 +1084,14 @@ mod tests {
                 .heartbeat_conf
                 .deploy_finalization_grace,
             Duration::from_secs(444444)
+        );
+        assert_eq!(
+            default_config
+                .casper
+                .heartbeat_conf
+                .advanced
+                .frontier_chase_max_lag,
+            111
         );
         assert_eq!(
             default_config

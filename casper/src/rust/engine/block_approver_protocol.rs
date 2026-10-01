@@ -7,9 +7,8 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, UnapprovedBlock,
+    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, ProcessedSystemDeploy, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
@@ -20,7 +19,6 @@ use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::genesis::contracts::validator::Validator;
 use crate::rust::genesis::contracts::vault::Vault;
-use crate::rust::genesis::genesis::Genesis;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -28,7 +26,6 @@ use crate::rust::validator_identity::ValidatorIdentity;
 /// The field layout and logic mirror the original as closely as possible.
 #[derive(Clone)]
 pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
-    pub resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
     // Configuration / static data
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
@@ -46,11 +43,6 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
-    pub max_cosigners_per_deploy: u32,
-    pub initial_phlogiston: i64,
-    pub epoch_phlogiston: i64,
-    pub protocol_version: i64,
-    pub client_fuel_allocations: Vec<(PublicKey, i64)>,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
@@ -79,20 +71,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
-        max_cosigners_per_deploy: u32,
-        initial_phlogiston: i64,
-        epoch_phlogiston: i64,
-        protocol_version: i64,
-        client_fuel_allocations: Vec<(PublicKey, i64)>,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
-        resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
-        crate::rust::casper::ensure_supported_casper_protocol_version(protocol_version)?;
-
         tracing::info!(
             required_sigs = required_sigs,
             "Validator configured required_sigs"
@@ -112,7 +96,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .collect();
 
         Ok(Self {
-            resource_policy,
             validator_id,
             deploy_timestamp,
             vaults,
@@ -129,11 +112,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
-            max_cosigners_per_deploy,
-            initial_phlogiston,
-            epoch_phlogiston,
-            protocol_version,
-            client_fuel_allocations,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -192,21 +170,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
-        max_cosigners_per_deploy: u32,
-        initial_phlogiston: i64,
-        epoch_phlogiston: i64,
-        protocol_version: i64,
-        client_fuel_allocations: &[(PublicKey, i64)],
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
-        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Result<(), String> {
-        if let Some(policy) = resource_policy {
-            policy
-                .validate_context(protocol_version, shard_id, native_token_decimals)
-                .map_err(|error| error.to_string())?;
-        }
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
             return Err(format!(
@@ -216,12 +183,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         }
 
         let block = &candidate.block;
-        if block.header.version != protocol_version {
-            return Err(format!(
-                "Candidate protocol version mismatch: expected {}, got {}",
-                protocol_version, block.header.version
-            ));
-        }
         if !block.body.system_deploys.is_empty() {
             return Err("Candidate must not contain system deploys.".to_string());
         }
@@ -254,23 +215,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_length,
             quarantine_length,
             number_of_active_validators,
-            // Must match the ceremony master's value: the pos_generator deploy is
-            // replayed byte-for-byte, so a ppm mismatch fails genesis validation —
-            // ceremony participants must agree on the protocol FTT like every
-            // other genesis parameter.
+            // Must match the ceremony master's values: the pos_generator deploy
+            // is replayed byte-for-byte, so any mismatch fails genesis
+            // validation — ceremony participants must agree on the consensus
+            // parameters like every other genesis parameter.
             fault_tolerance_threshold_ppm,
             max_parent_depth,
             deploy_lifespan,
             min_phlo_price,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
-            max_cosigners_per_deploy,
-            initial_phlogiston,
-            epoch_phlogiston,
         };
-        let funded_vaults =
-            Genesis::vaults_with_protocol_funding(&pos_params, vaults, client_fuel_allocations)
-                .map_err(|error| error.to_string())?;
 
         tracing::info!(
             shard_id = %shard_id,
@@ -283,16 +238,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         );
 
         // Expected blessed contracts
-        let genesis_blessed_contracts = Genesis::default_blessed_terms(
-            &pos_params,
-            &funded_vaults,
-            i64::MAX,
-            shard_id,
-            native_token_name,
-            native_token_symbol,
-            native_token_decimals,
-            resource_policy,
-        );
+        let genesis_blessed_contracts =
+            crate::rust::genesis::genesis::Genesis::default_blessed_terms(
+                &pos_params,
+                vaults,
+                i64::MAX,
+                shard_id,
+                native_token_name,
+                native_token_symbol,
+                native_token_decimals,
+            );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
 
@@ -308,10 +263,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .iter()
             .zip(genesis_blessed_contracts.iter())
             .filter(|(candidate_deploy, expected_contract)| {
-                candidate_deploy.body().term != expected_contract.data.term
+                candidate_deploy.deploy.data.term != expected_contract.data.term
             })
             .map(|(candidate_deploy, _)| {
-                let term = &candidate_deploy.body().term;
+                let term = &candidate_deploy.deploy.data.term;
                 term.chars().take(100).collect::<String>()
             })
             .take(5)
@@ -327,7 +282,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // State hash checks
         let empty_state_hash = RuntimeManager::empty_state_hash_fixed();
         let state_hash = runtime_manager
-            .replay_block_from_consensus_data(&empty_state_hash, block, None)
+            .replay_compute_state(
+                &empty_state_hash,
+                block_deploys.clone(),
+                Vec::<ProcessedSystemDeploy>::new(),
+                &rholang::rust::interpreter::system_processes::BlockData::from_block(block),
+                None,
+                true,
+            )
             .await
             .map_err(|e| format!("Failed status during replay: {:?}.", e))?;
 
@@ -381,15 +343,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
-            self.max_cosigners_per_deploy,
-            self.initial_phlogiston,
-            self.epoch_phlogiston,
-            self.protocol_version,
-            &self.client_fuel_allocations,
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
-            self.resource_policy.as_ref(),
         )
         .await
     }

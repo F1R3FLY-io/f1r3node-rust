@@ -4,7 +4,7 @@ use crypto::rust::signatures::frost_secp256k1::FrostSecp256k1;
 use crypto::rust::signatures::schnorr_secp256k1::SchnorrSecp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::cost_deploy_data::DeployData;
 
 fn sample_deploy() -> DeployData {
     DeployData {

@@ -17,25 +17,17 @@ use crate::util::genesis_builder::GenesisBuilder;
 // sibling `..._advance_finalization_monotonically_in_round_robin` already runs.)
 #[tokio::test]
 async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriate_in_round_robin() {
-    async fn assert_finalized_block(node: &TestNode, expected: &BlockMessage) {
-        node.settle_finalization(std::time::Duration::from_secs(30))
-            .await
-            .expect("finalizer should settle");
-        let representation = node
+    fn assert_finalized_block(node: &TestNode, expected: &BlockMessage) {
+        let last_finalized_block_hash = node
             .block_dag_storage
             .get_representation()
-            .expect("dag representation");
-        let last_finalized_block_hash = representation.last_finalized_block();
-        let actual_height = representation
-            .lookup_unsafe(&last_finalized_block_hash)
-            .expect("last finalized metadata")
-            .block_number;
+            .expect("dag representation")
+            .last_finalized_block();
 
         assert_eq!(
             last_finalized_block_hash,
             expected.block_hash,
-            "Last finalized block mismatch\nExpected #{}: {}\nGot #{actual_height}: {}",
-            expected.body.state.block_number,
+            "Last finalized block mismatch\nExpected: {}\nGot: {}",
             hex::encode(&expected.block_hash),
             hex::encode(&last_finalized_block_hash)
         );
@@ -87,11 +79,6 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         .await
         .unwrap();
 
-    nodes[1]
-        .settle_finalization(std::time::Duration::from_secs(30))
-        .await
-        .expect("finalizer should settle before the next certificate carrier");
-
     // One clock: the LFB is the floor of the live view, whose per-parent
     // frontier witnesses one round EARLIER than the retired Finalizer's
     // agreement aggregation did. The two-sided disagreement walk moved the
@@ -104,35 +91,25 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         .await
         .unwrap();
 
-    assert_finalized_block(&nodes[0], &block3).await;
-
-    nodes[2]
-        .settle_finalization(std::time::Duration::from_secs(30))
-        .await
-        .expect("finalizer should settle before the next certificate carrier");
+    assert_finalized_block(&nodes[0], &block3);
 
     let block6 = TestNode::propagate_block_at_index(&mut nodes, 2, &[deploy_datas[5].clone()])
         .await
         .unwrap();
 
-    assert_finalized_block(&nodes[0], &block4).await;
+    assert_finalized_block(&nodes[0], &block4);
 
     let _block7 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[6].clone()])
         .await
         .unwrap();
 
-    assert_finalized_block(&nodes[0], &block5).await;
-
-    nodes[1]
-        .settle_finalization(std::time::Duration::from_secs(30))
-        .await
-        .expect("finalizer should settle before the next certificate carrier");
+    assert_finalized_block(&nodes[0], &block5);
 
     let _block8 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[7].clone()])
         .await
         .unwrap();
 
-    assert_finalized_block(&nodes[0], &block6).await;
+    assert_finalized_block(&nodes[0], &block6);
 }
 
 /// This test verifies that finalization advances monotonically (block number never

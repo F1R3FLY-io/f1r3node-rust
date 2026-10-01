@@ -1,3 +1,0 @@
-------------- MODULE TransportPeerLifecycleActiveEvictionUnsafe -------------
-EXTENDS TransportPeerLifecycle
-=============================================================================

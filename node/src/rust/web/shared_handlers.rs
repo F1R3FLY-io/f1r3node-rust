@@ -1,16 +1,19 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// A /status response slower than this is logged as a warning, in both the
+/// handler and the underlying API.
+pub(crate) const STATUS_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, BlockPendingAdmissionError, DeployNotFoundError, DeployValidationError,
-    ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
-    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
-    PrivateNamePreviewUnavailable, ProposeReadOnlyError,
+    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
+    NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -88,7 +91,7 @@ pub struct ApiErrorResponse {
     /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`, `private_name_preview_unavailable`
+    /// `no_new_deploys`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -258,13 +261,6 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if cause.downcast_ref::<BlockNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "block_not_found", cause.to_string());
         }
-        if cause.downcast_ref::<BlockPendingAdmissionError>().is_some() {
-            return (
-                StatusCode::CONFLICT,
-                "block_pending_admission",
-                cause.to_string(),
-            );
-        }
         if cause.downcast_ref::<InvalidHashError>().is_some() {
             return (StatusCode::BAD_REQUEST, "invalid_hash", cause.to_string());
         }
@@ -314,16 +310,6 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
             return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
         }
-        if cause
-            .downcast_ref::<PrivateNamePreviewUnavailable>()
-            .is_some()
-        {
-            return (
-                StatusCode::CONFLICT,
-                "private_name_preview_unavailable",
-                cause.to_string(),
-            );
-        }
     }
 
     (
@@ -346,31 +332,11 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
 
         SlashAuth(_) => (S::FORBIDDEN, "slash_auth_error", err.to_string()),
 
-        // Cost-accounted-rho multi-sig admission failures: client-side deploy
-        // errors (an underfunded or double-charged cosigner), not node faults.
-        InsufficientPhloByCosigner { .. } => (
-            S::PAYMENT_REQUIRED,
-            "insufficient_phlo_by_cosigner",
-            err.to_string(),
-        ),
-        DuplicateCosignerCharge { .. } => {
-            (S::BAD_REQUEST, "duplicate_cosigner_charge", err.to_string())
-        }
-        InvalidCostSettlement(_) => (
-            S::UNPROCESSABLE_ENTITY,
-            "invalid_cost_settlement",
-            err.to_string(),
-        ),
-        ParentFrontierCapacityExceeded { .. } => (
-            S::SERVICE_UNAVAILABLE,
-            "parent_frontier_capacity_exceeded",
-            err.to_string(),
-        ),
-        CertificateVerificationWorkExceeded { .. } => {
-            internal("certificate_verification_work_exceeded")
-        }
-        UnsupportedProtocolVersion { .. } => internal("unsupported_protocol_version"),
-        BlockNotHeld(_) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+        // The node is answering about history it does not have, not failing:
+        // a node restored from a sync anchor is still filling in below it, and
+        // the same request may succeed once it has. 503 tells the caller to
+        // retry; the 500 class would say the node is broken.
+        BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -418,12 +384,12 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "out_of_phlogistons",
             ie.to_string(),
         ),
-        UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
         HostWorkRejected => (
             S::UNPROCESSABLE_ENTITY,
             "host_work_rejected",
             ie.to_string(),
         ),
+        UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
         | IfConditionTypeError { .. }
@@ -483,13 +449,12 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
     tag = "Status"
 )]
 pub async fn status_handler(State(app_state): State<AppState>) -> Response {
-    const STATUS_HANDLER_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
     let started = Instant::now();
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.status().await }).await {
         Ok(response) => {
             let elapsed = started.elapsed();
-            if elapsed >= STATUS_HANDLER_SLOW_THRESHOLD {
+            if elapsed >= STATUS_SLOW_THRESHOLD {
                 warn!(?elapsed, "HTTP /status handler responded slowly");
             }
             Json(response).into_response()
@@ -638,7 +603,6 @@ pub async fn get_blocks_handler(
         (status = 200, description = "Block information", body = BlockInfoSerde),
         (status = 400, description = "Hash is shorter than 6 characters or contains non-hex characters (`invalid_hash`)", body = ApiErrorResponse),
         (status = 404, description = "No block matches the given hash or prefix (`block_not_found`)", body = ApiErrorResponse),
-        (status = 409, description = "Block was received but is still pending DAG admission (`block_pending_admission`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
     tag = "Blocks"
@@ -677,55 +641,59 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    use casper::rust::api::block_api::{ExploratoryDeployBusyError, ExploratoryDeployTimeoutError};
+
+    use super::{classify_error, retry_after_secs, AppError};
 
     #[test]
-    fn invalid_cost_settlement_is_an_objective_client_error() {
-        let error = CasperError::InvalidCostSettlement("realized cost exceeds bound".to_string());
-        let (status, kind, detail) = classify_casper_error(&error);
-
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(kind, "invalid_cost_settlement");
-        assert!(detail.contains("realized cost exceeds bound"));
-    }
-
-    #[test]
-    fn unsupported_protocol_version_is_an_internal_compatibility_error() {
-        let error = CasperError::UnsupportedProtocolVersion { version: 1 };
-        let (status, kind, detail) = classify_casper_error(&error);
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(kind, "unsupported_protocol_version");
-        assert!(detail.contains("Unsupported Casper protocol version: 1"));
-    }
-
-    #[test]
-    fn parent_frontier_capacity_is_a_service_deferral() {
-        let error = CasperError::ParentFrontierCapacityExceeded {
-            configured_cap: 2,
-            required_parents: 3,
-            effective_committee: 3,
-            unique_causal_tips: 3,
-            floor_backstop_added: false,
-            expired_tip_count: 0,
-        };
-        let (status, kind, detail) = classify_casper_error(&error);
+    fn exploratory_deploy_busy_is_service_unavailable() {
+        let error = eyre::Report::new(ExploratoryDeployBusyError {
+            retry_after_secs: 15,
+        });
+        let (status, kind, _) = classify_error(&error);
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(kind, "parent_frontier_capacity_exceeded");
-        assert!(detail.contains("requires 3 parents"));
+        assert_eq!(kind, "observer_busy");
+        assert_eq!(retry_after_secs(&error), Some(15));
     }
 
     #[test]
-    fn protocol_v6_private_name_preview_is_a_stable_conflict() {
-        let error = eyre::Report::new(PrivateNamePreviewUnavailable {
-            protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-        });
-        let (status, kind, detail) = classify_error(&error);
+    fn exploratory_deploy_busy_response_carries_retry_after() {
+        let response = AppError(eyre::Report::new(ExploratoryDeployBusyError {
+            retry_after_secs: 15,
+        }))
+        .into_response();
 
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(kind, "private_name_preview_unavailable");
-        assert!(detail.contains("authenticated deploy envelope"));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("15")
+        );
+    }
+
+    #[test]
+    fn exploratory_deploy_timeout_response_has_no_retry_after() {
+        let response = AppError(eyre::Report::new(ExploratoryDeployTimeoutError {
+            timeout_ms: 15_000,
+        }))
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
+    }
+
+    #[test]
+    fn exploratory_deploy_timeout_is_gateway_timeout() {
+        let error = eyre::Report::new(ExploratoryDeployTimeoutError { timeout_ms: 15_000 });
+        let (status, kind, _) = classify_error(&error);
+
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(kind, "exploratory_timeout");
     }
 
     mod classification {
@@ -866,7 +834,10 @@ mod tests {
                     "other_error",
                 ),
                 (
-                    CasperError::BlockNotHeld(vec![0xab].into()),
+                    CasperError::BlockNotHeld(
+                        vec![0xab].into(),
+                        shared::rust::store::key_value_store::MissingBlockContext::new(""),
+                    ),
                     StatusCode::SERVICE_UNAVAILABLE,
                     "block_not_held",
                 ),
@@ -931,19 +902,6 @@ mod tests {
                 assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
                 assert_eq!(kind, "rholang_execution_error");
             }
-        }
-
-        #[test]
-        fn host_work_rejection_is_a_distinct_deterministic_execution_rejection() {
-            assert_eq!(
-                classify(CasperError::InterpreterError(
-                    InterpreterError::HostWorkRejected
-                )),
-                (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "host_work_rejected".to_string()
-                )
-            );
         }
 
         #[test]

@@ -1,19 +1,20 @@
 (* ===========================================================================
-   Lca.v - The lowest universal common ancestor (LCUA) of certified votes.
+   Lca.v - The lowest universal common ancestor (LCUA) and the depth cutoff.
 
-   Fork choice starts its upward rank from the LCA of all eligible certified latest
+   Fork choice starts its upward rank from the LCA of the (filtered) latest
    messages (estimator.rs:96, calculate_lca -> rank_forkchoices([lca])). The LCA
    must be a COMMON ANCESTOR of every latest message, else the upward walk would
    start off-chain and miss reachable tips. `calculate_lca` (estimator.rs:184):
 
-     * consumes the eligible projection without consulting receiver-local DAG height;
-     * returns genesis if the projection is empty, else
+     * filters out latest messages older than LATEST_MESSAGE_MAX_DEPTH (=1000)
+       below the DAG tip (`msg.block_number > top - 1000`), then
+     * returns genesis if none remain, else
        DagOperations::lowest_universal_common_ancestor_many(...).
 
    We model faithfully what the fork choice DEPENDS ON:
 
-     * `certified_messages` - the identity projection over already-certified votes,
-                         independent of receiver-local head height;
+     * `depth_filter`  - the concrete `> top - 1000` cutoff (exactly reproduced),
+                         and its determinism in `top` (`lca_depth_filter_deterministic`);
      * `lcua_many`     - the LCUA-many BTreeSet fold, MODELED CONCRETELY (below):
                          a fuel-bounded reduction that repeatedly pops the
                          highest-block-number element and re-inserts its parents,
@@ -70,7 +71,7 @@
    ---------------------------------------------------------------------------
    Rocq                            | Rust (casper/src/rust/estimator.rs, util/dag_operations.rs)
    --------------------------------+-------------------------------------------
-   certified_messages              | context.vote_projection().eligible_latest_messages()
+   depth_filter (> top - 1000)     | filter msg.block_number > top - 1000 (estimator:201)
    lca (empty -> genesis)          | calculate_lca (estimator:204-210)
    select_max / step / reduce      | ReverseOrdered BTreeSet fold (dag_operations:172-207)
    lcua_many                       | lowest_universal_common_ancestor_many (dag_operations:158)
@@ -87,9 +88,14 @@ Import ListNotations.
 
 From ForkChoice Require Import Foundation.
 
-Definition certified_messages (_d : DAG) (_receiver_top : nat)
-                              (lms : list (Validator * BlockHash))
-  : list (Validator * BlockHash) := lms.
+(* The DAG tip height minus the max look-back window (LATEST_MESSAGE_MAX_DEPTH). *)
+Definition LATEST_MESSAGE_MAX_DEPTH : nat := 1000.
+
+(* Keep only latest messages whose block sits within the look-back window of the
+   tip: `numof(msg) > top - 1000`. Exactly estimator.rs:201. *)
+Definition depth_filter (d : DAG) (top : nat) (lms : list (Validator * BlockHash))
+  : list (Validator * BlockHash) :=
+  filter (fun e => Nat.ltb (top - LATEST_MESSAGE_MAX_DEPTH) (numof d (snd e))) lms.
 
 (* ===========================================================================
    Section 1 - Common ancestry and the concrete LCUA-many fold model
@@ -170,7 +176,7 @@ Definition lcua_many (d : DAG) (ms : list BlockHash) : BlockHash :=
    (estimator.rs:204). *)
 Definition lca (genesis lcua : BlockHash) (d : DAG) (top : nat)
                (lms : list (Validator * BlockHash)) : BlockHash :=
-  match certified_messages d top lms with
+  match depth_filter d top lms with
   | [] => genesis
   | _  => lcua
   end.
@@ -686,22 +692,20 @@ Proof.
 Qed.
 
 (* ===========================================================================
-   Section 5 - Receiver-state independence and genesis fallback
+   Section 5 - The kept determinism / genesis / cutoff theorems
    =========================================================================== *)
 
-Theorem certified_messages_receiver_state_irrelevant :
+(* The depth cutoff is a pure function of `top`: equal tips give equal filters
+   (determinism - two nodes with the same tip filter identically). *)
+Theorem lca_depth_filter_deterministic :
   forall d top1 top2 lms,
-    certified_messages d top1 lms = certified_messages d top2 lms.
-Proof. reflexivity. Qed.
-
-Theorem certified_messages_complete :
-  forall d top lms, certified_messages d top lms = lms.
-Proof. reflexivity. Qed.
+    top1 = top2 -> depth_filter d top1 lms = depth_filter d top2 lms.
+Proof. intros d top1 top2 lms H. subst. reflexivity. Qed.
 
 (* When the filtered set is empty, the LCA is genesis (estimator.rs:204). *)
 Theorem lca_empty_is_genesis :
   forall genesis lcua d top lms,
-    certified_messages d top lms = [] -> lca genesis lcua d top lms = genesis.
+    depth_filter d top lms = [] -> lca genesis lcua d top lms = genesis.
 Proof.
   intros genesis lcua d top lms H. unfold lca. rewrite H. reflexivity.
 Qed.
@@ -788,23 +792,23 @@ Proof.
   apply Hcs. exact Hm.
 Qed.
 
-(* The LCA is a common ancestor of every certified latest message. The nonempty
+(* The LCA is a common ancestor of every (filtered) latest message. The nonempty
    case is `lcua_many_common_ancestor`; the empty case never arises (a member of
-   `certified_messages` witnesses nonemptiness). *)
+   `depth_filter` witnesses nonemptiness). *)
 Theorem lca_is_common_ancestor :
   forall genesis root d top lms,
     wf_dag d -> wf_lookup d ->
     single_root d root ->
-    all_real d (map snd (certified_messages d top lms)) ->
-    forall lm, In lm (certified_messages d top lms) ->
-      anc_of d (lca genesis (lcua_many d (map snd (certified_messages d top lms))) d top lms) (snd lm).
+    all_real d (map snd (depth_filter d top lms)) ->
+    forall lm, In lm (depth_filter d top lms) ->
+      anc_of d (lca genesis (lcua_many d (map snd (depth_filter d top lms))) d top lms) (snd lm).
 Proof.
   intros genesis root d top lms Hwf Hwl Hsr Har lm Hin.
-  pose proof (lcua_many_common_ancestor d root (map snd (certified_messages d top lms))
+  pose proof (lcua_many_common_ancestor d root (map snd (depth_filter d top lms))
                 Hwf Hwl Hsr Har) as Hca'.
   unfold common_ancestor in Hca'.
   (* the filter is nonempty (lm witnesses it), so lca = lcua_many *)
-  unfold lca. destruct (certified_messages d top lms) eqn:E.
+  unfold lca. destruct (depth_filter d top lms) eqn:E.
   - destruct Hin.
   - apply Hca'. apply in_map. exact Hin.
 Qed.

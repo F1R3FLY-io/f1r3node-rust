@@ -1,3 +1,0 @@
----------------- MODULE TransportConcurrencyWireLimitUnsafe ----------------
-EXTENDS TransportConcurrency
-=============================================================================

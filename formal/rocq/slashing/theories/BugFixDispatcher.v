@@ -71,81 +71,59 @@ Proof.
   intros. unfold dispatch_post_fix. rewrite H. reflexivity.
 Qed.
 
-Record CertifiedRejectionProjection : Type := mkCertifiedRejectionProjection {
-  rejection_persisted : bool;
-  rejection_buffered : bool;
-  rejection_evidence : EqStore
-}.
+(* ═══════════════════════════════════════════════════════════════════════════
+   §3 — Bug fix #1 no-corruption: the minted UnauthorizedSlashDeploy record
+        does not spuriously neglect-slash an honest validator
+   ═══════════════════════════════════════════════════════════════════════════
 
-Definition dispatch_certified_rejection
-  (ib : InvalidBlock) (offender : Validator) (baseSeq : nat)
-  (s : EqStore) : CertifiedRejectionProjection :=
-  mkCertifiedRejectionProjection true false
-    (dispatch_post_fix ib offender baseSeq s).
+   Because IBUnauthorizedSlashDeploy is is_slashable (the 27th variant), the
+   dispatcher mints a record for it. That record is `mkEqRec offender baseSeq
+   nil` — the empty-witness `EquivocationRecord::new(sender, seq-1, {})`
+   (equivocation_detector.rs:280,311 context). We show two facts:
+     (1) the dispatcher indeed mints the empty-witness record for it, and
+     (2) an honest sender's view over an empty record yields
+         EquivocationOblivious — never a spurious NeglectedEquivocation. *)
 
-Theorem certified_objective_rejection_persists :
-  forall ib offender baseSeq s,
-    rejection_persisted
-      (dispatch_certified_rejection ib offender baseSeq s) = true.
+Definition minted_unauth_record (offender : Validator) (baseSeq : nat) : EqRec :=
+  mkEqRec offender baseSeq nil.
+
+Lemma minted_unauth_record_no_witness :
+  forall offender baseSeq, er_hashes (minted_unauth_record offender baseSeq) = nil.
 Proof. reflexivity. Qed.
 
-Theorem certified_objective_rejection_leaves_buffer :
-  forall ib offender baseSeq s,
-    rejection_buffered
-      (dispatch_certified_rejection ib offender baseSeq s) = false.
-Proof. reflexivity. Qed.
-
-Theorem every_certified_rejection_is_terminal :
-  forall ib offender baseSeq s,
-    rejection_persisted
-      (dispatch_certified_rejection ib offender baseSeq s) = true
-    /\ rejection_buffered
-      (dispatch_certified_rejection ib offender baseSeq s) = false.
-Proof. intros. split; reflexivity. Qed.
-
-Theorem certified_non_slashable_rejection_preserves_evidence :
-  forall ib offender baseSeq s,
-    is_slashable ib = false ->
-    rejection_evidence
-      (dispatch_certified_rejection ib offender baseSeq s) = s.
+Lemma dispatch_unauth_mints_empty_record :
+  forall offender baseSeq s,
+    has_key s (offender, baseSeq) = false ->
+    find_by_key
+      (dispatch_post_fix IBUnauthorizedSlashDeploy offender baseSeq s)
+      (offender, baseSeq)
+    = Some (minted_unauth_record offender baseSeq).
 Proof.
-  intros ib offender baseSeq s H.
-  unfold dispatch_certified_rejection. simpl.
-  apply t_9_3_dispatch_noop_unslashable. exact H.
+  intros offender baseSeq s Hk.
+  unfold dispatch_post_fix.
+  assert (Hslash : is_slashable IBUnauthorizedSlashDeploy = true) by reflexivity.
+  rewrite Hslash.
+  unfold minted_unauth_record.
+  set (r := mkEqRec offender baseSeq nil).
+  assert (Hek : er_key r = (offender, baseSeq)) by reflexivity.
+  rewrite <- Hek. rewrite <- Hek in Hk.
+  apply find_insert_cond_same_absent. assumption.
 Qed.
 
-Inductive DependencyDisposition : Type :=
-  | DependencyAbsent
-  | DependencyAccepted
-  | DependencyRejected.
-
-Definition dependency_ready (disposition : DependencyDisposition) : bool :=
-  match disposition with
-  | DependencyAbsent => false
-  | DependencyAccepted | DependencyRejected => true
-  end.
-
-Definition child_can_be_accepted (disposition : DependencyDisposition) : bool :=
-  match disposition with
-  | DependencyAccepted => true
-  | DependencyAbsent | DependencyRejected => false
-  end.
-
-Theorem persisted_rejection_is_ready_but_not_accepted :
-  dependency_ready DependencyRejected = true /\
-  child_can_be_accepted DependencyRejected = false.
-Proof. split; reflexivity. Qed.
-
-Theorem invalid_sequence_persists_without_evidence :
-  forall offender baseSeq s,
-    rejection_persisted
-      (dispatch_certified_rejection IBInvalidSequenceNumber offender baseSeq s) = true
-    /\ rejection_buffered
-      (dispatch_certified_rejection IBInvalidSequenceNumber offender baseSeq s) = false
-    /\ rejection_evidence
-      (dispatch_certified_rejection IBInvalidSequenceNumber offender baseSeq s) = s.
+(* No-corruption capstone: for a bonded (stake > 0) honest sender — whose
+   observing view carries no detected-hash marker (the minted record's witness
+   set is empty) and at most one distinct canonical child (a single self-chain)
+   — the empty UnauthorizedSlashDeploy record resolves to EquivocationOblivious,
+   so neglected-equivocation detection is NOT corrupted. *)
+Theorem unauth_record_honest_oblivious :
+  forall stake xs,
+    stake > 0 ->
+    detected_hash_seen xs = false ->
+    Nat.leb 2 (length (nodup Nat.eq_dec (child_hashes xs))) = false ->
+    discovery_status_bonded stake (fixed_detectable_view xs) = EDOblivious.
 Proof.
-  intros. repeat split; reflexivity.
+  intros stake xs Hstake H1 H2.
+  apply honest_empty_record_oblivious; assumption.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════

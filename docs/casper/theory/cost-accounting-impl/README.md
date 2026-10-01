@@ -2,6 +2,9 @@
 
 This directory records the production refinement of the cost-accounted rho
 calculus onto F1R3node's Rholang, RSpace, SystemVault, and Casper subsystems.
+On `feature/cost-accounted-rho`, the Rholang, model, and native RSpace work is
+implemented; the Casper production bindings in this guide are design contracts
+preserved for completion on `feature/casper-cost-accounting-completion`.
 The two normative design sources are:
 
 - [*Cost-Accounted Rho Calculus*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex)
@@ -35,7 +38,7 @@ funding slots, lollipop delegation, exact settlement, replay, and finalization.
 8. [Admission-record and runtime-effect alignment](admission-effect-alignment.md)
 9. [Block-heap lifecycle and reclamation](block-heap-lifecycle.md)
    - [Runtime ownership inventory](runtime-ownership-inventory.md)
-10. [Deploy occurrence and exact state effects](../deploy-occurrence/deploy-occurrence-specification.md)
+10. [Three-paper cost-accounting traceability](../cost-accounting-three-paper-traceability.md)
 11. [Finalized-floor specification](../finalized-floor/finalized-floor-specification.md)
 12. [Rotating monetary allocation](rotating-monetary-allocation.md)
 13. [Atomic trie update or insertion](atomic-trie-upsert.md)

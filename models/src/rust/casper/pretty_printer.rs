@@ -64,13 +64,10 @@ impl PrettyPrinter {
 
     pub fn build_string_processed_deploy(d: &ProcessedDeploy) -> String {
         format!(
-            "User: {}, Cost: {:?} {} Sig: {} SigAlgorithm: {} ValidAfterBlockNumber: {}",
-            Self::build_string_no_limit(&d.primary().pk.bytes),
+            "User: {}, Cost: {:?} {}",
+            Self::build_string_no_limit(&d.deploy.pk.bytes),
             d.cost,
-            Self::build_string_deploy_data(d.body()),
-            Self::build_string_sig(&d.primary().sig),
-            d.primary().sig_algorithm.name(),
-            d.body().valid_after_block_number,
+            Self::build_string_signed_deploy_data(&d.deploy)
         )
     }
 
@@ -153,12 +150,12 @@ mod tests {
         Signed::create(
             DeployData {
                 term: "new x in { x!(1) }".to_string(),
-                language: "rholang".to_string(),
                 time_stamp: 42,
+                phlo_price: 1,
+                phlo_limit: 1000,
                 valid_after_block_number: 5,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
-                authority_presentations: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -300,12 +297,12 @@ mod tests {
     fn build_string_deploy_data_prints_timestamp_and_term() {
         let deploy = DeployData {
             term: "Nil".to_string(),
-            language: "rholang".to_string(),
             time_stamp: 99,
+            phlo_price: 1,
+            phlo_limit: 10,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
-            authority_presentations: Vec::new(),
         };
         assert_eq!(
             PrettyPrinter::build_string_deploy_data(&deploy),
@@ -329,8 +326,13 @@ mod tests {
     #[test]
     fn processed_deploy_rendering_includes_deployer_and_cost() {
         let signed = signed_deploy();
-        let mut processed = ProcessedDeploy::empty(signed.clone()).unwrap();
-        processed.cost = PCost { cost: 17 };
+        let processed = ProcessedDeploy {
+            deploy: signed.clone(),
+            cost: PCost { cost: 17 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        };
         let rendered = PrettyPrinter::build_string_processed_deploy(&processed);
         assert!(rendered.starts_with(&format!(
             "User: {}",
