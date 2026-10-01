@@ -1050,6 +1050,792 @@
           "harnesses": []
         }
       ]
+    },
+    {
+      "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-004",
+      "claim": "docs/claims/casper-node-fork-choice-observation.md",
+      "model": "PairedForkChoice",
+      "rocq_project": null,
+      "properties": [
+        {
+          "property": 1,
+          "invariants": [
+            "OneCapture"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_fork_choice_matches_the_bounded_result_on_the_capture"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "fork_choice_scratch_views_do_not_share_cached_floor_rows"
+            }
+          ],
+          "gaps": [
+            "The scratch view construction stays pending. The store byte comparison of Batch B2 covers the capture call."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 2,
+          "invariants": [
+            "OneCapture"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_fork_choice_selection_binds_the_inputs_and_the_digest"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "comparison_refuses_different_captures_and_unavailable_results"
+            }
+          ],
+          "gaps": [
+            "Digest coverage of each input is a hash assumption. The test changes the capture and the selection, not each input field."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 3,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_fork_choice_selection_binds_the_inputs_and_the_digest"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_zero_parent_limit_gives_no_head_and_no_substitute"
+            }
+          ],
+          "gaps": [
+            "The adoption routes are not modeled. The tests read the endpoint values of the fixture, with the startup default of zero parents as the contrast."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 4,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "bounded_fork_choice_matches_the_production_estimator_on_the_capture"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "fork_choice_scratch_views_do_not_share_cached_floor_rows"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "random_dags_give_equal_heads_deterministic_results_and_heads_in_tips"
+            }
+          ],
+          "gaps": [
+            "No call doubles. The metered limit tests of property 11 show that the production functions run under the checked meter."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 5,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "bounded_fork_choice_matches_the_production_estimator_on_the_capture"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "bounded_and_reference_agree_on_the_two_branch_fixture_and_on_the_counts"
+            }
+          ],
+          "gaps": [
+            "The filter is a copy of the caller logic (decision 3). The count parity of the 2 evaluations covers the testimony filter."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 6,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_controls_that_change_a_rule_produce_a_head_mismatch"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_tie_order_control_produces_a_head_mismatch"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_invalid_filter_control_produces_a_head_mismatch"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "random_dags_give_equal_heads_deterministic_results_and_heads_in_tips"
+            }
+          ],
+          "gaps": [
+            "5 of the 6 planned controls are tests. The testimony filter control is not constructible through the capture API."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 7,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "bounded_fork_choice_matches_the_production_estimator_on_the_capture"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_fork_choice_matches_the_bounded_result_on_the_capture"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_lower_bound_in_the_head_field_fails_the_schema_check"
+            }
+          ],
+          "gaps": [],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 8,
+          "invariants": [
+            "CompareSameInput"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "comparison_refuses_different_captures_and_unavailable_results"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "bounded_and_reference_agree_on_the_two_branch_fixture_and_on_the_counts"
+            }
+          ],
+          "gaps": [
+            "The construction extension awaits the maintainer decision."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 9,
+          "invariants": [
+            "HeadNotFloor"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_zero_parent_limit_gives_no_head_and_no_substitute"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_lower_bound_in_the_head_field_fails_the_schema_check"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "random_dags_give_equal_heads_deterministic_results_and_heads_in_tips"
+            }
+          ],
+          "gaps": [
+            "A test with a floor above the approved block is pending."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 10,
+          "invariants": [
+            "NoFabricatedHead"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_selection_without_the_reference_leaves_it_not_requested"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_zero_parent_limit_gives_no_head_and_no_substitute"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_fork_choice_refuses_a_budget_limit_with_the_limit_reason"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "comparison_refuses_different_captures_and_unavailable_results"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "an_approved_block_outside_the_capture_refuses_both_evaluations"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "an_approved_block_number_mismatch_refuses_both_evaluations"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "an_incomplete_history_refuses_the_reference_with_its_reason"
+            }
+          ],
+          "gaps": [
+            "Refusal completeness is not modeled. The rows missing_body_coverage and score_overflow have no test. A production error gives the failed state with an error class."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 11,
+          "invariants": [
+            "SharedBudget"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "reference_fork_choice_refuses_a_budget_limit_with_the_limit_reason"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_weight_read_matches_the_production_read"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_common_ancestor_matches_the_production_walk"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_fork_choice_matches_the_production_estimator"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_fork_choice_floor_matches_the_production_floor"
+            }
+          ],
+          "gaps": [
+            "Charge placement stays pending. A fork-choice deadline test is pending. The 5 budget theorems of NodeAuthority are inherited through the shared meter."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 12,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "work_budget_has_six_paths_and_the_aggregate_is_their_sum"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "bounded_and_reference_agree_on_the_two_branch_fixture_and_on_the_counts"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "work_report_without_a_selection_has_no_fork_choice_work"
+            }
+          ],
+          "gaps": [],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 13,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_weight_read_matches_the_production_read"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_common_ancestor_matches_the_production_walk"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_fork_choice_matches_the_production_estimator"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "metered_fork_choice_floor_matches_the_production_floor"
+            }
+          ],
+          "gaps": [
+            "The existing estimator and floor suites run in the ordinary test job and are not listed here."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 14,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_request_without_a_fork_choice_selection_keeps_the_batch_b2_digest_and_bytes"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "work_report_without_a_selection_has_no_fork_choice_work"
+            }
+          ],
+          "gaps": [],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 15,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "fork_choice_scratch_views_do_not_share_cached_floor_rows"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "random_dags_give_equal_heads_deterministic_results_and_heads_in_tips"
+            }
+          ],
+          "gaps": [
+            "Effect confinement is not modeled. The production store byte comparison of Batch B2 does not run a fork-choice request."
+          ],
+          "theorems": [],
+          "harnesses": []
+        },
+        {
+          "property": 16,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "capabilities_are_bound_and_never_claim_live_qualification"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "a_fork_choice_selection_is_admitted_and_an_unknown_selection_field_is_rejected"
+            }
+          ],
+          "gaps": [],
+          "theorems": [],
+          "harnesses": []
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-005",
+      "claim": "docs/claims/casper-node-display-projection.md",
+      "model": "DisplayProjection",
+      "inherited_model": "BoundedCapture",
+      "construction_project": "formal/rocq/node_authority",
+      "status": "pending",
+      "machine_checked_refinement": false,
+      "properties": [
+        {
+          "property": 1,
+          "invariants": [
+            "NoFabrication"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "request_without_display_preserves_legacy_fields_and_ignores_tracker_rows"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "a_request_without_a_fork_choice_selection_keeps_the_batch_b2_digest_and_bytes"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": [
+            "Bounded-by-design classification requires named maintainer acceptance."
+          ]
+        },
+        {
+          "property": 2,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_admission_rejects_null_duplicates_and_invalid_limits"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "a_display_selection_is_admitted_and_invalid_display_fields_are_rejected"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 3,
+          "invariants": [
+            "OneInterval"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_refuses_tracker_inputs_from_a_different_capture_interval"
+            }
+          ],
+          "theorems": [
+            "capture_generation_stable"
+          ],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 4,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "malformed_tracker_rows_and_oversized_values_refuse_the_capture"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_parser_refuses_invalid_keys_hash_order_and_hash_count_before_copy"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_row_limits_and_invalid_admission_refuse_capture"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 5,
+          "invariants": [
+            "OneInterval"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_write_between_open_and_validation_rejects_the_capture"
+            }
+          ],
+          "theorems": [
+            "capture_generation_stable"
+          ],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 6,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_checked_sums_refuse_total_and_record_multiplicity_overflow"
+            }
+          ],
+          "theorems": [
+            "capture_no_interference"
+          ],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 7,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "equivocation_digest_is_order_independent_and_binds_each_field"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "equivocation_digest_binds_validator_sequence_hashes_count_and_generation"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": [
+            "No tracker wire construction proof."
+          ]
+        },
+        {
+          "property": 8,
+          "invariants": [
+            "OneInterval"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_digest_changes_with_tracker_inputs_without_store_writes"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_response_binds_separate_values_and_contains_no_tracker_rows"
+            }
+          ],
+          "theorems": [
+            "display_requires_equal_digest"
+          ],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 9,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 10,
+          "invariants": [
+            "BaseSource"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_finalized_set_and_metadata_flag_remain_separate"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_metadata_flag_alone_uses_persisted_bits_without_an_original"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_without_original_refuses_nonfinalized_targets_and_missing_targets"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_typed_missing_history_uses_minimum_without_a_fabricated_original"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 11,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_zero_weights_and_float_boundaries_keep_shared_production_bits"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls"
+            },
+            {
+              "source": "casper/src/rust/safety/initial_fault.rs",
+              "name": "helpers_match_frozen_handoff_arithmetic_on_boundary_inputs"
+            },
+            {
+              "source": "casper/src/rust/safety/initial_fault.rs",
+              "name": "shared_arithmetic_preserves_record_multiplicity_and_display_bits"
+            }
+          ],
+          "theorems": [
+            "display_matched_weight_bounded",
+            "display_record_multiplicity",
+            "display_duplicate_records_add_duplicate_terms"
+          ],
+          "harnesses": [],
+          "gaps": [
+            "No IEEE-754 construction proof."
+          ]
+        },
+        {
+          "property": 12,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_checked_sums_refuse_total_and_record_multiplicity_overflow"
+            }
+          ],
+          "theorems": [
+            "display_weight_sum_checked",
+            "display_overflow_refuses"
+          ],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 13,
+          "invariants": [
+            "NoFabrication"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_without_original_refuses_nonfinalized_targets_and_missing_targets"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_checked_sums_refuse_total_and_record_multiplicity_overflow"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_refuses_tracker_inputs_from_a_different_capture_interval"
+            }
+          ],
+          "theorems": [
+            "display_refusal_has_no_value"
+          ],
+          "harnesses": [],
+          "gaps": []
+        },
+        {
+          "property": 14,
+          "invariants": [
+            "NoFabrication"
+          ],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_response_binds_separate_values_and_contains_no_tracker_rows"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_typed_missing_history_uses_minimum_without_a_fabricated_original"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": [
+            "Bounded-by-design classification requires named maintainer acceptance."
+          ]
+        },
+        {
+          "property": 15,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "request_without_display_preserves_legacy_fields_and_ignores_tracker_rows"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": [
+            "No tracker wire construction proof."
+          ]
+        },
+        {
+          "property": 16,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/src/rust/safety/initial_fault.rs",
+              "name": "helpers_match_frozen_handoff_arithmetic_on_boundary_inputs"
+            },
+            {
+              "source": "casper/src/rust/safety/initial_fault.rs",
+              "name": "ordinary_sum_overflow_matches_the_compiler_profile"
+            },
+            {
+              "source": "casper/src/rust/safety/initial_fault.rs",
+              "name": "shared_arithmetic_preserves_record_multiplicity_and_display_bits"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": [
+            "No IEEE-754 construction proof."
+          ]
+        },
+        {
+          "property": 17,
+          "invariants": [],
+          "coverage": "source-bound-tests-and-bounded-models-not-refinement",
+          "tests": [
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_charges_work_allocation_deadline_and_cancellation_before_results"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_allocations_cover_hash_table_capacity_and_input_keys"
+            },
+            {
+              "source": "casper/tests/soak_observer.rs",
+              "name": "display_response_binds_separate_values_and_contains_no_tracker_rows"
+            }
+          ],
+          "theorems": [],
+          "harnesses": [],
+          "gaps": [
+            "Bounded-by-design classification requires named maintainer acceptance."
+          ]
+        }
+      ]
     }
   ],
   "construction_project": "formal/rocq/node_observation",

@@ -103,20 +103,28 @@ const _: () = assert!(
 /// the golden-hex pin in `tests` below also forces a coordinated
 /// change of the encoded fingerprint.
 ///
-/// Currently 10 — additions so far:
+/// Currently 15 — additions so far:
 ///   PR 2.3 (`wal` types):
-///     order 1  — `MAX_WAL_ENTRIES`       (u64_be)
-///     order 2  — `WAL_OUTCOME_VARIANTS`  (u64_be)
-///     order 3  — `WAL_OP_VARIANTS`       (u64_be)
+///     order 1  — `MAX_WAL_ENTRIES`          (u64_be)
+///     order 2  — `WAL_OUTCOME_VARIANTS`     (u64_be)
+///     order 3  — `WAL_OP_VARIANTS`          (u64_be)
 ///   PR 2.4 (`mod` constants):
-///     order 4  — `MAX_READ_BYTES`        (u64_be)
-///     order 5  — `MAX_TRUNCATE_BYTES`    (u64_be)
-///     order 6  — `MAX_OPEN_FDS`          (u64_be)
-///     order 7  — `MAX_CHUNK_ITEMS`       (u64_be)
-///     order 8  — `CMODE_ORACULAR_STR`    (str_bytes)
-///     order 9  — `CMODE_CONSENSUS_STR`   (str_bytes)
-///     order 10 — `FS_NONCE`              (i64_be)
-const EXPECTED_ENTRY_COUNT: usize = 10;
+///     order 4  — `MAX_READ_BYTES`           (u64_be)
+///     order 5  — `MAX_TRUNCATE_BYTES`       (u64_be)
+///     order 6  — `MAX_OPEN_FDS`             (u64_be)
+///     order 7  — `MAX_CHUNK_ITEMS`          (u64_be)
+///     order 8  — `CMODE_ORACULAR_STR`       (str_bytes)
+///     order 9  — `CMODE_CONSENSUS_STR`      (str_bytes)
+///     order 10 — `FS_NONCE`                 (i64_be)
+///   PR 2.5 (`lock` types):
+///     order 11 — `MAX_RANGES_PER_FILE`      (u64_be)
+///     order 12 — `MAX_WAITERS_PER_FILE`     (u64_be)
+///     order 13 — `LOCK_ID_CEILING`          (u64_be)
+///   PR 2.16 (`handle_table` soft-checkpoint):
+///     order 14 — `FD_ENTROPY_HEADROOM_BITS` (u64_be)
+///   PR 2.17 (`snapshot` encoder — first `u8_raw`):
+///     order 15 — `SNAPSHOT_FORMAT_VERSION`  (u8_raw)
+const EXPECTED_ENTRY_COUNT: usize = 15;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -409,7 +417,34 @@ mod tests {
         //     8  CMODE_ORACULAR_STR     = "oracular"         (str_bytes)
         //     9  CMODE_CONSENSUS_STR    = "consensus"        (str_bytes)
         //    10  FS_NONCE               = i64::MAX           (i64_be)
-        const EXPECTED_FOR_CURRENT: &str = "b2024bf3be489a44";
+        // Wave 2 PR 2.5 (lock types) → `b49df15c4b948c53`.
+        //   Adds orders 11-13 to the fold:
+        //    11  MAX_RANGES_PER_FILE    = 1024               (u64_be)
+        //    12  MAX_WAITERS_PER_FILE   = 1024               (u64_be)
+        //    13  LOCK_ID_CEILING        = i64::MAX - 2^16    (u64_be)
+        // (LOCK_ID_CEILING was tightened from `u64::MAX - 2^16` to
+        //  `i64::MAX - 2^16` per the PR 2.5 review — closes the
+        //  Rholang-i64 wire-truncation footgun by aligning the
+        //  ceiling with `LockId::try_from(u64)`'s wire-safety
+        //  check.  Rolls this pin one extra time within PR 2.5.)
+        // Wave 2 PR 2.16 (`handle_table` soft-checkpoint) →
+        // `b271a6804c526e1c`.  Adds order 14:
+        //    14  FD_ENTROPY_HEADROOM_BITS = 20               (u64_be)
+        // (Consensus-observable per the docstring: fd values live
+        //  in Rholang tuplespace state, so the state-hash → fd-
+        //  watermark derivation is an implicit consensus
+        //  commitment.  Registering closes the partial-upgrade
+        //  silent-fork hazard by advertising the constant to the
+        //  peering-handshake `network_id` check.)
+        // Wave 2 PR 2.17 (`snapshot` encoder — first `u8_raw`
+        // fingerprint entry) → `5491728f5f89dc4f`.  Adds order 15:
+        //    15  SNAPSHOT_FORMAT_VERSION  = 6                (u8_raw)
+        // (Consensus-observable: the encoded WAL slice's
+        //  Blake2b256 root is the on-chain commitment consumed by
+        //  `WalSnapshotWrite` — a validator running a different
+        //  version byte produces different root bytes for
+        //  identical WAL contents and silently forks.)
+        const EXPECTED_FOR_CURRENT: &str = "5491728f5f89dc4f";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \

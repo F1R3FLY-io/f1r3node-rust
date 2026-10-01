@@ -1,87 +1,51 @@
 # CbC Evidence: shared/src/rust/dag/observation_work.rs
 
-The B2 claim was accepted on 2026-09-23. The source manifest binds the recorded tests to these working-tree contents.
-Previous acceptance applies only to its recorded source revision.
+The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-004 at revision `3ab092cc5` on 2026-09-30 (PR #447, comment 5918385665). This record is discharged for the Batch D bytes of the file.
 
 ```json
 {
   "artifact": {
     "path": "shared/src/rust/dag/observation_work.rs",
     "id": "shared-src-rust-dag-observation-work-rs",
-    "commit": "d69e12151082d111f18c9e8f818ed7f3ba4f9377",
+    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
     "commit_is_base": true,
-    "working_tree": true,
-    "sha256": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731",
-    "accepted_sha256": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731"
+    "working_tree": false,
+    "sha256": "2e8f5771e80d14f8b2a371f9e21e479f9bf3a13ee0ec1583bd47c15fad994812",
+    "sha256_at_registration": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731"
   },
-  "claim": "docs/claims/casper-node-authority-evaluation.md",
+  "claim": "docs/claims/casper-node-fork-choice-observation.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-003"
+    "CLAIM-CASPER-NODE-OBSERVATION-004"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-evaluation.md": "15cc3c2951f8291b4670cf9554103755833777b857cd700feac1776d02924081"
+    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940"
   },
-  "adapter": null,
+  "previous_record": {
+    "path": "docs/cbc-evidence/shared-src-rust-dag-observation-work-rs.md",
+    "sha256": "8105c64b01512651d67424a146c055ffd3866cf611d16381c0536f7c2264375c",
+    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a"
+  },
   "status": "discharged",
-  "scope": "batch-b2-construction-01",
+  "scope": "batch-d-acceptance-01",
   "evidence": {
     "kind": "tiered-evidence-accepted",
-    "ref": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/report.json",
-    "sha256": "4a9a8d296e921baab5e006be3e6aa5eb0181af8515921aa49330bb3f9bb43bf5"
+    "ref": "docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/report.json",
+    "sha256": "6eb70a7bd3a4833555780e3ebd87104964a45a0c8f518af55869fde4da323297"
   },
   "tiers": {
-    "refutation": "inherited-models-only",
-    "construction": "recorded-partial",
+    "refutation": "recorded",
+    "construction": "pending",
     "binding": "recorded"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-23T21:01:02Z",
-  "previous_record": {
-    "path": "docs/cbc-evidence/shared-src-rust-dag-observation-work-rs.md",
-    "sha256": "b2711b3eaae2c3caffbd8b94e3dfb1453e44f75a978267548a0032b875fbab95",
-    "commit": "d11acabcbd27b564eab7398778169cf3990762d1"
-  },
-  "accepted_claim_digests": {
-    "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
-  },
+  "verified_at": "2026-09-30T19:50:26+00:00",
   "acceptance": {
-    "claim_ids": [
-      "CLAIM-CASPER-NODE-OBSERVATION-003"
-    ],
-    "reviewer": "jltatbeach",
-    "review_id": 5294038948,
-    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
-    "revision": "237e43d723b9867985cd47fdfe312fd8d06352e8",
-    "verified_at": "2026-09-23T21:01:02Z",
-    "review_edited_in_place": true,
-    "package": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02",
-    "decisions": "C1, C13 accepted as bounded by design; construction gaps C2, C6, C10, C11, C14, C15 and the C4, C9, C12 remaining parts accepted as recorded; C7, C8 extension accepted",
-    "artifact_sha256_at_acceptance": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731",
-    "claim_digests_at_acceptance": {
-      "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
-    }
-  },
-  "acceptances": [
-    {
-      "claim_ids": [
-        "CLAIM-CASPER-NODE-OBSERVATION-003"
-      ],
-      "reviewer": "jltatbeach",
-      "review_id": 5294038948,
-      "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
-      "revision": "237e43d723b9867985cd47fdfe312fd8d06352e8",
-      "verified_at": "2026-09-23T21:01:02Z",
-      "review_edited_in_place": true,
-      "package": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02",
-      "decisions": "C1, C13 accepted as bounded by design; construction gaps C2, C6, C10, C11, C14, C15 and the C4, C9, C12 remaining parts accepted as recorded; C7, C8 extension accepted",
-      "artifact_sha256_at_acceptance": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731",
-      "claim_digests_at_acceptance": {
-        "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
-      }
-    }
-  ],
-  "accepted_at": "2026-09-23T21:01:02Z",
-  "acceptance_scope": "The acceptance of CLAIM-CASPER-NODE-OBSERVATION-003 applies at revision 237e43d723b9867985cd47fdfe312fd8d06352e8 and the accepted digest."
+    "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-004",
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665",
+    "revision": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
+    "reviewed_at": "2026-09-30T19:41:35Z"
+  }
 }
 ```

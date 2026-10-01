@@ -1,6 +1,6 @@
 # Node authority construction proofs
 
-This project proves attachment, coverage, event ledger, work budget, and comparison guard properties for the Batch B2 detached authority observer. It does not discharge CLAIM-CASPER-NODE-OBSERVATION-003.
+This project proves attachment, coverage, event ledger, work budget, and comparison guard properties for the Batch B2 detached authority observer. It does not discharge CLAIM-CASPER-NODE-OBSERVATION-003 or CLAIM-CASPER-NODE-OBSERVATION-005.
 
 ## Modules
 
@@ -8,7 +8,8 @@ This project proves attachment, coverage, event ledger, work budget, and compari
 | --- | --- |
 | `AuthorityObserver` | Once-only attachment, installation coverage, and the nonblocking event ledger. |
 | `AuthorityWork` | The shared sticky work budget, checked overflow, and the digest guard on result comparison. |
-| `MainTheorem` | The 15 exported results. |
+| `DisplayProjection` | Checked integer sums, record multiplicity, refusal, and input identity. |
+| `MainTheorem` | The 22 exported results. |
 
 ## Correspondence
 
@@ -60,10 +61,22 @@ make -j1
 coqchk -Q theories NodeAuthority NodeAuthority.MainTheorem
 ```
 
-The formal gate separately prints the assumptions of each exported theorem and requires 15 closed sets.
+The formal gate separately prints the assumptions of each exported theorem and requires 22 closed sets.
 
 The [TLA+ area](../../tlaplus/node_observation/README.md#batch-b2-applicability-review) holds the B2 applicability review. Batch B2 adds no bounded model, so its refutation tier is inherited from the accepted session and capture models only.
 
 These theorems do not prove capability exclusion, finalizer hook placement, adoption routes, reference semantics, charge placement at every operation, refusal completeness, or effect confinement. Those properties keep pending construction.
 
 Named maintainer review of every B2 applicability decision and acceptance of the claim were recorded on 2026-09-23 at revision `237e43d72`.
+
+
+## Display construction limits
+
+The seven display results cover integer sums, record multiplicity, overflow refusal, value absence, and equal input identity.
+The matched-weight bound requires nonrepeated validator records.
+Repeated records intentionally add repeated terms.
+
+These results do not prove tracker wire encoding or IEEE-754 division and subtraction.
+They do not establish a machine-checked refinement from Rust to Rocq.
+The source-bound tests and the applicability review record those boundaries.
+Claim 005 remains pending on named maintainer acceptance.

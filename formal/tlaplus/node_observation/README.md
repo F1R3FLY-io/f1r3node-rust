@@ -8,16 +8,17 @@ The reconciliation starts from node revision `10e7b8452824e12a1fe2743dca7989b79f
 
 ## Canonical inventory
 
-[verification-plan.json](verification-plan.json) lists two positive configurations and 17 negative controls. Each configuration has one matching entry module.
+[verification-plan.json](verification-plan.json) lists three positive configurations and 22 negative controls. Each configuration has one matching entry module.
 
-The entry modules extend either `ObserverSession` or `BoundedCapture`. They do not contain separate state machines.
+The entry modules extend `ObserverSession`, `BoundedCapture`, or `PairedForkChoice`. They do not contain separate state machines.
 
-The gate registers the union of the downstream 16 controls and the node freshness control. It rejects disagreement with the plan or configuration inventory.
+The gate registers the union of the downstream 16 controls, the node freshness control, and the 5 Batch D controls. It rejects disagreement with the plan or configuration inventory.
 
 | Family | Positive configuration | Negative controls |
 | --- | --- | --- |
 | Session | `MC_ObserverSession` | `freshness_pre_fix`, `challenge_unsafe`, `identity_unsafe`, `frame_unsafe`, `deadline_unsafe`, `repeat_unsafe`, `budget_unsafe`. |
 | Capture | `MC_BoundedCapture` | `admission_unsafe`, `deadline_unsafe`, `order_unsafe`, `open_unsafe`, `validation_unsafe`, `generation_unsafe`, `incomplete_unsafe`, `bytes_unsafe`, `release_unsafe`, `write_unsafe`. |
+| Paired fork choice | `MC_PairedForkChoice` | `digest_unsafe`, `floor_unsafe`, `absent_unsafe`, `compare_unsafe`, `budget_unsafe`. |
 
 A clean check must exit zero with the completed-search marker and no error. A negative check must exit 12 with its named invariant and a trace.
 
@@ -81,6 +82,26 @@ Copied sizes are one, two, or three units, with a limit of two. These values do 
 | `Detached`, `ReadOnly` | Reader consumption, guard release, and sealing. | Effect abstraction, not a complete store-write proof. |
 
 Both models permit stuttering and assume no fairness. They establish bounded safety results, not eventual completion or universal timing bounds.
+
+## Paired fork-choice model
+
+`PairedForkChoice` models the Batch D observation of [CLAIM-CASPER-NODE-OBSERVATION-004](../../../docs/claims/casper-node-fork-choice-observation.md). Its domain has two captures, two candidate heads, and a budget of three work units.
+
+One request makes one capture. The `bounded` evaluation runs first and the `reference` evaluation second. Each evaluation reads a capture digest, selects a head or refuses with a reason, and charges work units to the shared budget.
+
+An evaluation that would exceed the budget stops with the reason `limit` and charges the remaining units only. The comparison runs last. It is available only when both results are available and both input digests are equal.
+
+The model does not contain the fork-choice rules, the DAG, or the weights. A selected head is an arbitrary candidate. The model states which values a result can carry and when a comparison is permitted, not which head is correct.
+
+| Invariants | Rust boundary | Limit |
+| --- | --- | --- |
+| `OneCapture` | The input digest of each evaluation in `evaluation.rs` and the capture binding in `soak_observer.rs`. | The digest coverage of each input is a hash assumption. |
+| `HeadNotFloor` | The head fields of `ForkChoiceResult`. | The model has one floor value. It does not model the oracle results. |
+| `NoFabricatedHead` | The state and reason fields of each result. | Refusal completeness is not modeled. The refusal reasons are a sample. |
+| `CompareSameInput` | The comparison in `evaluation.rs`. | The model compares heads only, not tips or scores. |
+| `SharedBudget` | The two new work paths in `observation_work.rs` and the charge sites. | Charge placement in the Rust code is a correspondence obligation. |
+
+Each negative control sets the `Bug` constant to one value and lists `TypeOK` and its named invariant. The `compare_unsafe` control also lets the reference read a different capture, because a comparison of equal inputs cannot show the missing digest check.
 
 ## Construction and binding
 
@@ -221,3 +242,111 @@ A separate capture must observe persisted metadata.
 
 B2 does not claim a live authority profile.
 The [work log](../../../docs/work-logs/task-019-3-node-authority-evaluation.md) records the tests, the construction cycle, and the source-bound evidence packages.
+
+## Batch D applicability review
+
+[CLAIM-CASPER-NODE-OBSERVATION-004](../../../docs/claims/casper-node-fork-choice-observation.md) covers the paired fork-choice observation.
+The earlier acceptances apply to claims 001, 002, and 003 at their recorded revisions.
+They do not accept this extension.
+
+Batch D adds the bounded model `PairedForkChoice` with 5 invariants and 5 negative controls.
+The model has no construction project. Its refutation tier covers the value states, the capture binding, and the shared budget.
+It does not cover the fork-choice rules. The Rust tests bind those rules to the production estimator and to the [specification](../../../docs/casper/theory/fork-choice/fork-choice-specification.md).
+
+The named maintainer has not reviewed the classifications below. The decision column records the proposal only.
+
+| Property | Class | Refutation | Construction | Binding | Decision |
+| --- | --- | --- | --- | --- | --- |
+| D1: one capture | U | `OneCapture`, control `digest_unsafe` | Inherited capture theorems. The scratch construction stays pending. | Reference on the capture and the scratch view test. | Pending maintainer review. |
+| D2: digest coverage | U | `OneCapture` | Pending. Digest coverage of each input is a hash assumption. | Selection and capture change tests. | Pending maintainer review. |
+| D3: adopted inputs | U | None | Pending. The adoption routes are not modeled. | Endpoint value test and the zero parent limit test. | Pending maintainer review. |
+| D4: measured path | U | None | Pending. The call structure is not mechanized. | Production estimator parity, scratch view, and 12 random DAGs. | Pending maintainer review. |
+| D5: caller filters | U | None | Pending. The filter is a copy of the caller logic. | Estimator parity and the count parity of the 2 evaluations. | Pending maintainer review. |
+| D6: independent reference | U | None | Pending. The reference semantics are not mechanized. | 5 reference controls with a required head mismatch. | Pending maintainer review. |
+| D7: result identity | F proposed | None | Not applicable proposed. The domain is the fixed response schema. | Result field tests and the schema check test. | Pending maintainer review. |
+| D8: comparison rule | U | `CompareSameInput`, control `compare_unsafe` | Pending. The extension of the authority theorem awaits the maintainer. | Different captures and unavailable results. | Pending maintainer review. |
+| D9: no substitute head | U | `HeadNotFloor`, control `floor_unsafe` | Pending. | Zero parent limit, schema check, and heads in tips on 12 random DAGs. | Pending maintainer review. |
+| D10: explicit absence | U | `NoFabricatedHead`, control `absent_unsafe` | Pending. Refusal completeness is not modeled. | 7 refusal tests, with 2 rows untested. | Pending maintainer review. |
+| D11: work bounds | U | `SharedBudget`, control `budget_unsafe` | Inherited budget theorems through the shared meter, with charge placement pending. | Limit tests of the 4 metered functions and of the reference. | Pending maintainer review. |
+| D12: separate counts | F proposed | None | Not applicable proposed for the fixed number of paths. | Sum of the 6 paths and the response work fields. | Pending maintainer review. |
+| D13: unchanged production result | U | None | Pending. | 4 differential tests and the ordinary estimator and floor suites. | Pending maintainer review. |
+| D14: unchanged Batch B2 result | U | None | Pending. | Byte and digest comparison without a selection. | Pending maintainer review. |
+| D15: read-only behavior | U | None | Pending without a model of effect confinement. | Scratch view test and the ordinary regressions. | Pending maintainer review. |
+| D16: no live qualification | F proposed | None | Not applicable proposed for the constant value. | Node capability and admission tests. | Pending maintainer review. |
+
+Three properties propose a bounded-by-design classification. Thirteen properties keep pending construction with Rust tests, and 2 of those inherit accepted theorems through the capture and the shared meter.
+
+The work fields of a fork-choice result have these meanings.
+`visited_blocks` is the metadata count of the evaluation path.
+`examined_edges` is the traversal count of the evaluation path.
+
+The `bounded` path counts the reads of the production functions under the checked meter.
+The `reference` path counts the reads of the captured maps. The 2 counts are not comparable.
+
+The `bounded` and `reference` results agree in head and tips on every fixture.
+Their score maps do not agree in extent.
+
+The production estimator credits the main parent of a block at the common ancestor height.
+The reference stops at the common ancestor, as R-SCORE states. The comparison does not compare scores.
+
+A production error in the `bounded` evaluation gives the failed state with an error class, such as `production_error:missing_block`.
+A work limit gives the unavailable state with the limit reason.
+
+The reference gives `history_incomplete` when the captured history does not reach the lower bound.
+
+The testimony filter has no negative control. The DAG storage records a latest message under its sender only, so a foreign message is not constructible through the capture.
+The count parity of the 2 evaluations covers that filter.
+
+Batch D does not claim a live fork-choice profile.
+The [work log](../../../docs/work-logs/task-019-9-paired-fork-choice.md) records the steps, the findings, and the test results.
+
+
+## Batch E applicability review
+
+Claim 005 keeps the snapshot schema at version 2.
+A display request adds a bounded tracker capture and separate display inputs.
+The property-to-test map covers all seventeen properties with twenty-six named tests.
+The map is not a machine-checked refinement proof.
+
+| Property | Evidence | Limit |
+| --- | --- | --- |
+| E1 | Legacy request and digest tests | Fixed schema review |
+| E2 | Admission and socket tests | Typed limits refusals |
+| E3 | Capture and mixed-interval tests | LMDB identity trusted |
+| E4 | Parser and bounded-read refusals | Producer encoding tested |
+| E5 | Tracker write interference | Cooperative transaction model |
+| E6 | Before-and-after store bytes | Captured fixture stores |
+| E7 | Canonical digest field controls | Wire construction pending |
+| E8 | Input digest and value tests | SHA-256 trusted |
+| E9 | Casper methods panic on invocation | Detached fixture boundary |
+| E10 | Both finalized sources and typed missing history | Frozen source rule |
+| E11 | Multiplicity and arithmetic boundaries | IEEE-754 construction pending |
+| E12 | Total and matched overflow refusals | Integer construction |
+| E13 | Typed unavailable results | No fabricated value |
+| E14 | Separate fields and input identities | Fixed schema review |
+| E15 | Schema 2 and legacy output | Wire construction pending |
+| E16 | Frozen shared-helper tests | No atomic live equivalence |
+| E17 | Work, allocation, deadline, cancellation | Fixed response review |
+
+The positive model checks `NoFabrication`, `BaseSource`, and `OneInterval`.
+Each negative control must violate its named invariant with exit 12 and a trace.
+The capture model remains an inherited bounded abstraction.
+
+The integer construction has seven theorems in `DisplayProjection.v`.
+Matched weight is bounded by total weight only when validator records do not repeat.
+Repeated records deliberately contribute repeated terms.
+The model does not prove floating-point arithmetic or tracker wire encoding.
+
+The display helper checks capture generation and transaction identities before calculation.
+Work charges precede identity comparison, hash-table allocation, key processing, checked sums, and shared-helper scans.
+Hash-table charges include spare capacity and control storage.
+The existing six work paths share their aggregate budget.
+
+The tracker rows are not response fields.
+The response contains counts and digests only.
+The node closes malformed requests and returns typed refusals for invalid numeric limits.
+A typed refusal does not require a closed connection.
+
+E1, E14, and E17 require named maintainer review of their bounded-by-design classifications.
+The twelve late source-record registrations remain explicit evidence gaps.
+Claim 005 stays pending until the maintainer accepts the source-bound evidence and the stated limits.
