@@ -10,7 +10,7 @@ use mettail_rholang_runtime::language_install::{
     LANGUAGE_CAPABILITY_ABI_CURRENT,
 };
 use mettail_rholang_runtime::rholang_ast::{RholangPreparationPolicy, RholangProgramFrontend};
-use mettail_rholang_runtime::{EmptyFltResolver, LanguageRights, RuntimePolicy};
+use mettail_rholang_runtime::{EmptyFltResolver, LanguageRight, LanguageRights, RuntimePolicy};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::frontend::ProgramFrontend;
 use rholang::rust::interpreter::rho_runtime::validate_extra_system_processes;
@@ -54,6 +54,18 @@ pub struct F1r3langComposition {
     pub evaluation: F1r3langEvaluation,
 }
 
+/// Public inline languages retain the ordinary guest-right ceiling. The
+/// compiled Rholang Boolean host profile has a distinct, explicit Bridge
+/// grant; source DDL cannot acquire that guest right through this choice.
+pub(crate) fn inline_language_install_policy() -> LanguageInstallPolicy {
+    LanguageInstallPolicy::new(
+        LanguageRights::native_flt_default(),
+        RuntimePolicy::default(),
+        LANGUAGE_CAPABILITY_ABI_CURRENT,
+    )
+    .with_host_profile_grants(LanguageRights::from_rights([LanguageRight::Bridge]))
+}
+
 impl F1r3langComposition {
     /// Explicit startup policy. Missing or invalid limits disable startup, not meters.
     /// This initial route supports inline modules; registry reads remain unavailable.
@@ -62,11 +74,7 @@ impl F1r3langComposition {
         let (preparation, funding) = host_policy(&read)?;
         Self::new(
             Arc::new(EmptyRegistrySnapshot),
-            LanguageInstallPolicy::new(
-                LanguageRights::native_flt_default(),
-                RuntimePolicy::default(),
-                LANGUAGE_CAPABILITY_ABI_CURRENT,
-            ),
+            inline_language_install_policy(),
             preparation,
             funding,
         )

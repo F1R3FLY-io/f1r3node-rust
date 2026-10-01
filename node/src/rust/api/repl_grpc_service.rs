@@ -435,15 +435,13 @@ mod prepared_route_tests {
         use mettail_rholang_runtime::guard_discharge::LoweringOptions;
         use mettail_rholang_runtime::language_install::{
             decode_ddl_envelope, par_to_canonical_value, CanonicalValueLimits,
-            EmptyRegistrySnapshot, LanguageInstallPolicy, LanguageInstallService,
-            LANGUAGE_CAPABILITY_ABI_CURRENT,
+            EmptyRegistrySnapshot, LanguageInstallService,
         };
         use mettail_rholang_runtime::rholang_ast::RholangPreparationPolicy;
-        use mettail_rholang_runtime::{LanguageRights, RuntimePolicy};
         use models::rhoapi::expr::ExprInstance;
         use models::rhoapi::Expr;
 
-        use crate::rust::runtime::f1r3lang::F1r3langComposition;
+        use crate::rust::runtime::f1r3lang::{inline_language_install_policy, F1r3langComposition};
 
         fn scalar(value: ExprInstance) -> Par {
             Par::default().with_exprs(vec![Expr {
@@ -507,11 +505,7 @@ mod prepared_route_tests {
 
         let mut composition = F1r3langComposition::new(
             Arc::new(EmptyRegistrySnapshot),
-            LanguageInstallPolicy::new(
-                LanguageRights::native_flt_default(),
-                RuntimePolicy::default(),
-                LANGUAGE_CAPABILITY_ABI_CURRENT,
-            ),
+            inline_language_install_policy(),
             RholangPreparationPolicy {
                 max_source_bytes: 1_000_000,
                 max_import_entries: 16,
@@ -538,11 +532,7 @@ mod prepared_route_tests {
                 .expect("independent expected declaration is a canonical value");
         let expected_installer = LanguageInstallService::new(
             Arc::new(EmptyRegistrySnapshot),
-            LanguageInstallPolicy::new(
-                LanguageRights::native_flt_default(),
-                RuntimePolicy::default(),
-                LANGUAGE_CAPABILITY_ABI_CURRENT,
-            ),
+            inline_language_install_policy(),
         );
         let expected_installation = expected_installer
             .install_all(decode_ddl_envelope(declaration).expect("canonical declaration envelope"))
