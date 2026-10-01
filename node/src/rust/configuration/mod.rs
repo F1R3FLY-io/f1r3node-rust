@@ -602,12 +602,43 @@ mod embedded_defaults_tests {
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
         assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
         assert_eq!(cfg.logging.file.retention, 14);
+        assert_eq!(cfg.logging.file.max_file_size_bytes, 104857600);
+        assert_eq!(cfg.logging.file.max_total_size_bytes, 2147483648);
         assert_eq!(cfg.api_server.exploratory_deploy_max_concurrent, 0);
         assert_eq!(cfg.api_server.exploratory_deploy_phlo_limit, 5_000_000);
         assert_eq!(
             cfg.api_server.exploratory_deploy_execution_timeout,
             Duration::from_secs(15)
         );
+    }
+
+    #[test]
+    fn embedded_logging_byte_limits_can_be_overridden() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str("logging.file { max-file-size-bytes = 256, max-total-size-bytes = 1024 }")
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(cfg.logging.file.max_file_size_bytes, 256);
+        assert_eq!(cfg.logging.file.max_total_size_bytes, 1024);
+        assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
+        assert_eq!(cfg.logging.file.retention, 14);
+    }
+
+    #[test]
+    fn negative_logging_byte_limits_are_rejected() {
+        for field in ["max-file-size-bytes", "max-total-size-bytes"] {
+            let override_config = format!("logging.file.{} = -1", field);
+            let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+                .load_str(EMBEDDED_DEFAULTS)
+                .unwrap()
+                .load_str(&override_config)
+                .unwrap()
+                .resolve();
+            assert!(result.is_err(), "{field}");
+        }
     }
 
     /// A negative fault-tolerance threshold weakens "finalized" from a BFT

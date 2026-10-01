@@ -743,7 +743,7 @@ This work does not start a blockchain candidate or dispatch cloud resources. Doc
 
 ## Live executor security review: 2026-09-28
 
-The maintainer identified [CodeQL alert 41](https://github.com/F1R3FLY-io/f1r3node-rust/security/code-scanning/41) through this [PR review comment](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#discussion_r4128609240).
+The maintainer identified CodeQL alert 41 (`security/code-scanning/41`, an authenticated page) through this [PR review comment](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#discussion_r4128609240).
 The rule reports a hard-coded cryptographic value at `scripts/casper-soak/src/authority_live.rs:769`.
 The cited statement initializes `capture_attempt` to zero.
 

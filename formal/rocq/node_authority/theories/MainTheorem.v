@@ -1,6 +1,7 @@
 From Coq Require Import List.
 From NodeAuthority Require Import AuthorityObserver.
 From NodeAuthority Require Import AuthorityWork.
+From NodeAuthority Require Export DisplayProjection.
 
 Theorem authority_instance_attaches_at_most_once : forall bs c rs,
   attach_all None bs = (c, rs) -> successes rs <= 1.

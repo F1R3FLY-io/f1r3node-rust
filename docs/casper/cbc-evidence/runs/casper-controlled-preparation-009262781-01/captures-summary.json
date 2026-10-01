@@ -1,0 +1,189 @@
+{
+ "identity": {
+  "approved_request_sha256": "592ff753d6553383b8a69395c9e112cfa64616b7d0af9ea31b9c06409d93dfc2",
+  "configuration_sha256": "4e409888063d80910b9fc6d9919e64795c078e6359d51fe4f40d2e580ddd3dba",
+  "hello_configuration_sha256": "4e409888063d80910b9fc6d9919e64795c078e6359d51fe4f40d2e580ddd3dba",
+  "live_envelope_sha256": "c987b7b062c27dc2c231e83be047977b0480cf814af1c8e3760261256385ad39",
+  "process_arguments": [
+   "--log-sink=stdout",
+   "run",
+   "-s",
+   "--config-file",
+   "/env/conf/rnode.conf",
+   "--data-dir",
+   "/env/target-data",
+   "--host",
+   "127.0.0.1",
+   "--no-upnp",
+   "--allow-private-addresses",
+   "--soak-observer",
+   "{\"directory\":\"/run/soak/observer\",\"source-revision\":\"009262781a032a14df2eed3c8e4f214f864bd068\",\"approved-request-sha256\":\"592ff753d6553383b8a69395c9e112cfa64616b7d0af9ea31b9c06409d93dfc2\",\"peer-pid\":{owner_pid},\"peer-start-ticks\":{owner_start_ticks},\"session-timeout-ms\":500,\"max-sessions\":128}"
+  ],
+  "process_config_sha256_with_key_redacted": null,
+  "public_config": {
+   "fault_tolerance_threshold_bits": 0,
+   "max_number_of_parents": 100,
+   "max_parent_depth": 15,
+   "network_id": "standalone-dev",
+   "schema_version": 1,
+   "shard_name": "root",
+   "standalone": true
+  }
+ },
+ "live": {
+  "captures": [
+   {
+    "bounded_head": "afe073b2d0750692",
+    "head_matches": true,
+    "held_blocks": 1,
+    "path": "step-00/before/report.json",
+    "report_sha256": "4d977e8b9c9e39ae4459e2cda154bb4b6d4c41e2c7798619d2388491ea186aa1",
+    "target_display_inputs": "unavailable"
+   },
+   {
+    "bounded_head": "2d8fade1061f4cc0",
+    "head_matches": true,
+    "held_blocks": 3,
+    "path": "step-00/capture/report.json",
+    "report_sha256": "c95108294d5a541d877e362245d8d4856e3892fdd47ea7d6f491eb5fad491ac2",
+    "target_display_inputs": "unavailable"
+   },
+   {
+    "bounded_head": "c22bf183db75d641",
+    "head_matches": true,
+    "held_blocks": 6,
+    "path": "step-01/before/report.json",
+    "report_sha256": "6afd2babd97ff1d23067fb845c5788231446dca0d53ab5fca51cb826d3245a9e",
+    "target_display_inputs": "available"
+   },
+   {
+    "bounded_head": "c22bf183db75d641",
+    "head_matches": true,
+    "held_blocks": 6,
+    "path": "step-01/capture/report.json",
+    "report_sha256": "17dc75353e2009a103e5b732e65f4591ccc57aa2a8723828c75fbdd0760d661c",
+    "target_display_inputs": "available"
+   },
+   {
+    "bounded_head": "c22bf183db75d641",
+    "head_matches": true,
+    "held_blocks": 6,
+    "path": "step-02/before/report.json",
+    "report_sha256": "31b04fb4f65412b98693bd85e734ef8437ab0bad70a9d2a58ff034b1d7f86a48",
+    "target_display_inputs": "available"
+   },
+   {
+    "bounded_head": "c22bf183db75d641",
+    "head_matches": true,
+    "held_blocks": 6,
+    "path": "step-02/capture/report.json",
+    "report_sha256": "dc6d1a5a4a3fa115d7248be77c77f66fce2618742458498578e19d952767fc38",
+    "target_display_inputs": "available"
+   },
+   {
+    "bounded_head": "c22bf183db75d641",
+    "head_matches": true,
+    "held_blocks": 6,
+    "path": "step-03/before/report.json",
+    "report_sha256": "25ff2303c714e59ea996334e4d1fcb3710d6abc15d9a70ac44bb7ee8c2d09930",
+    "target_display_inputs": "available"
+   },
+   {
+    "bounded_head": "c22bf183db75d641",
+    "head_matches": true,
+    "held_blocks": 6,
+    "path": "step-03/capture/report.json",
+    "report_sha256": "8a255cc2ff1138aa90ee2fb1c65c564056b8012832933061c0df99beb0a1b3fb",
+    "target_display_inputs": "available"
+   }
+  ],
+  "receipts": [
+   {
+    "member": "bounded",
+    "operation": "load_fixture",
+    "sha256": "c6abf05eedc64501a65cdce575271938b77ae2676d97694afb462a8bb2b41731",
+    "status": "unknown",
+    "step": 0
+   },
+   {
+    "member": "bounded",
+    "operation": "evaluate",
+    "sha256": "80c57113a14392a0082c57a5aec2b477f10bed1df5ee812ad566d18a828a1826",
+    "status": "unknown",
+    "step": 1
+   },
+   {
+    "member": "reference",
+    "operation": "load_fixture",
+    "sha256": "f93e12c880709d5c01661a171419d1af49b52a655d590a627b701a393e828680",
+    "status": "unknown",
+    "step": 2
+   },
+   {
+    "member": "reference",
+    "operation": "evaluate",
+    "sha256": "0bd705f7471f0aac2b07cb13e1d0c42afc1b4d781744ac2cc2a84f0474204ec9",
+    "status": "unknown",
+    "step": 3
+   }
+  ],
+  "report": {
+   "blocked_reasons": [
+    "live_adapter_unqualified",
+    "paired_fork_choice_qualification_pending",
+    "exact_traversal_measurements_unavailable"
+   ],
+   "errors": [],
+   "profile_verdict": "blocked",
+   "qualification": "pending",
+   "receipt_count": 4,
+   "soak_verdict": "non_passing",
+   "status": "incomplete"
+  }
+ },
+ "manual": {
+  "after_delivery": {
+   "authority_digest": "0b4f9f025cc037410426d7c533250a7c64aa2ebdfac76e5d3b4393c24305391a",
+   "bounded_head": "c22bf183db75d641bb1c6fd0e1b8e901cc8828a110ab50641968948b766e12de",
+   "bounded_score_count": 2,
+   "display_projection": 1065353216,
+   "equivocation_rows": 0,
+   "head_matches": true,
+   "held_blocks": 6,
+   "mapping_sha256": "229d14eff61a4118e9aec0ba35e1f301871bddfa09fc635fc6d2eecc0d0d22f2",
+   "reference_head": "c22bf183db75d641bb1c6fd0e1b8e901cc8828a110ab50641968948b766e12de",
+   "reference_score_count": 1,
+   "response_sha256": "3fb33dd35f3f862c6dd07ddf0a53b4d2a8d4cc151248e2617e27014d70d0abac",
+   "snapshot_digest": "bf70ee61e7a7d47180dafdaf939cc3ea765752acbda3e3dc1bc5fe5bf1783407",
+   "target_display_inputs": "available",
+   "target_display_inputs_reason": null
+  },
+  "before_delivery": {
+   "authority_digest": "3def34322187067837f3076fe6de466a6f3a5e6d0947d1f1891f3669934c564f",
+   "bounded_head": "afe073b2d0750692cbac47c7d110325ff38cdcf0cdb6f5beaf7ff3ebcc4ecf4b",
+   "bounded_score_count": 0,
+   "display_projection": null,
+   "equivocation_rows": 0,
+   "head_matches": true,
+   "held_blocks": 1,
+   "mapping_sha256": "405a4d1ec64b32f07d4f3cc93f3a4501daa7eb28b7bafa4bed93f3c0f406c6a9",
+   "reference_head": "afe073b2d0750692cbac47c7d110325ff38cdcf0cdb6f5beaf7ff3ebcc4ecf4b",
+   "reference_score_count": 0,
+   "response_sha256": "17c65f2c548aa63e61800efab87c46eaff4126337e7f6dcbd8f33423d9584575",
+   "snapshot_digest": "2dcad49368c6b7574d24089659ed2b5f981110007e3b2156269834ef71e43871",
+   "target_display_inputs": "unavailable",
+   "target_display_inputs_reason": "target_not_held"
+  }
+ },
+ "p2p_manual": {
+  "deliveries_acknowledged": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "result_sha256": "62413f7bf82edda49fc41a74af164ea0cd9df53d3839d28df6630115603b019d",
+  "status": "unknown"
+ }
+}

@@ -8,17 +8,26 @@ use block_storage::rust::dag::soak_snapshot::{
 use block_storage::rust::key_value_block_store::BlockDecodeLimits;
 use crypto::rust::hash::sha_256::Sha256Hasher;
 use models::rust::block_hash::BlockHash;
+use models::rust::validator::Validator;
 use serde::{Deserialize, Serialize};
 use shared::rust::dag::observation_work::{
     CheckedWork, WorkKind, WorkLimits, WorkMeter, WorkUsage,
 };
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::soak_snapshot::ReadLimits;
 
+use super::display::{self, DisplayInputs};
+use super::fork_choice::{
+    self, EvaluationMode, ForkChoiceObservation, ForkChoiceResult, LatestMessageCounts, LowerBound,
+    LowerBoundRule,
+};
 use super::reference::Reference;
 use super::{
     AuthorityInputs, CaptureEndpoint, Coverage, EventKind, FloorOutcome, ObservationEvent,
     ObserverBinding,
 };
+use crate::rust::errors::CasperError;
+use crate::rust::estimator::Estimator;
 use crate::rust::finality::floor::{self, Floor, FloorOfView};
 use crate::rust::safety::clique_oracle::{CliqueOracle, ExactOracleResult, FtThreshold};
 
@@ -97,6 +106,12 @@ pub enum FloorSelection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ForkChoiceSelection {
+    pub reference: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthorityRequest {
     pub capture: CaptureOptions,
     pub evaluation: WorkLimits,
@@ -106,6 +121,56 @@ pub struct AuthorityRequest {
     pub original: bool,
     pub reference: bool,
     pub strict: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_choice: Option<ForkChoiceSelection>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_display"
+    )]
+    pub display: Option<DisplaySelection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplaySelection {
+    pub max_equivocation_records: usize,
+}
+
+fn deserialize_display<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<DisplaySelection>, D::Error> {
+    DisplaySelection::deserialize(deserializer).map(Some)
+}
+
+#[derive(Serialize)]
+struct RequestDigestInput<'a> {
+    capture: &'a CaptureOptions,
+    evaluation: &'a WorkLimits,
+    targets: &'a [String],
+    body_hashes: &'a [String],
+    floor: &'a Option<FloorSelection>,
+    original: bool,
+    reference: bool,
+    strict: bool,
+}
+
+impl AuthorityRequest {
+    fn digest_input(&self) -> (RequestDigestInput<'_>, Option<&ForkChoiceSelection>) {
+        (
+            RequestDigestInput {
+                capture: &self.capture,
+                evaluation: &self.evaluation,
+                targets: &self.targets,
+                body_hashes: &self.body_hashes,
+                floor: &self.floor,
+                original: self.original,
+                reference: self.reference,
+                strict: self.strict,
+            },
+            self.fork_choice.as_ref(),
+        )
+    }
 }
 
 pub fn parse_hash(hash: &str) -> Result<BlockHash, String> {
@@ -123,6 +188,12 @@ pub fn parse_hash(hash: &str) -> Result<BlockHash, String> {
 
 impl AuthorityRequest {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(selection) = &self.display {
+            block_storage::rust::dag::soak_equivocations::validate_row_limit(
+                selection.max_equivocation_records,
+            )
+            .map_err(|e| e.to_string())?;
+        }
         self.capture.validate()?;
         self.evaluation.validate().map_err(|e| e.to_string())?;
         if self.targets.len() > 16 || self.body_hashes.len() > self.capture.max_blocks {
@@ -252,6 +323,8 @@ pub struct TargetResult {
     pub oracle_witness: Value<ExactOracleResult>,
     pub original_fault_tolerance: Value<u32>,
     pub display_projection: Value<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_inputs: Option<Value<DisplayInputs>>,
     pub persisted_fault_tolerance: Value<u32>,
     pub reference_comparison: Value<OracleComparison>,
 }
@@ -271,6 +344,8 @@ pub struct WorkReport {
     pub measured: WorkUsage,
     pub original: Value<WorkUsage>,
     pub reference: Value<WorkUsage>,
+    pub fork_choice_bounded: Value<WorkUsage>,
+    pub fork_choice_reference: Value<WorkUsage>,
     pub complete: bool,
     pub failure: Option<String>,
 }
@@ -294,11 +369,24 @@ pub struct AuthorityResponse {
     pub targets: Vec<TargetResult>,
     pub floor_result: Value<FloorValue>,
     pub floor_comparison: Value<FloorComparison>,
+    pub fork_choice: Value<ForkChoiceObservation>,
     pub work: WorkReport,
     pub events: Vec<ObservationEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equivocation_capture: Option<Value<EquivocationCapture>>,
 }
 
-fn digest(value: &impl Serialize, meter: &CheckedWork) -> Result<String, String> {
+#[derive(Clone, Debug, Serialize)]
+pub struct EquivocationCapture {
+    pub store: &'static str,
+    pub row_count: usize,
+    pub byte_count: usize,
+    pub digest: String,
+}
+
+pub(super) fn digest(value: &impl Serialize, meter: &CheckedWork) -> Result<String, String> {
     let size = bincode::serialized_size(value).map_err(|e| e.to_string())?;
     meter
         .charge(WorkKind::Allocation, 1, size)
@@ -370,6 +458,8 @@ pub struct PartialWork {
     pub measured: WorkUsage,
     pub original: Option<WorkUsage>,
     pub reference: Option<WorkUsage>,
+    pub fork_choice_bounded: Option<WorkUsage>,
+    pub fork_choice_reference: Option<WorkUsage>,
     pub failure: String,
 }
 
@@ -387,8 +477,18 @@ impl std::fmt::Display for AuthorityFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.reason) }
 }
 
-fn work_report(meter: &CheckedWork, request: &AuthorityRequest, digest: &str) -> WorkReport {
+fn work_report(
+    meter: &CheckedWork,
+    request: &AuthorityRequest,
+    digest: &str,
+    fork_choice_digest: Option<&str>,
+) -> WorkReport {
     let (aggregate, paths, failure) = meter.usage();
+    let fork_choice_work = |requested: bool, path: usize| match (requested, fork_choice_digest) {
+        (true, Some(digest)) => Value::available(digest, paths[path].clone()),
+        _ => Value::NotRequested,
+    };
+    let selection = request.fork_choice.as_ref();
     WorkReport {
         aggregate,
         preparation: paths[0].clone(),
@@ -403,6 +503,8 @@ fn work_report(meter: &CheckedWork, request: &AuthorityRequest, digest: &str) ->
         } else {
             Value::NotRequested
         },
+        fork_choice_bounded: fork_choice_work(selection.is_some(), 4),
+        fork_choice_reference: fork_choice_work(selection.is_some_and(|s| s.reference), 5),
         complete: failure.is_none(),
         failure,
     }
@@ -429,6 +531,12 @@ pub async fn evaluate(
                     measured: paths[1].clone(),
                     original: request.original.then(|| paths[2].clone()),
                     reference: request.reference.then(|| paths[3].clone()),
+                    fork_choice_bounded: request.fork_choice.as_ref().map(|_| paths[4].clone()),
+                    fork_choice_reference: request
+                        .fork_choice
+                        .as_ref()
+                        .filter(|selection| selection.reference)
+                        .map(|_| paths[5].clone()),
                     failure: failure.unwrap_or(reason),
                 }),
             }
@@ -453,24 +561,65 @@ async fn evaluate_inner(
         .iter()
         .map(|s| parse_hash(s))
         .collect::<Result<Vec<_>, _>>()?;
-    let snapshot = soak_snapshot::capture(&endpoint.dag, &endpoint.blocks, &CaptureRequest {
+    let capture_request = CaptureRequest {
         limits: request.capture.limits(remaining),
         bodies: &body_hashes,
-    })
-    .map_err(|e| format!("capture_unavailable:{e}"))?;
+    };
+    let (snapshot, tracker) = match &request.display {
+        None => (
+            soak_snapshot::capture(&endpoint.dag, &endpoint.blocks, &capture_request)
+                .map_err(|e| format!("capture_unavailable:{e}"))?,
+            None,
+        ),
+        Some(selection) => {
+            let (snapshot, tracker) = soak_snapshot::capture_with_equivocations(
+                &endpoint.dag,
+                &endpoint.blocks,
+                &capture_request,
+                selection.max_equivocation_records,
+            )
+            .map_err(|e| format!("capture_unavailable:{e}"))?;
+            (snapshot, Some(tracker))
+        }
+    };
     if !binding.is_active() {
         return Err("instance_changed".to_string());
     }
     prepare(&snapshot, meter)?;
-    let authority_digest = digest(
-        &(
-            "batch-b2-authority-v1",
-            snapshot.digest(),
-            &endpoint.authority,
-            request,
-        ),
-        meter,
-    )?;
+    let (request_digest_input, fork_choice_selection) = request.digest_input();
+    let authority_digest = match (fork_choice_selection, tracker.as_ref()) {
+        (_, Some(tracker)) => digest(
+            &(
+                "batch-e-authority-v1",
+                snapshot.digest(),
+                tracker.digest(),
+                &endpoint.authority,
+                &request_digest_input,
+                fork_choice_selection,
+                request.display.as_ref(),
+            ),
+            meter,
+        )?,
+        (None, None) => digest(
+            &(
+                "batch-b2-authority-v1",
+                snapshot.digest(),
+                &endpoint.authority,
+                &request_digest_input,
+            ),
+            meter,
+        )?,
+        (Some(selection), None) => digest(
+            &(
+                "batch-b2-authority-v1",
+                snapshot.digest(),
+                &endpoint.authority,
+                &request_digest_input,
+                selection,
+            ),
+            meter,
+        )?,
+    };
     let snapshot_digest = snapshot.digest_hex();
     let measured_work = meter.for_path(1).map_err(|e| e.to_string())?;
     let original_work = meter.for_path(2).map_err(|e| e.to_string())?;
@@ -489,6 +638,9 @@ async fn evaluate_inner(
         .floor
         .as_ref()
         .map(|selection| digest(&(&authority_digest, "floor", selection), meter))
+        .transpose()?;
+    let fork_choice_digest = fork_choice_selection
+        .map(|_| fork_choice_input_digest(&authority_digest, &endpoint.fork_choice, meter))
         .transpose()?;
     let measured = scratch(&snapshot, meter);
     let original = if request.original {
@@ -518,20 +670,22 @@ async fn evaluate_inner(
             .map_err(|e| e.to_string()),
             Err(error) => Err(error.clone()),
         };
+        let mut original_missing_history = false;
         let original_bits = match &original {
             None => Value::NotRequested,
             Some(Err(error)) => Value::unavailable(&input_digest, error),
-            Some(Ok(view)) => Value::from_result(
-                &input_digest,
-                CliqueOracle::ft_witnessed_metered(
+            Some(Ok(view)) => {
+                let result = CliqueOracle::ft_witnessed_metered(
                     &original_work,
                     &hash,
                     &view.representation,
                     &snapshot.latest_messages,
                 )
-                .await
-                .map(f32::to_bits),
-            ),
+                .await;
+                original_missing_history =
+                    matches!(&result, Err(KvStoreError::MissingBlock { .. }));
+                Value::from_result(&input_digest, result.map(f32::to_bits))
+            }
         };
         let comparison = if request.reference {
             match (
@@ -595,6 +749,44 @@ async fn evaluate_inner(
             Some(matches!(&decision, Value::Available { .. })),
             Some(snapshot.digest()),
         );
+        let (display_projection, display_inputs) = match &tracker {
+            None => (
+                Value::unavailable(&input_digest, "equivocation_snapshot_unavailable"),
+                None,
+            ),
+            Some(tracker) => {
+                let base = match &original_bits {
+                    Value::Available { value, .. } => Some(("original_oracle", *value)),
+                    _ if original_missing_history => Some((
+                        "missing_history_minimum",
+                        crate::rust::safety_oracle::MIN_FAULT_TOLERANCE.to_bits(),
+                    )),
+                    _ => None,
+                };
+                let calculated =
+                    display::calculate(&snapshot, tracker, &hash, base, &measured_work);
+                match calculated {
+                    Ok((bits, inputs)) => (
+                        Value::available(&input_digest, bits),
+                        Some(Value::available(&input_digest, inputs)),
+                    ),
+                    Err(reason) => {
+                        if reason.contains("observation_work:") {
+                            return Err(reason);
+                        }
+                        let reason = if reason == "display_base_unavailable" && !request.original {
+                            "original_not_requested"
+                        } else {
+                            &reason
+                        };
+                        (
+                            Value::unavailable(&input_digest, reason),
+                            Some(Value::unavailable(&input_digest, reason)),
+                        )
+                    }
+                }
+            }
+        };
         targets.push(TargetResult {
             target: target.clone(),
             input_scope: "captured_latest_messages",
@@ -604,10 +796,8 @@ async fn evaluate_inner(
             oracle_decision: decision,
             oracle_witness: witness,
             original_fault_tolerance: original_bits,
-            display_projection: Value::unavailable(
-                &input_digest,
-                "equivocation_snapshot_unavailable",
-            ),
+            display_projection,
+            display_inputs,
             persisted_fault_tolerance: persisted,
             reference_comparison: comparison,
         });
@@ -679,7 +869,55 @@ async fn evaluate_inner(
             (Value::from_result(input_digest, result), comparison)
         }
     };
-    let work = work_report(meter, request, &authority_digest);
+    let fork_choice_observation = match (fork_choice_selection, fork_choice_digest.clone()) {
+        (Some(selection), Some(input_digest)) => {
+            let bounded_work = meter.for_path(4).map_err(|e| e.to_string())?;
+            let (counts, bounded) =
+                bounded_fork_choice(&snapshot, endpoint, threshold, &bounded_work).await;
+            let (reference, compare_requested) = if selection.reference {
+                let reference_work = meter.for_path(5).map_err(|e| e.to_string())?;
+                let (_, reference) = fork_choice::ReferenceForkChoice::new(
+                    &snapshot,
+                    &reference_work,
+                    &endpoint.fork_choice,
+                    &endpoint.authority,
+                )
+                .evaluate();
+                (fork_choice_value(&input_digest, reference), true)
+            } else {
+                (Value::NotRequested, false)
+            };
+            let bounded = fork_choice_value(&input_digest, bounded);
+            let comparison = if compare_requested {
+                fork_choice::compare(&bounded, &reference)
+            } else {
+                Value::NotRequested
+            };
+            Value::available(&input_digest, ForkChoiceObservation {
+                input_digest: input_digest.clone(),
+                inputs: endpoint.fork_choice.clone(),
+                latest_messages: counts,
+                bounded,
+                reference,
+                comparison,
+            })
+        }
+        _ => Value::NotRequested,
+    };
+    let work = work_report(
+        meter,
+        request,
+        &authority_digest,
+        fork_choice_digest.as_deref(),
+    );
+    let equivocation_capture = tracker.as_ref().map(|tracker| {
+        Value::available(&authority_digest, EquivocationCapture {
+            store: "equivocation-tracker",
+            row_count: tracker.rows().len(),
+            byte_count: tracker.raw_bytes(),
+            digest: hex::encode(tracker.digest()),
+        })
+    });
     Ok(AuthorityResponse {
         scope: "batch-b2-detached-authority-evaluation",
         live_profile_qualified: false,
@@ -707,7 +945,204 @@ async fn evaluate_inner(
         targets,
         floor_result,
         floor_comparison,
+        fork_choice: fork_choice_observation,
         work,
         events: Vec::new(),
+        display_scope: request.display.as_ref().map(|_| display::DISPLAY_SCOPE),
+        equivocation_capture,
     })
+}
+
+fn checked_result(result: Result<ForkChoiceResult, String>) -> Result<ForkChoiceResult, String> {
+    let result = result?;
+    fork_choice::validate_result(&result)?;
+    Ok(result)
+}
+
+fn fork_choice_value(
+    digest: &str,
+    result: Result<ForkChoiceResult, String>,
+) -> Value<ForkChoiceResult> {
+    match checked_result(result) {
+        Ok(value) => Value::available(digest, value),
+        Err(reason) if reason == "score_overflow" || reason.starts_with("production_error:") => {
+            Value::Failed {
+                input_digest: Some(digest.to_string()),
+                reason,
+            }
+        }
+        Err(reason) => Value::unavailable(digest, reason),
+    }
+}
+
+fn store_reason(error: KvStoreError) -> String {
+    match error {
+        KvStoreError::InvalidArgument(text) if text.starts_with("observation_work:") => text,
+        KvStoreError::KeyNotFound(_) => "production_error:key_not_found".to_string(),
+        KvStoreError::IoError(_) => "production_error:io".to_string(),
+        KvStoreError::SerializationError(_) => "production_error:serialization".to_string(),
+        KvStoreError::InvalidArgument(_) => "production_error:invalid_argument".to_string(),
+        KvStoreError::LockError(_) => "production_error:lock".to_string(),
+        KvStoreError::LastFinalizedBlockUninitialized => {
+            "production_error:last_finalized_block_uninitialized".to_string()
+        }
+        KvStoreError::MissingBlock { .. } => "production_error:missing_block".to_string(),
+    }
+}
+
+fn casper_reason(error: CasperError) -> String {
+    match error {
+        CasperError::KvStoreError(error) => store_reason(error),
+        CasperError::BlockNotHeld(..) => "production_error:missing_block".to_string(),
+        CasperError::IncompatibleFinalizedFork(_) => {
+            "production_error:incompatible_finalized_fork".to_string()
+        }
+        CasperError::LockError(_) => "production_error:lock".to_string(),
+        _ => "production_error:casper".to_string(),
+    }
+}
+
+async fn bounded_fork_choice(
+    snapshot: &DetachedDagSnapshot,
+    endpoint: &CaptureEndpoint,
+    threshold: FtThreshold,
+    meter: &CheckedWork,
+) -> (LatestMessageCounts, Result<ForkChoiceResult, String>) {
+    let mut counts = LatestMessageCounts {
+        captured: snapshot.latest_messages.len(),
+        ..LatestMessageCounts::default()
+    };
+    let result = async {
+        let mut view = scratch(snapshot, meter)?;
+        let captured: std::collections::HashMap<Validator, BlockHash> = snapshot
+            .latest_messages
+            .iter()
+            .map(|(validator, hash)| (validator.clone(), hash.clone()))
+            .collect();
+        let ordered: Vec<(&Validator, &BlockHash)> = snapshot.latest_messages.iter().collect();
+        meter
+            .charge(
+                WorkKind::Metadata,
+                captured.len() as u64,
+                meter.metadata_bytes(),
+            )
+            .map_err(store_reason)?;
+        let invalid = view
+            .representation
+            .invalid_latest_messages_from_hashes(&captured)
+            .map_err(store_reason)?;
+        counts.invalid = invalid.len();
+        let mut used: std::collections::BTreeMap<Validator, BlockHash> =
+            std::collections::BTreeMap::new();
+        for (validator, hash) in ordered {
+            if invalid.contains_key(validator) {
+                continue;
+            }
+            match view
+                .representation
+                .lookup_metered(meter, hash)
+                .map_err(store_reason)?
+            {
+                None => counts.not_held += 1,
+                Some(metadata) if metadata.sender != *validator => counts.not_own_testimony += 1,
+                Some(_) => {
+                    used.insert(validator.clone(), hash.clone());
+                }
+            }
+        }
+        counts.used = used.len();
+        let approved_hash = parse_hash(&endpoint.authority.approved_block_hash)?;
+        let approved = view
+            .representation
+            .lookup_metered(meter, &approved_hash)
+            .map_err(store_reason)?
+            .ok_or("approved_block_not_captured")?;
+        if approved.block_number != endpoint.fork_choice.approved_block_number {
+            return Err("approved_block_mismatch".to_string());
+        }
+        let floor_block = floor::fork_choice_floor_metered(
+            meter,
+            &view.representation,
+            &view.blocks,
+            used.values(),
+            approved.clone(),
+            threshold,
+        )
+        .await
+        .map_err(casper_reason)?;
+        let rule = if floor_block.block_hash == approved.block_hash {
+            LowerBoundRule::ApprovedBlock
+        } else {
+            LowerBoundRule::FinalizedFloor
+        };
+        let choice = Estimator::apply()
+            .tips_with_latest_messages_metered(
+                meter,
+                &mut view.representation,
+                &floor_block,
+                used.into_iter().collect(),
+                endpoint.fork_choice.max_number_of_parents,
+                Some(endpoint.authority.max_parent_depth),
+            )
+            .await
+            .map_err(store_reason)?;
+        let head = choice.tips.first().ok_or("no_head_selected")?;
+        let mut sorted_scores: std::collections::BTreeMap<String, i64> =
+            std::collections::BTreeMap::new();
+        for (hash, score) in &choice.scores {
+            meter.step(WorkKind::Traversal).map_err(store_reason)?;
+            sorted_scores.insert(hex::encode(hash), *score);
+        }
+        let score_digest = digest(&sorted_scores, meter)?;
+        let (_, paths, _) = meter.usage();
+        let usage = &paths[4];
+        Ok(ForkChoiceResult {
+            mode: EvaluationMode::Bounded,
+            lower_bound: LowerBound {
+                hash: hex::encode(&floor_block.block_hash),
+                block_number: floor_block.block_number,
+                rule,
+            },
+            common_ancestor: hex::encode(&choice.lca),
+            head: hex::encode(head),
+            tips: choice
+                .tips
+                .iter()
+                .take(fork_choice::MAX_REPORTED_TIPS)
+                .map(hex::encode)
+                .collect(),
+            tip_scores: choice
+                .tips
+                .iter()
+                .take(fork_choice::MAX_REPORTED_TIPS)
+                .map(|tip| choice.scores.get(tip).copied().unwrap_or(0))
+                .collect(),
+            score_count: choice.scores.len(),
+            score_digest,
+            visited_blocks: usage.metadata,
+            examined_edges: usage.traversal,
+        })
+    }
+    .await;
+    (counts, result)
+}
+
+pub fn fork_choice_input_digest(
+    authority_digest: &str,
+    inputs: &super::ForkChoiceInputs,
+    meter: &CheckedWork,
+) -> Result<String, String> {
+    digest(
+        &(
+            fork_choice::INPUT_DIGEST_DOMAIN,
+            authority_digest,
+            inputs,
+            fork_choice::LATEST_MESSAGE_SCOPE,
+            [
+                LowerBoundRule::FinalizedFloor.name(),
+                LowerBoundRule::ApprovedBlock.name(),
+            ],
+        ),
+        meter,
+    )
 }

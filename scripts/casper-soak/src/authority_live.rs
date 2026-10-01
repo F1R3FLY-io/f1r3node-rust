@@ -465,7 +465,13 @@ fn snapshot(
         "utc":utc()?});
     result["presence"] = "observed".into();
     result["reason"] = Value::Null;
-    result["payload"] = json!({"head":missing("paired_fork_choice_unavailable"),"finality":finality,
+    let head = &mapping["fork_choice"][format!("{}_head", text(&member["evaluation_mode"])?)];
+    let head = if head.is_null() {
+        missing("paired_fork_choice_unavailable")
+    } else {
+        head.clone()
+    };
+    result["payload"] = json!({"head":head,"finality":finality,
         "work":missing("exact_traversal_measurements_unavailable"),
         "evaluation_receipt":observed(json!({"status":if applied {"applied"} else {"unknown"},
             "steps":completed,"fixture_digest":request["inputs"]["fixture"]["sha256"]})),
@@ -905,7 +911,7 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
     let report = json!({"schema_version":1,"status":if errors.is_empty() && all_applied {"captured"} else {"incomplete"},
         "scope":"live-executor-qualification","request_sha256":digest,"receipt_count":receipts.len(),
         "captures":captures,"errors":errors,"qualification":"pending","profile_verdict":"blocked","soak_verdict":"non_passing",
-        "node_launch_count":null,"blocked_reasons":["live_adapter_unqualified","paired_fork_choice_unavailable","exact_traversal_measurements_unavailable"],
+        "node_launch_count":null,"blocked_reasons":["live_adapter_unqualified","paired_fork_choice_qualification_pending","exact_traversal_measurements_unavailable"],
         "source_digests":{
             "scripts/casper-soak/src/authority_live.rs":hash(include_bytes!("authority_live.rs")),
             "scripts/casper-soak/src/authority_process.rs":hash(include_bytes!("authority_process.rs")),

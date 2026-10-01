@@ -356,6 +356,11 @@ The API subtracts normalized initial fault using the live equivocation tracker.
 B1 does not capture that tracker.
 B2 therefore reports `equivocation_snapshot_unavailable` for the display projection.
 
+The approved [Batch E](casper-node-observation-batch-e.md) adds an optional capture of the equivocation inputs.
+Without that option, the B2 response and digest remain unchanged.
+Batch E uses captured inputs and shared production arithmetic.
+Its evidence and named acceptance remain separate from the earlier batches.
+
 Persisted fault tolerance from finalized metadata can still be reported as its own captured value.
 It cannot replace the display projection or the original oracle result.
 Adding a complete display capture or restore-seed contract requires a separate scope review.

@@ -49,7 +49,7 @@ fn unique_dir(tag: &str) -> PathBuf {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    std::fs::canonicalize(dir).unwrap()
 }
 
 fn env_config(name: &str) -> LmdbEnvConfig {
@@ -1526,4 +1526,257 @@ fn metered_traversals_match_detached_results_and_stop_at_the_limit() {
         .is_err());
     assert_eq!(limited.usage().0.operations, 1);
     assert_eq!(before, fixture.store_bytes());
+}
+
+fn add_tracker_record(fx: &Fixture, validator: u8, sequence: i32, detected: u8) {
+    use models::rust::equivocation_record::EquivocationRecord;
+    fx.dag
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                vec![validator; 65].into(),
+                sequence,
+                std::collections::BTreeSet::from([vec![detected; 32].into()]),
+            ))
+        })
+        .unwrap();
+}
+
+#[test]
+fn tracker_rows_are_captured_in_the_dag_transaction() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations;
+    use models::rust::validator::ValidatorSerde;
+    use shared::rust::store::soak_snapshot::BoundedLmdbReader;
+    let fx = fixture("tracker-capture");
+    add_tracker_record(&fx, 1, -2, 3);
+    add_tracker_record(&fx, 1, 4, 5);
+    let before = fx.store_bytes();
+    let generation = fx.dag.current_generation();
+    let (snapshot, tracker) =
+        capture_with_equivocations(&fx.dag, &fx.blocks, &request(&[]), 16).unwrap();
+    assert_eq!(snapshot.schema_version, 2);
+    assert_eq!(tracker.rows().len(), 2);
+    assert_eq!(tracker.rows()[0].base_sequence_number, -2);
+    assert_eq!(tracker.rows()[1].base_sequence_number, 4);
+    assert_eq!(tracker.insertion_generation(), generation);
+    assert_eq!(tracker.transactions(), snapshot.transactions);
+    assert!(tracker.raw_bytes() > 0);
+    let store = fx.handle("equivocation-tracker");
+    let mut reader = BoundedLmdbReader::open(&[&store], limits().read).unwrap();
+    for row in tracker.rows() {
+        let typed: KeyValueTypedStoreImpl<
+            (ValidatorSerde, i32),
+            std::collections::BTreeSet<BlockHashSerde>,
+        > = KeyValueTypedStoreImpl::new(store.clone());
+        let key = typed
+            .encode_key(&(
+                ValidatorSerde(row.equivocator.clone()),
+                row.base_sequence_number,
+            ))
+            .unwrap();
+        let raw = reader.read_raw(&store, &key).unwrap().unwrap();
+        assert_eq!(
+            row.raw_value_digest.as_slice(),
+            crypto::rust::hash::sha_256::Sha256Hasher::hash(raw)
+        );
+        assert_eq!(row.detected_hash_count, 1);
+    }
+    reader.validate().unwrap();
+    assert_eq!(before, fx.store_bytes());
+}
+
+#[test]
+fn tracker_write_between_open_and_validation_rejects_the_capture() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations_observed;
+    use models::rust::validator::ValidatorSerde;
+    let fx = fixture("tracker-interference");
+    add_tracker_record(&fx, 1, 0, 3);
+    let generation = fx.dag.current_generation();
+    let result =
+        capture_with_equivocations_observed(&fx.dag, &fx.blocks, &request(&[]), 16, |phase| {
+            if phase == CapturePhase::RowsRead {
+                fx.write_from_other_thread("equivocation-tracker", |store| {
+                    let typed: KeyValueTypedStoreImpl<
+                        (ValidatorSerde, i32),
+                        std::collections::BTreeSet<BlockHashSerde>,
+                    > = KeyValueTypedStoreImpl::new(store);
+                    typed
+                        .put_one(
+                            (ValidatorSerde(vec![2; 65].into()), 1),
+                            std::collections::BTreeSet::new(),
+                        )
+                        .unwrap();
+                });
+            }
+        });
+    assert!(matches!(
+        result,
+        Err(SnapshotError::EnvironmentChanged { .. })
+    ));
+    assert_eq!(generation, fx.dag.current_generation());
+}
+
+#[test]
+fn tracker_row_limits_and_invalid_admission_refuse_capture() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations_observed;
+    let fx = fixture("tracker-limit");
+    add_tracker_record(&fx, 1, 0, 3);
+    add_tracker_record(&fx, 1, 1, 4);
+    let mut phases = 0;
+    for limit in [0, 4097] {
+        let result =
+            capture_with_equivocations_observed(&fx.dag, &fx.blocks, &request(&[]), limit, |_| {
+                phases += 1
+            });
+        assert!(matches!(result, Err(SnapshotError::InvalidLimits(_))));
+    }
+    assert_eq!(phases, 0);
+    let before = fx.store_bytes();
+    let result = capture_with_equivocations_observed(&fx.dag, &fx.blocks, &request(&[]), 1, |_| {});
+    assert!(matches!(result, Err(SnapshotError::LimitExceeded { .. })));
+    assert_eq!(before, fx.store_bytes());
+}
+
+#[test]
+fn malformed_tracker_rows_and_oversized_values_refuse_the_capture() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations;
+    use models::rust::validator::ValidatorSerde;
+    let fx = fixture("tracker-malformed");
+    let typed: KeyValueTypedStoreImpl<
+        (ValidatorSerde, i32),
+        std::collections::BTreeSet<BlockHashSerde>,
+    > = KeyValueTypedStoreImpl::new(fx.handle("equivocation-tracker"));
+    let key = typed
+        .encode_key(&(ValidatorSerde(vec![1; 65].into()), 0i32))
+        .unwrap();
+    for value in [vec![255; 8], vec![0; 9], vec![0; 2048]] {
+        fx.handle("equivocation-tracker")
+            .put(vec![(key.clone(), value)])
+            .unwrap();
+        let mut selected = request(&[]);
+        selected.limits.read.max_value_bytes = 1024;
+        let before = fx.store_bytes();
+        assert!(capture_with_equivocations(&fx.dag, &fx.blocks, &selected, 16).is_err());
+        assert_eq!(before, fx.store_bytes());
+    }
+}
+
+#[test]
+fn equivocation_digest_is_order_independent_and_binds_each_field() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations;
+    let left = fixture("tracker-left");
+    let right = fixture("tracker-right");
+    add_tracker_record(&left, 1, -2, 3);
+    add_tracker_record(&left, 2, 4, 5);
+    add_tracker_record(&right, 2, 4, 5);
+    add_tracker_record(&right, 1, -2, 3);
+    let get = |fx: &Fixture| {
+        capture_with_equivocations(&fx.dag, &fx.blocks, &request(&[]), 16)
+            .unwrap()
+            .1
+            .digest()
+    };
+    let original = get(&left);
+    assert_eq!(original, get(&right));
+    add_tracker_record(&left, 1, -2, 6);
+    assert_ne!(original, get(&left));
+    add_tracker_record(&right, 1, -1, 3);
+    assert_ne!(original, get(&right));
+}
+
+#[test]
+fn tracker_parser_refuses_invalid_keys_hash_order_and_hash_count_before_copy() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations;
+    use models::rust::validator::ValidatorSerde;
+    for case in 0..6 {
+        let fx = fixture("tracker-parser-controls");
+        let typed: KeyValueTypedStoreImpl<
+            (ValidatorSerde, i32),
+            std::collections::BTreeSet<BlockHashSerde>,
+        > = KeyValueTypedStoreImpl::new(fx.handle("equivocation-tracker"));
+        let mut key = typed
+            .encode_key(&(ValidatorSerde(vec![1; 65].into()), 0))
+            .unwrap();
+        let mut value = 0u64.to_le_bytes().to_vec();
+        match case {
+            0 => key = vec![0],
+            1 => {
+                key.truncate(key.len() - 1);
+            }
+            2 => {
+                key[0..8].copy_from_slice(&u64::MAX.to_le_bytes());
+            }
+            3 | 4 => {
+                value = 2u64.to_le_bytes().to_vec();
+                for byte in [5, if case == 3 { 5 } else { 3 }] {
+                    value.extend_from_slice(&32u64.to_le_bytes());
+                    value.extend_from_slice(&[byte; 32]);
+                }
+            }
+            _ => value = ((limits().max_blocks + 1) as u64).to_le_bytes().to_vec(),
+        }
+        fx.handle("equivocation-tracker")
+            .put(vec![(key, value)])
+            .unwrap();
+        let before = fx.store_bytes();
+        let error = capture_with_equivocations(&fx.dag, &fx.blocks, &request(&[]), 16).unwrap_err();
+        if case == 5 {
+            assert!(matches!(error, SnapshotError::LimitExceeded {
+                kind: "equivocation hashes",
+                ..
+            }));
+        } else {
+            assert!(matches!(error, SnapshotError::Malformed(_)));
+        }
+        assert_eq!(before, fx.store_bytes());
+    }
+}
+
+#[test]
+fn equivocation_digest_binds_validator_sequence_hashes_count_and_generation() {
+    use block_storage::rust::dag::soak_snapshot::capture_with_equivocations;
+    use models::rust::equivocation_record::EquivocationRecord;
+    let base = fixture("tracker-digest-fields");
+    add_tracker_record(&base, 1, -2, 3);
+    let get = |fx: &Fixture| {
+        capture_with_equivocations(&fx.dag, &fx.blocks, &request(&[]), 16)
+            .unwrap()
+            .1
+    };
+    let original = get(&base);
+    for (validator, sequence, hashes) in [
+        (2, -2, vec![3]),
+        (1, -1, vec![3]),
+        (1, -2, vec![4]),
+        (1, -2, vec![3, 4]),
+    ] {
+        let changed = fixture("tracker-digest-field-control");
+        changed
+            .dag
+            .access_equivocations_tracker(|tracker| {
+                tracker.add(EquivocationRecord::new(
+                    vec![validator; 65].into(),
+                    sequence,
+                    hashes
+                        .into_iter()
+                        .map(|byte| vec![byte; 32].into())
+                        .collect(),
+                ))
+            })
+            .unwrap();
+        assert_ne!(original.digest(), get(&changed).digest());
+    }
+    let mut block = base.chain.last().unwrap().clone();
+    block.block_hash = vec![99; 32].into();
+    block.header.parents_hash_list = vec![base.chain.last().unwrap().block_hash.clone()];
+    block.body.state.block_number += 1;
+    block.seq_num += 1;
+    base.dag.insert(&block, InsertMode::Normal).unwrap();
+    let changed = get(&base);
+    assert_eq!(original.rows(), changed.rows());
+    assert_eq!(original.raw_bytes(), changed.raw_bytes());
+    assert_ne!(
+        original.insertion_generation(),
+        changed.insertion_generation()
+    );
+    assert_ne!(original.digest(), changed.digest());
 }

@@ -81,6 +81,7 @@ sha256sum Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml \
     scripts/ci/check-node-observation-bindings.sh scripts/ci/check-node-canonical-wire.sh \
     scripts/ci/test-check-node-observation-bindings.sh \
     docs/claims/casper-node-observation.md docs/claims/casper-node-authority-snapshot.md \
+    docs/claims/casper-node-fork-choice-observation.md \
     formal/tlaplus/node_observation/*.tla formal/tlaplus/node_observation/*.cfg \
     formal/tlaplus/node_observation/*.json formal/tlaplus/node_observation/README.md \
     formal/rocq/node_observation/_CoqProject formal/rocq/node_observation/README.md \
