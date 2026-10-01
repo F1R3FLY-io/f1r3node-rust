@@ -878,6 +878,165 @@ impl LockRegistry {
             Err(LockError::Closed)
         }
     }
+
+    /// Release every lock owned by `holder` across every file
+    /// in the registry.  Called from `fs_release_all_for_holder`
+    /// (File.close path) when a cap goes away: every range
+    /// AND the sequential_holder (if matching) are swept.
+    /// Returns the count released for diagnostics.
+    ///
+    /// # Lifetime posture
+    ///
+    /// Called when a `FileHandle` drops (File.close).  Pairs
+    /// with a yet-to-land `cancel_all_waiters_for_holder`
+    /// sweep that cancels this holder's PARKED waiters (same
+    /// cap is going away; its parked wait: true acquires
+    /// shouldn't resolve to a dead cap).  Both land on
+    /// opposite sides of the Wait-support slice; this slice
+    /// ships the holder-side held-lock sweep alone.
+    ///
+    /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
+    ///
+    /// Holder matches use [`HolderId::ct_eq`] to maintain
+    /// consistency with [`release`]'s SEC-Mi-01 discipline.  A
+    /// bulk sweep is destructive and one-shot (not an
+    /// enumeration surface the way `release` is), so the
+    /// timing attack is less actionable here — but a future
+    /// dry-run mode or a per-entry return would retroactively
+    /// create an enumeration surface.  Using `ct_eq`
+    /// uniformly across every release-side holder comparison
+    /// keeps the invariant "all release-path holder matches
+    /// are constant-time" true-by-construction without the
+    /// reviewer having to argue the exemption each slice.
+    /// Micro-perf cost is 32-byte compare × ranges × files
+    /// (negligible under typical workloads).
+    ///
+    /// # Deferred: `wake_waiters` after sweep
+    ///
+    /// Fileio's `release_all_for_holder` calls
+    /// `wake_waiters(state)` after the sweep to admit any
+    /// OTHER-holder waiters whose conflict just cleared.
+    /// This slice doesn't park yet, so no waiter can be
+    /// admitted.  When Wait support lands, the wake call lands
+    /// here too.
+    pub fn release_all_for_holder(&self, holder: &HolderId) -> usize {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut released = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            let before = state.ranges.len();
+            // SEC-Mi-01: ct_eq, NOT `==` / `!=`.  Do not regress
+            // to derived equality — see docstring.
+            state.ranges.retain(|e| !e.holder.ct_eq(holder));
+            released += before - state.ranges.len();
+            if state
+                .sequential_holder
+                .as_ref()
+                .is_some_and(|s| s.holder.ct_eq(holder))
+            {
+                state.sequential_holder = None;
+                released += 1;
+            }
+            // wake_waiters(state) deferred — see docstring.
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        released
+    }
+
+    /// Release every lock owned by `deploy` across every file
+    /// in the registry.  Called from the `WalDeployScope::end`
+    /// auto-release hook (yet-to-land) when a deploy
+    /// completes.  Returns the count released.
+    ///
+    /// # Sentinel guard: `[0; 32]` is reserved
+    ///
+    /// Panics if `deploy == [0; 32]`.  The all-zeros
+    /// `DeployScope` is reserved as a pre-wiring placeholder
+    /// (acquires outside a live `WalDeployScope` record this
+    /// sentinel while deploy-scope threading is in progress).
+    /// Calling `release_all_for_deploy(&[0; 32])` would sweep
+    /// EVERY sentinel-scoped entry on the registry — a
+    /// production deploy running under a live
+    /// `WalDeployScope` always derives a non-sentinel scope
+    /// via Blake2b256, so the guard fires only for test
+    /// scaffolding or a pre-wiring regression.  Promoted from
+    /// `debug_assert!` to `assert!` so release builds also
+    /// catch the sweep-every-lock foot-gun.
+    ///
+    /// # Deferred: `wake_waiters` after sweep
+    ///
+    /// Same deferral as `release_all_for_holder`.
+    pub fn release_all_for_deploy(&self, deploy: &DeployScope) -> usize {
+        assert!(
+            deploy != &[0u8; 32],
+            "release_all_for_deploy called with the [0; 32] sentinel — \
+             the all-zeros DeployScope is reserved as a pre-wiring \
+             placeholder; a production deploy under a live WalDeployScope \
+             derives a non-sentinel scope via Blake2b256.  Calling with \
+             the sentinel would sweep every stray sentinel-scoped entry."
+        );
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut released = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            let before = state.ranges.len();
+            state.ranges.retain(|e| &e.deploy != deploy);
+            released += before - state.ranges.len();
+            if state.sequential_holder.as_ref().map(|s| &s.deploy) == Some(deploy) {
+                state.sequential_holder = None;
+                released += 1;
+            }
+            // wake_waiters(state) deferred — see docstring.
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        released
+    }
+
+    /// Unlink-gate query: is `(dev, inode)` currently holding
+    /// a lock that overlaps `range = (offset, length)`?
+    ///
+    /// Called from `fs_remove_file` / `fs_remove_dir` under
+    /// consensus mode (yet-to-land); callers surface
+    /// `FSERR_BUSY` on `true` and skip the unlink.  Oracular
+    /// callers skip this check entirely and log-warn instead.
+    ///
+    /// # Whole-file query shape
+    ///
+    /// For a whole-file unlink or truncate-to-zero probe,
+    /// pass `range = (0, u64::MAX)` — the sequential holder
+    /// branch short-circuits before range overlap scan runs,
+    /// but even without a sequential holder the `u64::MAX`
+    /// length saturates via [`ranges_overlap`]'s saturating
+    /// add so any held range overlaps.
+    ///
+    /// # Read-side hot path
+    ///
+    /// Uses the `read` guard (contention-free concurrent
+    /// readers).  Linear scan O(R) where R = ranges on this
+    /// file (≤ `MAX_RANGES_PER_FILE`).
+    pub fn is_locked(&self, dev_inode: DevInode, range: (u64, u64)) -> bool {
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
+        let Some(state) = guard.get(&dev_inode) else {
+            return false;
+        };
+        if state.sequential_holder.is_some() {
+            return true;
+        }
+        state
+            .ranges
+            .iter()
+            .any(|e| ranges_overlap((e.offset, e.length), range))
+    }
 }
 
 // Compile-time witness that `LockRegistry: Send + Sync` —
@@ -2451,5 +2610,302 @@ mod tests {
         let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
         assert!(!guard.contains_key(&(2, 2)));
         assert!(guard.contains_key(&(1, 1)));
+    }
+
+    // --- release_all_for_holder ------------------------------------
+
+    /// Sweeps every range entry whose `holder` matches the
+    /// argument, across every file in the registry.  Returns
+    /// the count released.
+    #[test]
+    fn release_all_for_holder_sweeps_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0x11; 32]);
+        let holder_b = HolderId::from_bytes([0x22; 32]);
+        // A holds locks on (1, 1) and (2, 2); B holds a lock on (1, 1).
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            10,
+            LockMode::Read,
+            holder_a.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (1, 1),
+            100,
+            10,
+            LockMode::Read,
+            holder_b.clone(),
+            deploy_scope(0x22),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            10,
+            LockMode::Write,
+            holder_a.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+
+        let n = reg.release_all_for_holder(&holder_a);
+        assert_eq!(n, 2, "two A-held ranges swept");
+
+        // B's lock on (1, 1) survives.
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert_eq!(guard.get(&(1, 1)).unwrap().ranges.len(), 1);
+        assert!(
+            !guard.contains_key(&(2, 2)),
+            "(2, 2) evicted (fully A-held)"
+        );
+    }
+
+    /// Sweeps the sequential_holder slot if `holder` matches.
+    /// Pins the sequential-side branch of the sweep.
+    #[test]
+    fn release_all_for_holder_clears_matching_sequential_holder() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        // Hand-populate a sequential holder (no sequential-acquire
+        // API yet; this slice's test only verifies sweep behavior).
+        {
+            let mut guard = poison_abort(reg.inner.write(), "LockRegistry.inner");
+            guard.insert((1, 1), FileLockState {
+                sequential_holder: Some(SequentialEntry {
+                    id: LockId::try_from(42).unwrap(),
+                    holder: holder.clone(),
+                    deploy: deploy_scope(0x11),
+                }),
+                ..Default::default()
+            });
+        }
+        let n = reg.release_all_for_holder(&holder);
+        assert_eq!(n, 1, "one sequential entry swept");
+        // State evicted (fully empty).
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert!(!guard.contains_key(&(1, 1)));
+    }
+
+    /// A holder with no locks returns 0 and leaves the map
+    /// unchanged.  Pins the idempotent no-op path.
+    #[test]
+    fn release_all_for_holder_no_matches_returns_zero() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0x11; 32]);
+        let other = HolderId::from_bytes([0xFF; 32]);
+        reg.try_acquire_range((1, 1), 0, 10, LockMode::Write, holder_a, deploy_scope(0x11))
+            .unwrap();
+        let n = reg.release_all_for_holder(&other);
+        assert_eq!(n, 0);
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert!(
+            guard.contains_key(&(1, 1)),
+            "unmatched holder leaves state intact"
+        );
+    }
+
+    /// Combined range + sequential removal in a single sweep.
+    /// Pins the `+= 1` sequential-side accounting in combination
+    /// with the `retain` range accounting — a future refactor
+    /// that double-counted (e.g., re-included the swept
+    /// sequential in `before - state.ranges.len()`) or missed
+    /// one of the two branches surfaces here with a wrong total.
+    #[test]
+    fn release_all_for_holder_combined_range_and_sequential_total() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        // Two range entries by `holder`.
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            10,
+            LockMode::Read,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (1, 1),
+            100,
+            10,
+            LockMode::Read,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        // Hand-populate a sequential_holder on a DIFFERENT file
+        // by the same holder (coexistence rules forbid both on
+        // the same file; sequential acquire API not landed yet
+        // so we populate directly).
+        {
+            let mut guard = poison_abort(reg.inner.write(), "LockRegistry.inner");
+            guard.insert((2, 2), FileLockState {
+                sequential_holder: Some(SequentialEntry {
+                    id: LockId::try_from(99).unwrap(),
+                    holder: holder.clone(),
+                    deploy: deploy_scope(0x11),
+                }),
+                ..Default::default()
+            });
+        }
+
+        let n = reg.release_all_for_holder(&holder);
+        assert_eq!(n, 3, "2 ranges + 1 sequential = 3 released");
+
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert!(!guard.contains_key(&(1, 1)), "fully-swept file evicted");
+        assert!(
+            !guard.contains_key(&(2, 2)),
+            "sequential-swept file evicted"
+        );
+    }
+
+    // --- release_all_for_deploy ------------------------------------
+
+    /// Sweeps every range entry whose `deploy` matches, across
+    /// every file.  Mirrors `release_all_for_holder` but keyed
+    /// on deploy.
+    #[test]
+    fn release_all_for_deploy_sweeps_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0x11; 32]);
+        let holder_b = HolderId::from_bytes([0x22; 32]);
+        let d1 = deploy_scope(0x11);
+        let d2 = deploy_scope(0x22);
+        reg.try_acquire_range((1, 1), 0, 10, LockMode::Read, holder_a.clone(), d1)
+            .unwrap();
+        reg.try_acquire_range((1, 1), 100, 10, LockMode::Read, holder_b, d2)
+            .unwrap();
+        reg.try_acquire_range((2, 2), 0, 10, LockMode::Write, holder_a, d1)
+            .unwrap();
+
+        let n = reg.release_all_for_deploy(&d1);
+        assert_eq!(n, 2, "two D1-held ranges swept");
+
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert_eq!(
+            guard.get(&(1, 1)).unwrap().ranges.len(),
+            1,
+            "D2's lock survives"
+        );
+        assert!(!guard.contains_key(&(2, 2)));
+    }
+
+    /// LOAD-BEARING sentinel guard: calling with `[0; 32]`
+    /// panics with the documented message to prevent a
+    /// pre-wiring regression that would otherwise sweep every
+    /// stray sentinel-scoped entry.
+    #[test]
+    #[should_panic(expected = "sentinel")]
+    fn release_all_for_deploy_panics_on_zero_sentinel() {
+        let reg = LockRegistry::new();
+        let _ = reg.release_all_for_deploy(&[0u8; 32]);
+    }
+
+    #[test]
+    fn release_all_for_deploy_no_matches_returns_zero() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range((1, 1), 0, 10, LockMode::Write, holder, deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(reg.release_all_for_deploy(&deploy_scope(0xFF)), 0);
+    }
+
+    // --- is_locked -------------------------------------------------
+
+    /// Empty registry → no file is locked.
+    #[test]
+    fn is_locked_empty_registry_returns_false() {
+        let reg = LockRegistry::new();
+        assert!(!reg.is_locked((1, 1), (0, 100)));
+    }
+
+    /// Tracked file with no overlap → false.
+    #[test]
+    fn is_locked_tracked_but_disjoint_returns_false() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range((1, 1), 0, 10, LockMode::Write, holder, deploy_scope(0x11))
+            .unwrap();
+        assert!(!reg.is_locked((1, 1), (100, 10)));
+    }
+
+    /// Overlap with ANY held range → true (holder-agnostic;
+    /// unlink doesn't care who holds it).
+    #[test]
+    fn is_locked_overlapping_range_returns_true() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range((1, 1), 0, 100, LockMode::Read, holder, deploy_scope(0x11))
+            .unwrap();
+        assert!(reg.is_locked((1, 1), (50, 50)));
+    }
+
+    /// Sequential holder → every query returns true (whole-
+    /// file exclusive).  LOAD-BEARING: pins the top-of-function
+    /// short-circuit.
+    #[test]
+    fn is_locked_sequential_holder_blocks_every_query() {
+        let reg = LockRegistry::new();
+        // Hand-populate a sequential holder.
+        {
+            let mut guard = poison_abort(reg.inner.write(), "LockRegistry.inner");
+            guard.insert((1, 1), FileLockState {
+                sequential_holder: Some(SequentialEntry {
+                    id: LockId::try_from(1).unwrap(),
+                    holder: HolderId::from_bytes([0x11; 32]),
+                    deploy: deploy_scope(0x11),
+                }),
+                ..Default::default()
+            });
+        }
+        // Even a tiny off-end range reports locked.
+        assert!(reg.is_locked((1, 1), (999_999, 1)));
+        assert!(reg.is_locked((1, 1), (0, 1)));
+    }
+
+    /// Whole-file probe `(0, u64::MAX)` detects any held range
+    /// via the saturating-add in `ranges_overlap`.  LOAD-
+    /// BEARING: pins the whole-file-unlink gate idiom.
+    #[test]
+    fn is_locked_whole_file_probe_detects_any_held_range() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        // Hold a tiny range near the top of the file space.
+        reg.try_acquire_range(
+            (1, 1),
+            u64::MAX - 1000,
+            100,
+            LockMode::Write,
+            holder,
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert!(reg.is_locked((1, 1), (0, u64::MAX)));
+    }
+
+    /// After `release`, the tracked file is evicted and
+    /// `is_locked` reads false — pins the integration between
+    /// release's eviction and is_locked's absent-key branch.
+    #[test]
+    fn is_locked_returns_false_after_release_evicts_state() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                10,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert!(reg.is_locked((1, 1), (0, 10)));
+        reg.release(id, &holder).unwrap();
+        assert!(!reg.is_locked((1, 1), (0, 10)));
     }
 }
