@@ -1,6 +1,6 @@
 // WAL fresh-tree applier — foundation types (PR #519) + pure
-// syscall helpers (this PR, slice 2 of the wal_applier
-// submodule tree).
+// syscall helpers (PR #521) + NSS lookup helpers (this PR,
+// slice 3 of the wal_applier submodule tree).
 //
 // PR #519 shipped the shared types the applier builds on:
 //
@@ -21,18 +21,23 @@
 //     (`MissingSidecarEntry`), and safe-descent failures
 //     (`SafeDescendFailed`).
 //
-// This slice (PR #520) adds the pure syscall helpers the
-// dispatcher calls: `format_quarantine` (QuarantineError →
-// String for the `SafeDescendFailed.reason` field),
-// `openat_leaf` (openat with S-1 `O_NOFOLLOW` discipline),
-// `pwrite_all` (EINTR-tolerant positioned-write loop),
-// `copy_at` (portable openat'd file copy via read+write
-// loop), and `check_path_allowed` (defense-in-depth
-// `allowed_roots` gate).
+// PR #521 added the pure syscall helpers the dispatcher calls:
+// `format_quarantine`, `openat_leaf`, `pwrite_all`, `copy_at`,
+// and `check_path_allowed`.
 //
-// Subsequent slices add the NSS lookup helpers
-// (`resolve_uid`, `resolve_gid`) and finally the main
-// [`apply_wal_to_fresh_tree`] dispatcher.
+// This slice (PR #522) adds the NSS lookup helpers used by
+// the Chown branch: `resolve_uid` (name → uid) and
+// `resolve_gid` (name → gid).  Both are thin adapters over
+// the libc FFI machinery in [`super::nss`]
+// ([`resolve_uid_detailed`] / [`resolve_gid_detailed`]) — the
+// shared machinery lives in `nss.rs` so future NSS tweaks
+// (ERANGE discipline, buffer ceiling, additional errno
+// handling) touch one site.  The adapter's job is just to
+// map the shared `Result<Option<u32>, i32>` surface onto the
+// applier's structured [`ApplierError`] variants.
+//
+// Subsequent slices add the main [`apply_wal_to_fresh_tree`]
+// dispatcher.
 //
 // # Why `ResolvedWalPath` and not `&Root` for replay sites
 //
@@ -576,6 +581,70 @@ pub(super) fn check_path_allowed(
     }
 }
 
+// ===========================================================
+// NSS lookup helpers (slice 3) — Chown branch supports
+// ===========================================================
+//
+// The Chown branch of the dispatcher receives `owner` and
+// `group` as textual names (via the WAL entry's
+// `Option<String>` fields) and must resolve them to numeric
+// `(uid, gid)` for `libc::fchownat`.
+//
+// Thin adapters over `super::nss::resolve_uid_detailed` /
+// `resolve_gid_detailed` — the core libc FFI machinery
+// (ERANGE grow-and-retry, SAFETY-commented syscall shape,
+// reentrant `_r` variants, buffer ceiling) lives in `nss.rs`
+// so a future NSS tweak touches one site.  The adapter's job
+// is just to map the shared `Result<Option<u32>, i32>`
+// surface onto `ApplierError`:
+//
+//   - `Ok(Some(uid))` → `Ok(uid)`.
+//   - `Ok(None)` → `Err(NssNotFound)` — genuine miss (null
+//     result_ptr, ENOENT, ESRCH).
+//   - `Err(errno)` → `Err(NssResolutionFailed { errno })` —
+//     any other failure (EINVAL for NUL in input, ERANGE at
+//     the `NSS_BUF_MAX` ceiling, EIO/EAGAIN/etc.).  The
+//     EINVAL mapping (vs. previously overloading NssNotFound
+//     for NUL inputs) is the semantic fix the consolidation
+//     carries along: "invalid input" and "name resolved to
+//     no entry" are distinct conditions with different
+//     operator-facing remediation.
+
+/// Resolve a user name to its numeric uid via
+/// [`super::nss::resolve_uid_detailed`], mapping onto the
+/// applier's structured [`ApplierError`] surface.
+#[allow(dead_code)]
+pub(super) fn resolve_uid(name: &str) -> Result<u32, ApplierError> {
+    match super::nss::resolve_uid_detailed(name) {
+        Ok(Some(uid)) => Ok(uid),
+        Ok(None) => Err(ApplierError::NssNotFound {
+            name: name.to_string(),
+        }),
+        Err(errno) => Err(ApplierError::NssResolutionFailed {
+            name: name.to_string(),
+            errno,
+        }),
+    }
+}
+
+/// Resolve a group name to its numeric gid via
+/// [`super::nss::resolve_gid_detailed`], mapping onto the
+/// applier's structured [`ApplierError`] surface.  Same shape
+/// as [`resolve_uid`].
+#[allow(dead_code)]
+pub(super) fn resolve_gid(name: &str) -> Result<u32, ApplierError> {
+    match super::nss::resolve_gid_detailed(name) {
+        Ok(Some(gid)) => Ok(gid),
+        Ok(None) => Err(ApplierError::NssNotFound {
+            name: name.to_string(),
+        }),
+        Err(errno) => Err(ApplierError::NssResolutionFailed {
+            name: name.to_string(),
+            errno,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::wal::WalOp;
@@ -1056,6 +1125,115 @@ mod tests {
                 assert_eq!(path, PathBuf::from("ghost.bin"));
             }
             other => panic!("expected IoFailure, got {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // NSS lookup helpers (slice 3)
+    // ---------------------------------------------------------------
+
+    /// `root` resolves to uid 0 on every POSIX system — the one
+    /// portable fixture that pins the happy-path lookup
+    /// end-to-end across Linux + macOS without a conditional.
+    #[test]
+    fn resolve_uid_known_name_root_resolves_to_zero() {
+        assert_eq!(resolve_uid("root").unwrap(), 0);
+    }
+
+    /// A clearly-nonexistent name surfaces [`ApplierError::NssNotFound`]
+    /// with the input preserved — operator diagnostic surface.
+    /// Using a UUID-like string makes a collision with a real
+    /// user ID vanishingly unlikely.
+    #[test]
+    fn resolve_uid_unknown_name_returns_nss_not_found() {
+        let bogus = "nss-ghost-9f3e7d8b-wal-applier-test";
+        match resolve_uid(bogus) {
+            Err(ApplierError::NssNotFound { name }) => assert_eq!(name, bogus),
+            other => panic!("expected NssNotFound, got {other:?}"),
+        }
+    }
+
+    /// A name containing a NUL byte fails the `CString::new`
+    /// pre-check in `nss::resolve_uid_detailed`, surfacing as
+    /// [`ApplierError::NssResolutionFailed { errno: EINVAL }`].
+    /// Pins the "invalid input" semantic — distinct from "name
+    /// not found" per the consolidation refactor.  A future
+    /// refactor that routes NUL-containing input through the
+    /// syscall (and thus into UB territory) surfaces here.
+    #[test]
+    fn resolve_uid_name_with_null_byte_returns_resolution_failed_einval() {
+        let bad = "root\0injected";
+        match resolve_uid(bad) {
+            Err(ApplierError::NssResolutionFailed { name, errno }) => {
+                assert_eq!(name, bad);
+                assert_eq!(errno, libc::EINVAL);
+            }
+            other => panic!("expected NssResolutionFailed(EINVAL) on NUL, got {other:?}"),
+        }
+    }
+
+    /// Portable group lookup: `daemon` exists on both Linux and
+    /// macOS.  We assert `Ok(_)` rather than pinning the numeric
+    /// gid because the value differs across distros (Linux gid=1
+    /// on most, macOS gid=1).  The pin is "the lookup machinery
+    /// works end-to-end"; the specific number is a system
+    /// configuration detail.
+    #[test]
+    fn resolve_gid_known_name_daemon_resolves() {
+        let out = resolve_gid("daemon");
+        assert!(
+            matches!(out, Ok(_)),
+            "`daemon` group lookup should succeed on any standard \
+             POSIX system; got {out:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_gid_unknown_name_returns_nss_not_found() {
+        let bogus = "nss-ghost-group-9f3e7d8b-wal-applier-test";
+        match resolve_gid(bogus) {
+            Err(ApplierError::NssNotFound { name }) => assert_eq!(name, bogus),
+            other => panic!("expected NssNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_gid_name_with_null_byte_returns_resolution_failed_einval() {
+        let bad = "wheel\0injected";
+        match resolve_gid(bad) {
+            Err(ApplierError::NssResolutionFailed { name, errno }) => {
+                assert_eq!(name, bad);
+                assert_eq!(errno, libc::EINVAL);
+            }
+            other => panic!("expected NssResolutionFailed(EINVAL) on NUL, got {other:?}"),
+        }
+    }
+
+    /// Empty name — `CString::new("")` succeeds (empty CStr is
+    /// valid), so the syscall runs with an empty C string.  POSIX
+    /// `getpwnam_r` returns success with a null `result_ptr` for
+    /// an empty name (no matching entry), surfacing as
+    /// [`ApplierError::NssNotFound`].  Pins the "empty name →
+    /// clean error, not panic" path.
+    #[test]
+    fn resolve_uid_empty_name_returns_nss_not_found() {
+        match resolve_uid("") {
+            Err(ApplierError::NssNotFound { name }) => assert!(name.is_empty()),
+            other => panic!("expected NssNotFound on empty, got {other:?}"),
+        }
+    }
+
+    /// Symmetric with the uid test — pin that gid lookup also
+    /// routes empty-name through the "clean error, not panic"
+    /// path.  Code paths are shared (both adapt over
+    /// `nss::*_detailed`), but the symmetric pin catches a
+    /// future refactor that diverged just one of the two
+    /// adapters.
+    #[test]
+    fn resolve_gid_empty_name_returns_nss_not_found() {
+        match resolve_gid("") {
+            Err(ApplierError::NssNotFound { name }) => assert!(name.is_empty()),
+            other => panic!("expected NssNotFound on empty, got {other:?}"),
         }
     }
 }
