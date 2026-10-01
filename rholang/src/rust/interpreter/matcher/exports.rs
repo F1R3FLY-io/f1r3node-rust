@@ -7,7 +7,7 @@ pub use models::rhoapi::expr::ExprInstance::{
     EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody, ENegBody,
     ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPlusBody, EPlusPlusBody,
     ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool, GByteArray, GDouble,
-    GFixedPoint, GInt, GString, GUri,
+    GFixedPoint, GInt, GInt32, GString, GUint16, GUint32, GUint64, GUint8, GUri,
 };
 pub use models::rhoapi::g_unforgeable::UnfInstance::{GDeployerIdBody, GPrivateBody};
 pub use models::rhoapi::var::VarInstance::{BoundVar, FreeVar, Wildcard};
