@@ -1149,6 +1149,7 @@ for pathmap_anchor_mutant in \
 done
 "$repo_root/scripts/check-pathmap-anchor-loom.sh"
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
+python3 "$repo_root/scripts/check-accepted-match-obligations.py" --check
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
 tlc_run "$tla_metadir" RSpaceCanonicalEgress.cfg RSpaceCanonicalEgress.tla -cleanup
 if canonical_egress_mutant="$({

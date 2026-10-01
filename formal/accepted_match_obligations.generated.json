@@ -1,0 +1,136 @@
+{
+  "causal_mutants": [],
+  "config": "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg",
+  "config_sha256": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
+  "model": "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla",
+  "model_sha256": "68ae034fcbea0f5cd6c83d3ff790e1cb9c5e9a42f8b11a50bac784b1ebbe335e",
+  "normal_suite_test_module": "rspace++/tests/hot_store/accepted_match_formal_bindings.rs",
+  "rocq": "formal/rocq/stack_safe_pda/theories/RSpaceCommit.v",
+  "rocq_print_assumptions": [
+    "refusal_is_observably_nonmutating",
+    "stale_epoch_cannot_commit",
+    "missing_persistent_witness_cannot_commit",
+    "inapplicable_delta_cannot_commit",
+    "comm_publication_follows_a_complete_commit",
+    "play_replay_same_ticket_same_result"
+  ],
+  "rocq_sha256": "f0157c777846b8629d7fb1a3f803efcc2450e859c44cafa027fe509e8fb9de65",
+  "rocq_theorems": [
+    {
+      "id": "ACM-RC-01",
+      "mode": "proof_only",
+      "obligation": "transition_is_deterministic",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-RC-02",
+      "mode": "executable_refinement",
+      "obligation": "refusal_is_observably_nonmutating",
+      "target_name": "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch"
+    },
+    {
+      "id": "ACM-RC-03",
+      "mode": "executable_refinement",
+      "obligation": "accepted_state_is_one_complete_proposal",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-RC-04",
+      "mode": "executable_refinement",
+      "obligation": "stale_epoch_cannot_commit",
+      "target_name": "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch"
+    },
+    {
+      "id": "ACM-RC-05",
+      "mode": "executable_refinement",
+      "obligation": "missing_persistent_witness_cannot_commit",
+      "target_name": "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch"
+    },
+    {
+      "id": "ACM-RC-06",
+      "mode": "executable_refinement",
+      "obligation": "inapplicable_delta_cannot_commit",
+      "target_name": "stale_selected_nonpersistent_or_persistent_path_preserves_all_other_changes"
+    },
+    {
+      "id": "ACM-RC-07",
+      "mode": "proof_only",
+      "obligation": "comm_publication_follows_a_complete_commit",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-RC-08",
+      "mode": "executable_refinement",
+      "obligation": "unrelated_group_is_preserved",
+      "target_name": "unrelated_mutation_does_not_invalidate_an_exact_selected_match"
+    },
+    {
+      "id": "ACM-RC-09",
+      "mode": "proof_only",
+      "obligation": "play_replay_same_ticket_same_result",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    }
+  ],
+  "tlc_invariants": [
+    {
+      "id": "ACM-TLA-01",
+      "mode": "proof_only",
+      "obligation": "TypeInvariant",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-TLA-02",
+      "mode": "executable_refinement",
+      "obligation": "PlayPublishesOneCompleteState",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-TLA-03",
+      "mode": "proof_only",
+      "obligation": "ReplayPublishesOneCompleteState",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-TLA-04",
+      "mode": "executable_refinement",
+      "obligation": "RejectedTransitionIsNonMutating",
+      "target_name": "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch"
+    },
+    {
+      "id": "ACM-TLA-05",
+      "mode": "proof_only",
+      "obligation": "EventPublicationFollowsCommit",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-TLA-06",
+      "mode": "executable_refinement",
+      "obligation": "StaleOrForgedTicketNeverCommits",
+      "target_name": "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch"
+    },
+    {
+      "id": "ACM-TLA-07",
+      "mode": "executable_refinement",
+      "obligation": "PersistentWitnessesAreRequired",
+      "target_name": "exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch"
+    },
+    {
+      "id": "ACM-TLA-08",
+      "mode": "executable_refinement",
+      "obligation": "CommittedMultiplicityAndArrivalAreExact",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-TLA-09",
+      "mode": "executable_refinement",
+      "obligation": "ContinuationAndJoinCommitTogether",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    },
+    {
+      "id": "ACM-TLA-10",
+      "mode": "proof_only",
+      "obligation": "PlayReplayTraceEquivalent",
+      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+    }
+  ]
+}
