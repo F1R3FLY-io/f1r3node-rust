@@ -19,7 +19,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::mpsc;
 
-/// Pipeline width; replay itself is serialized by the runtime's ReplayLock.
+/// Pipeline width; also the bound on concurrent consensus replays.
 const MAX_PARALLEL_BLOCKS: usize = 2;
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 

@@ -13,6 +13,7 @@ use std::time::Duration;
 use casper::rust::reporting_casper;
 use casper::rust::util::construct_deploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
+use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -208,4 +209,43 @@ async fn reporting_waits_for_consensus_replay() {
         .expect("Reporting replay did not resume")
         .expect("Reporting task failed")
         .expect("Reporting replay failed");
+}
+
+#[tokio::test]
+async fn block_replay_proceeds_while_another_consensus_replay_runs() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .expect("Failed to create network");
+    let deploy = construct_deploy::source_deploy_now(
+        r#"for (@a <- @"1") { Nil } | @"1"!("x")"#.to_string(),
+        None,
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .expect("Failed to construct deploy");
+    let block = nodes[0]
+        .add_block_from_deploys(&[deploy])
+        .await
+        .expect("Failed to add block");
+
+    let in_flight_replay = nodes[1]
+        .runtime_manager
+        .replay_lock()
+        .acquire_consensus()
+        .await
+        .expect("Replay semaphore closed");
+    let status = tokio::time::timeout(Duration::from_secs(60), nodes[1].process_block(block))
+        .await
+        .expect("Block replay waited for the in-flight consensus replay")
+        .expect("Block processing failed");
+    assert!(
+        matches!(status, Either::Right(_)),
+        "Block was not valid: {:?}",
+        status
+    );
+    drop(in_flight_replay);
 }
