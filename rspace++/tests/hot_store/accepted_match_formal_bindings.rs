@@ -372,6 +372,88 @@ fn bounded_multichannel_transition_refines_independent_sparse_count_oracle() {
     assert_extracted_commit_obligations_have_stable_normal_suite_bindings();
 }
 
+fn apply_frozen_split_predecessor(fixture: &Fixture, remove_joins: bool, publish_arrival: bool) {
+    let selected = fixture.selected_commit();
+    assert_eq!(
+        fixture
+            .store
+            .remove_continuation(&fixture.channels, selected.address.index),
+        Some(())
+    );
+    let removals = transition_delta(&fixture.paths, 1, 1, 0);
+    fixture.store.apply_datum_delta(removals.delta()).unwrap();
+    if remove_joins {
+        for channel in &fixture.channels {
+            assert_eq!(fixture.store.remove_join(channel, &fixture.channels), Some(()));
+        }
+    }
+    if publish_arrival {
+        let arrival = Datum::create(&fixture.channels[1], "arrival".to_owned(), false);
+        fixture.store.put_datum(&fixture.channels[1], arrival);
+    }
+}
+
+#[test]
+fn frozen_split_predecessor_agrees_with_atomic_success_and_mutants_diverge() {
+    let mut compared = 0;
+    for left_count in 1..=3 {
+        for right_count in 1..=3 {
+            for arrival_count in 0..=2 {
+                let atomic = Fixture::new(left_count, right_count, arrival_count, false);
+                let transition = atomic.transition(transition_delta(&atomic.paths, 1, 1, 1));
+                let result = atomic.store.apply_accepted_match(transition).unwrap();
+                let AcceptedMatchOutcome::Committed {
+                    continuation: Some(returned),
+                } = result
+                else {
+                    panic!("the atomic transition must commit its selected continuation")
+                };
+                assert_eq!(returned, atomic.continuation);
+
+                let predecessor = Fixture::new(left_count, right_count, arrival_count, false);
+                apply_frozen_split_predecessor(&predecessor, true, true);
+                let atomic_state = atomic.store.snapshot();
+                let predecessor_state = predecessor.store.snapshot();
+                assert_eq!(atomic_state.data, predecessor_state.data);
+                assert_eq!(atomic_state.continuations, predecessor_state.continuations);
+                assert_eq!(
+                    atomic_state.installed_continuations,
+                    predecessor_state.installed_continuations
+                );
+                assert_eq!(atomic_state.joins, predecessor_state.joins);
+                assert_eq!(atomic_state.installed_joins, predecessor_state.installed_joins);
+                assert_eq!(atomic.counts(), predecessor.counts());
+                let atomic_journal = atomic.store.state.read().unwrap().pending_journal();
+                assert!(
+                    predecessor
+                        .store
+                        .state
+                        .read()
+                        .unwrap()
+                        .matches_pending_journal(&atomic_journal),
+                    "the frozen predecessor must match all five atomic journal domains"
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 27);
+
+    let without_joins = Fixture::new(1, 1, 0, false);
+    apply_frozen_split_predecessor(&without_joins, false, true);
+    let atomic_joins = Fixture::new(1, 1, 0, false);
+    let transition = atomic_joins.transition(transition_delta(&atomic_joins.paths, 1, 1, 1));
+    assert!(matches!(
+        atomic_joins.store.apply_accepted_match(transition).unwrap(),
+        AcceptedMatchOutcome::Committed { .. }
+    ));
+    assert_ne!(without_joins.store.snapshot().joins, atomic_joins.store.snapshot().joins);
+
+    let without_arrival = Fixture::new(1, 1, 0, false);
+    apply_frozen_split_predecessor(&without_arrival, true, false);
+    assert_ne!(without_arrival.counts(), atomic_joins.counts());
+}
+
 #[test]
 fn exact_capabilities_refuse_wrong_source_missing_witness_and_stale_group_epoch() {
     for refusal in 0..3 {
