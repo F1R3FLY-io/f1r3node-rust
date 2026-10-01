@@ -124,7 +124,14 @@ use super::ConsensusMode;
 /// fingerprint fold advertises the constant to peering handshakes
 /// so a mismatched validator fails the `network_id` check at boot
 /// rather than silently forking.
-const FD_ENTROPY_HEADROOM_BITS: u32 = 20;
+///
+/// Exposed as `pub(crate)` so `dir_handle_table::FD_ENTROPY_HEADROOM_BITS`
+/// (which uses the same derivation and must share this value — a
+/// divergence would silently fork dir-fd allocation) can
+/// compile-time-assert equality.  Only this copy is registered
+/// in `CONSENSUS_FOLD`; the structural equality assertion covers
+/// the dir-table side.
+pub(crate) const FD_ENTROPY_HEADROOM_BITS: u32 = 20;
 
 // Compile-time invariant guard.  If a future change raises
 // `MAX_OPEN_FDS` past the entropy-headroom budget, the build

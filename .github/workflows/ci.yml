@@ -24,14 +24,19 @@ on:
       - trying
     tags:
       - "**"
+  # `labeled` carries the ci-heavy opt-in. `edited` stays: a stacked pull
+  # request's base change arrives as an edit, and the gate reads the base ref.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled]
+  merge_group:
 
 # GitHub keeps one running item and one pending item in each concurrency group.
 # Issue #267 showed that one shared push group can discard a pending test run.
 # A push key includes its ref and SHA. Thus, a branch and tag at one SHA stay
 # separate.
 # A newer PR head cancels only the obsolete run for that PR.
+# A merge group is never cancelled: the queue reads a cancelled check as failure
+# and ejects the group's pull requests.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.target_sha != '') }}
@@ -80,6 +85,7 @@ jobs:
           PR_BASE_REF: ${{ github.base_ref }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
         shell: bash -euo pipefail {0}
         run: |
           target="$REQUESTED_TARGET_SHA"
@@ -123,8 +129,14 @@ jobs:
               exit 1
             }
           fi
+          # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
+          # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
+          # GitHub-hosted checks only and reaches the heavy pipeline through the
+          # queue, so a green Integration context on a PR means "not run here".
           run_heavy=false
-          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
+          if [ "$EVENT_NAME" = merge_group ]; then
+            run_heavy=true
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
             run_heavy=true
           elif [ "$EVENT_NAME" = push ] && {
             [ "$EVENT_REF" = refs/heads/dev ] ||
@@ -133,6 +145,7 @@ jobs:
           }; then
             run_heavy=true
           elif [ "$EVENT_NAME" = pull_request ] \
+            && [ "$PR_HAS_HEAVY_LABEL" = true ] \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
             && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ]; } \
             && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ]; then
@@ -819,9 +832,11 @@ jobs:
     needs: [build_base, lint]
     # A newer branch or PR head replaces obsolete heavy work. Version tags use
     # separate groups and run to completion. OCI launch remains globally locked.
+    # A merge group is never cancelled: the queue reads a cancelled required
+    # check as a failure and ejects every pull request in the group.
     concurrency:
       group: ci-heavy-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref) }}
-      cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      cancel-in-progress: ${{ github.event_name != 'merge_group' && !startsWith(github.ref, 'refs/tags/') }}
     if: needs.build_base.outputs.RUN_HEAVY == 'true'
     # `secrets: inherit` is required here, not incidental. A called workflow's
     # jobs do not receive `secrets.*` merely by naming an environment — the
@@ -906,6 +921,58 @@ jobs:
             exit 1
           fi
           echo "All arm64 integration test slots succeeded"
+
+  # A failed merge group ejects its pull requests, and GitHub records that only as
+  # a timeline event on each one. A comment names the author and carries the run
+  # link, so the person who has to act learns about it without watching the queue.
+  notify_queue_failure:
+    name: Notify Queue Failure
+    needs: [pipeline, integration_tests_amd64, integration_tests_arm64]
+    if: >-
+      always() && github.event_name == 'merge_group'
+      && (needs.pipeline.result == 'failure'
+          || needs.integration_tests_amd64.result == 'failure'
+          || needs.integration_tests_arm64.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment on the group's pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # The group's pull requests are whatever the commits it added belong to;
+          # the queue ref names only the last one.
+          prs="$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" --jq '.commits[].sha' \
+            | while read -r sha; do
+                gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls" --jq '.[].number' || true
+              done | sort -u)"
+
+          if [ -z "$prs" ]; then
+            echo "::warning::merge group $HEAD_SHA maps to no pull request; nothing to notify"
+            exit 0
+          fi
+
+          # printf, not a multi-line string: a YAML block scalar would carry its
+          # own indentation into the comment, and four leading spaces make
+          # markdown render the paragraph as a code block.
+          body="$(printf '%s\n\n%s\n' \
+            "The merge group containing this pull request failed its integration checks, so the queue removed it. Run: $RUN_URL" \
+            "A batch failure does not always come from this pull request — the group also carried the others queued with it. Add the \`ci-heavy\` label to run the suite against this head alone, then queue again.")"
+
+          for pr in $prs; do
+            if gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "$body"; then
+              echo "commented on #$pr"
+            else
+              echo "::warning::could not comment on #$pr"
+            fi
+          done
 
   # Publish Docker image to Docker Hub + OCIR.
   # Runs on release tag pushes and on push to dev/master (with suffix).
