@@ -20,22 +20,43 @@
 // that later slices thread through the sidecar path.
 //
 // Slice 4 (PR #507) added the payload-hash sidecar:
-// [`hashes_sidecar_path`] (colocated `.hashes` path derivation),
-// [`read_hashes_sidecar`] (best-effort read that returns an
-// empty set on corruption rather than propagating), and
-// [`scan_retained_payload_hashes`] (union across a snapshot
-// directory).  The sidecar write is threaded into
-// [`write_snapshot`] as a best-effort tail.
+// [`hashes_sidecar_path`], [`read_hashes_sidecar`], and
+// [`scan_retained_payload_hashes`].  The sidecar write is
+// threaded into [`write_snapshot`] as a best-effort tail.
 //
-// Slice 5 (this PR) adds [`sweep_stale_tmp_files`] — a
-// best-effort maintenance helper that removes stale tmp files
-// left behind by a crash between `atomic_write_file`'s tmp
-// `sync_all` and its `rename`.  Handles both `.wal.tmp` and
-// `.hashes.tmp` shapes produced by the two current writers
-// (snapshot + sidecar).
+// Slice 5 (PR #508) added [`sweep_stale_tmp_files`] — a
+// best-effort maintenance helper that removes leaked
+// `.wal.tmp` / `.hashes.tmp` files.
 //
-// Manifest / writer / pruning all land in subsequent slices as
-// their own natural units.
+// Slice 6 (PR #509) added the manifest wire format:
+// [`MANIFEST_FORMAT_VERSION`], [`MANIFEST_FILENAME`],
+// [`ManifestEntry`] (struct + `data`/`empty` constructors), and
+// [`ManifestEntry::to_line`] / [`ManifestEntry::from_line`].
+//
+// Slice 7 (PR #510) added the manifest persistence layer:
+// [`append_manifest_entry`] (O_APPEND + create-if-missing,
+// line-atomic on common Linux filesystems) and
+// [`read_manifest`] (parse every line, missing file → empty
+// Vec, malformed line → [`SnapshotError::MalformedManifest`]).
+//
+// Slice 8 (PR #511) added [`prune_snapshot_dir`] — mtime-based
+// retention keeping the N newest `.wal` snapshots and their
+// paired `.hashes` sidecars (manifest-independent for
+// correctness under lost manifest entries).
+//
+// Slice 9 (this PR) adds H-4 signing on `ManifestEntry`:
+// [`ManifestEntry::sign_bytes`] (canonical byte-encoding of
+// non-sig fields → Blake2b256 → the message the signature
+// covers), [`ManifestEntry::signed`] (populate the `sig` field
+// by signing with a secp256k1 secret key), and
+// [`ManifestEntry::verify_with_pubkey`] (verify an entry's sig
+// against a public key).  Fills the `sig` field forward-
+// declared in PR #509's wire format.  New error variants
+// [`SnapshotError::UnsignedManifestEntry`] and
+// [`SnapshotError::ManifestSignatureInvalid`] let join clients
+// distinguish "unsigned" from "signature mismatch" cleanly.
+//
+// Writer lands in a subsequent slice as its own natural unit.
 //
 // # Snapshot semantics — log-structured
 //
@@ -138,6 +159,49 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES};
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
 
 crate::register_consensus_constant!(order = 15, name = SNAPSHOT_FORMAT_VERSION, u8_raw);
+
+/// Wire-format version of the on-disk `manifest.jsonl` line
+/// format.  Distinct from [`SNAPSHOT_FORMAT_VERSION`] because
+/// the two are independent wire surfaces: the `.wal` file bytes
+/// and the manifest text lines evolve on separate cadences.
+///
+/// A WAL encoding change (added field, new op tag) does NOT
+/// invalidate existing manifest lines; a manifest schema change
+/// (added key, renamed field) does NOT invalidate existing
+/// `.wal` snapshots.  Coupling the two under a single version
+/// would force every WAL bump to invalidate manifest lines
+/// (H-4 signatures unnecessarily) and vice versa.
+///
+/// # Wire-format contract
+///
+/// - The version is embedded as `"v":<n>` in the JSON line so
+///   readers can multi-decode across versions cleanly.  A future
+///   reader that understands versions 1..=N routes each line
+///   through the version-appropriate decoder.
+/// - Bumping this value is a coordinated upgrade — producers
+///   and consumers on the network MUST upgrade before the
+///   change activates, or joiners will refuse post-upgrade
+///   manifest lines.
+/// - The version is separate from consensus fold registration
+///   because the manifest is a LOCAL-STORAGE artifact — a
+///   joiner never trusts a manifest line without verifying the
+///   referenced snapshot bytes directly against the on-chain
+///   `WalSnapshotWrite` root.  Manifest divergence between
+///   validators does not fork the state; it degrades peer
+///   discovery.
+///
+/// # Version history
+///
+/// - `1`: initial layout.  Fields: `v`, `block_number`, `root`
+///   (hex string or null), `entries`, `ts_ms`, `sig` (optional
+///   hex string, populated by a later slice).
+pub const MANIFEST_FORMAT_VERSION: u8 = 1;
+
+/// Filename of the manifest inside the snapshot directory.
+///
+/// A single manifest per snapshot dir; appended to (`O_APPEND`)
+/// by the writer machinery in a later slice.
+pub const MANIFEST_FILENAME: &str = "manifest.jsonl";
 
 /// Encoded WAL slice + its two consensus-observable hashes.
 ///
@@ -428,6 +492,30 @@ pub enum SnapshotError {
     /// the assembled snapshot as byzantine and re-fetch from a
     /// different peer set.
     MalformedBlob { offset: usize, message: String },
+    /// [`read_manifest`] encountered a malformed line at
+    /// (1-based) `line`.  Distinct from [`Io`] so the
+    /// join-protocol layer can pattern-match manifest schema
+    /// issues (retry with a different peer's manifest) apart
+    /// from real I/O failures (disk problem, escalate).  `cause`
+    /// carries the underlying [`ManifestEntry::from_line`] error
+    /// text.
+    MalformedManifest { line: usize, cause: String },
+    /// [`ManifestEntry::verify_with_pubkey`] was called on an
+    /// entry whose `sig` field is `None`.  Join clients MUST
+    /// reject unsigned entries in production (unless an explicit
+    /// "trust local disk" override is set) — an unsigned entry
+    /// is indistinguishable from one with a stripped signature.
+    UnsignedManifestEntry,
+    /// Signature verification failed: the `sig` field is present
+    /// but does not match the public key over the entry's
+    /// canonical [`ManifestEntry::sign_bytes`].  Causes:
+    /// tampering (sig forged for different field values),
+    /// wrong public key for this entry's writer, or a signature
+    /// over a different canonical encoding (version drift).
+    /// Distinct from [`UnsignedManifestEntry`] so the join
+    /// protocol can diagnose "unsigned by writer" vs. "signed
+    /// but doesn't verify."
+    ManifestSignatureInvalid,
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -451,6 +539,15 @@ impl std::fmt::Display for SnapshotError {
             ),
             SnapshotError::MalformedBlob { offset, message } => {
                 write!(f, "snapshot blob malformed at offset {offset}: {message}")
+            }
+            SnapshotError::MalformedManifest { line, cause } => {
+                write!(f, "manifest line {line}: {cause}")
+            }
+            SnapshotError::UnsignedManifestEntry => {
+                write!(f, "manifest entry is unsigned (no sig field)")
+            }
+            SnapshotError::ManifestSignatureInvalid => {
+                write!(f, "manifest entry signature verification failed")
             }
         }
     }
@@ -1307,6 +1404,705 @@ pub fn sweep_stale_tmp_files(snapshot_dir: &Path, older_than_secs: u64) -> std::
     Ok(removed)
 }
 
+// ===========================================================
+// Directory pruning (slice 8) — retention by mtime
+// ===========================================================
+
+/// Prune old `.wal` snapshots (and their paired `.hashes`
+/// sidecars) from `snapshot_dir`, keeping the `keep_last_n`
+/// newest by mtime.  Returns the number of `.wal` files
+/// successfully removed.  Sidecar removals are silently
+/// side-effected (they contribute to the retention union but
+/// not to the return count).
+///
+/// # Conservative posture — manifest-independent
+///
+/// This function does NOT consult `<snapshot_dir>/manifest.jsonl`
+/// when deciding what to keep.  Retention is purely mtime-
+/// based over the actual `.wal` files present on disk.  The
+/// rationale ties back to [`append_manifest_entry`]'s no-fsync
+/// posture: a crash between a snapshot write and its manifest
+/// append could leave a durable `.wal` file whose manifest
+/// entry was lost, and a manifest-driven pruner would then
+/// over-eagerly delete it.  By using on-disk mtime as the
+/// authority, a lost manifest entry cannot orphan its `.wal`
+/// file.
+///
+/// If a future design ever requires manifest-authoritative
+/// pruning (e.g., to bound the manifest against on-disk state),
+/// [`append_manifest_entry`] must first gain fsync semantics
+/// AND the retention protocol must handle the "snapshot on
+/// disk but not in any peer's manifest" fetch fallback.
+///
+/// # Symlink skip — operator hygiene defense
+///
+/// The scan uses `entry.file_type()` (which under the hood is
+/// `lstat`, not `stat`) to detect and skip symlink `.wal`
+/// entries; mtimes are read via `symlink_metadata` (also
+/// lstat-based) as TOCTOU hardening — a replace-with-symlink
+/// race between the file_type check and the metadata read
+/// would still read the link's own metadata, not the target's.
+/// Rationale: an operator whose snapshot dir contains an
+/// attacker-planted `evil.wal -> /etc/passwd` symlink would
+/// otherwise let the symlink freshly-touch itself past the
+/// mtime cutoff on every scan (and worse, `remove_file` on the
+/// symlink would just unlink the symlink — safe, but noisy).
+/// Skip cleanly.  The snapshot directory is expected to be
+/// exclusively owned by the validator; symlinks are not a
+/// supported shape.
+///
+/// # Sidecar pairing — only on successful `.wal` removal
+///
+/// Each SUCCESSFULLY removed `.wal` triggers a best-effort
+/// remove of the colocated `.hashes` sidecar
+/// (`snapshot_path` and `hashes_sidecar_path` share the same
+/// stem, so `path.with_extension("hashes")` matches).  ENOENT
+/// on the sidecar is silently OK — pre-sidecar snapshots
+/// (before PR #507) don't have one, and a mid-flight crash
+/// between snapshot write and sidecar write can leave the
+/// same shape.  Other sidecar errors log at `warn` but do NOT
+/// fail the prune (the `.wal` is already gone; a leaked
+/// sidecar just over-counts hashes in the retention union —
+/// safe direction).
+///
+/// # The orphan-`.wal` invariant
+///
+/// Sidecar removal is deliberately NOT attempted when `.wal`
+/// removal fails.  Removing the sidecar for a still-live
+/// orphan `.wal` would under-count its payload hashes in the
+/// next [`scan_retained_payload_hashes`] pass → the payload
+/// store would delete those referenced bytes → the snapshot
+/// would become unreadable.  This is the same "orphan
+/// payload" hazard the manifest-independent pruning design
+/// was built to avoid, surfacing at the `.wal`-removal-failure
+/// path.  Pinned by
+/// `prune_wal_removal_failure_preserves_paired_sidecar`.
+///
+/// # Failure posture
+///
+/// Individual `remove_file` failures on the `.wal` log at
+/// `warn` and do NOT propagate — a permission problem on one
+/// snapshot must not abort the prune of the rest.  The initial
+/// `read_dir` failure DOES propagate (same posture as
+/// [`sweep_stale_tmp_files`]).
+pub fn prune_snapshot_dir(snapshot_dir: &Path, keep_last_n: usize) -> std::io::Result<usize> {
+    let mut wal_files: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(snapshot_dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("wal") {
+                return None;
+            }
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_symlink() {
+                tracing::debug!(
+                    target: "f1r3fly.fs_wal.snapshot",
+                    path = %path.display(),
+                    "prune_snapshot_dir: skipping symlink .wal entry \
+                     (snapshot dir should be exclusively owned)"
+                );
+                return None;
+            }
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|mtime| (path, mtime))
+        })
+        .collect();
+    // Newest-first; keep the first `keep_last_n`.  Secondary
+    // key on filename (content-hash hex) breaks ties
+    // deterministically when two snapshots share an mtime — on
+    // filesystems with 1-second mtime resolution, back-to-back
+    // writes within the same second would otherwise have
+    // read_dir-order-dependent (OS/filesystem-dependent)
+    // survivors.
+    wal_files.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
+    });
+
+    let mut removed = 0;
+    for (path, _) in wal_files.into_iter().skip(keep_last_n) {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                removed += 1;
+                // Pair-remove the sidecar ONLY when the `.wal`
+                // removal succeeded.  Removing the sidecar for a
+                // still-live orphan `.wal` would under-count that
+                // snapshot's payload hashes in the next
+                // `scan_retained_payload_hashes` pass → the
+                // payload store would delete the referenced
+                // bytes → the snapshot would become unreadable.
+                // See the "Sidecar pairing" docstring section.
+                let sidecar_path = path.with_extension("hashes");
+                match std::fs::remove_file(&sidecar_path) {
+                    Ok(()) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.fs_wal.payload_store",
+                        path = %sidecar_path.display(),
+                        error = %e,
+                        "prune_snapshot_dir: failed to remove hashes sidecar; \
+                         the sidecar will leak but retention correctness is preserved"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot",
+                path = %path.display(),
+                error = %e,
+                "prune_snapshot_dir: failed to remove old snapshot; \
+                 leaving paired sidecar in place so retention keeps counting its payloads"
+            ),
+        }
+    }
+    Ok(removed)
+}
+
+// ===========================================================
+// Manifest wire format (slice 6) — ManifestEntry + to/from line
+// ===========================================================
+
+/// One line in the manifest.  Serialized to a compact JSON
+/// object with fixed field ordering by [`ManifestEntry::to_line`]
+/// and parsed by the strict-schema [`ManifestEntry::from_line`].
+///
+/// A manifest advertises "which snapshots exist at which block
+/// heights" so joiners can discover fetchable snapshots by
+/// scanning peers' manifests instead of guessing content-
+/// addressed hashes.  A joiner still verifies each fetched
+/// snapshot's bytes against the on-chain `WalSnapshotWrite`
+/// root before applying — the manifest is discovery, not
+/// authority.
+///
+/// # Field ordering (wire-format contract)
+///
+/// The serialization is `{v, block_number, root, entries,
+/// ts_ms, [sig]}`.  Adding a field is a coordinated upgrade
+/// (bump [`MANIFEST_FORMAT_VERSION`]).  Removing or renaming a
+/// field is a hard fork of the manifest wire format.
+///
+/// # `sig` field
+///
+/// `sig` is an optional [`Vec<u8>`] carrying a secp256k1
+/// signature over the canonicalized non-`sig` fields (H-4).
+/// This slice ships the wire-format layer only — the
+/// `sign_bytes` / `signed` / `verify_with_pubkey` methods land
+/// in a follow-up.  Callers wanting to write an unsigned
+/// manifest line pass `sig = None`; the emitted line omits the
+/// `sig` field entirely.  On parse, absence of `sig` yields
+/// `None`; presence yields `Some(bytes)`.  The join-protocol
+/// layer (yet-to-land) MUST reject `None` in production unless
+/// an explicit "trust local disk" override is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestEntry {
+    /// Block number the snapshot corresponds to.  Under
+    /// last-finalized-block cadence (yet-to-land), the
+    /// finalized-block height at which this snapshot was written.
+    pub block_number: i64,
+    /// `Some(root)` for a data snapshot; `None` for the
+    /// empty-slice sentinel.
+    pub root: Option<[u8; 32]>,
+    /// Number of `WalEntry` records the snapshot encodes.  Zero
+    /// for the empty sentinel; strictly positive for data.
+    pub entries: u64,
+    /// Wall-clock write timestamp, ms since UNIX_EPOCH.
+    /// Best-effort — a validator whose clock is skewed still
+    /// produces a valid manifest, but comparisons across peers
+    /// are noisy.
+    pub ts_ms: i64,
+    /// H-4 optional secp256k1 signature (see struct-level
+    /// docstring).  `None` = unsigned; `Some(bytes)` = signed.
+    /// This slice ships wire-format only; the actual signing
+    /// methods land later.
+    pub sig: Option<Vec<u8>>,
+}
+
+impl ManifestEntry {
+    /// Constructor for a data-snapshot manifest entry.  `ts_ms`
+    /// is populated from [`now_ms`] so callers get a wall-clock
+    /// stamp without threading a clock parameter.
+    pub fn data(block_number: i64, root: [u8; 32], entries: usize) -> Self {
+        Self {
+            block_number,
+            root: Some(root),
+            entries: entries as u64,
+            ts_ms: now_ms(),
+            sig: None,
+        }
+    }
+
+    /// Constructor for an empty-slice sentinel entry.  Some
+    /// blocks produce no WAL entries (no fs syscalls); the
+    /// manifest still records them so a joiner can distinguish
+    /// "we produced no snapshot at height N" from "we never
+    /// finalized height N."
+    pub fn empty(block_number: i64) -> Self {
+        Self {
+            block_number,
+            root: None,
+            entries: 0,
+            ts_ms: now_ms(),
+            sig: None,
+        }
+    }
+
+    /// Serialize to a single JSON line (no trailing newline).
+    /// Fixed field order + minimal whitespace so peers parsing
+    /// with a hand-rolled reader don't have to canonicalize.
+    ///
+    /// Field order: `v`, `block_number`, `root`, `entries`,
+    /// `ts_ms`, [`sig`].  `sig` is omitted entirely when `None`.
+    pub fn to_line(&self) -> String {
+        let root_field = match &self.root {
+            Some(r) => format!("\"{}\"", hex_encode(r)),
+            None => "null".to_string(),
+        };
+        match &self.sig {
+            Some(s) => format!(
+                "{{\"v\":{},\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{},\"sig\":\"{}\"}}",
+                MANIFEST_FORMAT_VERSION,
+                self.block_number,
+                root_field,
+                self.entries,
+                self.ts_ms,
+                hex_encode(s),
+            ),
+            None => format!(
+                "{{\"v\":{},\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
+                MANIFEST_FORMAT_VERSION, self.block_number, root_field, self.entries, self.ts_ms,
+            ),
+        }
+    }
+
+    /// Parse a single manifest line.  Rejects any input that
+    /// doesn't match the strict schema — a corrupted line
+    /// surfaces here rather than mid-catchup.
+    ///
+    /// # Version handling
+    ///
+    /// The `"v"` field is mandatory.  A missing `v` is either a
+    /// pre-versioned line or a corrupted one; both are treated
+    /// as untrusted and rejected so a silent decode of
+    /// "someone's future schema as v1" can never happen.  A
+    /// `v` value not matching [`MANIFEST_FORMAT_VERSION`] is
+    /// rejected with a coordinated-upgrade message.
+    ///
+    /// # Parser posture
+    ///
+    /// Hand-rolled — deliberately not `serde` — to keep the
+    /// line format independent of any Rust crate's
+    /// deserializer behavior and to make the wire format
+    /// reproducible in other languages.  Errors are returned as
+    /// [`String`] here (the persistence layer, in a later
+    /// slice, wraps these into `SnapshotError::Io(InvalidData)`
+    /// with the line number).
+    pub fn from_line(line: &str) -> Result<Self, String> {
+        let trimmed = line.trim();
+        let inner = trimmed
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .ok_or_else(|| format!("manifest line missing braces: {line:?}"))?;
+        let mut saw_v = false;
+        let mut block_number: Option<i64> = None;
+        let mut root: Option<Option<[u8; 32]>> = None;
+        let mut entries: Option<u64> = None;
+        let mut ts_ms: Option<i64> = None;
+        let mut sig: Option<Vec<u8>> = None;
+        for part in split_top_level_commas(inner) {
+            let (key, value) = part
+                .split_once(':')
+                .ok_or_else(|| format!("manifest kv missing `:` in {part:?}"))?;
+            let key = key.trim().trim_matches('"');
+            let value = value.trim();
+            match key {
+                "v" => {
+                    let v: u8 = value.parse().map_err(|e| format!("v parse: {e}"))?;
+                    if v != MANIFEST_FORMAT_VERSION {
+                        return Err(format!(
+                            "unsupported manifest version {v} (this validator understands \
+                             version {MANIFEST_FORMAT_VERSION}); a coordinated upgrade may \
+                             be needed"
+                        ));
+                    }
+                    saw_v = true;
+                }
+                "block_number" => {
+                    block_number = Some(
+                        value
+                            .parse()
+                            .map_err(|e| format!("block_number parse: {e}"))?,
+                    );
+                }
+                "root" => {
+                    if value == "null" {
+                        root = Some(None);
+                    } else {
+                        let hex = value.trim_matches('"');
+                        if hex.len() != 64 {
+                            return Err(format!("root hex must be 64 chars; got {}", hex.len()));
+                        }
+                        let bytes = hex_decode_32(hex)?;
+                        root = Some(Some(bytes));
+                    }
+                }
+                "entries" => {
+                    entries = Some(value.parse().map_err(|e| format!("entries parse: {e}"))?);
+                }
+                "ts_ms" => {
+                    ts_ms = Some(value.parse().map_err(|e| format!("ts_ms parse: {e}"))?);
+                }
+                "sig" => {
+                    let hex = value.trim_matches('"');
+                    // secp256k1 sigs are DER-ish, variable length (~70-72
+                    // bytes typical).  Accept any even-length hex that
+                    // decodes cleanly; length validation lives in the
+                    // (yet-to-land) verify_with_pubkey.
+                    if hex.len() % 2 != 0 {
+                        return Err(format!("sig hex length must be even; got {}", hex.len()));
+                    }
+                    let mut bytes = Vec::with_capacity(hex.len() / 2);
+                    for i in (0..hex.len()).step_by(2) {
+                        let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+                            .map_err(|e| format!("sig hex byte {i}: {e}"))?;
+                        bytes.push(byte);
+                    }
+                    sig = Some(bytes);
+                }
+                other => {
+                    return Err(format!("unknown manifest key `{other}`"));
+                }
+            }
+        }
+        if !saw_v {
+            return Err(format!(
+                "missing `v` field (mandatory); expected v = {MANIFEST_FORMAT_VERSION}"
+            ));
+        }
+        Ok(Self {
+            block_number: block_number.ok_or("missing block_number")?,
+            root: root.ok_or("missing root")?,
+            entries: entries.ok_or("missing entries")?,
+            ts_ms: ts_ms.ok_or("missing ts_ms")?,
+            sig,
+        })
+    }
+
+    // -------------------------------------------------------
+    // H-4 signing (slice 9)
+    // -------------------------------------------------------
+
+    /// Canonical byte-encoding of the four non-`sig` fields,
+    /// Blake2b256-hashed → the 32-byte message a secp256k1
+    /// signature covers.
+    ///
+    /// # Layout (binary, big-endian)
+    ///
+    ///   `MANIFEST_FORMAT_VERSION (u8)`
+    /// | `block_number (i64 BE)`
+    /// | `root presence tag (u8: 0=None, 1=Some)` [+ 32 bytes if 1]
+    /// | `entries (u64 BE)`
+    /// | `ts_ms (i64 BE)`
+    ///
+    /// Then `Blake2b256(buf)`.
+    ///
+    /// # Why binary (not JSON) canonical encoding
+    ///
+    /// The signed message is deliberately NOT the JSON output
+    /// of [`ManifestEntry::to_line`].  JSON is for interop and
+    /// operator inspection; binary canonical encoding is for
+    /// signature stability.  A future `to_line` tweak (e.g.,
+    /// Unicode escape handling, number formatting) would
+    /// invalidate every existing signature if signing covered
+    /// the JSON text.  Binary covers only the semantic field
+    /// values, so a signature survives any wire-format
+    /// refactor as long as `MANIFEST_FORMAT_VERSION` doesn't
+    /// change.
+    ///
+    /// # Why include `MANIFEST_FORMAT_VERSION` in the message
+    ///
+    /// Ties the signature to the specific manifest format.  If
+    /// the format ever bumps to v2 with a new field, a v1 sig
+    /// cannot be mis-interpreted as a valid v2 sig (the
+    /// prepended version byte would differ, Blake2b256 output
+    /// would differ, verify would fail).
+    pub fn sign_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(1 + 8 + 1 + 32 + 8 + 8);
+        buf.push(MANIFEST_FORMAT_VERSION);
+        buf.extend_from_slice(&self.block_number.to_be_bytes());
+        match &self.root {
+            Some(r) => {
+                buf.push(1);
+                buf.extend_from_slice(r);
+            }
+            None => buf.push(0),
+        }
+        buf.extend_from_slice(&self.entries.to_be_bytes());
+        buf.extend_from_slice(&self.ts_ms.to_be_bytes());
+        Blake2b256::hash(buf)
+    }
+
+    /// Return a copy of `self` with the `sig` field populated
+    /// by signing [`sign_bytes`] with `sk_bytes` (a 32-byte
+    /// secp256k1 secret key).  The caller is responsible for
+    /// invoking this before writing to the manifest; the
+    /// (yet-to-land) higher-level writer wraps the two-step
+    /// (sign + append).
+    ///
+    /// # Signature determinism depends on the Secp256k1 strategy
+    ///
+    /// This crate's [`crypto::rust::signatures::secp256k1::Secp256k1`]
+    /// uses `sign_prehash` (RFC 6979 deterministic nonces), so
+    /// two signings of the same entry under the same key
+    /// produce byte-identical `sig` bytes — pinned by
+    /// `manifest_signed_is_deterministic_rfc6979`.  Do NOT rely
+    /// on this cross-strategy: a future swap to a non-RFC-6979
+    /// backend (e.g., randomized ECDSA) would make the `sig`
+    /// bytes non-deterministic across invocations.  Both bytes
+    /// would still verify under the same public key — the
+    /// signature's semantic contract is "verifies under this
+    /// public key over this message," not "produces identical
+    /// bytes."  Consumers checking sig-equality (e.g.,
+    /// detecting duplicate manifest entries) MUST use the
+    /// semantic fields, not `sig` bytes.
+    pub fn signed(mut self, sk_bytes: &[u8]) -> Self {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let msg = self.sign_bytes();
+        let sig = Secp256k1.sign(&msg, sk_bytes);
+        self.sig = Some(sig);
+        self
+    }
+
+    /// Verify the entry's signature against a public key.
+    ///
+    /// Returns [`SnapshotError::UnsignedManifestEntry`] if
+    /// `sig` is `None`; returns
+    /// [`SnapshotError::ManifestSignatureInvalid`] if the
+    /// signature doesn't verify.  Join-protocol MUST call this
+    /// on every manifest line before treating `root` as
+    /// authoritative.  The two-variant split lets the join
+    /// protocol distinguish "writer never signed" (operator
+    /// misconfig or local-disk-tooling edit) from "signature
+    /// present but doesn't verify" (tampering, wrong pubkey,
+    /// or canonical-encoding drift).
+    pub fn verify_with_pubkey(&self, pk_bytes: &[u8]) -> Result<(), SnapshotError> {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let sig = self
+            .sig
+            .as_deref()
+            .ok_or(SnapshotError::UnsignedManifestEntry)?;
+        let msg = self.sign_bytes();
+        if !Secp256k1.verify(&msg, sig, pk_bytes) {
+            return Err(SnapshotError::ManifestSignatureInvalid);
+        }
+        Ok(())
+    }
+}
+
+// ===========================================================
+// Manifest persistence (slice 7) — append + read
+// ===========================================================
+
+/// Append a manifest entry to `<snapshot_dir>/manifest.jsonl`.
+/// Creates the file with `0o644` on first append.
+///
+/// # O_APPEND semantics
+///
+/// Uses O_APPEND.  On common Linux filesystems (ext4, xfs), a
+/// single `write_all` call for a payload <= PIPE_BUF (4 KiB on
+/// Linux, 512 bytes on some BSDs) is atomic against concurrent
+/// writers — no torn lines.  A single manifest line fits in
+/// ~250 bytes worst case (v + block_number + 64-char hex root +
+/// entries + ts_ms + optional 144-char hex sig).
+///
+/// POSIX itself only guarantees this atomicity for pipes;
+/// regular-file behavior is filesystem-specific.  NFSv3 in
+/// particular has weaker semantics.  Under the intended
+/// single-writer SnapshotWriter cadence the concurrent case is
+/// degenerate anyway; the O_APPEND posture is defense-in-depth
+/// for operator side-band tooling on common local filesystems.
+///
+/// # Explicit 0o644 on unix
+///
+/// Matches [`atomic_write_file`]'s discipline — the leader's
+/// umask does not leak to any joiner reading the manifest over
+/// shared storage.  Mode applies only on first-create; a
+/// subsequent append to an existing differently-moded file
+/// does NOT rectify the mode.
+///
+/// # No fsync — manifest is discovery, not authoritative
+///
+/// This function does NOT `fsync` the manifest file or the
+/// containing directory.  Deliberate: the manifest is a
+/// discovery artifact, not consensus authority.  The
+/// referenced snapshot bytes themselves are already durable
+/// (via [`atomic_write_file`]'s tmp+fsync+rename+dir-fsync
+/// discipline).  A crash between this append and the next
+/// natural sync loses the manifest entry from local durable
+/// storage; the consequences are bounded:
+///
+///   - **Discovery**: a joiner querying this peer's manifest
+///     won't see the lost entry; they can rediscover the
+///     snapshot via another peer's manifest, direct-by-root
+///     fetch, or subsequent re-appends by the writer.
+///   - **Retention**: [`prune_snapshot_dir`] (yet to land)
+///     will follow a "keep on-disk `.wal` if referenced by
+///     manifest OR present on disk within retention window"
+///     posture, so a lost manifest entry does not orphan its
+///     `.wal` file to over-eager deletion.
+///
+/// If a future pruning design instead treats the manifest as
+/// authoritative (delete `.wal` files not in manifest), this
+/// no-fsync posture becomes unsafe and MUST be revisited.
+pub fn append_manifest_entry(
+    snapshot_dir: &Path,
+    entry: ManifestEntry,
+) -> Result<(), SnapshotError> {
+    use std::io::Write;
+
+    let path = snapshot_dir.join(MANIFEST_FILENAME);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o644);
+    }
+    let mut file = opts.open(&path)?;
+    let mut line = entry.to_line();
+    line.push('\n');
+    file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Read every manifest entry from `<snapshot_dir>/manifest.jsonl`
+/// in file order.  Blank lines skipped.
+///
+/// # Missing file → empty Vec
+///
+/// A fresh install has no manifest yet; retention and discovery
+/// treat "no manifest" as "no snapshots advertised."  Returning
+/// an error instead would force every caller to special-case
+/// [`ErrorKind::NotFound`] as an empty result.
+///
+/// # Malformed line → error with line number
+///
+/// A corrupt line halts parsing at that line and surfaces
+/// [`SnapshotError::MalformedManifest`] with the 1-based line
+/// number so an operator inspecting the manifest can jump
+/// straight to the offending line.  The distinct variant (vs.
+/// wrapping the string in `Io(InvalidData)`) lets the
+/// join-protocol layer pattern-match manifest schema issues
+/// (retry with a different peer's manifest) apart from real
+/// I/O failures (disk problem, escalate).  Join clients should
+/// NOT treat entries before the malformed line as a "best-
+/// effort prefix" — that opens a "who saw what prefix"
+/// divergence hazard between joiners at different manifest read
+/// points; retry with a fixed manifest instead.
+pub fn read_manifest(snapshot_dir: &Path) -> Result<Vec<ManifestEntry>, SnapshotError> {
+    let path = snapshot_dir.join(MANIFEST_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(SnapshotError::Io(e)),
+    };
+    let mut out = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = ManifestEntry::from_line(line)
+            .map_err(|cause| SnapshotError::MalformedManifest { line: i + 1, cause })?;
+        out.push(entry);
+    }
+    Ok(out)
+}
+
+/// Wall-clock milliseconds since UNIX_EPOCH.  Saturates to
+/// [`i64::MAX`] if the clock is set far in the future
+/// (astronomically improbable but keeps the return total).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Lowercase-hex encoding.  Hand-rolled to match the rest of
+/// this module's hex conventions (no `hex` crate dependency
+/// coupling for a couple call sites).
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Decode a 64-char lowercase-hex string to a `[u8; 32]`.
+/// Returns a diagnostic error on wrong length or non-hex
+/// digits.
+fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err(format!("hex must be 64 chars; got {}", hex.len()));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("hex byte {i}: {e}"))?;
+    }
+    Ok(out)
+}
+
+/// Split a top-level JSON-object body on commas that are NOT
+/// inside a quoted string.  The manifest line format has no
+/// nested objects or arrays, so this is sufficient — a
+/// full JSON parser would be overkill.  Handles escaped quotes
+/// (`\"`) inside strings.
+fn split_top_level_commas(inner: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_str = false;
+    let mut escape = false;
+    for c in inner.chars() {
+        if escape {
+            cur.push(c);
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if c == '\\' {
+                escape = true;
+                cur.push(c);
+                continue;
+            }
+            if c == '"' {
+                in_str = false;
+            }
+            cur.push(c);
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                cur.push(c);
+            }
+            ',' => {
+                parts.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur.trim().to_string());
+    }
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -2014,6 +2810,18 @@ mod tests {
             message: "test-message".into(),
         });
         assert!(s.contains("42") && s.contains("test-message"), "got {s:?}");
+
+        let s = format!("{}", SnapshotError::MalformedManifest {
+            line: 17,
+            cause: "example-cause".into(),
+        });
+        assert!(s.contains("17") && s.contains("example-cause"), "got {s:?}");
+
+        let s = format!("{}", SnapshotError::UnsignedManifestEntry);
+        assert!(s.contains("unsigned"), "got {s:?}");
+
+        let s = format!("{}", SnapshotError::ManifestSignatureInvalid);
+        assert!(s.contains("signature verification failed"), "got {s:?}");
 
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
         let s = format!("{}", SnapshotError::Io(io_err));
@@ -2747,5 +3555,1037 @@ mod tests {
         // Even at older_than_secs = 0, nothing to sweep — rename
         // consumed the tmp during the write.
         assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Manifest wire format (slice 6)
+    // ---------------------------------------------------------------
+
+    /// Coordinated-upgrade surface pin.  Bumping this value invalidates
+    /// existing manifest lines cross the network and must land as a
+    /// coordinated upgrade.
+    #[test]
+    fn manifest_format_version_pinned_at_1() {
+        assert_eq!(MANIFEST_FORMAT_VERSION, 1);
+    }
+
+    #[test]
+    fn manifest_filename_pinned_at_manifest_jsonl() {
+        assert_eq!(MANIFEST_FILENAME, "manifest.jsonl");
+    }
+
+    /// Load-bearing wire-format pin: the exact JSON layout of a
+    /// data entry, no whitespace, fixed field order.  Any refactor
+    /// that reorders keys, adds whitespace, or drops the `v` field
+    /// prefix trips this test.
+    ///
+    /// # H-4 coordination cost
+    ///
+    /// The (yet-to-land) H-4 signing slice will sign
+    /// [`ManifestEntry::to_line`]'s output byte-for-byte.  Any
+    /// change that trips this test would invalidate EVERY
+    /// existing signature on the network — a coordinated
+    /// fleet-wide upgrade, not a local refactor.  Peers
+    /// producing differently-ordered JSON would produce
+    /// signatures over different bytes and fail
+    /// verify_with_pubkey on every joiner.
+    #[test]
+    fn manifest_data_entry_to_line_layout_pinned() {
+        let entry = ManifestEntry {
+            block_number: 42,
+            root: Some([0xABu8; 32]),
+            entries: 7,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        };
+        let hex64 = "ab".repeat(32);
+        let expected = format!(
+            "{{\"v\":1,\"block_number\":42,\"root\":\"{hex64}\",\"entries\":7,\"ts_ms\":1700000000000}}"
+        );
+        assert_eq!(entry.to_line(), expected);
+    }
+
+    /// Empty-sentinel entry: `root` serializes as `null`, no
+    /// quotes.  Distinct from `"null"` (which would be a bogus
+    /// 4-char root hex).
+    #[test]
+    fn manifest_empty_entry_root_field_serializes_as_null() {
+        let entry = ManifestEntry {
+            block_number: 100,
+            root: None,
+            entries: 0,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        };
+        let expected =
+            "{\"v\":1,\"block_number\":100,\"root\":null,\"entries\":0,\"ts_ms\":1700000000000}";
+        assert_eq!(entry.to_line(), expected);
+    }
+
+    /// `sig = Some(bytes)` appends `,"sig":"<hex>"` at the end
+    /// (never in the middle — field ordering is contractual).
+    #[test]
+    fn manifest_signed_entry_appends_sig_field_at_end() {
+        let entry = ManifestEntry {
+            block_number: 1,
+            root: Some([0x11u8; 32]),
+            entries: 2,
+            ts_ms: 3,
+            sig: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        };
+        let root_hex = "11".repeat(32);
+        let expected = format!(
+            "{{\"v\":1,\"block_number\":1,\"root\":\"{root_hex}\",\"entries\":2,\"ts_ms\":3,\"sig\":\"deadbeef\"}}"
+        );
+        assert_eq!(entry.to_line(), expected);
+    }
+
+    /// Load-bearing round-trip: any entry we serialize we can
+    /// parse back to structural equality.  Covers both `None`
+    /// and `Some` for the root and sig options.
+    #[test]
+    fn manifest_entry_to_line_from_line_round_trips() {
+        for entry in [
+            ManifestEntry {
+                block_number: -5,
+                root: Some([0x33u8; 32]),
+                entries: 12345,
+                ts_ms: 999,
+                sig: None,
+            },
+            ManifestEntry {
+                block_number: 0,
+                root: None,
+                entries: 0,
+                ts_ms: 0,
+                sig: None,
+            },
+            ManifestEntry {
+                block_number: i64::MAX,
+                root: Some([0xAAu8; 32]),
+                entries: u64::MAX,
+                ts_ms: i64::MAX,
+                sig: Some(vec![0x01, 0x02, 0x03, 0x04, 0x05]),
+            },
+        ] {
+            let line = entry.to_line();
+            let back = ManifestEntry::from_line(&line).expect("parse ok");
+            assert_eq!(back, entry, "round-trip preserves entry: {line}");
+        }
+    }
+
+    /// `data` constructor: root populated, sig=None, ts_ms from
+    /// wall clock (best-effort, so we only assert it's non-zero
+    /// under a normally-set clock).
+    #[test]
+    fn manifest_data_constructor_populates_root_and_wallclock() {
+        let entry = ManifestEntry::data(7, [0x55u8; 32], 3);
+        assert_eq!(entry.block_number, 7);
+        assert_eq!(entry.root, Some([0x55u8; 32]));
+        assert_eq!(entry.entries, 3);
+        assert!(entry.ts_ms > 0, "ts_ms populated from wall clock");
+        assert_eq!(entry.sig, None);
+    }
+
+    /// `empty` constructor: root=None, entries=0, sig=None.
+    #[test]
+    fn manifest_empty_constructor_has_null_root_and_zero_entries() {
+        let entry = ManifestEntry::empty(10);
+        assert_eq!(entry.block_number, 10);
+        assert_eq!(entry.root, None);
+        assert_eq!(entry.entries, 0);
+        assert!(entry.ts_ms > 0);
+        assert_eq!(entry.sig, None);
+    }
+
+    /// `v` field is mandatory: a line without it is rejected
+    /// (defends against silent-decode-as-v1 for pre-versioned
+    /// or corrupted lines).
+    #[test]
+    fn manifest_from_line_missing_v_rejected() {
+        let line = "{\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("missing v is rejected");
+        assert!(
+            err.contains("missing `v` field"),
+            "error mentions the missing v field: {err}"
+        );
+    }
+
+    /// `v` value not matching the current MANIFEST_FORMAT_VERSION
+    /// surfaces a coordinated-upgrade message.
+    #[test]
+    fn manifest_from_line_wrong_v_rejected_with_upgrade_message() {
+        let line = "{\"v\":99,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("wrong v is rejected");
+        assert!(
+            err.contains("unsupported manifest version 99") && err.contains("coordinated upgrade"),
+            "error surfaces both the unsupported version and the upgrade guidance: {err}"
+        );
+    }
+
+    /// `root` hex must be exactly 64 chars (32 bytes).
+    #[test]
+    fn manifest_from_line_short_root_hex_rejected() {
+        let line = "{\"v\":1,\"block_number\":1,\"root\":\"abcd\",\"entries\":0,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("short root hex is rejected");
+        assert!(
+            err.contains("root hex must be 64 chars"),
+            "error names the length constraint: {err}"
+        );
+    }
+
+    /// An unknown key surfaces cleanly rather than being silently
+    /// dropped — future producers introducing a new field without
+    /// coordinating the upgrade would otherwise mint lines that
+    /// existing consumers half-decode.
+    #[test]
+    fn manifest_from_line_unknown_key_rejected() {
+        let line = "{\"v\":1,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0,\"future_key\":\"x\"}";
+        let err = ManifestEntry::from_line(line).expect_err("unknown key is rejected");
+        assert!(
+            err.contains("unknown manifest key"),
+            "error names the unknown key: {err}"
+        );
+    }
+
+    /// Missing required field (other than v, which has its own
+    /// dedicated test) surfaces cleanly.
+    #[test]
+    fn manifest_from_line_missing_required_field_rejected() {
+        // Missing `entries`.
+        let line = "{\"v\":1,\"block_number\":1,\"root\":null,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("missing entries is rejected");
+        assert!(
+            err.contains("missing entries"),
+            "error names the missing field: {err}"
+        );
+    }
+
+    /// Missing braces (not a JSON object at all) surfaces cleanly.
+    #[test]
+    fn manifest_from_line_missing_braces_rejected() {
+        let line = "not a json object";
+        let err = ManifestEntry::from_line(line).expect_err("no braces is rejected");
+        assert!(
+            err.contains("missing braces"),
+            "error names the shape problem: {err}"
+        );
+    }
+
+    /// The parser tolerates leading/trailing whitespace on the
+    /// whole line (some editors add trailing newlines or spaces).
+    #[test]
+    fn manifest_from_line_tolerates_outer_whitespace() {
+        let entry = ManifestEntry::empty(1);
+        let line = format!("   {}   ", entry.to_line());
+        let back = ManifestEntry::from_line(&line).expect("trimmed parse ok");
+        assert_eq!(back, entry);
+    }
+
+    /// Inner whitespace (around `:` and `,`) is also tolerated —
+    /// producers with different JSON-emitter style should still
+    /// parse.  The trims on key/value happen after
+    /// [`split_top_level_commas`], so this exercises both paths.
+    #[test]
+    fn manifest_from_line_tolerates_inner_whitespace() {
+        let line = "{ \"v\" : 1 , \"block_number\" : 42 , \"root\" : null , \
+                     \"entries\" : 0 , \"ts_ms\" : 1700000000000 }";
+        let back = ManifestEntry::from_line(line).expect("inner-whitespace parse ok");
+        assert_eq!(back, ManifestEntry {
+            block_number: 42,
+            root: None,
+            entries: 0,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        });
+    }
+
+    /// Load-bearing when H-4 signing arrives: signatures cover
+    /// [`ManifestEntry::to_line`] output byte-for-byte (fixed
+    /// order), but [`ManifestEntry::from_line`] MUST tolerate
+    /// arbitrary field orderings so a peer running a differently-
+    /// implemented producer (or a future emitter that reorders)
+    /// still parses cleanly.  Pins the write-vs-parse asymmetry:
+    /// serialize is order-fixed, deserialize is order-agnostic.
+    #[test]
+    fn manifest_from_line_is_field_order_agnostic() {
+        let line =
+            "{\"entries\":0,\"v\":1,\"ts_ms\":1700000000000,\"block_number\":42,\"root\":null}";
+        let back = ManifestEntry::from_line(line).expect("reordered parse ok");
+        assert_eq!(back, ManifestEntry {
+            block_number: 42,
+            root: None,
+            entries: 0,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        });
+    }
+
+    /// Pins the odd-length-hex guard on the `sig` field.  An odd
+    /// number of hex characters is definitionally not a byte
+    /// sequence; reject cleanly rather than silently truncating
+    /// or panicking.
+    #[test]
+    fn manifest_from_line_odd_length_sig_hex_rejected() {
+        let line =
+            "{\"v\":1,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0,\"sig\":\"abc\"}";
+        let err = ManifestEntry::from_line(line).expect_err("odd-length sig hex is rejected");
+        assert!(
+            err.contains("sig hex length must be even"),
+            "error names the length constraint: {err}"
+        );
+    }
+
+    // Helpers pins (small but the split-commas helper is subtle
+    // enough to deserve one dedicated test).
+
+    #[test]
+    fn split_top_level_commas_ignores_commas_inside_strings() {
+        let parts = split_top_level_commas("\"a,b\":\"c\",\"d\":\"e,f\"");
+        assert_eq!(parts, vec![
+            "\"a,b\":\"c\"".to_string(),
+            "\"d\":\"e,f\"".to_string()
+        ]);
+    }
+
+    #[test]
+    fn hex_encode_decode_32_round_trips_arbitrary_bytes() {
+        let mut b = [0u8; 32];
+        for (i, x) in b.iter_mut().enumerate() {
+            *x = (i * 7 + 13) as u8;
+        }
+        let hex = hex_encode(&b);
+        assert_eq!(hex.len(), 64);
+        let back = hex_decode_32(&hex).expect("decode ok");
+        assert_eq!(back, b);
+    }
+
+    #[test]
+    fn hex_decode_32_rejects_wrong_length() {
+        assert!(hex_decode_32("abcd").is_err());
+    }
+
+    #[test]
+    fn hex_decode_32_rejects_non_hex_chars() {
+        let mostly_hex: String = std::iter::repeat_n('0', 63)
+            .chain(std::iter::once('z'))
+            .collect();
+        assert!(hex_decode_32(&mostly_hex).is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // Manifest persistence (slice 7)
+    // ---------------------------------------------------------------
+
+    /// Fresh install: no manifest file yet.  Callers see an empty
+    /// Vec, not an error.
+    #[test]
+    fn read_manifest_missing_file_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = read_manifest(tmp.path()).expect("missing manifest is OK, empty");
+        assert!(out.is_empty());
+    }
+
+    /// Empty file (created but never written) also returns empty
+    /// — semantically the same as "no snapshots advertised."
+    #[test]
+    fn read_manifest_empty_file_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), b"").unwrap();
+        assert!(read_manifest(tmp.path()).unwrap().is_empty());
+    }
+
+    /// First `append_manifest_entry` creates the file at the
+    /// expected path.
+    #[test]
+    fn append_manifest_entry_creates_file_on_first_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(MANIFEST_FILENAME);
+        assert!(!path.exists());
+        append_manifest_entry(tmp.path(), ManifestEntry::empty(1)).expect("append ok");
+        assert!(path.exists());
+    }
+
+    /// Append writes exactly `to_line() + "\n"` — the newline is
+    /// added by the appender, not by `to_line` (which returns a
+    /// bare line for composition into other contexts).
+    #[test]
+    fn append_manifest_entry_writes_line_with_trailing_newline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = ManifestEntry::empty(1);
+        append_manifest_entry(tmp.path(), entry.clone()).expect("append ok");
+        let bytes = std::fs::read_to_string(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        assert_eq!(bytes, format!("{}\n", entry.to_line()));
+    }
+
+    /// Second `append_manifest_entry` on an existing file appends
+    /// (not overwrites).  Load-bearing behavior: the manifest is
+    /// meant to grow over the lifetime of the snapshot dir.
+    #[test]
+    fn append_manifest_entry_appends_to_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e1 = ManifestEntry::empty(1);
+        let e2 = ManifestEntry::empty(2);
+        append_manifest_entry(tmp.path(), e1.clone()).unwrap();
+        append_manifest_entry(tmp.path(), e2.clone()).unwrap();
+        let bytes = std::fs::read_to_string(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        assert_eq!(bytes, format!("{}\n{}\n", e1.to_line(), e2.to_line()));
+    }
+
+    /// End-to-end load-bearing round-trip: `read_manifest` after
+    /// multiple `append_manifest_entry` calls returns the entries
+    /// in append order.
+    #[test]
+    fn append_read_round_trips_multiple_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = vec![
+            ManifestEntry::data(1, [0x11u8; 32], 3),
+            ManifestEntry::empty(2),
+            ManifestEntry::data(3, [0x33u8; 32], 7),
+        ];
+        for e in &entries {
+            append_manifest_entry(tmp.path(), e.clone()).expect("append ok");
+        }
+        let back = read_manifest(tmp.path()).expect("read ok");
+        assert_eq!(
+            back, entries,
+            "read returns entries in append (= write) order"
+        );
+    }
+
+    /// Blank lines within the manifest (e.g., from an editor
+    /// pass) are tolerated — parsing skips them.  Not a
+    /// well-formed producer's output, but a resilience posture
+    /// against manual edits.
+    #[test]
+    fn read_manifest_skips_blank_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e1 = ManifestEntry::empty(1);
+        let e2 = ManifestEntry::empty(2);
+        let contents = format!("{}\n\n\n   \n{}\n", e1.to_line(), e2.to_line());
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), contents).unwrap();
+        let back = read_manifest(tmp.path()).expect("read ok");
+        assert_eq!(back, vec![e1, e2]);
+    }
+
+    /// A malformed line surfaces as [`SnapshotError::MalformedManifest`]
+    /// with the 1-based line number as a structured field.  Pattern-
+    /// matching this variant apart from [`SnapshotError::Io`] lets
+    /// the join-protocol layer distinguish "manifest schema issue,
+    /// retry with a different peer" from "real disk problem,
+    /// escalate."
+    #[test]
+    fn read_manifest_malformed_line_returns_error_with_line_number() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = ManifestEntry::empty(1);
+        // Second line is malformed (missing braces).
+        let contents = format!("{}\nnot json here\n", good.to_line());
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), contents).unwrap();
+        let err = read_manifest(tmp.path()).expect_err("malformed line surfaces");
+        match err {
+            SnapshotError::MalformedManifest { line, cause } => {
+                assert_eq!(line, 2, "1-based line number");
+                assert!(
+                    cause.contains("missing braces"),
+                    "underlying parse error: {cause}"
+                );
+                // Also pin the Display shape for operator-facing text.
+                let msg = format!("{}", SnapshotError::MalformedManifest { line, cause });
+                assert!(msg.starts_with("manifest line 2:"), "Display shape: {msg}");
+            }
+            other => panic!("expected MalformedManifest, got: {other:?}"),
+        }
+    }
+
+    /// Partial-view posture: parsing halts at the first malformed
+    /// line — entries before it are not returned, even though
+    /// they parsed successfully.  Callers wanting a "best-effort
+    /// prefix" should retry with a fixed manifest.  Pins the
+    /// all-or-nothing behavior.
+    #[test]
+    fn read_manifest_stops_at_first_malformed_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good_a = ManifestEntry::empty(1);
+        let good_b = ManifestEntry::empty(3);
+        let contents = format!("{}\nnot json\n{}\n", good_a.to_line(), good_b.to_line());
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), contents).unwrap();
+        assert!(read_manifest(tmp.path()).is_err());
+    }
+
+    /// Append preserves numeric order under a single-writer
+    /// cadence (block_number climbs monotonically per validator).
+    /// This is a natural consequence of append-only + writer
+    /// discipline; pinned here so a future SnapshotWriter that
+    /// accidentally shuffles entries would be caught.
+    #[test]
+    fn append_preserves_block_number_order_under_single_writer() {
+        let tmp = tempfile::tempdir().unwrap();
+        for bn in 1..=5 {
+            append_manifest_entry(tmp.path(), ManifestEntry::empty(bn)).unwrap();
+        }
+        let back = read_manifest(tmp.path()).expect("read ok");
+        let bns: Vec<i64> = back.iter().map(|e| e.block_number).collect();
+        assert_eq!(bns, vec![1, 2, 3, 4, 5]);
+    }
+
+    /// Explicit 0o644 mode on unix so shared-storage joiners see
+    /// consistent metadata regardless of the leader's umask.
+    /// Matches the `atomic_write_file` posture.
+    #[cfg(unix)]
+    #[test]
+    fn append_manifest_entry_creates_file_with_0o644_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        append_manifest_entry(tmp.path(), ManifestEntry::empty(1)).expect("append ok");
+        let meta = std::fs::metadata(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        // Low 9 bits are the rwxrwxrwx mode; higher bits are
+        // file-type flags.  Mask to compare just the mode bits.
+        assert_eq!(meta.permissions().mode() & 0o777, 0o644);
+    }
+
+    // ---------------------------------------------------------------
+    // Directory pruning (slice 8)
+    // ---------------------------------------------------------------
+
+    /// Same posture as [`sweep_stale_tmp_files`]: an explicit
+    /// maintenance op that surfaces a missing dir as an error
+    /// rather than a no-op.
+    #[test]
+    fn prune_missing_dir_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+        let err = prune_snapshot_dir(&missing, 1).expect_err("missing dir is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn prune_empty_dir_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(prune_snapshot_dir(tmp.path(), 5).unwrap(), 0);
+    }
+
+    /// `keep_last_n >= count` leaves everything alone.
+    #[test]
+    fn prune_keep_last_n_greater_than_count_removes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            let name = format!("{:064x}.wal", i);
+            std::fs::write(tmp.path().join(&name), b"x").unwrap();
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 10).unwrap(), 0);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 3);
+    }
+
+    /// `keep_last_n = 0` removes every `.wal` file.
+    #[test]
+    fn prune_keep_last_n_zero_removes_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            let name = format!("{:064x}.wal", i);
+            std::fs::write(tmp.path().join(&name), b"x").unwrap();
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 3);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    /// Load-bearing: retention keeps the N newest by mtime, not
+    /// by filename order.  Five snapshots with staggered mtimes,
+    /// keep 2 → the two newest survive.
+    #[test]
+    fn prune_keeps_newest_n_by_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for i in 0..5 {
+            let name = format!("{:064x}.wal", i);
+            let p = tmp.path().join(&name);
+            std::fs::write(&p, b"x").unwrap();
+            // Age file[i] by (5 - i) hours: file[0] is oldest,
+            // file[4] is newest.
+            age_file(&p, ((5 - i) as u64) * 3600);
+            paths.push(p);
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 2).unwrap(), 3);
+        // The two newest (indices 3, 4) survive.
+        assert!(!paths[0].exists());
+        assert!(!paths[1].exists());
+        assert!(!paths[2].exists());
+        assert!(paths[3].exists());
+        assert!(paths[4].exists());
+    }
+
+    /// Sidecar pairing: pruning a `.wal` also removes its paired
+    /// `.hashes` sidecar so stale sidecars don't outlive their
+    /// snapshots (which would defeat retention's payload-hash
+    /// union pass).
+    #[test]
+    fn prune_pairs_sidecar_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        // Two snapshots via the real writer so both `.wal` and
+        // `.hashes` files exist naturally.
+        let (path_a, _, _) = write_snapshot(tmp.path(), &entries).expect("write a ok");
+        // Second snapshot must differ; add a synthetic entry.
+        let mut entries_b = entries.clone();
+        entries_b.push(WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/@bundle/second"),
+            extra_path: None,
+            offset: None,
+            length: Some(4),
+            payload_ref: Some(PayloadRef::hash(b"more")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        });
+        let (path_b, _, _) = write_snapshot(tmp.path(), &entries_b).expect("write b ok");
+        let sidecar_a = path_a.with_extension("hashes");
+        let sidecar_b = path_b.with_extension("hashes");
+        assert!(sidecar_a.exists() && sidecar_b.exists());
+        // Age snapshot_a so snapshot_b is strictly newer.
+        age_file(&path_a, 3600);
+        age_file(&sidecar_a, 3600);
+
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 1);
+        assert!(!path_a.exists(), "old .wal removed");
+        assert!(!sidecar_a.exists(), "paired .hashes sidecar removed");
+        assert!(path_b.exists(), "new .wal survives");
+        assert!(sidecar_b.exists(), "new .hashes survives");
+    }
+
+    /// A `.wal` without a paired sidecar (e.g., a pre-sidecar
+    /// snapshot from before PR #507) still prunes cleanly —
+    /// ENOENT on the sidecar removal is silently OK.
+    #[test]
+    fn prune_missing_sidecar_is_fine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let name = format!("{:064x}.wal", 1);
+        let p = tmp.path().join(&name);
+        std::fs::write(&p, b"x").unwrap();
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 1);
+        assert!(!p.exists());
+    }
+
+    /// Non-`.wal` files survive prune untouched: an orphan
+    /// `.hashes` (no matching `.wal`), the manifest itself, and
+    /// stale `.wal.tmp` files.
+    #[test]
+    fn prune_leaves_non_wal_files_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orphan_hashes = tmp.path().join(format!("{:064x}.hashes", 0xAB));
+        let manifest = tmp.path().join(MANIFEST_FILENAME);
+        let stale_tmp = tmp.path().join("something.12345-1-1.wal.tmp");
+        for p in [&orphan_hashes, &manifest, &stale_tmp] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 0);
+        for p in [&orphan_hashes, &manifest, &stale_tmp] {
+            assert!(p.exists(), "should survive prune: {}", p.display());
+        }
+    }
+
+    /// Symlink `.wal` entries are skipped — never counted, never
+    /// removed by name (which would just unlink the symlink,
+    /// noisy).  Operator hygiene defense.
+    #[cfg(unix)]
+    #[test]
+    fn prune_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join(format!("{:064x}.wal", 1));
+        let link = tmp.path().join(format!("{:064x}.wal", 2));
+        std::fs::write(&real, b"real").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        age_file(&real, 3600);
+        // keep_last_n=0: both real+link would be removed if the
+        // symlink weren't skipped.  With the skip: only the real
+        // file is a candidate; it gets removed, count = 1.  Link
+        // itself is left alone (dangling, but that's operator's
+        // problem to clean up).
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 1);
+        assert!(!real.exists(), "real .wal removed");
+        // symlink_metadata (lstat) so we check the link itself,
+        // not the target.
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "symlink survives prune"
+        );
+    }
+
+    /// Prune returns the count of `.wal` files SUCCESSFULLY
+    /// removed — not the count of pruning candidates, and not
+    /// counting sidecar removals.
+    #[test]
+    fn prune_returns_count_of_wal_removals_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..4 {
+            let name = format!("{:064x}.wal", i);
+            let p = tmp.path().join(&name);
+            std::fs::write(&p, b"x").unwrap();
+            // Also drop a sidecar so we can prove sidecar
+            // removals don't inflate the count.
+            let sidecar = p.with_extension("hashes");
+            std::fs::write(&sidecar, b"y").unwrap();
+            age_file(&p, ((10 - i) as u64) * 60);
+        }
+        // Keep 1; expect 3 `.wal` removals (and 3 silent sidecar
+        // removals) — count is `.wal` only.
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 3);
+    }
+
+    /// Post-write happy path: after a single `write_snapshot`
+    /// cycle, `prune_snapshot_dir(dir, 1)` removes nothing
+    /// (there is exactly one snapshot).
+    #[test]
+    fn prune_after_write_snapshot_cycle_keeps_just_written_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        let (path, _, _) = write_snapshot(tmp.path(), &entries).expect("write ok");
+        let sidecar = path.with_extension("hashes");
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 0);
+        assert!(path.exists() && sidecar.exists());
+    }
+
+    /// Load-bearing invariant: if the `.wal` removal fails (e.g.,
+    /// permissions, filesystem quirk, locked by another process),
+    /// the paired `.hashes` sidecar MUST be preserved.  Otherwise
+    /// we create an orphan `.wal` without its sidecar, and the
+    /// next [`scan_retained_payload_hashes`] pass would
+    /// under-count the payload hashes this still-live snapshot
+    /// references → payload-store retention would delete the
+    /// referenced bytes → snapshot becomes unreadable.
+    ///
+    /// This is the exact "orphan payload" hazard the
+    /// manifest-independent pruning design was engineered to
+    /// avoid; this test closes the symmetric case at the
+    /// `.wal`-removal-failure path.  Portable orchestration:
+    /// create the `.wal` as a DIRECTORY so `remove_file` returns
+    /// EISDIR on every POSIX system without needing special
+    /// privileges or filesystem features.
+    #[test]
+    fn prune_wal_removal_failure_preserves_paired_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_path = tmp.path().join(format!("{:064x}.wal", 1));
+        let sidecar_path = wal_path.with_extension("hashes");
+        // `.wal` as a directory: `remove_file` will fail with EISDIR.
+        std::fs::create_dir(&wal_path).unwrap();
+        // `.hashes` as a regular file: `remove_file` would
+        // succeed if attempted — which the fix forbids.
+        std::fs::write(&sidecar_path, b"preserve me").unwrap();
+
+        // keep_last_n = 0 → every `.wal` candidate enters the
+        // remove loop.  The directory's `remove_file` fails;
+        // per the orphan-`.wal` invariant, the sidecar MUST
+        // survive.
+        let removed = prune_snapshot_dir(tmp.path(), 0).unwrap();
+        assert_eq!(removed, 0, "no `.wal` was successfully removed");
+        assert!(wal_path.exists(), "orphan `.wal` survives (remove failed)");
+        assert!(
+            sidecar_path.exists(),
+            "paired sidecar MUST survive when `.wal` remove failed \
+             (otherwise next retention pass under-counts hashes)"
+        );
+    }
+
+    /// Same-mtime tiebreaker: two `.wal` files with identical
+    /// mtimes must have deterministic pruning survivors (not
+    /// dependent on `read_dir` order, which is OS/filesystem-
+    /// specific).  The secondary sort key is filename, so with
+    /// `keep_last_n = 1` the lexicographically-smaller name is
+    /// the survivor (reverse mtime, then forward filename →
+    /// smaller filename wins the tiebreaker when mtimes match).
+    #[test]
+    fn prune_same_mtime_tiebreaker_is_deterministic_by_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join(format!("{:064x}.wal", 1)); // "0000...0001.wal"
+        let b = tmp.path().join(format!("{:064x}.wal", 2)); // "0000...0002.wal"
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"y").unwrap();
+        // Force both to the same mtime so the tiebreaker fires.
+        let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        for p in [&a, &b] {
+            let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+            let times = std::fs::FileTimes::new()
+                .set_modified(aged)
+                .set_accessed(aged);
+            f.set_times(times).unwrap();
+        }
+        // keep_last_n = 1.  Sort key is (mtime desc, filename asc).
+        // With equal mtimes, filename-ascending puts `a` (hex "0...1")
+        // ahead of `b` (hex "0...2"), so `a` is "newest" per the
+        // tiebreaker and survives.
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 1);
+        assert!(a.exists(), "lexicographically-smaller filename survives");
+        assert!(!b.exists());
+    }
+
+    // ---------------------------------------------------------------
+    // H-4 signing (slice 9)
+    // ---------------------------------------------------------------
+
+    fn new_secp256k1_keypair() -> (Vec<u8>, Vec<u8>) {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let (sk, pk) = Secp256k1.new_key_pair();
+        (sk.bytes.to_vec(), pk.bytes.to_vec())
+    }
+
+    fn fixture_entry() -> ManifestEntry {
+        ManifestEntry {
+            block_number: 42,
+            root: Some([0xABu8; 32]),
+            entries: 7,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        }
+    }
+
+    /// `sign_bytes` is deterministic — same entry, same output.
+    /// Load-bearing property for signatures to verify
+    /// deterministically across runs.
+    #[test]
+    fn manifest_sign_bytes_is_deterministic() {
+        let entry = fixture_entry();
+        assert_eq!(entry.sign_bytes(), entry.sign_bytes());
+    }
+
+    /// The output is a 32-byte Blake2b256 digest.  Pins the
+    /// hash primitive — a change to a different hash function
+    /// (same size, different algorithm) would silently
+    /// invalidate every existing signature.
+    #[test]
+    fn manifest_sign_bytes_is_32_byte_blake2b256_digest() {
+        assert_eq!(fixture_entry().sign_bytes().len(), 32);
+    }
+
+    /// `sign_bytes` ignores the `sig` field.  A signature
+    /// cannot cover its own output — if it did, flipping `sig`
+    /// from `None` to `Some(sig_bytes)` after signing would
+    /// invalidate the signature it just created.
+    #[test]
+    fn manifest_sign_bytes_ignores_sig_field() {
+        let unsigned = fixture_entry();
+        let mut signed_shape = unsigned.clone();
+        signed_shape.sig = Some(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(unsigned.sign_bytes(), signed_shape.sign_bytes());
+    }
+
+    /// Each semantic field is covered by the signed message —
+    /// changing block_number, root, entries, or ts_ms yields a
+    /// different digest.  Prevents a tampering attack where an
+    /// attacker modifies one field hoping the signature still
+    /// matches (which it wouldn't, if sign_bytes covers it).
+    #[test]
+    fn manifest_sign_bytes_differs_by_each_semantic_field() {
+        let base = fixture_entry();
+        let base_hash = base.sign_bytes();
+
+        let mut mutated = base.clone();
+        mutated.block_number += 1;
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "block_number must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.root = Some([0xCDu8; 32]);
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "root value must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.root = None;
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "root presence must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.entries += 1;
+        assert_ne!(
+            mutated.sign_bytes(),
+            base_hash,
+            "entries must affect digest"
+        );
+
+        let mut mutated = base.clone();
+        mutated.ts_ms += 1;
+        assert_ne!(mutated.sign_bytes(), base_hash, "ts_ms must affect digest");
+    }
+
+    /// `signed()` populates the `sig` field; the returned
+    /// entry's other fields are unchanged.
+    #[test]
+    fn manifest_signed_populates_sig_field_and_preserves_others() {
+        let (sk, _pk) = new_secp256k1_keypair();
+        let unsigned = fixture_entry();
+        let signed = unsigned.clone().signed(&sk);
+        assert!(signed.sig.is_some(), "sig populated after signed()");
+        // Non-sig fields preserved.
+        assert_eq!(signed.block_number, unsigned.block_number);
+        assert_eq!(signed.root, unsigned.root);
+        assert_eq!(signed.entries, unsigned.entries);
+        assert_eq!(signed.ts_ms, unsigned.ts_ms);
+    }
+
+    /// Load-bearing round-trip: a freshly-signed entry verifies
+    /// cleanly against the same public key.
+    #[test]
+    fn manifest_signed_verify_round_trips_with_matching_pubkey() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+        signed.verify_with_pubkey(&pk).expect("verify ok");
+    }
+
+    /// A signature made with one key does NOT verify under a
+    /// different public key.  Baseline cryptographic property;
+    /// pinned to catch a future implementation bug that would,
+    /// e.g., accidentally accept any pubkey.
+    #[test]
+    fn manifest_verify_with_wrong_pubkey_returns_signature_invalid() {
+        let (sk, _pk) = new_secp256k1_keypair();
+        let (_sk2, pk2) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+        match signed.verify_with_pubkey(&pk2) {
+            Err(SnapshotError::ManifestSignatureInvalid) => (),
+            other => panic!("expected ManifestSignatureInvalid, got: {other:?}"),
+        }
+    }
+
+    /// Verify on an entry with `sig = None` surfaces
+    /// `UnsignedManifestEntry` (distinct from "signed but
+    /// doesn't verify") — the two-variant split lets join
+    /// clients diagnose the operator-facing problem.
+    #[test]
+    fn manifest_verify_unsigned_returns_unsigned_error() {
+        let (_sk, pk) = new_secp256k1_keypair();
+        let unsigned = fixture_entry();
+        match unsigned.verify_with_pubkey(&pk) {
+            Err(SnapshotError::UnsignedManifestEntry) => (),
+            other => panic!("expected UnsignedManifestEntry, got: {other:?}"),
+        }
+    }
+
+    /// Tampering with ANY signed field (post-signing) breaks
+    /// verification — the tamper-detection load-bearer.
+    #[test]
+    fn manifest_verify_fails_on_any_tampered_field() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+
+        for mutate in [
+            Box::new(|e: &mut ManifestEntry| e.block_number += 1)
+                as Box<dyn Fn(&mut ManifestEntry)>,
+            Box::new(|e: &mut ManifestEntry| e.root = Some([0xCDu8; 32])),
+            Box::new(|e: &mut ManifestEntry| e.root = None),
+            Box::new(|e: &mut ManifestEntry| e.entries += 1),
+            Box::new(|e: &mut ManifestEntry| e.ts_ms += 1),
+        ] {
+            let mut tampered = signed.clone();
+            mutate(&mut tampered);
+            match tampered.verify_with_pubkey(&pk) {
+                Err(SnapshotError::ManifestSignatureInvalid) => (),
+                other => panic!("tampered entry should fail verify: {other:?}"),
+            }
+        }
+    }
+
+    /// End-to-end integration: sign an entry, serialize to a
+    /// line, parse the line back, verify.  Load-bearing — pins
+    /// that `to_line` / `from_line` preserve the `sig` field
+    /// losslessly across the wire format.
+    #[test]
+    fn manifest_signed_to_line_from_line_round_trips_with_verify() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let signed = fixture_entry().signed(&sk);
+        let line = signed.to_line();
+        let parsed = ManifestEntry::from_line(&line).expect("parse ok");
+        assert_eq!(parsed, signed);
+        parsed
+            .verify_with_pubkey(&pk)
+            .expect("verify ok after wire round-trip");
+    }
+
+    /// The signed message prefixes `MANIFEST_FORMAT_VERSION` so
+    /// a v1-signed entry's bytes could not be mistaken for a
+    /// hypothetical v2-signed entry's.  Pins the first byte of
+    /// the pre-hash buffer by constructing it manually.
+    #[test]
+    fn manifest_sign_bytes_version_byte_prefix_is_pinned() {
+        let entry = ManifestEntry {
+            block_number: 0,
+            root: None,
+            entries: 0,
+            ts_ms: 0,
+            sig: None,
+        };
+        // Expected pre-hash buffer: [MANIFEST_FORMAT_VERSION, 0...0 (bn), 0 (root=None), 0...0 (entries), 0...0 (ts_ms)]
+        let mut expected_prehash = Vec::with_capacity(1 + 8 + 1 + 8 + 8);
+        expected_prehash.push(MANIFEST_FORMAT_VERSION);
+        expected_prehash.extend_from_slice(&0i64.to_be_bytes());
+        expected_prehash.push(0u8); // root presence = None
+        expected_prehash.extend_from_slice(&0u64.to_be_bytes());
+        expected_prehash.extend_from_slice(&0i64.to_be_bytes());
+        let expected_hash = Blake2b256::hash(expected_prehash);
+        assert_eq!(entry.sign_bytes(), expected_hash);
+    }
+
+    /// This crate's secp256k1 strategy uses `sign_prehash` (RFC
+    /// 6979 deterministic nonces), so two signings of the same
+    /// entry under the same key produce byte-identical `sig`
+    /// bytes.  Pins the current strategy so a swap to a
+    /// randomized-ECDSA backend (which would still verify but
+    /// not byte-match) surfaces here instead of silently
+    /// breaking a downstream consumer that assumed sig-equality.
+    #[test]
+    fn manifest_signed_is_deterministic_rfc6979() {
+        let (sk, pk) = new_secp256k1_keypair();
+        let a = fixture_entry().signed(&sk);
+        let b = fixture_entry().signed(&sk);
+        assert_eq!(
+            a.sig, b.sig,
+            "RFC 6979: two signings of the same entry under the same key \
+             produce byte-identical sig bytes"
+        );
+        // Semantic contract still holds either way.
+        a.verify_with_pubkey(&pk).unwrap();
+        b.verify_with_pubkey(&pk).unwrap();
+    }
+
+    /// Garbage `sig` bytes (zero-length, random non-DER) must
+    /// surface `ManifestSignatureInvalid` rather than panicking
+    /// or returning Ok.  Pins the delegation contract with
+    /// `Secp256k1::verify` — any bytes that aren't a valid
+    /// signature over `sign_bytes()` under the pubkey are
+    /// rejected cleanly.
+    #[test]
+    fn manifest_verify_malformed_sig_bytes_returns_signature_invalid() {
+        let (_sk, pk) = new_secp256k1_keypair();
+        let mut entry = fixture_entry();
+
+        // Zero-length sig bytes.
+        entry.sig = Some(Vec::new());
+        assert!(matches!(
+            entry.verify_with_pubkey(&pk),
+            Err(SnapshotError::ManifestSignatureInvalid)
+        ));
+
+        // Short, non-DER garbage.
+        entry.sig = Some(vec![0, 0, 0]);
+        assert!(matches!(
+            entry.verify_with_pubkey(&pk),
+            Err(SnapshotError::ManifestSignatureInvalid)
+        ));
+
+        // 72 bytes (plausible length) but all zeros — not a
+        // valid DER-encoded signature.
+        entry.sig = Some(vec![0u8; 72]);
+        assert!(matches!(
+            entry.verify_with_pubkey(&pk),
+            Err(SnapshotError::ManifestSignatureInvalid)
+        ));
     }
 }
