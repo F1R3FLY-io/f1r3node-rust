@@ -11,6 +11,7 @@ use shared::rust::test_scratch;
 use super::checkpoint_wal::fixture_with_retained_union_cardinality;
 use super::durable_publication::install_checkpoint_image;
 use super::durable_recovery::{checkpoint_image_from_source, limits};
+use super::kind1_recovery_protocol_properties::measure_allocations;
 use super::support::TestSemanticProfile;
 use crate::rspace::persistence::LogPackDecodeLimits;
 use crate::rspace::persistence::durable::{DurableAdmissionLimitsV1, DurableDirectoryV1};
@@ -19,6 +20,7 @@ const CHILD_PHASE_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_PHASE";
 const CHILD_ROOT_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_ROOT";
 const CHILD_HISTORY_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_HISTORY";
 const CHILD_STACK_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_STACK";
+const CHILD_BUFFER_REFERENCE_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_CHILD_BUFFER_REFERENCE";
 const FULL_MATRIX_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_FULL_MATRIX";
 const SCRATCH_BASE_ENV: &str = "RSPACE_CHECKPOINT_REAL_IO_SCRATCH_BASE";
 const TEST_NAME: &str =
@@ -88,6 +90,32 @@ fn linux_open_descriptor_count() -> Option<usize> {
     )
 }
 
+fn linux_resident_stack_span_bytes() -> Option<usize> {
+    let mut attributes = MaybeUninit::<libc::pthread_attr_t>::uninit();
+    if unsafe { libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let mut attributes = unsafe { attributes.assume_init() };
+    let mut stack_base = std::ptr::null_mut();
+    let mut stack_size = 0;
+    let status =
+        unsafe { libc::pthread_attr_getstack(&attributes, &mut stack_base, &mut stack_size) };
+    unsafe { libc::pthread_attr_destroy(&mut attributes) };
+    if status != 0 {
+        return None;
+    }
+    let page_size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    if page_size == 0 || (stack_base as usize) % page_size != 0 || stack_size % page_size != 0 {
+        return None;
+    }
+    let mut residency = vec![0u8; stack_size / page_size];
+    if unsafe { libc::mincore(stack_base, stack_size, residency.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let lowest_resident_page = residency.iter().position(|&page| page & 1 != 0)?;
+    stack_size.checked_sub(lowest_resident_page * page_size)
+}
+
 fn linux_filesystem_magic(path: &Path) -> u64 {
     let path = CString::new(path.as_os_str().as_bytes()).expect("scratch path has no NUL byte");
     let mut filesystem = MaybeUninit::<libc::statfs>::uninit();
@@ -108,7 +136,13 @@ fn scratch_base() -> PathBuf {
         })
 }
 
-fn run_child(phase: &str, root: &Path, historical_states: usize, stack_bytes: usize) {
+fn run_child(
+    phase: &str,
+    root: &Path,
+    historical_states: usize,
+    stack_bytes: usize,
+    buffer_reference_bytes: usize,
+) {
     let retained_union_objects = historical_states
         .checked_add(2)
         .expect("historical state count fits retained-union cardinality");
@@ -148,18 +182,22 @@ fn run_child(phase: &str, root: &Path, historical_states: usize, stack_bytes: us
                 start_receiver
                     .recv()
                     .expect("publication worker receives start signal");
-                let published = writer
-                    .publish_generation_checkpoint_v1(
-                        limits(),
-                        LogPackDecodeLimits::UNBOUNDED,
-                        DurableAdmissionLimitsV1::UNBOUNDED,
-                    )
-                    .expect("publish checkpoint to disk");
+                let stack_span_before = linux_resident_stack_span_bytes();
+                let (published, allocations) = measure_allocations(|| {
+                    writer
+                        .publish_generation_checkpoint_v1(
+                            limits(),
+                            LogPackDecodeLimits::UNBOUNDED,
+                            DurableAdmissionLimitsV1::UNBOUNDED,
+                        )
+                        .expect("publish checkpoint to disk")
+                });
                 assert_eq!(published.authority().slot().pack().active_pack(), 2);
                 assert_eq!(
                     published.report().retained_union.distinct_objects,
                     retained_union_objects_u64,
                 );
+                (allocations, stack_span_before, linux_resident_stack_span_bytes())
             } else {
                 ready_sender
                     .send(())
@@ -167,13 +205,17 @@ fn run_child(phase: &str, root: &Path, historical_states: usize, stack_bytes: us
                 start_receiver
                     .recv()
                     .expect("recovery worker receives start signal");
-                let recovered = DurableDirectoryV1::open(&root)
-                    .expect("reopen checkpoint directory")
-                    .recover_writer_v1(limits(), LogPackDecodeLimits::UNBOUNDED)
-                    .expect("recover published checkpoint");
+                let stack_span_before = linux_resident_stack_span_bytes();
+                let (recovered, allocations) = measure_allocations(|| {
+                    DurableDirectoryV1::open(&root)
+                        .expect("reopen checkpoint directory")
+                        .recover_writer_v1(limits(), LogPackDecodeLimits::UNBOUNDED)
+                        .expect("recover published checkpoint")
+                });
                 assert_eq!(recovered.recovered().checkpoints(), 1);
                 assert_eq!(recovered.recovered().object_records(), object_records);
                 assert_eq!(recovered.recovered().object_index().record_count(), object_records);
+                (allocations, stack_span_before, linux_resident_stack_span_bytes())
             }
         })
         .expect("spawn bounded-stack checkpoint worker");
@@ -188,7 +230,7 @@ fn run_child(phase: &str, root: &Path, historical_states: usize, stack_bytes: us
     start_sender
         .send(())
         .expect("checkpoint worker receives start signal");
-    worker
+    let (allocations, stack_span_before, stack_span_after) = worker
         .join()
         .expect("bounded-stack checkpoint worker completes");
     let elapsed = start.elapsed();
@@ -200,19 +242,41 @@ fn run_child(phase: &str, root: &Path, historical_states: usize, stack_bytes: us
          worker_stack_bytes={stack_bytes} elapsed_ns={} rss_before_bytes={rss_before:?} \
          rss_after_bytes={:?} peak_rss_before_bytes={peak_rss_before:?} peak_rss_after_bytes={:?} \
          descriptors_before={descriptors_before:?} descriptors_after={descriptors_after:?} \
-         linux_io_delta={:?}",
+         linux_io_delta={:?} allocation_calls={} allocation_bytes={} \
+         allocation_max_single_bytes={} allocation_peak_live_bytes={} \
+         allocation_live_at_end_bytes={} resident_stack_span_before_bytes={stack_span_before:?} \
+         resident_stack_span_after_bytes={stack_span_after:?}",
         elapsed.as_nanos(),
         linux_status_bytes("VmRSS:"),
         linux_status_bytes("VmHWM:"),
         io_before
             .zip(io_after)
             .and_then(|(before, after)| after.difference(before)),
+        allocations.count,
+        allocations.total_bytes,
+        allocations.max_single_bytes,
+        allocations.peak_live_bytes,
+        allocations.live_at_end,
     );
     if let (Some(before), Some(after)) = (descriptors_before, descriptors_after) {
         assert!(after <= before + 1, "checkpoint {phase} leaked descriptors: {before} -> {after}");
     }
+    assert!(
+        stack_span_before.is_some() && stack_span_after.is_some(),
+        "checkpoint {phase} resident stack-page measurement failed",
+    );
     if let Some(peak) = linux_status_bytes("VmHWM:") {
         assert!(peak <= 256 * 1024 * 1024, "checkpoint {phase} peak RSS {peak} exceeds 256 MiB");
+    }
+    // A full input image allocation must remain visible above the fixed 64 KiB
+    // scratch allocation once the fixture is large enough to distinguish them.
+    if buffer_reference_bytes > 256 * 1024 {
+        assert!(
+            allocations.max_single_bytes < buffer_reference_bytes as u64,
+            "checkpoint {phase} requested {} bytes in one allocation for a {}-byte input pack",
+            allocations.max_single_bytes,
+            buffer_reference_bytes,
+        );
     }
 }
 
@@ -229,12 +293,16 @@ fn checkpoint_real_io_cardinality_resource_gate() {
             .expect("child stack size is set")
             .parse::<usize>()
             .expect("child stack size is a usize");
-        run_child(phase, Path::new(&root), historical_states, stack_bytes);
+        let buffer_reference_bytes = std::env::var(CHILD_BUFFER_REFERENCE_ENV)
+            .expect("child buffer reference is set")
+            .parse::<usize>()
+            .expect("child buffer reference is a usize");
+        run_child(phase, Path::new(&root), historical_states, stack_bytes, buffer_reference_bytes);
         return;
     }
 
     let cardinalities: &[usize] = if std::env::var(FULL_MATRIX_ENV).ok().as_deref() == Some("1") {
-        &[1, 1_000, 20_000]
+        &[1, 16, 256, 1_000, 4_096, 20_000]
     } else {
         &[1, 1_000]
     };
@@ -282,6 +350,7 @@ fn checkpoint_real_io_cardinality_resource_gate() {
                         .env(CHILD_ROOT_ENV, scratch.path())
                         .env(CHILD_HISTORY_ENV, historical_states.to_string())
                         .env(CHILD_STACK_ENV, stack_bytes.to_string())
+                        .env(CHILD_BUFFER_REFERENCE_ENV, initial_pack_bytes.to_string())
                         .output()
                         .expect("checkpoint real-I/O child starts");
                 assert!(

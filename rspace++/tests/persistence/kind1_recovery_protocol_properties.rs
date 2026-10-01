@@ -61,6 +61,7 @@ thread_local! {
     static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
     static ALLOCATION_COUNT: Cell<u64> = const { Cell::new(0) };
     static ALLOCATION_BYTES: Cell<u64> = const { Cell::new(0) };
+    static ALLOCATION_MAX_SINGLE_BYTES: Cell<u64> = const { Cell::new(0) };
     static ALLOCATION_LIVE_BYTES: Cell<u64> = const { Cell::new(0) };
     static ALLOCATION_PEAK_LIVE_BYTES: Cell<u64> = const { Cell::new(0) };
 }
@@ -69,6 +70,7 @@ fn record_allocation(bytes: usize) {
     let bytes = bytes as u64;
     ALLOCATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     ALLOCATION_BYTES.with(|total| total.set(total.get().saturating_add(bytes)));
+    ALLOCATION_MAX_SINGLE_BYTES.with(|maximum| maximum.set(maximum.get().max(bytes)));
     ALLOCATION_LIVE_BYTES.with(|live| {
         let next = live.get().saturating_add(bytes);
         live.set(next);
@@ -1892,18 +1894,35 @@ fn kind1_streaming_recovery_is_a_complete_structured_differential_of_contiguous_
 }
 
 #[derive(Clone, Copy, Debug)]
-struct AllocationMeasurement {
-    count: u64,
-    total_bytes: u64,
-    peak_live_bytes: u64,
-    live_at_end: u64,
+pub(super) struct AllocationMeasurement {
+    pub(super) count: u64,
+    pub(super) total_bytes: u64,
+    pub(super) max_single_bytes: u64,
+    pub(super) peak_live_bytes: u64,
+    pub(super) live_at_end: u64,
 }
 
 fn reset_allocation_measurement() {
     ALLOCATION_COUNT.with(|count| count.set(0));
     ALLOCATION_BYTES.with(|bytes| bytes.set(0));
+    ALLOCATION_MAX_SINGLE_BYTES.with(|bytes| bytes.set(0));
     ALLOCATION_LIVE_BYTES.with(|bytes| bytes.set(0));
     ALLOCATION_PEAK_LIVE_BYTES.with(|bytes| bytes.set(0));
+}
+
+pub(super) fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, AllocationMeasurement) {
+    reset_allocation_measurement();
+    COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+    let result = operation();
+    COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+    let measurement = AllocationMeasurement {
+        count: ALLOCATION_COUNT.with(Cell::get),
+        total_bytes: ALLOCATION_BYTES.with(Cell::get),
+        max_single_bytes: ALLOCATION_MAX_SINGLE_BYTES.with(Cell::get),
+        peak_live_bytes: ALLOCATION_PEAK_LIVE_BYTES.with(Cell::get),
+        live_at_end: ALLOCATION_LIVE_BYTES.with(Cell::get),
+    };
+    (result, measurement)
 }
 
 fn measured_recovery_allocations(image: &Kind1Image) -> AllocationMeasurement {
@@ -1948,6 +1967,7 @@ fn measured_recovery_allocations(image: &Kind1Image) -> AllocationMeasurement {
     AllocationMeasurement {
         count: ALLOCATION_COUNT.with(Cell::get),
         total_bytes: ALLOCATION_BYTES.with(Cell::get),
+        max_single_bytes: ALLOCATION_MAX_SINGLE_BYTES.with(Cell::get),
         peak_live_bytes: ALLOCATION_PEAK_LIVE_BYTES.with(Cell::get),
         live_at_end: ALLOCATION_LIVE_BYTES.with(Cell::get),
     }
@@ -2019,6 +2039,7 @@ fn kind1_decoder_owned_heap_has_zero_input_slope() {
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
     let peak = ALLOCATION_PEAK_LIVE_BYTES.with(Cell::get);
     assert!(peak >= prepare_bytes as u64);
+    assert!(ALLOCATION_MAX_SINGLE_BYTES.with(Cell::get) >= prepare_bytes as u64);
     drop(whole_record);
 }
 
