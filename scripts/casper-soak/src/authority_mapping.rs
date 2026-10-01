@@ -221,7 +221,6 @@ fn target(value: &Value, snapshot: &str, strict: bool) -> Result<Value> {
         "oracle_decision",
         "oracle_witness",
         "original_fault_tolerance",
-        "display_projection",
         "reference_comparison",
     ];
     let mut digest = None;
@@ -234,6 +233,51 @@ fn target(value: &Value, snapshot: &str, strict: bool) -> Result<Value> {
             );
             digest = Some(candidate);
         }
+    }
+    let mut display_digest = digest;
+    if let Some(inputs) = value.get("display_inputs") {
+        let payload = available(inputs, None)?;
+        let projection = available(&value["display_projection"], None)?;
+        ensure!(
+            inputs["input_digest"] == value["display_projection"]["input_digest"],
+            "The display input digest differs."
+        );
+        ensure!(
+            payload.is_some() == projection.is_some(),
+            "The display input availability differs."
+        );
+        display_digest = inputs["input_digest"].as_str();
+        if let Some(payload) = payload {
+            ensure!(
+                object(payload)?.len() == 10,
+                "The display input fields differ."
+            );
+            for field in ["base_bits", "initial_fault_bits"] {
+                let _: u32 = number(&payload[field])?.try_into()?;
+            }
+            ensure!(
+                matches!(
+                    text(&payload["base_source"])?,
+                    "persisted_metadata" | "original_oracle" | "missing_history_minimum"
+                ),
+                "The display base source is unsupported."
+            );
+            manifest::hex(&payload["equivocation_digest"], 64)?;
+            for field in ["equivocating_weight", "total_weight"] {
+                manifest::decimal(&payload[field])?;
+            }
+            for field in ["matched_records", "distinct_equivocators"] {
+                number(&payload[field])?;
+            }
+            for field in ["finalized_set_member", "metadata_finalized"] {
+                ensure!(
+                    payload[field].is_boolean(),
+                    "The display finalized flag is absent."
+                );
+            }
+        }
+    } else {
+        available(&value["display_projection"], digest)?;
     }
     let persisted = &value["persisted_fault_tolerance"];
     let persisted_value = available(persisted, Some(snapshot))?;
@@ -251,7 +295,8 @@ fn target(value: &Value, snapshot: &str, strict: bool) -> Result<Value> {
         "target":value["target"],"evaluation_input_digest":digest,
         "oracle":decision(value, digest)?,
         "original_ft":float_observation(&value["original_fault_tolerance"], digest)?,
-        "display_projection":float_observation(&value["display_projection"], digest)?,
+        "display_projection":float_observation(&value["display_projection"], display_digest)?,
+        "display_input_digest":display_digest,"display_inputs":value["display_inputs"],
         "persisted_ft":float_observation(persisted, Some(snapshot))?,
         "persisted_finalized":finalized,
         "reference_comparison":value["reference_comparison"],
@@ -280,7 +325,15 @@ fn work(value: &Value) -> Result<Value> {
     for field in ["aggregate", "preparation", "measured"] {
         usage(&value[field])?;
     }
-    for field in ["original", "reference"] {
+    for field in [
+        "original",
+        "reference",
+        "fork_choice_bounded",
+        "fork_choice_reference",
+    ] {
+        if field.starts_with("fork_choice_") && value.get(field).is_none() {
+            continue;
+        }
         if let Some(v) = available(&value[field], None)? {
             usage(v)?;
         }
@@ -299,6 +352,55 @@ fn work(value: &Value) -> Result<Value> {
     Ok(json!({"scope":"whole_authority_request","source":value,
         "visited_vertices":absent("distinct_vertex_counter_unavailable"),
         "traversed_edges":absent("edge_counter_unavailable")}))
+}
+
+fn fork_choice(value: &Value) -> Result<Value> {
+    let source = value
+        .get("fork_choice")
+        .cloned()
+        .unwrap_or_else(|| json!({"availability":"not_requested"}));
+    let mut mapped = json!({"source":source,
+        "bounded_head":absent("fork_choice_observation_unavailable"),
+        "reference_head":absent("fork_choice_observation_unavailable")});
+    if let Some(choice) = available(&source, None)? {
+        let digest = text(&source["input_digest"])?;
+        ensure!(
+            choice["input_digest"] == digest,
+            "The fork-choice input digest differs."
+        );
+        for mode in ["bounded", "reference"] {
+            if let Some(result) = available(&choice[mode], Some(digest))? {
+                ensure!(result["mode"] == mode, "The fork-choice evaluator differs.");
+                manifest::hex(&result["head"], 64)?;
+                number(&result["visited_blocks"])?;
+                number(&result["examined_edges"])?;
+                mapped[format!("{mode}_head")] = observed(result["head"].clone());
+            }
+        }
+        if let Some(comparison) = available(&choice["comparison"], Some(digest))? {
+            ensure!(
+                comparison["algorithm"] == "immutable-ghost-reference-v1",
+                "The fork-choice comparison algorithm differs."
+            );
+            for field in ["head_matches", "tips_match", "bounds_differ"] {
+                ensure!(
+                    comparison[field].is_boolean(),
+                    "The fork-choice comparison flag is absent."
+                );
+            }
+            ensure!(
+                mapped["bounded_head"]["presence"] == "observed"
+                    && mapped["reference_head"]["presence"] == "observed",
+                "The fork-choice comparison lacks paired results."
+            );
+            ensure!(
+                comparison["head_matches"]
+                    == (mapped["bounded_head"]["value"] == mapped["reference_head"]["value"]),
+                "The fork-choice head comparison differs."
+            );
+        }
+    }
+    Ok(mapped)
 }
 
 pub fn map(response: &Value) -> Result<Value> {
@@ -363,5 +465,25 @@ pub fn map(response: &Value) -> Result<Value> {
     mapped["events"] = value["events"].clone();
     mapped["coverage"] = value["coverage"].clone();
     mapped["work"] = work(&value["work"])?;
+    mapped["fork_choice"] = fork_choice(value)?;
+    if mapped["fork_choice"]["bounded_head"]["presence"] == "observed"
+        && mapped["fork_choice"]["reference_head"]["presence"] == "observed"
+    {
+        mapped["blocked_reasons"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|reason| reason != "paired_fork_choice_unavailable");
+    }
+    if let Some(capture) = value.get("equivocation_capture") {
+        available(capture, None)?;
+        mapped["equivocation_capture"] = capture.clone();
+    }
+    if let Some(scope) = value.get("display_scope") {
+        ensure!(
+            scope == "batch-e-detached-display-projection",
+            "The display scope differs."
+        );
+        mapped["display_scope"] = scope.clone();
+    }
     Ok(mapped)
 }

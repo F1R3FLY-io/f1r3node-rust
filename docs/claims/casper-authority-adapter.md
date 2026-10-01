@@ -67,3 +67,19 @@ The accepted authority profile still rejects live inputs. This claim does not au
 Paired fork-choice observations, captured display inputs, executable fixtures, and profile input bindings remain required for the live profile.
 
 Source-bound acceptance and live qualification remain pending.
+
+## Batch D and Batch E mapping registration
+
+This extension was registered on 2026-10-01 before its implementation.
+
+The mapper keeps the oracle, persisted, display, and fork-choice input digests separate.
+Display values and display input summaries must have the same display digest and availability.
+Legacy responses without display inputs keep their existing mapping contract.
+
+The mapper retains both fork-choice heads and the recorded comparison.
+The mapper rejects inconsistent nested fork-choice digests and incorrect evaluator labels.
+An unavailable evaluator does not produce a selected head.
+
+Fork-choice work counters retain their evaluator names.
+The mapper retains captured display inputs and equivocation capture evidence without creating tracker rows.
+None of these observations establishes candidate qualification, workload application, or a passing campaign.
