@@ -31,6 +31,16 @@ historical 327 component summaries with current owner samples. The present
 workspace contains other agents' staged changes and is not a valid benchmark
 source tree without isolation and source hashing.
 
+The existing [FFI `space_new`](../../../rspace++/libs/rspace_rhotypes/src/lib.rs)
+path passes `GB` (1,073,741,824 bytes) to `mk_rspace_store_manager`; that
+manager's `LmdbEnvConfig::new` defaults to 20 databases, and the shared
+environment cache sets 2,048 readers. An alternate
+`get_or_create_rspace_store` path passes 10,000 databases but is
+not a substitute for the FFI path in an FFI-owner comparison. The runner must
+name the actual owner entrypoint it exercises and freeze these resolved
+settings from that entrypoint before the first pair; mixing entrypoints makes
+the cell ineligible.
+
 ## Equal contract and observations
 
 An **acknowledged durable batch** is one successful RSpace checkpoint whose
