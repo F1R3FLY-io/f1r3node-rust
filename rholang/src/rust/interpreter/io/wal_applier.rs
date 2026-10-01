@@ -1,6 +1,7 @@
 // WAL fresh-tree applier — foundation types (PR #519) + pure
-// syscall helpers (PR #521) + NSS lookup helpers (this PR,
-// slice 3 of the wal_applier submodule tree).
+// syscall helpers (PR #521) + NSS lookup helpers (PR #522) +
+// main dispatcher (this PR, final slice of the wal_applier
+// submodule tree).
 //
 // PR #519 shipped the shared types the applier builds on:
 //
@@ -25,19 +26,38 @@
 // `format_quarantine`, `openat_leaf`, `pwrite_all`, `copy_at`,
 // and `check_path_allowed`.
 //
-// This slice (PR #522) adds the NSS lookup helpers used by
-// the Chown branch: `resolve_uid` (name → uid) and
-// `resolve_gid` (name → gid).  Both are thin adapters over
-// the libc FFI machinery in [`super::nss`]
-// ([`resolve_uid_detailed`] / [`resolve_gid_detailed`]) — the
-// shared machinery lives in `nss.rs` so future NSS tweaks
-// (ERANGE discipline, buffer ceiling, additional errno
-// handling) touch one site.  The adapter's job is just to
-// map the shared `Result<Option<u32>, i32>` surface onto the
-// applier's structured [`ApplierError`] variants.
+// PR #522 added the NSS lookup helpers used by the Chown
+// branch (`resolve_uid` / `resolve_gid`) as thin adapters over
+// [`super::nss`]'s shared libc FFI machinery.
 //
-// Subsequent slices add the main [`apply_wal_to_fresh_tree`]
-// dispatcher.
+// This slice (PR #523, CAPSTONE) adds the main
+// [`apply_wal_to_fresh_tree`] dispatcher + `descend_entry`
+// helper.  The dispatcher iterates `wal` entries, skips
+// Failure-outcome entries (H-6), and dispatches each `WalOp`
+// through the matching libc syscall family:
+//
+//   - Write/WriteAt → openat + pwrite_all + close
+//   - Truncate      → openat + ftruncate + close
+//   - Chmod         → fchmodat
+//   - Chown         → resolve_uid/gid + fchownat
+//   - RemoveFile    → unlinkat
+//   - RemoveDir     → unlinkat(AT_REMOVEDIR)
+//   - Rename        → renameat (both sides descend)
+//   - CopyFile      → copy_at (both sides descend)
+//   - Read/Stat/.../Exists → observation-only, no-op
+//
+// Every entry's path (and `extra_path` for Rename/CopyFile)
+// routes through [`descend_entry`] which checks
+// `allowed_roots`, resolves via `path_map` closure, then
+// calls `safe_descend_verified`.  The resulting
+// `SafeParent` dirfd is used for every `*at` syscall so the
+// S-1 TOCTOU discipline holds end-to-end.
+//
+// This closes the wal_applier submodule tree.  Downstream
+// consumers (yet-to-land joiner-side `wal_payload_sync` and
+// test fixtures via `fileio-test-fixtures/`) can now invoke
+// `apply_wal_to_fresh_tree` against a decoded WAL slice +
+// resolved payload-bytes sidecar.
 //
 // # Why `ResolvedWalPath` and not `&Root` for replay sites
 //
@@ -93,10 +113,12 @@
 // the correct hash" guarantee.  Any such refactor MUST cite
 // this note.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::path::descend::safe_descend_verified;
 use super::path::{QuarantineError, SafeParent};
-use super::wal::WalOp;
+use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 
 /// Result of decomposing a WAL entry's absolute path into the
 /// `(on_disk_root, rel_from_root, expected_root_id)` triple the
@@ -303,12 +325,11 @@ const _APPLIER_ERROR_IS_SEND_SYNC: fn() = || {
 // Pure syscall helpers (slice 2) — used by the dispatcher
 // ===========================================================
 //
-// `#[allow(dead_code)]` applies to each helper individually
-// because the sole caller (the dispatcher) lands in a yet-to-
-// land slice.  Removing the allow once the dispatcher is in
-// place will catch any orphaned helper that nothing wires up.
-// Tests in this file DO exercise each helper, so test builds
-// don't need the allow (cfg-test visibility suffices).
+// Each helper is `pub(super)` so the dispatcher can call it;
+// no `#[allow(dead_code)]` is needed now that slice 4
+// (the dispatcher) wires every helper to a call site.  A
+// future refactor that orphans a helper surfaces as a
+// standard dead-code warning.
 
 /// Render a [`QuarantineError`] into a short operator-facing
 /// string suitable for the `reason` field of
@@ -317,7 +338,6 @@ const _APPLIER_ERROR_IS_SEND_SYNC: fn() = || {
 /// which varies between Linux and macOS; the `(kind, msg)` tuple
 /// in `IoError` is already scrubbed by `io_msg_scrub` at the
 /// `path` module boundary).
-#[allow(dead_code)]
 pub(super) fn format_quarantine(qe: &QuarantineError) -> String {
     match qe {
         QuarantineError::Empty => "empty rel".to_string(),
@@ -330,16 +350,30 @@ pub(super) fn format_quarantine(qe: &QuarantineError) -> String {
 }
 
 /// `openat` on `parent`'s dirfd using `parent`'s leaf name,
-/// returning the raw fd on success or [`ApplierError::IoFailure`]
+/// returning an [`OwnedFd`] on success or [`ApplierError::IoFailure`]
 /// with the full WAL-entry context on failure.  `O_NOFOLLOW` is
 /// unconditionally ORed into `flags` to preserve the S-1 TOCTOU
-/// discipline — a leaf-level symlink is rejected here rather
-/// than followed into whatever the attacker populated.
+/// discipline — a leaf-level symlink is rejected here rather than
+/// followed into whatever the attacker populated.
 ///
-/// Callers own the returned fd and MUST close it (typically via
-/// `std::fs::File::from_raw_fd` + Drop or an explicit
-/// `libc::close`) before returning.
-#[allow(dead_code)]
+/// # Why `OwnedFd`
+///
+/// Returning an owning handle (vs. a raw `c_int`) makes close-on-
+/// every-exit-path structural rather than conventional:
+///
+///   - Normal control flow: `OwnedFd` drops at scope end, closing
+///     the fd exactly once.
+///   - Panic unwinding (e.g., allocator OOM during `pwrite_all`):
+///     `OwnedFd`'s Drop still runs, closing the fd.
+///   - Early `?` returns: same.
+///
+/// With the raw-fd shape, the dispatcher had to pair every
+/// `openat_leaf` call with an explicit `unsafe { libc::close(fd) }`
+/// before any error propagation.  A panic between open and close
+/// would leak the fd (recovered on process exit, but not clean).
+/// The `OwnedFd` shape eliminates two `unsafe` close blocks at
+/// each call site and makes panic + error paths structurally
+/// equivalent.
 pub(super) fn openat_leaf(
     entry_index: usize,
     op: WalOp,
@@ -347,7 +381,8 @@ pub(super) fn openat_leaf(
     dst: &Path,
     flags: libc::c_int,
     mode: libc::mode_t,
-) -> Result<libc::c_int, ApplierError> {
+) -> Result<std::os::fd::OwnedFd, ApplierError> {
+    use std::os::fd::FromRawFd;
     // SAFETY: `parent` owns an open dirfd and a NUL-terminated
     // `CString` leaf for its lifetime, so `as_raw_fd()` and
     // `leaf_ptr()` are valid across the call.  `openat` only reads
@@ -371,7 +406,11 @@ pub(super) fn openat_leaf(
             message: format!("openat: {e}"),
         });
     }
-    Ok(fd)
+    // SAFETY: `openat` returned a non-negative `fd` (checked
+    // above), so this is a fresh kernel-side open file descriptor
+    // this function owns exclusively.  Transferring ownership to
+    // `OwnedFd` means Drop closes it on every exit path.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
 }
 
 /// EINTR-tolerant positioned-write loop.  Writes the entire
@@ -387,7 +426,6 @@ pub(super) fn openat_leaf(
 /// `#[cfg(test)] mod tests` boundary.
 ///
 /// [`WriteZero`]: std::io::ErrorKind::WriteZero
-#[allow(dead_code)]
 pub(super) fn pwrite_all(fd: libc::c_int, bytes: &[u8], off: u64) -> std::io::Result<()> {
     let mut written: usize = 0;
     while written < bytes.len() {
@@ -448,7 +486,6 @@ const COPY_BUF_LEN: usize = 64 * 1024;
 /// `read(2)` system call usually fills the buffer in one hop
 /// for medium files; larger files iterate (pinned by
 /// `copy_at_large_file_round_trips_through_multi_iteration_loop`).
-#[allow(dead_code)]
 pub(super) fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::io::Result<()> {
     // SAFETY: `from_parent` owns an open dirfd and a NUL-terminated
     // `CString` leaf for its lifetime, so `as_raw_fd()` and
@@ -565,7 +602,6 @@ pub(super) fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::
 /// This split keeps the function pure (no "if empty, pass"
 /// hidden branch) and keeps the "do I need to validate at all?"
 /// decision at a single caller site.
-#[allow(dead_code)]
 pub(super) fn check_path_allowed(
     entry_index: usize,
     path: &Path,
@@ -613,7 +649,6 @@ pub(super) fn check_path_allowed(
 /// Resolve a user name to its numeric uid via
 /// [`super::nss::resolve_uid_detailed`], mapping onto the
 /// applier's structured [`ApplierError`] surface.
-#[allow(dead_code)]
 pub(super) fn resolve_uid(name: &str) -> Result<u32, ApplierError> {
     match super::nss::resolve_uid_detailed(name) {
         Ok(Some(uid)) => Ok(uid),
@@ -631,7 +666,6 @@ pub(super) fn resolve_uid(name: &str) -> Result<u32, ApplierError> {
 /// [`super::nss::resolve_gid_detailed`], mapping onto the
 /// applier's structured [`ApplierError`] surface.  Same shape
 /// as [`resolve_uid`].
-#[allow(dead_code)]
 pub(super) fn resolve_gid(name: &str) -> Result<u32, ApplierError> {
     match super::nss::resolve_gid_detailed(name) {
         Ok(Some(gid)) => Ok(gid),
@@ -643,6 +677,385 @@ pub(super) fn resolve_gid(name: &str) -> Result<u32, ApplierError> {
             errno,
         }),
     }
+}
+
+// ===========================================================
+// Main dispatcher (slice 4 — CAPSTONE)
+// ===========================================================
+
+/// Apply a captured WAL slice to a filesystem tree.
+///
+/// See the module docstring for supported ops, `path_map`
+/// semantics, path validation, and error variants.
+///
+/// `path_map` receives the WAL entry's `path` (or `extra_path`
+/// for Rename / CopyFile) and returns a [`ResolvedWalPath`] —
+/// the `(on_disk_root, rel_from_root, expected_root_id)`
+/// triple the applier hands to [`safe_descend_verified`].
+/// Every mutation runs as a `*at` syscall against the
+/// descended dirfd, so a component swap between descent and
+/// syscall cannot escape the on-disk root (S-1 TOCTOU
+/// discipline).
+///
+/// # H-6 Failure-outcome skip
+///
+/// WAL entries whose outcome is `Failure { .. }` are skipped
+/// unconditionally.  The leader never mutated disk on
+/// Failure, so replaying a Failure entry on the follower
+/// would introduce a divergence.
+///
+/// # Chown's EPERM-is-ok posture
+///
+/// `fchownat` with `AT_SYMLINK_NOFOLLOW` returning `EPERM`
+/// is treated as a no-op success — unprivileged hosts
+/// (typical CI, test harnesses) can't chown to arbitrary
+/// owners.  Tests should use current-user names to avoid this
+/// branch; production joiners run as the node service user
+/// and MUST have the perms to replay the leader's chown ops.
+pub fn apply_wal_to_fresh_tree<F>(
+    wal: &[WalEntry],
+    payload_bytes: &HashMap<[u8; 32], Vec<u8>>,
+    path_map: F,
+    allowed_roots: &[PathBuf],
+) -> Result<(), ApplierError>
+where
+    F: Fn(&Path) -> ResolvedWalPath,
+{
+    for (i, entry) in wal.iter().enumerate() {
+        if matches!(entry.outcome, WalOutcome::Failure { .. }) {
+            continue; // H-6: leader never mutated disk on Failure
+        }
+        match entry.op {
+            WalOp::Write | WalOp::WriteAt => {
+                let hash = match entry.payload_ref {
+                    Some(PayloadRef::Hash(h)) => h,
+                    Some(PayloadRef::DeployRef { .. }) => {
+                        return Err(ApplierError::UnsupportedPayloadRef { entry_index: i })
+                    }
+                    None => {
+                        return Err(ApplierError::MissingPayloadRef {
+                            entry_index: i,
+                            op: entry.op,
+                        })
+                    }
+                };
+                let bytes =
+                    payload_bytes
+                        .get(&hash)
+                        .ok_or_else(|| ApplierError::MissingSidecarEntry {
+                            entry_index: i,
+                            hash_hex: hex::encode(hash),
+                        })?;
+                let off = entry.offset.ok_or(ApplierError::MissingOffset {
+                    entry_index: i,
+                    op: entry.op,
+                })?;
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let owned_fd = openat_leaf(
+                    i,
+                    entry.op,
+                    &parent,
+                    &dst,
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC,
+                    0o644,
+                )?;
+                use std::os::fd::AsRawFd;
+                let write_res = pwrite_all(owned_fd.as_raw_fd(), bytes, off);
+                // `owned_fd` drops at scope end → close.  Panic
+                // during `pwrite_all` or error-propagation via `?`
+                // below both close the fd via Drop.
+                drop(owned_fd);
+                write_res.map_err(|e| ApplierError::IoFailure {
+                    entry_index: i,
+                    op: entry.op,
+                    path: dst,
+                    message: format!("pwrite: {e}"),
+                })?;
+            }
+            WalOp::Truncate => {
+                let n = entry.offset.ok_or(ApplierError::MissingOffset {
+                    entry_index: i,
+                    op: entry.op,
+                })?;
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let owned_fd = openat_leaf(
+                    i,
+                    entry.op,
+                    &parent,
+                    &dst,
+                    libc::O_WRONLY | libc::O_CLOEXEC,
+                    0,
+                )?;
+                use std::os::fd::AsRawFd;
+                // SAFETY: `owned_fd` keeps the fd open for the
+                // duration of this block; `ftruncate` operates
+                // purely on the kernel-side file object and does
+                // not touch userspace memory.  The owning `OwnedFd`
+                // Drop closes on every exit path.
+                let rc = unsafe { libc::ftruncate(owned_fd.as_raw_fd(), n as libc::off_t) };
+                let ftrunc_err = if rc < 0 {
+                    Some(std::io::Error::last_os_error())
+                } else {
+                    None
+                };
+                // `owned_fd` drops at scope end → close.  Panic
+                // or error-propagation both close the fd via Drop.
+                drop(owned_fd);
+                if let Some(e) = ftrunc_err {
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("ftruncate: {e}"),
+                    });
+                }
+            }
+            // Observation-only — nothing to reconstruct on disk.
+            WalOp::Read
+            | WalOp::ReadAt
+            | WalOp::Stat
+            | WalOp::Entries
+            | WalOp::Size
+            | WalOp::EntriesStreamNext
+            | WalOp::Exists => {}
+            WalOp::Chmod => {
+                let bits = entry
+                    .mode_bits
+                    .ok_or(ApplierError::MissingModeBits { entry_index: i })?;
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid for the
+                // duration of this call.  `fchmodat` only reads the
+                // leaf name pointer and does not retain it.
+                let rc = unsafe {
+                    libc::fchmodat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        bits as libc::mode_t,
+                        0,
+                    )
+                };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("fchmodat: {e}"),
+                    });
+                }
+            }
+            WalOp::Chown => {
+                // Chown.owner contract: the leader-side journaling
+                // (yet-to-land in handlers.rs) MUST populate
+                // `owner` for every Chown entry — either with the
+                // name string (triggers NSS resolve) or with
+                // `Some("")` meaning "leave uid unchanged" (short-
+                // circuits NSS to the POSIX `u32::MAX` sentinel).
+                // `None` is a leader-side invariant violation; we
+                // reject with `MissingOwner` so the subscriber
+                // surfaces the bug rather than silently applying a
+                // zero-field chown.  `group` is more permissive:
+                // both `None` and `Some("")` route to the "leave
+                // gid unchanged" sentinel.
+                let owner = entry
+                    .owner
+                    .as_ref()
+                    .ok_or(ApplierError::MissingOwner { entry_index: i })?;
+                let group = entry.group.as_deref();
+                let uid = if owner.is_empty() {
+                    u32::MAX
+                } else {
+                    resolve_uid(owner)?
+                };
+                let gid = match group {
+                    None | Some("") => u32::MAX,
+                    Some(g) => resolve_gid(g)?,
+                };
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                // `fchownat` only reads the leaf name pointer and does
+                // not retain it; `AT_SYMLINK_NOFOLLOW` matches leader
+                // discipline (never traverse a symlink leaf).
+                let rc = unsafe {
+                    libc::fchownat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        uid,
+                        gid,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                };
+                if rc != 0 {
+                    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                    // Unprivileged hosts (typical CI) can't chown
+                    // to arbitrary owners.  EPERM is treated as a
+                    // no-op success — tests should use current-
+                    // user names to avoid this; production
+                    // joiners run as the node service user and
+                    // MUST have the perms to replay the leader's
+                    // chown ops.
+                    if errno != libc::EPERM {
+                        return Err(ApplierError::ChownFailed {
+                            entry_index: i,
+                            path: dst,
+                            errno,
+                        });
+                    }
+                }
+            }
+            WalOp::RemoveFile => {
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                // `unlinkat` only reads the leaf name pointer.
+                let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("unlinkat: {e}"),
+                    });
+                }
+            }
+            WalOp::RemoveDir => {
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                // `unlinkat(AT_REMOVEDIR)` only reads the leaf name
+                // pointer.
+                let rc = unsafe {
+                    libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), libc::AT_REMOVEDIR)
+                };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("unlinkat(AT_REMOVEDIR): {e}"),
+                    });
+                }
+            }
+            WalOp::Rename => {
+                let extra = entry
+                    .extra_path
+                    .as_ref()
+                    .ok_or(ApplierError::MissingExtraPath {
+                        entry_index: i,
+                        op: entry.op,
+                    })?;
+                let (from_parent, from_dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let (to_parent, to_dst) =
+                    descend_entry(i, entry.op, extra, &path_map, allowed_roots)?;
+                // SAFETY: both `from_parent` and `to_parent` own open
+                // dirfds and NUL-terminated `CString` leaves for their
+                // lifetimes, so all four accessors are valid here.
+                // `renameat` only reads the leaf name pointers and
+                // does not retain them.
+                let rc = unsafe {
+                    libc::renameat(
+                        from_parent.as_raw_fd(),
+                        from_parent.leaf_ptr(),
+                        to_parent.as_raw_fd(),
+                        to_parent.leaf_ptr(),
+                    )
+                };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: from_dst,
+                        message: format!("renameat → {to_dst:?}: {e}"),
+                    });
+                }
+            }
+            WalOp::CopyFile => {
+                let extra = entry
+                    .extra_path
+                    .as_ref()
+                    .ok_or(ApplierError::MissingExtraPath {
+                        entry_index: i,
+                        op: entry.op,
+                    })?;
+                let (from_parent, from_dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let (to_parent, to_dst) =
+                    descend_entry(i, entry.op, extra, &path_map, allowed_roots)?;
+                copy_at(&from_parent, &to_parent).map_err(|e| ApplierError::IoFailure {
+                    entry_index: i,
+                    op: entry.op,
+                    path: from_dst.clone(),
+                    message: format!("copy → {to_dst:?}: {e}"),
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Common prologue for every op: check `allowed_roots` on the
+/// raw WAL entry path (bundle-relative), run the closure to
+/// resolve to the on-disk absolute, then
+/// [`safe_descend_verified`] to obtain the [`SafeParent`]
+/// dirfd.  Returns the descended parent + the joined on-disk
+/// path for error messages.
+///
+/// # Ordering rationale
+///
+/// WAL entries carry bundle-relative paths (e.g.
+/// `/@bundle/target`).  Node setup registers `BUNDLE_ROOT_PREFIX`
+/// (`/@bundle`) as a consensus-static root plus the operator's
+/// absolute per-validator paths.  Checking the RAW `entry_path`
+/// against `allowed_roots` matches on the bundle-relative
+/// prefix directly, without depending on how the registry
+/// resolves it to a per-validator on-disk subdir.  Checking the
+/// resolved on-disk root would require the operator to register
+/// per-validator absolute paths whose exact lexical shape
+/// matches the registry's output — brittle across
+/// canonicalization variants.
+fn descend_entry<F>(
+    entry_index: usize,
+    op: WalOp,
+    entry_path: &Path,
+    path_map: &F,
+    allowed_roots: &[PathBuf],
+) -> Result<(SafeParent, PathBuf), ApplierError>
+where
+    F: Fn(&Path) -> ResolvedWalPath,
+{
+    if !allowed_roots.is_empty() {
+        check_path_allowed(entry_index, entry_path, allowed_roots)?;
+    }
+    let resolved = path_map(entry_path);
+    let rel_str = resolved.rel.to_string_lossy().into_owned();
+    let dst = resolved.root.join(&resolved.rel);
+    let parent = safe_descend_verified(&resolved.root, &rel_str, resolved.expected_root_id)
+        .map_err(|qe| ApplierError::SafeDescendFailed {
+            entry_index,
+            root: resolved.root.clone(),
+            rel: resolved.rel.clone(),
+            reason: format_quarantine(&qe),
+        })?;
+    // Silence "unused op" warning on paths that skip IoFailure
+    // wrapping — retained for future error variants that carry op.
+    let _ = op;
+    Ok((parent, dst))
 }
 
 #[cfg(test)]
@@ -794,8 +1207,6 @@ mod tests {
     // ---------------------------------------------------------------
     // Pure syscall helpers (slice 2)
     // ---------------------------------------------------------------
-
-    use std::os::fd::FromRawFd;
 
     use super::super::path::descend::safe_descend_verified;
     use super::super::path::QuarantineError;
@@ -1022,13 +1433,15 @@ mod tests {
 
     /// `openat_leaf` with `O_CREAT | O_RDWR` creates a new file
     /// under a safely-descended parent.  Pin the happy path +
-    /// confirm the returned fd is usable for a subsequent write.
+    /// confirm the returned `OwnedFd` is usable for a subsequent
+    /// write (via `File::from(owned_fd)` which transfers ownership
+    /// without an extra `unsafe`).
     #[test]
     fn openat_leaf_creates_and_returns_usable_fd() {
         let tmp = tempfile::tempdir().unwrap();
         let parent = safe_descend_verified(tmp.path(), "new.bin", None).unwrap();
 
-        let fd = openat_leaf(
+        let owned_fd = openat_leaf(
             0,
             WalOp::Write,
             &parent,
@@ -1038,11 +1451,9 @@ mod tests {
         )
         .expect("openat_leaf ok");
 
-        // Wrap in File so Drop closes the fd; also tests the fd is
-        // actually writable.
-        // SAFETY: `openat_leaf` returned a fresh fd we own; wrapping
-        // in `File::from_raw_fd` transfers ownership so Drop closes it.
-        let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
+        // `OwnedFd → File` is a safe transfer; File's Drop closes
+        // the fd.
+        let mut f = std::fs::File::from(owned_fd);
         use std::io::Write;
         f.write_all(b"content").unwrap();
         drop(f);
@@ -1235,5 +1646,591 @@ mod tests {
             Err(ApplierError::NssNotFound { name }) => assert!(name.is_empty()),
             other => panic!("expected NssNotFound on empty, got {other:?}"),
         }
+    }
+
+    // ---------------------------------------------------------------
+    // apply_wal_to_fresh_tree dispatcher (slice 4 — capstone)
+    // ---------------------------------------------------------------
+
+    fn write_entry_at(dst: &Path, off: u64, payload: &[u8]) -> (WalEntry, [u8; 32]) {
+        let PayloadRef::Hash(h) = PayloadRef::hash(payload) else {
+            unreachable!()
+        };
+        let entry = WalEntry {
+            op: WalOp::WriteAt,
+            path: dst.to_path_buf(),
+            extra_path: None,
+            offset: Some(off),
+            length: Some(payload.len() as u64),
+            payload_ref: Some(PayloadRef::Hash(h)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        (entry, h)
+    }
+
+    /// Identity path_map — production joiners apply directly to the
+    /// WAL entry's canonical host path.  LOAD-BEARING end-to-end
+    /// pin: synthetic Write entry, identity path_map, verify the
+    /// payload lands at the expected offset.
+    #[test]
+    fn identity_path_map_writes_at_wal_entry_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("target.bin");
+        std::fs::write(&dst, vec![0u8; 8]).unwrap();
+
+        let payload = b"data".to_vec();
+        let (entry, h) = write_entry_at(&dst, 2, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        apply_wal_to_fresh_tree(&[entry], &sidecar, ResolvedWalPath::identity_leaf_split, &[
+        ])
+        .unwrap();
+
+        let got = std::fs::read(&dst).unwrap();
+        assert_eq!(&got[..2], &[0, 0]);
+        assert_eq!(&got[2..2 + payload.len()], payload.as_slice());
+    }
+
+    /// H-6: `Failure`-outcome entries are skipped even when their
+    /// sidecar bytes are missing — the applier must not attempt a
+    /// write the leader never performed.
+    #[test]
+    fn skips_failure_outcome_entries_without_touching_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("target.bin");
+        std::fs::write(&dst, vec![0xAA; 8]).unwrap();
+
+        let bogus_hash = [0u8; 32];
+        let failure_entry = WalEntry {
+            op: WalOp::WriteAt,
+            path: dst.clone(),
+            extra_path: None,
+            offset: Some(0),
+            length: Some(4),
+            payload_ref: Some(PayloadRef::Hash(bogus_hash)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Failure { code: 5 },
+        };
+        // Empty sidecar — a Failure entry must not touch it.
+        let sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        apply_wal_to_fresh_tree(
+            &[failure_entry],
+            &sidecar,
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .unwrap();
+
+        // Byte state unchanged.
+        assert_eq!(std::fs::read(&dst).unwrap(), vec![0xAA; 8]);
+    }
+
+    /// The caller-supplied `path_map` closure redirects writes: a
+    /// closure that translates `src_root/f.bin` → `dst_root/f.bin`
+    /// leaves the WAL entry's original path untouched.
+    #[test]
+    fn path_map_closure_redirects_writes() {
+        let src_root = tempfile::tempdir().unwrap();
+        let dst_root = tempfile::tempdir().unwrap();
+        std::fs::write(src_root.path().join("f.bin"), vec![0u8; 8]).unwrap();
+        std::fs::write(dst_root.path().join("f.bin"), vec![0u8; 8]).unwrap();
+
+        let payload = b"xy".to_vec();
+        let (entry, h) = write_entry_at(&src_root.path().join("f.bin"), 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        let src = src_root.path().to_path_buf();
+        let dst = dst_root.path().to_path_buf();
+        apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| {
+                let rel = p.strip_prefix(&src).unwrap();
+                ResolvedWalPath {
+                    root: dst.clone(),
+                    rel: rel.to_path_buf(),
+                    expected_root_id: None,
+                }
+            },
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(src_root.path().join("f.bin")).unwrap(),
+            vec![0u8; 8]
+        );
+        let got = std::fs::read(dst_root.path().join("f.bin")).unwrap();
+        assert_eq!(&got[..2], payload.as_slice());
+    }
+
+    /// Missing sidecar entry returns `MissingSidecarEntry` rather
+    /// than panicking — a pre-hardening panic would kill the boot
+    /// subscriber task.
+    #[test]
+    fn missing_sidecar_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("t.bin");
+        std::fs::write(&dst, vec![0u8; 8]).unwrap();
+        let payload = b"missing".to_vec();
+        let (entry, h) = write_entry_at(&dst, 0, &payload);
+        let sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        let err =
+            apply_wal_to_fresh_tree(&[entry], &sidecar, ResolvedWalPath::identity_leaf_split, &[
+            ])
+            .expect_err("missing sidecar must Err");
+        assert_eq!(err, ApplierError::MissingSidecarEntry {
+            entry_index: 0,
+            hash_hex: hex::encode(h),
+        });
+        assert_eq!(std::fs::read(&dst).unwrap(), vec![0u8; 8]);
+    }
+
+    /// A `DeployRef` payload_ref is well-formed but not-yet-
+    /// reproducible.  Dispatcher surfaces `UnsupportedPayloadRef`.
+    #[test]
+    fn deploy_ref_payload_ref_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("t.bin");
+        std::fs::write(&dst, vec![0u8; 8]).unwrap();
+        let entry = WalEntry {
+            op: WalOp::WriteAt,
+            path: dst.clone(),
+            extra_path: None,
+            offset: Some(0),
+            length: Some(4),
+            payload_ref: Some(PayloadRef::DeployRef {
+                block_hash: [0; 32],
+                deploy_index: 0,
+                arg_index: 0,
+            }),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .expect_err("DeployRef must Err");
+        assert_eq!(err, ApplierError::UnsupportedPayloadRef { entry_index: 0 });
+    }
+
+    /// A path outside every `allowed_roots` entry returns
+    /// `PathOutsideAllowedRoots` — defense-in-depth against a
+    /// leader canonicalize bug or a forged snapshot.
+    #[test]
+    fn path_outside_allowed_roots_returns_error() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_target = outside.path().join("evil.bin");
+        std::fs::write(&outside_target, vec![0u8; 8]).unwrap();
+
+        let payload = b"attacker".to_vec();
+        let (entry, h) = write_entry_at(&outside_target, 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        let allowed = vec![root.path().to_path_buf()];
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            ResolvedWalPath::identity_leaf_split,
+            &allowed,
+        )
+        .expect_err("out-of-root must Err");
+        assert!(
+            matches!(err, ApplierError::PathOutsideAllowedRoots {
+                entry_index: 0,
+                ..
+            }),
+            "got {err:?}"
+        );
+        // Outside file untouched.
+        assert_eq!(std::fs::read(&outside_target).unwrap(), vec![0u8; 8]);
+    }
+
+    /// Empty `allowed_roots` disables validation at the dispatcher
+    /// level — the `check_path_allowed` call is skipped by
+    /// `descend_entry`'s `if !allowed_roots.is_empty()` gate.
+    /// LOAD-BEARING: pins the integration between the gate and the
+    /// pure function (which per PR #521 rejects empty inputs; the
+    /// skip is caller-driven).
+    #[test]
+    fn empty_allowed_roots_skips_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("t.bin");
+        std::fs::write(&dst, vec![0u8; 8]).unwrap();
+        let payload = b"ok".to_vec();
+        let (entry, h) = write_entry_at(&dst, 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+        apply_wal_to_fresh_tree(&[entry], &sidecar, ResolvedWalPath::identity_leaf_split, &[
+        ])
+        .unwrap();
+        let got = std::fs::read(&dst).unwrap();
+        assert_eq!(&got[..2], payload.as_slice());
+    }
+
+    /// A NULL byte inside a Chown path is caught by
+    /// `safe_descend_verified`'s `to_c` step and surfaces as
+    /// `SafeDescendFailed`.  Chown resolves NSS names BEFORE
+    /// descent, so we use an empty owner/group pair (short-
+    /// circuits NSS) to exercise the descent-side NULL check.
+    #[test]
+    fn chown_path_with_null_byte_returns_safe_descend_failed() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let bad_path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/has\0null"));
+        let entry = WalEntry {
+            op: WalOp::Chown,
+            path: bad_path,
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: Some(String::new()),
+            group: Some(String::new()),
+            outcome: WalOutcome::Success,
+        };
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .expect_err("path with NULL must Err");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "got {err:?}"
+        );
+    }
+
+    /// Empty owner + empty group short-circuits to
+    /// `(u32::MAX, u32::MAX)` sentinels (POSIX "leave uid/gid
+    /// unchanged").  No NSS lookup fires, so even hosts without
+    /// NSS entries for these names succeed.
+    #[test]
+    fn chown_empty_owner_and_group_short_circuits_nss() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("chownable.bin");
+        std::fs::write(&dst, vec![0u8; 4]).unwrap();
+        let entry = WalEntry {
+            op: WalOp::Chown,
+            path: dst,
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: Some(String::new()),
+            group: Some(String::new()),
+            outcome: WalOutcome::Success,
+        };
+        apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .unwrap();
+    }
+
+    /// Chown with a nonexistent owner name surfaces `NssNotFound`
+    /// (not a panic).  Pin against the reentrant `getpwnam_r`
+    /// path via the `nss::resolve_uid_detailed` adapter.
+    #[test]
+    fn chown_nonexistent_owner_returns_nss_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("chownable.bin");
+        std::fs::write(&dst, vec![0u8; 4]).unwrap();
+        let entry = WalEntry {
+            op: WalOp::Chown,
+            path: dst,
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: Some("no-such-user-in-nss-4f8d3a2e".to_string()),
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .expect_err("nonexistent owner must Err");
+        assert!(
+            matches!(err, ApplierError::NssNotFound { .. }),
+            "got {err:?}"
+        );
+    }
+
+    /// A Rename entry missing `extra_path` returns
+    /// `MissingExtraPath` — invariant violation surfaced rather
+    /// than panicking.
+    #[test]
+    fn rename_without_extra_path_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        std::fs::write(&a, b"a").unwrap();
+        let entry = WalEntry {
+            op: WalOp::Rename,
+            path: a,
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .expect_err("missing extra_path must Err");
+        assert_eq!(err, ApplierError::MissingExtraPath {
+            entry_index: 0,
+            op: WalOp::Rename,
+        });
+    }
+
+    /// Truncate without offset returns `MissingOffset`.
+    #[test]
+    fn truncate_without_offset_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("t.bin");
+        std::fs::write(&dst, vec![0u8; 16]).unwrap();
+        let entry = WalEntry {
+            op: WalOp::Truncate,
+            path: dst,
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .expect_err("missing offset on Truncate must Err");
+        assert_eq!(err, ApplierError::MissingOffset {
+            entry_index: 0,
+            op: WalOp::Truncate,
+        });
+    }
+
+    /// Truncate on a nonexistent file surfaces `IoFailure` (via
+    /// the `openat_leaf` ENOENT path), not a panic.
+    #[test]
+    fn truncate_missing_target_returns_io_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("does-not-exist.bin");
+        let entry = WalEntry {
+            op: WalOp::Truncate,
+            path: dst.clone(),
+            extra_path: None,
+            offset: Some(0),
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            ResolvedWalPath::identity_leaf_split,
+            &[],
+        )
+        .expect_err("truncate on missing file must Err");
+        assert!(
+            matches!(err, ApplierError::IoFailure {
+                entry_index: 0,
+                op: WalOp::Truncate,
+                ..
+            }),
+            "got {err:?}"
+        );
+    }
+
+    /// LOAD-BEARING S-1 TOCTOU pin: a symlink component along the
+    /// on-disk path is rejected by `safe_descend_verified`'s
+    /// `openat(O_NOFOLLOW)` step, surfacing as `SafeDescendFailed`
+    /// rather than silently traversing into the symlink target.
+    #[test]
+    fn symlink_intermediate_component_returns_safe_descend_failed() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let evil = tempfile::tempdir().unwrap();
+        // /root/sub is a symlink to /evil (the attacker's tree).
+        symlink(evil.path(), root.path().join("sub")).unwrap();
+        let target = root.path().join("sub").join("target.bin");
+        let payload = b"hello".to_vec();
+        let (entry, h) = write_entry_at(&target, 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        let root_pb = root.path().to_path_buf();
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| {
+                let rel = p.strip_prefix(&root_pb).unwrap();
+                ResolvedWalPath {
+                    root: root_pb.clone(),
+                    rel: rel.to_path_buf(),
+                    expected_root_id: None,
+                }
+            },
+            &[],
+        )
+        .expect_err("symlink component must Err");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "got {err:?}"
+        );
+        // The attacker's tree is untouched.
+        assert!(!evil.path().join("target.bin").exists());
+    }
+
+    /// LOAD-BEARING: full-flow H-5 rename-and-recreate attack
+    /// detection.  Capture the real root identity, perform the
+    /// attack between capture and apply, verify the applier
+    /// surfaces `SafeDescendFailed` AND that the attacker-seeded
+    /// bytes stay unmutated.  Uses my branch's `Root::capture +
+    /// identity()` API rather than fileio's free-function
+    /// `capture_root_identity`.
+    #[test]
+    fn wal_applier_identity_check_rejects_renamed_root() {
+        use super::super::path::identity::Root;
+
+        let staging = tempfile::tempdir().unwrap();
+        let root_path = staging.path().join("legit-root");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("target.bin"), vec![0u8; 8]).unwrap();
+
+        // Boot: capture the real identity of the legit root.
+        let boot_id = Root::capture(&root_path)
+            .expect("boot-time capture ok")
+            .identity();
+
+        // Sanity: the applier accepts the entry BEFORE the attack.
+        let payload = b"good".to_vec();
+        let (entry, h) = write_entry_at(&root_path.join("target.bin"), 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+        let root_pb = root_path.clone();
+        apply_wal_to_fresh_tree(
+            &[entry.clone()],
+            &sidecar,
+            |_p| ResolvedWalPath {
+                root: root_pb.clone(),
+                rel: PathBuf::from("target.bin"),
+                expected_root_id: Some(boot_id),
+            },
+            &[],
+        )
+        .expect("pre-attack apply must succeed against the legit root");
+        // O_WRONLY | O_CREAT (not TRUNC) → tail of the 8-byte seed
+        // remains after the 4-byte payload.
+        let contents_after = std::fs::read(root_path.join("target.bin")).unwrap();
+        assert_eq!(&contents_after[..4], b"good");
+
+        // Attack: rename the legit root aside, then recreate a
+        // fresh dir with the same name + attacker content.
+        let sidelined = staging.path().join("legit-root.bak");
+        std::fs::rename(&root_path, &sidelined).unwrap();
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("target.bin"), b"attacker-seed").unwrap();
+
+        // Apply again with the ORIGINAL boot_id.  The applier
+        // MUST reject at safe_descend_verified with the identity
+        // mismatch — attacker-seeded content stays untouched.
+        let attack_payload = b"attacker-overwrite".to_vec();
+        let (attack_entry, attack_h) =
+            write_entry_at(&root_path.join("target.bin"), 0, &attack_payload);
+        sidecar.insert(attack_h, attack_payload);
+        let err = apply_wal_to_fresh_tree(
+            &[attack_entry],
+            &sidecar,
+            |_p| ResolvedWalPath {
+                root: root_pb.clone(),
+                rel: PathBuf::from("target.bin"),
+                expected_root_id: Some(boot_id),
+            },
+            &[],
+        )
+        .expect_err("post-rename apply MUST reject");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "post-rename apply must surface as SafeDescendFailed; got {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(root_path.join("target.bin")).unwrap(),
+            b"attacker-seed".to_vec(),
+            "applier must not mutate a swapped root"
+        );
+    }
+
+    /// Mismatched `expected_root_id` (synthetic
+    /// `Some((u64::MAX, u64::MAX))`) is rejected by
+    /// `safe_descend_verified` and surfaces as
+    /// `SafeDescendFailed`.  Companion to the rename-and-recreate
+    /// test above — this one forces the mismatch synthetically
+    /// (no attack staging needed).
+    #[test]
+    fn mismatched_root_identity_returns_safe_descend_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let dst = root.path().join("t.bin");
+        std::fs::write(&dst, vec![0u8; 8]).unwrap();
+
+        let payload = b"data".to_vec();
+        let (entry, h) = write_entry_at(&dst, 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        let root_pb = root.path().to_path_buf();
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |_p| ResolvedWalPath {
+                root: root_pb.clone(),
+                rel: PathBuf::from("t.bin"),
+                expected_root_id: Some((u64::MAX, u64::MAX)),
+            },
+            &[],
+        )
+        .expect_err("mismatched root identity must Err");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "got {err:?}"
+        );
+        assert_eq!(std::fs::read(&dst).unwrap(), vec![0u8; 8]);
     }
 }
