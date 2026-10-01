@@ -10,8 +10,11 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::estimator::Estimator;
 
 pub mod evaluation;
+pub mod display;
+pub mod fork_choice;
 pub mod reference;
 
 pub const EVENT_CAPACITY: usize = 256;
@@ -26,10 +29,18 @@ pub struct AuthorityInputs {
     pub approved_post_state_hash: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForkChoiceInputs {
+    pub max_number_of_parents: i32,
+    pub approved_block_number: i64,
+    pub latest_message_depth: i64,
+}
+
 pub struct CaptureEndpoint {
     pub(crate) dag: BlockDagKeyValueStorage,
     pub(crate) blocks: KeyValueBlockStore,
     pub(crate) authority: AuthorityInputs,
+    pub(crate) fork_choice: ForkChoiceInputs,
 }
 
 impl CaptureEndpoint {
@@ -50,8 +61,17 @@ impl CaptureEndpoint {
                 approved_block_hash: hex::encode(&approved.block_hash),
                 approved_post_state_hash: hex::encode(&approved.body.state.post_state_hash),
             },
+            fork_choice: ForkChoiceInputs {
+                max_number_of_parents: conf.max_number_of_parents,
+                approved_block_number: approved.body.state.block_number,
+                latest_message_depth: Estimator::LATEST_MESSAGE_MAX_DEPTH,
+            },
         }
     }
+
+    pub fn authority(&self) -> &AuthorityInputs { &self.authority }
+
+    pub fn fork_choice_inputs(&self) -> &ForkChoiceInputs { &self.fork_choice }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

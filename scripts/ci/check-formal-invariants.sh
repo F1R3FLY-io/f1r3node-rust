@@ -182,7 +182,7 @@ run_rocq_checks() {
         canonical_collection_permutation
 
     build_rocq_project node_authority NodeAuthority
-    check_assumptions node_authority NodeAuthority 15 \
+    check_assumptions node_authority NodeAuthority 22 \
         authority_instance_attaches_at_most_once \
         authority_first_attachment_wins \
         authority_replaced_binding_refused \
@@ -197,7 +197,14 @@ run_rocq_checks() {
         authority_budget_failure_keeps_usage \
         authority_paths_share_one_budget \
         authority_checked_overflow_is_limit_failure \
-        authority_comparison_requires_equal_digest
+        authority_comparison_requires_equal_digest \
+        display_matched_weight_bounded \
+        display_record_multiplicity \
+        display_duplicate_records_add_duplicate_terms \
+        display_weight_sum_checked \
+        display_overflow_refuses \
+        display_refusal_has_no_value \
+        display_requires_equal_digest
 
     build_rocq_project slashing Slashing
     check_assumptions slashing Slashing 2 \

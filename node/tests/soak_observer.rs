@@ -162,8 +162,16 @@ async fn capabilities_are_bound_and_never_claim_live_qualification() {
     assert_eq!(response["identity"], hello["identity"]);
     assert_eq!(response["live_profile_qualified"], false);
     let capabilities = response["capabilities"].as_array().unwrap();
-    assert_eq!(capabilities.len(), 5);
+    assert_eq!(capabilities.len(), 6);
     assert!(capabilities.iter().all(|item| item["supported"] == false));
+    let reason = |name: &str| {
+        capabilities
+            .iter()
+            .find(|item| item["name"] == name)
+            .map(|item| item["reason"].clone())
+    };
+    assert_eq!(reason("fork_choice"), reason("authority"));
+    assert_eq!(reason("fork_choice"), Some(json!("awaiting_casper")));
     assert!(response["sequence"].as_u64().unwrap() > hello["sequence"].as_u64().unwrap());
     assert!(response["monotonic_ns"].as_u64().unwrap() >= hello["monotonic_ns"].as_u64().unwrap());
     assert!(!response.to_string().contains("synthetic-secret-sentinel"));
@@ -621,17 +629,7 @@ async fn authority_request_preserves_identity_and_reports_missing_casper() {
     );
     let observer = observer.spawn();
     let (mut stream, hello) = connect(&directory.socket()).await;
-    let mut message = request(&hello);
-    message["operation"] = json!("authority_snapshot");
-    message["authority"] = json!({
-        "capture": {
-            "max_value_bytes":1048576,"max_total_bytes":16777216,"max_records":4096,"max_operations":100000,
-            "max_compressed_bytes":1048576,"max_decompressed_bytes":1048576,"max_expansion_ratio":4096,
-            "max_blocks":128,"max_validators":64,"max_edges":4096,"max_work":2000000,"lock_wait_ms":100
-        },
-        "evaluation":{"operations":2000000,"allocated_bytes":268435456,"clique_expansions":100000,"recursion_depth":64},
-        "targets":[],"body_hashes":[],"floor":null,"original":false,"reference":false,"strict":false
-    });
+    let message = authority_request(&hello);
     send(&mut stream, &message).await;
     let response = receive(&mut stream).await;
     assert_eq!(response["kind"], "authority_snapshot");
@@ -645,5 +643,98 @@ async fn authority_request_preserves_identity_and_reports_missing_casper() {
             serde_json::to_vec(&message).unwrap()
         ))
     );
+    observer.stop().await;
+}
+
+fn authority_request(hello: &Value) -> Value {
+    let mut message = request(hello);
+    message["operation"] = json!("authority_snapshot");
+    message["authority"] = json!({
+        "capture": {
+            "max_value_bytes":1048576,"max_total_bytes":16777216,"max_records":4096,"max_operations":100000,
+            "max_compressed_bytes":1048576,"max_decompressed_bytes":1048576,"max_expansion_ratio":4096,
+            "max_blocks":128,"max_validators":64,"max_edges":4096,"max_work":2000000,"lock_wait_ms":100
+        },
+        "evaluation":{"operations":2000000,"allocated_bytes":268435456,"clique_expansions":100000,"recursion_depth":64},
+        "targets":[],"body_hashes":[],"floor":null,"original":false,"reference":false,"strict":false
+    });
+    message
+}
+
+#[tokio::test]
+async fn a_display_selection_is_admitted_and_invalid_display_fields_are_rejected() {
+    let directory = Directory::new();
+    let observer = Observer::bind(&configuration(&directory, true))
+        .unwrap()
+        .unwrap()
+        .spawn();
+    let (mut stream, hello) = connect(&directory.socket()).await;
+    let mut message = authority_request(&hello);
+    message["authority"]["display"] = json!({"max_equivocation_records": 4096});
+    send(&mut stream, &message).await;
+    let response = receive(&mut stream).await;
+    assert_eq!(response["kind"], "authority_snapshot");
+    assert_eq!(response["result"]["reason"], "awaiting_casper");
+    assert_eq!(response["identity"], hello["identity"]);
+    for selection in [
+        json!(null),
+        json!({}),
+        json!({"max_equivocation_records": 1.5}),
+        json!({"max_equivocation_records": 1, "extra": true}),
+    ] {
+        let (mut stream, hello) = connect(&directory.socket()).await;
+        let mut message = authority_request(&hello);
+        message["authority"]["display"] = selection;
+        send(&mut stream, &message).await;
+        closed(&mut stream).await;
+    }
+    for limit in [0, 4097] {
+        let (mut stream, hello) = connect(&directory.socket()).await;
+        let mut message = authority_request(&hello);
+        message["authority"]["display"] = json!({"max_equivocation_records": limit});
+        send(&mut stream, &message).await;
+        let response = receive(&mut stream).await;
+        assert_eq!(response["result"]["availability"], "unavailable");
+        assert!(response["result"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("equivocation rows"));
+        assert_eq!(response["identity"], hello["identity"]);
+    }
+    observer.stop().await;
+}
+
+#[tokio::test]
+async fn a_fork_choice_selection_is_admitted_and_an_unknown_selection_field_is_rejected() {
+    let directory = Directory::new();
+    let observer = Observer::bind(&configuration(&directory, true))
+        .unwrap()
+        .unwrap()
+        .spawn();
+    let (mut stream, hello) = connect(&directory.socket()).await;
+    let mut message = authority_request(&hello);
+    message["authority"]["fork_choice"] = json!({"reference": true});
+    send(&mut stream, &message).await;
+    let response = receive(&mut stream).await;
+    assert_eq!(response["kind"], "authority_snapshot");
+    assert_eq!(response["result"]["availability"], "unavailable");
+    assert_eq!(response["result"]["reason"], "awaiting_casper");
+    assert_eq!(
+        response["request_sha256"],
+        hex::encode(crypto::rust::hash::sha_256::Sha256Hasher::hash(
+            serde_json::to_vec(&message).unwrap()
+        ))
+    );
+    for selection in [
+        json!({"reference": true, "unknown": true}),
+        json!({}),
+        json!("reference"),
+    ] {
+        let (mut stream, hello) = connect(&directory.socket()).await;
+        let mut message = authority_request(&hello);
+        message["authority"]["fork_choice"] = selection;
+        send(&mut stream, &message).await;
+        closed(&mut stream).await;
+    }
     observer.stop().await;
 }

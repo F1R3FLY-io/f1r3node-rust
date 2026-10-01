@@ -219,3 +219,166 @@ fn unavailable_failed_and_persisted_values_keep_their_distinct_meanings() {
     assert_eq!(mapped["authority"]["reason"], "not_attached");
     assert_eq!(mapped["profile_verdict"], "blocked");
 }
+
+fn display_response() -> Value {
+    let mut value = response();
+    value["result"]["value"]["request"]["display"] = json!({"max_equivocation_records":16});
+    let target = &mut value["result"]["value"]["targets"][0];
+    target["display_projection"] = available(json!(0.25f32.to_bits()), 'e');
+    target["display_inputs"] = available(
+        json!({
+            "base_source":"original_oracle","base_bits":0.5f32.to_bits(),
+            "initial_fault_bits":0.25f32.to_bits(),"equivocating_weight":"1","total_weight":"4",
+            "matched_records":1,"distinct_equivocators":1,"finalized_set_member":false,
+            "metadata_finalized":false,"equivocation_digest":"f".repeat(64)
+        }),
+        'e',
+    );
+    value
+}
+
+#[test]
+fn display_mapping_keeps_its_digest_separate_from_the_oracle() {
+    let value = display_response();
+    let mapped = mapping::map(&value).unwrap();
+    let target = &mapped["targets"][0];
+    assert_eq!(target["evaluation_input_digest"], "c".repeat(64));
+    assert_eq!(target["display_input_digest"], "e".repeat(64));
+    assert_eq!(
+        target["display_projection"]["numeric"]["bits"],
+        0.25f32.to_bits()
+    );
+    assert_eq!(
+        target["display_inputs"],
+        value["result"]["value"]["targets"][0]["display_inputs"]
+    );
+    assert_eq!(mapped["qualification"], "pending");
+    assert_eq!(mapped["profile_verdict"], "blocked");
+}
+
+#[test]
+fn display_mapping_rejects_cross_capture_inputs_and_availability_mismatch() {
+    for (pointer, replacement) in [
+        (
+            "/result/value/targets/0/display_inputs/input_digest",
+            json!("f".repeat(64)),
+        ),
+        (
+            "/result/value/targets/0/display_inputs",
+            missing("display_base_unavailable", 'e'),
+        ),
+        (
+            "/result/value/targets/0/display_inputs/value/base_bits",
+            json!(4294967296u64),
+        ),
+        (
+            "/result/value/targets/0/display_inputs/value/equivocation_digest",
+            json!("invalid"),
+        ),
+    ] {
+        let mut value = display_response();
+        *value.pointer_mut(pointer).unwrap() = replacement;
+        assert!(mapping::map(&value).is_err(), "{pointer}");
+    }
+}
+
+fn fork_response() -> Value {
+    let mut value = response();
+    value["result"]["value"]["request"]["fork_choice"] = json!({"reference":true});
+    let head = |mode: &str, hash: char| {
+        json!({
+            "mode":mode,"head":hash.to_string().repeat(64),
+            "lower_bound":{"hash":"a".repeat(64),"block_number":1,"rule":"finalized_floor"},
+            "common_ancestor":"a".repeat(64),"tips":[hash.to_string().repeat(64)],
+            "tip_scores":[3],"score_count":1,"score_digest":"7".repeat(64),
+            "visited_blocks":2,"examined_edges":1
+        })
+    };
+    value["result"]["value"]["fork_choice"] = available(
+        json!({
+            "input_digest":"e".repeat(64),"inputs":{"max_number_of_parents":2,
+                "approved_block_number":0,"latest_message_depth":20},
+            "latest_messages":{"captured":1,"invalid":0,"not_held":0,"not_own_testimony":0,"used":1},
+            "bounded":available(head("bounded", 'd'), 'e'),
+            "reference":available(head("reference", 'f'), 'e'),
+            "comparison":available(json!({"algorithm":"immutable-ghost-reference-v1",
+                "head_matches":false,"tips_match":false,"bounds_differ":false}), 'e')
+        }),
+        'e',
+    );
+    let work = value["result"]["value"]["work"]["measured"].clone();
+    value["result"]["value"]["work"]["fork_choice_bounded"] = available(work.clone(), 'b');
+    value["result"]["value"]["work"]["fork_choice_reference"] = available(work, 'b');
+    value
+}
+
+#[test]
+fn fork_mapping_retains_paired_heads_disagreement_and_named_work_paths() {
+    let value = fork_response();
+    let mapped = mapping::map(&value).unwrap();
+    assert_eq!(
+        mapped["fork_choice"]["bounded_head"]["value"],
+        "d".repeat(64)
+    );
+    assert_eq!(
+        mapped["fork_choice"]["reference_head"]["value"],
+        "f".repeat(64)
+    );
+    assert_eq!(
+        mapped["fork_choice"]["source"],
+        value["result"]["value"]["fork_choice"]
+    );
+    assert_eq!(
+        mapped["work"]["source"]["fork_choice_bounded"],
+        value["result"]["value"]["work"]["fork_choice_bounded"]
+    );
+    assert_eq!(mapped["profile_verdict"], "blocked");
+}
+
+#[test]
+fn fork_mapping_rejects_mixed_digests_wrong_modes_and_malformed_work() {
+    for (pointer, replacement) in [
+        (
+            "/result/value/fork_choice/value/input_digest",
+            json!("f".repeat(64)),
+        ),
+        (
+            "/result/value/fork_choice/value/reference/input_digest",
+            json!("f".repeat(64)),
+        ),
+        (
+            "/result/value/fork_choice/value/bounded/value/mode",
+            json!("reference"),
+        ),
+        (
+            "/result/value/fork_choice/value/bounded/value/head",
+            json!("invalid"),
+        ),
+        (
+            "/result/value/work/fork_choice_reference/value/traversal",
+            Value::Null,
+        ),
+    ] {
+        let mut value = fork_response();
+        *value.pointer_mut(pointer).unwrap() = replacement;
+        assert!(mapping::map(&value).is_err(), "{pointer}");
+    }
+}
+
+#[test]
+fn unavailable_fork_and_display_inputs_never_create_values() {
+    let mut value = fork_response();
+    value["result"]["value"]["fork_choice"]["value"]["reference"] = missing("deadline", 'e');
+    value["result"]["value"]["fork_choice"]["value"]["comparison"] =
+        missing("comparison_unavailable", 'e');
+    let target = &mut value["result"]["value"]["targets"][0];
+    target["display_inputs"] = missing("display_base_unavailable", 'e');
+    target["display_projection"] = missing("display_base_unavailable", 'e');
+    let mapped = mapping::map(&value).unwrap();
+    assert_eq!(
+        mapped["fork_choice"]["reference_head"]["presence"],
+        "missing"
+    );
+    assert!(mapped["targets"][0]["display_projection"]["numeric"].is_null());
+    assert_eq!(mapped["targets"][0]["display_input_digest"], "e".repeat(64));
+}
