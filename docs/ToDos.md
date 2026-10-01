@@ -1601,8 +1601,14 @@ tasks:
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md
     status: in_progress
-    claimed_by: codex-task-017-12-20260928
-    claimed_at: 2026-09-28
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-10-01
+    claim_chain: ["pi-soak-carrier-index-linux (to 2026-09-28)", "codex-task-017-12-20260928 (2026-09-28 to 2026-10-01)", "pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa (from 2026-10-01)"]
+    claim_transfer: "The user transferred the task to the Batch E owner on 2026-10-01. The EPIC-019 prerequisites TASK-019-3 and TASK-019-4 are complete, and the merge c9ca12821 brings the paired fork-choice observation (claim 004) and the detached display projection (claim 005) to this branch."
+    handoff_scope_2026_10_01:
+      agent_now: "Map the Batch D fields (fork_choice bounded and reference heads, comparison, work paths 4 and 5) and the Batch E fields (display inputs, display projection, equivocation capture) in the harness profile. Prepare candidate block histories and captured input exports. Qualify the provider in controlled tests. Triage the CodeQL finding at authority_live.rs:769."
+      user_decisions: "OCI runner dispatches (two 24-hour baselines, the 60-hour campaign), the authoritative OCI object and supervisor provisioning, and live admission stay with the user. No dispatch follows from this transfer."
+      critical_path: "TASK-017-13 reviews this task's evidence. TASK-017-14 and TASK-017-15 chain behind it."
     previous_claimed_by: pi-soak-carrier-index-linux
     previous_claimed_at: 2026-09-19T19:20:00Z
     handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
@@ -1610,7 +1616,8 @@ tasks:
     repin_tool: scripts/ci/resolve-dev-candidate.sh
     dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
-    blocked_by: [TASK-019-3, TASK-019-4]
+    blocked_by: []
+    blockers_cleared: "TASK-019-3 and TASK-019-4 complete and accepted on 2026-09-23. The EPIC-019 observer additions landed on this branch in c9ca12821."
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
       - "Qualify a live executor against the selected node with the implemented receipt binding. Client, adapter, and renewed Claim002 acceptance remain pending."
