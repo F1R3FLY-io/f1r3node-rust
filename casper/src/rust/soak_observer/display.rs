@@ -32,6 +32,30 @@ pub fn calculate(
     base: Option<(&'static str, u32)>,
     meter: &CheckedWork,
 ) -> Result<(u32, DisplayInputs), String> {
+    let identity_scan = (snapshot.transactions.len() as u64)
+        .checked_add(tracker.transactions().len() as u64)
+        .and_then(|count| count.checked_add(2))
+        .ok_or("display_work_overflow")?;
+    meter
+        .charge(WorkKind::Metadata, identity_scan, 0)
+        .map_err(|e| e.to_string())?;
+    let identity_work = snapshot
+        .transactions
+        .iter()
+        .chain(tracker.transactions())
+        .try_fold(2u64, |work, transaction| {
+            work.checked_add(transaction.environment.len() as u64)
+                .and_then(|work| work.checked_add(1))
+        })
+        .ok_or("display_work_overflow")?;
+    meter
+        .charge(WorkKind::Metadata, identity_work, 0)
+        .map_err(|e| e.to_string())?;
+    if snapshot.insertion_generation != tracker.insertion_generation()
+        || snapshot.transactions != tracker.transactions()
+    {
+        return Err("display_capture_mismatch".into());
+    }
     meter.step(WorkKind::Metadata).map_err(|e| e.to_string())?;
     let block = snapshot.blocks.get(hash).ok_or("target_not_held")?;
     meter.step(WorkKind::Metadata).map_err(|e| e.to_string())?;
@@ -48,7 +72,7 @@ pub fn calculate(
     meter
         .allocate(
             block.metadata.weight_map.len(),
-            std::mem::size_of::<(Validator, u64)>(),
+            4 * std::mem::size_of::<(Validator, u64)>() + 32,
         )
         .map_err(|e| e.to_string())?;
     let mut weights = HashMap::with_capacity(block.metadata.weight_map.len());
@@ -62,6 +86,11 @@ pub fn calculate(
                 WorkKind::Oracle,
                 (validator.len() as u64)
                     .checked_add(1)
+                    .and_then(|cost| {
+                        (block.metadata.weight_map.len() as u64)
+                            .checked_add(1)
+                            .and_then(|count| cost.checked_mul(count))
+                    })
                     .ok_or("display_work_overflow")?,
                 0,
             )
@@ -89,7 +118,9 @@ pub fn calculate(
         let compare_cost = key_cost
             .checked_mul(
                 (tracker.rows().len() as u64)
-                    .checked_add(1)
+                    .checked_add(weights.len() as u64)
+                    .and_then(|cost| cost.checked_add(2))
+                    .and_then(|cost| cost.checked_mul(2))
                     .ok_or("display_work_overflow")?,
             )
             .ok_or("display_work_overflow")?;

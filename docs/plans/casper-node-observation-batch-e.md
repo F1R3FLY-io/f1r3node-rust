@@ -1,7 +1,7 @@
 # Casper Node Observation: Batch E
 
 ```yaml
-status: implementation_in_progress
+status: verification_complete_acceptance_pending
 scope_confirmed_by: user
 scope_confirmed_at: 2026-09-30T15:38:36.579734+00:00
 approval_checkpoint: 06f0d3e8cf85f7072769960cde3746dc0830a68f
@@ -24,6 +24,11 @@ cbc_tags_ratified: true
 cbc_tags_applied: true
 claim_registered: true
 implementation_started: true
+implementation_complete: true
+verification_complete: true
+acceptance_status: pending
+verification_report: docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/report.json
+validation_report: docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/validation.json
 ```
 
 ## Authorization and sequencing
@@ -252,7 +257,9 @@ The local review inventory carries the exact reviewed attributes and source hash
 ## Exact approved ledger list
 
 Each mandatory artifact keeps one default lookup record.
-The source records remain unregistered until the final Batch D source check.
+The table records the approved ledger scope.
+All thirty-one records now exist.
+Their final source refresh preserves the immutable history and the twelve disclosed late-registration gaps.
 
 | Path | State |
 | --- | --- |

@@ -2202,3 +2202,343 @@ async fn display_digest_changes_with_tracker_inputs_without_store_writes() {
     );
     assert_eq!(before, fixture.stored());
 }
+
+fn display_capture(
+    fixture: &Fixture,
+) -> (
+    block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot,
+    block_storage::rust::dag::soak_equivocations::EquivocationSnapshot,
+) {
+    use block_storage::rust::dag::soak_snapshot::{
+        capture_with_equivocations, CaptureLimits, CaptureRequest,
+    };
+    use block_storage::rust::key_value_block_store::BlockDecodeLimits;
+    use shared::rust::store::soak_snapshot::ReadLimits;
+    capture_with_equivocations(
+        &fixture.dag,
+        &fixture.blocks,
+        &CaptureRequest {
+            limits: CaptureLimits {
+                read: ReadLimits {
+                    max_value_bytes: 1 << 20,
+                    max_total_bytes: 1 << 24,
+                    max_records: 4096,
+                    max_operations: 100_000,
+                },
+                block_decode: BlockDecodeLimits {
+                    max_compressed_bytes: 1 << 20,
+                    max_decompressed_bytes: 1 << 20,
+                    max_expansion_ratio: 4096,
+                },
+                max_blocks: 128,
+                max_validators: 64,
+                max_edges: 4096,
+                max_work: 2_000_000,
+                lock_wait: Duration::from_millis(100),
+            },
+            bodies: &[],
+        },
+        16,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn request_without_display_preserves_legacy_fields_and_ignores_tracker_rows() {
+    let fixture = Fixture::new().await;
+    let position = STORES
+        .iter()
+        .position(|name| *name == "equivocation-tracker")
+        .unwrap();
+    fixture.handles[position]
+        .put(vec![(vec![1], vec![2])])
+        .unwrap();
+    let before = fixture.stored();
+    let controller = ObserverController::new("legacy-display-fixture".into());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let response = evaluate(&fixture, &controller).await;
+    let json = serde_json::to_value(&response).unwrap();
+    assert!(json.get("display_scope").is_none());
+    assert!(json.get("equivocation_capture").is_none());
+    assert!(json["targets"][0].get("display_inputs").is_none());
+    assert_eq!(
+        refusal(&response.targets[0].display_projection),
+        ("unavailable", "equivocation_snapshot_unavailable")
+    );
+    assert_eq!(before, fixture.stored());
+}
+
+fn update_display_metadata(
+    fixture: &Fixture,
+    update: impl FnOnce(&mut models::rust::block_metadata::BlockMetadata),
+) {
+    use models::rust::block_hash::BlockHashSerde;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    let hash = fixture.chain[1].block_hash.clone();
+    let mut metadata = fixture
+        .dag
+        .get_representation()
+        .unwrap()
+        .lookup(&hash)
+        .unwrap()
+        .unwrap();
+    update(&mut metadata);
+    let position = STORES
+        .iter()
+        .position(|name| *name == "block-metadata")
+        .unwrap();
+    let store = KeyValueTypedStoreImpl::new(fixture.handles[position].clone());
+    store.put_one(BlockHashSerde(hash), metadata).unwrap();
+}
+
+#[tokio::test]
+async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    add_display_record(&fixture, 7, 1);
+    for weights in [
+        BTreeMap::from([(validator(7), -1), (validator(8), 1)]),
+        BTreeMap::from([(validator(7), -1)]),
+    ] {
+        update_display_metadata(&fixture, |m| m.weight_map = weights);
+        let before = fixture.stored();
+        let (snapshot, tracker) = display_capture(&fixture);
+        assert_eq!(
+            calculate(
+                &snapshot,
+                &tracker,
+                &fixture.chain[1].block_hash,
+                Some(("original_oracle", 1f32.to_bits())),
+                &meter(work_limits())
+            )
+            .unwrap_err(),
+            "initial_fault_weight_overflow"
+        );
+        assert_eq!(before, fixture.stored());
+    }
+}
+
+#[tokio::test]
+async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    add_display_record(&fixture, 7, 1);
+    add_display_record(&fixture, 9, 0);
+    for (a, b, fault_bits) in [
+        (0, 0, 0),
+        (1, 2, 0x3f2a_aaab),
+        (16_777_217, 16_777_219, 0x3f7f_fffe),
+        (i64::MAX / 2, i64::MAX / 2, 0x3f80_0000),
+    ] {
+        update_display_metadata(&fixture, |m| {
+            m.weight_map = BTreeMap::from([(validator(7), a), (validator(8), b)])
+        });
+        let before = fixture.stored();
+        let (snapshot, tracker) = display_capture(&fixture);
+        for bits in [
+            0,
+            0x8000_0000,
+            1,
+            f32::MIN.to_bits(),
+            f32::MAX.to_bits(),
+            0.75f32.to_bits(),
+        ] {
+            let (actual, inputs) = calculate(
+                &snapshot,
+                &tracker,
+                &fixture.chain[1].block_hash,
+                Some(("original_oracle", bits)),
+                &meter(work_limits()),
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                (f32::from_bits(bits) - f32::from_bits(fault_bits)).to_bits()
+            );
+            assert_eq!(inputs.initial_fault_bits, fault_bits);
+            assert_eq!(inputs.equivocating_weight, (2 * a as u64).to_string());
+            assert_eq!(inputs.total_weight, (a as u64 + b as u64).to_string());
+            assert_eq!(inputs.matched_records, 2);
+            assert_eq!(inputs.distinct_equivocators, 1);
+        }
+        assert_eq!(before, fixture.stored());
+    }
+}
+
+#[tokio::test]
+async fn display_charges_work_allocation_deadline_and_cancellation_before_results() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    let before = fixture.stored();
+    let (snapshot, tracker) = display_capture(&fixture);
+    let hash = &fixture.chain[1].block_hash;
+    let base = Some(("original_oracle", 0.75f32.to_bits()));
+    for operations in [1, 2, 3, 10, 100] {
+        let work = meter(WorkLimits {
+            operations,
+            ..work_limits()
+        });
+        assert!(is_limit_error(
+            &calculate(&snapshot, &tracker, hash, base, &work).unwrap_err()
+        ));
+        assert!(work.usage().0.operations <= operations);
+    }
+    let work = meter(WorkLimits {
+        allocated_bytes: 1,
+        ..work_limits()
+    });
+    assert!(is_limit_error(
+        &calculate(&snapshot, &tracker, hash, base, &work).unwrap_err()
+    ));
+    for (deadline, cancelled) in [
+        (Instant::now() - Duration::from_secs(1), false),
+        (Instant::now() + Duration::from_secs(10), true),
+    ] {
+        let work = CheckedWork::new(
+            work_limits(),
+            deadline,
+            Arc::new(AtomicBool::new(cancelled)),
+            4096,
+            8192,
+        )
+        .unwrap();
+        assert!(is_limit_error(
+            &calculate(&snapshot, &tracker, hash, base, &work).unwrap_err()
+        ));
+    }
+    assert_eq!(before, fixture.stored());
+}
+
+#[tokio::test]
+async fn display_allocations_cover_hash_table_capacity_and_input_keys() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    let (snapshot, tracker) = display_capture(&fixture);
+    let work = meter(work_limits());
+    calculate(
+        &snapshot,
+        &tracker,
+        &fixture.chain[1].block_hash,
+        Some(("original_oracle", 0.75f32.to_bits())),
+        &work,
+    )
+    .unwrap();
+    let n = snapshot.blocks[&fixture.chain[1].block_hash]
+        .metadata
+        .weight_map
+        .len();
+    assert!(
+        work.usage().0.allocated_bytes
+            >= (n * 4 * std::mem::size_of::<(Validator, u64)>() + n * 65 + 256) as u64
+    );
+}
+
+#[tokio::test]
+async fn display_metadata_flag_alone_uses_persisted_bits_without_an_original() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    update_display_metadata(&fixture, |metadata| {
+        metadata.finalized = true;
+        metadata.fault_tolerance_value = 0.75;
+    });
+    let before = fixture.stored();
+    let (snapshot, tracker) = display_capture(&fixture);
+    let hash = &fixture.chain[1].block_hash;
+    assert!(!snapshot.finalized_block_set.contains(hash));
+    let (bits, inputs) = calculate(&snapshot, &tracker, hash, None, &meter(work_limits())).unwrap();
+    assert_eq!(bits, (-0.25f32).to_bits());
+    assert_eq!(inputs.base_source, "persisted_metadata");
+    assert!(!inputs.finalized_set_member);
+    assert!(inputs.metadata_finalized);
+    assert_eq!(before, fixture.stored());
+}
+
+#[tokio::test]
+async fn display_typed_missing_history_uses_minimum_without_a_fabricated_original() {
+    let base = Fixture::new().await;
+    let fixture = Fixture::from_chain(vec![
+        graph_block(&base.chain[0], 1, 0, 7, &[], &[]),
+        graph_block(&base.chain[0], 2, 1, 7, &[9], &[(7, 1)]),
+        graph_block(&base.chain[0], 3, 1, 8, &[1], &[(8, 1)]),
+    ])
+    .await;
+    let before = fixture.stored();
+    let response = display_response(&fixture, fixture.request()).await;
+    let target = &response.targets[0];
+    assert!(matches!(
+        &target.original_fault_tolerance,
+        Value::Unavailable { .. }
+    ));
+    let inputs = available(target.display_inputs.as_ref().unwrap());
+    assert_eq!(inputs.base_source, "missing_history_minimum");
+    assert_eq!(
+        inputs.base_bits,
+        casper::rust::safety_oracle::MIN_FAULT_TOLERANCE.to_bits()
+    );
+    assert_eq!(*available(&target.display_projection), inputs.base_bits);
+    assert_eq!(before, fixture.stored());
+}
+
+#[tokio::test]
+async fn display_refuses_tracker_inputs_from_a_different_capture_interval() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    let (snapshot, _) = display_capture(&fixture);
+    add_display_record(&fixture, 7, 0);
+    let (_, tracker) = display_capture(&fixture);
+    let before = fixture.stored();
+    assert_eq!(
+        snapshot.insertion_generation,
+        tracker.insertion_generation()
+    );
+    assert_ne!(snapshot.transactions, tracker.transactions());
+    assert_eq!(
+        calculate(
+            &snapshot,
+            &tracker,
+            &fixture.chain[1].block_hash,
+            Some(("original_oracle", 0.75f32.to_bits())),
+            &meter(work_limits())
+        )
+        .unwrap_err(),
+        "display_capture_mismatch"
+    );
+    assert_eq!(before, fixture.stored());
+}
+
+#[tokio::test]
+async fn display_response_binds_separate_values_and_contains_no_tracker_rows() {
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    let before = fixture.stored();
+    let response = display_response(&fixture, fixture.request()).await;
+    let json = serde_json::to_value(&response).unwrap();
+    let target = &json["targets"][0];
+    assert_eq!(
+        target["display_projection"]["input_digest"],
+        target["display_inputs"]["input_digest"]
+    );
+    assert_eq!(
+        target["display_projection"]["input_digest"],
+        target["original_fault_tolerance"]["input_digest"]
+    );
+    assert_ne!(
+        target["display_projection"]["input_digest"],
+        target["persisted_fault_tolerance"]["input_digest"]
+    );
+    assert_eq!(
+        target["display_inputs"]["value"]["equivocation_digest"],
+        json["equivocation_capture"]["value"]["digest"]
+    );
+    let capture = json["equivocation_capture"]["value"].as_object().unwrap();
+    assert!(capture.contains_key("row_count"));
+    assert!(capture.contains_key("byte_count"));
+    assert!(!capture.contains_key("rows"));
+    assert!(!capture.contains_key("validators"));
+    assert!(serde_json::to_vec(&response).unwrap().len() < 65_536);
+    assert_eq!(before, fixture.stored());
+}

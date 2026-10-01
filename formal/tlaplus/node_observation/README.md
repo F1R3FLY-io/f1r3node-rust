@@ -301,3 +301,54 @@ The count parity of the 2 evaluations covers that filter.
 
 Batch D does not claim a live fork-choice profile.
 The [work log](../../../docs/work-logs/task-019-9-paired-fork-choice.md) records the steps, the findings, and the test results.
+
+
+## Batch E applicability review
+
+Claim 005 keeps the snapshot schema at version 2.
+A display request adds a bounded tracker capture and separate display inputs.
+The property-to-test map covers all seventeen properties with twenty-six named tests.
+The map is not a machine-checked refinement proof.
+
+| Property | Evidence | Limit |
+| --- | --- | --- |
+| E1 | Legacy request and digest tests | Fixed schema review |
+| E2 | Admission and socket tests | Typed limits refusals |
+| E3 | Capture and mixed-interval tests | LMDB identity trusted |
+| E4 | Parser and bounded-read refusals | Producer encoding tested |
+| E5 | Tracker write interference | Cooperative transaction model |
+| E6 | Before-and-after store bytes | Captured fixture stores |
+| E7 | Canonical digest field controls | Wire construction pending |
+| E8 | Input digest and value tests | SHA-256 trusted |
+| E9 | Casper methods panic on invocation | Detached fixture boundary |
+| E10 | Both finalized sources and typed missing history | Frozen source rule |
+| E11 | Multiplicity and arithmetic boundaries | IEEE-754 construction pending |
+| E12 | Total and matched overflow refusals | Integer construction |
+| E13 | Typed unavailable results | No fabricated value |
+| E14 | Separate fields and input identities | Fixed schema review |
+| E15 | Schema 2 and legacy output | Wire construction pending |
+| E16 | Frozen shared-helper tests | No atomic live equivalence |
+| E17 | Work, allocation, deadline, cancellation | Fixed response review |
+
+The positive model checks `NoFabrication`, `BaseSource`, and `OneInterval`.
+Each negative control must violate its named invariant with exit 12 and a trace.
+The capture model remains an inherited bounded abstraction.
+
+The integer construction has seven theorems in `DisplayProjection.v`.
+Matched weight is bounded by total weight only when validator records do not repeat.
+Repeated records deliberately contribute repeated terms.
+The model does not prove floating-point arithmetic or tracker wire encoding.
+
+The display helper checks capture generation and transaction identities before calculation.
+Work charges precede identity comparison, hash-table allocation, key processing, checked sums, and shared-helper scans.
+Hash-table charges include spare capacity and control storage.
+The existing six work paths share their aggregate budget.
+
+The tracker rows are not response fields.
+The response contains counts and digests only.
+The node closes malformed requests and returns typed refusals for invalid numeric limits.
+A typed refusal does not require a closed connection.
+
+E1, E14, and E17 require named maintainer review of their bounded-by-design classifications.
+The twelve late source-record registrations remain explicit evidence gaps.
+Claim 005 stays pending until the maintainer accepts the source-bound evidence and the stated limits.

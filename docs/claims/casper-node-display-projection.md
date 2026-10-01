@@ -120,11 +120,12 @@ The `f32` division and subtraction follow the IEEE 754 rules of the Rust target.
 
 SHA-256 collision resistance is an assumption of the digest binding.
 
-## Refutation tier plan
+## Refutation evidence obligations
 
-The plan proposes one bounded TLA+ model, `DisplayProjection` (proposal), with 3 negative controls.
+The registered bounded model is `DisplayProjection`, with three negative controls.
+The formal gate requires a clean positive run and exact invariant violations from all three controls.
 
-| Invariant (proposal) | Negative control (proposal) | Property |
+| Bounded invariant | Negative control | Property |
 |----------------------|-----------------------------|----------|
 | `NoFabrication`: an available value requires a captured tracker and an available base value | `MC_DisplayProjection_fabricated_unsafe` | 1, 13 |
 | `BaseSource`: a finalized target uses the persisted value | `MC_DisplayProjection_source_unsafe` | 10 |
@@ -136,15 +137,19 @@ The model uses Boolean values for the arithmetic result. It does not show `f32` 
 
 The user approved the new bounded model with three controls.
 
-## Construction tier plan
+## Construction evidence obligations
 
-The plan proposes one Rocq theory, `DisplayProjection.v` (proposal), in the `NodeAuthority` project.
+The registered Rocq theory is `DisplayProjection.v` in the `NodeAuthority` project.
+The theory exports seven results.
+The formal gate checks all twenty-two NodeAuthority assumption sets.
 
-| Theorem (proposal) | Statement | Property |
+| Theorem | Statement | Property |
 |--------------------|-----------|----------|
 | `display_weight_sum_checked` | A checked sum gives a result only when the exact sum is in the range. | 12 |
 | `display_matched_weight_bounded` | With no repeated validator in the records, the matched weight is not larger than the total weight. | 11 |
 | `display_record_multiplicity` | The matched weight has one term for each record, for each record order. | 11 |
+| `display_duplicate_records_add_duplicate_terms` | Repeated records add repeated weight terms. | 11 |
+| `display_overflow_refuses` | An excessive exact sum has no checked result. | 12 |
 | `display_refusal_has_no_value` | A refused calculation gives no value. | 13 |
 | `display_requires_equal_digest` | A display value and its inputs have one input digest. | 8, 14 |
 
@@ -156,32 +161,29 @@ Property 11 keeps pending construction for the `f32` operations. The theorems co
 
 Properties 1, 14, and 17 can use a proposed bounded-by-design classification. The domain is the fixed response schema.
 
-## Binding tier plan
+## Binding evidence obligations
 
-The bindings manifest must map each property to named tests.
-The approved plan retains the proposed test names.
-The initial arithmetic test does not complete the binding obligations.
+The [binding manifest](../../formal/tlaplus/node_observation/bindings.json) maps all seventeen properties to twenty-six named tests.
+The [applicability review](../../formal/tlaplus/node_observation/README.md#batch-e-applicability-review) records the evidence and limits for each property.
+The map includes frozen arithmetic, parser controls, consistency failures, both finalized sources, typed refusals, and resource limits.
 
-| Property | Binding evidence (proposal) |
-|----------|-----------------------------|
-| 1 | `request_without_display_keeps_the_current_response` |
-| 2 | `display_option_is_accepted_and_unknown_fields_are_refused`, and limit validation tests |
-| 3, 5 | `tracker_rows_are_captured_in_the_dag_transaction`, `tracker_write_between_open_and_validation_rejects_the_capture` |
-| 4 | `oversized_tracker_value_is_rejected_before_copy`, `malformed_tracker_row_is_rejected`, `tracker_row_limit_rejects_the_capture` |
-| 6 | `capture_does_not_change_tracker_bytes`, `production_stores_are_unchanged_after_a_display_request` |
-| 7, 8 | `equivocation_digest_changes_with_each_field`, `display_digest_binds_the_equivocation_capture` |
-| 9 | `observer_does_not_call_the_casper_instance` |
-| 10 | The two tests for a finalized target and an unfinalized target |
-| 11 | `display_bits_equal_the_production_function_on_equal_inputs`, `equivocator_outside_the_weight_map_adds_no_weight`, `zero_total_weight_gives_a_zero_initial_fault` |
-| 12 | `weight_overflow_is_refused` |
-| 13, 14 | The refusal tests and the typed availability assertions |
-| 15 | `snapshot_schema_is_unchanged_by_the_tracker_read` |
-| 16 | The unit tests of the extracted function and the existing casper tests |
-| 17 | The work limit tests and the response size assertion |
+A malformed node request closes its connection.
+An invalid numeric limit returns a typed unavailable response before capture.
+Both outcomes refuse admission without changing the existing protocol.
 
-A Kani harness can cover the checked weight sum with symbolic inputs. The plan lists it as an option, not as a requirement.
+The display helper also refuses mixed capture generations or transaction identities.
+That defensive check does not replace the guarded capture interval.
 
-A named-test map is not a refinement proof. Unit and integration tests supply evidence and do not discharge this claim.
+A Kani harness remains optional.
+A named-test map is not a refinement proof.
+Test results do not discharge this claim.
+
+## Registration history
+
+Claim 005 was registered before implementation.
+Twelve source records were first registered after their source implementation commits.
+Those records retain explicit registration gaps.
+The maintainer must review these gaps with the source-bound evidence.
 
 ## Verification requirements
 
