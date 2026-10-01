@@ -299,6 +299,7 @@
   ],
   "dispatch_blockers": [
     "Current dev has no matching published candidate tag. Its CI image release was skipped after an integration test failure.",
+    "No published image contains the node observer of claims 004 and 005. The CI publish gate releases images on pushes to dev, master, or a v tag only. The observer reaches dev through PR #451 and PR #447 (TASK-019-6), and the dev image publication is TASK-019-7. The pinned node 6940a5beb predates the observer (recorded 2026-10-01).",
     "Executable profile workload configurations remain unpinned.",
     "Profile adapters and required node interfaces remain unqualified.",
     "The refreshed campaign model and configuration inventory requires source-bound acceptance.",

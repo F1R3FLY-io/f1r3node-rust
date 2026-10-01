@@ -78,3 +78,30 @@ Authoritative storage, supervisor activation, source acceptance, and approved li
 Other participants staged some shared files during this continuation.
 This agent did not stage, commit, push, or switch branches.
 Existing staged changes remain untouched.
+
+## Take-over on 2026-10-01
+
+<!-- claude-session-f3cbc961 -->
+
+The user transferred the remaining work of TASK-017-12 from the Batch E owner to claude-session-f3cbc961 after commit `2bfd6d88d`. The tracker records the claim chain and the hand-off.
+
+### Critical path finding
+
+The CI publish gate in `.github/workflows/ci.yml` releases node images on pushes to `dev`, `master`, or a `v` tag only. No published image contains the node observer of claims 004 and 005. The candidate matrix pins node `6940a5beb`, which predates the observer. The observer reaches `dev` through PR #451 and PR #447 (TASK-019-6), and the `dev` image publication is TASK-019-7. The task now lists both as blockers.
+
+The remaining work has this order:
+
+1. The merges to `dev`.
+2. The `dev` image publication.
+3. The candidate repin and the workload pin.
+4. The controlled and live qualification.
+5. The maintainer acceptance.
+6. The preflight and the baselines under the user's dispatch authorization.
+
+### Controlled preparation
+
+A local image from `node/Dockerfile` on this branch supports the controlled preparation. That preparation covers the `authority_finality` workload pin, the captured input exports, the candidate block histories, and the exact traversal qualification. That image has no registry digest or artifact identity, so it is not an immutable candidate. The preparation starts after the current merge round reaches branch 4.
+
+### Records
+
+The matrix `dispatch_blockers` list has the image publication fact. The matrix digest changed. The inventory validation of 2026-09-28 names the earlier digest for its own cycle and stays correct for that cycle.

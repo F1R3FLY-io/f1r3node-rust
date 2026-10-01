@@ -1603,10 +1603,18 @@ tasks:
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md
     status: in_progress
-    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    claimed_at: 2026-10-01
-    claim_chain: ["pi-soak-carrier-index-linux (to 2026-09-28)", "codex-task-017-12-20260928 (2026-09-28 to 2026-10-01)", "pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa (from 2026-10-01)"]
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-10-01T06:00:00Z
+    claim_chain: ["pi-soak-carrier-index-linux (to 2026-09-28)", "codex-task-017-12-20260928 (2026-09-28 to 2026-10-01)", "pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa (2026-10-01, mapping slice 2bfd6d88d)", "claude-session-f3cbc961 (from 2026-10-01)"]
     claim_transfer: "The user transferred the task to the Batch E owner on 2026-10-01. The EPIC-019 prerequisites TASK-019-3 and TASK-019-4 are complete, and the merge c9ca12821 brings the paired fork-choice observation (claim 004) and the detached display projection (claim 005) to this branch."
+    handoff_2026_10_01_from_agent_b:
+      delivered: "Commit 2bfd6d88d: separate display and oracle digests, paired evaluator heads, named fork-choice work paths, captured display metadata, live snapshot head selection. 35 isolated Linux tests and 12 host profile tests passed. Report docs/casper/cbc-evidence/runs/casper-node-interface-adapter-20261001-01/report.json."
+      codeql_alert_41: "Assessed as a false positive: the retry counter at authority_live.rs:769 feeds a request identifier, not a key or nonce. The remote alert stays open. Maintainer review pending."
+      work_log: docs/work-logs/task-017-12-node-interface-20261001.md
+    critical_path_2026_10_01:
+      finding: "ci.yml publishes node images only on pushes to dev, master, or a v tag. No candidate image contains the observer (claims 004 and 005) until PR #451 and PR #447 merge to dev. The matrix pins node 6940a5beb, which predates the observer."
+      order: "PR #451 to dev, PR #447 to dev (TASK-019-6), dev image publication (TASK-019-7), candidate repin and workload pin, controlled and live qualification, maintainer acceptance, preflight and baselines (user dispatch)."
+      controlled_preparation: "A local image from node/Dockerfile on this branch supports the authority_finality workload pin, the captured input exports, the candidate block histories, and the exact traversal qualification in controlled mode. It is not an immutable candidate identity."
     handoff_scope_2026_10_01:
       agent_now: "Map the Batch D fields (fork_choice bounded and reference heads, comparison, work paths 4 and 5) and the Batch E fields (display inputs, display projection, equivocation capture) in the harness profile. Prepare candidate block histories and captured input exports. Qualify the provider in controlled tests. Triage the CodeQL finding at authority_live.rs:769."
       user_decisions: "OCI runner dispatches (two 24-hour baselines, the 60-hour campaign), the authoritative OCI object and supervisor provisioning, and live admission stay with the user. No dispatch follows from this transfer."
@@ -1618,7 +1626,7 @@ tasks:
     repin_tool: scripts/ci/resolve-dev-candidate.sh
     dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
-    blocked_by: []
+    blocked_by: [TASK-019-6, TASK-019-7]
     blockers_cleared: "TASK-019-3 and TASK-019-4 complete and accepted on 2026-09-23. The EPIC-019 observer additions landed on this branch in c9ca12821."
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
