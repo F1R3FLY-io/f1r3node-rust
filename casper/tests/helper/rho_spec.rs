@@ -362,13 +362,14 @@ pub async fn get_results(
             set_phase("runtime-create");
             let mut runtime = create_runtime_from_kv_store(
                 r_store,
-                std::sync::Arc::new(Genesis::default_mergeable_tags()),
+                Genesis::default_mergeable_tags_arc(),
                 true,
                 &mut additional_system_processes,
                 matcher,
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
-            .await;
+            .await
+            .unwrap();
 
             // Position the runtime at the genesis post-state so the standard library / registry
             // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
