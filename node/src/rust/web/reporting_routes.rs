@@ -83,7 +83,18 @@ pub async fn trace_handler(
         .await
     {
         Ok(block_event_info) => {
-            let serde_data = BlockEventInfoSerde::from(block_event_info);
+            let serde_data = match BlockEventInfoSerde::try_from(block_event_info) {
+                Ok(data) => data,
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ReportResponse::BlockReportError {
+                            error_message: error.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
             Json(ReportResponse::BlockTracesReport {
                 report: serde_json::to_value(&serde_data).unwrap_or(Value::Null),
             })

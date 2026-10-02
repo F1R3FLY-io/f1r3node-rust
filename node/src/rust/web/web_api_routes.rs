@@ -659,6 +659,14 @@ mod tests {
             },
             valid_after_block_number: if is_full { Some(0) } else { None },
             transfers: if is_full { Some(vec![]) } else { None },
+            parameters: if is_full {
+                vec![models::rust::deploy_parameters::DeployParameter {
+                    name: "amount".into(),
+                    value: models::rust::deploy_parameters::RholangValue::Int(42),
+                }]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -897,6 +905,12 @@ mod tests {
 
         // Full view includes deploy execution details
         assert_eq!(json["deployer"], "0487def456");
+        assert_eq!(
+            json["parameters"],
+            serde_json::json!([
+                {"name": "amount", "value": {"type": "int", "value": 42}}
+            ])
+        );
         assert!(json.get("term").is_some());
         assert!(json.get("phloPrice").is_some());
         assert!(json.get("phloLimit").is_some());
@@ -927,6 +941,7 @@ mod tests {
         assert_eq!(json["isFinalized"], true);
 
         // Full-only fields omitted
+        assert!(json.get("parameters").is_none());
         assert!(json.get("deployer").is_none());
         assert!(json.get("term").is_none());
         assert!(json.get("phloPrice").is_none());
@@ -977,6 +992,9 @@ mod tests {
         assert_eq!(json["deploys"][0]["deployer"], "0487def456");
         assert_eq!(json["deploys"][1]["deployer"], "0499abc789");
         assert_eq!(json["deploys"][0]["sigAlgorithm"], "secp256k1");
+        for deploy in json["deploys"].as_array().unwrap() {
+            assert!(deploy.get("parameters").is_none());
+        }
     }
 
     #[tokio::test]
@@ -1063,7 +1081,9 @@ mod router_tests {
         }
     }
 
-    fn block_info() -> BlockInfoSerde { BlockInfoSerde::from(models::casper::BlockInfo::default()) }
+    fn block_info() -> BlockInfoSerde {
+        BlockInfoSerde::try_from(models::casper::BlockInfo::default()).unwrap()
+    }
 
     struct CannedWebApi {
         is_ready: bool,

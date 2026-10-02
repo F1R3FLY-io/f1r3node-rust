@@ -1,4 +1,5 @@
 use models::casper::BlockEventInfo;
+use models::rust::deploy_parameters::ParameterError;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -18,14 +19,20 @@ pub struct BlockEventInfoSerde {
     pub post_state_hash: Vec<u8>,
 }
 
-impl From<BlockEventInfo> for BlockEventInfoSerde {
-    fn from(data: BlockEventInfo) -> Self {
-        Self {
+impl TryFrom<BlockEventInfo> for BlockEventInfoSerde {
+    type Error = ParameterError;
+
+    fn try_from(data: BlockEventInfo) -> Result<Self, Self::Error> {
+        Ok(Self {
             block_info: data.block_info.map(|b| b.into()),
-            deploys: data.deploys.into_iter().map(|d| d.into()).collect(),
+            deploys: data
+                .deploys
+                .into_iter()
+                .map(DeployInfoWithEventDataSerde::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
             system_deploys: data.system_deploys.into_iter().map(|s| s.into()).collect(),
             post_state_hash: data.post_state_hash.to_vec(),
-        }
+        })
     }
 }
 
