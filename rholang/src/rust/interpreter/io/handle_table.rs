@@ -29,7 +29,7 @@
 //     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
 //     assert (slice 8).
 //
-// # This slice adds
+// # Earlier slices (prior PRs) added
 //
 //   - `lock_registry: SharedLockRegistry` public field +
 //     [`share_lock_registry`](FileHandleTable::share_lock_registry)
@@ -41,17 +41,20 @@
 //     — sync try_read used by `WalDeployScope::Drop` to decide
 //     if a sweep is needed.
 //
-// # Deferred to later `handle_table` slices
+// # This slice adds
 //
-//   - `dir_handles: DirHandleTable` + `share_dir_handles` —
-//     gated on `DirHandleTable`.
+//   - `dir_handles: DirHandleTable` public field.  NOT paired
+//     with a `share_dir_handles` method — dir-stream lifetimes
+//     are per-runtime (not manager-broadcast), matching
+//     fileio's design.  `DirHandleTable` already carries its
+//     own `Arc<Inner>` so clones of `FileHandleTable` share
+//     the backing automatically.
 //
-// `dir_handles` waits for `dir_handle_table.rs`; sharing
-// methods wait for `RootIdentityRegistry::share_from` in a
-// future `path::identity` slice.  Landing the fd allocator
-// alone now unblocks the FileHandle *construction* path in
-// Wave 4 handlers even while the higher-order plumbing catches
-// up.
+// Landing `dir_handles` closes out the `handle_table::*`
+// Wave 2 wrap-up: file-fd allocator (slices 1-8) + sharing
+// infrastructure (slices 46-47) + dir-stream colocation
+// (THIS slice).  Wave 4 handlers (yet-to-land) consume both
+// tables for file + dir-stream dispatch.
 //
 // # Fd namespace: NOT unique across FileHandleTable +
 //   DirHandleTable
@@ -100,6 +103,7 @@ use std::sync::Arc;
 // the DD-FailClosedOnInvariantBreak discipline.
 use tokio::sync::RwLock;
 
+use super::dir_handle_table::DirHandleTable;
 use super::errors::poison_abort;
 use super::lock::{DeployScope, SharedLockRegistry};
 use super::mode::AccessMode;
@@ -325,6 +329,50 @@ pub struct FileHandleTable {
     /// routes through [`SharedLockRegistry::share_from`] and
     /// swaps the slot's INNER backing in place.
     pub lock_registry: SharedLockRegistry,
+    /// Per-runtime directory-stream handle table.  Colocated with
+    /// the file handle table because both are per-runtime and
+    /// travel together through handler dispatch; handlers reach
+    /// it via `self.handles.dir_handles`.
+    ///
+    /// # NOT shared across runtimes
+    ///
+    /// Unlike `lock_registry` (manager-broadcast via
+    /// [`share_lock_registry`]) and `root_registry` (manager-
+    /// broadcast via [`share_root_registry`]), `dir_handles` is
+    /// per-runtime.  Dir-stream lifetimes mirror file-handle
+    /// lifetimes — bounded by the owning deploy's scope and
+    /// swept by [`DirHandleTable::close_all_for_deploy`] at
+    /// deploy end.  No manager-side broadcast method is needed
+    /// (and would be semantically wrong: sharing dir-stream
+    /// state across runtimes would cross-contaminate deploy
+    /// scopes on the fd namespace).
+    ///
+    /// # Clone-share semantics
+    ///
+    /// [`DirHandleTable`] holds `Arc<Inner>` internally, so a
+    /// `FileHandleTable` clone shares the backing with its
+    /// original.  Reducer-side clones observe the same
+    /// dir-stream state as the owning runtime without any
+    /// outer-slot indirection — matches `wal: Wal`'s design.
+    ///
+    /// # Fd namespace
+    ///
+    /// File fds and dir-stream fds live in DISTINCT tables
+    /// and can share numeric values.  Handler dispatch routes
+    /// each fd to the correct table by URN (see the type-
+    /// level "Fd namespace: NOT unique" section).
+    ///
+    /// # Hazard: direct field replacement breaks clone-share
+    ///
+    /// `handles.dir_handles = DirHandleTable::new()` allocates
+    /// a fresh `Arc<Inner>` and orphans every prior clone's
+    /// view — the exact clone-share invariant this field
+    /// relies on.  There's no `share_dir_handles` method
+    /// (per-runtime by design), so replacement from outside
+    /// `new`/`Default` is not expected.  If a test ever needs
+    /// to swap `dir_handles`, swap on the ORIGINAL
+    /// `FileHandleTable` BEFORE any clones are taken.
+    pub dir_handles: DirHandleTable,
     /// The per-runtime "current deploy state" — `scope` + `sig`
     /// bundled under a **single** guard.
     ///
@@ -762,13 +810,24 @@ impl FileHandleTable {
         self.lock_registry.share_from(&shared);
     }
 
-    /// Close every file fd owned by `scope`.  Mirrors
-    /// [`super::lock::LockRegistry::release_all_for_deploy`] on
-    /// the lock side — called from `WalDeployScope::Drop` to
-    /// sweep files the deploy left open past end (via
-    /// `drop(File)` without dispatching `fs_close`, or by
-    /// dropping the Rholang cap holding the fd).  Returns the
-    /// count of fds swept, for diagnostics.
+    /// Close every file fd AND dir-stream fd owned by `scope`.
+    /// Mirrors [`super::lock::LockRegistry::release_all_for_deploy`]
+    /// on the lock side — called from `WalDeployScope::Drop` to
+    /// sweep handles the deploy left open past end (via
+    /// `drop(File)` without dispatching `fs_close`, by dropping
+    /// the Rholang cap holding the fd, or the analogous
+    /// dir-stream paths).  Returns the TOTAL count of handles
+    /// swept across both tables, for diagnostics.
+    ///
+    /// # Both tables swept in a single call
+    ///
+    /// Unified sweep: file-handle AND dir-stream tables are
+    /// swept together, so a caller cannot forget one half.  A
+    /// deploy with only dir-streams open would otherwise leak
+    /// its dir-stream handles across the drop if a caller
+    /// invoked only the file-side sweep.  Delegates to
+    /// [`DirHandleTable::close_all_for_deploy`] for the dir-side
+    /// pass.
     ///
     /// # Sentinel guard
     ///
@@ -778,16 +837,19 @@ impl FileHandleTable {
     /// placeholder; a `WalDeployScope::Drop` under a live scope
     /// always derives a non-sentinel Blake2b256-based scope.  A
     /// sentinel sweep would close every stray sentinel-scoped
-    /// handle on the table (test scaffolding, pre-wiring
-    /// regressions).
+    /// handle on BOTH tables (test scaffolding, pre-wiring
+    /// regressions).  Fires BEFORE either table is touched.
     ///
     /// # OS-level fd lifetime
     ///
     /// Dropping a [`FileHandle`] (whose `file: Option<Arc<File>>`
     /// holds the OS fd) automatically closes the underlying
-    /// kernel fd via `File`'s `Drop` impl.  Shadow handles
-    /// (`file: None`, follower is-replay path) have no OS fd;
-    /// sweeping them is a pure HashMap-entry removal.
+    /// kernel fd via `File`'s `Drop` impl.  Dropping a
+    /// [`super::dir_handle_table::DirHandle`] (whose owning
+    /// `DirIter` holds the directory stream) does the symmetric
+    /// cleanup via `closedir(3)`.  Shadow handles (file-side
+    /// `file: None`, dir-side `DirHandle::shadow`) have no OS
+    /// resource; sweeping them is a pure HashMap-entry removal.
     pub async fn close_all_for_deploy(&self, scope: &DeployScope) -> usize {
         assert!(
             *scope != [0u8; 32],
@@ -797,31 +859,52 @@ impl FileHandleTable {
              Blake2b256.  Calling with the sentinel would sweep every stray \
              sentinel-scoped handle."
         );
-        let mut table = self.inner.table.write().await;
-        let before = table.len();
-        table.retain(|_, h| &h.deploy != scope);
-        before - table.len()
+        let file_swept = {
+            let mut table = self.inner.table.write().await;
+            let before = table.len();
+            table.retain(|_, h| &h.deploy != scope);
+            before - table.len()
+        };
+        // DirHandleTable has its own sentinel assertion that
+        // would also fire — but the outer assert above has
+        // already short-circuited, so this is reached only with
+        // a non-sentinel scope.
+        let dir_swept = self.dir_handles.close_all_for_deploy(scope).await;
+        file_swept + dir_swept
     }
 
-    /// Sync peek into the table's length without awaiting the
-    /// `RwLock`.  Used by `WalDeployScope::Drop` to decide
-    /// whether the deploy-end sweep is a no-op (empty table) or
-    /// has real work to do — the latter requires a live tokio
-    /// runtime, the former is safely skippable.
+    /// Sync peek: does the runtime have ANY active handle (file
+    /// OR dir-stream)?  Used by `WalDeployScope::Drop` to decide
+    /// whether the deploy-end sweep is a no-op (both tables
+    /// empty) or has real work to do — the latter requires a
+    /// live tokio runtime, the former is safely skippable.
+    ///
+    /// # Both tables probed
+    ///
+    /// Returns `true` if EITHER the file-handle table OR the
+    /// dir-stream table has entries.  A false-negative "no
+    /// handles" from probing only one table would silently skip
+    /// a needed sweep for the other — the quiet correctness
+    /// regression this method's design exists to prevent.
     ///
     /// # Fail-safe-pessimistic on contention
     ///
-    /// Reads via `try_read()`.  On contention (someone else is
-    /// midway through a mutation), returns `true` — the safe
-    /// direction: a false-positive "has handles" forces the
-    /// caller to run the sweep under a tokio runtime (loud
-    /// requirement); a false-negative "no handles" would silently
-    /// skip a needed sweep (quiet correctness regression).
+    /// Reads via `try_read()` on both tables.  On contention
+    /// (someone midway through a mutation on EITHER table),
+    /// returns `true` — the safe direction: a false-positive
+    /// "has handles" forces the caller to run the sweep under
+    /// a tokio runtime (loud requirement); a false-negative
+    /// "no handles" would silently skip a needed sweep (quiet
+    /// correctness regression).
     pub fn has_active_handles_sync(&self) -> bool {
-        match self.inner.table.try_read() {
+        let file_has = match self.inner.table.try_read() {
             Ok(guard) => !guard.is_empty(),
             Err(_) => true,
+        };
+        if file_has {
+            return true;
         }
+        self.dir_handles.has_active_handles_sync()
     }
 
     // --- Soft-checkpoint (slice 8) ---------------------------------
@@ -1927,5 +2010,177 @@ mod tests {
             !table.has_active_handles_sync(),
             "after bulk sweep the table must be empty"
         );
+    }
+
+    // --- dir_handles field ----------------------------------------
+
+    use super::super::dir_handle_table::DirHandle;
+
+    fn shadow_dir_handle(deploy_byte: u8) -> DirHandle {
+        DirHandle::shadow(
+            PathBuf::from("/tmp/shadow-dir"),
+            ConsensusMode::Consensus,
+            [deploy_byte; 32],
+        )
+    }
+
+    /// Basic access: the dir_handles field is reachable through
+    /// FileHandleTable and operates normally.
+    #[tokio::test]
+    async fn dir_handles_field_insert_and_access() {
+        let table = FileHandleTable::new();
+        let fd = table
+            .dir_handles
+            .insert(shadow_dir_handle(0x11))
+            .await
+            .unwrap();
+        assert_eq!(fd, 1);
+        assert!(table.dir_handles.get(fd).await.is_some());
+    }
+
+    /// LOAD-BEARING clone-share: a clone of FileHandleTable
+    /// shares the same `dir_handles` backing — mirrors
+    /// `wal`'s per-runtime-but-cloned-shared design.
+    /// Specifically: inserts via one clone are visible via
+    /// another clone.
+    #[tokio::test]
+    async fn dir_handles_shared_across_filehandletable_clones() {
+        let runtime = FileHandleTable::new();
+        let reducer = runtime.clone();
+        let fd = runtime
+            .dir_handles
+            .insert(shadow_dir_handle(0x22))
+            .await
+            .unwrap();
+        assert!(
+            reducer.dir_handles.get(fd).await.is_some(),
+            "reducer-side clone shares the dir_handles backing"
+        );
+    }
+
+    /// Independence from `inner.table` (file-handle fd namespace):
+    /// a file-handle fd allocation does NOT advance the dir-handle
+    /// fd counter, and vice versa — the two tables are distinct.
+    #[tokio::test]
+    async fn dir_handles_fd_namespace_independent_of_file_handles() {
+        let table = FileHandleTable::new();
+        let file_fd = table.insert(shadow_handle(0x11)).await.unwrap();
+        let dir_fd = table
+            .dir_handles
+            .insert(shadow_dir_handle(0x11))
+            .await
+            .unwrap();
+        // Both start at 1 because they're separate counters.
+        assert_eq!(file_fd, 1);
+        assert_eq!(dir_fd, 1);
+    }
+
+    /// NOT manager-shared: there's no `share_dir_handles`
+    /// method.  A reducer-side clone and a hypothetical manager-
+    /// side DirHandleTable are DISTINCT — writes to one are
+    /// invisible to the other.  Pin the per-runtime semantics
+    /// at the field surface (fileio documents this explicitly:
+    /// "NOT shared across runtimes via RuntimeManager").
+    #[tokio::test]
+    async fn dir_handles_is_not_shared_across_distinct_filehandletables() {
+        let runtime_a = FileHandleTable::new();
+        let runtime_b = FileHandleTable::new();
+        runtime_a
+            .dir_handles
+            .insert(shadow_dir_handle(0xAA))
+            .await
+            .unwrap();
+        // runtime_b's dir_handles is a FRESH DirHandleTable (not
+        // shared with runtime_a via any broadcast method).
+        assert!(runtime_b.dir_handles.get(1).await.is_none());
+    }
+
+    // --- Unified close_all_for_deploy + has_active_handles_sync ----
+    //
+    // Composition tests pinning that the file + dir sweeps and
+    // probes operate jointly from the FileHandleTable surface,
+    // closing the gap that would otherwise require the caller
+    // (WalDeployScope::Drop) to remember two separate calls.
+
+    /// LOAD-BEARING: `close_all_for_deploy` sweeps BOTH tables
+    /// — a deploy with ONLY dir-stream handles open is still
+    /// cleaned up by a single call.
+    #[tokio::test]
+    async fn close_all_for_deploy_sweeps_dir_handles_too() {
+        let table = FileHandleTable::new();
+        let d_fd = table
+            .dir_handles
+            .insert(shadow_dir_handle(0xAA))
+            .await
+            .unwrap();
+        let n = table.close_all_for_deploy(&[0xAA; 32]).await;
+        assert_eq!(n, 1, "dir-handle count included in return");
+        assert!(
+            table.dir_handles.get(d_fd).await.is_none(),
+            "dir-handle must be swept"
+        );
+    }
+
+    /// LOAD-BEARING: return count sums BOTH tables.
+    #[tokio::test]
+    async fn close_all_for_deploy_returns_sum_across_both_tables() {
+        let table = FileHandleTable::new();
+        table.insert(shadow_handle(0xAA)).await.unwrap();
+        table.insert(shadow_handle(0xAA)).await.unwrap();
+        table
+            .dir_handles
+            .insert(shadow_dir_handle(0xAA))
+            .await
+            .unwrap();
+        let n = table.close_all_for_deploy(&[0xAA; 32]).await;
+        assert_eq!(n, 3, "2 file + 1 dir = 3");
+    }
+
+    /// LOAD-BEARING: `has_active_handles_sync` reports `true`
+    /// when ONLY dir-streams are open — a dir-only runtime
+    /// MUST NOT silently skip the sweep.
+    #[test]
+    fn has_active_handles_sync_detects_dir_only_runtime() {
+        let table = FileHandleTable::new();
+        // Insert via a one-shot runtime so the sync probe can
+        // run after.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            table
+                .dir_handles
+                .insert(shadow_dir_handle(0xBB))
+                .await
+                .unwrap();
+        });
+        drop(rt);
+        assert!(
+            table.has_active_handles_sync(),
+            "sync probe must detect dir-stream-only activity"
+        );
+    }
+
+    /// `has_active_handles_sync` returns `false` only when BOTH
+    /// tables are empty.
+    #[tokio::test]
+    async fn has_active_handles_sync_false_only_when_both_tables_empty() {
+        let table = FileHandleTable::new();
+        assert!(!table.has_active_handles_sync());
+        // Add + remove a file handle → still empty.
+        let fd = table.insert(shadow_handle(0xAA)).await.unwrap();
+        assert!(table.has_active_handles_sync());
+        table.remove(fd).await;
+        assert!(!table.has_active_handles_sync());
+        // Add + remove a dir handle → still empty.
+        let d_fd = table
+            .dir_handles
+            .insert(shadow_dir_handle(0xAA))
+            .await
+            .unwrap();
+        assert!(table.has_active_handles_sync());
+        table.dir_handles.remove(d_fd).await;
+        assert!(!table.has_active_handles_sync());
     }
 }
