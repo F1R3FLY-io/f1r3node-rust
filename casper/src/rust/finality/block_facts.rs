@@ -10,15 +10,24 @@ use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{BLOCK_FACTS_CACHE_CLEARED_METRIC, CASPER_METRICS_SOURCE};
 
+/// Budgeted in measured bytes, not entries: one fat block can carry hundreds of
+/// sigs. Overflow clears the whole cache instead of evicting piecewise — entries are
+/// pure functions of immutable bodies, so a clear costs only re-reads. Thrash would
+/// need one walk's entries to approach the budget; walk depth is bounded by the
+/// floor-distance merge backstop (`merge_scope_backstop_exceeded`), and a 128-sig
+/// block costs ~20 KB with sigs counted in both `deploy_sigs` and `applied_sigs`.
 const CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+/// Map slot, `Arc` headers and hash key per entry.
 const ENTRY_OVERHEAD_BYTES: usize = 128;
 
 /// Where a block's state lineage continues.
 pub(crate) enum LineageNext {
     Base(BlockHash),
     Genesis,
-    /// Multi-parent block without a recorded `merge_base`.
+    /// Multi-parent block without a recorded `merge_base`. Walks refuse to step
+    /// through it; readers of the block's own facts are unaffected.
     MalformedMultiParent,
 }
 
@@ -64,6 +73,8 @@ impl FactsCache {
     fn insert(&mut self, hash: BlockHash, facts: Arc<BlockFacts>) {
         let entry_bytes = facts.approx_bytes();
         if self.approx_bytes + entry_bytes > CACHE_MAX_BYTES {
+            metrics::counter!(BLOCK_FACTS_CACHE_CLEARED_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .increment(1);
             self.map.clear();
             self.approx_bytes = 0;
         }
@@ -83,18 +94,25 @@ pub(crate) fn cache_bytes() -> usize { cache().lock().approx_bytes }
 #[cfg(test)]
 pub(crate) const MAX_CACHE_BYTES: usize = CACHE_MAX_BYTES;
 
-/// The block's facts, or `None` when `block_store` does not hold it. The cache is
-/// process-global, so a hit is revalidated against the caller's store.
-pub(crate) fn held_block_facts(
-    block_store: &KeyValueBlockStore,
-    block_hash: &BlockHash,
-) -> Result<Option<Arc<BlockFacts>>, CasperError> {
+enum Lookup {
+    Held(Arc<BlockFacts>),
+    Absent,
+    /// Cached from a store that held the block, but the caller's store does not.
+    CachedNotHeld,
+}
+
+/// The cache is process-global, so a hit is revalidated against the caller's store.
+fn lookup(block_store: &KeyValueBlockStore, block_hash: &BlockHash) -> Result<Lookup, CasperError> {
     let cached = cache().lock().map.get(block_hash).cloned();
     if let Some(facts) = cached {
-        return Ok(block_store.contains_key(block_hash)?.then_some(facts));
+        return Ok(if block_store.contains_key(block_hash)? {
+            Lookup::Held(facts)
+        } else {
+            Lookup::CachedNotHeld
+        });
     }
     let Some(block) = block_store.get(block_hash)? else {
-        return Ok(None);
+        return Ok(Lookup::Absent);
     };
     let lineage_next = if !block.body.merge_base.is_empty() {
         LineageNext::Base(block.body.merge_base.clone())
@@ -128,16 +146,34 @@ pub(crate) fn held_block_facts(
         rejected: Arc::new(block.body.rejected_deploys),
     });
     cache().lock().insert(block_hash.clone(), facts.clone());
-    Ok(Some(facts))
+    Ok(Lookup::Held(facts))
 }
 
-/// The block's facts; a block `block_store` does not hold is `BlockNotHeld`.
+/// The block's facts, or `None` when `block_store` does not hold it.
+pub(crate) fn held_block_facts(
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+) -> Result<Option<Arc<BlockFacts>>, CasperError> {
+    Ok(match lookup(block_store, block_hash)? {
+        Lookup::Held(facts) => Some(facts),
+        Lookup::Absent | Lookup::CachedNotHeld => None,
+    })
+}
+
+/// The block's facts; a block `block_store` does not hold is `BlockNotHeld`, labelled
+/// with `accessor` unless the block was cached from another store.
 pub(crate) fn block_facts(
     block_store: &KeyValueBlockStore,
     block_hash: &BlockHash,
     accessor: &'static str,
 ) -> Result<Arc<BlockFacts>, CasperError> {
-    held_block_facts(block_store, block_hash)?.ok_or_else(|| {
-        CasperError::BlockNotHeld(block_hash.clone(), MissingBlockContext::new(accessor))
-    })
+    let accessor = match lookup(block_store, block_hash)? {
+        Lookup::Held(facts) => return Ok(facts),
+        Lookup::Absent => accessor,
+        Lookup::CachedNotHeld => "block-facts cache revalidation",
+    };
+    Err(CasperError::BlockNotHeld(
+        block_hash.clone(),
+        MissingBlockContext::new(accessor),
+    ))
 }

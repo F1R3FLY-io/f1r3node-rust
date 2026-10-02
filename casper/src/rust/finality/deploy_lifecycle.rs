@@ -1366,7 +1366,7 @@ mod tests {
     /// block typed, still serve a malformed multi-parent block's records
     /// (only stepping through it is refused), and stay a function of the
     /// supplied store: a store that does not hold a cached block gets
-    /// `BlockNotHeld`.
+    /// `BlockNotHeld` under the cache-revalidation label.
     #[tokio::test]
     async fn rejected_records_load_through_the_cache_per_store() {
         let rejected_records_of = |store: &KeyValueBlockStore, hash: &BlockHash| {
@@ -1408,12 +1408,25 @@ mod tests {
         let absent = block_at(3, vec![], 323);
         let err =
             rejected_records_of(&store, &absent.block_hash).expect_err("absence must refuse typed");
-        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash));
+        assert!(matches!(
+            err,
+            CasperError::BlockNotHeld(ref h, ref site)
+                if *h == absent.block_hash && site.accessor() == "test"
+        ));
 
         let other_store = store_fn_second().await;
         let err = rejected_records_of(&other_store, &a.block_hash)
             .expect_err("a store that does not hold the block must refuse despite the cache");
-        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == a.block_hash));
+        assert!(
+            matches!(
+                err,
+                CasperError::BlockNotHeld(ref h, ref site)
+                    if *h == a.block_hash && site.accessor() == "block-facts cache revalidation"
+            ),
+            "a cache hit the caller's store does not hold must be labelled apart from plain \
+             absence; got: {}",
+            err
+        );
     }
 
     async fn store_fn_second() -> KeyValueBlockStore {

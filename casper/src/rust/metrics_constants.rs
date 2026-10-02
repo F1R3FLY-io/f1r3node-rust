@@ -71,6 +71,7 @@ pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.s
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
 pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
     "block.processing.stage.parents-post-state.time";
+pub const BLOCK_FACTS_CACHE_CLEARED_METRIC: &str = "block-facts.cache.cleared";
 pub const DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.compute-trie-actions.time";
 pub const DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.apply-trie-actions.time";
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";

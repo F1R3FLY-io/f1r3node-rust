@@ -2502,6 +2502,92 @@ mod backstop_tests {
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store");
+        let dag = generated_disposition_dag(&block_store);
+        let layer = dag.tips;
+
+        for earliest in [i64::MIN, 4, 9] {
+            let expected = decoding_walk(&block_store, &layer, earliest);
+            for _pass in 0..2 {
+                let actual = canonical_dispositions(&block_store, &layer, earliest).expect("walk");
+                assert_eq!(
+                    actual, expected,
+                    "cached walk diverged at earliest {}",
+                    earliest
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_visible_win_check_matches_a_body_decoding_check() {
+        fn decoding_check(
+            block_store: &KeyValueBlockStore,
+            visible_blocks: &HashSet<BlockHash>,
+            sig: &Bytes,
+            source_block: &BlockHash,
+        ) -> bool {
+            let mut disposition = std::collections::HashMap::new();
+            for hash in visible_blocks {
+                if hash == source_block {
+                    continue;
+                }
+                let block = block_store.get(hash).expect("read").expect("held");
+                let bn = block.body.state.block_number;
+                for pd in &block.body.deploys {
+                    if pd.deploy.sig == *sig {
+                        super::record_disposition(&mut disposition, sig.clone(), bn, true);
+                    }
+                }
+                for rd in block
+                    .body
+                    .rejected_deploys
+                    .iter()
+                    .filter(|rd| !rd.duplicate)
+                {
+                    if rd.sig == *sig {
+                        super::record_disposition(&mut disposition, sig.clone(), bn, false);
+                    }
+                }
+            }
+            disposition.get(sig).map(|(_, won)| *won).unwrap_or(false)
+        }
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag = generated_disposition_dag(&block_store);
+        let visible: HashSet<BlockHash> = dag.blocks.iter().cloned().collect();
+
+        for _pass in 0..2 {
+            for sig in &dag.sigs {
+                for source in &dag.blocks {
+                    assert_eq!(
+                        rejected_sig_has_visible_non_source_win(
+                            &block_store,
+                            &visible,
+                            sig,
+                            source
+                        )
+                        .expect("check"),
+                        decoding_check(&block_store, &visible, sig, source),
+                        "cached visible-win check diverged for source {}",
+                        hex::encode(&source[..8.min(source.len())]),
+                    );
+                }
+            }
+        }
+    }
+
+    struct GeneratedDispositionDag {
+        blocks: Vec<BlockHash>,
+        tips: Vec<BlockHash>,
+        sigs: Vec<Bytes>,
+    }
+
+    /// Twelve layers of 1–3 blocks with random multi-parent links, repeated and
+    /// failed deploys of six sigs, and kept and duplicate-flagged rejection records.
+    fn generated_disposition_dag(block_store: &KeyValueBlockStore) -> GeneratedDispositionDag {
         let mut seed: u64 = 0x5eed;
         let mut rand = |n: u64| {
             seed = seed
@@ -2515,7 +2601,7 @@ mod backstop_tests {
             .collect();
 
         let mut layer: Vec<BlockHash> = Vec::new();
-        let mut all: Vec<BlockHash> = Vec::new();
+        let mut blocks: Vec<BlockHash> = Vec::new();
         for height in 0..12 {
             let mut next = Vec::new();
             for _ in 0..=rand(3) {
@@ -2541,30 +2627,23 @@ mod backstop_tests {
                     body_deploys,
                 );
                 block.body.rejected_deploys = (0..rand(3))
-                    .filter(|_| !all.is_empty())
+                    .filter(|_| !blocks.is_empty())
                     .map(|_| RejectedDeploy {
                         sig: deploys[rand(6) as usize].sig.clone(),
                         duplicate: rand(3) == 0,
-                        carrier: all[rand(all.len() as u64) as usize].clone(),
+                        carrier: blocks[rand(blocks.len() as u64) as usize].clone(),
                     })
                     .collect();
                 block_store.put_block_message(&block).expect("store block");
                 next.push(block.block_hash.clone());
             }
-            all.extend(next.iter().cloned());
+            blocks.extend(next.iter().cloned());
             layer = next;
         }
-
-        for earliest in [i64::MIN, 4, 9] {
-            let expected = decoding_walk(&block_store, &layer, earliest);
-            for _pass in 0..2 {
-                let actual = canonical_dispositions(&block_store, &layer, earliest).expect("walk");
-                assert_eq!(
-                    actual, expected,
-                    "cached walk diverged at earliest {}",
-                    earliest
-                );
-            }
+        GeneratedDispositionDag {
+            blocks,
+            tips: layer,
+            sigs: deploys.iter().map(|d| d.sig.clone()).collect(),
         }
     }
 
