@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 "$repo_root/scripts/build-pathmap-obligation-registry.py" --check
+python3 "$repo_root/scripts/build-pathmap-obligation-registry.py" --self-test
 export TLC_REPO_ROOT="$repo_root"
 export TLC_HEAP="${TLC_HEAP:-512m}"
 export TLC_WORKERS="${TLC_WORKERS:-1}"
