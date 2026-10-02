@@ -122,7 +122,7 @@ async fn test_case(
         std::sync::Arc::new(m)
     };
     let rm = mk_runtime_manager("merging-test", Some(mergeable_tags)).await;
-    let mut runtime = rm.spawn_runtime().await;
+    let mut runtime = rm.spawn_runtime().await.unwrap();
 
     async fn run_rholang(
         runtime: &mut RhoRuntimeImpl,
