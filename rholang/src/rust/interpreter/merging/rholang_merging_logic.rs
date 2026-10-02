@@ -443,6 +443,27 @@ mod tests {
     }
 
     #[test]
+    fn a_single_map_par_is_not_a_number() {
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::Expr;
+        use models::rust::par_map::ParMap;
+        use models::rust::par_map_type_mapper::ParMapTypeMapper;
+
+        let map =
+            ParMap::create_from_vec(vec![(RhoNumber::create_par(1), RhoNumber::create_par(2))]);
+        let leaf = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+                map,
+            ))),
+        }]);
+        let value = ListParWithRandom {
+            pars: vec![leaf],
+            random_state: vec![0u8; 32],
+        };
+        assert!(RholangMergingLogic::try_get_number_with_rnd(&value).is_none());
+    }
+
+    #[test]
     fn no_produce_is_allowed() {
         let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
         let base = vec![num_datum(0)];

@@ -8,7 +8,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 pub struct EvalCollector {
     pub event_log: Vec<Event>,
-    pub mergeable_channels: HashMap<Par, MergeType>,
+    pub(crate) mergeable_channels: HashMap<Par, MergeType>,
 }
 
 impl EvalCollector {

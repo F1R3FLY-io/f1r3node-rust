@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             matcher,
             ExternalServices::for_observer(),
         )
-        .await;
+        .await?;
 
         let result = if !conf.files.is_empty() {
             let mut problems = Vec::new();
