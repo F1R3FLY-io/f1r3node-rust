@@ -448,7 +448,7 @@ def extract(sources):
     require(len(DIRECT) == 5, "unexpected direct executable correspondence count")
     return {
         "scope": "ParBag protobuf projection, sink, in-frame memo, and RSpace canonical egress",
-        "boundary": "Concrete witnesses exercise selected production bytes and slot order. Other formal statements are proof-only; no bincode-specific formal source or clean normal-suite egress-publication witness is claimed.",
+        "boundary": "Concrete witnesses exercise selected production bytes and slot order. The canonical-egress Verus source covers bincode envelope and length arithmetic, while full encoder byte equivalence and publication remain proof-only here.",
         "source_sha256": {
             path: hashlib.sha256(sources[path].encode()).hexdigest()
             for path in source_paths()
@@ -462,7 +462,7 @@ def extract(sources):
             {"source": source, "test": test}
             for source, test in ((PREPARED_TEST, PREPARED_NAME), (SLOT_TEST, SLOT_NAME))
         ],
-        "missing_formal_family": "No bincode-specific TLA/Rocq/Verus source was found in this accepted ParBag/egress slice.",
+        "bincode_formal_boundary": "The canonical-egress Verus source models fixed bincode framing and preflight arithmetic; this registry has no separate formal model of the general-purpose bincode encoder.",
     }
 
 

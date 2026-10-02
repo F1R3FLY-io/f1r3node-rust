@@ -1,5 +1,6 @@
 {
-  "boundary": "Concrete witnesses exercise selected production bytes and slot order. Other formal statements are proof-only; no bincode-specific formal source or clean normal-suite egress-publication witness is claimed.",
+  "bincode_formal_boundary": "The canonical-egress Verus source models fixed bincode framing and preflight arithmetic; this registry has no separate formal model of the general-purpose bincode encoder.",
+  "boundary": "Concrete witnesses exercise selected production bytes and slot order. The canonical-egress Verus source covers bincode envelope and length arithmetic, while full encoder byte equivalence and publication remain proof-only here.",
   "causal_mutants": [
     {
       "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionCapMutant.cfg",
@@ -222,7 +223,6 @@
       "test": "par_slot_visitor_uses_generated_sequence_and_map_order_without_descending_into_par"
     }
   ],
-  "missing_formal_family": "No bincode-specific TLA/Rocq/Verus source was found in this accepted ParBag/egress slice.",
   "rocq": [
     {
       "obligations": [
