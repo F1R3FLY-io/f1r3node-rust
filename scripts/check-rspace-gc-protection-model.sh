@@ -17,6 +17,7 @@ evidence_dir="$repo_root/target/verification/rspace-gc-protection"
 mkdir -p "$evidence_dir"
 cd "$model_dir"
 metadir="$(tlc_metadir rspace-gc-protection)"
+sha256sum RSpaceGcProtection.tla "$repo_root/scripts/check-rspace-gc-protection-model.sh"
 
 for baseline in \
   'baseline:RSpaceGcProtection.cfg' \
@@ -51,6 +52,17 @@ fi
 if ! rg -Fq 'The behavior up to this point is:' "$witness_log"; then
   cat "$witness_log"
   echo "gc-protection: known-overlap witness has no trace" >&2
+  exit 1
+fi
+if ! awk '
+  /^State [0-9]+: <Crash / && !crash { crash = NR }
+  /^State [0-9]+: <Recover / && crash && !recover { recover = NR }
+  /^State [0-9]+: <Reclaim / && recover && !reclaim { reclaim = NR }
+  /^State [0-9]+: <AcquireNewPin / && reclaim && !new_pin { new_pin = NR }
+  END { exit !(crash && recover > crash && reclaim > recover && new_pin > reclaim) }
+' "$witness_log"; then
+  cat "$witness_log"
+  echo "gc-protection: known-overlap witness lacks crash, recovery, reclaim, then new pin" >&2
   exit 1
 fi
 

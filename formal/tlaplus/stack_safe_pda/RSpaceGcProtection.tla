@@ -70,11 +70,11 @@ PinRole(token) ==
     [] token = "rollback0" -> "rollback"
 
 VARIABLES phase, catalog, copied, oldPresent, oldPins, newPins,
-          durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+          durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
           reclaimIntent, walHead, walTail, walStarts
 
 vars == <<phase, catalog, copied, oldPresent, oldPins, newPins,
-          durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+          durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
           reclaimIntent, walHead, walTail, walStarts>>
 
 ActiveRoles == durable \cup {PinRole(token) : token \in oldPins \cup newPins}
@@ -104,6 +104,7 @@ Init ==
   /\ knownAtPublish = FALSE
   /\ overlapAtPublish = FALSE
   /\ crashedAfterOverlap = FALSE
+  /\ knownAfterReclaim = FALSE
   /\ reclaimIntent = FALSE
   /\ walHead = 0
   /\ walTail = 0
@@ -113,28 +114,28 @@ StartCopy ==
   /\ phase = "idle"
   /\ phase' = "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail, walStarts>>
 
 CopyOne ==
   /\ phase = "copying"
   /\ \E object \in Objects \ copied : copied' = copied \cup {object}
   /\ UNCHANGED <<phase, catalog, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail, walStarts>>
 
 AbortCopy ==
   /\ phase = "copying"
   /\ phase' = "aborted"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail, walStarts>>
 
 RetryCopy ==
   /\ phase = "aborted"
   /\ phase' = "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail, walStarts>>
 
 Publish ==
@@ -150,9 +151,10 @@ Publish ==
   /\ reclaimIntent' = TRUE
   /\ phase' = "published"
   /\ UNCHANGED <<copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, crashedAfterOverlap, walHead, walTail, walStarts>>
+                 durable, oldDurable, crashedAfterOverlap, knownAfterReclaim, walHead, walTail, walStarts>>
 
 AcquireOldPin ==
+  /\ phase # "crashed"
   /\ oldPresent
   /\ \E token \in PinTokens \ (oldPins \cup newPins) :
        /\ oldPins' = oldPins \cup {token}
@@ -161,14 +163,18 @@ AcquireOldPin ==
                          THEN [walStarts EXCEPT ![token] = start]
                          ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail>>
 
 AcquireNewPin ==
+  /\ phase # "crashed"
   /\ catalog = "new"
   /\ \E token \in PinTokens \ (oldPins \cup newPins) :
        /\ ProtectionMatrix[PinRole(token)].objects \subseteq copied
        /\ newPins' = newPins \cup {token}
+       /\ knownAfterReclaim' =
+            (knownAfterReclaim \/
+             (token = "known0" /\ crashedAfterOverlap /\ ~oldPresent))
        /\ \E start \in walHead..walTail :
             walStarts' = IF token \in WalIds
                          THEN [walStarts EXCEPT ![token] = start]
@@ -178,6 +184,7 @@ AcquireNewPin ==
                  reclaimIntent, walHead, walTail>>
 
 ReleaseOldPin ==
+  /\ phase # "crashed"
   /\ oldPins # {}
   /\ \E token \in oldPins :
        /\ oldPins' = oldPins \ {token}
@@ -185,10 +192,11 @@ ReleaseOldPin ==
                        THEN [walStarts EXCEPT ![token] = NoWalStart]
                        ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail>>
 
 ReleaseNewPin ==
+  /\ phase # "crashed"
   /\ newPins # {}
   /\ \E token \in newPins :
        /\ newPins' = newPins \ {token}
@@ -196,10 +204,11 @@ ReleaseNewPin ==
                        THEN [walStarts EXCEPT ![token] = NoWalStart]
                        ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail>>
 
 RegisterDurable ==
+  /\ phase # "crashed"
   /\ \E role \in {"replay", "rollback"} \ durable :
        /\ \E generation \in {"old", "new"} :
             /\ (IF generation = "old" THEN oldPresent
@@ -210,16 +219,17 @@ RegisterDurable ==
        /\ \E start \in walHead..walTail :
             walStarts' = [walStarts EXCEPT ![role] = start]
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail>>
 
 ReleaseDurable ==
+  /\ phase # "crashed"
   /\ \E role \in durable \ {"current", "retained"} :
        /\ durable' = durable \ {role}
        /\ oldDurable' = oldDurable \ {role}
        /\ walStarts' = [walStarts EXCEPT ![role] = NoWalStart]
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail>>
 
 Reclaim ==
@@ -230,18 +240,20 @@ Reclaim ==
   /\ oldPresent' = FALSE
   /\ reclaimIntent' = FALSE
   /\ UNCHANGED <<phase, catalog, copied, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  walHead, walTail, walStarts>>
 
 AdvanceWal ==
+  /\ phase # "crashed"
   /\ walTail - walHead < MaxWalWindow
   /\ walTail < MaxWalEvents
   /\ walTail' = walTail + 1
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walStarts>>
 
 RotateWal ==
+  /\ phase = "published"
   /\ catalog = "new"
   /\ (IF BlockWalOnOldPack THEN ~oldPresent ELSE TRUE)
   /\ walHead < ReclaimableWalFrontier
@@ -249,7 +261,7 @@ RotateWal ==
                  THEN ReclaimableWalFrontier + 1
                  ELSE ReclaimableWalFrontier
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walTail, walStarts>>
 
 Crash ==
@@ -261,14 +273,14 @@ Crash ==
                                    !["rollback0"] = NoWalStart]
   /\ crashedAfterOverlap' = (crashedAfterOverlap \/ (overlapAtPublish /\ oldPresent))
   /\ UNCHANGED <<catalog, copied, oldPresent, durable, oldDurable, knownAtPublish,
-                 overlapAtPublish,
+                 overlapAtPublish, knownAfterReclaim,
                  reclaimIntent, walHead, walTail>>
 
 Recover ==
   /\ phase = "crashed"
   /\ phase' = IF catalog = "new" THEN "published" ELSE "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap, knownAfterReclaim,
                  reclaimIntent, walHead, walTail, walStarts>>
 
 Next == StartCopy \/ CopyOne \/ AbortCopy \/ RetryCopy \/ Publish \/
@@ -290,6 +302,7 @@ TypeInvariant ==
   /\ knownAtPublish \in BOOLEAN
   /\ overlapAtPublish \in BOOLEAN
   /\ crashedAfterOverlap \in BOOLEAN
+  /\ knownAfterReclaim \in BOOLEAN
   /\ walHead \in Nat
   /\ walTail \in Nat
   /\ walTail <= MaxWalEvents
@@ -330,9 +343,9 @@ KnownWalOrthogonal ==
 OverlapWitnessHistorySound ==
   /\ (overlapAtPublish => knownAtPublish /\ catalog = "new")
   /\ (crashedAfterOverlap => overlapAtPublish)
+  /\ (knownAfterReclaim => crashedAfterOverlap /\ ~oldPresent /\ catalog = "new")
 KnownOverlapLifecycleAbsent ==
-  ~(KnownMode /\ overlapAtPublish /\ crashedAfterOverlap /\ ~oldPresent /\
-    "known0" \in newPins)
+  ~(KnownMode /\ knownAfterReclaim)
 ActiveObjectProtection ==
   \A role \in ActiveRoles :
     (catalog = "old" /\ oldPresent) \/
@@ -349,5 +362,9 @@ ObjectOnlyPinDoesNotBlockWal ==
 WalAdmissionBounded == walHead <= walTail /\ walTail - walHead <= MaxWalWindow
 CrashRetryAuthority ==
   (phase = "crashed" /\ catalog = "old") => oldPresent
+CrashPhaseQuiescence ==
+  (phase = "crashed") =>
+    ~ENABLED (AcquireOldPin \/ AcquireNewPin \/ ReleaseOldPin \/ ReleaseNewPin \/
+              RegisterDurable \/ ReleaseDurable \/ AdvanceWal \/ RotateWal)
 
 =============================================================================
