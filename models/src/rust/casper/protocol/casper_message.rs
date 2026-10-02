@@ -45,6 +45,8 @@ pub enum CasperMessage {
     // Between-snapshot WAL payload fetch (Wave 3, Phase 7b-2).
     GetWalPayloadRequest(GetWalPayloadRequest),
     WalPayloadResponse(WalPayloadResponse),
+    HasWalPayloadRequest(HasWalPayloadRequest),
+    HasWalPayload(HasWalPayload),
 }
 
 impl CasperMessage {
@@ -156,6 +158,14 @@ impl CasperMessage {
 
     pub fn from_wal_payload_response(proto: WalPayloadResponseProto) -> Self {
         CasperMessage::WalPayloadResponse(WalPayloadResponse::from_proto(proto))
+    }
+
+    pub fn from_has_wal_payload_request(proto: HasWalPayloadRequestProto) -> Self {
+        CasperMessage::HasWalPayloadRequest(HasWalPayloadRequest::from_proto(proto))
+    }
+
+    pub fn from_has_wal_payload(proto: HasWalPayloadProto) -> Self {
+        CasperMessage::HasWalPayload(HasWalPayload::from_proto(proto))
     }
 }
 
@@ -415,6 +425,63 @@ impl WalPayloadResponse {
         WalPayloadResponseProto {
             payload_hash: self.payload_hash,
             payload_bytes: self.payload_bytes,
+        }
+    }
+}
+
+/// Joiner → serving validator: "do you have bytes for this
+/// payload hash?"  Broadcast + point-to-point; serving nodes
+/// reply with [`HasWalPayload`] when they can serve it.
+/// Mirrors the [`HasSnapshotRequest`] / [`HasSnapshot`]
+/// pattern on the payload-fetch side.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasWalPayloadRequest {
+    pub payload_hash: ByteString,
+}
+
+impl HasWalPayloadRequest {
+    pub fn from_proto(proto: HasWalPayloadRequestProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+        }
+    }
+
+    pub fn to_proto(self) -> HasWalPayloadRequestProto {
+        HasWalPayloadRequestProto {
+            payload_hash: self.payload_hash,
+        }
+    }
+}
+
+/// Response to [`HasWalPayloadRequest`].  Carries `payload_size`
+/// so the joiner can budget before issuing the full fetch via
+/// [`GetWalPayloadRequest`].
+///
+/// # ADVISORY `payload_size`
+///
+/// The joiner MUST cap at `MAX_PAYLOAD_BYTES` (4 MiB) regardless
+/// of what the server claims here, and the actual response's
+/// byte count is the authoritative truth.  A server over-
+/// reporting here would get caught by the comm-layer message-
+/// size limit before memory pressure.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasWalPayload {
+    pub payload_hash: ByteString,
+    pub payload_size: u32,
+}
+
+impl HasWalPayload {
+    pub fn from_proto(proto: HasWalPayloadProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+            payload_size: proto.payload_size,
+        }
+    }
+
+    pub fn to_proto(self) -> HasWalPayloadProto {
+        HasWalPayloadProto {
+            payload_hash: self.payload_hash,
+            payload_size: self.payload_size,
         }
     }
 }
@@ -2485,6 +2552,57 @@ mod tests {
                 assert_eq!(inner.payload_bytes, proto.payload_bytes);
             }
             _ => panic!("expected WalPayloadResponse variant"),
+        }
+    }
+
+    // --- HasWalPayload lookup pair roundtrips (Wave 3, PR 3.4) ---
+
+    #[test]
+    fn has_wal_payload_request_proto_roundtrip() {
+        let req = HasWalPayloadRequest {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let roundtripped = HasWalPayloadRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn has_wal_payload_proto_roundtrip() {
+        let resp = HasWalPayload {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_size: 2048,
+        };
+        let roundtripped = HasWalPayload::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_has_wal_payload_request() {
+        let proto = HasWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let msg = CasperMessage::from_has_wal_payload_request(proto.clone());
+        match msg {
+            CasperMessage::HasWalPayloadRequest(inner) => {
+                assert_eq!(inner.payload_hash, proto.payload_hash);
+            }
+            _ => panic!("expected HasWalPayloadRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_has_wal_payload() {
+        let proto = HasWalPayloadProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_size: 7,
+        };
+        let msg = CasperMessage::from_has_wal_payload(proto.clone());
+        match msg {
+            CasperMessage::HasWalPayload(inner) => {
+                assert_eq!(inner.payload_hash, proto.payload_hash);
+                assert_eq!(inner.payload_size, proto.payload_size);
+            }
+            _ => panic!("expected HasWalPayload variant"),
         }
     }
 }
