@@ -524,7 +524,7 @@ if [[ "${1:-}" == "--match-preparation" ]]; then
   pushd "$repo_root" >/dev/null
   rspace_preparation_run_tests 69 --lib rspace::data_index::
   rspace_preparation_run_tests 1 --lib catalog_hash_preimages_are_exact_raw_identity_bytes
-  rspace_preparation_run_tests 12 --lib accepted_match_formal_bindings
+  rspace_preparation_run_tests 14 --lib accepted_match_formal_bindings
   rspace_preparation_run_tests 28 --test data_index_spec
   rspace_preparation_run_tests 5 --test serializer_byte_goldens
   rspace_preparation_run_tests 2 --test bag_spec transaction_delta
@@ -891,6 +891,9 @@ rocq_compile_with_closed_count \
 rocq_compile_with_closed_count \
   theories/RhoPathV1Datum.v 21 \
   "the exact RhoPath V1 datum-key schema and partition"
+rocq_compile_with_closed_count \
+  theories/RhoPathV2.v 4 \
+  "the RhoPath V2 outer-grammar capstones"
 epathmap_score_proofs
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthority.v 33 \
@@ -1150,11 +1153,33 @@ done
 "$repo_root/scripts/check-pathmap-anchor-loom.sh"
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 python3 "$repo_root/scripts/check-accepted-match-obligations.py" --check
+python3 "$repo_root/scripts/check-accepted-match-obligations.py" --self-test
 python3 "$repo_root/scripts/check-bag-obligations.py" --check
 python3 "$repo_root/scripts/check-bag-obligations.py" --self-test
 python3 "$repo_root/scripts/check-workspace-regression-obligations.py" --check
 python3 "$repo_root/scripts/check-workspace-regression-obligations.py" --self-test
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
+for accepted_match_mutant in \
+  "RSpaceBagCommitSplitPublicationMutant.cfg:RSpaceBagCommitMutants.tla:PlayPublishesOneCompleteState" \
+  "RSpaceBagCommitEarlyEventMutant.cfg:RSpaceBagCommitMutants.tla:EventPublicationFollowsCommit" \
+  "RSpaceBagCommitDropJoinMutant.cfg:RSpaceBagCommitMutants.tla:ContinuationAndJoinCommitTogether"; do
+  accepted_match_cfg="${accepted_match_mutant%%:*}"
+  accepted_match_rest="${accepted_match_mutant#*:}"
+  accepted_match_tla="${accepted_match_rest%%:*}"
+  accepted_match_invariant="${accepted_match_rest#*:}"
+  if accepted_match_output="$({
+    tlc_run "$tla_metadir" "$accepted_match_cfg" "$accepted_match_tla" -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$accepted_match_output"
+    echo "stack-safe-pda: accepted-match mutant unexpectedly passed: $accepted_match_cfg" >&2
+    exit 1
+  fi
+  printf '%s\n' "$accepted_match_output"
+  if ! grep -q "Invariant ${accepted_match_invariant} is violated" <<<"$accepted_match_output"; then
+    echo "stack-safe-pda: accepted-match mutant failed without ${accepted_match_invariant}: $accepted_match_cfg" >&2
+    exit 1
+  fi
+done
 tlc_run "$tla_metadir" RSpaceCanonicalEgress.cfg RSpaceCanonicalEgress.tla -cleanup
 if canonical_egress_mutant="$({
   tlc_run "$tla_metadir" \
@@ -1280,6 +1305,8 @@ done
 tlc_run "$tla_metadir" \
   RSpaceRecordReplayAuthorityLifecycle.cfg \
   RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+python3 "$repo_root/scripts/check-rho-path-v2-obligations.py" --check
+python3 "$repo_root/scripts/check-rho-path-v2-obligations.py" --self-test
 tlc_run "$tla_metadir" \
   RhoPathV2Lifecycle.cfg \
   RhoPathV2Lifecycle.tla -cleanup

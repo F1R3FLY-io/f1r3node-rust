@@ -1,9 +1,36 @@
 {
-  "causal_mutants": [],
+  "causal_mutants": [
+    {
+      "action": "SplitPublication",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceBagCommitSplitPublicationMutant.cfg",
+      "config_sha256": "e15aa3691a83d07a4a20d239c0ade2e12a68ec6514dc51d1ba9fd0887f3c8626",
+      "expected_invariant": "PlayPublishesOneCompleteState",
+      "id": "ACM-MUT-01",
+      "specification": "SplitPublicationSpec"
+    },
+    {
+      "action": "EarlyEvent",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceBagCommitEarlyEventMutant.cfg",
+      "config_sha256": "af5cb1492bdff370a3846e398236a69ff5291998ae70d82b9c14bcf737bf7617",
+      "expected_invariant": "EventPublicationFollowsCommit",
+      "id": "ACM-MUT-02",
+      "specification": "EarlyEventSpec"
+    },
+    {
+      "action": "DropJoin",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceBagCommitDropJoinMutant.cfg",
+      "config_sha256": "c7644ae056502787d8c9e66166c5c2e11b39ef38182a35c2ea4f0a82dd377276",
+      "expected_invariant": "ContinuationAndJoinCommitTogether",
+      "id": "ACM-MUT-03",
+      "specification": "DropJoinSpec"
+    }
+  ],
   "config": "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg",
   "config_sha256": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
   "model": "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla",
   "model_sha256": "68ae034fcbea0f5cd6c83d3ff790e1cb9c5e9a42f8b11a50bac784b1ebbe335e",
+  "mutant_model": "formal/tlaplus/stack_safe_pda/RSpaceBagCommitMutants.tla",
+  "mutant_model_sha256": "bca470853eb406bb386cbad7905ee7427adbbf7708464ba5d135b96c61da13f5",
   "normal_suite_test_module": "rspace++/tests/hot_store/accepted_match_formal_bindings.rs",
   "rocq": "formal/rocq/stack_safe_pda/theories/RSpaceCommit.v",
   "rocq_print_assumptions": [

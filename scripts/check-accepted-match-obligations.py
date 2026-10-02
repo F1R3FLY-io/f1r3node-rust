@@ -6,12 +6,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TLA = Path("formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla")
+MUTANT_MODEL = TLA.with_name("RSpaceBagCommitMutants.tla")
 CONFIG = TLA.with_suffix(".cfg")
 ROCQ = Path("formal/rocq/stack_safe_pda/theories/RSpaceCommit.v")
 RUST = Path("rspace++/tests/hot_store/accepted_match_formal_bindings.rs")
 MODULE = Path("rspace++/src/rspace/hot_store.rs")
 RUNNER = Path("scripts/check-stack-safe-pda-proofs.sh")
 OUTPUT = Path("formal/accepted_match_obligations.generated.json")
+MUTANTS = {
+    "RSpaceBagCommitSplitPublicationMutant.cfg": (
+        "SplitPublicationSpec",
+        "SplitPublication",
+        "PlayPublishesOneCompleteState",
+    ),
+    "RSpaceBagCommitEarlyEventMutant.cfg": (
+        "EarlyEventSpec",
+        "EarlyEvent",
+        "EventPublicationFollowsCommit",
+    ),
+    "RSpaceBagCommitDropJoinMutant.cfg": (
+        "DropJoinSpec",
+        "DropJoin",
+        "ContinuationAndJoinCommitTogether",
+    ),
+}
 
 
 class RegistryError(ValueError):
@@ -62,8 +80,56 @@ def bindings(source, array):
     return rows
 
 
-def extract(model, config, rocq, rust, module, runner, mutant_configs):
-    require(not mutant_configs, "unregistered RSpaceBagCommit mutant configuration")
+def extract(model, config, rocq, rust, module, runner, mutant_sources):
+    require(
+        set(mutant_sources) == {MUTANT_MODEL.name, *MUTANTS},
+        "missing or unregistered RSpaceBagCommit mutant source",
+    )
+    mutant_model = mutant_sources[MUTANT_MODEL.name]
+    require(
+        re.search(r"(?m)^EXTENDS RSpaceBagCommit\s*$", mutant_model) is not None,
+        "mutant model does not extend accepted-match authority",
+    )
+    causal_mutants = []
+    for filename, (specification, action, invariant) in MUTANTS.items():
+        mutant_config = mutant_sources[filename]
+        require(
+            re.findall(r"(?m)^SPECIFICATION\s+(\w+)\s*$", mutant_config)
+            == [specification],
+            f"wrong mutant specification: {filename}",
+        )
+        require(
+            re.findall(r"(?m)^INVARIANT\s+(\w+)\s*$", mutant_config) == [invariant],
+            f"wrong mutant invariant: {filename}",
+        )
+        require(
+            len(re.findall(rf"(?m)^{re.escape(action)}\s*==", mutant_model)) == 1,
+            f"missing mutant action: {action}",
+        )
+        require(
+            len(
+                re.findall(
+                    rf"(?m)^{re.escape(specification)}\s*==\s*Init\s*/\\\s*\[\]\[Next\s*\\/\s*{re.escape(action)}\]_vars\s*$",
+                    mutant_model,
+                )
+            )
+            == 1,
+            f"mutant specification is not bound to {action}",
+        )
+        require(
+            f"{filename}:RSpaceBagCommitMutants.tla:{invariant}" in runner,
+            f"mutant is absent from normal proof suite: {filename}",
+        )
+        causal_mutants.append(
+            {
+                "id": f"ACM-MUT-{len(causal_mutants) + 1:02d}",
+                "config": str(TLA.parent / filename),
+                "config_sha256": hashlib.sha256(mutant_config.encode()).hexdigest(),
+                "specification": specification,
+                "action": action,
+                "expected_invariant": invariant,
+            }
+        )
     require(
         not re.search(r"(?m)^(?:INVARIANTS|PROPERTIES)\b", config),
         "unsupported multi-line TLC obligation",
@@ -164,7 +230,9 @@ def extract(model, config, rocq, rust, module, runner, mutant_configs):
         "tlc_invariants": rows["tla"],
         "rocq_theorems": rows["rocq"],
         "rocq_print_assumptions": capstones,
-        "causal_mutants": [],
+        "causal_mutants": causal_mutants,
+        "mutant_model": str(MUTANT_MODEL),
+        "mutant_model_sha256": hashlib.sha256(mutant_model.encode()).hexdigest(),
     }
 
 
@@ -332,7 +400,54 @@ def self_test(inputs):
     )
     reject(
         lambda: extract(
-            model, config, rocq, rust, module, runner, ["RSpaceBagCommitNewMutant.cfg"]
+            model,
+            config,
+            rocq,
+            rust,
+            module,
+            runner,
+            {**mutants, "RSpaceBagCommitNewMutant.cfg": ""},
+        )
+    )
+    reject(
+        lambda: extract(
+            model,
+            config,
+            rocq,
+            rust,
+            module,
+            runner,
+            {key: value for key, value in mutants.items() if key != MUTANT_MODEL.name},
+        )
+    )
+    first = next(iter(MUTANTS))
+    reject(
+        lambda: extract(
+            model,
+            config,
+            rocq,
+            rust,
+            module,
+            runner,
+            {
+                **mutants,
+                first: mutants[first].replace(
+                    "PlayPublishesOneCompleteState", "TypeInvariant"
+                ),
+            },
+        )
+    )
+    reject(
+        lambda: extract(
+            model,
+            config,
+            rocq,
+            rust,
+            module,
+            runner.replace(
+                f"{first}:RSpaceBagCommitMutants.tla:PlayPublishesOneCompleteState", ""
+            ),
+            mutants,
         )
     )
 
@@ -344,11 +459,17 @@ def main():
     group.add_argument("--write", action="store_true")
     group.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    mutant_paths = [
+        MUTANT_MODEL,
+        *(
+            TLA.parent / path.name
+            for path in (ROOT / TLA.parent).glob("RSpaceBagCommit*Mutant.cfg")
+        ),
+    ]
+    mutant_sources = {path.name: (ROOT / path).read_text() for path in mutant_paths}
     inputs = tuple(
         (ROOT / path).read_text() for path in (TLA, CONFIG, ROCQ, RUST, MODULE, RUNNER)
-    ) + (
-        [path.name for path in (ROOT / TLA.parent).glob("RSpaceBagCommit*Mutant.cfg")],
-    )
+    ) + (mutant_sources,)
     payload = json.dumps(extract(*inputs), indent=2, sort_keys=True) + "\n"
     if args.self_test:
         self_test(inputs)

@@ -1,0 +1,233 @@
+{
+  "boundary": "Rust witnesses exercise selected outer codec behaviors, not the abstract lifecycle, RCI2/RMP2 payload validity, or a formal Rust refinement proof.",
+  "excluded_families": [
+    "RCI2 ChannelImage.v",
+    "RMP2 RMP2.v"
+  ],
+  "normal_suite": {
+    "direct_witnesses": [
+      "v1_and_v2_datum_namespaces_are_disjoint",
+      "v2_continuation_has_u64_count_and_rejects_empty_groups",
+      "v2_continuation_rejects_count_mismatch_without_fallback",
+      "v2_datum_round_trips_all_byte_values_in_each_field",
+      "v2_headers_and_escapes_fail_closed",
+      "v2_join_frames_identity"
+    ],
+    "source": "rspace++/tests/rho_path_spec.rs",
+    "tests": [
+      "datum_paths_round_trip_all_byte_values",
+      "datum_offsets_refine_exact_prefix_and_raw_identity_suffix",
+      "v2_datum_uses_three_framed_canonical_fields",
+      "v2_datum_round_trips_all_byte_values_in_each_field",
+      "v1_and_v2_datum_namespaces_are_disjoint",
+      "rho_path_errors_are_not_mislabeled_by_wire_version",
+      "v2_continuation_has_u64_count_and_rejects_empty_groups",
+      "v2_continuation_preserves_order_and_zero_escaping",
+      "v2_continuation_rejects_count_mismatch_without_fallback",
+      "v2_wide_repeated_channel_positions_preserve_every_occurrence",
+      "v2_headers_and_escapes_fail_closed",
+      "v2_megabyte_fields_parse_on_a_tiny_native_stack",
+      "v2_join_frames_identity",
+      "channel_and_structural_prefixes_are_real_trie_prefixes",
+      "relative_datum_keys_share_the_complete_key_framing_contract",
+      "structural_sequences_are_injective",
+      "structural_queries_match_exact_wildcard_coreference_and_remainder_cases",
+      "structural_queries_reject_malformed_framing",
+      "nested_match_queries_skip_values_and_enforce_coreference_without_decoding",
+      "nested_value_skip_is_stack_safe_and_rejects_every_small_truncation",
+      "malformed_frames_are_rejected_without_partial_acceptance",
+      "million_byte_fields_parse_on_a_small_native_stack"
+    ]
+  },
+  "rocq": {
+    "obligations": [
+      {
+        "id": "RPV2-RC-01",
+        "mode": "concrete_witness",
+        "obligation": "parse_three_round_trip",
+        "test_target": "v2_datum_round_trips_all_byte_values_in_each_field"
+      },
+      {
+        "id": "RPV2-RC-02",
+        "mode": "proof_only",
+        "obligation": "datum_empty_round_trip",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-RC-03",
+        "mode": "proof_only",
+        "obligation": "datum_empty_rejects_trailing_bytes",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-RC-04",
+        "mode": "proof_only",
+        "obligation": "join_empty_round_trip",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-RC-05",
+        "mode": "proof_only",
+        "obligation": "continuation_zero_count_bytes_are_rejected",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-RC-06",
+        "mode": "concrete_witness",
+        "obligation": "continuation_count_mismatch_is_rejected",
+        "test_target": "v2_continuation_rejects_count_mismatch_without_fallback"
+      },
+      {
+        "id": "RPV2-RC-07",
+        "mode": "proof_only",
+        "obligation": "join_trailing_bytes_are_rejected",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-RC-08",
+        "mode": "concrete_witness",
+        "obligation": "v1_v2_domains_are_prefix_disjoint",
+        "test_target": "v1_and_v2_datum_namespaces_are_disjoint"
+      },
+      {
+        "id": "RPV2-RC-09",
+        "mode": "concrete_witness",
+        "obligation": "datum_kind_is_distinct",
+        "test_target": "v2_headers_and_escapes_fail_closed"
+      },
+      {
+        "id": "RPV2-RC-10",
+        "mode": "concrete_witness",
+        "obligation": "continuation_count_is_eight_bytes",
+        "test_target": "v2_continuation_has_u64_count_and_rejects_empty_groups"
+      },
+      {
+        "id": "RPV2-RC-11",
+        "mode": "concrete_witness",
+        "obligation": "empty_continuation_is_rejected",
+        "test_target": "v2_continuation_has_u64_count_and_rejects_empty_groups"
+      },
+      {
+        "id": "RPV2-RC-12",
+        "mode": "concrete_witness",
+        "obligation": "nonempty_continuation_has_explicit_count",
+        "test_target": "v2_continuation_has_u64_count_and_rejects_empty_groups"
+      },
+      {
+        "id": "RPV2-RC-13",
+        "mode": "concrete_witness",
+        "obligation": "join_identity_is_framed",
+        "test_target": "v2_join_frames_identity"
+      }
+    ],
+    "print_assumptions": [
+      "datum_empty_round_trip",
+      "datum_empty_rejects_trailing_bytes",
+      "v1_v2_domains_are_prefix_disjoint",
+      "continuation_count_is_eight_bytes"
+    ],
+    "source": "formal/rocq/stack_safe_pda/theories/RhoPathV2.v"
+  },
+  "scope": "RhoPath V2 outer byte grammar and abstract two-lane lifecycle",
+  "sources_sha256": {
+    "formal/rocq/stack_safe_pda/theories/RhoPathV2.v": "3ef35d417d92147a9c5318d8a71c2488840d5de0ed5714307c8a2f176eb3f106",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.cfg": "ab4189ddeb55332f25356dfedf8eedf021840e3c820cce807d1514f4e37f2a8a",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla": "5259c2adcbc760d3a0f7240d713f80cddd8b5ef48fe95004fd6089b8337bf181",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.cfg": "800cd4beb7e04ea2656ae350401c538be86279244c24c9900de2a3c6b418ff97",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.tla": "93595940ca743fb249e938cd072b503d23929100f7377812acfb23ec3c59167c",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.tla": "b2efa3f2d3b184600399f369bbd3d2120e70d3198c69014a64cdbb56a8a74e31",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
+    "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
+    "rspace++/Cargo.toml": "61e3374b61b5ac5bbc9c0b269515e04c3f43d0207f4a5fe32c06f6906b3f725c",
+    "rspace++/tests/rho_path_spec.rs": "9825d393fe2fe2941dd5dfbca74b8b8ffe991101f13ec80553e5f96cad09d068"
+  },
+  "tlc": {
+    "actions": [
+      "Init",
+      "Produce",
+      "Install",
+      "Consume",
+      "Commit",
+      "Checkpoint",
+      "Reset",
+      "Rebuild",
+      "Export",
+      "Import",
+      "Replay",
+      "COMM"
+    ],
+    "causal_mutants": [
+      {
+        "config": "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.cfg",
+        "expected_invariant_failure": "DistinctCollisionRepresentativesPreserved",
+        "id": "RPV2-MUT-01",
+        "model": "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.tla"
+      },
+      {
+        "config": "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg",
+        "expected_invariant_failure": "DistinctCollisionRepresentativesPreserved",
+        "id": "RPV2-MUT-02",
+        "model": "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla"
+      },
+      {
+        "config": "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.cfg",
+        "expected_invariant_failure": "FullImageIdentityPreserved",
+        "id": "RPV2-MUT-03",
+        "model": "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.tla"
+      }
+    ],
+    "config": "formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.cfg",
+    "model": "formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla",
+    "obligations": [
+      {
+        "id": "RPV2-TLA-01",
+        "mode": "proof_only",
+        "obligation": "TypeInvariant",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-02",
+        "mode": "proof_only",
+        "obligation": "FullImageCollisionSafety",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-03",
+        "mode": "proof_only",
+        "obligation": "DistinctCollisionRepresentativesPreserved",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-04",
+        "mode": "proof_only",
+        "obligation": "AuthoritativeImageIsAdmitted",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-05",
+        "mode": "proof_only",
+        "obligation": "SemanticRootMatchesImage",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-06",
+        "mode": "proof_only",
+        "obligation": "LaneMatchesImageAfterCommit",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-07",
+        "mode": "proof_only",
+        "obligation": "NoPartialPublication",
+        "test_target": null
+      },
+      {
+        "id": "RPV2-TLA-08",
+        "mode": "proof_only",
+        "obligation": "ReplayedImageWasExported",
+        "test_target": null
+      }
+    ]
+  }
+}
