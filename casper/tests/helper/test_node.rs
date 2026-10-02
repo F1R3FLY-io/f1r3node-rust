@@ -115,7 +115,8 @@ impl TestNode {
         })?;
 
         // Create block using block_creator
-        block_creator::create(
+        block_creator::create_with_approved_genesis(
+            self.casper.get_approved_block()?,
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
@@ -1123,7 +1124,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
+            casper_version: genesis.header.version,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,

@@ -8,6 +8,13 @@ use super::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireError, PhloWire
 
 pub const PHLO_FUNDING_INTENT_V1_DOMAIN: &[u8] = b"f1r3node:phlo-funding-intent:v1";
 
+mod v2;
+pub use v2::{
+    quote_evidence_commitment, PhloConversionCompositionV2, PhloFundingGrantUseV2,
+    PhloFundingIntentV2, PhloFundingIntentV2Error, PhloFundingIntentV2Limits,
+    PhloFundingIntentVersioned, PHLO_FUNDING_INTENT_V2_DOMAIN, PHLO_QUOTE_EVIDENCE_V2_DOMAIN,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhloFundingIntentV1<'a> {
     pub controls: PhloControlsV1<'a>,

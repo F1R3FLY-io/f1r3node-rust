@@ -115,10 +115,10 @@ async fn step_block(
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|d| d.deploy)
+        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
         .collect::<Vec<_>>();
 
-    let checkpoint = compute_deploys_checkpoint(
+    let checkpoint = Box::pin(compute_deploys_checkpoint(
         block_store,
         parents,
         deploys,
@@ -130,12 +130,12 @@ async fn step_block(
         None,
         None,
         None,
-    )
+    ))
     .await?;
 
     let mut updated = block.clone();
     updated.body.state.post_state_hash = checkpoint.post_state_hash;
-    updated.body.deploys = checkpoint.deploys;
+    updated.body.deploys = checkpoint.deploys.into_iter().map(Into::into).collect();
     updated.body.system_deploys = checkpoint.system_deploys;
     updated.body.state.bonds = checkpoint.bonds;
 
@@ -565,15 +565,16 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         .iter()
         .map(|pd| {
             (
-                pd.is_failed,
-                pd.system_deploy_error.clone(),
-                pd.cost.cost,
-                pd.deploy_log.len(),
+                pd.is_failed(),
+                pd.as_legacy()
+                    .and_then(|legacy| legacy.system_deploy_error.clone()),
+                pd.cost().cost,
+                pd.deploy_log().len(),
             )
         })
         .collect();
     assert!(
-        side.body.deploys.iter().all(|pd| !pd.is_failed),
+        side.body.deploys.iter().all(|pd| !pd.is_failed()),
         "side deploy must execute cleanly: {:?}",
         side_statuses
     );

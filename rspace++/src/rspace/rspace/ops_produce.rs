@@ -75,7 +75,6 @@ where
         observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         Self::observe_produce(observer, produce_ref, &channel, &data, persist)?;
-
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
             a: data.clone(),

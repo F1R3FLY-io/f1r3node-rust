@@ -17,7 +17,7 @@ use prost::bytes::Bytes;
 /// Detect if a deploy ID is a system deploy ID.
 /// System deploy IDs are 33 bytes: [32-byte blockHash][1-byte marker]
 /// Markers: 0x01 (slash), 0x02 (close block), 0x03 (empty/heartbeat)
-pub fn is_system_deploy_id(id: &Bytes) -> bool {
+pub fn is_system_deploy_id(id: &[u8]) -> bool {
     id.len() == SYSTEM_DEPLOY_ID_LEN && {
         let last_byte = id[32];
         last_byte == SLASH_MARKER

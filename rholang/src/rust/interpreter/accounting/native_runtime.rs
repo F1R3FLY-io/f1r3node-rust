@@ -19,6 +19,7 @@ mod operations;
 pub(super) mod index;
 mod checked_operations;
 mod replay_authority;
+mod wire;
 pub(crate) mod clone_backing;
 pub use checked_operations::{
     CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeOperationJournalError,
@@ -37,6 +38,10 @@ pub use operations::{
 use recording::{recording_error, work, NativeBudgetRecorder, NativeObservationPreparation};
 pub use recording::{NativeBudgetRecording, NativeBudgetRetry};
 pub(crate) use replay_authority::NativeAuthorityCheckpoint;
+pub use wire::{
+    decode_native_budget_recording, decode_native_operation_journal,
+    encode_native_budget_recording, encode_native_operation_journal, NativeRecordingWireLimits,
+};
 
 pub struct NativeRuntimeConfig {
     replay_bound: bool,
@@ -71,6 +76,14 @@ impl NativeRuntimeConfig {
 }
 
 impl RuntimeBudget {
+    pub fn native_execution_active(&self) -> bool {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .is_some()
+    }
+
     pub(crate) fn native_host_work(&self) -> Option<HostWorkBudget> {
         self.authority_state
             .lock()

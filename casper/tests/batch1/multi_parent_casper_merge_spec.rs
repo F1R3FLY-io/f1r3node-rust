@@ -129,7 +129,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .body
         .deploys
         .iter()
-        .any(|pd| pd.deploy.sig == deploys[2].sig)
+        .any(|pd| pd.identity_bytes() == deploys[2].sig.as_ref())
     {
         Some(multiparent_block.clone())
     } else {
@@ -150,7 +150,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
                 .body
                 .deploys
                 .iter()
-                .any(|pd| pd.deploy.sig == deploys[2].sig)
+                .any(|pd| pd.identity_bytes() == deploys[2].sig.as_ref())
             {
                 deploy2_block = Some(block);
                 break;

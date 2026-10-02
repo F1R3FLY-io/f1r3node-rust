@@ -495,6 +495,10 @@ theories/StructuralAuthorityBound.v
 theories/CausalStackOrder.v
 theories/ParallelStackMaterialization.v
 theories/TransactionalAdmission.v
+theories/StateBoundCandidateFunding.v
+theories/SerializedNativeFrontier.v
+theories/NativeFrontierArrival.v
+theories/SelectedNativeWitness.v
 theories/RuntimeBoundAuthority.v
 theories/PayloadSortPersistence.v
 theories/SettlementMergeVisibility.v
@@ -613,3 +617,4 @@ theories/CheckpointLocalHandoff.v
 theories/NativeBorrowedHistory.v
 theories/NativeReplayAccounting.v
 theories/NativeReplayAuthentication.v
+theories/QuoteExactOutput.v

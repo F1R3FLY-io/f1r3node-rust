@@ -13,6 +13,8 @@ use crate::rust::web::{
         status_info::status_info_handler,
         web_api_routes::ready_handler,
         shared_handlers::deploy_handler,
+        shared_handlers::deploy_offered_handler,
+        shared_handlers::offered_settlement_receipt_handler,
         shared_handlers::explore_deploy_handler,
         shared_handlers::explore_deploy_by_block_hash_handler,
         shared_handlers::get_blocks_handler,
@@ -51,6 +53,8 @@ pub struct PublicApi;
     paths(
         status_info::status_info_handler,
         shared_handlers::deploy_handler,
+        shared_handlers::deploy_offered_handler,
+        shared_handlers::offered_settlement_receipt_handler,
         shared_handlers::explore_deploy_handler,
         shared_handlers::explore_deploy_by_block_hash_handler,
         shared_handlers::get_blocks_handler,

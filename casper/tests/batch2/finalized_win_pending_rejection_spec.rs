@@ -316,7 +316,7 @@ async fn finalized_noncanonical_deploy_is_reproposed_after_canonical_rejection()
             .body
             .deploys
             .iter()
-            .any(|processed| processed.deploy.sig == fixture.rejected_sig),
+            .any(|processed| processed.identity_bytes() == fixture.rejected_sig.as_ref()),
         "deploy {} must be re-proposed after the canonical merge rejects its finalized noncanonical carrier",
         hex::encode(&fixture.rejected_sig)
     );

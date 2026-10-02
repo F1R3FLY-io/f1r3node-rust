@@ -12,6 +12,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
 use rspace_plus_plus::rspace::reporting_rspace::ReportPhase;
@@ -249,6 +250,11 @@ pub(crate) async fn root_with_observation<T>(
     let guard = ParticipantGuard::new(session.clone(), CausalPath::new());
     let result = scope(context, future).await;
     drop(guard);
+    if session.budget.native_execution_active() && !session.has_complete_cut() {
+        session
+            .failures
+            .record(EvaluationFailureSummary::single(PhloFailure::Platform));
+    }
     (result, session.failures.snapshot())
 }
 
@@ -421,6 +427,11 @@ struct PreparedIntent {
 }
 
 impl ReductionSession {
+    fn has_complete_cut(&self) -> bool {
+        let state = self.state.lock().expect("reduction session lock");
+        state.participants.is_empty() && state.intents.is_empty() && !state.driving
+    }
+
     fn new(
         space: ExecutionSpace,
         budget: RuntimeBudget,
@@ -802,6 +813,9 @@ fn insert_authority(
     authority: Option<&models::rhoapi::CostAuthority>,
     budget: &RuntimeBudget,
 ) {
+    if budget.native_execution_active() {
+        footprint.insert(vec![2, 0]);
+    }
     if !budget.has_comm_accounting_scope() || budget.is_unmetered() {
         return;
     }
@@ -893,6 +907,14 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
         self.inner.get_data(channel).await
+    }
+
+    async fn get_data_metered(
+        &self,
+        channel: &Par,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+        self.inner.get_data_metered(channel, meter).await
     }
 
     async fn get_waiting_continuations(
@@ -989,6 +1011,12 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
+        if current().is_some_and(|context| context.session.budget.is_legacy()) {
+            return self
+                .inner
+                .consume(channels, patterns, continuation, persistent, peeks)
+                .await;
+        }
         self.execution
             .consume(channels, patterns, continuation, persistent, peeks)
             .await
@@ -1003,6 +1031,9 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
+        if current().is_some_and(|context| context.session.budget.is_legacy()) {
+            return self.inner.produce(channel, data, persistent).await;
+        }
         self.execution.produce(channel, data, persistent).await
     }
 
@@ -1113,17 +1144,27 @@ impl ExecutionBackend for ScheduledExecution {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Duration;
 
     use models::rhoapi::{CostAuthority, CostRegion};
     use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
+    use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use tokio::sync::Notify;
 
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
+    use crate::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
+        NativePhloExecutionContract, NativePhloRegionLimits,
+    };
+    use crate::rust::interpreter::accounting::phlo_controls::{
+        check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
+    };
+    use crate::rust::interpreter::accounting::NativeRuntimeConfig;
+    use crate::rust::interpreter::execution_space::{ConsumeResult, ProduceResult};
     use crate::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 
     fn prepared(order: u64, keys: &[u8]) -> PreparedIntent {
@@ -1208,6 +1249,274 @@ mod tests {
             ]),
             vec![vec![0], vec![1], vec![2]]
         );
+    }
+
+    fn native_budget() -> RuntimeBudget {
+        let descriptor = PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"native-test",
+            shard: b"root",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: NativePhloDimension::ALL
+                .into_iter()
+                .zip([0, 0, 1, 0])
+                .zip([b"c".as_slice(), b"i", b"t", b"r"])
+                .map(|((dimension, weight), name)| dimension.resource_class(name, weight))
+                .collect(),
+            actual_price: 0,
+            compatibility_rule: native_resource_compatibility_rule(),
+        };
+        let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
+        let selected = binding.schedule();
+        let permitted = [selected];
+        let owners = [0];
+        let controls = check_phlo_controls(
+            selected.environment,
+            0,
+            u64::MAX,
+            SignedPhloControls {
+                limit: 1,
+                price_ceiling: 0,
+                required_owner_ceilings: &owners,
+                permitted_schedules: &permitted,
+            },
+            selected,
+            1,
+        )
+        .unwrap();
+        let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+        let config = NativeRuntimeConfig::new(
+            contract,
+            NativeBudgetTraceLimits {
+                attempts: 4,
+                path_segments: 4,
+                regions: NativePhloRegionLimits {
+                    regions: 4,
+                    encoded_authority_bytes: 4096,
+                },
+            },
+            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000))),
+        );
+        let budget = RuntimeBudget::new(Cost::create(1, "native global schedule"));
+        budget.reset_for_native_execution(config).unwrap();
+        budget
+    }
+
+    #[tokio::test]
+    async fn native_selected_cut_rejects_unjoined_participant() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (_, incomplete) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                let children = current().expect("root reduction context").split(1);
+                drop(children);
+            },
+        )
+        .await;
+        assert!(incomplete.contains(PhloFailure::Platform));
+
+        let (_, complete) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {},
+        )
+        .await;
+        assert_eq!(complete, EvaluationFailureSummary::default());
+    }
+
+    struct NearLimitBackend {
+        first_channel: Par,
+        admissions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ExecutionBackend for NearLimitBackend {
+        async fn consume(
+            &self,
+            _: Vec<Par>,
+            _: Vec<BindPattern>,
+            _: TaggedContinuation,
+            _: bool,
+            _: BTreeSet<i32>,
+        ) -> Result<ConsumeResult, RSpaceError> {
+            unreachable!()
+        }
+
+        async fn produce(
+            &self,
+            channel: Par,
+            _: ListParWithRandom,
+            _: bool,
+        ) -> Result<ProduceResult, RSpaceError> {
+            if channel == self.first_channel {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if self.admissions.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(None)
+            } else {
+                Err(RSpaceError::HostWorkRejected)
+            }
+        }
+
+        async fn get_joins(&self, _: Par) -> Result<Vec<Vec<Par>>, RSpaceError> { Ok(Vec::new()) }
+
+        async fn is_replay(&self) -> bool { false }
+
+        async fn update_produce(&self, _: &Produce, _: Produce) -> Result<(), RSpaceError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_disjoint_operations_reserve_near_limit_in_causal_order() {
+        let budget = native_budget();
+        let first_channel = models::rust::utils::new_gint_par(1, Vec::new(), false);
+        let second_channel = models::rust::utils::new_gint_par(2, Vec::new(), false);
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let space = scheduled_execution(ExecutionSpace::new(NearLimitBackend {
+            first_channel: first_channel.clone(),
+            admissions: admissions.clone(),
+        }));
+        let (first, second) = root(
+            space.clone(),
+            budget,
+            ReductionCoordinator::default(),
+            async {
+                let parent = current().unwrap();
+                let mut children = parent.split(2).into_iter();
+                let first_context = children.next().unwrap();
+                let second_context = children.next().unwrap();
+                let first_space = space.clone();
+                let first = tokio::spawn(scope(first_context.clone(), async move {
+                    let _guard = ParticipantGuard::for_context(&first_context);
+                    first_space
+                        .produce(first_channel, ListParWithRandom::default(), false)
+                        .await
+                }));
+                let second_space = space.clone();
+                let second = tokio::spawn(scope(second_context.clone(), async move {
+                    let _guard = ParticipantGuard::for_context(&second_context);
+                    second_space
+                        .produce(second_channel, ListParWithRandom::default(), false)
+                        .await
+                }));
+                let result = (first.await.unwrap(), second.await.unwrap());
+                parent.rejoin();
+                result
+            },
+        )
+        .await;
+        assert!(first.is_ok());
+        assert!(matches!(second, Err(RSpaceError::HostWorkRejected)));
+        assert_eq!(admissions.load(Ordering::SeqCst), 2);
+    }
+
+    struct OrderedNativeBackend {
+        seen: Arc<Mutex<Vec<Par>>>,
+    }
+
+    #[async_trait]
+    impl ExecutionBackend for OrderedNativeBackend {
+        async fn consume(
+            &self,
+            _: Vec<Par>,
+            _: Vec<BindPattern>,
+            _: TaggedContinuation,
+            _: bool,
+            _: BTreeSet<i32>,
+        ) -> Result<ConsumeResult, RSpaceError> {
+            unreachable!()
+        }
+
+        async fn produce(
+            &self,
+            channel: Par,
+            _: ListParWithRandom,
+            _: bool,
+        ) -> Result<ProduceResult, RSpaceError> {
+            self.seen.lock().expect("native order trace").push(channel);
+            Ok(None)
+        }
+
+        async fn get_joins(&self, _: Par) -> Result<Vec<Vec<Par>>, RSpaceError> { Ok(Vec::new()) }
+
+        async fn is_replay(&self) -> bool { false }
+
+        async fn update_produce(&self, _: &Produce, _: Produce) -> Result<(), RSpaceError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_recursive_frontiers_ignore_branch_arrival_order() {
+        let channels =
+            [1, 2, 3, 4].map(|value| models::rust::utils::new_gint_par(value, Vec::new(), false));
+        for iteration in 0..8 {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let space = scheduled_execution(ExecutionSpace::new(OrderedNativeBackend {
+                seen: seen.clone(),
+            }));
+            let expected = channels.clone();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                root(
+                    space.clone(),
+                    native_budget(),
+                    ReductionCoordinator::default(),
+                    async {
+                        let parent = current().expect("root reduction context");
+                        let mut children = parent.split(2).into_iter();
+                        let first_context = children.next().unwrap();
+                        let second_context = children.next().unwrap();
+                        let first_space = space.clone();
+                        let first_channels = [channels[0].clone(), channels[2].clone()];
+                        let first = tokio::spawn(scope(first_context.clone(), async move {
+                            let _guard = ParticipantGuard::for_context(&first_context);
+                            if iteration % 2 == 0 {
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                            for channel in first_channels {
+                                first_space
+                                    .produce(channel, ListParWithRandom::default(), false)
+                                    .await?;
+                                tokio::task::yield_now().await;
+                            }
+                            Ok::<(), RSpaceError>(())
+                        }));
+                        let second_space = space.clone();
+                        let second_channels = [channels[1].clone(), channels[3].clone()];
+                        let second = tokio::spawn(scope(second_context.clone(), async move {
+                            let _guard = ParticipantGuard::for_context(&second_context);
+                            if iteration % 2 == 1 {
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                            for channel in second_channels {
+                                second_space
+                                    .produce(channel, ListParWithRandom::default(), false)
+                                    .await?;
+                                tokio::task::yield_now().await;
+                            }
+                            Ok::<(), RSpaceError>(())
+                        }));
+                        first.await.unwrap().unwrap();
+                        second.await.unwrap().unwrap();
+                        parent.rejoin();
+                    },
+                ),
+            )
+            .await
+            .expect("native frontier stalled");
+            assert_eq!(*seen.lock().expect("native order trace"), expected);
+        }
     }
 
     #[test]

@@ -485,6 +485,37 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             .unwrap();
         assert!(std::ptr::eq(offered.envelope(), &offered_envelope));
         assert_eq!(offered.verified_witnesses().count(), count.div_ceil(2));
+        let v2_limits = models::rust::phlo_intent::PhloFundingIntentV2Limits {
+            wire: intent_limits.wire,
+            base: intent_limits,
+            grant_uses: intent_limits.wire.total_bytes / 8,
+            grant_id_bytes: intent_limits.wire.field_bytes,
+            quote_evidence_bytes: intent_limits.wire.field_bytes,
+        };
+        let v2_bytes = models::rust::phlo_intent::PhloFundingIntentV2 {
+            base: decoded.clone(),
+            grant_uses: Vec::new(),
+            conversion: models::rust::phlo_intent::PhloConversionCompositionV2::NoConversion,
+        }
+        .encode(v2_limits)
+        .unwrap();
+        let v2_offered = threshold_envelope(
+            OfferedFundedDeploy::new(body.clone(), v2_bytes.clone(), 3, 1, deploy_limits).unwrap(),
+            count,
+        );
+        assert!(view
+            .check_offered_signed_family(&v2_offered, &family, right, signed_limits)
+            .is_ok());
+        let other = PhloFundingIntentV1 {
+            total_exposure: decoded.total_exposure + 1,
+            ..decoded.clone()
+        };
+        let other_binding = PhloFundingIntentBinding::new(&other, intent_limits).unwrap();
+        let other_view = other_binding.view().unwrap();
+        assert!(matches!(
+            other_view.check_offered_signed_family(&v2_offered, &family, right, signed_limits),
+            Err(SignedPhloConsentError::RecordMismatch)
+        ));
         for (limit, price, expected) in [
             (
                 2,

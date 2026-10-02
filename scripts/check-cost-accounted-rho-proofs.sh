@@ -7,6 +7,11 @@ THEORIES="$PROOF_ROOT/theories"
 SLASHING_ROOT="$ROOT/formal/rocq/slashing"
 VALIDATOR_ROOT="$ROOT/formal/rocq/validator"
 VALIDATOR_THEORIES="$VALIDATOR_ROOT/theories"
+COST_ACCOUNTING_ONLY="${COST_ACCOUNTING_ONLY:-0}"
+if [[ "$COST_ACCOUNTING_ONLY" != 0 && "$COST_ACCOUNTING_ONLY" != 1 ]]; then
+  echo "error: COST_ACCOUNTING_ONLY must be 0 or 1" >&2
+  exit 1
+fi
 VERIFICATION_DOCS=(
   "$ROOT/docs/casper/theory/cost-accounted-rho-verification.md"
   "$ROOT/docs/casper/theory/cost-accounting-migration.md"
@@ -58,16 +63,20 @@ done
 # Validator behavioral-contract aggregation (Workstream E, stage E5): a thin
 # subtree that NAMES the contract by re-exporting already-proven obligations.
 # Subject it to the same Admitted/Axiom/incompletion-marker hygiene gate.
-for proof in "$VALIDATOR_THEORIES"/*.v; do
-  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/validator__$(basename "$proof")"
-done
+if [[ "$COST_ACCOUNTING_ONLY" == 0 ]]; then
+  for proof in "$VALIDATOR_THEORIES"/*.v; do
+    perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/validator__$(basename "$proof")"
+  done
+fi
 # Slashing development (Stage-C two-effect slash + redemption; #14): the
 # validator-contract dependency compiled below. It was previously compiled but
 # NOT axiom-gated; subject its theories to the same Admitted/Axiom/incompletion
 # hygiene scan as the cost-accounted + validator trees.
-for proof in "$SLASHING_ROOT/theories"/*.v; do
-  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/slashing__$(basename "$proof")"
-done
+if [[ "$COST_ACCOUNTING_ONLY" == 0 ]]; then
+  for proof in "$SLASHING_ROOT/theories"/*.v; do
+    perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/slashing__$(basename "$proof")"
+  done
+fi
 
 assumptions="$(mktemp "$WORK_ROOT/assumptions.XXXXXX.log")"
 trap 'rm -rf "$SANITIZED_THEORIES"; rm -f "$assumptions"' EXIT
@@ -114,22 +123,25 @@ echo "Compiling and checking Rocq theories..."
   rocqchk -Q theories CostAccountedRho "${proof_modules[@]}" >/dev/null 2>&1
 )
 
-echo "Compiling the Slashing development (validator contract dependency)..."
-(
-  cd "$SLASHING_ROOT"
-  rocq makefile -f _CoqProject -o Makefile >/dev/null
-  make -j"${ROCQ_JOBS:-2}" >/dev/null
-)
-
-echo "Compiling and checking the validator contract aggregation..."
-(
-  cd "$VALIDATOR_ROOT"
-  rocq makefile -f _CoqProject -o Makefile >/dev/null 2>&1
-  make -j"${ROCQ_JOBS:-2}" >/dev/null
-  rocqchk -Q ../cost_accounted_rho/theories CostAccountedRho \
-          -Q ../slashing/theories Slashing \
-          -Q theories Validator Validator.Contract >/dev/null 2>&1
-)
+if [[ "$COST_ACCOUNTING_ONLY" == 0 ]]; then
+  echo "Compiling the Slashing development (validator contract dependency)..."
+  (
+    cd "$SLASHING_ROOT"
+    rocq makefile -f _CoqProject -o Makefile >/dev/null
+    make -j"${ROCQ_JOBS:-2}" >/dev/null
+  )
+  echo "Compiling and checking the validator contract aggregation..."
+  (
+    cd "$VALIDATOR_ROOT"
+    rocq makefile -f _CoqProject -o Makefile >/dev/null 2>&1
+    make -j"${ROCQ_JOBS:-2}" >/dev/null
+    rocqchk -Q ../cost_accounted_rho/theories CostAccountedRho \
+            -Q ../slashing/theories Slashing \
+            -Q theories Validator Validator.Contract >/dev/null 2>&1
+  )
+else
+  echo "Cost-accounting-only mode: validator and slashing proof trees are outside this check."
+fi
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
 From CostAccountedRho Require Import CostAccountedSyntax TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement AtomicCommAccounting MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange BoundedLedger GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation CostMonad CATranslationLemmas CATranslationFaithfulness CABisimulation CASettlement CAMintingInjection CAExchange CAEconomicCapstone CALocatedPurses CAGradedAdequacy CAAdjunctions CATypeDiscipline CAOSLFSpatialModal CAGradedImageFinite CAGradedSuccPairs CAGradedCompleteness CAInternalisation CAGradedLimit CAForceSeparation CAJoinConservation CategoryInterface CACategory CACostFunctor CACostFunctorCI CACostMonadCat CAAdjunctionI CACostMonadInstances CASimulationBicat CAAdjunctionII CAProperSubcategory CAAbstractCapstone CAUntypedLambda CAUntypedLambdaCI EndToEndAuthority.
@@ -2963,6 +2975,23 @@ then
   echo "error: failed to query headline theorem assumptions" >&2
   sed -n '1,160p' "$assumptions" >&2
   exit 1
+fi
+
+if [[ "$COST_ACCOUNTING_ONLY" == 1 ]]; then
+  cost_query_count="$(awk '
+    index($0, "if ! rocq repl -Q \"$THEORIES\" CostAccountedRho > \"$assumptions\"") == 1 { in_cost = 1; next }
+    in_cost && /^EOF$/ { exit }
+    in_cost && /^Print Assumptions / { count++ }
+    END { print count + 0 }
+  ' "$0")"
+  closed_count="$( (rg -o 'Closed under the global context' "$assumptions" || true) | wc -l | tr -d ' ')"
+  if [[ "$cost_query_count" == 0 || "$closed_count" != "$cost_query_count" ]]; then
+    echo "error: cost-accounted theorems have unexpected assumptions ($closed_count of $cost_query_count closed)" >&2
+    sed -n '/Print Assumptions/,$p' "$assumptions" >&2
+    exit 1
+  fi
+  echo "Cost-accounting proof hygiene passed ($proof_module_count modules; $closed_count closed assumption queries)."
+  exit 0
 fi
 
 # Validator behavioral contract (Workstream E, stage E5): assert every

@@ -139,6 +139,7 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -203,7 +204,12 @@ impl ApproveBlockProtocolFactory {
             native_token_decimals,
         };
 
-        let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
+        let genesis_block = Genesis::create_genesis_block_with_policy(
+            runtime_manager,
+            &genesis,
+            resource_policy.as_ref(),
+        )
+        .await?;
         let sigs = Arc::new(Mutex::new(HashSet::new()));
 
         Ok(ApproveBlockProtocolImpl::new(

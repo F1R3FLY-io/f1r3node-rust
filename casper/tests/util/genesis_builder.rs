@@ -21,6 +21,7 @@ use lazy_static::lazy_static;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, F1r3flyState, Header,
 };
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use tempfile::TempDir;
@@ -68,7 +69,7 @@ lazy_static! {
   ];
 
   // STATIC CACHE: Shared across all GenesisBuilder instances
-  static ref GENESIS_CACHE: DashMap<GenesisParameters, GenesisContext> = DashMap::new();
+  static ref GENESIS_CACHE: DashMap<(GenesisParameters, Option<PhloGenesisPolicy>), GenesisContext> = DashMap::new();
 }
 
 // Static cache counters for diagnostics
@@ -78,13 +79,24 @@ static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
+    resource_policy: Option<PhloGenesisPolicy>,
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self { Self { vaults: None } }
+    pub fn new() -> Self {
+        Self {
+            vaults: None,
+            resource_policy: None,
+        }
+    }
 
     pub fn with_vaults(mut self, vaults: Vec<Vault>) -> Self {
         self.vaults = Some(vaults);
+        self
+    }
+
+    pub fn with_resource_policy(mut self, policy: PhloGenesisPolicy) -> Self {
+        self.resource_policy = Some(policy);
         self
     }
 
@@ -265,11 +277,12 @@ impl GenesisBuilder {
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
         CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
 
-        if GENESIS_CACHE.contains_key(&parameters) {
-            Ok(GENESIS_CACHE.get(&parameters).unwrap().value().clone())
+        let key = (parameters.clone(), self.resource_policy.clone());
+        if GENESIS_CACHE.contains_key(&key) {
+            Ok(GENESIS_CACHE.get(&key).unwrap().value().clone())
         } else {
             let context = self.do_build_genesis(&parameters).await?;
-            GENESIS_CACHE.insert(parameters, context.clone());
+            GENESIS_CACHE.insert(key, context.clone());
             Ok(context)
         }
     }
@@ -322,8 +335,12 @@ impl GenesisBuilder {
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             );
 
-            let genesis =
-                Genesis::create_genesis_block(&runtime_manager, &genesis_parameters).await?;
+            let genesis = Genesis::create_genesis_block_with_policy(
+                &runtime_manager,
+                &genesis_parameters,
+                self.resource_policy.as_ref(),
+            )
+            .await?;
             let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvs_manager).await?;
             block_store.put(genesis.block_hash.clone(), &genesis)?;
 

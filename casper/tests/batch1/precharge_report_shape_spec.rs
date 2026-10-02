@@ -286,12 +286,13 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
 
     for (i, processed) in deploys.iter().enumerate() {
         assert_eq!(
-            processed.deploy.data.phlo_price, 0,
+            processed.phlo_price(),
+            0,
             "genesis deploy {} must carry phlo_price == 0 (standard_deploys::to_deploy)",
             i
         );
         assert_eq!(
-            processed.deploy.data.total_phlo_charge(),
+            processed.phlo_price() * processed.phlo_limit(),
             0,
             "genesis deploy {} must have zero precharge amount",
             i

@@ -29,6 +29,7 @@ use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::RuntimeBudget;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
@@ -346,6 +347,7 @@ pub struct ProcessContext {
     /// consulting it directly instead of duplicating the table.
     pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
+    pub cost: RuntimeBudget,
 }
 
 impl ProcessContext {
@@ -360,6 +362,7 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        cost: RuntimeBudget,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -379,6 +382,7 @@ impl ProcessContext {
                 grpc_client_service,
                 chromadb_service,
             ),
+            cost,
         }
     }
 }
@@ -447,7 +451,41 @@ impl Definition {
                 + Sync,
         >,
     ) {
-        (self.body_ref, (self.handler)(context))
+        let forbidden = matches!(
+            self.body_ref,
+            BodyRefs::STDOUT
+                | BodyRefs::STDOUT_ACK
+                | BodyRefs::STDERR
+                | BodyRefs::STDERR_ACK
+                | BodyRefs::GPT4
+                | BodyRefs::DALLE3
+                | BodyRefs::TEXT_TO_AUDIO
+                | BodyRefs::GRPC_TELL
+                | BodyRefs::OLLAMA_CHAT
+                | BodyRefs::OLLAMA_GENERATE
+                | BodyRefs::OLLAMA_MODELS
+                | BodyRefs::CHROMA_CREATE_COLLECTION
+                | BodyRefs::CHROMA_GET_COLLECTION_META
+                | BodyRefs::CHROMA_UPSERT_ENTRIES
+                | BodyRefs::CHROMA_QUERY
+                | BodyRefs::CHROMA_DELETE_DOCUMENTS
+        );
+        let cost = context.cost.clone();
+        let handler = (self.handler)(context);
+        (
+            self.body_ref,
+            Box::new(move |args| {
+                if forbidden && cost.native_execution_active() {
+                    Box::pin(async {
+                        Err(InterpreterError::ReduceError(
+                            "native funded execution forbids external service calls".to_string(),
+                        ))
+                    })
+                } else {
+                    handler(args)
+                }
+            }),
+        )
     }
 
     pub fn to_urn_map(&self) -> (String, Par) {

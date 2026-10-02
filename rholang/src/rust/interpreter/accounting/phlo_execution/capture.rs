@@ -41,6 +41,7 @@ impl<'a> CapturedPhloSource<'a> {
 pub struct CanonicalPhloFundingCapture<'a> {
     intent: CheckedPhloFundingIntent<'a>,
     branch: usize,
+    original_source_positions: Vec<usize>,
     sources: Vec<CapturedPhloSource<'a>>,
     obligation_keys: Vec<Vec<u8>>,
     original_obligation_positions: Vec<usize>,
@@ -52,6 +53,7 @@ pub struct CanonicalPhloFundingCapture<'a> {
 impl<'a> CanonicalPhloFundingCapture<'a> {
     pub fn intent(&self) -> CheckedPhloFundingIntent<'a> { self.intent }
     pub fn branch(&self) -> usize { self.branch }
+    pub fn original_source_positions(&self) -> &[usize] { &self.original_source_positions }
     pub fn sources(&self) -> &[CapturedPhloSource<'a>] { &self.sources }
     pub fn obligation_keys(&self) -> &[Vec<u8>] { &self.obligation_keys }
     pub fn amounts(&self) -> &[u64] { &self.amounts }
@@ -284,9 +286,21 @@ impl<'a> CheckedPhloFundingIntent<'a> {
         {
             return Err(FundingSearchError::InvalidResult.into());
         }
+        reserve_work(
+            budget,
+            HostWorkDimension::SearchStateBytes,
+            n.checked_mul(size_of::<usize>())
+                .ok_or(FundingSearchError::Overflow)?,
+        )?;
+        let mut original_source_positions = Vec::new();
+        original_source_positions
+            .try_reserve_exact(n)
+            .map_err(|_| FundingSearchError::AllocationFailed)?;
+        original_source_positions.extend_from_slice(canonical.original_source_positions());
         Ok(CanonicalPhloFundingCapture {
             intent: self,
             branch,
+            original_source_positions,
             sources,
             obligation_keys,
             original_obligation_positions,

@@ -297,6 +297,7 @@ impl TestFixture {
             KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(deploy_storage_store);
         let deploy_storage = KeyValueDeployStorage {
             store: deploy_storage_typed_store,
+            envelope_store: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
         };
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.

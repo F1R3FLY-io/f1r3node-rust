@@ -18,6 +18,7 @@ use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -106,6 +107,16 @@ pub trait Casper {
         &self,
         deploy: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError>;
+
+    fn deploy_envelope(
+        &self,
+        _envelope: DeployEnvelope,
+        _adopted_policy: &crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        Err(CasperError::RuntimeError(
+            "offered-funded deploy admission is not active".to_string(),
+        ))
+    }
 
     async fn estimator(
         &self,

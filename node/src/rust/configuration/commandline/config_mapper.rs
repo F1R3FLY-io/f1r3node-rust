@@ -803,6 +803,7 @@ mod tests {
                     drop_peer_after_retries: 4,
                 },
                 genesis_block_data: casper::rust::casper_conf::GenesisBlockData {
+                    resource_policy: None,
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),

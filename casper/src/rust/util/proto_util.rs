@@ -13,8 +13,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedSystemDeploy,
+    ProcessedUserDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -324,7 +324,7 @@ pub fn parent_metadatas_above_block_number(
     Ok(result)
 }
 
-pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
+pub fn deploys(block: &BlockMessage) -> Vec<ProcessedUserDeploy> { block.body.deploys.clone() }
 
 /// The block's KEPT rejection records. A duplicate-flagged record states
 /// that the copy it discarded was redundant — its effect already stood in

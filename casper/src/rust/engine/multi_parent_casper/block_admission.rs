@@ -14,7 +14,8 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::normalizer_env::normalizer_env_from_deploy;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat};
+use models::rust::normalizer_env::{normalizer_env_from_deploy, normalizer_env_from_envelope};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -22,6 +23,7 @@ use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::OFFERED_PRODUCTION_READY;
 use crate::rust::util::rholang::interpreter_util;
 
 pub(crate) fn admit_contains<T: TransportLayer + Send + Sync>(
@@ -101,12 +103,64 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 }
 
+pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    envelope: DeployEnvelope,
+    adopted_policy: &crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy,
+) -> Result<Either<DeployError, DeployId>, CasperError> {
+    if !OFFERED_PRODUCTION_READY
+        || !adopted_policy.offered_funded_v6_active()
+        || adopted_policy.genesis().genesis_root()
+            != &this.approved_block.body.state.post_state_hash
+    {
+        return Err(CasperError::RuntimeError(
+            "offered-funded deploy admission is not active under the current genesis policy"
+                .to_string(),
+        ));
+    }
+    if envelope.format() != DeployEnvelopeFormat::OfferedFunded {
+        return Err(CasperError::RuntimeError(
+            "only offered-funded envelopes use funded admission".to_string(),
+        ));
+    }
+    let deploy_id = envelope.identity().as_bytes().to_vec();
+    if deploy_is_known(this, &deploy_id)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+    let normalizer_env = normalizer_env_from_envelope(&envelope);
+    if let Err(interpreter_error) = interpreter_util::mk_term(&envelope.body().term, normalizer_env)
+    {
+        return Ok(Either::Left(DeployError::parsing_error(format!(
+            "Error in parsing term: \n{}",
+            interpreter_error
+        ))));
+    }
+    if !this
+        .deploy_storage
+        .lock()
+        .add_envelope_if_absent(&envelope)?
+    {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+    if this.casper_shard_conf.deploy_heartbeat_wake_enabled {
+        if let Some(signal) = this.heartbeat_signal_ref.get() {
+            signal.trigger_wake();
+        }
+    }
+    Ok(Either::Right(deploy_id))
+}
+
 fn deploy_is_known<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy_id: &DeployId,
 ) -> Result<bool, CasperError> {
     if this.deploy_storage.lock().contains_sig(deploy_id)? {
         return Ok(true);
+    }
+    if let Ok(id) = models::rust::deploy_id::DeployIdV6::try_from(deploy_id.as_slice()) {
+        if this.deploy_storage.lock().contains_envelope_id(&id)? {
+            return Ok(true);
+        }
     }
     if this
         .block_dag_storage

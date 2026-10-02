@@ -657,13 +657,18 @@ impl Validate {
                 Err(e) => return Either::Left(BlockError::from_validation_error(e)),
             };
             for pd in &block.body.deploys {
-                let sig = &pd.deploy.sig;
+                let sig = pd.identity_bytes();
                 if !rejected.contains(sig) {
                     continue;
                 }
-                match ctx.retry_gate_open(&s.dag, block_store, earliest_block_number, sig) {
+                match ctx.retry_gate_open(
+                    &s.dag,
+                    block_store,
+                    earliest_block_number,
+                    &sig.to_vec().into(),
+                ) {
                     Ok(true) => {
-                        exempt.insert(sig.clone());
+                        exempt.insert(sig.to_vec().into());
                     }
                     Ok(false) => {
                         tracing::warn!(
@@ -692,8 +697,8 @@ impl Validate {
             .body
             .deploys
             .iter()
-            .filter(|pd| !exempt.contains(&pd.deploy.sig))
-            .map(|pd| pd.deploy.sig.to_vec())
+            .filter(|pd| !exempt.contains(pd.identity_bytes()))
+            .map(|pd| pd.identity_bytes().to_vec())
             .collect();
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
@@ -836,8 +841,7 @@ impl Validate {
       // corrupted state.
       let duplicated_deploy = match duplicated_deploys
         .iter()
-        .map(|processed_deploy| &processed_deploy.deploy)
-        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
+        .find(|deploy| deploy_key_set.contains(deploy.identity_bytes()))
       {
         Some(d) => d,
         None => {
@@ -854,9 +858,9 @@ impl Validate {
         }
       };
 
-      let term = &duplicated_deploy.data.term;
-      let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
-      let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
+      let term = duplicated_deploy.term();
+      let deployer_string = PrettyPrinter::build_string_bytes(duplicated_deploy.deployer_bytes());
+      let timestamp_string = duplicated_deploy.timestamp().to_string();
 
       let message = format!(
         "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
@@ -977,19 +981,15 @@ impl Validate {
         let block_number = proto_util::block_number(b);
 
         let processed_deploys = proto_util::deploys(b);
-        let deploys: Vec<_> = processed_deploys
+        let maybe_future_deploy = processed_deploys
             .iter()
-            .map(|processed_deploy| &processed_deploy.deploy)
-            .collect();
-
-        let maybe_future_deploy = deploys
-            .iter()
-            .find(|&deploy| deploy.data.valid_after_block_number >= block_number);
+            .find(|deploy| deploy.valid_after_block_number() >= block_number);
 
         let maybe_error = maybe_future_deploy.map(|future_deploy| {
             let message = format!(
                 "block contains an future deploy with valid after block number of {}: {}",
-                future_deploy.data.valid_after_block_number, future_deploy.data.term
+                future_deploy.valid_after_block_number(),
+                future_deploy.term()
             );
 
             tracing::warn!("{}", Self::ignore(b, &message));
@@ -1015,19 +1015,15 @@ impl Validate {
             - expiration_threshold as i64;
 
         let processed_deploys = proto_util::deploys(b);
-        let deploys: Vec<_> = processed_deploys
-            .iter()
-            .map(|processed_deploy| &processed_deploy.deploy)
-            .collect();
-
-        let maybe_expired_deploy = deploys.iter().find(|&deploy| {
-            deploy.data.valid_after_block_number <= earliest_acceptable_valid_after_block_number
+        let maybe_expired_deploy = processed_deploys.iter().find(|deploy| {
+            deploy.valid_after_block_number() <= earliest_acceptable_valid_after_block_number
         });
 
         let maybe_error = maybe_expired_deploy.map(|expired_deploy| {
             let message = format!(
                 "block contains an expired deploy with valid after block number of {}: {}",
-                expired_deploy.data.valid_after_block_number, expired_deploy.data.term
+                expired_deploy.valid_after_block_number(),
+                expired_deploy.term()
             );
 
             tracing::warn!("{}", Self::ignore(b, &message));
@@ -1043,21 +1039,18 @@ impl Validate {
     pub fn time_based_expiration(b: &BlockMessage) -> ValidBlockProcessing {
         let block_timestamp = b.header.timestamp;
         let processed_deploys = proto_util::deploys(b);
-        let deploys: Vec<_> = processed_deploys
-            .iter()
-            .map(|processed_deploy| &processed_deploy.deploy)
-            .collect();
-
-        let maybe_time_expired_deploy = deploys
-            .iter()
-            .find(|&deploy| deploy.data.is_expired_at(block_timestamp));
+        let maybe_time_expired_deploy = processed_deploys.iter().find(|deploy| {
+            deploy
+                .expiration_timestamp()
+                .is_some_and(|timestamp| block_timestamp > timestamp)
+        });
 
         let maybe_error = maybe_time_expired_deploy.map(|expired_deploy| {
             let message = format!(
                 "block contains a time-expired deploy with expirationTimestamp={:?} but block timestamp is {}: {}",
-                expired_deploy.data.expiration_timestamp.unwrap_or(0),
+                expired_deploy.expiration_timestamp().unwrap_or(0),
                 block_timestamp,
-                expired_deploy.data.term
+                expired_deploy.term()
             );
 
             tracing::warn!("{}", Self::ignore(b, &message));
@@ -1133,7 +1126,7 @@ impl Validate {
         if b.body
             .deploys
             .iter()
-            .all(|deploy| deploy.deploy.data.shard_id == shard_id)
+            .all(|deploy| deploy.shard_id() == shard_id)
         {
             Either::Right(ValidBlock::Valid)
         } else {
@@ -1193,7 +1186,7 @@ impl Validate {
             .body
             .deploys
             .iter()
-            .any(|pd| !is_system_deploy_id(&pd.deploy.sig));
+            .any(|pd| !is_system_deploy_id(pd.identity_bytes()));
         // Slash deploys are liveness-critical recovery actions and must not be blocked
         // by empty-block progress checks.
         let has_slash_system_deploys = b.body.system_deploys.iter().any(|system_deploy| {
@@ -1896,7 +1889,7 @@ impl Validate {
         if b.body
             .deploys
             .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
+            .all(|deploy| deploy.phlo_price() >= min_phlo_price)
         {
             Either::Right(ValidBlock::Valid)
         } else {

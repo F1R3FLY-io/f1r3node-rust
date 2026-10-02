@@ -120,7 +120,7 @@ fn effect_in_state_of_above(
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == *sig && !pd.is_failed)
+            .any(|pd| pd.identity_bytes() == sig.as_ref() && !pd.is_failed())
         {
             return Ok(true);
         }
@@ -271,8 +271,8 @@ fn lineage_step_of(
         .body
         .deploys
         .iter()
-        .filter(|pd| !pd.is_failed)
-        .map(|pd| pd.deploy.sig.clone())
+        .filter(|pd| !pd.is_failed())
+        .map(|pd| pd.identity_bytes().to_vec().into())
         .collect();
     sigs.extend(block.body.applied_from_scope.iter().cloned());
     let step = std::sync::Arc::new(LineageStep {
@@ -510,7 +510,7 @@ impl DeployLifecycle {
         // Due: crossed thresholds plus the block's own touched sigs.
         let mut due: HashSet<Bytes> = HashSet::new();
         for pd in &block.body.deploys {
-            due.insert(pd.deploy.sig.clone());
+            due.insert(pd.identity_bytes().to_vec().into());
         }
         for rd in &block.body.rejected_deploys {
             due.insert(rd.sig.clone());
@@ -1084,7 +1084,7 @@ mod tests {
         let genesis = block_at(0, vec![], 0);
         let (sig_a, pd_a) = processed(1, false);
         let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
-        a.body.deploys = vec![pd_a];
+        a.body.deploys = vec![pd_a.into()];
         let sig_b = Bytes::from_static(b"applied_sig");
         let mut m = block_at(2, vec![a.block_hash.clone(), genesis.block_hash.clone()], 2);
         m.body.merge_base = a.block_hash.clone();
@@ -1107,7 +1107,7 @@ mod tests {
         let genesis = block_at(0, vec![], 0);
         let (sig_f, pd_f) = processed(1, true);
         let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
-        a.body.deploys = vec![pd_f];
+        a.body.deploys = vec![pd_f.into()];
         for b in [&genesis, &a] {
             store.put_block_message(b).expect("store block");
         }
@@ -1122,7 +1122,7 @@ mod tests {
         let genesis = block_at(0, vec![], 0);
         let (sig_a, pd_a) = processed(1, false);
         let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
-        a.body.deploys = vec![pd_a];
+        a.body.deploys = vec![pd_a.into()];
         let b = block_at(2, vec![a.block_hash.clone()], 2);
         for blk in [&genesis, &a, &b] {
             store.put_block_message(blk).expect("store block");
@@ -1390,7 +1390,7 @@ mod tests {
                     deploy_n += 1;
                     let failed = rand(4) == 0;
                     let (sig, pd) = processed(deploy_n, failed);
-                    b.body.deploys.push(pd);
+                    b.body.deploys.push(pd.into());
                     probe_sigs.push(sig);
                 }
                 for _ in 0..rand(3) {
@@ -1439,10 +1439,10 @@ mod tests {
         let genesis = block_at(0, vec![], 300);
         let (sig_a, pd_a) = processed(301, false);
         let mut floor1 = block_at(1, vec![genesis.block_hash.clone()], 301);
-        floor1.body.deploys = vec![pd_a];
+        floor1.body.deploys = vec![pd_a.into()];
         let (sig_b, pd_b) = processed(302, false);
         let mut mid = block_at(1, vec![genesis.block_hash.clone()], 302);
-        mid.body.deploys = vec![pd_b];
+        mid.body.deploys = vec![pd_b.into()];
         let floor2 = block_at(2, vec![mid.block_hash.clone()], 303);
         for b in [&genesis, &floor1, &mid, &floor2] {
             store.put_block_message(b).expect("store block");
@@ -1479,7 +1479,7 @@ mod tests {
         let genesis = block_at(0, vec![], 310);
         let (sig_a, pd_a) = processed(311, false);
         let mut floor1 = block_at(1, vec![genesis.block_hash.clone()], 311);
-        floor1.body.deploys = vec![pd_a];
+        floor1.body.deploys = vec![pd_a.into()];
         let absent = block_at(1, vec![], 312);
         let floor2 = block_at(2, vec![absent.block_hash.clone()], 313);
         for b in [&genesis, &floor1, &floor2] {
@@ -1578,7 +1578,7 @@ mod tests {
         let absent = block_at(1, vec![], 1);
         let (sig_top, pd) = processed(90, false);
         let mut b = block_at(2, vec![absent.block_hash.clone()], 2);
-        b.body.deploys = vec![pd];
+        b.body.deploys = vec![pd.into()];
         store.put_block_message(&b).expect("store block");
 
         assert!(

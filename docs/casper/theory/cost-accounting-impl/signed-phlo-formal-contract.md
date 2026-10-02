@@ -69,8 +69,13 @@ A lower price does not authorize an otherwise unapproved schedule.
 
 Control admission alone does not prove that $`B`$ is sufficient.
 The execution checker also verifies that the supplied resource demand fits $`B`$.
-An up-front planner must prove this relation for every permitted execution in its certified scope.
-A check against one completed trace is not that universal sufficiency proof.
+An up-front planner that commits before execution must prove this relation for every
+permitted execution in its certified scope. The offered-funded production route
+instead proposes one user-authorized, complete selected witness from an
+unpublished private execution. It may check that selected demand against $`B`$
+only if validators follow and fully consume the committed witness, independently
+recompute its funding, and reject the candidate without effects when any check
+fails. The numeric checker alone establishes none of those conditions.
 
 Typed prepaid discharge partitions available resources into used and unused occurrences.
 It partitions required resources into used prepaid occurrences and newly acquired occurrences.
@@ -483,9 +488,13 @@ The checker accepts a total exposure cap of three and rejects a cap of one.
 It does not derive exposure consent from the retained-charge ceiling.
 
 The checker proves feasibility only for the supplied outcome family.
-`covered_realized_case_is_checked` requires a separate proof that every permitted execution belongs to that family.
-The checker does not discover missing outcomes or prove a supplied family's completeness.
-Conservative precharge requires that coverage proof, not only successful family checking.
+`covered_realized_case_is_checked` requires a separate proof that every
+permitted execution belongs to that family when an up-front reservation covers
+all alternatives. The checker does not discover missing outcomes or prove a
+supplied family's completeness. For an offered-funded complete selected witness,
+a singleton family can cover the selected case only after the interpreter's
+complete cut, signed alternative authorization, and validator-guided replay are
+established. Conservative precharge still requires the wider coverage proof.
 
 The supplied assignments must independently meet the approved lexicographic minimax and canonical residual contracts.
 This module establishes feasibility and charge conservation, not optimal selection of assignments or reservations.

@@ -1350,7 +1350,7 @@ impl BlockDagKeyValueStorage {
                 let carrier_guard = self.carrier_index.write();
                 for pd in &block.body.deploys {
                     carrier_guard.record_once(
-                        &pd.deploy.sig,
+                        pd.identity_bytes(),
                         block_number,
                         block.block_hash.to_vec(),
                     )?;
@@ -1372,13 +1372,13 @@ impl BlockDagKeyValueStorage {
                 if !invalid {
                     for pd in &block.body.deploys {
                         lifecycle_guard.append_event_once(
-                            &pd.deploy.sig,
-                            Some(pd.deploy.data.valid_after_block_number),
+                            pd.identity_bytes(),
+                            Some(pd.valid_after_block_number()),
                             LifecycleEvent {
                                 height: block_number,
                                 block_hash: block.block_hash.to_vec(),
                                 kind: LifecycleEventKind::Included {
-                                    is_failed: pd.is_failed,
+                                    is_failed: pd.is_failed(),
                                 },
                             },
                         )?;

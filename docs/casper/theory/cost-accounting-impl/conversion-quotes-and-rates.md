@@ -29,7 +29,7 @@ The canonical quote commitment must bind:
 - Format version, quote identity, network, shard, and supported evaluation context.
 - Input and output asset identities, integer scales, physical custody roles, and permitted destinations.
 - Provider authority and the input permission or grant references.
-- Exact-output pricing rule, supported output amounts, integer rounding, and all applicable fee terms.
+- Exact-output pricing rule, supported output amounts, integer rounding, fee amounts, and the explicit fee recipient.
 - Input and output retained caps, maximum fees, and separately permitted temporary exposure.
 - Validity endpoints, endpoint presence, and the permitted use or cumulative-capacity rule.
 - Conversion composition, funding schedule commitment, and applicable failure behavior.
@@ -160,6 +160,7 @@ The [replay contract](price-transitions-and-replay.md) requires the exact accept
 
 The two compositions are separate signed choices, not fallback implementations of each other.
 The separate deployment fee remains distinct from conversion fees.
+[`PhloQuoteEvidenceV2`](../../../../models/src/rust/phlo_quote_v2.rs) now requires a nonempty `fee_recipient` in canonical quote evidence. The signed V2 funding intent commits to these quote bytes. Changing or omitting the recipient changes or invalidates the commitment. Provider custody remains the source of output capacity, not an implied fee destination. [`QuoteExactOutput.v`](../../../../formal/rocq/cost_accounted_rho/theories/QuoteExactOutput.v) proves fee arithmetic; it does not prove recipient authority or transfer. Atomic publication remains closed pending authenticated backing, authorized fee routing, and one-checkpoint settlement.
 A zero new resource-acquisition amount does not necessarily mean zero output when another fee obligation still needs funding.
 The full settlement projection must identify which output funds each retained obligation.
 

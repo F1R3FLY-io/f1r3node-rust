@@ -14,12 +14,19 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use shared::rust::clone_backing::CloneBacking;
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hashing::native_source::{SourceMeter, hash};
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
+use super::history::native_reader::{
+    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
+    decode_record,
+};
 use super::logging::{BasicLogger, RSpaceLogger};
 use super::r#match::Match;
 use super::metrics_constants::{
@@ -208,6 +215,89 @@ where
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
+
+    async fn get_data_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned,
+    {
+        struct ReadMeter<'a>(&'a dyn SourceMeter);
+
+        impl NativeReadMeter for ReadMeter<'_> {
+            type Error = RSpaceError;
+
+            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
+                self.0
+                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
+            }
+        }
+
+        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
+            match error {
+                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+                NativeReadError::Store(error) => error.into(),
+                NativeReadError::Invalid(
+                    NativeReadFault::Depth |
+                    NativeReadFault::Allocation |
+                    NativeReadFault::Overflow,
+                ) => RSpaceError::HostWorkRejected,
+                NativeReadError::Invalid(error) => {
+                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
+                }
+            }
+        }
+
+        let history = self.get_history_repository();
+        let root: [u8; 32] = history
+            .root()
+            .0
+            .as_slice()
+            .try_into()
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        self.get_store().get_data_with_reader(
+            channel,
+            &|| {
+                let projection = hash(channel, &|operations, scanned, backing| {
+                    meter.reserve(operations, scanned, backing)
+                })?;
+                let projection: [u8; 32] = projection
+                    .0
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+                let reader = history.native_history_reader(root);
+                let read_meter = ReadMeter(meter);
+                reader
+                    .with_records(NativeLeafKind::Data, &projection, &read_meter, |rows| {
+                        meter.reserve(
+                            rows.len()
+                                .checked_mul(2)
+                                .and_then(|n| n.checked_add(1))
+                                .ok_or(RSpaceError::HostWorkRejected)?,
+                            0,
+                            rows.len()
+                                .checked_mul(std::mem::size_of::<Datum<A>>())
+                                .ok_or(RSpaceError::HostWorkRejected)?,
+                        )?;
+                        let mut values = Vec::new();
+                        values
+                            .try_reserve_exact(rows.len())
+                            .map_err(|_| RSpaceError::HostWorkRejected)?;
+                        for row in rows.iter() {
+                            values.push(decode_record(row, &read_meter).map_err(read_error)?);
+                        }
+                        Ok(values)
+                    })
+                    .map_err(read_error)
+                    .map(Option::unwrap_or_default)
+            },
+            meter,
+        )
+    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)

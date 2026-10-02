@@ -289,7 +289,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys,
+        deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
         rejected_deploys: Vec::new(),
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),

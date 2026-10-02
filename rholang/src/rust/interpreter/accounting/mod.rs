@@ -57,11 +57,13 @@ pub mod economic_failure;
 mod native_runtime;
 pub(crate) use native_runtime::{clone_backing, NativeAuthorityCheckpoint};
 pub use native_runtime::{
-    CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeBudgetRecording,
-    NativeBudgetRetry, NativeCommRecord, NativeCommSource, NativeConsumeSource,
-    NativeObservationLink, NativeOperationJournalError, NativeOperationJournalLimits,
-    NativeOperationOccurrence, NativeOperationRecord, NativeOperationReplay, NativeOperationSource,
-    NativeOperationTraceError, NativeOperationTraceLimits, NativeProduceSource,
+    decode_native_budget_recording, decode_native_operation_journal,
+    encode_native_budget_recording, encode_native_operation_journal, CheckedNativeOperationJournal,
+    CheckedNativeOperationTrace, NativeBudgetRecording, NativeBudgetRetry, NativeCommRecord,
+    NativeCommSource, NativeConsumeSource, NativeObservationLink, NativeOperationJournalError,
+    NativeOperationJournalLimits, NativeOperationOccurrence, NativeOperationRecord,
+    NativeOperationReplay, NativeOperationSource, NativeOperationTraceError,
+    NativeOperationTraceLimits, NativeProduceSource, NativeRecordingWireLimits,
     NativeReplayAccountingSnapshot, NativeReplayBoundary, NativeReplayCheckpoint,
     NativeReplayError, NativeReplayOutcome, NativeReplayPublication, NativeReplayReservation,
     NativeReplayRestore, NativeRuntimeConfig, NativeRuntimeReplayCheckpoint,
@@ -95,6 +97,8 @@ pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 #[derive(Clone)]
 pub struct RuntimeBudget {
     initial_tokens: Arc<AtomicI64>,
+    legacy_active: Arc<AtomicU64>,
+    legacy_cost: Arc<Mutex<LegacyCostState>>,
     // Liveness counter — tracks weights successfully claimed by parallel
     // workers via CAS. Strictly an internal runtime check used to short
     // out branches once the budget is exhausted. The consensus-relevant
@@ -143,6 +147,25 @@ pub struct RuntimeBudget {
     unmetered: Arc<AtomicU64>,
     comm_accounting_scopes: Arc<AtomicUsize>,
     authority_state: Arc<Mutex<AuthorityRuntimeState>>,
+}
+
+struct LegacyCostState {
+    initial: i64,
+    remaining: i64,
+    log: VecDeque<Cost>,
+}
+
+pub struct LegacyBudgetScope {
+    budget: RuntimeBudget,
+    previous: u64,
+}
+
+impl Drop for LegacyBudgetScope {
+    fn drop(&mut self) {
+        self.budget
+            .legacy_active
+            .store(self.previous, Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -783,6 +806,12 @@ impl RuntimeBudget {
 
         Self {
             initial_tokens: Arc::new(AtomicI64::new(initial_value.value)),
+            legacy_active: Arc::new(AtomicU64::new(0)),
+            legacy_cost: Arc::new(Mutex::new(LegacyCostState {
+                initial: initial_value.value,
+                remaining: initial_value.value,
+                log: VecDeque::with_capacity(initial_capacity),
+            })),
             consumed_tokens: Arc::new(AtomicI64::new(0)),
             signature: Arc::new(Mutex::new(Sig::Unit)),
             deploy_id: Arc::new(Mutex::new([0; 32])),
@@ -808,6 +837,37 @@ impl RuntimeBudget {
         let budget = Self::new(Cost::unsafe_max());
         budget.unmetered.store(1, Ordering::Release);
         budget
+    }
+
+    pub fn enter_legacy_scope(&self) -> LegacyBudgetScope {
+        let previous = self.legacy_active.swap(1, Ordering::AcqRel);
+        LegacyBudgetScope {
+            budget: self.clone(),
+            previous,
+        }
+    }
+
+    pub fn is_legacy(&self) -> bool { self.legacy_active.load(Ordering::Acquire) != 0 }
+
+    pub fn charge_legacy(&self, amount: Cost) -> Result<(), InterpreterError> {
+        if !self.is_legacy() || self.unmetered.load(Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        let mut legacy = self.legacy_cost.lock().expect("legacy cost lock");
+        if legacy.remaining < 0 {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        legacy.remaining = legacy.remaining.saturating_sub(amount.value);
+        if self.max_log_entries != 0 {
+            if legacy.log.len() >= self.max_log_entries {
+                legacy.log.pop_front();
+            }
+            legacy.log.push_back(amount);
+        }
+        if legacy.remaining < 0 {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        Ok(())
     }
 
     pub fn reserve_canonical_with_cost(
@@ -868,6 +928,9 @@ impl RuntimeBudget {
         weight: u64,
         description: &'static str,
     ) -> Result<(), InterpreterError> {
+        if self.is_legacy() {
+            return Ok(());
+        }
         if !self.has_comm_accounting_scope() {
             return Ok(());
         }
@@ -2181,6 +2244,12 @@ impl RuntimeBudget {
         if self.unmetered.load(Ordering::Acquire) != 0 {
             return Cost::unsafe_max();
         }
+        if self.is_legacy() {
+            return Cost::create(
+                self.legacy_cost.lock().expect("legacy cost lock").remaining,
+                "legacy phlo remaining",
+            );
+        }
         let initial = self.initial_tokens.load(Ordering::Acquire);
         let consumed = self.reconcile().consumed_units;
         Cost::create(initial.saturating_sub(consumed), "token budget remaining")
@@ -2220,6 +2289,12 @@ impl RuntimeBudget {
             .expect("reconciliation cache lock");
         self.initial_tokens
             .store(token.remaining_units_i64(), Ordering::Release);
+        {
+            let mut legacy = self.legacy_cost.lock().expect("legacy cost lock");
+            legacy.initial = token.remaining_units_i64();
+            legacy.remaining = legacy.initial;
+            legacy.log.clear();
+        }
         self.consumed_tokens.store(0, Ordering::Release);
         self.diagnostic_record_count.store(0, Ordering::Release);
         self.persistent_introductions
@@ -2445,6 +2520,17 @@ impl RuntimeBudget {
         if self.unmetered.load(Ordering::Acquire) != 0 {
             return Cost::create(0, "unmetered token budget");
         }
+        if self.is_legacy() {
+            let legacy = self.legacy_cost.lock().expect("legacy cost lock");
+            return Cost::create(
+                if legacy.remaining < 0 {
+                    legacy.initial
+                } else {
+                    legacy.initial.saturating_sub(legacy.remaining)
+                },
+                "legacy phlo consumed",
+            );
+        }
         Cost::create(
             self.reconcile().consumed_units,
             "consumed source-token units",
@@ -2469,6 +2555,16 @@ impl RuntimeBudget {
     /// `total_cost()`. `clear_log` empties it without affecting any
     /// consensus observable; a later `reconcile()` recompute repopulates.
     pub fn get_log(&self) -> Vec<Cost> {
+        if self.is_legacy() {
+            return self
+                .legacy_cost
+                .lock()
+                .expect("legacy cost lock")
+                .log
+                .iter()
+                .cloned()
+                .collect();
+        }
         // Ensure the diagnostic mirror reflects the canonical committed
         // set (populated by `reconcile` at finalization).
         let _ = self.reconcile();
@@ -2499,7 +2595,17 @@ impl RuntimeBudget {
     /// attempts are skipped — see `attempt_one`'s unmetered fast path).
     pub fn last_oop_event(&self) -> Option<BillableTokenEvent> { self.reconcile().oop }
 
-    pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+    pub fn clear_log(&self) {
+        if self.is_legacy() {
+            self.legacy_cost
+                .lock()
+                .expect("legacy cost lock")
+                .log
+                .clear();
+        } else {
+            self.log.lock().unwrap().clear();
+        }
+    }
 
     pub fn clear_event_log(&self) { self.event_log.lock().unwrap().clear(); }
 

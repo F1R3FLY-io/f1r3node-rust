@@ -1,9 +1,11 @@
 # Formal Verification of Cost-Accounted Rho Calculus
 
-> **Branch scope.** Casper production tests and bindings described in this
-> record are preserved on `feature/casper-cost-accounting-completion`.
-> This branch verifies the cost models, Rholang, and native RSpace work;
-> references to deferred Casper evidence are not release claims for it.
+> **Branch scope.** This record covers formal and native verification on
+> `feature/cost-accounted-rho`. The current worktree connects direct-REV
+> ingress, guarded publication, the evidence codec, and independent node
+> replay. Final aggregate qualification remains in progress. This record does
+> not claim protocol activation. V2 asset conversion remains outside the
+> direct-REV scope.
 
 **A Mechanized Proof in Rocq 9.1.1 that Phlogiston Accounting
 Is Faithfully Encodable within Pure Rho Calculus**
@@ -21,6 +23,15 @@ May 2026 [4].*
 > and DR-36 supersedes `produce_balance`, `dual_write_supply`, separate `W_v` or
 > `F_v` stores, `convertedEpochs`, and `genesis_supply` mechanisms.
 
+> **Legacy cost checkpoint.** Historical signed deploys use a legacy-only
+> meter adapter with parsing, storage, and refund charges from clean dev.
+> Exact `Nil` and matched-COMM fixtures match clean dev. The fresh-genesis
+> ListOps fixture costs 53,251 phlo; clean dev costs 52,835 phlo. Two
+> continuation bodies each contain 104 more encoded bytes under the current
+> schema, and substitution and consume storage each charge those bytes once.
+> The remaining charge sequence matches. This fresh-genesis result does not
+> establish old-genesis replay parity.
+
 ---
 
 ## Abstract
@@ -37,7 +48,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 235 modules and 88,584 lines of development, and
+in **Rocq 9.1.1** across 240 modules and 89,517 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -59,7 +70,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 4,642 `Qed.`/`Defined.` proof terms belong to the current source inventory.
+All 4,685 `Qed.`/`Defined.` proof terms belong to the current source inventory.
 Source counts alone do not establish that an aggregate verification run passed.
 The [economic failure observation](cost-accounting-impl/economic-failure-observation.md) connects failure-summary proofs to concurrent recorder tests and preserves the legacy public error contract.
 The [observed outcome matcher](cost-accounting-impl/observed-funding-outcome.md) binds complete execution evidence to one equivalent prepared settlement and rejects ambiguous captures.
@@ -121,12 +132,12 @@ Generated tests check canonical channel unions. Mutation tests change logical so
 These checks assume that the caller supplies the actual guarded state. They do not establish prestate payload provenance.
 Candidate preparation tests exercise actual RSpace matching without tuple mutation, including repeated channels, prospective counters, and unselected produce triggers.
 The selection proofs cover ordered candidates after spatial matching. They establish exact source checks and telemetry-independent eligibility, not a proof of the Rust matcher.
-These checks do not establish candidate provenance, dependency readiness, or complete native replay. Native funded ingress remains disabled.
+These local checks do not establish candidate provenance, dependency readiness, or complete native replay by themselves. The connected direct-REV path now exercises ingress and independent replay. Final aggregate qualification remains pending.
 The [coupled checkpoint contract](cost-accounting-impl/observed-funding-outcome.md#coupled-checkpoint-contract) separates channel waits, tuple effects, and ledger publication.
 Its five negative controls reject unlocked capture, partial restore, premature release, preparation-time mutation, and counter loss.
 This bounded model assumes private backing handles and an infallible publication interval. It does not prove Rust refinement or complete native operation integration.
 The private session implements capture and restore, including completed budget usage.
-Native operation tickets, actual candidate checks, and dependency readiness remain required before activation.
+The production path now uses operation tickets, actual candidate checks, and dependency readiness. Final aggregate tests must verify this connection.
 `NativeCheckpointBacking.v` proves metadata backing bounds from standard-library layout and occupancy premises.
 Allocator-instrumented tests check the resulting byte bound. This proof does not cover cold-history materialization or complete payload cleanup.
 Four additional lemmas establish field-bound composition, complete clone reservation, prepaid publication or cancellation, and source preservation after reservation rejection.
@@ -544,7 +555,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 235 modules and 88,584 lines, with 4,642 `Qed.` or
+   development spans 240 modules and 89,517 lines, with 4,685 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -709,9 +720,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 235 modules                                                |
-| Total lines of Rocq                              | 88,584                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 4,642                                                      |
+| Rocq source files                                | 240 modules                                                |
+| Total lines of Rocq                              | 89,517                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 4,685                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -733,7 +744,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 235-module formalization
+The foundational 32-module subgraph of the 240-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -743,7 +754,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 235-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 240-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/casper/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/casper/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 

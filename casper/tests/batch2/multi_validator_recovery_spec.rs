@@ -215,7 +215,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         vec![genesis_block.clone()],
         proto_util::deploys(&r0_raw)
             .into_iter()
-            .map(|d| d.deploy)
+            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
@@ -238,7 +238,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     }
     let mut r0 = r0_raw;
     r0.body.state.post_state_hash = checkpoint_r0.post_state_hash.clone();
-    r0.body.deploys = checkpoint_r0.deploys;
+    r0.body.deploys = checkpoint_r0.deploys.into_iter().map(Into::into).collect();
     r0.body.system_deploys = checkpoint_r0.system_deploys;
     r0.body.state.bonds = checkpoint_r0.bonds;
     block_store.put_block_message(&r0).expect("store R0");
@@ -269,7 +269,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         vec![genesis_block.clone()],
         proto_util::deploys(&r1_raw)
             .into_iter()
-            .map(|d| d.deploy)
+            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
@@ -292,7 +292,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     }
     let mut r1 = r1_raw;
     r1.body.state.post_state_hash = checkpoint_r1.post_state_hash.clone();
-    r1.body.deploys = checkpoint_r1.deploys;
+    r1.body.deploys = checkpoint_r1.deploys.into_iter().map(Into::into).collect();
     r1.body.system_deploys = checkpoint_r1.system_deploys;
     r1.body.state.bonds = checkpoint_r1.bonds;
     block_store.put_block_message(&r1).expect("store R1");

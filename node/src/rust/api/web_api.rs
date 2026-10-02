@@ -5,8 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
+    OfferedSettlementReceipt,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -22,8 +25,9 @@ use crypto::rust::signatures::{
 };
 use eyre::{eyre, Result};
 use hex;
-use models::casper::LightBlockInfo;
+use models::casper::{DeployDataProto, LightBlockInfo};
 use models::rust::casper::protocol::casper_message::DeployData;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -57,6 +61,21 @@ pub trait WebApi {
 
     /// Deploy a contract
     async fn deploy(&self, request: DeployRequest) -> Result<String>;
+
+    async fn deploy_offered(&self, _request: OfferedDeployRequest) -> Result<String> {
+        Err(eyre!(
+            "offered-funded deploy admission is not active under the current genesis policy"
+        ))
+    }
+
+    async fn offered_settlement_receipt(
+        &self,
+        _deploy_id: String,
+    ) -> Result<Option<OfferedReceiptResponse>> {
+        Err(eyre!(
+            "offered-funded settlement receipt lookup is unavailable"
+        ))
+    }
 
     /// Get data at a par (parallel expression)
     async fn get_data_at_par(
@@ -497,6 +516,32 @@ impl WebApi for WebApiImpl {
             &self.shard_id,
         )
         .await
+    }
+
+    async fn deploy_offered(&self, request: OfferedDeployRequest) -> Result<String> {
+        let proto = decode_offered_deploy_proto(&request)?;
+        BlockAPI::deploy_offered(
+            &self.engine_cell,
+            proto,
+            &self.trigger_propose_f,
+            self.is_node_read_only,
+            &self.shard_id,
+        )
+        .await
+    }
+
+    async fn offered_settlement_receipt(
+        &self,
+        deploy_id: String,
+    ) -> Result<Option<OfferedReceiptResponse>> {
+        let deploy_id_bytes = hex::decode(deploy_id.trim_start_matches("0x"))
+            .map_err(|_| eyre::Report::new(InvalidHashError(deploy_id.clone())))?;
+        if deploy_id_bytes.len() != 32 {
+            return Err(eyre::Report::new(InvalidHashError(deploy_id)));
+        }
+        BlockAPI::find_offered_settlement_receipt(&self.engine_cell, &deploy_id_bytes.into())
+            .await
+            .map(|receipt| receipt.map(OfferedReceiptResponse::from))
     }
 
     async fn get_data_at_par(
@@ -1293,6 +1338,38 @@ pub struct DeployRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedDeployRequest {
+    #[serde(rename = "deployDataProtoBase64")]
+    pub deploy_data_proto_base64: String,
+}
+
+fn decode_offered_deploy_proto(request: &OfferedDeployRequest) -> Result<DeployDataProto> {
+    let wire = STANDARD
+        .decode(&request.deploy_data_proto_base64)
+        .map_err(|error| {
+            eyre::Report::new(DeployValidationError {
+                message: format!("Invalid offered-funded base64: {}", error),
+            })
+        })?;
+    if STANDARD.encode(&wire) != request.deploy_data_proto_base64 {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded base64 is not canonical".to_string(),
+        }));
+    }
+    let proto = DeployDataProto::decode(wire.as_slice()).map_err(|error| {
+        eyre::Report::new(DeployValidationError {
+            message: format!("Invalid offered-funded protobuf: {}", error),
+        })
+    })?;
+    if proto.encode_to_vec() != wire {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded protobuf is not canonical".to_string(),
+        }));
+    }
+    Ok(proto)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
@@ -1449,6 +1526,69 @@ pub struct VersionInfo {
 
 /// Unified deploy response. Default (full) includes all fields.
 /// Summary view (`?view=summary`) omits Optional fields for lightweight polling.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedPurseSettlementResponse {
+    pub address: String,
+    #[serde(rename = "resourceRev")]
+    pub resource_rev: String,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "postBalance")]
+    pub post_balance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedReceiptResponse {
+    #[serde(rename = "deployId")]
+    pub deploy_id: String,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+    #[serde(rename = "phloUsed")]
+    pub phlo_used: u64,
+    #[serde(rename = "freshPhlo")]
+    pub fresh_phlo: u64,
+    #[serde(rename = "retainedPhlo")]
+    pub retained_phlo: u64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: u64,
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: u64,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "revSpent")]
+    pub rev_spent: String,
+    #[serde(rename = "revCeiling")]
+    pub rev_ceiling: String,
+    pub purses: Vec<OfferedPurseSettlementResponse>,
+}
+
+impl From<OfferedSettlementReceipt> for OfferedReceiptResponse {
+    fn from(receipt: OfferedSettlementReceipt) -> Self {
+        Self {
+            deploy_id: hex::encode(receipt.deploy_id),
+            block_hash: hex::encode(receipt.block_hash),
+            phlo_used: receipt.phlo_used,
+            fresh_phlo: receipt.fresh_phlo,
+            retained_phlo: receipt.retained_phlo,
+            phlo_limit: receipt.phlo_limit,
+            phlo_price: receipt.phlo_price,
+            fee_rev: receipt.fee_rev.to_string(),
+            rev_spent: receipt.rev_spent.to_string(),
+            rev_ceiling: receipt.rev_ceiling.to_string(),
+            purses: receipt
+                .purses
+                .into_iter()
+                .map(|purse| OfferedPurseSettlementResponse {
+                    address: hex::encode(purse.address),
+                    resource_rev: purse.resource_rev.to_string(),
+                    fee_rev: purse.fee_rev.to_string(),
+                    post_balance: purse.post_balance.to_string(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployResponse {
     // === Always present (summary + full) ===
@@ -2087,6 +2227,7 @@ fn to_rho_data_response(
 
 #[cfg(test)]
 mod tests {
+    use casper::rust::api::block_api::OfferedPurseSettlement;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
@@ -2094,6 +2235,39 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn offered_receipt_json_preserves_rev_amounts_and_post_balance() {
+        let response = OfferedReceiptResponse::from(OfferedSettlementReceipt {
+            deploy_id: vec![1; 32],
+            block_hash: vec![2; 32].into(),
+            phlo_used: 7,
+            fresh_phlo: 5,
+            retained_phlo: 2,
+            phlo_limit: 10,
+            phlo_price: 2,
+            fee_rev: 1,
+            rev_spent: 15,
+            rev_ceiling: 21,
+            purses: vec![OfferedPurseSettlement {
+                address: vec![3; 32],
+                resource_rev: 14,
+                fee_rev: 1,
+                post_balance: 100,
+            }],
+        });
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["phloUsed"], 7);
+        assert_eq!(json["freshPhlo"], 5);
+        assert_eq!(json["retainedPhlo"], 2);
+        assert_eq!(json["phloLimit"], 10);
+        assert_eq!(json["phloPrice"], 2);
+        assert_eq!(json["feeRev"], "1");
+        assert_eq!(json["revSpent"], "15");
+        assert_eq!(json["revCeiling"], "21");
+        assert_eq!(json["purses"][0]["resourceRev"], "14");
+        assert_eq!(json["purses"][0]["postBalance"], "100");
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
@@ -2173,6 +2347,38 @@ mod tests {
         assert!(json.get("sigAlgorithm").is_none());
         assert!(json.get("validAfterBlockNumber").is_none());
         assert!(json.get("transfers").is_none());
+    }
+
+    #[test]
+    fn offered_http_wire_decoding_preserves_full_proto_and_rejects_noncanonical_data() {
+        let proto = DeployDataProto {
+            authorization_v61: Some(models::casper::DeployAuthorizationV61 {
+                format_version:
+                    models::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+                ..Default::default()
+            }),
+            funding_intent: Some(vec![1, 2, 3].into()),
+            phlo_limit: 7,
+            phlo_price: 11,
+            ..Default::default()
+        };
+        let wire = proto.encode_to_vec();
+        let request = OfferedDeployRequest {
+            deploy_data_proto_base64: STANDARD.encode(&wire),
+        };
+        assert_eq!(decode_offered_deploy_proto(&request).unwrap(), proto);
+
+        let padded_variant = OfferedDeployRequest {
+            deploy_data_proto_base64: format!("{}=", request.deploy_data_proto_base64),
+        };
+        assert!(decode_offered_deploy_proto(&padded_variant).is_err());
+
+        let mut noncanonical = wire;
+        noncanonical.extend_from_slice(&[0x38, 0x00]);
+        let noncanonical = OfferedDeployRequest {
+            deploy_data_proto_base64: STANDARD.encode(noncanonical),
+        };
+        assert!(decode_offered_deploy_proto(&noncanonical).is_err());
     }
 
     #[test]

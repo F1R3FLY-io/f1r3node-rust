@@ -83,6 +83,13 @@ run_expected_violation() {
 echo "Checking cost-accounted rho with Apalache 0.58.3+..."
 
 overall=0
+run_check atomic-quote-shared-capacity \
+  "shared provider capacity, exact duplicate output, and cumulative use through length 8" \
+  --config=AtomicQuoteSharedCapacityApalache.cfg --length=8 AtomicQuoteSharedCapacity.tla || overall=1
+run_expected_violation atomic-quote-shared-capacity-stale-unsafe \
+  "stale publication duplicates shared provider capacity" \
+  PhysicalConservation \
+  --config=AtomicQuoteSharedCapacityStaleUnsafeApalache.cfg --length=8 AtomicQuoteSharedCapacity.tla || overall=1
 run_check native-cache-backing \
   "cold and warm cache copies preserve credit, publication, cancellation, retry, and checkpoint state through length 8" \
   --config=NativeCacheBacking.cfg --length=8 NativeCacheBacking.tla || overall=1

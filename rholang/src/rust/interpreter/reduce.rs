@@ -52,10 +52,10 @@ use super::accounting::costs::{
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
-    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
-    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
-    var_eval_cost,
+    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost,
+    equality_check_cost_legacy, list_append_cost, method_call_cost, modulo_cost,
+    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+    string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
 use super::deterministic_reduction::{
@@ -1988,6 +1988,16 @@ impl ReducerCore {
     }
 
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || {
+            self.eval_expr_to_expr_inner(expr, env)
+        })
+    }
+
+    fn eval_expr_to_expr_inner(
+        &self,
+        expr: &Expr,
+        env: &Env<Par>,
+    ) -> Result<Expr, InterpreterError> {
         if matches!(
             expr.expr_instance.as_ref(),
             Some(
@@ -2715,8 +2725,12 @@ impl ReducerCore {
                     // TODO: build an equality operator that takes in an environment. - OLD
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.metering
-                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
+                    let cost = if self.metering.budget().is_legacy() {
+                        equality_check_cost_legacy(&sv1, &sv2)
+                    } else {
+                        equality_check_cost(&sv1, &sv2)
+                    };
+                    self.metering.reserve_primitive(cost)?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         false
@@ -2733,8 +2747,12 @@ impl ReducerCore {
                     let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.metering
-                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
+                    let cost = if self.metering.budget().is_legacy() {
+                        equality_check_cost_legacy(&sv1, &sv2)
+                    } else {
+                        equality_check_cost(&sv1, &sv2)
+                    };
+                    self.metering.reserve_primitive(cost)?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         true

@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, CostSignature};
 use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
@@ -103,6 +104,35 @@ pub(super) fn journal_limits() -> NativeOperationJournalLimits {
         footprint_bytes: 10_000_000,
         predecessor_edges: 1_000_000,
     }
+}
+
+#[tokio::test]
+async fn native_funded_runtime_rejects_external_output_before_dispatch() {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use crate::rust::interpreter::test_utils::resources::create_runtimes;
+
+    let mut manager = InMemoryStoreManager::new();
+    let stores = manager.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+    runtime
+        .cost
+        .set_deploy_signature_funded(b"native-external-guard", Sig::Ground(vec![9]));
+    let result = runtime
+        .evaluate_with_native_phlo(
+            r#"new out(`rho:io:stdout`) in { out!("must not print") }"#,
+            HashMap::new(),
+            Blake2b512Random::create_from_bytes(b"native-external-guard"),
+            None,
+            config(1_000_000, [0; 4]),
+        )
+        .await;
+    let error = match result {
+        Ok(evaluation) => format!("{:?}", evaluation.errors),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("native funded execution forbids external service calls"));
 }
 
 pub(super) fn authority(owners: usize) -> CostAuthority {

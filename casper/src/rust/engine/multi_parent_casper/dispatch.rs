@@ -19,6 +19,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -68,6 +69,14 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         deploy: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError> {
         super::block_admission::admit_deploy(self, deploy)
+    }
+
+    fn deploy_envelope(
+        &self,
+        envelope: DeployEnvelope,
+        adopted_policy: &crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        super::block_admission::admit_deploy_envelope(self, envelope, adopted_policy)
     }
 
     async fn estimator(

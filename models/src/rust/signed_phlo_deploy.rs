@@ -3,7 +3,10 @@ use prost::Message;
 
 use crate::casper::DeployDataProto;
 use crate::rust::cost_deploy_data::DeployData;
-use crate::rust::phlo_intent::{PhloFundingIntentLimits, PhloFundingIntentV1};
+use crate::rust::phlo_intent::{
+    PhloFundingIntentLimits, PhloFundingIntentV1, PhloFundingIntentV2Limits,
+    PhloFundingIntentVersioned,
+};
 use crate::rust::phlo_wire::{PhloWireEncoder, PhloWireLimits};
 
 mod offered;
@@ -111,6 +114,29 @@ impl ToMessage for FundedDeploy {
 fn check_canonical_funding(funding: &[u8], limits: PhloFundingIntentLimits) -> Result<(), String> {
     let intent = PhloFundingIntentV1::decode(funding, limits).map_err(|error| error.to_string())?;
     if intent.encode(limits).map_err(|error| error.to_string())? != funding {
+        return Err("funding intent is not canonical".to_string());
+    }
+    Ok(())
+}
+
+fn check_canonical_offered_funding(
+    funding: &[u8],
+    limits: PhloFundingIntentLimits,
+) -> Result<(), String> {
+    let versioned_limits = PhloFundingIntentV2Limits {
+        wire: limits.wire,
+        base: limits,
+        grant_uses: limits.wire.total_bytes / 8,
+        grant_id_bytes: limits.wire.field_bytes,
+        quote_evidence_bytes: limits.wire.field_bytes,
+    };
+    let intent = PhloFundingIntentVersioned::decode(funding, versioned_limits)
+        .map_err(|error| error.to_string())?;
+    if intent
+        .encode(versioned_limits)
+        .map_err(|error| error.to_string())?
+        != funding
+    {
         return Err("funding intent is not canonical".to_string());
     }
     Ok(())

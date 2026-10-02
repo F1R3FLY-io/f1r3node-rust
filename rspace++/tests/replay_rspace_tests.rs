@@ -2195,6 +2195,68 @@ async fn check_replay_data_should_throw_error_if_replay_data_contains_elements()
     assert!(res.is_err());
 }
 
+#[tokio::test]
+async fn duplicate_comm_witness_is_rejected_after_one_matching_replay() {
+    let (space, replay_space) = fixture().await;
+    let channel = "wallet".to_string();
+    let channels = vec![channel.clone()];
+    let patterns = vec![Pattern::Wildcard];
+    let continuation = "settle".to_string();
+    let datum = "charge".to_string();
+    let initial = space.create_checkpoint().await.unwrap();
+    assert!(
+        space
+            .consume(
+                channels.clone(),
+                patterns.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        space
+            .produce(channel.clone(), datum.clone(), false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let recorded = space.create_checkpoint().await.unwrap();
+    let duplicate = recorded
+        .log
+        .iter()
+        .find(|event| matches!(event, Event::Comm(_)))
+        .cloned()
+        .unwrap();
+    let mut tampered = recorded.log;
+    tampered.push(duplicate);
+    replay_space
+        .rig_and_reset(initial.root, tampered)
+        .await
+        .unwrap();
+    assert!(
+        replay_space
+            .consume(channels, patterns, continuation, false, BTreeSet::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        replay_space
+            .produce(channel, datum, false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(matches!(
+        replay_space.check_replay_data().await,
+        Err(RSpaceError::UnusedCommEvent { .. })
+    ));
+}
+
 // Verify is_replay flag matches correct behavior.
 // RSpace (normal execution) must return false.
 // ReplayRSpace (block validation) must return true so that

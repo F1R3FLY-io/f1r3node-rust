@@ -1,3 +1,4 @@
+pub mod acceptance;
 pub mod costacc;
 pub mod interpreter_util;
 pub mod mem_profiler;

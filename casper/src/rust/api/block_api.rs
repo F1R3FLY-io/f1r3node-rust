@@ -11,14 +11,22 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use futures::future;
 use models::casper::{
-    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, LightBlockInfo, RejectedDeployInfo,
-    WaitingContinuationInfo,
+    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployDataProto, LightBlockInfo,
+    RejectedDeployInfo, WaitingContinuationInfo,
 };
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeRef};
+use models::rust::native_wallet_receipt::{NativeWalletReceiptLimits, NativeWalletReceiptV1};
+use models::rust::phlo_intent::{
+    PhloConversionCompositionV2, PhloFundingIntentV2Limits, PhloFundingIntentVersioned,
+};
+use models::rust::phlo_schedule::PhloGenesisPolicy;
+use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Bytes;
@@ -40,11 +48,151 @@ use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MIN_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::{
+    AdoptedResourcePolicy, OFFERED_PRODUCTION_READY,
+};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
 use crate::rust::ProposeFunction;
 pub struct BlockAPI;
+
+fn offered_validation_error(message: impl Into<String>) -> eyre::Report {
+    eyre::Report::new(DeployValidationError {
+        message: message.into(),
+    })
+}
+
+fn decode_offered_submission(proto: DeployDataProto, shard_id: &str) -> ApiErr<DeployEnvelope> {
+    let limits = offered_funded_v6_limits().envelope;
+    if proto.encoded_len() > limits.payload.deploy_bytes {
+        return Err(offered_validation_error(
+            "offered-funded deploy exceeds the fixed v6 syntax limit",
+        ));
+    }
+    if DeployEnvelopeFormat::from_authorization_version(
+        proto
+            .authorization_v61
+            .as_ref()
+            .map(|auth| auth.format_version),
+    )
+    .map_err(offered_validation_error)?
+        != DeployEnvelopeFormat::OfferedFunded
+    {
+        return Err(offered_validation_error(
+            "offered-funded submission requires the offered-funded authorization format",
+        ));
+    }
+    let envelope =
+        DeployEnvelope::from_proto(proto.clone(), limits).map_err(offered_validation_error)?;
+    if envelope.to_proto().map_err(offered_validation_error)? != proto {
+        return Err(offered_validation_error(
+            "offered-funded submission is not canonical",
+        ));
+    }
+    if envelope.body().shard_id != shard_id {
+        return Err(offered_validation_error(format!(
+            "Deploy shardId '{}' is not as expected network shard '{}'.",
+            envelope.body().shard_id,
+            shard_id
+        )));
+    }
+    if envelope.signers().iter().any(|signer| {
+        standard_deploys::system_public_keys()
+            .iter()
+            .any(|key| **key == signer.pk)
+    }) {
+        return Err(offered_validation_error(
+            "Deploy refused because it is signed with a forbidden private key.",
+        ));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    if envelope.body().is_expired_at(now) {
+        return Err(offered_validation_error(
+            "Offered-funded deploy has expired.",
+        ));
+    }
+    Ok(envelope)
+}
+
+fn check_offered_submission_policy(
+    envelope: &DeployEnvelope,
+    policy: &AdoptedResourcePolicy,
+) -> ApiErr<()> {
+    if !policy.offered_funded_v6_active() {
+        return Err(offered_validation_error(
+            "offered-funded deploy format is not active under the approved genesis policy",
+        ));
+    }
+    let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
+        return Err(offered_validation_error("expected offered-funded envelope"));
+    };
+    let syntax = offered_funded_v6_limits().envelope.payload.funding;
+    let v2_limits = PhloFundingIntentV2Limits {
+        wire: syntax.wire,
+        base: syntax,
+        grant_uses: syntax.wire.total_bytes / 8,
+        grant_id_bytes: syntax.wire.field_bytes,
+        quote_evidence_bytes: syntax.wire.field_bytes,
+    };
+    let intent = PhloFundingIntentVersioned::decode(offer.data.funding_intent(), v2_limits)
+        .map_err(|error| offered_validation_error(error.to_string()))?;
+    let base = match intent {
+        PhloFundingIntentVersioned::V1(_) => {
+            return Err(offered_validation_error(
+                "production offered funding requires explicit V2 composition terms",
+            ));
+        }
+        PhloFundingIntentVersioned::V2(v2) => {
+            if !matches!(v2.conversion, PhloConversionCompositionV2::NoConversion) {
+                return Err(offered_validation_error(
+                    "offered conversion requires authenticated asset custody and atomic settlement",
+                ));
+            }
+            v2.base
+        }
+    };
+    let limit = u64::try_from(offer.data.phlo_limit())
+        .map_err(|_| offered_validation_error("offered phloLimit is negative"))?;
+    let price = u64::try_from(offer.data.phlo_price())
+        .map_err(|_| offered_validation_error("offered phloPrice is negative"))?;
+    if limit > base.controls.limit || price > base.controls.price_ceiling {
+        return Err(offered_validation_error(
+            "offered phloLimit or phloPrice exceeds signed funding controls",
+        ));
+    }
+    let mut selected = false;
+    for schedule in &base.controls.permitted_schedules {
+        let encoded = schedule
+            .encode(PhloGenesisPolicy::LIMITS)
+            .map_err(|error| offered_validation_error(error.to_string()))?;
+        if schedule
+            .digest(syntax.controls.schedule(syntax.controls.total_classes))
+            .map_err(|error| offered_validation_error(error.to_string()))?
+            == base.schedule_commitment
+        {
+            if schedule.actual_price != price {
+                return Err(offered_validation_error(
+                    "offered phloPrice differs from selected signed schedule",
+                ));
+            }
+            policy
+                .check_acquisition_terms(&encoded)
+                .map_err(|error| offered_validation_error(error.to_string()))?;
+            selected = true;
+            break;
+        }
+    }
+    if !selected {
+        return Err(offered_validation_error(
+            "signed offered price schedule is absent",
+        ));
+    }
+    Ok(())
+}
 
 pub type ApiErr<T> = eyre::Result<T>;
 
@@ -52,6 +200,29 @@ pub type ApiErr<T> = eyre::Result<T>;
 #[error("Couldn't find block containing deploy with id: {deploy_id}")]
 pub struct DeployNotFoundError {
     pub deploy_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedPurseSettlement {
+    pub address: Vec<u8>,
+    pub resource_rev: u128,
+    pub fee_rev: u128,
+    pub post_balance: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedSettlementReceipt {
+    pub deploy_id: Vec<u8>,
+    pub block_hash: BlockHash,
+    pub phlo_used: u64,
+    pub fresh_phlo: u64,
+    pub retained_phlo: u64,
+    pub phlo_limit: u64,
+    pub phlo_price: u64,
+    pub fee_rev: u128,
+    pub rev_spent: u128,
+    pub rev_ceiling: u128,
+    pub purses: Vec<OfferedPurseSettlement>,
 }
 
 // Look at shared/src/main/scala/coop/rchain/shared/Base16.scala
@@ -691,6 +862,73 @@ impl BlockAPI {
         }
     }
 
+    pub async fn deploy_offered(
+        engine_cell: &EngineCell,
+        proto: DeployDataProto,
+        trigger_propose: &Option<Arc<ProposeFunction>>,
+        is_node_read_only: bool,
+        shard_id: &str,
+    ) -> ApiErr<String> {
+        if is_node_read_only {
+            return Err(offered_validation_error(
+                "Deploy was rejected because node is running in read-only mode.",
+            ));
+        }
+        if !OFFERED_PRODUCTION_READY {
+            return Err(offered_validation_error(
+                "offered-funded deploy admission awaits production proof and replay activation",
+            ));
+        }
+        let envelope = decode_offered_submission(proto, shard_id)?;
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| offered_validation_error("Casper instance was not available"))?;
+        let adopted = AdoptedResourcePolicy::load(
+            &casper.runtime_manager(),
+            casper.get_approved_block()?,
+            casper.casper_shard_conf(),
+        )
+        .await?;
+        check_offered_submission_policy(&envelope, &adopted)?;
+        let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
+            return Err(offered_validation_error("expected offered-funded envelope"));
+        };
+        if offer.data.phlo_price() < casper.casper_shard_conf().min_phlo_price {
+            return Err(offered_validation_error(
+                "offered phloPrice is below the adopted minimum",
+            ));
+        }
+        let dag = casper.block_dag().await?;
+        let next_block_number = dag.latest_block_number() + 1;
+        if deploy_is_block_expired(
+            envelope.body().valid_after_block_number,
+            next_block_number,
+            casper.casper_shard_conf().deploy_lifespan,
+        )? {
+            return Err(offered_validation_error(
+                "offered-funded deploy is outside the block lifespan",
+            ));
+        }
+        let deploy_id = match casper.deploy_envelope(envelope, &adopted)? {
+            Either::Left(error) => return Err(error.into()),
+            Either::Right(deploy_id) => deploy_id,
+        };
+        if let Some(trigger) = trigger_propose {
+            let trigger = Arc::clone(trigger);
+            let casper = casper.clone();
+            tokio::spawn(async move {
+                if let Err(error) = trigger(casper, true).await {
+                    tracing::error!(error = %error, "offered-funded deploy propose trigger failed");
+                }
+            });
+        }
+        Ok(format!(
+            "Success!\nDeployId is: {}",
+            PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+        ))
+    }
+
     #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]
     pub async fn create_block(
         engine_cell: &EngineCell,
@@ -1009,7 +1247,7 @@ impl BlockAPI {
             .body
             .deploys
             .iter()
-            .flat_map(|pd| pd.deploy_log.iter())
+            .flat_map(|pd| pd.deploy_log().iter())
             .collect();
 
         let log: Vec<RspaceEvent> = serialized_log
@@ -1486,6 +1724,78 @@ impl BlockAPI {
         }
     }
 
+    pub async fn find_offered_settlement_receipt(
+        engine_cell: &EngineCell,
+        deploy_id: &DeployId,
+    ) -> ApiErr<Option<OfferedSettlementReceipt>> {
+        let light_block = Self::find_deploy(engine_cell, deploy_id).await?;
+        let block_hash: BlockHash = hex::decode(&light_block.block_hash)?.into();
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| eyre::eyre!("Casper instance was not available"))?;
+        let block = casper.block_store().get(&block_hash)?.ok_or_else(|| {
+            eyre::eyre!("canonical deploy block is unavailable from block storage")
+        })?;
+        let processed = block
+            .body
+            .deploys
+            .iter()
+            .find(|deploy| deploy.identity_bytes() == deploy_id.as_slice())
+            .ok_or_else(|| DeployNotFoundError {
+                deploy_id: PrettyPrinter::build_string_no_limit(deploy_id),
+            })?;
+        let Some(offered) = processed.as_offered() else {
+            return Ok(None);
+        };
+        let limits = offered_funded_v6_limits();
+        let evidence = offered
+            .evidence(limits.evidence)
+            .map_err(|error| eyre::eyre!(error))?;
+        if evidence.wallet_settlement.is_empty() {
+            return Ok(None);
+        }
+        let receipt =
+            NativeWalletReceiptV1::decode(evidence.wallet_settlement, NativeWalletReceiptLimits {
+                wire: PhloWireLimits {
+                    total_bytes: limits.evidence.field_bytes,
+                    field_bytes: limits.evidence.field_bytes,
+                },
+                payers: limits.envelope.members.get(),
+            })?;
+        let resource_rev = evidence.resource_rev()?;
+        if receipt.resource_rev != resource_rev
+            || receipt.fee_rev != evidence.fee_rev
+            || receipt.rev_spent()? != evidence.rev_spent()?
+        {
+            return Err(eyre::eyre!(
+                "wallet settlement receipt differs from authenticated cost evidence"
+            ));
+        }
+        Ok(Some(OfferedSettlementReceipt {
+            deploy_id: deploy_id.to_vec(),
+            block_hash,
+            phlo_used: evidence.phlo_used,
+            fresh_phlo: evidence.fresh_phlo,
+            retained_phlo: evidence.retained_phlo,
+            phlo_limit: evidence.phlo_limit,
+            phlo_price: evidence.phlo_price,
+            fee_rev: evidence.fee_rev,
+            rev_spent: evidence.rev_spent()?,
+            rev_ceiling: evidence.rev_ceiling()?,
+            purses: receipt
+                .rows
+                .iter()
+                .map(|row| OfferedPurseSettlement {
+                    address: row.address.to_vec(),
+                    resource_rev: row.resource_rev,
+                    fee_rev: row.fee_rev,
+                    post_balance: row.post_balance,
+                })
+                .collect(),
+        }))
+    }
+
     #[tracing::instrument(name = "get-block", target = "f1r3fly.block-api.get-block", skip_all)]
     pub async fn get_block(engine_cell: &EngineCell, hash: &str) -> ApiErr<BlockInfo> {
         let error_message =
@@ -1654,7 +1964,7 @@ impl BlockAPI {
             .body
             .deploys
             .iter()
-            .map(|processed_deploy| processed_deploy.clone().to_deploy_info())
+            .map(|processed_deploy| processed_deploy.to_deploy_info())
             .collect();
 
         BlockInfo {
@@ -2127,9 +2437,30 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{
-        await_exploratory_deploy_task, deploy_is_block_expired, ExploratoryDeployOutcome,
-        ExploratoryDeployTaskError,
+        await_exploratory_deploy_task, decode_offered_submission, deploy_is_block_expired,
+        ExploratoryDeployOutcome, ExploratoryDeployTaskError,
     };
+
+    #[test]
+    fn offered_ingress_rejects_wrong_format_and_oversized_wire_before_admission() {
+        let legacy = models::casper::DeployDataProto::default();
+        assert!(decode_offered_submission(legacy.clone(), "test")
+            .unwrap_err()
+            .to_string()
+            .contains("offered-funded authorization format"));
+        let mut oversized = legacy;
+        oversized.term = "x".repeat(
+            models::rust::cost_protocol_limits::offered_funded_v6_limits()
+                .envelope
+                .payload
+                .deploy_bytes
+                + 1,
+        );
+        assert!(decode_offered_submission(oversized, "test")
+            .unwrap_err()
+            .to_string()
+            .contains("syntax limit"));
+    }
 
     struct DropSignal(Arc<AtomicBool>);
 

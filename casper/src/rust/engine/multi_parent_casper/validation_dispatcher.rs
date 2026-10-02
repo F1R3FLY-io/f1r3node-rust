@@ -16,7 +16,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedUserDeploy};
 use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -39,7 +39,8 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
-use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint_with_policy;
 use crate::rust::validate::Validate;
 
 async fn timed_step<A, Fut>(
@@ -139,10 +140,27 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
+        let offered_policy = if block
+            .body
+            .deploys
+            .iter()
+            .any(|term| matches!(term, ProcessedUserDeploy::Offered(_)))
+        {
+            Some(
+                AdoptedResourcePolicy::load(
+                    &this.runtime_manager,
+                    &this.approved_block,
+                    &this.casper_shard_conf,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-            validate_block_checkpoint(
+            validate_block_checkpoint_with_policy(
                 block,
                 &this.block_store,
                 snapshot,
@@ -150,6 +168,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
                 local_validator.as_ref(),
+                offered_policy.as_ref(),
             ),
         )
         .await?;

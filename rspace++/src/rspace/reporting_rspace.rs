@@ -6,11 +6,14 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use shared::rust::clone_backing::CloneBacking;
 
 use super::checkpoint::{Checkpoint, SoftCheckpoint};
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hashing::native_source::SourceMeter;
 use super::history::history_repository::HistoryRepository;
 use super::hot_store::HotStore;
 use super::internal::{ConsumeCandidate, Datum, Row, WaitingContinuation};
@@ -331,6 +334,18 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         self.replay_rspace.get_data(channel).await
+    }
+
+    async fn get_data_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned,
+    {
+        self.replay_rspace.get_data_metered(channel, meter).await
     }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {

@@ -518,7 +518,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             VaultParser::parse_from_path_str(&self.conf.genesis_block_data.wallets_file)
                 .map_err(|e| CasperError::RuntimeError(format!("Failed to parse vaults: {}", e)))?;
 
-        let bap = BlockApproverProtocol::new(
+        let mut bap = BlockApproverProtocol::new(
             validator_id.clone(),
             timestamp,
             vaults,
@@ -544,6 +544,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;
+        bap.resource_policy = self
+            .conf
+            .genesis_block_data
+            .lowered_resource_policy()
+            .map_err(CasperError::RuntimeError)?;
 
         // Scala equivalent: EngineCell[F].set(new GenesisValidator(...))
         let genesis_validator = GenesisValidator::new(
@@ -643,6 +648,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.conf
+                .genesis_block_data
+                .lowered_resource_policy()
+                .map_err(CasperError::RuntimeError)?,
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

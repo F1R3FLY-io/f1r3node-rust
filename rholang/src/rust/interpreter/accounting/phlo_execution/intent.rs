@@ -2,7 +2,8 @@ use std::num::NonZeroUsize;
 
 use crypto::rust::signatures::signed::{Cosigned, CosignedError, Cosigner, ToMessage};
 use models::rust::phlo_intent::{
-    PhloFundingIntentError, PhloFundingIntentLimits, PhloFundingIntentV1,
+    PhloFundingIntentError, PhloFundingIntentLimits, PhloFundingIntentV1, PhloFundingIntentV2Error,
+    PhloFundingIntentV2Limits, PhloFundingIntentVersioned,
 };
 use models::rust::phlo_wire::PhloWireError;
 use models::rust::signed_phlo_deploy::{FundedDeploy, OfferedFundedDeploy};
@@ -76,6 +77,8 @@ pub enum SignedPhloConsentError {
     RecordMismatch,
     #[error(transparent)]
     Record(#[from] PhloFundingIntentError),
+    #[error(transparent)]
+    VersionedRecord(#[from] PhloFundingIntentV2Error),
     #[error(transparent)]
     Signature(#[from] CosignedError),
     #[error(transparent)]
@@ -153,7 +156,25 @@ impl PhloFundingIntentView<'_> {
         if envelope.signers().len() > limits.members.get() {
             return Err(SignedPhloConsentError::TooManyMembers);
         }
-        if self.record.encode(limits.intent)? != envelope.data.funding_intent() {
+        let bytes = envelope.data.funding_intent();
+        let base = limits.intent;
+        let versioned_limits = PhloFundingIntentV2Limits {
+            wire: base.wire,
+            base,
+            grant_uses: base.wire.total_bytes / 8,
+            grant_id_bytes: base.wire.field_bytes,
+            quote_evidence_bytes: base.wire.field_bytes,
+        };
+        let versioned = PhloFundingIntentVersioned::decode(bytes, versioned_limits)?;
+        let matches = match &versioned {
+            PhloFundingIntentVersioned::V1(record) => {
+                record == self.record && self.record.encode(limits.intent)? == bytes
+            }
+            PhloFundingIntentVersioned::V2(record) => {
+                &record.base == self.record && record.encode(versioned_limits)? == bytes
+            }
+        };
+        if !matches {
             return Err(SignedPhloConsentError::RecordMismatch);
         }
         envelope.validate_envelope()?;

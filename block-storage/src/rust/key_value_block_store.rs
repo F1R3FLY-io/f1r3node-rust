@@ -148,17 +148,11 @@ impl KeyValueBlockStore {
                     "Missing deploy field".to_string(),
                 ))
             })?;
-            let sig = deploy.sig;
-            if sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", sig.len()),
-                )));
-            }
-            if deploy_sigs.contains(&sig) {
+            let identity = Self::indexed_deploy_identity(block_hash, deploy)?;
+            if deploy_sigs.contains(&identity) {
                 has_any = true;
             }
-            block_deploy_sigs.push(sig);
+            block_deploy_sigs.push(identity);
         }
         Self::cache_deploy_sigs(key, block_deploy_sigs);
         Ok(Some(has_any))
@@ -214,13 +208,7 @@ impl KeyValueBlockStore {
                     "Missing deploy field".to_string(),
                 ))
             })?;
-            if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", deploy.sig.len()),
-                )));
-            }
-            block_deploy_sigs.push(deploy.sig);
+            block_deploy_sigs.push(Self::indexed_deploy_identity(block_hash, deploy)?);
         }
 
         Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
@@ -372,6 +360,42 @@ impl KeyValueBlockStore {
         Self::compress_bytes(&block_proto.encode_to_vec())
     }
 
+    fn indexed_deploy_identity(
+        block_hash: &BlockHash,
+        deploy: BlockDeploySigsDeploy,
+    ) -> Result<Vec<u8>, KvStoreError> {
+        let identity = match deploy.authorization.map(|auth| auth.format_version) {
+            None => {
+                if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
+                    return Err(KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        format!("Invalid deploy signature length: {}", deploy.sig.len()),
+                    )));
+                }
+                deploy.sig
+            }
+            Some(models::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION) => {
+                if deploy.deploy_id.len() != 32 {
+                    return Err(KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        format!(
+                            "Invalid offered deploy ID length: {}",
+                            deploy.deploy_id.len()
+                        ),
+                    )));
+                }
+                deploy.deploy_id
+            }
+            Some(version) => {
+                return Err(KvStoreError::SerializationError(Self::error_block(
+                    block_hash.clone(),
+                    format!("Unsupported deploy authorization version: {version}"),
+                )));
+            }
+        };
+        Ok(identity)
+    }
+
     fn cached_has_any_deploy_sig(
         block_hash: &[u8],
         deploy_sigs: &HashSet<Vec<u8>>,
@@ -464,6 +488,16 @@ struct BlockDeploySigsProcessedDeploy {
 struct BlockDeploySigsDeploy {
     #[prost(bytes = "vec", tag = "4")]
     sig: Vec<u8>,
+    #[prost(bytes = "vec", tag = "19")]
+    deploy_id: Vec<u8>,
+    #[prost(message, optional, tag = "20")]
+    authorization: Option<BlockDeploySigsAuthorization>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct BlockDeploySigsAuthorization {
+    #[prost(uint32, tag = "1")]
+    format_version: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -826,6 +860,86 @@ mod tests {
             .unwrap();
         assert!(!repeated_lookup);
         assert_eq!(*input_keys.lock().unwrap(), vec![block.block_hash.to_vec()]);
+    }
+
+    #[test]
+    fn offered_deploy_duplicate_scan_uses_deploy_id_across_blocks() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        let mut proto = block.to_proto();
+        let offered_id = vec![0xA5; 32];
+        let deploy_proto = proto
+            .body
+            .as_mut()
+            .unwrap()
+            .deploys
+            .first_mut()
+            .unwrap()
+            .deploy
+            .as_mut()
+            .unwrap();
+        deploy_proto.deploy_id = offered_id.clone().into();
+        deploy_proto.authorization_v61 = Some(models::casper::DeployAuthorizationV61 {
+            format_version:
+                models::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+            ..Default::default()
+        });
+        let mut candidate = proto.clone();
+        candidate.block_hash = vec![0xC7; 32].into();
+        let candidate_deploy = candidate
+            .body
+            .as_mut()
+            .unwrap()
+            .deploys
+            .first_mut()
+            .unwrap()
+            .deploy
+            .as_mut()
+            .unwrap();
+        candidate_deploy.sig = vec![0xB7; 65].into();
+        assert_ne!(&candidate.block_hash[..], &block.block_hash[..]);
+        assert_ne!(&candidate_deploy.sig[..], &deploy.deploy.sig[..]);
+        assert_eq!(&candidate_deploy.deploy_id[..], offered_id.as_slice());
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&proto);
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(Some(block_bytes))),
+            Arc::new(NotImplementedKV),
+        );
+
+        assert!(bs
+            .has_any_deploy_sig_strict(&block.block_hash, &HashSet::from([offered_id.clone()]))
+            .unwrap());
+        assert!(!bs
+            .has_any_deploy_sig_strict(
+                &block.block_hash,
+                &HashSet::from([deploy.deploy.sig.to_vec()]),
+            )
+            .unwrap());
+        assert_eq!(
+            bs.deploy_sigs(&block.block_hash).unwrap(),
+            Some(vec![offered_id])
+        );
     }
 
     #[test]

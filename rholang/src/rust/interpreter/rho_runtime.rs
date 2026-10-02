@@ -48,6 +48,7 @@ use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
+use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -1380,6 +1381,7 @@ fn dispatch_table_creator(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    cost: RuntimeBudget,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1405,6 +1407,7 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            cost.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1512,6 +1515,7 @@ async fn setup_reducer(
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        cost.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1987,6 +1991,10 @@ where
         raw_rspace,
         reduction_coordinator.clone(),
     )));
+    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+        scheduled_rspace,
+        cost.clone(),
+    )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -1994,7 +2002,7 @@ where
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let core = setup_reducer(
-        scheduled_rspace.clone().into(),
+        charging_rspace.clone().into(),
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -2011,7 +2019,7 @@ where
     )
     .await;
     let reducer = Arc::new(DebruijnInterpreter {
-        space: scheduled_rspace,
+        space: charging_rspace,
         core,
     });
 
