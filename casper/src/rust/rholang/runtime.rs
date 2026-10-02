@@ -880,6 +880,7 @@ impl RuntimeOps {
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
@@ -1110,7 +1111,8 @@ impl RuntimeOps {
             .evaluate(
                 &deploy.data.term,
                 Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
-                normalizer_env_from_deploy(deploy),
+                normalizer_env_from_deploy(deploy)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
                 Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
             )
             .await;

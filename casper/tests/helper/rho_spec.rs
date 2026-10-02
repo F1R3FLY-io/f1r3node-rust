@@ -459,7 +459,7 @@ async fn eval_deploy(
     TestUtil::eval(
         &deploy.data.term,
         runtime,
-        normalizer_env_from_deploy(deploy),
+        normalizer_env_from_deploy(deploy).unwrap(),
         rand,
     )
     .await?;
@@ -486,6 +486,7 @@ fn rho_spec_deploy() -> Signed<DeployData> {
         valid_after_block_number: 0,
         shard_id: SHARD_ID.to_string(),
         expiration_timestamp: None,
+        parameters: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), sk).expect("Failed to sign RhoSpec deploy")

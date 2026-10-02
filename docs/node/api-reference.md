@@ -241,6 +241,7 @@ Submit a signed deploy to the network. Validator nodes only.
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
+| `data.parameters` | array | no | Named Rholang values. The default is an empty array. |
 | `deployer` | string | yes | Deployer public key (hex) |
 | `signature` | string | yes | Deploy signature (hex) |
 | `sigAlgorithm` | string | yes | Signature algorithm (`"secp256k1"`) |
@@ -270,6 +271,72 @@ curl -X POST http://localhost:40413/api/deploy \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
+
+##### Deploy parameters
+
+A deploy parameter supplies a typed value through `rho:deploy:param:<name>`.
+The deploy signature covers parameter names, values, and array order.
+The node rejects changes to these fields after signing.
+
+```json
+{
+  "parameters": [
+    {"name": "items", "value": {"type": "list", "value": [
+      {"type": "int", "value": -42},
+      {"type": "nil"}
+    ]}}
+  ]
+}
+```
+
+```rholang
+new items(`rho:deploy:param:items`), stdout(`rho:io:stdout`) in {
+  stdout!(*items)
+}
+```
+
+| JSON `type` | JSON `value` |
+|-------------|--------------|
+| `bool` | A Boolean. |
+| `int` | A signed 64-bit integer. |
+| `string` | A string. |
+| `bytes` | An array of integers from 0 through 255. |
+| `tuple`, `list`, `set` | An array of typed values. |
+| `map` | An array of objects with typed `key` and `value` fields. |
+| `nil` | Omit the `value` field. |
+| `uri` | A URI string, used as a Rholang value. |
+
+Lists and tuples preserve element order.
+Sets remove duplicate values and use Rholang ordering.
+Maps use Rholang key ordering and reject duplicate keys, including equivalent set keys.
+A URI parameter does not grant access to a system process.
+
+Parameter names must be unique and match `[A-Za-z_][A-Za-z0-9_]*`.
+Each name can contain at most 256 bytes.
+A deploy can contain at most 50 parameters, 32 nesting levels, and 10,000 values.
+The total data budget is 1 MiB, including names, string data, byte data, and eight bytes per value.
+Transport limits also apply.
+
+Deploys without parameters retain their protobuf bytes and signatures.
+JSON output omits an empty parameter array.
+The deploy storage and rejected buffer can read existing records without parameters.
+New parameter records require this node version or a later compatible version.
+
+The earlier Scala implementation used protobuf field 13 for parameters.
+This Rust schema uses field 13 for `expirationTimestamp` and field 14 for parameters.
+Primitive value fields retain their original numbers, including `sint64` for integers.
+
+To migrate a client from that Scala schema:
+
+1. Generate the client types from this repository's protobuf files.
+2. Encode parameters in field 14 with the recursive value schema.
+3. Apply the name, size, and nesting limits above.
+4. Sign the deploy again with its new protobuf bytes.
+
+The Scala implementation permitted larger byte parameters.
+Clients must apply the total data budget before they sign a deploy for this schema.
+Nodes that use the earlier schema cannot validate these parameter signatures.
+All validators must use a compatible schema before the network accepts deploy parameters.
 
 #### `GET /api/deploy/{deploy_id}`
 

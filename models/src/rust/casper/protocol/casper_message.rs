@@ -970,6 +970,12 @@ pub struct DeployData {
     pub shard_id: String,
     /// Optional millisecond timestamp after which deploy is invalid (None = no expiration)
     pub expiration_timestamp: Option<i64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::rust::deploy_parameters::deserialize_parameters"
+    )]
+    pub parameters: Vec<crate::rust::deploy_parameters::DeployParameter>,
 }
 
 impl ToMessage for DeployData {
@@ -999,11 +1005,13 @@ impl DeployData {
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
-        Ok(DeployData::_from_proto(proto))
+        DeployData::_from_proto(proto)
     }
 
-    fn _from_proto(proto: DeployDataProto) -> Self {
-        Self {
+    fn _from_proto(proto: DeployDataProto) -> Result<Self, String> {
+        let parameters = crate::rust::deploy_parameters::parameters_from_proto(proto.parameters)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
             term: proto.term,
             time_stamp: proto.timestamp,
             phlo_price: proto.phlo_price,
@@ -1016,7 +1024,8 @@ impl DeployData {
             } else {
                 Some(proto.expiration_timestamp)
             },
-        }
+            parameters,
+        })
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
@@ -1025,7 +1034,7 @@ impl DeployData {
 
         let sig = proto.sig.clone();
         let pk = PublicKey::from_bytes(&proto.deployer);
-        let signed = Signed::from_signed_data(DeployData::_from_proto(proto), pk, sig, algorithm)?;
+        let signed = Signed::from_signed_data(DeployData::_from_proto(proto)?, pk, sig, algorithm)?;
 
         match signed {
             Some(signed) => Ok(signed),
@@ -1043,6 +1052,11 @@ impl DeployData {
             shard_id: dd.shard_id,
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.expiration_timestamp.unwrap_or(0),
+            parameters: dd
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         }
     }
@@ -1062,6 +1076,12 @@ impl DeployData {
             sig_algorithm: dd.sig_algorithm.name(),
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),
+            parameters: dd
+                .data
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         }
     }
@@ -1906,6 +1926,7 @@ mod tests {
             valid_after_block_number: 4,
             shard_id: "root".to_string(),
             expiration_timestamp: Some(500),
+            parameters: Vec::new(),
         };
         assert_eq!(
             DeployData::decode(DeployData::encode(with_expiration.clone())).unwrap(),
@@ -1934,6 +1955,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         };
         assert_eq!(deploy.total_phlo_charge(), 77);
         assert!(!deploy.has_expiration());

@@ -134,6 +134,7 @@ impl DeployRuntime {
                 valid_after_block_number: valid_after_block,
                 shard_id: shard_id.to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             };
 
             // Signed(d, Secp256k1, privateKey)

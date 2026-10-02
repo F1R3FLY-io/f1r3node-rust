@@ -603,6 +603,7 @@ dependencies = [
 name = "block-storage"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "crypto",
  "dashmap",
  "hex",
@@ -3435,6 +3436,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
+ "thiserror 2.0.19",
  "tonic 0.14.6",
  "tonic-prost",
  "tonic-prost-build",

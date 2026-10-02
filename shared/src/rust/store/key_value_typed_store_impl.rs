@@ -13,6 +13,8 @@ use crate::rust::BitVector;
 pub struct KeyValueTypedStoreImpl<K, V> {
     store: Arc<dyn KeyValueStore>,
     phantom_data: PhantomData<(K, V)>,
+    value_encoder: fn(&V) -> Result<BitVector, KvStoreError>,
+    value_decoder: fn(&BitVector) -> Result<V, KvStoreError>,
 }
 
 impl<K, V> KeyValueTypedStoreImpl<K, V>
@@ -26,9 +28,23 @@ where
     V: serde::Serialize + for<'a> serde::Deserialize<'a> + Clone,
 {
     pub fn new(store: Arc<dyn KeyValueStore>) -> Self {
+        Self::with_value_codec(
+            store,
+            |value| Ok(bincode::serialize(value)?),
+            |bytes| Ok(bincode::deserialize(bytes)?),
+        )
+    }
+
+    pub fn with_value_codec(
+        store: Arc<dyn KeyValueStore>,
+        value_encoder: fn(&V) -> Result<BitVector, KvStoreError>,
+        value_decoder: fn(&BitVector) -> Result<V, KvStoreError>,
+    ) -> Self {
         Self {
             store,
             phantom_data: PhantomData,
+            value_encoder,
+            value_decoder,
         }
     }
 
@@ -46,11 +62,11 @@ where
     }
 
     pub fn encode_value(&self, value: &V) -> Result<BitVector, KvStoreError> {
-        Ok(bincode::serialize(value)?)
+        (self.value_encoder)(value)
     }
 
     pub fn decode_value(&self, encoded_value: &BitVector) -> Result<V, KvStoreError> {
-        Ok(bincode::deserialize(encoded_value)?)
+        (self.value_decoder)(encoded_value)
     }
 
     // See shared/src/main/scala/coop/rchain/store/KeyValueTypedStoreSyntax.scala

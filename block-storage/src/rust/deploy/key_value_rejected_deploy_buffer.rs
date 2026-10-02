@@ -8,11 +8,12 @@
 // Mirrors KeyValueDeployStorage in shape and storage backing.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
@@ -25,9 +26,17 @@ pub struct KeyValueRejectedDeployBuffer {
 impl KeyValueRejectedDeployBuffer {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let buffer_kv_store = kvm.store("rejected_deploy_buffer".to_string()).await?;
-        let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-            KeyValueTypedStoreImpl::new(buffer_kv_store);
-        Ok(Self { store: buffer_db })
+        Ok(Self::from_store(buffer_kv_store))
+    }
+
+    pub fn from_store(store: Arc<dyn KeyValueStore>) -> Self {
+        Self {
+            store: KeyValueTypedStoreImpl::with_value_codec(
+                store,
+                super::deploy_codec::encode,
+                super::deploy_codec::decode,
+            ),
+        }
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -101,6 +110,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),

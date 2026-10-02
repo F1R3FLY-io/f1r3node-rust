@@ -1,11 +1,12 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
@@ -18,11 +19,17 @@ pub struct KeyValueDeployStorage {
 impl KeyValueDeployStorage {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await?;
-        let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-            KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-        Ok(Self {
-            store: deploy_storage_db,
-        })
+        Ok(Self::from_store(deploy_storage_kv_store))
+    }
+
+    pub fn from_store(store: Arc<dyn KeyValueStore>) -> Self {
+        Self {
+            store: KeyValueTypedStoreImpl::with_value_codec(
+                store,
+                super::deploy_codec::encode,
+                super::deploy_codec::decode,
+            ),
+        }
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -105,6 +112,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),
@@ -153,9 +161,7 @@ mod tests {
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
         let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage = KeyValueDeployStorage {
-            store: KeyValueTypedStoreImpl::new(store),
-        };
+        let storage = KeyValueDeployStorage::from_store(store);
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),
@@ -165,6 +171,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),
