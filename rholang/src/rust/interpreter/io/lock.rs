@@ -1194,6 +1194,50 @@ impl LockRegistry {
             .any(|e| ranges_overlap((e.offset, e.length), range))
     }
 
+    /// Count of distinct HELD lock entries on `(dev_inode)`:
+    /// every held range, plus `1` if a sequential_holder is
+    /// present.  PARKED waiters are NOT counted.
+    ///
+    /// Returns `0` if `(dev_inode)` has no entry in the registry
+    /// (vacuously no holders).
+    ///
+    /// # Oracular unlink diagnostic
+    ///
+    /// Called from the Oracular-mode `fs_remove_file` /
+    /// `fs_remove_dir` paths (yet-to-land) to log how many
+    /// holders would have blocked the unlink under consensus
+    /// mode.  Oracular callers DO NOT gate the unlink on this
+    /// result — they log-warn with the count and proceed —
+    /// which is why this method exists alongside [`is_locked`]
+    /// (the gating boolean) rather than replacing it: consensus-
+    /// mode uses the boolean short-circuit, Oracular-mode uses
+    /// the diagnostic count.
+    ///
+    /// # Why PARKED waiters don't count
+    ///
+    /// A parked waiter is a wish, not a hold.  The unlink
+    /// diagnostic measures how many entities would observe the
+    /// unlink as a visible change — a parked waiter does not
+    /// yet own anything on the file, so from the unlink's
+    /// perspective the waiter is just a bystander.  (If the
+    /// unlink proceeds while a waiter is parked, the waiter's
+    /// `oneshot` sender stays alive in `state.waiters` until
+    /// its deploy-end sweep or an explicit `cancel_wait` fires.
+    /// `state_is_empty` continues to see the waiter and refuses
+    /// to evict the state — correct for the waiter's lifetime.)
+    ///
+    /// # Read-side hot path
+    ///
+    /// Uses the `read` guard (contention-free concurrent
+    /// readers).  O(1) — just a vec-len + option-is-some.
+    pub fn n_holders(&self, dev_inode: DevInode) -> usize {
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
+        let Some(state) = guard.get(&dev_inode) else {
+            return 0;
+        };
+        state.ranges.len() + usize::from(state.sequential_holder.is_some())
+    }
+
     /// Try to acquire the whole-file sequential lock on
     /// `(dev_inode)` for `holder`.
     ///
@@ -5585,5 +5629,148 @@ mod tests {
         let released = reg.release_all_for_deploy(&d1);
         assert_eq!(released, 1);
         assert_eq!(d2_rx.try_recv(), Ok(Ok(d2_lock_id)));
+    }
+
+    // --- n_holders ------------------------------------------------
+
+    /// Absent key → 0.
+    #[test]
+    fn n_holders_absent_key_is_zero() {
+        let reg = LockRegistry::new();
+        assert_eq!(reg.n_holders((42, 42)), 0);
+    }
+
+    /// One held range → 1.
+    #[test]
+    fn n_holders_counts_single_range() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// Multiple held ranges on the same file (reader-reader) → N.
+    #[test]
+    fn n_holders_counts_multiple_ranges() {
+        let reg = LockRegistry::new();
+        for i in 0..5u8 {
+            reg.try_acquire_range(
+                (1, 1),
+                (i as u64) * 100,
+                50,
+                LockMode::Read,
+                HolderId::from_bytes([i; 32]),
+                [i; 32],
+            )
+            .unwrap();
+        }
+        assert_eq!(reg.n_holders((1, 1)), 5);
+    }
+
+    /// Only a sequential_holder → 1.
+    #[test]
+    fn n_holders_counts_sequential_as_one() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 1), HolderId::from_bytes([0x11; 32]), deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// LOAD-BEARING: PARKED waiters are NOT counted.  A waiter
+    /// is a wish, not a hold — the Oracular diagnostic measures
+    /// what the unlink would displace, not who was watching.
+    #[test]
+    fn n_holders_does_not_count_parked_waiters() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0xAA; 32]),
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        // Park two waiters.
+        let _b = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xBB; 32]),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let _c = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xCC; 32]),
+                deploy_scope(0xCC),
+            )
+            .unwrap();
+        // Only A's held range counts.
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// Mixed: sequential_holder forbids coexistence with ranges
+    /// by construction, so the "ranges + sequential" scenario
+    /// doesn't arise in production.  But n_holders's addition is
+    /// well-defined regardless; pin via a hand-populated state
+    /// that bypasses the admissibility check.
+    #[test]
+    fn n_holders_sums_ranges_and_sequential_if_both_present() {
+        let reg = LockRegistry::new();
+        {
+            let mut guard = reg.inner.write().unwrap();
+            let state = guard.entry((1, 1)).or_default();
+            state.ranges.push(RangeEntry {
+                id: LockId::try_from(1).unwrap(),
+                offset: 0,
+                length: 10,
+                mode: LockMode::Read,
+                holder: HolderId::from_bytes([0x11; 32]),
+                deploy: [0x11; 32],
+            });
+            state.sequential_holder = Some(SequentialEntry {
+                id: LockId::try_from(2).unwrap(),
+                holder: HolderId::from_bytes([0x22; 32]),
+                deploy: [0x22; 32],
+            });
+        }
+        assert_eq!(reg.n_holders((1, 1)), 2);
+    }
+
+    /// After release of every held lock, n_holders returns 0.
+    /// (State may stay in the map if a waiter is parked —
+    /// that's `is_locked` / `state_is_empty`'s concern; this
+    /// pins n_holders's definition.)
+    #[test]
+    fn n_holders_zero_after_all_held_released() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 1);
+        reg.release(id, &holder).unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 0);
     }
 }
