@@ -29,23 +29,29 @@
 //     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
 //     assert (slice 8).
 //
+// # This slice adds
+//
+//   - `lock_registry: SharedLockRegistry` public field +
+//     [`share_lock_registry`](FileHandleTable::share_lock_registry)
+//     broadcast method (slice 47 — gated on
+//     [`super::lock::SharedLockRegistry`]'s PR #543).
+//   - [`close_all_for_deploy`](FileHandleTable::close_all_for_deploy)
+//     — deploy-abort fd sweep (sentinel-guarded).
+//   - [`has_active_handles_sync`](FileHandleTable::has_active_handles_sync)
+//     — sync try_read used by `WalDeployScope::Drop` to decide
+//     if a sweep is needed.
+//
 // # Deferred to later `handle_table` slices
 //
-//   - `lock_registry: LockRegistry` + `share_lock_registry` —
-//     gated on `LockRegistry`.
 //   - `dir_handles: DirHandleTable` + `share_dir_handles` —
 //     gated on `DirHandleTable`.
-//   - `close_all_for_deploy` / `has_active_handles_sync` — gated
-//     on `LockRegistry` for the symmetric sweep interface.
 //
-// Each deferred field / method group has its own natural
-// dependency:  `lock_registry` waits for `lock.rs`'s
-// `LockRegistry` slice; `dir_handles` waits for
-// `dir_handle_table.rs`; sharing methods wait for
-// `RootIdentityRegistry::share_from` in a future `path::identity`
-// slice.  Landing the fd allocator alone now unblocks the
-// FileHandle *construction* path in Wave 4 handlers even while
-// the higher-order plumbing catches up.
+// `dir_handles` waits for `dir_handle_table.rs`; sharing
+// methods wait for `RootIdentityRegistry::share_from` in a
+// future `path::identity` slice.  Landing the fd allocator
+// alone now unblocks the FileHandle *construction* path in
+// Wave 4 handlers even while the higher-order plumbing catches
+// up.
 //
 // # Fd namespace: NOT unique across FileHandleTable +
 //   DirHandleTable
@@ -95,7 +101,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::errors::poison_abort;
-use super::lock::DeployScope;
+use super::lock::{DeployScope, SharedLockRegistry};
 use super::mode::AccessMode;
 use super::path::identity::RootIdentityRegistry;
 use super::wal::{PayloadPersistence, PayloadSourceRecorder, Wal};
@@ -288,6 +294,37 @@ pub struct FileHandleTable {
     /// internally (see `RootIdentityRegistry` docs), so no
     /// discipline is bypassed by direct access.
     pub root_registry: RootIdentityRegistry,
+    /// Shared range-lock registry.  Colocated on `RuntimeManager`
+    /// alongside `root_registry`; broadcast to every spawned
+    /// runtime via [`share_lock_registry`](Self::share_lock_registry)
+    /// so cross-cap coordination on the same `(dev, inode)`
+    /// collapses to a single entry regardless of which runtime
+    /// holds each cap (see X-1 design memo).
+    ///
+    /// Wrapped in [`SharedLockRegistry`] (not raw `LockRegistry`)
+    /// so a `FileHandleTable` cloned BEFORE
+    /// `share_lock_registry` still observes the swap afterward
+    /// — the same reducer-clone-visibility invariant that
+    /// drives [`RootIdentityRegistry::share_from`].  See
+    /// [`SharedLockRegistry`]'s type-level docstring for the
+    /// PB-M-14 rationale.
+    ///
+    /// Public field (matches `root_registry`'s ergonomic idiom)
+    /// — the inner [`LockRegistry`]'s own methods route through
+    /// `poison_abort` internally.
+    ///
+    /// # Replace via [`share_lock_registry`], NOT direct
+    /// field assignment
+    ///
+    /// `handles.lock_registry = other` would allocate a NEW
+    /// outer slot Arc on `handles`, orphaning any clone of
+    /// `handles` that captured the ORIGINAL slot Arc earlier —
+    /// the exact reducer-clone-visibility regression this
+    /// field's wrapper exists to prevent.  Always re-point via
+    /// [`share_lock_registry`](Self::share_lock_registry), which
+    /// routes through [`SharedLockRegistry::share_from`] and
+    /// swaps the slot's INNER backing in place.
+    pub lock_registry: SharedLockRegistry,
     /// The per-runtime "current deploy state" — `scope` + `sig`
     /// bundled under a **single** guard.
     ///
@@ -708,6 +745,83 @@ impl FileHandleTable {
     ///      inner and every runtime sees it.
     pub fn share_root_registry(&self, shared: RootIdentityRegistry) {
         self.root_registry.share_from(&shared);
+    }
+
+    /// Atomically re-point `self`'s `lock_registry` backing at
+    /// `shared`'s backing — [`SharedLockRegistry::share_from`]
+    /// discipline (see that type's docstring for the reducer-
+    /// clone-visibility rationale).  Called from
+    /// `RuntimeManager::spawn_runtime` after the manager-side
+    /// `SharedLockRegistry` is constructed; subsequent writes
+    /// through `shared` propagate to every clone of `self`.
+    ///
+    /// Takes `&self` (not `&mut self`): the slot's own `RwLock`
+    /// provides interior mutability.  Matches
+    /// [`share_root_registry`](Self::share_root_registry).
+    pub fn share_lock_registry(&self, shared: SharedLockRegistry) {
+        self.lock_registry.share_from(&shared);
+    }
+
+    /// Close every file fd owned by `scope`.  Mirrors
+    /// [`super::lock::LockRegistry::release_all_for_deploy`] on
+    /// the lock side — called from `WalDeployScope::Drop` to
+    /// sweep files the deploy left open past end (via
+    /// `drop(File)` without dispatching `fs_close`, or by
+    /// dropping the Rholang cap holding the fd).  Returns the
+    /// count of fds swept, for diagnostics.
+    ///
+    /// # Sentinel guard
+    ///
+    /// Panics on the `[0; 32]` sentinel scope — same discipline
+    /// as [`super::lock::LockRegistry::release_all_for_deploy`].
+    /// The all-zeros `DeployScope` is reserved as a pre-wiring
+    /// placeholder; a `WalDeployScope::Drop` under a live scope
+    /// always derives a non-sentinel Blake2b256-based scope.  A
+    /// sentinel sweep would close every stray sentinel-scoped
+    /// handle on the table (test scaffolding, pre-wiring
+    /// regressions).
+    ///
+    /// # OS-level fd lifetime
+    ///
+    /// Dropping a [`FileHandle`] (whose `file: Option<Arc<File>>`
+    /// holds the OS fd) automatically closes the underlying
+    /// kernel fd via `File`'s `Drop` impl.  Shadow handles
+    /// (`file: None`, follower is-replay path) have no OS fd;
+    /// sweeping them is a pure HashMap-entry removal.
+    pub async fn close_all_for_deploy(&self, scope: &DeployScope) -> usize {
+        assert!(
+            *scope != [0u8; 32],
+            "FileHandleTable::close_all_for_deploy called with the [0; 32] sentinel — \
+             the all-zeros DeployScope is reserved as a pre-wiring placeholder; a \
+             production WalDeployScope::Drop derives a non-sentinel scope via \
+             Blake2b256.  Calling with the sentinel would sweep every stray \
+             sentinel-scoped handle."
+        );
+        let mut table = self.inner.table.write().await;
+        let before = table.len();
+        table.retain(|_, h| &h.deploy != scope);
+        before - table.len()
+    }
+
+    /// Sync peek into the table's length without awaiting the
+    /// `RwLock`.  Used by `WalDeployScope::Drop` to decide
+    /// whether the deploy-end sweep is a no-op (empty table) or
+    /// has real work to do — the latter requires a live tokio
+    /// runtime, the former is safely skippable.
+    ///
+    /// # Fail-safe-pessimistic on contention
+    ///
+    /// Reads via `try_read()`.  On contention (someone else is
+    /// midway through a mutation), returns `true` — the safe
+    /// direction: a false-positive "has handles" forces the
+    /// caller to run the sweep under a tokio runtime (loud
+    /// requirement); a false-negative "no handles" would silently
+    /// skip a needed sweep (quiet correctness regression).
+    pub fn has_active_handles_sync(&self) -> bool {
+        match self.inner.table.try_read() {
+            Ok(guard) => !guard.is_empty(),
+            Err(_) => true,
+        }
     }
 
     // --- Soft-checkpoint (slice 8) ---------------------------------
@@ -1626,5 +1740,192 @@ mod tests {
         table.truncate_to(999).await;
         // Handle survives.
         assert!(table.with_mut(1, |_| ()).await.is_some());
+    }
+
+    // --- share_lock_registry ----------------------------------------
+
+    use super::super::lock::{HolderId, LockMode};
+
+    /// Basic broadcast: after share_lock_registry, writes
+    /// through the shared SharedLockRegistry are visible via
+    /// the table's `lock_registry` field.
+    #[tokio::test]
+    async fn share_lock_registry_broadcasts_from_manager_source() {
+        let table = FileHandleTable::new();
+        let manager = SharedLockRegistry::new();
+        manager
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                [0x11; 32],
+            )
+            .unwrap();
+        table.share_lock_registry(manager);
+        assert_eq!(
+            table.lock_registry.n_holders((1, 1)),
+            1,
+            "runtime side observes the manager's registration after broadcast"
+        );
+    }
+
+    /// LOAD-BEARING reducer-clone visibility: a clone of the
+    /// FileHandleTable captured BEFORE share_lock_registry
+    /// observes the swap afterwards.  Equivalent to
+    /// share_root_registry's PB-M-14 canary pin.
+    #[tokio::test]
+    async fn share_lock_registry_preserves_reducer_clone_visibility() {
+        let runtime_table = FileHandleTable::new();
+        // Reducer-side clone taken BEFORE share_lock_registry.
+        let reducer_table = runtime_table.clone();
+        // Manager constructs + registers a hold.
+        let manager = SharedLockRegistry::new();
+        manager
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                [0xAA; 32],
+            )
+            .unwrap();
+        // Broadcast to the runtime (NOT to the reducer's clone).
+        runtime_table.share_lock_registry(manager);
+        // The reducer's prior clone sees the swap through the
+        // shared outer slot.
+        assert_eq!(
+            reducer_table.lock_registry.n_holders((1, 1)),
+            1,
+            "reducer-side clone observes the shared backing after share_lock_registry"
+        );
+    }
+
+    /// LOAD-BEARING late-registration propagation: after
+    /// share_lock_registry, writes through the manager-side
+    /// registry propagate to clones captured before the
+    /// broadcast.
+    #[tokio::test]
+    async fn share_lock_registry_late_registration_propagates_to_prior_clones() {
+        let runtime_table = FileHandleTable::new();
+        let reducer_table = runtime_table.clone();
+        let manager = SharedLockRegistry::new();
+        runtime_table.share_lock_registry(manager.clone());
+        // AFTER broadcast: manager registers a hold.
+        manager
+            .try_acquire_range(
+                (7, 7),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x77; 32]),
+                [0x77; 32],
+            )
+            .unwrap();
+        assert_eq!(reducer_table.lock_registry.n_holders((7, 7)), 1);
+    }
+
+    // --- close_all_for_deploy --------------------------------------
+
+    /// Sweeps every fd owned by `scope`; others survive.
+    #[tokio::test]
+    async fn close_all_for_deploy_sweeps_matching_handles() {
+        let table = FileHandleTable::new();
+        let fd_a1 = table.insert(shadow_handle(0xAA)).await.unwrap();
+        let fd_a2 = table.insert(shadow_handle(0xAA)).await.unwrap();
+        let fd_b = table.insert(shadow_handle(0xBB)).await.unwrap();
+        let n = table.close_all_for_deploy(&[0xAA; 32]).await;
+        assert_eq!(n, 2);
+        assert!(table.with_mut(fd_a1, |_| ()).await.is_none());
+        assert!(table.with_mut(fd_a2, |_| ()).await.is_none());
+        assert!(table.with_mut(fd_b, |_| ()).await.is_some());
+    }
+
+    /// No matches → zero swept, no mutation.
+    #[tokio::test]
+    async fn close_all_for_deploy_no_match_returns_zero() {
+        let table = FileHandleTable::new();
+        table.insert(shadow_handle(0x11)).await.unwrap();
+        let n = table.close_all_for_deploy(&[0xFF; 32]).await;
+        assert_eq!(n, 0);
+        assert!(table.with_mut(1, |_| ()).await.is_some());
+    }
+
+    /// LOAD-BEARING sentinel guard: `[0; 32]` sweep panics with
+    /// the explanatory message.
+    #[tokio::test]
+    #[should_panic(expected = "sentinel")]
+    async fn close_all_for_deploy_panics_on_zero_sentinel() {
+        let table = FileHandleTable::new();
+        let _ = table.close_all_for_deploy(&[0u8; 32]).await;
+    }
+
+    // --- has_active_handles_sync -----------------------------------
+
+    /// Empty table → false.
+    #[tokio::test]
+    async fn has_active_handles_sync_empty_table_is_false() {
+        let table = FileHandleTable::new();
+        assert!(!table.has_active_handles_sync());
+    }
+
+    /// Non-empty table → true.
+    #[tokio::test]
+    async fn has_active_handles_sync_with_handle_is_true() {
+        let table = FileHandleTable::new();
+        table.insert(shadow_handle(0x01)).await.unwrap();
+        assert!(table.has_active_handles_sync());
+    }
+
+    /// LOAD-BEARING fail-safe-pessimistic on contention: if the
+    /// `RwLock` is contended (held by a writer), `try_read()`
+    /// returns `Err` → the method returns `true`.  Pin the
+    /// contention path by holding a write guard across the
+    /// call.
+    #[tokio::test]
+    async fn has_active_handles_sync_contended_returns_true() {
+        let table = FileHandleTable::new();
+        // Table is empty, so without contention has_active would
+        // return false.  Hold a write guard to force contention.
+        let _held = table.inner.table.write().await;
+        assert!(
+            table.has_active_handles_sync(),
+            "contended try_read must fail-safe-pessimistic (over-report true)"
+        );
+    }
+
+    /// `_sync` promises callability outside a tokio runtime —
+    /// the primary use case is `WalDeployScope::Drop`, which
+    /// may fire from a sync context.  Pin by invoking from a
+    /// plain `#[test]` (no runtime).  Empty-table path only;
+    /// the contended path requires a write guard which requires
+    /// awaiting, so it can't be exercised sync.
+    #[test]
+    fn has_active_handles_sync_callable_outside_tokio_runtime() {
+        let table = FileHandleTable::new();
+        assert!(
+            !table.has_active_handles_sync(),
+            "sync method must be callable from a non-tokio-runtime context"
+        );
+    }
+
+    /// INTEGRATION: after `close_all_for_deploy` sweeps every
+    /// handle, `has_active_handles_sync` reports empty.  Pins
+    /// the state-machine linkage between the two sync APIs the
+    /// `WalDeployScope::Drop` path composes.
+    #[tokio::test]
+    async fn close_all_for_deploy_leaves_has_active_handles_sync_false() {
+        let table = FileHandleTable::new();
+        table.insert(shadow_handle(0xAA)).await.unwrap();
+        table.insert(shadow_handle(0xAA)).await.unwrap();
+        assert!(table.has_active_handles_sync());
+        let n = table.close_all_for_deploy(&[0xAA; 32]).await;
+        assert_eq!(n, 2);
+        assert!(
+            !table.has_active_handles_sync(),
+            "after bulk sweep the table must be empty"
+        );
     }
 }
