@@ -385,23 +385,42 @@ pub mod builder {
         explicit_config_file: Option<PathBuf>,
     ) -> (PathBuf, Vec<String>) {
         if let Some(path) = explicit_config_file {
-            return (path, Vec::new());
+            let warnings = if path.exists() {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "Config file {} not found; starting from embedded defaults only.",
+                    path.display(),
+                )]
+            };
+            return (path, warnings);
         }
 
         let default_path = data_dir.join(DEFAULT_CONFIG_FILE_NAME);
         let legacy_path = data_dir.join(LEGACY_CONFIG_FILE_NAME);
         if !default_path.exists() && legacy_path.exists() {
             let warning = format!(
-                "{} not found; falling back to legacy {}. Rename it to {} before \
-                the next release, when this fallback is removed.",
+                "{} not found; falling back to legacy {}. Rename it to {} — the \
+                fallback will be removed once every deployment that still mounts \
+                the legacy name has been updated.",
                 default_path.display(),
                 legacy_path.display(),
                 DEFAULT_CONFIG_FILE_NAME,
             );
-            (legacy_path, vec![warning])
-        } else {
-            (default_path, Vec::new())
+            return (legacy_path, vec![warning]);
         }
+
+        let warnings = if default_path.exists() {
+            Vec::new()
+        } else {
+            vec![format!(
+                "No config file found at {} (or legacy {}); starting from embedded \
+                defaults only.",
+                default_path.display(),
+                legacy_path.display(),
+            )]
+        };
+        (default_path, warnings)
     }
 
     /// Check dev mode and adjust configuration accordingly. Returns the
@@ -464,20 +483,40 @@ pub mod builder {
         use super::*;
 
         #[test]
-        fn explicit_path_wins_even_if_absent() {
+        fn explicit_path_wins_but_warns_if_absent() {
             let data_dir = std::env::temp_dir().join("f1r3fly-config-path-test-explicit");
             let explicit = data_dir.join("custom.conf");
             let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
             assert_eq!(path, explicit);
-            assert!(warnings.is_empty());
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains(&explicit.display().to_string()));
         }
 
         #[test]
-        fn defaults_to_f1r3fly_conf_when_neither_file_exists() {
+        fn explicit_path_present_emits_no_warning() {
+            let data_dir = std::env::temp_dir()
+                .join("f1r3fly-config-path-test-explicit-present")
+                .join(uuid::Uuid::new_v4().to_string());
+            std::fs::create_dir_all(&data_dir).expect("create test data dir");
+            let explicit = data_dir.join("custom.conf");
+            std::fs::write(&explicit, "").expect("write explicit config file");
+
+            let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
+
+            assert_eq!(path, explicit);
+            assert!(warnings.is_empty());
+
+            std::fs::remove_dir_all(&data_dir).expect("clean up test data dir");
+        }
+
+        #[test]
+        fn warns_when_neither_default_nor_legacy_file_exists() {
             let data_dir = std::env::temp_dir().join("f1r3fly-config-path-test-neither");
             let (path, warnings) = resolve_config_file_path(&data_dir, None);
             assert_eq!(path, data_dir.join(DEFAULT_CONFIG_FILE_NAME));
-            assert!(warnings.is_empty());
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains(DEFAULT_CONFIG_FILE_NAME));
+            assert!(warnings[0].contains(LEGACY_CONFIG_FILE_NAME));
         }
 
         #[test]
