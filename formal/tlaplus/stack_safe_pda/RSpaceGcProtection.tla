@@ -259,7 +259,7 @@ Crash ==
   /\ newPins' = {}
   /\ walStarts' = [walStarts EXCEPT !["replay0"] = NoWalStart,
                                    !["rollback0"] = NoWalStart]
-  /\ crashedAfterOverlap' = crashedAfterOverlap \/ (overlapAtPublish /\ oldPresent)
+  /\ crashedAfterOverlap' = (crashedAfterOverlap \/ (overlapAtPublish /\ oldPresent))
   /\ UNCHANGED <<catalog, copied, oldPresent, durable, oldDurable, knownAtPublish,
                  overlapAtPublish,
                  reclaimIntent, walHead, walTail>>
