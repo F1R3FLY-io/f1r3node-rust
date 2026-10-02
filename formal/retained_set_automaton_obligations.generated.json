@@ -1,0 +1,118 @@
+{
+  "causal_formal_mutants": [],
+  "dedicated_tla_configurations": [],
+  "dedicated_verus_sources": [],
+  "negative_controls": [
+    {
+      "assertions": [
+        "RhoPathV1::relative_datum_key(b\"resting/alpha\", b\"identity/alpha\")",
+        "matching_candidates_with_resting(b\"unrelated/fresh\", &[0], Some(&resting))",
+        "assert_eq!(selected, vec![true, false, true])"
+      ],
+      "test": "retained_segments_product_walk_the_authoritative_resting_bag"
+    },
+    {
+      "assertions": [
+        "RhoPathV1::relative_datum_key(&alpha_deeper, b\"identity/alpha\")",
+        "RhoPathV1::relative_datum_key(&beta, b\"identity/beta\")",
+        "assert_eq!(selected, vec![true, true, true, false, true])"
+      ],
+      "test": "compressed_product_runs_visit_prefix_terminals_and_bag_branches"
+    },
+    {
+      "assertions": [
+        "assert_eq!(selected, vec![true, true, true, false])"
+      ],
+      "test": "singleton_bag_with_multiple_terminal_depths_uses_the_linear_product"
+    }
+  ],
+  "normal_suite": {
+    "rspace++/tests/retained_set_automaton_allocation_spec.rs": {
+      "sha256": "4590ddb11da9d66d9f7b27bc0ec92da81337dcdb692d5a97b6378748d4aa8011",
+      "tests": [
+        "doubling_live_terminals_has_a_linear_construction_allocation_slope"
+      ]
+    },
+    "rspace++/tests/retained_set_automaton_spec.rs": {
+      "sha256": "c29ca8ac4f9c5eeb80e913c234e6eeffbe2a65a576539cfcc2989063cd2ee167",
+      "tests": [
+        "exact_terminals_and_root_fallbacks_are_selected_by_bind_position",
+        "automaton_selection_is_a_superset_of_direct_matches",
+        "every_candidate_in_a_large_shared_terminal_chain_is_selected",
+        "structural_queries_use_exact_trie_prefixes_and_filter_after_wildcards",
+        "retained_segments_product_walk_the_authoritative_resting_bag",
+        "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+        "singleton_bag_path_selects_a_terminal_below_diverse_and_shared_branches",
+        "singleton_bag_with_multiple_terminal_depths_uses_the_linear_product",
+        "representation_stats_expose_eligibility_and_terminal_sharing",
+        "immutable_rebuilds_never_accumulate_dead_terminals",
+        "deep_and_wide_automata_compile_select_and_drop_on_a_tiny_stack"
+      ]
+    }
+  },
+  "normal_suite_boundary": "These are Cargo auto-discovered integration-test targets. The existing stack-safe-pda proof script compiles SpatialMatcher.v but does not explicitly run either retained-automaton Rust test target.",
+  "obligations": [
+    {
+      "conditional_hypotheses": [
+        "successful_match_has_retained_prefix",
+        "successful_match_passes_residual_query"
+      ],
+      "id": "RSA-ROCQ-01",
+      "kind": "theorem",
+      "mode": "executable_refinement",
+      "normal_suite_witnesses": [
+        "automaton_selection_is_a_superset_of_direct_matches"
+      ],
+      "section": "RetainedPathQuery",
+      "symbol": "retained_candidate_has_no_false_negative"
+    },
+    {
+      "conditional_hypotheses": [
+        "successful_match_has_retained_prefix",
+        "successful_match_passes_residual_query"
+      ],
+      "id": "RSA-ROCQ-02",
+      "kind": "theorem",
+      "mode": "proof_only",
+      "normal_suite_witnesses": [],
+      "section": "RetainedPathQuery",
+      "symbol": "retained_filter_preserves_first_spatial_match"
+    },
+    {
+      "conditional_hypotheses": [
+        "successful_match_has_product_prefix",
+        "successful_fresh_match_passes_residual"
+      ],
+      "id": "RSA-ROCQ-03",
+      "kind": "theorem",
+      "mode": "proof_only",
+      "normal_suite_witnesses": [
+        "retained_segments_product_walk_the_authoritative_resting_bag",
+        "compressed_product_runs_visit_prefix_terminals_and_bag_branches"
+      ],
+      "section": "RetainedBagProduct",
+      "symbol": "retained_bag_product_has_no_false_negative"
+    },
+    {
+      "conditional_hypotheses": [
+        "successful_match_has_product_prefix",
+        "successful_fresh_match_passes_residual"
+      ],
+      "id": "RSA-ROCQ-04",
+      "kind": "corollary",
+      "mode": "proof_only",
+      "normal_suite_witnesses": [
+        "retained_segments_product_walk_the_authoritative_resting_bag",
+        "compressed_product_runs_visit_prefix_terminals_and_bag_branches"
+      ],
+      "section": "RetainedBagProduct",
+      "symbol": "retained_bag_product_rejection_proves_no_pool_match"
+    }
+  ],
+  "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The fresh-datum superset test compares against Match; resting-Bag tests are finite positive/negative controls, not a universal prefix-terminal refinement or first-admissible-order proof.",
+  "rocq_sha256": "240b3921aead9cb9d3bc6473a773d0625f8703bf6f83c378fccab3dea0d29e8c",
+  "rocq_source": "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+  "runtime_sha256": "58729b8da4f3416f0c5628e2748ef7c32e7483b8924a4b4a839b8fd47b810cc0",
+  "runtime_source": "rspace++/src/rspace/retained_set_automaton.rs",
+  "scope": "retained RSpace set automaton and authoritative resting-Bag product"
+}

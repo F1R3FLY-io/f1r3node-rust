@@ -1,0 +1,381 @@
+{
+  "causal_mutants": [],
+  "rocq_print_assumptions": [
+    {
+      "assertion": "assert_eq!(consumed + second_consumed, stream.len());",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-01",
+      "symbol": "channel_prefix_parser_is_left_inverse",
+      "target": "borrowed_cursor_takes_exactly_one_image_from_a_stream",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "assert_eq!(decoded, par, \"semantic round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-02",
+      "symbol": "channel_exact_parser_is_left_inverse",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "assert_eq!(left, right, \"image locally_free quotient: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-03",
+      "symbol": "canonical_channel_image_is_unique_iff_semantic_par_equality",
+      "target": "image_is_exactly_a_function_of_par_equality",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "\"root locally_free quotient: {label}\"",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-04",
+      "symbol": "root_locally_free_is_quotiented_out",
+      "target": "image_is_exactly_a_function_of_par_equality",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "\"connective image: {label}\"",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-05",
+      "symbol": "connective_flag_separates_otherwise_equal_channels",
+      "target": "image_is_exactly_a_function_of_par_equality",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "&16u64.to_be_bytes()",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-06",
+      "symbol": "endpoint_multiplicities_are_preserved_exactly",
+      "target": "multiplicity_is_one_fixed_width_counter_not_repeated_endpoints",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-ROCQ-07",
+      "symbol": "every_successfully_decoded_channel_has_canonical_endpoints",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "ChannelImageV2::try_from_bytes(&duplicate)",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-08",
+      "symbol": "duplicate_endpoint_fails_strict_order_check",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "ChannelImageV2::try_from_bytes(&reversed)",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-09",
+      "symbol": "permuted_endpoint_fails_strict_order_check",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "image_with_single_endpoint_key(bytes, &nonminimal_varint)",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-10",
+      "symbol": "noncanonical_rpb3_endpoint_fails_admission_check",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "Err(ChannelImageError::ZeroMultiplicity)",
+      "classification": "executable_refinement",
+      "id": "RCI2-ROCQ-11",
+      "symbol": "zero_multiplicity_fails_admission_check",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    }
+  ],
+  "scope_limit": "No ChannelImage-specific TLA config or causal mutant is accepted; ChannelPrefixReplacementMutants.v is a separate transaction family. Executable rows bind concrete normal-suite examples and boundaries, not universal Rocq theorems, Verus arithmetic overflow, or RPB3 parser internals. Abstract proofs and unmatched Verus steps remain proof-only. This registry checks source and runner wiring, not proof/test execution.",
+  "source_sha256": {
+    "formal/rocq/stack_safe_pda/theories/ChannelImage.v": "86612cde8efc525024ae120dcc26526c140a142cb58cba543b7bb0d1493871bd",
+    "formal/verus/channel_image_cursor.rs": "9ab0984e3b2dc785f5f1d29d21a4a6d760107788b4ca155358de216d26db5a4b",
+    "models/tests/channel_image_v2.rs": "0d50bf53d099f94e675e130ec3176874ae37618004e3a9130831f504a301f3ce"
+  },
+  "tla_obligations": [],
+  "verus_obligations": [
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-01",
+      "kind": "verified_exec",
+      "symbol": "checked_cursor_add",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-02",
+      "kind": "verified_exec",
+      "symbol": "checked_bounded_advance",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-03",
+      "kind": "verified_exec",
+      "symbol": "checked_cursor_increment",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-04",
+      "kind": "open_spec",
+      "symbol": "u64_be_spec",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "&16u64.to_be_bytes()",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-05",
+      "kind": "verified_exec",
+      "symbol": "executable_u64_from_be_bytes",
+      "target": "multiplicity_is_one_fixed_width_counter_not_repeated_endpoints",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-06",
+      "kind": "verified_exec",
+      "symbol": "checked_fixed_u64_read",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "Err(ChannelImageError::InvalidEscape(0x7E))",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-07",
+      "kind": "verified_exec",
+      "symbol": "checked_escaped_frame_step",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-08",
+      "kind": "verified_exec",
+      "symbol": "checked_distinct_increment",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "Err(ChannelImageError::DistinctCountMismatch {",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-09",
+      "kind": "verified_exec",
+      "symbol": "exact_distinct_count",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-10",
+      "kind": "open_spec",
+      "symbol": "admitted_rpb3_relative_key",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-11",
+      "kind": "open_spec",
+      "symbol": "byte_lex_less",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "image_with_single_endpoint_key(bytes, &nonminimal_varint)",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-12",
+      "kind": "open_spec",
+      "symbol": "endpoint_admitted",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "ChannelImageV2::try_from_bytes(&reversed)",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-13",
+      "kind": "open_spec",
+      "symbol": "endpoints_strictly_ascending",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-14",
+      "kind": "open_spec",
+      "symbol": "escape_rpb3_key",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-15",
+      "kind": "open_spec",
+      "symbol": "unescape_rpb3_key",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-16",
+      "kind": "proof",
+      "symbol": "unescape_nonzero_prefix",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-17",
+      "kind": "proof",
+      "symbol": "unescape_zero_prefix",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-18",
+      "kind": "proof",
+      "symbol": "escaped_key_round_trip",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "assert_eq!(image(&decoded), encoded, \"byte-stable round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-19",
+      "kind": "open_spec",
+      "symbol": "encode_endpoint",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "assert_eq!(decoded, par, \"semantic round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-20",
+      "kind": "open_spec",
+      "symbol": "decode_endpoint",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-21",
+      "kind": "proof",
+      "symbol": "admitted_endpoint_encoder_decoder_refinement",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "assert_eq!(image(&decoded), encoded, \"byte-stable round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-22",
+      "kind": "open_spec",
+      "symbol": "encode_endpoints",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "assert_eq!(decoded, par, \"semantic round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-23",
+      "kind": "open_spec",
+      "symbol": "decode_endpoints",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-24",
+      "kind": "proof",
+      "symbol": "encode_endpoints_preserves_length",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-25",
+      "kind": "proof",
+      "symbol": "decode_encoded_endpoint_prefix",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-26",
+      "kind": "proof",
+      "symbol": "admitted_endpoints_encoder_decoder_refinement",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "Err(ChannelImageError::ZeroMultiplicity)",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-27",
+      "kind": "open_spec",
+      "symbol": "semantic_channel_admitted",
+      "target": "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "assert_eq!(image(&decoded), encoded, \"byte-stable round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-28",
+      "kind": "open_spec",
+      "symbol": "encode_channel",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": "assert_eq!(decoded, par, \"semantic round trip: {label}\");",
+      "classification": "executable_refinement",
+      "id": "RCI2-VERUS-29",
+      "kind": "open_spec",
+      "symbol": "decode_channel",
+      "target": "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+      "target_source": "models/tests/channel_image_v2.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-30",
+      "kind": "proof",
+      "symbol": "admitted_channel_encoder_decoder_refinement",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RCI2-VERUS-31",
+      "kind": "proof",
+      "symbol": "admitted_channel_boundary_is_non_vacuous",
+      "target": null,
+      "target_source": null
+    }
+  ]
+}

@@ -588,6 +588,8 @@ rocq_check_modules "captured replay archive" \
   StackSafePDA.ReplayArchive StackSafePDA.ReplayArchiveMutants
 rocq_compile_with_closed_count theories/ChannelImage.v 11 \
   "the channel-image codec capstones"
+python3 "$repo_root/scripts/check-rci2-channel-image-obligations.py" --check
+python3 "$repo_root/scripts/check-rci2-channel-image-obligations.py" --self-test
 rocq_reject_placeholders theories/RSpaceCallerAuthority.v theories/RSpaceCallerAuthorityMutants.v
 rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 36 \
   "the exact caller-authority contract capstones"
@@ -1161,6 +1163,8 @@ done
 "$repo_root/scripts/check-pathmap-anchor-loom.sh"
 python3 "$repo_root/scripts/check-spatial-matcher-obligations.py" --check
 python3 "$repo_root/scripts/check-spatial-matcher-obligations.py" --self-test
+python3 "$repo_root/scripts/check-retained-set-automaton-obligations.py" --check
+python3 "$repo_root/scripts/check-retained-set-automaton-obligations.py" --self-test
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 python3 "$repo_root/scripts/check-accepted-match-obligations.py" --check
 python3 "$repo_root/scripts/check-accepted-match-obligations.py" --self-test
