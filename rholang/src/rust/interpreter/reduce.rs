@@ -1337,11 +1337,11 @@ impl DebruijnInterpreter {
 
             let add_urn = |new_env: &mut Env<Par>, urn: String| {
                 if !self.urn_map.contains_key(&urn) {
-                    // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
-                    // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
                     match new.injections.get(&urn) {
                         Some(p) => {
-                            if let Some(gunf) = RhoUnforgeable::unapply(p) {
+                            if p == &Par::default() {
+                                Ok(new_env.put(Par::default()))
+                            } else if let Some(gunf) = RhoUnforgeable::unapply(p) {
                                 if let Some(instance) = gunf.unf_instance {
                                     Ok(new_env.put(Par::default().with_unforgeables(vec![
                                         GUnforgeable {

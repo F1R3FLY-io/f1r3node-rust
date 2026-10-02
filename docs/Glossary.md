@@ -29,6 +29,13 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Deploy parameter
+
+A deploy parameter is a named, typed Rholang value included in the signed deploy data.
+Rholang code accesses the value through `rho:deploy:param:<name>`.
+
+**Preferred usage.** Use this term for values in `DeployData.parameters`.
+
 ### Release candidate
 
 A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
