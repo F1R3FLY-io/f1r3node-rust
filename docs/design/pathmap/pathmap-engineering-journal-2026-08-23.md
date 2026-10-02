@@ -18541,7 +18541,9 @@ catalog row therefore overstated executable coverage. The corrected model
 retains two explicit vertices and adds unchanged background object and byte
 summaries. Let $`B_o`$ and $`B_b`$ be those summaries, $`c_v`$ the checked
 reference count, and $`w_v`$ the abstract byte weight of vertex $`v`$. The
-independent `u128` oracle recomputes the inventory after every event as
+generator sets $`B_b = 0`$ whenever $`B_o = 0`$, so every symbolic background
+can represent a sum of nonnegative object weights. The independent `u128`
+oracle recomputes the inventory after every event as
 
 ```math
 O = B_o + \sum_v [c_v > 0], \qquad

@@ -634,7 +634,9 @@ and byte contributions change only when the count crosses zero. The byte weight
 is the object's declared canonical length; the object weight is one. The test
 model has two explicit vertices and an unchanged background inventory. The
 background is included in the independent `u128` oracle and never changed by an
-edge event. It permits the exact `u64::MAX` distinct-object boundary without
+edge event. Generated states require zero background bytes when there are zero
+background objects, so the pair represents a valid weighted inventory. It
+permits the exact `u64::MAX` distinct-object boundary without
 allocating that many vertices; the two explicit vertices and large byte weights
 also exercise byte overflow. A zero-weight abstract object isolates the object
 counter's overflow check from the byte counter. That arithmetic control is
@@ -659,7 +661,7 @@ formal targets; their compiled theory is independently kernel-checked.
 | Pinned source | SHA-256 |
 |---|---|
 | `formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v` | `5b9e5199c4001e9620d25ff4b0c700f2670fe23303ca5d1b293d53df2a8b7500` |
-| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `0e9288681d9afcbb0bd6441702c6610efb968273d6082e62be0a87648e7a1aef` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `b5e97ee5226238566bbcb537f6dfede875ec21981baa078c91e9bd29722ef797` |
 | `rspace++/tests/persistence/property_support.rs` | `b8e2aa87da27c9a8bfdc8c611a4e9245fb412475406a3398a5f26a8a28d0588b` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `2f4080420cdd91c233e0137c2941abd67864d1190ec1cb6483f528138b65388b` |
 

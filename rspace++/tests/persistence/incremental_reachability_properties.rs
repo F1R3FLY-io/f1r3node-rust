@@ -132,9 +132,13 @@ proptest! {
     ) {
         let weights = [first_weight, second_weight];
         let background_objects = generated_background_objects.min(u64::MAX - u64::from(initial > 0));
-        let background_bytes = generated_background_bytes.min(
-            u64::MAX - if initial > 0 { first_weight } else { 0 }
-        );
+        let background_bytes = if background_objects == 0 {
+            0
+        } else {
+            generated_background_bytes.min(
+                u64::MAX - if initial > 0 { first_weight } else { 0 }
+            )
+        };
         let mut state = CheckedInventory {
             counts: [initial, 0],
             background_objects,
