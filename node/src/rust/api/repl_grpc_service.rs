@@ -544,38 +544,19 @@ mod prepared_route_tests {
             hex::encode(expected_installation.exports[0].receipt.fingerprint),
         );
         let mut stores = InMemoryStoreManager::new();
-        let store = stores.r_space_stores().await.unwrap();
-        let runtime = create_runtime_from_kv_store(
+        let store = stores.eval_stores().await.unwrap();
+        let mut runtime = create_runtime_from_kv_store(
             store,
             Arc::new(HashMap::new()),
-            true,
+            false,
             &mut composition.definitions,
             Arc::new(Box::new(composition.evaluation.matcher.clone())),
             ExternalServices::noop(),
         )
         .await;
-        let registry_contract =
-            rholang::rust::build::compile_rholang_source::CompiledRholangSource::new(
-                casper::rust::genesis::contracts::embedded_rho::VERSIONED_REGISTRY.to_owned(),
-                HashMap::new(),
-                "VersionedRegistry.rho".to_owned(),
-            )
-            .expect("the production versioned registry genesis source compiles");
-        let registry_result = runtime
-            .evaluate_prepared(
-                rholang::rust::interpreter::frontend::PreparedProgram::from_normalized(
-                    registry_contract.term,
-                ),
-                Cost::unsafe_max(),
-                Blake2b512Random::create_from_length(128),
-            )
+        crate::rust::runtime::f1r3lang::ensure_eval_registry(&mut runtime)
             .await
-            .expect("the production versioned registry genesis deploy evaluates");
-        assert!(
-            registry_result.errors.is_empty(),
-            "versioned registry genesis deploy failed: {:?}",
-            registry_result.errors
-        );
+            .expect("the production eval registry installs");
         let service = ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation);
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
             "/../../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho"));

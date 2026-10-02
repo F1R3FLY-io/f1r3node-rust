@@ -82,11 +82,11 @@ For the complete Regex application, allow a longer client wait explicitly:
 
 ```sh
 target/debug/node --grpc-host=127.0.0.1 --grpc-port=40402 \
-  --grpc-max-recv-message-size=33554432 eval --timeout 5m \
+  --grpc-max-recv-message-size=33554432 eval --timeout 10m --language rho \
   ../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho
 ```
 
-`eval --timeout` accepts a positive duration such as `30s`, `1500ms`, or `5m`.
+`eval --timeout` accepts a positive duration such as `30s`, `1500ms`, or `10m`.
 Its default remains `30s`; durations outside the platform clock range refuse
 before connection. The limit applies separately to each evaluation RPC,
 including server preparation and execution, not to the entire batch of files.
@@ -107,13 +107,49 @@ the host grants the existing native FLT rights, not publication or bridging
 authority. Compile-time guard discharge is disabled on this route so runtime
 guard evaluation remains visible.
 
+## Versioned Registry startup
+
+The standalone eval runtime installs the embedded production
+`VersionedRegistry.rho` contract before accepting an application. It first
+observes the five fixed registry channels: three legacy registry channels,
+the internal versioned-registry channel, and the public
+`rho:registry:1.0.0` channel. A *forwarder* is the existing one-shot bootstrap
+receiver that returns the raw channel to trusted registry source. An *installed
+contract* is the persistent receiver on that channel. The check includes each
+receiver's join count and message-argument arity, not merely its number of
+channel bindings.
+
+| Observed eval RSpace | Startup action |
+| --- | --- |
+| All five channels empty | Run the existing registry bootstrap, then install the embedded versioned-registry source. |
+| All five channels have exactly the bootstrap forwarder | Install the embedded source without bootstrapping again. |
+| Legacy forwarders remain; internal and public channels have the expected persistent API receivers | Reuse the existing installation without another source compilation or checkpoint. |
+| Any partial or unexpected combination | Refuse startup without installing over that state. |
+
+For the two installation cases, startup compiles only the embedded trusted
+genesis source, executes it through the existing interpreter, checks the
+execution result and installed channel shapes, and commits one RSpace
+checkpoint. A failed installation restores the preceding soft checkpoint and
+refuses startup. Reopening the committed eval store takes the reuse path. The
+state model in `formal/rocq/cost_accounted_rho/theories/EvalRegistryStartup.v`
+proves that an installed state does not trigger another bootstrap; the runtime
+tests compare the actual fixed-channel shapes across fresh startup and restart.
+This structural check establishes idempotence of the trusted local startup
+path. It is not a cryptographic attestation of an externally supplied RSpace.
+
+The trusted registry source is baseline node startup material, not a second
+parser for application source. Once startup completes, a Rholang application
+can publish a GSLT value through the versioned registry, retrieve it by its
+explicit `rho:lib` URI and version, and pass the retrieved value to `install!`.
+The application itself still receives exactly one checked MeTTaIL preparation.
+
 ## Deliberate boundaries
 
-The startup composition supplies an empty immutable registry snapshot: inline
-`Module`/`Theory` definitions work within the admitted source profile; registry
-and filesystem loading are unavailable. The constructor accepts an injected
-registry snapshot for a subsequent registry-backed composition. No filesystem
-I/O implementation is introduced.
+The installed-language service still receives an empty immutable
+`RegistrySnapshot`; it does not directly resolve arbitrary registry URIs on
+behalf of `install!`. The in-Rholang publish/retrieve path above is distinct
+from that host snapshot interface. Filesystem loading remains unavailable;
+no filesystem I/O implementation is introduced.
 
 Signed deploys, exploratory deploys and queries implemented by exploratory
 source execution, bond-status queries, and legacy LSP validation explicitly refuse under this

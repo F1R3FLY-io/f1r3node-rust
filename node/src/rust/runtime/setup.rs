@@ -259,6 +259,15 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         .await
     };
 
+    #[cfg(feature = "mettail-frontend")]
+    let eval_runtime = {
+        let mut runtime = eval_runtime;
+        super::f1r3lang::ensure_eval_registry(&mut runtime)
+            .await
+            .map_err(CasperError::Other)?;
+        runtime
+    };
+
     // Runtime manager (play and replay runtimes)
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;

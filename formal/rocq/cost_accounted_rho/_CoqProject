@@ -72,6 +72,7 @@
 -Q theories CostAccountedRho
 
 theories/PreparedProgramAdmission.v
+theories/EvalRegistryStartup.v
 theories/LanguageProviderLifecycle.v
 theories/ProviderRegistration.v
 

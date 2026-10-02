@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use mettail_rholang_runtime::guard_discharge::LoweringOptions;
 use mettail_rholang_runtime::guard_par_substrate::SubstrateGuardMatcher;
 use mettail_rholang_runtime::language_install::{
@@ -12,9 +13,127 @@ use mettail_rholang_runtime::language_install::{
 use mettail_rholang_runtime::rholang_ast::{RholangPreparationPolicy, RholangProgramFrontend};
 use mettail_rholang_runtime::{EmptyFltResolver, LanguageRight, LanguageRights, RuntimePolicy};
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::frontend::ProgramFrontend;
-use rholang::rust::interpreter::rho_runtime::validate_extra_system_processes;
-use rholang::rust::interpreter::system_processes::Definition;
+use rholang::rust::interpreter::frontend::{PreparedProgram, ProgramFrontend};
+use rholang::rust::interpreter::rho_runtime::{
+    bootstrap_registry, validate_extra_system_processes, RhoRuntime, RhoRuntimeImpl,
+};
+use rholang::rust::interpreter::system_processes::{Definition, FixedChannels};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvalRegistryState {
+    Fresh,
+    Bootstrapped,
+    Installed,
+}
+
+fn classify_eval_registry(
+    shapes: &[Vec<(bool, usize, usize)>; 5],
+) -> Result<EvalRegistryState, String> {
+    const FORWARDER: &[(bool, usize, usize)] = &[(false, 1, 1)];
+    const INTERNAL_API: &[(bool, usize, usize)] =
+        &[(true, 1, 4), (true, 1, 5), (true, 1, 5), (true, 1, 6)];
+    const PUBLIC_API: &[(bool, usize, usize)] = &[(true, 1, 2)];
+
+    if shapes.iter().all(Vec::is_empty) {
+        return Ok(EvalRegistryState::Fresh);
+    }
+    if shapes.iter().all(|shape| shape.as_slice() == FORWARDER) {
+        return Ok(EvalRegistryState::Bootstrapped);
+    }
+    if shapes[..3]
+        .iter()
+        .all(|shape| shape.as_slice() == FORWARDER)
+        && shapes[3].as_slice() == INTERNAL_API
+        && shapes[4].as_slice() == PUBLIC_API
+    {
+        return Ok(EvalRegistryState::Installed);
+    }
+    Err("eval registry contains a partial or unexpected fixed-channel installation".into())
+}
+
+async fn observe_eval_registry(runtime: &RhoRuntimeImpl) -> [Vec<(bool, usize, usize)>; 5] {
+    let channels = [
+        FixedChannels::reg_lookup(),
+        FixedChannels::reg_insert_random(),
+        FixedChannels::reg_insert_signed(),
+        FixedChannels::reg_v1_internal(),
+        FixedChannels::reg_v1(),
+    ];
+    let mut shapes: [Vec<(bool, usize, usize)>; 5] = std::array::from_fn(|_| Vec::new());
+    for (shape, channel) in shapes.iter_mut().zip(channels) {
+        *shape = runtime
+            .get_continuations(vec![channel])
+            .await
+            .into_iter()
+            .map(|continuation| {
+                (
+                    continuation.persist,
+                    continuation.patterns.len(),
+                    continuation
+                        .patterns
+                        .first()
+                        .map_or(0, |binding| binding.patterns.len()),
+                )
+            })
+            .collect();
+        shape.sort_unstable();
+    }
+    shapes
+}
+
+pub(crate) async fn ensure_eval_registry(runtime: &mut RhoRuntimeImpl) -> Result<(), String> {
+    let initial = classify_eval_registry(&observe_eval_registry(runtime).await)?;
+    if initial == EvalRegistryState::Installed {
+        return Ok(());
+    }
+
+    let compiled = rholang::rust::build::compile_rholang_source::CompiledRholangSource::new(
+        casper::rust::genesis::contracts::embedded_rho::VERSIONED_REGISTRY.to_owned(),
+        std::collections::HashMap::new(),
+        "VersionedRegistry.rho".to_owned(),
+    )
+    .map_err(|error| format!("trusted versioned registry compilation failed: {error}"))?;
+
+    let checkpoint = runtime.create_soft_checkpoint().await;
+    if initial == EvalRegistryState::Fresh {
+        bootstrap_registry(runtime).await;
+        if classify_eval_registry(&observe_eval_registry(runtime).await)
+            != Ok(EvalRegistryState::Bootstrapped)
+        {
+            runtime.revert_to_soft_checkpoint(checkpoint).await;
+            return Err("trusted eval registry bootstrap did not install all forwarders".into());
+        }
+    }
+
+    let evaluated = runtime
+        .evaluate_prepared(
+            PreparedProgram::from_normalized(compiled.term),
+            Cost::unsafe_max(),
+            Blake2b512Random::create_from_length(128),
+        )
+        .await;
+    let result = match evaluated {
+        Ok(result) => result,
+        Err(error) => {
+            runtime.revert_to_soft_checkpoint(checkpoint).await;
+            return Err(format!(
+                "trusted versioned registry execution failed: {error}"
+            ));
+        }
+    };
+    let installed_shapes = observe_eval_registry(runtime).await;
+    if !result.errors.is_empty()
+        || classify_eval_registry(&installed_shapes) != Ok(EvalRegistryState::Installed)
+    {
+        runtime.revert_to_soft_checkpoint(checkpoint).await;
+        return Err(format!(
+            "trusted versioned registry installation failed: errors={:?}, channel_shapes={installed_shapes:?}",
+            result.errors,
+        ));
+    }
+    runtime.create_checkpoint().await;
+    Ok(())
+}
 
 pub(crate) fn require_standalone(standalone: bool) -> Result<(), String> {
     if standalone {
@@ -149,7 +268,105 @@ fn host_policy(
 
 #[cfg(test)]
 mod tests {
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
     use super::*;
+
+    async fn test_eval_runtime(stores: &mut InMemoryStoreManager) -> RhoRuntimeImpl {
+        create_runtime_from_kv_store(
+            stores.eval_stores().await.unwrap(),
+            Arc::new(std::collections::HashMap::new()),
+            false,
+            &mut Vec::new(),
+            Arc::new(Box::new(SubstrateGuardMatcher::new())),
+            ExternalServices::noop(),
+        )
+        .await
+    }
+
+    #[test]
+    fn eval_registry_startup_classification_refuses_partial_states() {
+        const FORWARDER: (bool, usize, usize) = (false, 1, 1);
+        let fresh = std::array::from_fn(|_| Vec::new());
+        assert_eq!(classify_eval_registry(&fresh), Ok(EvalRegistryState::Fresh));
+
+        let bootstrapped = std::array::from_fn(|_| vec![FORWARDER]);
+        assert_eq!(
+            classify_eval_registry(&bootstrapped),
+            Ok(EvalRegistryState::Bootstrapped)
+        );
+
+        let installed = [
+            vec![FORWARDER],
+            vec![FORWARDER],
+            vec![FORWARDER],
+            vec![(true, 1, 4), (true, 1, 5), (true, 1, 5), (true, 1, 6)],
+            vec![(true, 1, 2)],
+        ];
+        assert_eq!(
+            classify_eval_registry(&installed),
+            Ok(EvalRegistryState::Installed)
+        );
+
+        let partial = [
+            vec![FORWARDER],
+            vec![FORWARDER],
+            vec![FORWARDER],
+            vec![FORWARDER],
+            vec![],
+        ];
+        assert!(classify_eval_registry(&partial).is_err());
+    }
+
+    #[tokio::test]
+    async fn eval_registry_installs_once_and_reuses_committed_state_after_restart() {
+        let mut stores = InMemoryStoreManager::new();
+        let mut runtime = test_eval_runtime(&mut stores).await;
+        assert_eq!(
+            classify_eval_registry(&observe_eval_registry(&runtime).await),
+            Ok(EvalRegistryState::Fresh)
+        );
+        ensure_eval_registry(&mut runtime).await.unwrap();
+        let root = runtime.get_root().await;
+        assert_eq!(
+            classify_eval_registry(&observe_eval_registry(&runtime).await),
+            Ok(EvalRegistryState::Installed)
+        );
+        ensure_eval_registry(&mut runtime).await.unwrap();
+        assert_eq!(runtime.get_root().await, root);
+        drop(runtime);
+
+        let mut restarted = test_eval_runtime(&mut stores).await;
+        assert_eq!(
+            classify_eval_registry(&observe_eval_registry(&restarted).await),
+            Ok(EvalRegistryState::Installed)
+        );
+        ensure_eval_registry(&mut restarted).await.unwrap();
+        assert_eq!(restarted.get_root().await, root);
+    }
+
+    #[tokio::test]
+    async fn eval_registry_recovers_complete_bootstrap_without_duplicating_forwarders() {
+        let mut stores = InMemoryStoreManager::new();
+        let mut runtime = test_eval_runtime(&mut stores).await;
+        bootstrap_registry(&runtime).await;
+        runtime.create_checkpoint().await;
+        assert_eq!(
+            classify_eval_registry(&observe_eval_registry(&runtime).await),
+            Ok(EvalRegistryState::Bootstrapped)
+        );
+        drop(runtime);
+
+        let mut restarted = test_eval_runtime(&mut stores).await;
+        ensure_eval_registry(&mut restarted).await.unwrap();
+        assert_eq!(
+            classify_eval_registry(&observe_eval_registry(&restarted).await),
+            Ok(EvalRegistryState::Installed)
+        );
+    }
 
     #[test]
     fn network_mode_is_rejected_before_node_setup() {
