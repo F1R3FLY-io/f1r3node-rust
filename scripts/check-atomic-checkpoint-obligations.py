@@ -18,7 +18,7 @@ BINDINGS = [
     (
         "TypeInvariant",
         "proof_only",
-        "memory_checkpoint_publishes_all_namespaces_together",
+        None,
     ),
     (
         "CurrentRootIsVerified",
@@ -68,6 +68,47 @@ MUTANTS = {
     "RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg": "VerifiedRootsHaveCompleteClosure",
 }
 
+TEST_ASSERTIONS = {
+    "memory_checkpoint_publishes_all_namespaces_together": (
+        "commit_local_checkpoint(&prepared, vec![(cold.clone(), bytes)], &validator())",
+        "assert_root_objects_visible(&authority, &current, &prepared, &cold);",
+    ),
+    "missing_or_malformed_cold_leaf_leaves_exact_pre_state": (
+        'expect_err("missing cold closure must fail")',
+        'expect_err("malformed cold object must fail")',
+        "assert_eq!(memory_snapshot(&authority), before);",
+    ),
+    "immutable_collision_leaves_exact_pre_state": (
+        'expect_err("immutable history collision must fail")',
+        "assert_eq!(memory_snapshot(&authority), before);",
+    ),
+    "same_generation_plans_conflict_without_partial_visibility": (
+        "RootError::RootCatalogConflict { .. }",
+        "assert_eq!(memory_snapshot(&authority), before_stale);",
+    ),
+    "lmdb_reopen_preserves_exact_catalog_and_known_root_activation": (
+        "assert_eq!(reopened.current_verified_root().unwrap(), Some(committed.clone()));",
+        "assert!(reopened.contains_verified_root(empty.root()).unwrap());",
+        "assert_eq!(at_empty.generation(), committed.generation() + 1);",
+    ),
+    "aba_root_reactivation_does_not_revive_an_old_plan": (
+        'expect_err("ABA must be rejected by generation")',
+        "RootError::RootCatalogConflict { .. }",
+        "assert_eq!(memory_snapshot(&authority), before_stale);",
+    ),
+    "no_op_writes_nothing_and_does_not_advance_generation": (
+        "assert_eq!(observed, current_before);",
+        "assert_eq!(memory_snapshot(&authority), before);",
+    ),
+}
+
+HELPER_ASSERTIONS = (
+    "assert_eq!(authority.current_verified_root().unwrap(), Some(root.clone()));",
+    "assert!(authority.contains_verified_root(root.root()).unwrap());",
+    "authority .history_store() .get_one(&root.root().bytes()) .unwrap() .as_deref(), prepared.root_encoding()",
+    "authority .cold_store() .get_one(&cold.encode()) .unwrap() .is_some()",
+)
+
 
 class RegistryError(ValueError):
     pass
@@ -95,12 +136,20 @@ def config_items(source, directive):
 def test_targets(source):
     targets = {}
     pattern = re.compile(
-        r"(?m)^#\[test\]\s*((?:#\[[^\n]+\]\s*)*)fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        r"(?m)^#\[test\][ \t]*\n((?:#\[[^\n]+\][ \t]*\n)*)fn[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\("
     )
     for match in pattern.finditer(source):
         attributes, name = match.groups()
         require(name not in targets, f"duplicate normal-suite test {name}")
-        targets[name] = "#[ignore" not in attributes
+        preceding = []
+        for line in reversed(source[: match.start()].splitlines()):
+            if not line.startswith("#["):
+                break
+            preceding.append(line)
+        attributes = "\n".join([*preceding, attributes])
+        following = re.search(r"(?m)^(?:#\[|fn[ \t])", source[match.end() :])
+        end = match.end() + following.start() if following else len(source)
+        targets[name] = (attributes, source[match.start() : end])
     return targets
 
 
@@ -134,6 +183,19 @@ def extract(
         "normal-suite test module is not registered",
     )
     targets = test_targets(test_source)
+    executable_targets = {
+        target for _, mode, target in bindings if mode == "executable_refinement"
+    }
+    require(
+        executable_targets == set(TEST_ASSERTIONS), "stale executable witness inventory"
+    )
+    helper = test_source.split("fn assert_root_objects_visible(", 1)
+    require(len(helper) == 2, "missing exact root-visibility helper")
+    helper_body = re.sub(r"\s+", " ", helper[1].split("\n#[test]", 1)[0])
+    require(
+        all(fragment in helper_body for fragment in HELPER_ASSERTIONS),
+        "root-visibility helper lost an authority assertion",
+    )
     for _, symbol in obligations:
         require(
             len(re.findall(rf"(?m)^{re.escape(symbol)}\s*==", model)) == 1,
@@ -144,9 +206,20 @@ def extract(
             mode in {"proof_only", "executable_refinement"},
             f"invalid binding mode: {symbol}",
         )
+        if mode == "proof_only":
+            require(
+                target is None, f"proof-only obligation has executable target: {symbol}"
+            )
+            continue
         require(target in targets, f"missing normal-suite target: {symbol} -> {target}")
+        attributes, body = targets[target]
         require(
-            targets[target], f"ignored-only normal-suite target: {symbol} -> {target}"
+            not re.search(r"#\[(?:ignore|cfg|cfg_attr)\b", attributes),
+            f"ignored or conditional normal-suite target: {symbol} -> {target}",
+        )
+        require(
+            all(fragment in body for fragment in TEST_ASSERTIONS[target]),
+            f"normal-suite target lost direct assertion: {symbol} -> {target}",
         )
     require(
         set(mutant_configs) == set(MUTANTS), "missing or extra mutant configuration"
@@ -194,12 +267,17 @@ def extract(
         "model_sha256": hashlib.sha256(model.encode()).hexdigest(),
         "config_sha256": hashlib.sha256(config.encode()).hexdigest(),
         "normal_suite_test_module": str(TEST),
+        "test_sha256": hashlib.sha256(test_source.encode()).hexdigest(),
+        "module_sha256": hashlib.sha256(module_source.encode()).hexdigest(),
         "obligations": [
             {
                 "kind": kind,
                 "symbol": symbol,
                 "mode": mapped[symbol][0],
                 "test": mapped[symbol][1],
+                "assertions": list(TEST_ASSERTIONS[mapped[symbol][1]])
+                if mapped[symbol][0] == "executable_refinement"
+                else [],
             }
             for kind, symbol in obligations
         ],
@@ -271,7 +349,7 @@ def self_test(inputs):
                 (
                     "StaleInvariant",
                     "proof_only",
-                    "memory_checkpoint_publishes_all_namespaces_together",
+                    None,
                 )
             ],
             test_source,
@@ -285,7 +363,11 @@ def self_test(inputs):
             config,
             mutants,
             [
-                (symbol, mode, "absent_test" if symbol == "TypeInvariant" else target)
+                (
+                    symbol,
+                    mode,
+                    "absent_test" if symbol == "CurrentRootIsVerified" else target,
+                )
                 for symbol, mode, target in bindings
             ],
             test_source,
@@ -300,6 +382,51 @@ def self_test(inputs):
             mutants,
             bindings + [bindings[0]],
             test_source,
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            bindings,
+            test_source.replace(
+                "assert_eq!(memory_snapshot(&authority), before_stale);",
+                "assert_eq!(memory_snapshot(&authority), memory_snapshot(&authority));",
+                1,
+            ),
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            bindings,
+            test_source.replace(
+                "assert!(authority.contains_verified_root(root.root()).unwrap());",
+                "assert!(true);",
+                1,
+            ),
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            bindings,
+            test_source.replace(
+                "#[test]\nfn no_op_writes_nothing_and_does_not_advance_generation",
+                "#[cfg(any())]\n#[test]\nfn no_op_writes_nothing_and_does_not_advance_generation",
+                1,
+            ),
             module_source,
             runner_source,
         )

@@ -835,6 +835,8 @@ rocq_reject_placeholders theories/SubstitutionSnapshotPrefix.v
 rocq_compile_with_closed_count theories/SubstitutionSnapshotPrefix.v 12 \
   "EPM1 prefix offsets and complete framing reconstruction"
 rocq_check_modules "substitution snapshot prefix" StackSafePDA.SubstitutionSnapshotPrefix
+python3 "$repo_root/scripts/check-rmp2-obligations.py" --check
+python3 "$repo_root/scripts/check-rmp2-obligations.py" --self-test
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"
@@ -1259,6 +1261,8 @@ do
     exit 1
   fi
 done
+python3 "$repo_root/scripts/check-affine-import-obligations.py" --check
+python3 "$repo_root/scripts/check-affine-import-obligations.py" --self-test
 tlc_run "$tla_metadir" \
   RSpaceAffineImportLifecycle.cfg RSpaceAffineImportLifecycle.tla -cleanup
 for affine_import_mutant in \

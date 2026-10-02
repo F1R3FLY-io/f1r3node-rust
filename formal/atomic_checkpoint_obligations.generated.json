@@ -23,61 +23,100 @@
   "config_sha256": "db0199d8e40a9a44fdab54aa8706ddfc2d7e005b568aa155703d8579d0e11a07",
   "model": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla",
   "model_sha256": "5044201a3dfcf7261884a49fc90ab3bf7df59a632b19e1ff9dea003d2fd00172",
+  "module_sha256": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992",
   "normal_suite_test_module": "rspace++/tests/state/atomic_state_authority.rs",
   "obligations": [
     {
+      "assertions": [],
       "kind": "invariant",
       "mode": "proof_only",
       "symbol": "TypeInvariant",
-      "test": "memory_checkpoint_publishes_all_namespaces_together"
+      "test": null
     },
     {
+      "assertions": [
+        "commit_local_checkpoint(&prepared, vec![(cold.clone(), bytes)], &validator())",
+        "assert_root_objects_visible(&authority, &current, &prepared, &cold);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "CurrentRootIsVerified",
       "test": "memory_checkpoint_publishes_all_namespaces_together"
     },
     {
+      "assertions": [
+        "expect_err(\"missing cold closure must fail\")",
+        "expect_err(\"malformed cold object must fail\")",
+        "assert_eq!(memory_snapshot(&authority), before);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "VerifiedRootsHaveCompleteClosure",
       "test": "missing_or_malformed_cold_leaf_leaves_exact_pre_state"
     },
     {
+      "assertions": [
+        "expect_err(\"immutable history collision must fail\")",
+        "assert_eq!(memory_snapshot(&authority), before);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "ContentKeysAreImmutable",
       "test": "immutable_collision_leaves_exact_pre_state"
     },
     {
+      "assertions": [
+        "RootError::RootCatalogConflict { .. }",
+        "assert_eq!(memory_snapshot(&authority), before_stale);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "NoUnpublishedCheckpointObjects",
       "test": "same_generation_plans_conflict_without_partial_visibility"
     },
     {
+      "assertions": [
+        "assert_eq!(reopened.current_verified_root().unwrap(), Some(committed.clone()));",
+        "assert!(reopened.contains_verified_root(empty.root()).unwrap());",
+        "assert_eq!(at_empty.generation(), committed.generation() + 1);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "GenerationAdvancesExactlyOnActivation",
       "test": "lmdb_reopen_preserves_exact_catalog_and_known_root_activation"
     },
     {
+      "assertions": [
+        "expect_err(\"ABA must be rejected by generation\")",
+        "RootError::RootCatalogConflict { .. }",
+        "assert_eq!(memory_snapshot(&authority), before_stale);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "CommitUsesExactBase",
       "test": "aba_root_reactivation_does_not_revive_an_old_plan"
     },
     {
+      "assertions": [
+        "expect_err(\"missing cold closure must fail\")",
+        "expect_err(\"malformed cold object must fail\")",
+        "assert_eq!(memory_snapshot(&authority), before);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "FailedCommitLeavesAuthorityUnchanged",
       "test": "missing_or_malformed_cold_leaf_leaves_exact_pre_state"
     },
     {
+      "assertions": [
+        "assert_eq!(observed, current_before);",
+        "assert_eq!(memory_snapshot(&authority), before);"
+      ],
       "kind": "invariant",
       "mode": "executable_refinement",
       "symbol": "NoOpLeavesAuthorityUnchanged",
       "test": "no_op_writes_nothing_and_does_not_advance_generation"
     }
-  ]
+  ],
+  "test_sha256": "4a2362f6dc94cd2cd7e3a2415e387813653e0bbe7d293338e6a6020601065e16"
 }

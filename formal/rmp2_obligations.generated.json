@@ -1,0 +1,261 @@
+{
+  "causal_mutants": [],
+  "rocq_print_assumptions": [
+    {
+      "assertion": "assert_eq!(token.end - token.start, 1 + 8 + 8 + 32);",
+      "classification": "executable_refinement",
+      "id": "RMP2-ROCQ-01",
+      "symbol": "emitted_opaque_par_token_has_exactly_49_bytes",
+      "target": "par_bag_token_is_the_fixed_49_byte_rmp2_summary",
+      "target_source": "models/tests/match_path_cursor.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-ROCQ-02",
+      "symbol": "compiled_opaque_query_has_no_false_negative",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-ROCQ-03",
+      "symbol": "unsupported_opaque_shell_fails_closed",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "sort_encoded_candidates(&mut entries);",
+      "classification": "executable_refinement",
+      "id": "RMP2-ROCQ-04",
+      "symbol": "canonical_candidate_order_is_independent_of_derived_rmp_bytes",
+      "target": "a_hash_collision_is_ordered_by_identity_not_the_derived_rho_path",
+      "target_source": "rspace++/src/rspace/data_index.rs"
+    },
+    {
+      "assertion": "resident,\n            region.expect",
+      "classification": "executable_refinement",
+      "id": "RMP2-ROCQ-05",
+      "symbol": "corresponding_semantic_fields_have_identical_projection",
+      "target": "resident_and_canonical_region_sources_have_identical_semantic_field_projection",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "vec![2, 3],",
+      "classification": "executable_refinement",
+      "id": "RMP2-ROCQ-06",
+      "symbol": "adjacent_coalescing_preserves_exact_cardinality",
+      "target": "canonical_region_coalesces_only_adjacent_identical_occurrences",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "assert_eq!(opaque.len(), 1);",
+      "classification": "executable_refinement",
+      "id": "RMP2-ROCQ-07",
+      "symbol": "nested_par_projection_is_opaque_to_recursive_component_structure",
+      "target": "nested_par_projection_is_one_opaque_bag_token_plus_root_metadata",
+      "target_source": "models/tests/match_path_structure.rs"
+    }
+  ],
+  "scope_limit": "No RMP2-specific TLA config or formal mutant is accepted in this family. Direct executable rows bind normal Rust assertions for concrete projection, coalescing, token size, opacity, and candidate order; they do not verify BLAKE2b, protobuf parsing, or symbolic Verus proof steps. Other obligations are proof-only. Source wiring is checked, not Rocq/Verus/Cargo execution.",
+  "source_sha256": {
+    "formal/rocq/stack_safe_pda/theories/RMP2.v": "495a0d729412d15b1505a7eafa3deebf7c04e0cd15450a28e87c87ab5c9a2669",
+    "formal/verus/rmp2_par_bag_transcript.rs": "fc52e634869bcc5b39ab6b976a2623910f08886be7091bbcf100e36d4af3efcb",
+    "models/tests/match_path_cursor.rs": "fb4095c10ab61716aa51be5634a0ce6f91cca609a556cd3e73d8dae3d682774a",
+    "models/tests/match_path_structure.rs": "23b1720e90adafec0ddd0699134d726fc84dfb69265e05716a3a43273db6af9d",
+    "rspace++/src/rspace/data_index.rs": "636c93212e8185de4e0a5568f1b9c5c1ddb4c2aa352e2cfd4c376e5ab0a0e5ba"
+  },
+  "tla_obligations": [],
+  "verus_obligations": [
+    {
+      "assertion": "resident_semantic_projection(ParCursor::from(&stored))",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-01",
+      "kind": "open_spec",
+      "symbol": "project_resident_field",
+      "target": "resident_and_canonical_region_sources_have_identical_semantic_field_projection",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "region_semantic_projection(",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-02",
+      "kind": "open_spec",
+      "symbol": "project_region_field",
+      "target": "resident_and_canonical_region_sources_have_identical_semantic_field_projection",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "resident,\n            region.expect",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-03",
+      "kind": "open_spec",
+      "symbol": "semantic_fields_correspond",
+      "target": "resident_and_canonical_region_sources_have_identical_semantic_field_projection",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-04",
+      "kind": "proof",
+      "symbol": "corresponding_semantic_fields_project_identically",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "vec![2, 3],",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-05",
+      "kind": "open_spec",
+      "symbol": "same_pending_occurrence",
+      "target": "canonical_region_coalesces_only_adjacent_identical_occurrences",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "vec![2, 3],",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-06",
+      "kind": "verified_exec",
+      "symbol": "executable_adjacent_coalescer_step",
+      "target": "canonical_region_coalesces_only_adjacent_identical_occurrences",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "assert_eq!(resident_records.len(), 2);",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-07",
+      "kind": "verified_exec",
+      "symbol": "executable_finalize_adjacent_distinct",
+      "target": "canonical_region_coalesces_only_adjacent_identical_occurrences",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "vec![\"Expr\", \"EList\", \"Par\"],",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-08",
+      "kind": "open_spec",
+      "symbol": "project_nested_par",
+      "target": "nested_par_projection_is_one_opaque_bag_token_plus_root_metadata",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-09",
+      "kind": "proof",
+      "symbol": "nested_par_projection_is_opaque_to_recursive_components",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-10",
+      "kind": "open_spec",
+      "symbol": "frame_of",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-11",
+      "kind": "open_spec",
+      "symbol": "framed_transcript",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-12",
+      "kind": "open_spec",
+      "symbol": "records_correspond",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-13",
+      "kind": "open_spec",
+      "symbol": "saturating_add_spec",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-14",
+      "kind": "open_spec",
+      "symbol": "saturated_cardinality",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-15",
+      "kind": "proof",
+      "symbol": "corresponding_sequences_are_extentionally_equal",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-16",
+      "kind": "proof",
+      "symbol": "resident_and_region_accumulators_are_equivalent",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-17",
+      "kind": "proof",
+      "symbol": "record_correspondence_precondition_is_non_vacuous",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-18",
+      "kind": "verified_exec",
+      "symbol": "executable_saturating_add",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "region_occurrences, expanded_resident,",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-19",
+      "kind": "verified_exec",
+      "symbol": "executable_occurrence_step",
+      "target": "canonical_region_coalesces_only_adjacent_identical_occurrences",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": "vec![2, 3],",
+      "classification": "executable_refinement",
+      "id": "RMP2-VERUS-20",
+      "kind": "verified_exec",
+      "symbol": "executable_exact_run_multiplicity_increment",
+      "target": "canonical_region_coalesces_only_adjacent_identical_occurrences",
+      "target_source": "models/tests/match_path_structure.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "RMP2-VERUS-21",
+      "kind": "verified_exec",
+      "symbol": "executable_body_length",
+      "target": null,
+      "target_source": null
+    }
+  ]
+}

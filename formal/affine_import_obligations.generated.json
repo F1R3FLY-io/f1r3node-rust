@@ -1,0 +1,102 @@
+{
+  "causal_mutants": [
+    {
+      "action": "PublishIncompleteMutant",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycleIncompleteMutant.cfg",
+      "config_sha256": "7cb2283085d50151920f3eaa2841b5b3f855905c1c349e9965a1ac88c2795e4f",
+      "expected_invariant": "PublicationRequiresConsumedSeal",
+      "id": "AFF-MUT-01",
+      "specification": "IncompleteMutantSpec"
+    },
+    {
+      "action": "PublishStaleActivationMutant",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycleStaleActivationMutant.cfg",
+      "config_sha256": "6a010b44cafc4386f0703df7938492a5ba9ea0fdf11c16271ee0cbe09a1ae833",
+      "expected_invariant": "AtMostOneRacingActivationPublishes",
+      "id": "AFF-MUT-02",
+      "specification": "StaleActivationMutantSpec"
+    },
+    {
+      "action": "MoveCurrentOnPreserveMutant",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecyclePreserveMutationMutant.cfg",
+      "config_sha256": "78d437641ecc07c3ec2410bc4cdef339739a6ba1c8a531bd99ab96bb7e257715",
+      "expected_invariant": "PreserveCurrentNeverMovesAuthority",
+      "id": "AFF-MUT-03",
+      "specification": "PreserveMutationMutantSpec"
+    }
+  ],
+  "config": "formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycle.cfg",
+  "config_sha256": "3f5b20d332f9d23a0d48d43d19edfe2e1862bd7208d06c65f66502cffbb96c72",
+  "dedicated_rocq_sources": [],
+  "dedicated_verus_sources": [],
+  "model": "formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycle.tla",
+  "model_sha256": "3150cd26e180e66327a6c96bb7906bd9b695a604c41f4c56bc39b6df37993f70",
+  "normal_suite_source_sha256": "6641b0d25336ad6317117a05f245d0d77b06614648b49e3148feac43047e5a62",
+  "normal_suite_test_module": "rspace++/src/rspace/state/instances/rspace_importer_store.rs",
+  "obligations": [
+    {
+      "id": "AFF-TLA-01",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "normal_suite_witnesses": [],
+      "symbol": "TypeInvariant"
+    },
+    {
+      "id": "AFF-TLA-02",
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "normal_suite_witnesses": [
+        "empty_root_requires_a_complete_page_before_atomic_publication"
+      ],
+      "symbol": "SealRequiresCompleteClosure"
+    },
+    {
+      "id": "AFF-TLA-03",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "normal_suite_witnesses": [
+        "empty_root_requires_a_complete_page_before_atomic_publication"
+      ],
+      "symbol": "PublicationRequiresConsumedSeal"
+    },
+    {
+      "id": "AFF-TLA-04",
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "normal_suite_witnesses": [
+        "empty_root_requires_a_complete_page_before_atomic_publication",
+        "malformed_page_cannot_mutate_any_store_or_publish_a_root"
+      ],
+      "symbol": "CurrentRootIsVerified"
+    },
+    {
+      "id": "AFF-TLA-05",
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "normal_suite_witnesses": [
+        "concurrent_activation_sessions_use_generation_cas_at_publication"
+      ],
+      "symbol": "AtMostOneRacingActivationPublishes"
+    },
+    {
+      "id": "AFF-TLA-06",
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "normal_suite_witnesses": [
+        "concurrent_activation_sessions_use_generation_cas_at_publication"
+      ],
+      "symbol": "ActivationGenerationIsCASProtected"
+    },
+    {
+      "id": "AFF-TLA-07",
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "normal_suite_witnesses": [
+        "preserve_current_publication_reports_no_activation_and_cannot_move_current"
+      ],
+      "symbol": "PreserveCurrentNeverMovesAuthority"
+    }
+  ],
+  "runtime_authority": "rspace++/src/rspace/state/rspace_state_authority.rs",
+  "runtime_authority_sha256": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992"
+}
