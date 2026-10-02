@@ -1366,6 +1366,98 @@ impl LockRegistry {
         });
         Ok(AcquireOutcome::Parked { lock_id, admit: rx })
     }
+
+    /// Cancel a currently-parked waiter identified by `lock_id`
+    /// iff `holder` matches the recorded owner via
+    /// [`HolderId::ct_eq`].
+    ///
+    /// Removes the waiter from its per-`(dev, inode)` FIFO queue
+    /// and signals its admit sender with
+    /// `Err(LockError::Cancelled)`.  The caller's `oneshot`
+    /// receiver resolves to `Ok(Err(LockError::Cancelled))` in
+    /// the happy path.  (The `RecvError` branch of
+    /// [`AcquireOutcome::Parked`]'s receiver fires only when
+    /// the sender is dropped WITHOUT a send — that happens on
+    /// `wake_waiters` rollback or registry drop, not on this
+    /// path: `cancel_wait` always sends before releasing the
+    /// sender.)
+    ///
+    /// After successful cancel, the touched state is evicted
+    /// from the map if [`state_is_empty`] holds (no held locks,
+    /// no remaining waiters).  No `wake_waiters` call is needed:
+    /// cancelling a waiter cannot ADD any holder, so no
+    /// downstream waiter's admissibility changes.
+    ///
+    /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
+    ///
+    /// The holder match uses [`HolderId::ct_eq`], mirroring the
+    /// release-path discipline.  Same rationale: an attacker
+    /// observing latency on failed `cancel_wait` calls could
+    /// otherwise narrow a correct holder byte-by-byte.
+    ///
+    /// # Returns
+    ///
+    ///   - `Ok(())` on successful cancel.
+    ///   - [`LockError::Closed`] if `lock_id` isn't parked
+    ///     anywhere OR the holder doesn't match.  The ERROR
+    ///     VALUE is indistinguishable per the release-path
+    ///     convention — attackers can't tell "wrong id" from
+    ///     "wrong holder" by the return.  Timing IS
+    ///     distinguishable (unknown-id scans all queues
+    ///     short-circuiting on `==`; known-id-wrong-holder
+    ///     reaches one `ct_eq` evaluation), but the practical
+    ///     impact is bounded: LockId has ~51 bits of entropy
+    ///     from `LOCK_ID_CEILING` so blind-probing to reach a
+    ///     known-id branch is infeasible, and once in that
+    ///     branch `ct_eq` is branchless-constant so holder
+    ///     bytes still can't be narrowed byte-by-byte.
+    ///
+    /// # Lifetime posture
+    ///
+    /// Pairs with the yet-to-land `cancel_all_waiters_for_holder`
+    /// / `_for_deploy` sweeps: those are the bulk-cancel
+    /// counterparts to the bulk-release methods PR #530 shipped.
+    /// `cancel_wait` is the targeted-by-LockId version a caller
+    /// invokes when they want to abandon a specific parked
+    /// acquire (e.g., async-cancellation on a user-visible
+    /// timeout in a future handler layer).
+    pub fn cancel_wait(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut touched_key: Option<DevInode> = None;
+        let mut admit: Option<oneshot::Sender<Result<LockId, LockError>>> = None;
+        for (dev_inode, state) in guard.iter_mut() {
+            // SEC-Mi-01: ct_eq, NOT `==`.  Do not regress.
+            if let Some(pos) = state
+                .waiters
+                .iter()
+                .position(|w| w.lock_id == lock_id && w.holder.ct_eq(holder))
+            {
+                let waiter = state.waiters.remove(pos).expect("position just observed");
+                admit = Some(waiter.admit);
+                touched_key = Some(*dev_inode);
+                // Early-exit assumes LockId global uniqueness
+                // (same monotone-counter invariant as `release`).
+                break;
+            }
+        }
+        let Some(tx) = admit else {
+            return Err(LockError::Closed);
+        };
+        // Send the cancel BEFORE eviction so the receiver always
+        // observes Cancelled (vs. RecvError on sender drop) in
+        // the happy path.  If the receiver was already dropped,
+        // the send fails silently — caller already walked away,
+        // same semantics as a Cancelled they never read.
+        let _ = tx.send(Err(LockError::Cancelled));
+        if let Some(k) = touched_key {
+            if let Some(state) = guard.get(&k) {
+                if state_is_empty(state) {
+                    guard.remove(&k);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // Compile-time witness that `LockRegistry: Send + Sync` —
@@ -4616,5 +4708,362 @@ mod tests {
             LockError::QuotaExceeded,
             "quota must fire before deadlock on the shared boundary"
         );
+    }
+
+    // --- cancel_wait ----------------------------------------------
+    //
+    // Targeted-by-LockId cancel of a parked waiter.  Pairs with
+    // the yet-to-land bulk-cancel sweeps.
+
+    /// Happy path: cancel a parked Range waiter → the admit
+    /// receiver resolves to `Err(LockError::Cancelled)`, and the
+    /// waiter is removed from the queue.
+    #[test]
+    fn cancel_wait_range_waiter_signals_cancelled() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (lock_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        reg.cancel_wait(lock_id, &holder_b).unwrap();
+        assert_eq!(admit.try_recv(), Ok(Err(LockError::Cancelled)));
+    }
+
+    /// Happy path (Sequential variant): same discipline.
+    #[test]
+    fn cancel_wait_sequential_waiter_signals_cancelled() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_sequential((1, 1), holder_a, deploy_scope(0xAA))
+            .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait((1, 1), holder_b.clone(), deploy_scope(0xBB))
+            .unwrap();
+        let (lock_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        reg.cancel_wait(lock_id, &holder_b).unwrap();
+        assert_eq!(admit.try_recv(), Ok(Err(LockError::Cancelled)));
+    }
+
+    /// Unknown `lock_id` → Closed.  Pins that cancel_wait doesn't
+    /// quietly succeed on a stale / never-minted id.
+    #[test]
+    fn cancel_wait_unknown_lock_id_returns_closed() {
+        let reg = LockRegistry::new();
+        let out = reg.cancel_wait(
+            LockId::try_from(999_999).unwrap(),
+            &HolderId::from_bytes([0x11; 32]),
+        );
+        assert_eq!(out.unwrap_err(), LockError::Closed);
+    }
+
+    /// LOAD-BEARING: wrong-holder cancel → Closed (indistinguishable
+    /// from unknown-id per release-path convention).  Attacker
+    /// enumerating holder bytes gets no diagnostic from the error
+    /// value AND the ct_eq comparison is branchless.
+    #[test]
+    fn cancel_wait_wrong_holder_returns_closed_and_leaves_waiter() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b,
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (lock_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        // Wrong holder.
+        let imposter = HolderId::from_bytes([0xCC; 32]);
+        let err = reg.cancel_wait(lock_id, &imposter);
+        assert_eq!(err.unwrap_err(), LockError::Closed);
+        // Waiter still parked (not cancelled, not admitted).
+        assert!(matches!(
+            admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // Queue still has 1 waiter.
+        let guard = reg.inner.read().unwrap();
+        assert_eq!(guard.get(&(1, 1)).unwrap().waiters.len(), 1);
+    }
+
+    /// Isolated eviction pin: a parked waiter with NO held locks
+    /// on the file (state constructed hand-populated) → cancel
+    /// evicts the state entirely.  Covers the pure eviction
+    /// branch without the admit-first-then-cancel-second race.
+    #[test]
+    fn cancel_wait_waiter_only_state_evicts_on_cancel() {
+        let reg = LockRegistry::new();
+        // Build a state with ONLY a parked waiter by hand.
+        {
+            let mut guard = reg.inner.write().unwrap();
+            let (tx, _rx) = oneshot::channel();
+            let state = guard.entry((1, 1)).or_default();
+            state.waiters.push_back(Waiter {
+                lock_id: LockId::try_from(42).unwrap(),
+                kind: WaitKind::Sequential,
+                holder: HolderId::from_bytes([0x11; 32]),
+                deploy: [0x11; 32],
+                admit: tx,
+            });
+        }
+        assert_eq!(reg.inner.read().unwrap().len(), 1);
+        reg.cancel_wait(
+            LockId::try_from(42).unwrap(),
+            &HolderId::from_bytes([0x11; 32]),
+        )
+        .unwrap();
+        assert_eq!(
+            reg.inner.read().unwrap().len(),
+            0,
+            "waiter-only state must evict after its sole waiter is cancelled"
+        );
+    }
+
+    /// Cancel one of multiple parked waiters → the targeted
+    /// waiter signals Cancelled, the others stay queued and
+    /// un-signalled.
+    #[test]
+    fn cancel_wait_only_targets_the_named_lock_id() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_c = HolderId::from_bytes([0xCC; 32]);
+        let (b_id, mut b_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("B must park"),
+        };
+        let (_c_id, mut c_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_c,
+                deploy_scope(0xCC),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("C must park"),
+        };
+        reg.cancel_wait(b_id, &holder_b).unwrap();
+        assert_eq!(b_admit.try_recv(), Ok(Err(LockError::Cancelled)));
+        // C is still parked.
+        assert!(matches!(
+            c_admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            reg.inner
+                .read()
+                .unwrap()
+                .get(&(1, 1))
+                .unwrap()
+                .waiters
+                .len(),
+            1
+        );
+    }
+
+    /// After cancelling the head of the FIFO queue, the next
+    /// release's wake_waiters promotes the NEW head.  Pins the
+    /// cancel + wake interaction (cancel removes a waiter →
+    /// next waiter becomes head → next wake admits it if
+    /// admissible).
+    #[test]
+    fn cancel_wait_head_promotes_next_waiter_on_subsequent_release() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_c = HolderId::from_bytes([0xCC; 32]);
+        let (b_id, _b_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("B must park"),
+        };
+        let (c_id, mut c_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_c,
+                deploy_scope(0xCC),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("C must park"),
+        };
+        // Cancel the head (B).
+        reg.cancel_wait(b_id, &holder_b).unwrap();
+        // Release A → wake_waiters admits new head (C).
+        reg.release(id_a, &holder_a).unwrap();
+        assert_eq!(c_admit.try_recv(), Ok(Ok(c_id)));
+    }
+
+    /// Dropped admit receiver → cancel still succeeds (send
+    /// fails silently; caller already walked away).  Pins the
+    /// no-panic-on-dead-receiver property.
+    #[test]
+    fn cancel_wait_dropped_receiver_still_succeeds() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (lock_id, admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("must park"),
+        };
+        drop(admit);
+        reg.cancel_wait(lock_id, &holder_b).unwrap();
+        // Waiter removed from queue.
+        assert_eq!(
+            reg.inner
+                .read()
+                .unwrap()
+                .get(&(1, 1))
+                .unwrap()
+                .waiters
+                .len(),
+            0
+        );
+    }
+
+    /// Already-admitted LockId → Closed on cancel.  Pins that
+    /// cancel ONLY targets the waiter queue, not held locks (a
+    /// post-promote lock_id must be released via `release`,
+    /// not cancelled).
+    #[test]
+    fn cancel_wait_on_promoted_waiter_returns_closed() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let (b_id, _b_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("must park"),
+        };
+        // Release A → wake promotes B.
+        reg.release(id_a, &holder_a).unwrap();
+        // Now B is a HELD lock.  Cancel on its id is Closed.
+        let err = reg.cancel_wait(b_id, &holder_b);
+        assert_eq!(err.unwrap_err(), LockError::Closed);
     }
 }
