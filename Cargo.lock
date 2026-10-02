@@ -262,6 +262,7 @@ version = "0.1.0"
 dependencies = [
  "ascent_syntax_export",
  "blake3",
+ "mettail-grammar-core",
  "proc-macro2 1.0.106",
  "quote 1.0.45",
  "syn 2.0.117",
@@ -3387,6 +3388,7 @@ version = "0.1.0"
 dependencies = [
  "ascent_syntax_export",
  "ast",
+ "blake3",
  "indexmap 2.14.0",
  "mettail-grammar-core",
  "moniker",
@@ -3573,6 +3575,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "mettail-grammar-core",
+ "prattail",
+ "runtime",
  "serde_json",
 ]
 
@@ -3582,6 +3586,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "mettail-semantic-key",
+ "moniker",
  "postcard",
  "regex-automata",
  "regex-syntax",
@@ -4638,6 +4643,7 @@ dependencies = [
  "ast",
  "blake3",
  "im",
+ "indexmap 2.14.0",
  "mettail-grammar-core",
  "mettail-semantic-key",
  "moniker",
@@ -5566,6 +5572,7 @@ dependencies = [
  "mettail-rholang-frontend",
  "models",
  "num-bigint",
+ "postcard",
  "prattail",
  "prost 0.14.3",
  "rho-pure-eval",
