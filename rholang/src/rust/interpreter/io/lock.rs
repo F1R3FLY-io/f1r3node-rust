@@ -1037,6 +1037,62 @@ impl LockRegistry {
             .iter()
             .any(|e| ranges_overlap((e.offset, e.length), range))
     }
+
+    /// Try to acquire the whole-file sequential lock on
+    /// `(dev_inode)` for `holder`.
+    ///
+    /// Fail-only variant: on conflict (any held range OR an
+    /// existing sequential_holder) returns [`LockError::Busy`]
+    /// immediately.  Does NOT park.  A yet-to-land
+    /// `try_acquire_sequential_wait` sibling will add
+    /// [`WaitPolicy::Wait`] support.
+    ///
+    /// # Coexistence rules
+    ///
+    /// Per [`sequential_conflicts`]: sequential requires the
+    /// state entirely empty (no held ranges, no existing
+    /// sequential_holder).  Does NOT use the same-holder skip
+    /// that `try_acquire_range` uses — a cap holding ANY range
+    /// cannot upgrade to a sequential lock without releasing
+    /// its ranges first.  Pinned by
+    /// `sequential_conflicts_held_range_blocks_even_for_same_holder`
+    /// (PR #527) and surfaced at the API boundary here.
+    ///
+    /// # Error ordering (consensus-observable)
+    ///
+    ///   1. [`LockError::Busy`] on conflict (via
+    ///      [`sequential_conflicts`]).
+    ///   2. [`LockError::QuotaExceeded`] on
+    ///      [`LOCK_ID_CEILING`] minted id.
+    ///
+    /// # Empty-state leak defense
+    ///
+    /// Uses the check-before-insert discipline from PR #529's
+    /// `try_acquire_range`: admissibility checked against
+    /// `guard.get(&dev_inode)` BEFORE any mutation; the
+    /// `entry().or_default()` call fires only once the acquire
+    /// is known to succeed.  A failed acquire does NOT leave
+    /// an empty `FileLockState` behind.
+    pub fn try_acquire_sequential(
+        &self,
+        dev_inode: DevInode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<LockId, LockError> {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        if let Some(state) = guard.get(&dev_inode) {
+            if sequential_conflicts(state) {
+                return Err(LockError::Busy);
+            }
+        }
+        // Admissibility passed → mint + insert.  Mint before
+        // mutating the map so a `LOCK_ID_CEILING` failure
+        // doesn't leak an empty entry.
+        let id = self.mint_next_lock_id()?;
+        let state = guard.entry(dev_inode).or_default();
+        state.sequential_holder = Some(SequentialEntry { id, holder, deploy });
+        Ok(id)
+    }
 }
 
 // Compile-time witness that `LockRegistry: Send + Sync` —
@@ -1136,7 +1192,6 @@ fn range_conflicts(
 /// sequential_holder) per the FIP coexistence rule.  Does NOT
 /// use the same-holder skip — a cap that already holds a range
 /// cannot upgrade to sequential without releasing first.
-#[allow(dead_code)]
 fn sequential_conflicts(state: &FileLockState) -> bool {
     state.sequential_holder.is_some() || !state.ranges.is_empty()
 }
@@ -2907,5 +2962,166 @@ mod tests {
         assert!(reg.is_locked((1, 1), (0, 10)));
         reg.release(id, &holder).unwrap();
         assert!(!reg.is_locked((1, 1), (0, 10)));
+    }
+
+    // --- try_acquire_sequential ------------------------------------
+
+    /// Happy path on an empty file.  Also pins the state is
+    /// actually populated by querying `is_locked`.
+    #[test]
+    fn try_acquire_sequential_empty_state_succeeds() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = reg
+            .try_acquire_sequential((1, 1), holder, deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(id.as_u64(), 1);
+        // Whole-file probe sees the sequential holder.
+        assert!(reg.is_locked((1, 1), (0, u64::MAX)));
+    }
+
+    /// Two different holders cannot both hold the sequential
+    /// lock — the second attempt returns `Busy`.
+    #[test]
+    fn try_acquire_sequential_second_acquire_busy() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 1), HolderId::from_bytes([0x11; 32]), deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(
+            reg.try_acquire_sequential(
+                (1, 1),
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            ),
+            Err(LockError::Busy)
+        );
+    }
+
+    /// LOAD-BEARING: a cap holding ANY range (even a tiny
+    /// Read) cannot upgrade to a sequential lock without
+    /// releasing first.  Pins the no-same-holder-skip rule
+    /// surfaced at the API boundary.
+    #[test]
+    fn try_acquire_sequential_held_range_blocks_even_for_same_holder() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            10,
+            LockMode::Read,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        // Same holder trying to upgrade to sequential — Busy.
+        assert_eq!(
+            reg.try_acquire_sequential((1, 1), holder, deploy_scope(0x11)),
+            Err(LockError::Busy)
+        );
+    }
+
+    /// Each `(dev, inode)` has an independent sequential slot.
+    #[test]
+    fn try_acquire_sequential_distinct_dev_inodes_are_independent() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 1), HolderId::from_bytes([0x11; 32]), deploy_scope(0x11))
+            .unwrap();
+        reg.try_acquire_sequential((2, 2), HolderId::from_bytes([0x22; 32]), deploy_scope(0x22))
+            .unwrap();
+    }
+
+    /// LOAD-BEARING empty-state leak defense: a failed
+    /// sequential acquire (Busy against an existing range)
+    /// MUST NOT leave an empty `FileLockState` behind on a
+    /// different `(dev, inode)` that never had a lock.  Same
+    /// invariant pinned for `try_acquire_range` in PR #529.
+    #[test]
+    fn try_acquire_sequential_failed_acquire_does_not_leak_empty_state() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        // Pre-populate (1, 1) with a range so a sequential
+        // acquire there is a legitimate conflict against an
+        // existing state.
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            10,
+            LockMode::Read,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert_eq!(
+            reg.try_acquire_sequential((1, 1), holder, deploy_scope(0x11)),
+            Err(LockError::Busy)
+        );
+        // (99, 99) was never touched → no empty entry.
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        let keys: Vec<_> = guard.keys().copied().collect();
+        assert_eq!(
+            keys,
+            vec![(1, 1)],
+            "exactly one entry (the pre-existing range-holding file)"
+        );
+    }
+
+    /// A sequential acquire followed by a release re-opens
+    /// the slot — pins the integration with PR #529's
+    /// unified `release` path.
+    #[test]
+    fn try_acquire_sequential_release_reopens_slot() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0x11; 32]);
+        let holder_b = HolderId::from_bytes([0x22; 32]);
+        let id = reg
+            .try_acquire_sequential((1, 1), holder_a.clone(), deploy_scope(0x11))
+            .unwrap();
+        reg.release(id, &holder_a).unwrap();
+        // Now B can acquire sequentially.
+        reg.try_acquire_sequential((1, 1), holder_b, deploy_scope(0x22))
+            .unwrap();
+    }
+
+    /// Integration pin: sequential acquire + range acquire on
+    /// the SAME file are mutually exclusive in both directions.
+    #[test]
+    fn try_acquire_sequential_and_range_are_mutually_exclusive() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+
+        // (A) range first, sequential blocked.
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            10,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert_eq!(
+            reg.try_acquire_sequential(
+                (1, 1),
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            ),
+            Err(LockError::Busy)
+        );
+
+        // (B) sequential first (on a different file), range blocked.
+        reg.try_acquire_sequential((2, 2), holder.clone(), deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(
+            reg.try_acquire_range(
+                (2, 2),
+                0,
+                10,
+                LockMode::Read,
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            ),
+            Err(LockError::Busy)
+        );
     }
 }
