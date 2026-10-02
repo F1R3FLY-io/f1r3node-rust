@@ -62,6 +62,8 @@ main()
 - `dev` -- Dev mode, deployer private key
 - `openai` -- LLM integration settings
 
+`peers-discovery.heartbeat-failure-threshold` controls consecutive failed heartbeats and failed outbound connection attempts. The default is 3. A successful heartbeat or connection attempt resets its respective failure count. Heartbeats use `cleanup-interval`. Connection attempts use `lookup-interval`.
+
 ### CLI Flag Overrides
 
 The following flags override HOCON configuration at startup. CLI flags always take precedence.
@@ -243,6 +245,7 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 | Bytes | `ExprBytes` | `{"ExprBytes": {"data": "0a1b2c"}}` |
 | **Extended numerics** | | |
 | Float (f64) | `ExprFloat` | `{"ExprFloat": {"data": 3.14}}` |
+| Float32 (f32) | `ExprFloat32` | `{"ExprFloat32": {"data": 2.5}}` |
 | BigInt | `ExprBigInt` | `{"ExprBigInt": {"data": "12345678901234567890"}}` |
 | BigRational | `ExprBigRat` | `{"ExprBigRat": {"numerator": "1", "denominator": "3"}}` |
 | FixedPoint | `ExprFixedPoint` | `{"ExprFixedPoint": {"value": "31415", "scale": 4}}` |
