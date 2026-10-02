@@ -1012,6 +1012,22 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
+fn std_petta_processes() -> Vec<Definition> {
+    vec![Definition {
+        urn: "rho:petta:execute".to_string(),
+        fixed_channel: FixedChannels::swipl_execute_petta(),
+        arity: 2,
+        body_ref: BodyRefs::SWIPL_EXECUTE_PETTA,
+        handler: Box::new(|ctx| {
+            Box::new(move |args| {
+                let ctx = ctx.clone();
+                Box::pin(async move { ctx.system_processes.clone().petta_execute(args).await })
+            })
+        }),
+        remainder: None,
+    }]
+}
+
 fn dispatch_table_creator(
     space: RhoISpace,
     dispatcher: RhoDispatch,
@@ -1034,6 +1050,7 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
+    all_processes.extend(std_petta_processes());
 
     all_processes.append(extra_system_processes);
 
@@ -1198,6 +1215,7 @@ fn setup_maps_and_refs(
     // When OpenAI is disabled, the NoOp service handles calls gracefully.
     let rho_ai_binding = std_rho_ai_processes();
     let rho_chroma_binding = std_rho_chroma_processes();
+    let rho_swipl_binding = std_petta_processes();
 
     let combined_processes = system_binding
         .iter()
@@ -1205,6 +1223,7 @@ fn setup_maps_and_refs(
         .chain(rho_ai_binding.iter())
         .chain(extra_system_processes.iter())
         .chain(rho_chroma_binding.iter())
+        .chain(rho_swipl_binding.iter())
         .collect::<Vec<&Definition>>();
 
     let mut urn_map: HashMap<_, _> = basic_processes();
