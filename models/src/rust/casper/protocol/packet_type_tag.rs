@@ -5,10 +5,11 @@ use prost::Message;
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
     BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
-    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, HasBlockProto, HasBlockRequestProto,
-    HasSnapshotProto, HasSnapshotRequestProto, MergeableEntryRequestProto,
-    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
-    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
+    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
+    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
+    MergeableEntryRequestProto, MergeableEntryResponseProto, NoApprovedBlockAvailableProto,
+    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
+    UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -59,3 +60,6 @@ impl_packet!(GetSnapshotChunkRequestProto, "GetSnapshotChunkRequest");
 impl_packet!(SnapshotChunkResponseProto, "SnapshotChunkResponse");
 impl_packet!(HasSnapshotRequestProto, "HasSnapshotRequest");
 impl_packet!(HasSnapshotProto, "HasSnapshot");
+// WAL payload fetch (Wave 3, Phase 7b-2).
+impl_packet!(GetWalPayloadRequestProto, "GetWalPayloadRequest");
+impl_packet!(WalPayloadResponseProto, "WalPayloadResponse");

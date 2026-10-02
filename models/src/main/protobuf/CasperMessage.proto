@@ -124,6 +124,43 @@ message HasSnapshotProto {
   uint32 chunk_count = 3;   // ADVISORY count the joiner can budget
 }
 
+// -------- Phase 7b-2 between-snapshot WAL payload fetch --------
+// After a joiner has assembled the latest snapshot, the WAL
+// between that snapshot and the head block still references
+// payload bytes by Blake2b256 hash.  For each hash that the
+// joiner can't reproduce locally (deterministic-Rholang /
+// deploy-data reducer misses), it asks peers for the bytes by
+// hash.  The response echoes the hash + the raw bytes; the
+// joiner rehashes the bytes to verify against the requested
+// hash before applying.
+//
+// `payload_hash` in BOTH request and response is the content-
+// address.  The echoed hash in the response is ADVISORY — the
+// joiner MUST recompute `Blake2b256(payload_bytes)` and compare
+// against the ORIGINAL request's hash.  A server returning
+// mismatched bytes with a correct-looking echoed hash would
+// otherwise skip the real content-integrity check.
+//
+// Payload sizes are bounded by write-op semantics: single
+// fs_write / fs_read replies map to one hash.  Cap enforced
+// at MAX_PAYLOAD_BYTES = 4 MiB (same as snapshot CHUNK_SIZE —
+// a natural upper bound; anything larger would already be
+// chunked by Phase 7b-1 during snapshot).
+
+message GetWalPayloadRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes payload_hash = 1;   // Blake2b256(payload bytes) — 32 bytes
+}
+
+message WalPayloadResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  // ADVISORY echo of the request's payload_hash.  Receiver
+  // MUST recompute `Blake2b256(payload_bytes)` and compare
+  // against the ORIGINAL request's hash (NOT this echo).
+  bytes payload_hash  = 1;
+  bytes payload_bytes = 2;  // raw payload bytes; joiner rehashes to verify
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }
