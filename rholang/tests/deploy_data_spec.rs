@@ -68,7 +68,8 @@ impl TestDeployDataFixture {
             &mut Vec::new(),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .unwrap();
 
         runtime.set_deploy_data(deploy_data).await;
 

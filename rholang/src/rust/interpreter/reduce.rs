@@ -127,8 +127,8 @@ pub struct DebruijnInterpreter {
     pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
-    pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
-    pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    pub(crate) merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+    pub(crate) mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
@@ -858,6 +858,10 @@ impl DebruijnInterpreter {
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
 
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
+
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
         // (b) tuple channels with a head that ISN'T in the tag registry
@@ -1373,12 +1377,17 @@ impl DebruijnInterpreter {
                 } else {
                     match self.urn_map.get(&urn) {
                         Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag" {
+                            if urn == "rho:system:bitmaskMergeableTag"
+                                && tracing::enabled!(
+                                    target: "f1r3fly.merge.tag_check.validation",
+                                    tracing::Level::DEBUG
+                                )
+                            {
                                 use prost::Message;
                                 let bytes = p.encode_to_vec();
                                 let hex: String =
                                     bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::info!(
+                                tracing::debug!(
                                     target: "f1r3fly.merge.tag_check.validation",
                                     "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
                                     hex,
@@ -7509,5 +7518,73 @@ fn describe_par_type(par: &Par) -> String {
         }
     } else {
         "non-boolean process".to_string()
+    }
+}
+
+#[cfg(test)]
+mod is_mergeable_channel_tests {
+    use models::rhoapi::{ETuple, Expr};
+    use models::rust::utils::new_gstring_par;
+
+    use super::*;
+    use crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name;
+    use crate::rust::interpreter::test_utils::resources::with_runtime;
+
+    fn tuple(ps: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps,
+                locally_free: vec![],
+                connective_used: false,
+            })),
+        }])
+    }
+
+    async fn merge_type(chan: Par) -> Option<MergeType> {
+        with_runtime("is-mergeable-channel-", |runtime| async move {
+            runtime.reducer.is_mergeable_channel(&chan)
+        })
+        .await
+    }
+
+    fn other() -> Par { new_gstring_par("x".to_string(), vec![], false) }
+
+    #[tokio::test]
+    async fn a_channel_that_is_not_a_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(bitmask_or_mergeable_tag_name()).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_empty_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_with_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_without_a_tag_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![other()])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_tuple_whose_head_is_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name(), other()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_after_the_head_is_not_matched() {
+        assert_eq!(
+            merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
+            None
+        );
     }
 }
