@@ -1458,6 +1458,152 @@ impl LockRegistry {
         }
         Ok(())
     }
+
+    /// Cancel every parked waiter owned by `holder` across every
+    /// file in the registry.  Pairs with
+    /// [`release_all_for_holder`] (PR #530) — the release-side
+    /// sweeps HELD locks for the holder; this sweeps PARKED
+    /// waiters for the holder.  Called from the same
+    /// `fs_release_all_for_holder` (File.close) path when a cap
+    /// goes away: a cap's parked `wait: true` acquires MUST NOT
+    /// resolve to the dead cap, so they're cancelled before the
+    /// cap vanishes.
+    ///
+    /// Signals every cancelled waiter's admit sender with
+    /// `Err(LockError::Cancelled)` (dropped-receiver sends fail
+    /// silently per the per-waiter cancel discipline).  Returns
+    /// the count cancelled for diagnostics.
+    ///
+    /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
+    ///
+    /// Uses [`HolderId::ct_eq`] uniformly, matching
+    /// [`release_all_for_holder`]'s rationale: a destructive
+    /// sweep is one-shot and less actionable than enumeration,
+    /// but a future dry-run / per-entry-return refactor would
+    /// retroactively create an enumeration surface.  Using
+    /// `ct_eq` uniformly keeps the "all release / cancel paths
+    /// use constant-time holder comparison" invariant true-by-
+    /// construction.
+    ///
+    /// # No `wake_waiters` call after sweep
+    ///
+    /// Cancelling waiters cannot ADD any holder, so no
+    /// downstream waiter's admissibility changes.  Mirrors
+    /// [`cancel_wait`]'s discipline.
+    pub fn cancel_all_waiters_for_holder(&self, holder: &HolderId) -> usize {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut cancelled = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        // Collect senders during the sweep, then drop(guard)
+        // before firing sends — see the drop-then-signal pattern
+        // below.  `oneshot::send` is non-blocking so holding the
+        // guard across sends is correct, but it briefly blocks
+        // any concurrent reader; dropping first minimizes guard
+        // hold time.  Matches per-waiter `cancel_wait` discipline.
+        let mut to_signal: Vec<oneshot::Sender<Result<LockId, LockError>>> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            // Drain-filter equivalent: scan from the front,
+            // removing matches.  Using `drain_filter` would be
+            // cleaner but it's unstable; the manual loop keeps
+            // the function nightly-feature-free.
+            let mut i = 0;
+            while i < state.waiters.len() {
+                // SEC-Mi-01: ct_eq, NOT `==`.
+                if state.waiters[i].holder.ct_eq(holder) {
+                    let waiter = state
+                        .waiters
+                        .remove(i)
+                        .expect("index just observed in bounds");
+                    to_signal.push(waiter.admit);
+                    cancelled += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        drop(guard);
+        for tx in to_signal {
+            let _ = tx.send(Err(LockError::Cancelled));
+        }
+        cancelled
+    }
+
+    /// Cancel every parked waiter owned by `deploy` across every
+    /// file in the registry.  Pairs with
+    /// [`release_all_for_deploy`] (PR #530) on the deploy-abort
+    /// path: the release-side sweeps HELD locks for the deploy;
+    /// this sweeps PARKED waiters.
+    ///
+    /// Called from the yet-to-land `WalDeployScope::drop` hook
+    /// as the FIRST step of the X-2 / G-02 defense-in-depth
+    /// chain (see [`wake_waiters`] docstring).  The ordering is
+    /// consensus-observable:
+    ///
+    ///   1. `cancel_all_waiters_for_deploy(D)` — drains D's
+    ///      PARKED waiters so none are promoted mid-abort.
+    ///   2. `release_all_for_deploy(D)` — sweeps D's HELD locks
+    ///      including anything the step 1 sweep raced against.
+    ///   3. `wake_waiters` runs inside step 2 to admit OTHER
+    ///      deploys that were blocked.
+    ///
+    /// Panics on the `[0; 32]` sentinel, same discipline as
+    /// [`release_all_for_deploy`]: the all-zeros `DeployScope`
+    /// is a pre-wiring placeholder and a bulk sweep keyed on it
+    /// would wipe every sentinel-scoped waiter on the registry.
+    ///
+    /// Returns the count cancelled.
+    ///
+    /// # No `wake_waiters` call after sweep
+    ///
+    /// Mirrors [`cancel_all_waiters_for_holder`]: cancellation
+    /// removes waiters, which doesn't change the holder set, so
+    /// no downstream admissibility changes.
+    pub fn cancel_all_waiters_for_deploy(&self, deploy: &DeployScope) -> usize {
+        assert!(
+            deploy != &[0u8; 32],
+            "cancel_all_waiters_for_deploy called with the [0; 32] sentinel — \
+             the all-zeros DeployScope is reserved as a pre-wiring \
+             placeholder; a production deploy under a live WalDeployScope \
+             derives a non-sentinel scope via Blake2b256.  Calling with \
+             the sentinel would sweep every stray sentinel-scoped waiter."
+        );
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut cancelled = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        let mut to_signal: Vec<oneshot::Sender<Result<LockId, LockError>>> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            let mut i = 0;
+            while i < state.waiters.len() {
+                if &state.waiters[i].deploy == deploy {
+                    let waiter = state
+                        .waiters
+                        .remove(i)
+                        .expect("index just observed in bounds");
+                    to_signal.push(waiter.admit);
+                    cancelled += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        drop(guard);
+        for tx in to_signal {
+            let _ = tx.send(Err(LockError::Cancelled));
+        }
+        cancelled
+    }
 }
 
 // Compile-time witness that `LockRegistry: Send + Sync` —
@@ -5065,5 +5211,379 @@ mod tests {
         // Now B is a HELD lock.  Cancel on its id is Closed.
         let err = reg.cancel_wait(b_id, &holder_b);
         assert_eq!(err.unwrap_err(), LockError::Closed);
+    }
+
+    // --- cancel_all_waiters_for_holder ----------------------------
+
+    /// Sweeps every waiter whose holder matches, across every
+    /// file.  B's unrelated waiter on a different file survives.
+    #[test]
+    fn cancel_all_waiters_for_holder_sweeps_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_x = HolderId::from_bytes([0x01; 32]);
+        let holder_y = HolderId::from_bytes([0x02; 32]);
+        // Put holders X and Y on files F1 and F2 (so A/B can park).
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_x,
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            holder_y,
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        // A parks on F1 and F2.
+        let a1 = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let a2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        // B parks on F2 only.
+        let b2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                holder_b,
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let n = reg.cancel_all_waiters_for_holder(&holder_a);
+        assert_eq!(n, 2, "both of A's waiters cancelled");
+        // A's admits fire with Cancelled.
+        let mut a1_rx = match a1 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a1 must park"),
+        };
+        let mut a2_rx = match a2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a2 must park"),
+        };
+        assert_eq!(a1_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        assert_eq!(a2_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        // B's admit stays empty.
+        let mut b2_rx = match b2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("b2 must park"),
+        };
+        assert!(matches!(
+            b2_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // F2 still has B's waiter + Y's held range.
+        let guard = reg.inner.read().unwrap();
+        assert_eq!(guard.get(&(2, 2)).unwrap().waiters.len(), 1);
+        assert_eq!(guard.get(&(1, 1)).unwrap().waiters.len(), 0);
+    }
+
+    /// No matching holder → zero cancelled, no mutation.
+    #[test]
+    fn cancel_all_waiters_for_holder_no_matches_returns_zero() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range((1, 1), 0, 100, LockMode::Write, holder, deploy_scope(0x11))
+            .unwrap();
+        let _ = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            )
+            .unwrap();
+        let n = reg.cancel_all_waiters_for_holder(&HolderId::from_bytes([0xFF; 32]));
+        assert_eq!(n, 0);
+        // Waiter still queued.
+        assert_eq!(
+            reg.inner
+                .read()
+                .unwrap()
+                .get(&(1, 1))
+                .unwrap()
+                .waiters
+                .len(),
+            1
+        );
+    }
+
+    /// LOAD-BEARING: cancel + no-held-locks → state eviction.
+    /// If a sweep cancels every waiter on a file that also has
+    /// no held locks, the state must evict.  Pins the integration
+    /// with state_is_empty.
+    #[test]
+    fn cancel_all_waiters_for_holder_evicts_waiter_only_states() {
+        let reg = LockRegistry::new();
+        // Hand-populate a waiter-only state (no held locks).
+        {
+            let mut guard = reg.inner.write().unwrap();
+            let (tx, _rx) = oneshot::channel();
+            let state = guard.entry((1, 1)).or_default();
+            state.waiters.push_back(Waiter {
+                lock_id: LockId::try_from(42).unwrap(),
+                kind: WaitKind::Sequential,
+                holder: HolderId::from_bytes([0x11; 32]),
+                deploy: [0x11; 32],
+                admit: tx,
+            });
+        }
+        assert_eq!(reg.inner.read().unwrap().len(), 1);
+        reg.cancel_all_waiters_for_holder(&HolderId::from_bytes([0x11; 32]));
+        assert_eq!(
+            reg.inner.read().unwrap().len(),
+            0,
+            "waiter-only state must evict after bulk cancel"
+        );
+    }
+
+    /// Dropped-receiver waiters are still removed from the queue
+    /// (send fails silently, same as cancel_wait).
+    #[test]
+    fn cancel_all_waiters_for_holder_handles_dropped_receivers() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        match out {
+            AcquireOutcome::Parked { admit, .. } => drop(admit),
+            _ => panic!("must park"),
+        };
+        let n = reg.cancel_all_waiters_for_holder(&holder);
+        assert_eq!(n, 1);
+    }
+
+    // --- cancel_all_waiters_for_deploy ----------------------------
+
+    /// Mirrors the holder sweep but keyed on deploy.
+    #[test]
+    fn cancel_all_waiters_for_deploy_sweeps_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let d_a = deploy_scope(0xAA);
+        let d_b = deploy_scope(0xBB);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x01; 32]),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x02; 32]),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        let a1 = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                d_a,
+            )
+            .unwrap();
+        let a2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                d_a,
+            )
+            .unwrap();
+        let b2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xBB; 32]),
+                d_b,
+            )
+            .unwrap();
+        let n = reg.cancel_all_waiters_for_deploy(&d_a);
+        assert_eq!(n, 2);
+        let mut a1_rx = match a1 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a1 must park"),
+        };
+        let mut a2_rx = match a2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a2 must park"),
+        };
+        assert_eq!(a1_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        assert_eq!(a2_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        let mut b2_rx = match b2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("b2 must park"),
+        };
+        assert!(matches!(
+            b2_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// LOAD-BEARING sentinel guard: `[0; 32]` sweep is refused
+    /// at the API boundary.  Same discipline as
+    /// `release_all_for_deploy`.
+    #[test]
+    #[should_panic(expected = "sentinel")]
+    fn cancel_all_waiters_for_deploy_panics_on_zero_sentinel() {
+        let reg = LockRegistry::new();
+        let _ = reg.cancel_all_waiters_for_deploy(&[0u8; 32]);
+    }
+
+    /// No matching deploy → zero cancelled.
+    #[test]
+    fn cancel_all_waiters_for_deploy_no_matches_returns_zero() {
+        let reg = LockRegistry::new();
+        assert_eq!(reg.cancel_all_waiters_for_deploy(&deploy_scope(0xFF)), 0);
+    }
+
+    /// Symmetry with the holder variant: dropped-receiver sends
+    /// fail silently and don't abort the sweep.
+    #[test]
+    fn cancel_all_waiters_for_deploy_handles_dropped_receivers() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0xAA; 32]),
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let d = deploy_scope(0x11);
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                d,
+            )
+            .unwrap();
+        match out {
+            AcquireOutcome::Parked { admit, .. } => drop(admit),
+            _ => panic!("must park"),
+        };
+        let n = reg.cancel_all_waiters_for_deploy(&d);
+        assert_eq!(n, 1);
+    }
+
+    /// INTEGRATION: the X-2 / G-02 defense chain operates in
+    /// order — cancel_all_waiters_for_deploy drains PARKED
+    /// waiters, release_all_for_deploy sweeps HELD locks and
+    /// its wake_waiters admits OTHER deploys that were blocked.
+    ///
+    /// Setup (no cycle — would_close_cycle would otherwise
+    /// refuse the second park):
+    ///   - D1 holds F1 (held range).
+    ///   - D3 holds F2 (held range).
+    ///   - D1 parks on F2 (edge D1 → D3).
+    ///   - D2 parks on F1 (edge D2 → D1).  No cycle because D1
+    ///     waits on D3 (not D2).
+    ///
+    /// Deploy-abort for D1:
+    ///   1. `cancel_all_waiters_for_deploy(D1)` → D1's wait on
+    ///      F2 cancelled.
+    ///   2. `release_all_for_deploy(D1)` → D1's held range on
+    ///      F1 released; wake_waiters admits D2's wait on F1.
+    #[test]
+    fn deploy_abort_chain_cancels_waiters_then_releases_holds_then_admits() {
+        let reg = LockRegistry::new();
+        let d1 = deploy_scope(0x01);
+        let d2 = deploy_scope(0x02);
+        let d3 = deploy_scope(0x03);
+        let h1 = HolderId::from_bytes([0x01; 32]);
+        let h2 = HolderId::from_bytes([0x02; 32]);
+        let h3 = HolderId::from_bytes([0x03; 32]);
+        reg.try_acquire_range((1, 1), 0, 100, LockMode::Write, h1.clone(), d1)
+            .unwrap();
+        reg.try_acquire_range((2, 2), 0, 100, LockMode::Write, h3, d3)
+            .unwrap();
+        let d1_waits_f2 = reg
+            .try_acquire_range_wait((2, 2), 0, 100, LockMode::Write, h1, d1)
+            .unwrap();
+        let d2_waits_f1 = reg
+            .try_acquire_range_wait((1, 1), 0, 100, LockMode::Write, h2, d2)
+            .unwrap();
+        let mut d1_rx = match d1_waits_f2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("must park"),
+        };
+        let (d2_lock_id, mut d2_rx) = match d2_waits_f1 {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("must park"),
+        };
+        // Step 1: cancel D1's PARKED waiters.
+        let cancelled = reg.cancel_all_waiters_for_deploy(&d1);
+        assert_eq!(cancelled, 1);
+        assert_eq!(d1_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        // D2's waiter untouched.
+        assert!(matches!(
+            d2_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // Step 2: release D1's HELD locks → wake_waiters admits
+        // D2's waiter on F1.
+        let released = reg.release_all_for_deploy(&d1);
+        assert_eq!(released, 1);
+        assert_eq!(d2_rx.try_recv(), Ok(Ok(d2_lock_id)));
     }
 }
