@@ -1124,6 +1124,8 @@ fi
 
 tla_root="$repo_root/formal/tlaplus/stack_safe_pda"
 tla_metadir="$(tlc_metadir stack-safe-pda-equivalence)"
+python3 "$repo_root/scripts/check-epathmap-core-obligations.py" --check
+python3 "$repo_root/scripts/check-epathmap-core-obligations.py" --self-test
 pushd "$tla_root" >/dev/null
 tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
 tlc_run "$tla_metadir" \

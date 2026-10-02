@@ -1,0 +1,863 @@
+{
+  "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
+  "delegated_epm1_positional_tla": {
+    "config": "formal/tlaplus/stack_safe_pda/Epm1PositionalAssociation.cfg",
+    "invariants": [
+      "TypeInvariant",
+      "MarkersAreZero",
+      "LogicalOccurrencesIgnoreStorageIdentity",
+      "AssignmentPrefixIsExact",
+      "SuspendedFocusIsExact",
+      "ChildErrorPrecedesDeferredAct",
+      "FailureNeverPublishes",
+      "PublicationRequiresCompleteLockstep",
+      "PublicationIsExactlyOnce"
+    ],
+    "registry": "formal/epm1_positional_obligations.generated.json"
+  },
+  "executable_witnesses": [
+    {
+      "source": "models/tests/epathmap_algebra.rs",
+      "test": "map_algebra_preserves_associations_and_rejects_unequal_overlaps"
+    },
+    {
+      "source": "models/tests/epathmap_algebra.rs",
+      "test": "nonempty_set_and_map_modes_cannot_mix"
+    },
+    {
+      "source": "models/tests/epathmap_algebra.rs",
+      "test": "set_algebra_uses_pathmap_lattice_operations"
+    },
+    {
+      "source": "models/tests/epathmap_epm1_snapshot.rs",
+      "test": "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces"
+    }
+  ],
+  "rocq": [
+    {
+      "obligations": [
+        {
+          "id": "EPC-RC-01-01",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "fold_forest_length",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-02",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "firstn_length_app",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-03",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "skipn_length_app",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-04",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "compile_run_equivalence",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-05",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "pda_fold_equivalent_to_recursive_fold",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-06",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "compiled_program_has_one_instruction_per_node",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-07",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "forest_list_round_trip",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-08",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "recursive_rebuild_is_identity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-09",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "decoder_machine_equivalent_to_recursive_rebuild",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-01-10",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "drop_machine_reaches_one_completion",
+          "test_name": null,
+          "test_source": null
+        }
+      ],
+      "print_assumptions": [],
+      "source": "formal/rocq/stack_safe_pda/theories/StackSafePDA.v"
+    },
+    {
+      "obligations": [
+        {
+          "id": "EPC-RC-02-01",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_join_absent_left",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-02",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_join_absent_right",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-03",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_join_idempotent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-04",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_join_commutative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-05",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_meet_commutative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-06",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_meet_idempotent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-07",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_subtract_absent_right",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-08",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_subtract_self",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-09",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "value_subtract_present_mask",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-10",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_join_empty_left",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-11",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_join_empty_right",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-12",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_join_idempotent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-13",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_join_commutative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-14",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_meet_empty_left",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-15",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_meet_empty_right",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-16",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_meet_idempotent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-17",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_meet_commutative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-18",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_subtract_empty_right",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-19",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "map_subtract_self_removes_present_cells",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-20",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "unequal_overlap_is_exactly_a_conflict",
+          "test_name": "map_algebra_preserves_associations_and_rejects_unequal_overlaps",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-21",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "unequal_meet_overlap_is_exactly_a_conflict",
+          "test_name": "map_algebra_preserves_associations_and_rejects_unequal_overlaps",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-22",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "subtract_overlap_is_value_independent_key_mask",
+          "test_name": "map_algebra_preserves_associations_and_rejects_unequal_overlaps",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-23",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "set_join_commutative",
+          "test_name": "set_algebra_uses_pathmap_lattice_operations",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-24",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_join_associative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-25",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "set_join_idempotent",
+          "test_name": "set_algebra_uses_pathmap_lattice_operations",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-26",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_join_empty_identity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-27",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_meet_commutative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-28",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_meet_associative",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-29",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_meet_idempotent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-30",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_meet_empty_absorbing",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-31",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "set_subtract_removes_members",
+          "test_name": "set_algebra_uses_pathmap_lattice_operations",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-32",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_subtract_empty_right",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-33",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "set_subtract_self_is_empty",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-34",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "neutral_empty_is_a_two_sided_identity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-35",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "mixed_nonempty_membership_is_rejected",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-36",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "neutral_empty_is_meet_and_restrict_absorbing",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-37",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "neutral_empty_is_subtract_left_zero_and_right_identity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-38",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "every_binary_operation_rejects_mixed_nonempty_modes",
+          "test_name": "nonempty_set_and_map_modes_cannot_mix",
+          "test_source": "models/tests/epathmap_algebra.rs"
+        },
+        {
+          "id": "EPC-RC-02-39",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "prefix_restriction_never_invents_members",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-02-40",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "prefix_restriction_of_empty_base_is_empty",
+          "test_name": null,
+          "test_source": null
+        }
+      ],
+      "print_assumptions": [],
+      "source": "formal/rocq/stack_safe_pda/theories/EPathMap.v"
+    },
+    {
+      "obligations": [
+        {
+          "id": "EPC-RC-03-01",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "decode_varint_cons",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-02",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "decode_varint_nil",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-03",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "decode_encode_varint_fuel",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-04",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_varint_round_trip",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-05",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_varint_rejects_redundant_continuation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-06",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_varint_rejects_truncated_continuation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-07",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_varint_rejects_out_of_range_byte",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-08",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "firstn_length_app",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-09",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "skipn_length_app",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-10",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_frame_round_trip",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-11",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "length_frame_rejects_truncated_payload",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-12",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_frames_round_trip",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-13",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "direct_object_replay_iff_materialized_writer_image",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-14",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "direct_act_replay_equivalent_to_reconstruction_oracle",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-15",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "epm1_structural_prefix_round_trip",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-16",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "epm1_framed_decode_encode_identity",
+          "test_name": "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
+          "test_source": "models/tests/epathmap_epm1_snapshot.rs"
+        },
+        {
+          "id": "EPC-RC-03-17",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "epm1_preserves_topology_and_ordered_value_table",
+          "test_name": "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
+          "test_source": "models/tests/epathmap_epm1_snapshot.rs"
+        },
+        {
+          "id": "EPC-RC-03-18",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "epm1_rejects_trailing_bytes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-19",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "epm1_rejects_truncated_header",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-20",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "epm1_rejects_invalid_mode",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-21",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_body_positions_are_bijective",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-22",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_body_position_indexes_its_value",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-23",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "positional_value_sentinels_are_zero_and_count_exact",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-24",
+          "mode": "concrete_witness",
+          "printed": false,
+          "symbol": "epm1_round_trip_preserves_positional_value_association",
+          "test_name": "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
+          "test_source": "models/tests/epathmap_epm1_snapshot.rs"
+        },
+        {
+          "id": "EPC-RC-03-25",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "epm1_round_trip_preserves_topology_positional_value_association",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-26",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "associated_map_markers_are_zero_and_count_exact",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-27",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "associated_set_markers_are_zero_without_a_value_table",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-28",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "zero_count_map_association_requires_no_valued_endpoints",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-29",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "set_association_accepts_any_number_of_zero_markers",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-30",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "set_association_rejects_nonzero_markers",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-31",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "structurally_nonempty_map_may_have_zero_values",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-32",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "structurally_empty_typed_arena_is_rejected",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-33",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "zero_count_map_framed_round_trip",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-34",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_validation_worklist_equivalent_to_recursive_validation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-35",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_validation_worklist_is_linear_in_reachable_subjects",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-36",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "canonical_fold_worklist_equivalent_to_recursive_fold",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-37",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "generated_pda_value_body_equals_recursive_body",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-38",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "generated_pda_value_table_equals_recursive_table",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "EPC-RC-03-39",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "epm1_generated_pda_values_equal_recursive_encoding",
+          "test_name": null,
+          "test_source": null
+        }
+      ],
+      "print_assumptions": [
+        "associated_set_markers_are_zero_without_a_value_table",
+        "zero_count_map_association_requires_no_valued_endpoints",
+        "set_association_accepts_any_number_of_zero_markers",
+        "set_association_rejects_nonzero_markers",
+        "structurally_nonempty_map_may_have_zero_values",
+        "structurally_empty_typed_arena_is_rejected",
+        "zero_count_map_framed_round_trip"
+      ],
+      "source": "formal/rocq/stack_safe_pda/theories/EPM1.v"
+    }
+  ],
+  "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
+  "source_sha256": {
+    "formal/epm1_positional_obligations.generated.json": "ceb66205645724f8fd2850244ac5167b64bae971b3c4930e6be2838d8356c7ff",
+    "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
+    "formal/rocq/stack_safe_pda/theories/EPathMap.v": "a0ba6d8381867c02971d94bbb5545f4495b739ed82ab69859da4c109b3b1a6b7",
+    "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
+    "formal/tlaplus/stack_safe_pda/Epm1PositionalAssociation.cfg": "1b1516198abcf597b2ec73ed55b62033d60872c18f9a3c3eceedff23f66b52b3",
+    "formal/tlaplus/stack_safe_pda/PDAEquivalence.cfg": "efa8bbad0b869ea2c14e865120c8cbd4c2060e4b75d0b0549f11645accfb4889",
+    "formal/tlaplus/stack_safe_pda/PDAEquivalence.tla": "1b010477e0dde9d836b70183c425a9929d47fb70b5caadc3fa54a7e13e1ae173",
+    "formal/verus/epathmap_canonical_worklist.rs": "2bfc8da59684812bc6488f0121d31832d7fddcab6019cc86d3b9182978e9ddfb",
+    "models/Cargo.toml": "dbb49d99a0b64ec5b5d6a6e6507b4b487424ffcbaea7564fb03bb6d6130ce0d8",
+    "models/tests/epathmap_algebra.rs": "8b9d018d17d15c96be10466ccae11a8ba265512bc2e62091624ad9911113fc67",
+    "models/tests/epathmap_epm1_snapshot.rs": "5066167eeb3d240dacc7e873590a28bfa7cc5efe6ae9c943f78be52c0957c561"
+  },
+  "tlc": {
+    "causal_mutants": [],
+    "config": "formal/tlaplus/stack_safe_pda/PDAEquivalence.cfg",
+    "model": "formal/tlaplus/stack_safe_pda/PDAEquivalence.tla",
+    "obligations": [
+      {
+        "id": "EPC-TLA-01",
+        "mode": "proof_only",
+        "symbol": "TypeInvariant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "EPC-TLA-02",
+        "mode": "proof_only",
+        "symbol": "NoInstructionUnderflow",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "EPC-TLA-03",
+        "mode": "proof_only",
+        "symbol": "CompletedEquivalent",
+        "test_name": null,
+        "test_source": null
+      }
+    ]
+  },
+  "verus": {
+    "obligations": [
+      {
+        "id": "EPC-VS-01",
+        "kind": "exec",
+        "mode": "proof_only",
+        "symbol": "relative_region",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "EPC-VS-02",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "recursive_validation",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "EPC-VS-03",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "worklist_validation",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "EPC-VS-04",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "validation_suffix_equivalent",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "EPC-VS-05",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "canonical_validation_worklist_equivalent",
+        "test_name": null,
+        "test_source": null
+      }
+    ],
+    "source": "formal/verus/epathmap_canonical_worklist.rs"
+  }
+}
