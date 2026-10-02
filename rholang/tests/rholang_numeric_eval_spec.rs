@@ -494,3 +494,41 @@ async fn pattern_match_on_numeric_values() {
     })
     .await
 }
+
+// --- toBigInt conversion ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn to_bigint_converts_int_and_keeps_bigint() {
+    with_runtime("to-bigint-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            r#"
+            @0!(5.toBigInt() == 5n) |
+            @1!((-7).toBigInt() == -7n) |
+            @2!(0.toBigInt() == 0n) |
+            @3!(12345678901234567890123n.toBigInt() == 12345678901234567890123n) |
+            @4!(9223372036854775807.toBigInt() + 1n == 9223372036854775808n)
+            "#,
+        )
+        .await;
+
+        for ch in 0..5 {
+            assert!(
+                has_par_with_bool(&channel_data(&runtime, int_channel(ch)).await, true),
+                "channel {} did not receive true",
+                ch
+            );
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn to_bigint_rejects_non_integers() {
+    with_runtime("to-bigint-err-", |mut runtime| async move {
+        eval_err(&mut runtime, r#"@0!("5".toBigInt())"#).await;
+        eval_err(&mut runtime, r#"@0!(1.5f64.toBigInt())"#).await;
+        eval_err(&mut runtime, r#"@0!(5.toBigInt(1))"#).await;
+    })
+    .await
+}

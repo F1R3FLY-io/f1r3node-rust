@@ -832,7 +832,8 @@ impl WebApi for WebApiImpl {
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
         let balance = match exprs.first() {
-            Some(RhoExpr::ExprInt { data }) => *data,
+            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
+            Some(RhoExpr::ExprInt { data }) => data.to_string(),
             _ => return Err(eyre!("Unexpected balance result for address {}", address)),
         };
 
@@ -1504,7 +1505,8 @@ pub enum ViewMode {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BalanceResponse {
     pub address: String,
-    pub balance: i64,
+    /// Balance in base units as a decimal string (vault balances are BigInt).
+    pub balance: String,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]

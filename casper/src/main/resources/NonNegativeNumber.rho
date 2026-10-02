@@ -16,31 +16,36 @@
 new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`), uriOut in {
   contract NonNegativeNumber(@init, return) = {
     new this, valueStore in {
+      // Values are stored as BigInt. Int and BigInt arguments are accepted and
+      // converted with toBigInt(); other argument types fail the deploy.
       contract this(@"add", @x, success) = {
-        if (x >= 0) {
-          for(@v <- @(*MergeableTag, *valueStore)){
-            if (v + x >= v) {
-              @(*MergeableTag, *valueStore)!(v + x) | success!(true)
+        match x.toBigInt() {
+          bx => {
+            if (bx >= 0n) {
+              for(@v <- @(*MergeableTag, *valueStore)){
+                @(*MergeableTag, *valueStore)!(v + bx) | success!(true)
+              }
             } else {
-              //overflow
-              @(*MergeableTag, *valueStore)!(v) | success!(false)
+              success!(false)
             }
           }
-        } else {
-          success!(false)
         }
       } |
       contract this(@"sub", @x, success) = {
-        if (x >= 0) {
-          for(@v <- @(*MergeableTag, *valueStore)) {
-            if (x <= v) {
-              @(*MergeableTag, *valueStore)!(v - x) | success!(true)
+        match x.toBigInt() {
+          bx => {
+            if (bx >= 0n) {
+              for(@v <- @(*MergeableTag, *valueStore)) {
+                if (bx <= v) {
+                  @(*MergeableTag, *valueStore)!(v - bx) | success!(true)
+                } else {
+                  @(*MergeableTag, *valueStore)!(v) | success!(false)
+                }
+              }
             } else {
-              @(*MergeableTag, *valueStore)!(v) | success!(false)
+              success!(false)
             }
           }
-        } else {
-          success!(false)
         }
       } |
       contract this(@"value", return) = {
@@ -49,12 +54,11 @@ new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`),
         }
       } |
       return!(bundle+{*this}) |
-      match init { //Initial balance is zero if given is negative on non-integer
-        Int => {
-          if (init >= 0) { @(*MergeableTag, *valueStore)!(init)  }
-          else           { @(*MergeableTag, *valueStore)!(0) }
+      match init.toBigInt() { //Initial balance is zero if given is negative
+        binit => {
+          if (binit >= 0n) { @(*MergeableTag, *valueStore)!(binit) }
+          else             { @(*MergeableTag, *valueStore)!(0n) }
         }
-         _ => { @(*MergeableTag, *valueStore)!(0) }
       }
     }
   } |

@@ -1144,7 +1144,7 @@ mod branch_tests {
         let changes = datum_state_change(&channel, vec![], vec![]);
         let base = reader(HashMap::new(), HashMap::new(), HashMap::new());
         let mut mergeable_chs: NumberChannelsDiff = BTreeMap::new();
-        mergeable_chs.insert(channel.clone(), (1, MergeType::IntegerAdd));
+        mergeable_chs.insert(channel.clone(), (num_bigint::BigInt::from(1), MergeType::IntegerAdd));
 
         let expected_data = override_data.clone();
         let with_override =

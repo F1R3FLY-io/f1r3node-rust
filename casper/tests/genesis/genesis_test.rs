@@ -616,7 +616,7 @@ async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corre
     let on_chain_balance = rev_vault_balance(&mut node, &shard_id, KNOWN_REV_ADDRESS).await;
     assert_eq!(
         on_chain_balance,
-        KNOWN_BALANCE.to_string(),
+        format!("{}n", KNOWN_BALANCE),
         "genesis REV vault for {} must hold the wallets-file balance {}",
         KNOWN_REV_ADDRESS,
         KNOWN_BALANCE
