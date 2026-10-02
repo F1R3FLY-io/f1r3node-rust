@@ -18574,9 +18574,19 @@ The just-built binary at SHA-256
 normal-suite registry test, one of one, with log
 `target/verification/pathmap-7913-registry-post-correction-debug.log` at SHA-256
 `49918111a9a137b51318265ca1b177b3a2ba91a07a1e096cc764190e6abb6af9`.
-The release build was interrupted when another heavy RSpace compile started;
-it supplies no result. Release tests and fresh independent review of these
-exact logs remain required before task 7913 can be claimed complete.
+The later headless release command used the same test filter and scope limits
+with `--release` at HEAD `eec2da4ed`. All 17 selected tests passed; its log is
+`target/verification/pathmap-7913-object-overflow-release.log` at SHA-256
+`0ba5441859e6a9a67cfc4f90a76792d0837e6fded0d5b280c2cb6c2f5e057321`.
+The release binary at SHA-256
+`3a11e68feba1de049982feb22e3f910a6921e2d2ae70b37be493287b88485491`
+also passed the normal-suite registry test, one of one, with log
+`target/verification/pathmap-7913-registry-post-correction-release.log` at
+SHA-256
+`cff86800a628c06ccc2079ff9df547e1c21e4695690e47a019601bf451403a91`.
+These are agent-run results in a shared dirty worktree; independent review and
+the approved pgmcp verification recipe remain required before task 7913 can be
+claimed complete.
 
 ## Upstream PathMap integration request register
 
