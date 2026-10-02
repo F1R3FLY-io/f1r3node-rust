@@ -1661,6 +1661,202 @@ const _LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
 };
 
 // ===========================================================
+// SharedLockRegistry — manager-broadcast slot (slice 46)
+// ===========================================================
+
+/// Two-layer-indirection wrapper over [`LockRegistry`] designed
+/// for the `RuntimeManager` → runtime → reducer broadcast chain.
+/// Pairs with [`SharedLockRegistry::share_from`] the same way
+/// [`super::path::identity::RootIdentityRegistry::share_from`]
+/// pairs with its own slot — see that type's docstring for the
+/// load-bearing PB-M-14 reducer-clone-visibility rationale.
+///
+/// # Shape
+///
+///   - Outer `Arc<RwLock<LockRegistry>>` — shared across clones.
+///     `#[derive(Clone)]` copies the outer `Arc` so every clone
+///     observes the SAME slot.
+///   - Inner [`LockRegistry`] (whose fields are already
+///     `Arc<...>`) — the actual backing.  Cloning a
+///     [`LockRegistry`] shares its backing; swapping the slot's
+///     contents atomically re-points EVERY outer-clone's view at
+///     a new backing in a single `write()` operation.
+///
+/// # Why not refactor `LockRegistry` directly
+///
+/// [`LockRegistry`]'s existing `Arc<...>` fields already provide
+/// clone-sharing between TWO clones that were created from the
+/// same source.  The missing property is "re-point an existing
+/// clone's backing to a DIFFERENT source without touching every
+/// clone individually" — the SLOT provides that.  Wrapping
+/// [`LockRegistry`] in a slot keeps all 144 existing lock tests
+/// untouched; refactoring [`LockRegistry`]'s internals would
+/// have broken every `reg.inner.read()` test peek.
+///
+/// # Delegating methods
+///
+/// Every public [`LockRegistry`] method has a thin delegation
+/// here: `fn X(&self, ...) { self.snapshot_registry().X(...) }`.
+/// Future [`LockRegistry`] additions MUST add a delegation here
+/// too — the handle-table ergonomics assume
+/// [`SharedLockRegistry`] mirrors [`LockRegistry`]'s surface
+/// fully.
+///
+/// # Serialize `share_from` with concurrent lock ops at boot
+///
+/// Same discipline as [`RootIdentityRegistry::share_from`]: a
+/// concurrent lock operation that snapshotted the current
+/// backing (via `snapshot_registry()`) BEFORE `share_from` swapped
+/// the slot will complete against the ORPHANED backing.  Boot
+/// must serialize: broadcast the shared registry via
+/// `share_from` BEFORE handler dispatch begins.  Production
+/// honors this by construction (boot is single-threaded).
+#[derive(Debug, Clone, Default)]
+pub struct SharedLockRegistry {
+    slot: Arc<RwLock<LockRegistry>>,
+}
+
+impl SharedLockRegistry {
+    /// Fresh wrapper over a brand-new empty [`LockRegistry`].
+    pub fn new() -> Self { Self::default() }
+
+    /// Wrap an existing [`LockRegistry`] in a fresh slot.  Used
+    /// at the `RuntimeManager` end of the broadcast — the manager
+    /// constructs its own [`LockRegistry`], wraps it here, then
+    /// `share_from`-broadcasts it to every spawned runtime.
+    pub fn with_registry(reg: LockRegistry) -> Self {
+        Self {
+            slot: Arc::new(RwLock::new(reg)),
+        }
+    }
+
+    /// Atomically re-point `self`'s backing at `other`'s backing
+    /// so subsequent reads AND writes through `self` (and every
+    /// clone of `self` that shares the outer slot Arc) route
+    /// through `other`'s inner [`LockRegistry`] state.
+    ///
+    /// Load-bearing for the reducer-clone pattern: a
+    /// `FileHandleTable` cloned BEFORE `share_lock_registry`
+    /// still observes the swap because the clone shares `self`'s
+    /// outer slot Arc.  Mirrors
+    /// [`RootIdentityRegistry::share_from`] exactly.
+    pub fn share_from(&self, other: &SharedLockRegistry) {
+        let src = poison_abort(other.slot.read(), "SharedLockRegistry.slot").clone();
+        *poison_abort(self.slot.write(), "SharedLockRegistry.slot") = src;
+    }
+
+    /// Snapshot the current [`LockRegistry`] backing.  After
+    /// [`share_from`], returns the shared backing.  The
+    /// snapshot's Arc fields keep the backing alive across the
+    /// returned reference even if a concurrent `share_from`
+    /// swaps the slot — any guard taken through the snapshot
+    /// continues to operate on the ORPHANED backing, which is
+    /// correct for the boot-serialize discipline (see type
+    /// docstring).
+    fn snapshot_registry(&self) -> LockRegistry {
+        poison_abort(self.slot.read(), "SharedLockRegistry.slot").clone()
+    }
+
+    // --- Delegating methods ---------------------------------------
+    //
+    // Thin wrappers over every public `LockRegistry` method.  Keep
+    // this surface in sync with `LockRegistry`'s surface — a new
+    // method on `LockRegistry` SHOULD get a mirror here or the
+    // handle-table-side ergonomics regress.
+
+    pub fn mint_next_lock_id(&self) -> Result<LockId, LockError> {
+        self.snapshot_registry().mint_next_lock_id()
+    }
+
+    pub fn try_acquire_range(
+        &self,
+        dev_inode: DevInode,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<LockId, LockError> {
+        self.snapshot_registry()
+            .try_acquire_range(dev_inode, offset, length, mode, holder, deploy)
+    }
+
+    pub fn try_acquire_range_wait(
+        &self,
+        dev_inode: DevInode,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<AcquireOutcome, LockError> {
+        self.snapshot_registry()
+            .try_acquire_range_wait(dev_inode, offset, length, mode, holder, deploy)
+    }
+
+    pub fn try_acquire_sequential(
+        &self,
+        dev_inode: DevInode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<LockId, LockError> {
+        self.snapshot_registry()
+            .try_acquire_sequential(dev_inode, holder, deploy)
+    }
+
+    pub fn try_acquire_sequential_wait(
+        &self,
+        dev_inode: DevInode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<AcquireOutcome, LockError> {
+        self.snapshot_registry()
+            .try_acquire_sequential_wait(dev_inode, holder, deploy)
+    }
+
+    pub fn release(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        self.snapshot_registry().release(lock_id, holder)
+    }
+
+    pub fn release_all_for_holder(&self, holder: &HolderId) -> usize {
+        self.snapshot_registry().release_all_for_holder(holder)
+    }
+
+    pub fn release_all_for_deploy(&self, deploy: &DeployScope) -> usize {
+        self.snapshot_registry().release_all_for_deploy(deploy)
+    }
+
+    pub fn cancel_wait(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        self.snapshot_registry().cancel_wait(lock_id, holder)
+    }
+
+    pub fn cancel_all_waiters_for_holder(&self, holder: &HolderId) -> usize {
+        self.snapshot_registry()
+            .cancel_all_waiters_for_holder(holder)
+    }
+
+    pub fn cancel_all_waiters_for_deploy(&self, deploy: &DeployScope) -> usize {
+        self.snapshot_registry()
+            .cancel_all_waiters_for_deploy(deploy)
+    }
+
+    pub fn is_locked(&self, dev_inode: DevInode, range: (u64, u64)) -> bool {
+        self.snapshot_registry().is_locked(dev_inode, range)
+    }
+
+    pub fn n_holders(&self, dev_inode: DevInode) -> usize {
+        self.snapshot_registry().n_holders(dev_inode)
+    }
+}
+
+// Compile-time witness that `SharedLockRegistry: Send + Sync` —
+// required for sharing across runtime clones.
+const _SHARED_LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SharedLockRegistry>();
+};
+
+// ===========================================================
 // Conflict-detection predicates (slice 3)
 // ===========================================================
 //
@@ -5772,5 +5968,266 @@ mod tests {
         assert_eq!(reg.n_holders((1, 1)), 1);
         reg.release(id, &holder).unwrap();
         assert_eq!(reg.n_holders((1, 1)), 0);
+    }
+
+    // --- SharedLockRegistry ---------------------------------------
+    //
+    // Mirrors the test shape of RootIdentityRegistry::share_from —
+    // the load-bearing property is that a prior clone sees the
+    // swap, so each test either (a) creates a clone BEFORE the
+    // share_from call or (b) exercises bidirectional
+    // propagation.
+
+    /// Basic delegation: operations on SharedLockRegistry behave
+    /// identically to operations on the inner LockRegistry.
+    #[test]
+    fn shared_registry_delegates_basic_operations() {
+        let shared = SharedLockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = shared
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_eq!(shared.n_holders((1, 1)), 1);
+        shared.release(id, &holder).unwrap();
+        assert_eq!(shared.n_holders((1, 1)), 0);
+    }
+
+    /// LOAD-BEARING: a clone of `SharedLockRegistry` captured
+    /// BEFORE `share_from` sees the swap afterwards.  Pins the
+    /// reducer-clone-visibility property that justifies the
+    /// slot indirection (equivalent to RootIdentityRegistry's
+    /// PB-M-14 canary regression pin).
+    #[test]
+    fn shared_registry_share_from_visible_through_prior_clone() {
+        let runtime_side = SharedLockRegistry::new();
+        // Reducer takes its clone of the FileHandleTable-side
+        // SharedLockRegistry BEFORE share_from is called.
+        let reducer_clone = runtime_side.clone();
+        // Manager constructs a fresh backing and broadcasts.
+        let manager_side = SharedLockRegistry::new();
+        let holder = HolderId::from_bytes([0xAA; 32]);
+        manager_side
+            .try_acquire_range((1, 1), 0, 100, LockMode::Write, holder, deploy_scope(0xAA))
+            .unwrap();
+        // Broadcast.
+        runtime_side.share_from(&manager_side);
+        // The reducer's PRIOR clone sees the swap.
+        assert_eq!(
+            reducer_clone.n_holders((1, 1)),
+            1,
+            "reducer-side clone must observe the shared backing after share_from"
+        );
+    }
+
+    /// LOAD-BEARING: after `share_from`, writes through EITHER
+    /// side land on the same shared backing — bidirectional
+    /// propagation.
+    #[test]
+    fn shared_registry_share_from_bidirectional_after_swap() {
+        let a = SharedLockRegistry::new();
+        let b = SharedLockRegistry::new();
+        b.share_from(&a);
+        // Writes via `a` show on `b` and vice versa.
+        let holder = HolderId::from_bytes([0x11; 32]);
+        a.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert_eq!(b.n_holders((1, 1)), 1);
+        b.try_acquire_sequential((2, 2), holder, deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(a.n_holders((2, 2)), 1);
+    }
+
+    /// A second `share_from` with a different source atomically
+    /// swaps to the new inner.
+    #[test]
+    fn shared_registry_share_from_replaces_prior_backing() {
+        let receiver = SharedLockRegistry::new();
+        let source_a = SharedLockRegistry::new();
+        source_a
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        receiver.share_from(&source_a);
+        assert_eq!(receiver.n_holders((1, 1)), 1);
+        // Second share_from to a different source.
+        let source_b = SharedLockRegistry::new();
+        receiver.share_from(&source_b);
+        assert_eq!(
+            receiver.n_holders((1, 1)),
+            0,
+            "second share_from must swap to the new (empty) backing"
+        );
+    }
+
+    /// Self-`share_from` is a no-op (self-reference boot phase).
+    #[test]
+    fn shared_registry_share_from_self_is_noop() {
+        let reg = SharedLockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        reg.share_from(&reg);
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// LOAD-BEARING: late write by manager AFTER `share_from`
+    /// propagates to runtime-side reads.  The write happens
+    /// through `manager_side` after the broadcast; the
+    /// `runtime_side` and any prior clone of it see the write.
+    #[test]
+    fn shared_registry_late_mutation_propagates_to_prior_clones() {
+        let runtime_side = SharedLockRegistry::new();
+        let reducer_clone = runtime_side.clone();
+        let manager_side = SharedLockRegistry::new();
+        runtime_side.share_from(&manager_side);
+        // AFTER share_from: manager writes.
+        manager_side
+            .try_acquire_range(
+                (7, 7),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x77; 32]),
+                deploy_scope(0x77),
+            )
+            .unwrap();
+        assert_eq!(reducer_clone.n_holders((7, 7)), 1);
+        assert_eq!(runtime_side.n_holders((7, 7)), 1);
+    }
+
+    /// `SharedLockRegistry::with_registry` wraps an existing
+    /// `LockRegistry` so its state is accessible through the
+    /// shared surface.
+    #[test]
+    fn shared_registry_with_registry_wraps_existing_state() {
+        let inner = LockRegistry::new();
+        inner
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        let shared = SharedLockRegistry::with_registry(inner);
+        assert_eq!(shared.n_holders((1, 1)), 1);
+    }
+
+    /// Delegation surface coverage: each `SharedLockRegistry`
+    /// public method is called at least once.  The docstring on
+    /// `SharedLockRegistry` warns that future `LockRegistry`
+    /// additions MUST get a delegation here; this test is the
+    /// gate that catches drift (new `LockRegistry` method
+    /// without a matching delegate → unused private method
+    /// here would warn, but a missed delegate on the type
+    /// surface is only caught by exercising every one).
+    ///
+    /// NOT about correctness of each delegate's semantics —
+    /// that's covered by the underlying `LockRegistry` tests.
+    /// This test only pins that each delegate exists AND
+    /// forwards to its intended `LockRegistry` method (not a
+    /// typo'd sibling).
+    #[test]
+    fn shared_registry_exercises_every_delegate_once() {
+        let shared = SharedLockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_c = HolderId::from_bytes([0xCC; 32]);
+
+        // mint_next_lock_id — returns a monotone id.
+        let id1 = shared.mint_next_lock_id().unwrap();
+        let id2 = shared.mint_next_lock_id().unwrap();
+        assert!(id2.as_u64() > id1.as_u64());
+
+        // try_acquire_range on F1.
+        let r_id = shared
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+
+        // is_locked — F1 is locked.
+        assert!(shared.is_locked((1, 1), (0, 100)));
+        // n_holders — F1 has 1 holder.
+        assert_eq!(shared.n_holders((1, 1)), 1);
+
+        // try_acquire_range_wait on F1 by B → park.
+        let b_wait = shared
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        assert!(matches!(b_wait, AcquireOutcome::Parked { .. }));
+
+        // cancel_wait on B's parked waiter.
+        let b_wait_id = match b_wait {
+            AcquireOutcome::Parked { lock_id, .. } => lock_id,
+            _ => unreachable!(),
+        };
+        shared.cancel_wait(b_wait_id, &holder_b).unwrap();
+
+        // release of A's held range.
+        shared.release(r_id, &holder_a).unwrap();
+
+        // try_acquire_sequential on F2 by A.
+        let _s_id = shared
+            .try_acquire_sequential((2, 2), holder_a.clone(), deploy_scope(0xAA))
+            .unwrap();
+
+        // try_acquire_sequential_wait by C → park.
+        let c_wait = shared
+            .try_acquire_sequential_wait((2, 2), holder_c.clone(), deploy_scope(0xCC))
+            .unwrap();
+        assert!(matches!(c_wait, AcquireOutcome::Parked { .. }));
+
+        // cancel_all_waiters_for_holder clears C's waiter.
+        assert_eq!(shared.cancel_all_waiters_for_holder(&holder_c), 1);
+
+        // cancel_all_waiters_for_deploy no-op (nothing left).
+        assert_eq!(shared.cancel_all_waiters_for_deploy(&deploy_scope(0xCC)), 0);
+
+        // release_all_for_holder sweeps A's sequential.
+        assert_eq!(shared.release_all_for_holder(&holder_a), 1);
+
+        // release_all_for_deploy — no match left.
+        assert_eq!(shared.release_all_for_deploy(&deploy_scope(0xAA)), 0);
     }
 }
