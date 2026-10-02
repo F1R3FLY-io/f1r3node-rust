@@ -821,14 +821,14 @@ impl LockRegistry {
     ///     diagnostic purposes to avoid narrowing attackers'
     ///     search space).
     ///
-    /// # Deferred: `wake_waiters` after remove
+    /// # Wake-pass after remove
     ///
-    /// Fileio's `release` calls `wake_waiters(state)` after
-    /// the remove to admit any eligible parked waiter.  This
-    /// slice doesn't park yet (no [`WaitPolicy::Wait`]
-    /// support), so no waiter can ever be admitted.  When the
-    /// Wait slice lands it will add BOTH the park path AND the
-    /// `wake_waiters` call here.
+    /// Calls [`wake_waiters`] on the touched state after the
+    /// remove to admit any eligible parked waiter (strict head-
+    /// of-line FIFO).  No-op under this slice's call sites —
+    /// nothing parks yet without [`WaitPolicy::Wait`] — but
+    /// wired now so the Wait-acquire slice doesn't have to
+    /// touch every release site.
     pub fn release(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
         let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut touched_key: Option<DevInode> = None;
@@ -863,10 +863,11 @@ impl LockRegistry {
         }
         if let Some(k) = touched_key {
             if let Some(state) = guard.get_mut(&k) {
-                // wake_waiters call deferred — this slice ships
-                // the Fail-only acquire path, so no waiter can
-                // ever be parked.  The Wait-support slice adds
-                // both the park path AND the wake call here.
+                // Head-of-line FIFO admission for any waiter
+                // whose conflict just cleared.  Pre-Wait slice
+                // the queue is always empty, so this is a no-op
+                // today; the Wait-acquire slice lights it up.
+                wake_waiters(state);
                 if state_is_empty(state) {
                     guard.remove(&k);
                 }
@@ -911,14 +912,13 @@ impl LockRegistry {
     /// Micro-perf cost is 32-byte compare × ranges × files
     /// (negligible under typical workloads).
     ///
-    /// # Deferred: `wake_waiters` after sweep
+    /// # Wake-pass after sweep
     ///
-    /// Fileio's `release_all_for_holder` calls
-    /// `wake_waiters(state)` after the sweep to admit any
-    /// OTHER-holder waiters whose conflict just cleared.
-    /// This slice doesn't park yet, so no waiter can be
-    /// admitted.  When Wait support lands, the wake call lands
-    /// here too.
+    /// Calls [`wake_waiters`] on each touched state after the
+    /// sweep to admit any OTHER-holder waiter whose conflict
+    /// just cleared.  No-op pre-Wait — nothing parks yet — but
+    /// wired now (see [`wake_waiters`] docstring for the X-2 /
+    /// G-02 defense-in-depth chain).
     pub fn release_all_for_holder(&self, holder: &HolderId) -> usize {
         let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut released = 0usize;
@@ -937,7 +937,7 @@ impl LockRegistry {
                 state.sequential_holder = None;
                 released += 1;
             }
-            // wake_waiters(state) deferred — see docstring.
+            wake_waiters(state);
             if state_is_empty(state) {
                 evict.push(*dev_inode);
             }
@@ -968,9 +968,18 @@ impl LockRegistry {
     /// `debug_assert!` to `assert!` so release builds also
     /// catch the sweep-every-lock foot-gun.
     ///
-    /// # Deferred: `wake_waiters` after sweep
+    /// # Wake-pass after sweep
     ///
-    /// Same deferral as `release_all_for_holder`.
+    /// Same discipline as `release_all_for_holder` — calls
+    /// [`wake_waiters`] on each touched state to admit any
+    /// OTHER-deploy waiter whose conflict just cleared.  The
+    /// X-2 / G-02 defense-in-depth chain pinned by
+    /// [`wake_waiters`] routes through here on the deploy-abort
+    /// path: `cancel_all_waiters_for_deploy` (yet-to-land)
+    /// drains THIS deploy's PARKED waiters first, THEN this
+    /// sweep clears THIS deploy's HELD locks, THEN the
+    /// `wake_waiters` call admits OTHER deploys that were
+    /// blocked.
     pub fn release_all_for_deploy(&self, deploy: &DeployScope) -> usize {
         assert!(
             deploy != &[0u8; 32],
@@ -991,7 +1000,7 @@ impl LockRegistry {
                 state.sequential_holder = None;
                 released += 1;
             }
-            // wake_waiters(state) deferred — see docstring.
+            wake_waiters(state);
             if state_is_empty(state) {
                 evict.push(*dev_inode);
             }
@@ -1202,9 +1211,130 @@ fn sequential_conflicts(state: &FileLockState) -> bool {
 /// dropping the `Waiter`'s `admit` sender would signal cancel
 /// to the caller even though nobody called `cancel_wait`, and
 /// the waiter would silently disappear from the queue.
-#[allow(dead_code)]
 fn state_is_empty(state: &FileLockState) -> bool {
     state.ranges.is_empty() && state.sequential_holder.is_none() && state.waiters.is_empty()
+}
+
+/// Strict head-of-line FIFO waiter wake pass.  Called after
+/// any release path that removed a held lock from `state`.
+/// Walks the waiter queue from the front and:
+///
+///   - If the head is admissible (no conflicts with current
+///     holders), pops it, promotes it to a held lock, and
+///     signals its admit sender with `Ok(lock_id)`.
+///   - If the admit sender's receiver has been dropped (the
+///     waiter's task was aborted between park and admit),
+///     rolls back the promotion — otherwise the "held" lock
+///     would be stranded in `ranges` / `sequential_holder`
+///     without any task awaiting the admit signal.  Continues
+///     to the next waiter in that case.
+///   - If the head is NOT admissible, stops.  Downstream
+///     waiters do NOT overtake — strict FIFO prevents writer
+///     starvation under a continuous stream of compatible-
+///     read admissions.
+///
+/// Idempotent when `waiters` is empty — safe to call after
+/// any state mutation (which this slice does from `release`,
+/// `release_all_for_holder`, and `release_all_for_deploy`).
+///
+/// # X-2 / G-02 defense-in-depth chain
+///
+/// A waiter belonging to deploy D1 can be promoted here while
+/// D1 is simultaneously aborting.  The yet-to-land abort path
+/// (`WalDeployScope::drop`) has two steps in a locked
+/// ordering:
+///
+///   1. `cancel_all_waiters_for_deploy(D1)` drains D1's
+///      PARKED waiters — doesn't help if a D1 waiter was
+///      already promoted here (i.e., moved from `waiters` to
+///      `ranges`) between D1's handler enqueuing and the
+///      sweep firing.
+///   2. `release_all_for_deploy(D1)` (PR #530)
+///      unconditionally sweeps ANY held range with matching
+///      deploy, regardless of whether it got there via direct
+///      acquire OR waiter promotion.  This closes the G-02
+///      leak.
+///
+/// The receiver-drop rollback below is a third layer: if
+/// D1's handler task was already dropped by the time
+/// promotion happens, `send(Ok)` fails → the promotion
+/// rolls back and the ghost is prevented from ever
+/// appearing in `ranges`.
+///
+/// # Why `#[allow(dead_code)]` is NOT needed
+///
+/// This slice wires `wake_waiters` into three release paths
+/// (`release`, `release_all_for_holder`,
+/// `release_all_for_deploy`).  The waiter-queue is still
+/// empty under this slice's call sites (no Wait acquire
+/// support yet, so no waiter can be parked), making every
+/// call a no-op — but the function IS reached by every
+/// release, so dead-code analysis is satisfied.  The
+/// Wait-acquire slice will add callers that actually
+/// populate `state.waiters`.
+fn wake_waiters(state: &mut FileLockState) {
+    while let Some(head) = state.waiters.front() {
+        // Admissibility uses the same rules as the direct
+        // acquire paths.
+        let admissible = match head.kind {
+            WaitKind::Range {
+                offset,
+                length,
+                mode,
+            } => {
+                state.ranges.len() < MAX_RANGES_PER_FILE
+                    && !range_conflicts(state, offset, length, mode, &head.holder)
+            }
+            WaitKind::Sequential => !sequential_conflicts(state),
+        };
+        if !admissible {
+            break;
+        }
+        // Pop BEFORE promoting so a rollback on receiver-drop
+        // can just re-check the (now different) new head on
+        // the next iteration.
+        let waiter = state.waiters.pop_front().expect("front just observed");
+        let lock_id = waiter.lock_id;
+        match waiter.kind {
+            WaitKind::Range {
+                offset,
+                length,
+                mode,
+            } => {
+                state.ranges.push(RangeEntry {
+                    id: lock_id,
+                    offset,
+                    length,
+                    mode,
+                    holder: waiter.holder.clone(),
+                    deploy: waiter.deploy,
+                });
+                if waiter.admit.send(Ok(lock_id)).is_err() {
+                    // Receiver already dropped (caller task
+                    // cancelled locally).  Roll back the
+                    // promotion so the slot returns to the
+                    // free pool for the next waiter.
+                    state.ranges.pop();
+                }
+            }
+            WaitKind::Sequential => {
+                let previous = state.sequential_holder.replace(SequentialEntry {
+                    id: lock_id,
+                    holder: waiter.holder.clone(),
+                    deploy: waiter.deploy,
+                });
+                debug_assert!(
+                    previous.is_none(),
+                    "sequential_holder must be empty before admit — \
+                     guarded by sequential_conflicts()"
+                );
+                if waiter.admit.send(Ok(lock_id)).is_err() {
+                    // Same rollback as Range case.
+                    state.sequential_holder = None;
+                }
+            }
+        }
+    }
 }
 
 // ===========================================================
@@ -3123,5 +3253,270 @@ mod tests {
             ),
             Err(LockError::Busy)
         );
+    }
+
+    // --- wake_waiters ---------------------------------------------
+    //
+    // The acquire-side park path lands in the subsequent Wait slice.
+    // Until then no production call site enqueues waiters, so the
+    // tests hand-populate `state.waiters` to pin the admit logic in
+    // isolation.
+
+    /// Build a parked Range waiter with an attached oneshot receiver.
+    /// The receiver is returned so the test can observe the admit
+    /// signal (or drop the receiver to exercise the rollback path).
+    fn parked_range_waiter(
+        lock_id: u64,
+        holder_byte: u8,
+        deploy_byte: u8,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+    ) -> (Waiter, oneshot::Receiver<Result<LockId, LockError>>) {
+        let (tx, rx) = oneshot::channel();
+        let w = Waiter {
+            lock_id: LockId::try_from(lock_id).unwrap(),
+            kind: WaitKind::Range {
+                offset,
+                length,
+                mode,
+            },
+            holder: HolderId::from_bytes([holder_byte; 32]),
+            deploy: [deploy_byte; 32],
+            admit: tx,
+        };
+        (w, rx)
+    }
+
+    fn parked_sequential_waiter(
+        lock_id: u64,
+        holder_byte: u8,
+        deploy_byte: u8,
+    ) -> (Waiter, oneshot::Receiver<Result<LockId, LockError>>) {
+        let (tx, rx) = oneshot::channel();
+        let w = Waiter {
+            lock_id: LockId::try_from(lock_id).unwrap(),
+            kind: WaitKind::Sequential,
+            holder: HolderId::from_bytes([holder_byte; 32]),
+            deploy: [deploy_byte; 32],
+            admit: tx,
+        };
+        (w, rx)
+    }
+
+    /// Empty waiter queue → wake_waiters is a no-op.  Important
+    /// because every release path calls wake_waiters today under
+    /// Fail-only acquires, so the production call sites must stay
+    /// cheap when no one has parked.
+    #[test]
+    fn wake_waiters_empty_queue_is_noop() {
+        let mut state = FileLockState::default();
+        wake_waiters(&mut state);
+        assert!(state.ranges.is_empty());
+        assert!(state.sequential_holder.is_none());
+        assert!(state.waiters.is_empty());
+    }
+
+    /// Head admissible (Range) → waiter popped, promoted into
+    /// `ranges`, admit signal fires with `Ok(lock_id)`.
+    #[test]
+    fn wake_waiters_promotes_admissible_range_head() {
+        let mut state = FileLockState::default();
+        let (w, mut rx) = parked_range_waiter(42, 0x11, 0x11, 0, 100, LockMode::Write);
+        state.waiters.push_back(w);
+        wake_waiters(&mut state);
+        assert_eq!(state.ranges.len(), 1);
+        assert_eq!(state.ranges[0].id.as_u64(), 42);
+        assert_eq!(state.ranges[0].offset, 0);
+        assert_eq!(state.ranges[0].length, 100);
+        assert_eq!(state.ranges[0].mode, LockMode::Write);
+        assert!(state.waiters.is_empty());
+        let admit = rx.try_recv().expect("admit must fire");
+        assert_eq!(admit, Ok(LockId::try_from(42).unwrap()));
+    }
+
+    /// Head admissible (Sequential) → waiter popped, promoted into
+    /// `sequential_holder`, admit fires.
+    #[test]
+    fn wake_waiters_promotes_admissible_sequential_head() {
+        let mut state = FileLockState::default();
+        let (w, mut rx) = parked_sequential_waiter(7, 0x22, 0x22);
+        state.waiters.push_back(w);
+        wake_waiters(&mut state);
+        let held = state
+            .sequential_holder
+            .as_ref()
+            .expect("sequential_holder must be set");
+        assert_eq!(held.id.as_u64(), 7);
+        assert!(state.waiters.is_empty());
+        let admit = rx.try_recv().expect("admit must fire");
+        assert_eq!(admit, Ok(LockId::try_from(7).unwrap()));
+    }
+
+    /// Head NOT admissible (sequential_holder already present) →
+    /// waiter stays queued, no admission, admit channel still open.
+    #[test]
+    fn wake_waiters_leaves_inadmissible_range_head_queued() {
+        let mut state = FileLockState {
+            sequential_holder: Some(SequentialEntry {
+                id: LockId::try_from(1).unwrap(),
+                holder: HolderId::from_bytes([0x33; 32]),
+                deploy: [0x33; 32],
+            }),
+            ..Default::default()
+        };
+        let (w, mut rx) = parked_range_waiter(99, 0x11, 0x11, 0, 10, LockMode::Read);
+        state.waiters.push_back(w);
+        wake_waiters(&mut state);
+        assert_eq!(state.waiters.len(), 1);
+        assert_eq!(state.ranges.len(), 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// Head NOT admissible (Sequential vs. existing range) → waiter
+    /// stays queued.
+    #[test]
+    fn wake_waiters_leaves_inadmissible_sequential_head_queued() {
+        let mut state = FileLockState::default();
+        state.ranges.push(RangeEntry {
+            id: LockId::try_from(1).unwrap(),
+            offset: 0,
+            length: 10,
+            mode: LockMode::Read,
+            holder: HolderId::from_bytes([0x33; 32]),
+            deploy: [0x33; 32],
+        });
+        let (w, mut rx) = parked_sequential_waiter(99, 0x11, 0x11);
+        state.waiters.push_back(w);
+        wake_waiters(&mut state);
+        assert_eq!(state.waiters.len(), 1);
+        assert!(state.sequential_holder.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// LOAD-BEARING: receiver-drop rollback for Range promotion.
+    /// If the awaiting task was dropped between park and admit, the
+    /// `send(Ok)` fails and the promoted range must be rolled back
+    /// — otherwise the ranges vec would hold a "lock" that nobody
+    /// is waiting for and nobody can release (admit was the only
+    /// handle the caller had).  Also pins the X-2 / G-02 defense-
+    /// in-depth posture against ghost held locks.
+    #[test]
+    fn wake_waiters_rolls_back_range_promotion_on_dropped_receiver() {
+        let mut state = FileLockState::default();
+        let (w, rx) = parked_range_waiter(42, 0x11, 0x11, 0, 100, LockMode::Write);
+        drop(rx);
+        state.waiters.push_back(w);
+        wake_waiters(&mut state);
+        assert!(
+            state.ranges.is_empty(),
+            "receiver-drop must rollback the promoted range"
+        );
+        assert!(state.waiters.is_empty());
+    }
+
+    /// LOAD-BEARING: receiver-drop rollback for Sequential promotion.
+    #[test]
+    fn wake_waiters_rolls_back_sequential_promotion_on_dropped_receiver() {
+        let mut state = FileLockState::default();
+        let (w, rx) = parked_sequential_waiter(7, 0x22, 0x22);
+        drop(rx);
+        state.waiters.push_back(w);
+        wake_waiters(&mut state);
+        assert!(
+            state.sequential_holder.is_none(),
+            "receiver-drop must rollback the sequential_holder"
+        );
+        assert!(state.waiters.is_empty());
+    }
+
+    /// Two admissible waiters in a row → both promoted in FIFO
+    /// order, both admit signals fire with their minted ids.
+    #[test]
+    fn wake_waiters_promotes_multiple_admissible_in_fifo_order() {
+        let mut state = FileLockState::default();
+        let (w1, mut rx1) = parked_range_waiter(1, 0x11, 0x11, 0, 10, LockMode::Read);
+        let (w2, mut rx2) = parked_range_waiter(2, 0x22, 0x22, 100, 10, LockMode::Read);
+        state.waiters.push_back(w1);
+        state.waiters.push_back(w2);
+        wake_waiters(&mut state);
+        assert_eq!(state.ranges.len(), 2);
+        assert_eq!(state.ranges[0].id.as_u64(), 1);
+        assert_eq!(state.ranges[1].id.as_u64(), 2);
+        assert_eq!(rx1.try_recv(), Ok(Ok(LockId::try_from(1).unwrap())));
+        assert_eq!(rx2.try_recv(), Ok(Ok(LockId::try_from(2).unwrap())));
+    }
+
+    /// LOAD-BEARING head-of-line FIFO: a non-admissible head blocks
+    /// an admissible tail.  Downstream waiters MUST NOT overtake —
+    /// strict FIFO prevents writer starvation under a continuous
+    /// stream of compatible-read admissions.
+    ///
+    /// Setup: a Write range by holder A is held.  Waiter 1 is a
+    /// Write by holder B (NOT admissible — conflicts with A).
+    /// Waiter 2 is a Read by holder C that WOULD be admissible on
+    /// its own (reader-reader with A's Write would still conflict,
+    /// but the test uses a disjoint range so C's Read doesn't
+    /// conflict with A's Write).  Head-of-line discipline says
+    /// neither moves because waiter 1 blocks.
+    #[test]
+    fn wake_waiters_head_of_line_blocks_admissible_tail() {
+        let mut state = FileLockState::default();
+        // Held Write by holder A on [0, 100).
+        state.ranges.push(RangeEntry {
+            id: LockId::try_from(1).unwrap(),
+            offset: 0,
+            length: 100,
+            mode: LockMode::Write,
+            holder: HolderId::from_bytes([0xAA; 32]),
+            deploy: [0xAA; 32],
+        });
+        // Waiter 1: Write by B on [0, 100) — conflicts with A.
+        let (w1, mut rx1) = parked_range_waiter(2, 0xBB, 0xBB, 0, 100, LockMode::Write);
+        // Waiter 2: Read by C on [200, 300) — disjoint from A, so
+        // would be admissible on its own.
+        let (w2, mut rx2) = parked_range_waiter(3, 0xCC, 0xCC, 200, 100, LockMode::Read);
+        state.waiters.push_back(w1);
+        state.waiters.push_back(w2);
+        wake_waiters(&mut state);
+        assert_eq!(state.ranges.len(), 1, "only A's held range should remain");
+        assert_eq!(state.waiters.len(), 2, "head-of-line keeps both queued");
+        assert!(matches!(
+            rx1.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            rx2.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// Receiver-drop on waiter 1 (Range) rolls back ITS promotion,
+    /// then the pass continues to waiter 2.  Pins that the rollback
+    /// doesn't accidentally halt the pass — a dropped receiver is a
+    /// local-cancel, not a global stop signal.
+    #[test]
+    fn wake_waiters_dropped_receiver_does_not_halt_pass() {
+        let mut state = FileLockState::default();
+        let (w1, rx1) = parked_range_waiter(1, 0x11, 0x11, 0, 10, LockMode::Read);
+        let (w2, mut rx2) = parked_range_waiter(2, 0x22, 0x22, 100, 10, LockMode::Read);
+        drop(rx1);
+        state.waiters.push_back(w1);
+        state.waiters.push_back(w2);
+        wake_waiters(&mut state);
+        assert_eq!(
+            state.ranges.len(),
+            1,
+            "waiter 1 rolled back, waiter 2 promoted"
+        );
+        assert_eq!(state.ranges[0].id.as_u64(), 2);
+        assert!(state.waiters.is_empty());
+        assert_eq!(rx2.try_recv(), Ok(Ok(LockId::try_from(2).unwrap())));
     }
 }
