@@ -472,7 +472,7 @@ impl TestFixture {
 
         let engine = Running::new(
             block_processing_queue_tx.clone(),
-            Arc::new(InFlightBlocks::new()),
+            blocks_in_processing.clone(),
             casper_trait_object,
             approved_block,
             Arc::new(|| {

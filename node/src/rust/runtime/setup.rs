@@ -5,16 +5,18 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use casper::rust::blocks::block_processor::{BlockProcessor, BlockQueueItem, InFlightBlocks};
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, BlockQueueItem, InFlightBlocks, IN_FLIGHT_MARKER_MAX_WARN_AGE,
+};
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
-    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
-    BLOCK_PROCESSOR_METRICS_SOURCE, PROPOSER_QUEUE_PENDING_METRIC,
-    PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
+    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
+    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
 use casper::rust::ProposeFunction;
@@ -334,6 +336,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     .set(0.0);
     let block_processor_queue_watch = block_processor_queue_tx.downgrade();
 
+    // Block processing state - set of items currently in processing.
+    // Sampled next to the queue depth: a marker that is neither queued nor
+    // processing is leaked, and leaks wedge the node at the in-flight cap.
     let block_processor_state_ref = Arc::new(InFlightBlocks::new());
     let block_processor_state_watch = Arc::downgrade(&block_processor_state_ref);
     tokio::spawn(async move {
@@ -356,6 +361,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     "source" => BLOCK_PROCESSOR_METRICS_SOURCE
                 )
                 .set(in_flight.len() as f64);
+                let now = std::time::Instant::now();
+                let oldest = in_flight.oldest(now);
+                metrics::gauge!(
+                    BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
+                    "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+                )
+                .set(oldest.as_ref().map_or(0.0, |(_, age)| age.as_secs_f64()));
+                if let Some((hash, age)) = oldest {
+                    if age > IN_FLIGHT_MARKER_MAX_WARN_AGE {
+                        warn!(
+                            block = %hex::encode(&hash),
+                            age_secs = age.as_secs(),
+                            in_flight = in_flight.len(),
+                            "in-flight block marker is older than the warning age"
+                        );
+                    }
+                }
             }
         }
     });

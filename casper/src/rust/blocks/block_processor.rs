@@ -36,10 +36,9 @@ use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_PROCESSING_IN_FLIGHT_EVICTED_METRIC, BLOCK_PROCESSING_STORAGE_TIME_METRIC,
-    BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
-    BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC, BLOCK_VALIDATION_SUCCESS_METRIC,
-    BLOCK_VALIDATION_TIME_METRIC,
+    BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
+    BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
+    BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::validate::Validate;
@@ -256,18 +255,17 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
 
-pub const IN_FLIGHT_MARKER_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+/// The node warns when its oldest in-flight marker is older than this. The
+/// marker is kept: an old marker means a block that is still queued or still
+/// processing, for example a long replay (#407).
+pub const IN_FLIGHT_MARKER_MAX_WARN_AGE: Duration = Duration::from_secs(10 * 60);
 
-#[derive(Debug)]
-struct InFlightEntry {
-    generation: u64,
-    inserted_at: Instant,
-}
-
+/// Blocks that are queued for processing or being processed. A marker is
+/// only added through [`mark_in_flight`], which returns the guard that owns
+/// it, so no marker can exist without an owner.
 #[derive(Debug, Default)]
 pub struct InFlightBlocks {
-    markers: dashmap::DashMap<BlockHash, InFlightEntry>,
-    next_generation: AtomicU64,
+    markers: dashmap::DashMap<BlockHash, Instant>,
 }
 
 impl InFlightBlocks {
@@ -279,82 +277,60 @@ impl InFlightBlocks {
 
     pub fn is_empty(&self) -> bool { self.markers.is_empty() }
 
-    fn evict_stale(&self, now: Instant) -> usize {
-        let before = self.markers.len();
-        self.markers.retain(|hash, entry| {
-            let age = now.saturating_duration_since(entry.inserted_at);
-            let keep = age < IN_FLIGHT_MARKER_MAX_AGE;
-            if !keep {
-                tracing::warn!(
-                    block = %PrettyPrinter::build_string_bytes(hash),
-                    age_secs = age.as_secs(),
-                    "evicting a stale in-flight marker at the cap"
-                );
-            }
-            keep
-        });
-        before - self.markers.len()
+    pub fn oldest(&self, now: Instant) -> Option<(BlockHash, Duration)> {
+        self.markers
+            .iter()
+            .min_by_key(|entry| *entry.value())
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    now.saturating_duration_since(*entry.value()),
+                )
+            })
     }
 }
 
+/// Owns one in-flight marker and removes it on drop, also on an early return,
+/// an error or a panic. It travels in the processing queue with its block, so a
+/// queued block that is dropped without processing releases its marker.
 #[derive(Debug)]
 pub struct InFlightBlockGuard {
     blocks: Arc<InFlightBlocks>,
     hash: BlockHash,
-    generation: u64,
 }
 
 impl Drop for InFlightBlockGuard {
-    fn drop(&mut self) {
-        self.blocks
-            .markers
-            .remove_if(&self.hash, |_, entry| entry.generation == self.generation);
-    }
+    fn drop(&mut self) { self.blocks.markers.remove(&self.hash); }
 }
 
 #[derive(Debug)]
 pub enum InFlightMark {
     Marked(InFlightBlockGuard),
+    /// The block is already queued or processing.
     AlreadyInFlight,
+    /// The set was full. No marker was kept, and the caller drops the block.
     CapReached,
 }
 
 pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlightMark {
-    mark_in_flight_at(blocks, hash, Instant::now())
-}
-
-fn mark_in_flight_at(blocks: &Arc<InFlightBlocks>, hash: BlockHash, now: Instant) -> InFlightMark {
-    let generation = blocks.next_generation.fetch_add(1, Ordering::Relaxed);
     match blocks.markers.entry(hash.clone()) {
         dashmap::mapref::entry::Entry::Occupied(_) => return InFlightMark::AlreadyInFlight,
         dashmap::mapref::entry::Entry::Vacant(slot) => {
-            slot.insert(InFlightEntry {
-                generation,
-                inserted_at: now,
-            });
+            slot.insert(Instant::now());
         }
     }
     let guard = InFlightBlockGuard {
         blocks: blocks.clone(),
         hash,
-        generation,
     };
     if blocks.len() > MAX_BLOCKS_IN_PROCESSING {
-        let evicted = blocks.evict_stale(now);
-        if evicted > 0 {
-            metrics::counter!(
-                BLOCK_PROCESSING_IN_FLIGHT_EVICTED_METRIC,
-                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-            )
-            .increment(evicted as u64);
-        }
-        if blocks.len() > MAX_BLOCKS_IN_PROCESSING {
-            return InFlightMark::CapReached;
-        }
+        return InFlightMark::CapReached;
     }
     InFlightMark::Marked(guard)
 }
 
+/// An item of the block processing queue. The guard keeps the block's
+/// in-flight marker while the item exists.
 pub type BlockQueueItem = (
     Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     BlockMessage,
@@ -1778,62 +1754,22 @@ mod tests {
         }
     }
 
-    fn fill_to_cap(blocks: &Arc<InFlightBlocks>, at: Instant) -> Vec<InFlightBlockGuard> {
-        (0..MAX_BLOCKS_IN_PROCESSING)
-            .map(|i| {
-                match mark_in_flight_at(blocks, BlockHash::from(i.to_be_bytes().to_vec()), at) {
-                    InFlightMark::Marked(guard) => guard,
-                    other => panic!("marker {i} must fit under the cap, got {other:?}"),
-                }
-            })
-            .collect()
-    }
-
     #[test]
-    fn stale_markers_are_evicted_at_the_cap_and_fresh_ones_are_kept() {
-        let start = Instant::now();
+    fn oldest_reports_the_earliest_marker_and_its_age() {
         let blocks = Arc::new(InFlightBlocks::new());
-        let _stale = fill_to_cap(&blocks, start);
+        assert!(blocks.oldest(Instant::now()).is_none());
 
-        let soon = start + IN_FLIGHT_MARKER_MAX_AGE / 2;
-        assert!(matches!(
-            mark_in_flight_at(&blocks, hash(0xfe), soon),
-            InFlightMark::CapReached
-        ));
+        let _first = marked(&blocks, 1);
+        std::thread::sleep(Duration::from_millis(10));
+        let _second = marked(&blocks, 2);
 
-        let later = start + IN_FLIGHT_MARKER_MAX_AGE + Duration::from_secs(1);
-        assert!(matches!(
-            mark_in_flight_at(&blocks, hash(0xff), later),
-            InFlightMark::Marked(_)
-        ));
-        assert!(blocks.len() <= 1);
+        let (hash_of_oldest, age) = blocks.oldest(Instant::now()).unwrap();
+        assert_eq!(hash_of_oldest, hash(1));
+        assert!(age >= Duration::from_millis(10));
     }
 
-    #[test]
-    fn the_guard_of_an_evicted_marker_does_not_remove_a_newer_marker() {
-        let start = Instant::now();
-        let blocks = Arc::new(InFlightBlocks::new());
-        let mut stale = fill_to_cap(&blocks, start);
-        let old_guard = stale.remove(0);
-        let reused = old_guard.hash.clone();
-
-        let later = start + IN_FLIGHT_MARKER_MAX_AGE + Duration::from_secs(1);
-        let _new_guard = match mark_in_flight_at(&blocks, hash(0xff), later) {
-            InFlightMark::Marked(guard) => guard,
-            other => panic!("expected eviction to make room, got {other:?}"),
-        };
-        let _reused_guard = match mark_in_flight_at(&blocks, reused.clone(), later) {
-            InFlightMark::Marked(guard) => guard,
-            other => panic!("an evicted block must be markable again, got {other:?}"),
-        };
-
-        drop(old_guard);
-        assert!(
-            blocks.contains(&reused),
-            "the old guard removed the newer marker of the same block"
-        );
-    }
-
+    /// The producers rely on this instead of a manual rollback in `map_err`:
+    /// the item that failed to send is dropped, and so is its guard.
     #[tokio::test]
     async fn a_failed_send_releases_the_marker() {
         let blocks = Arc::new(InFlightBlocks::new());
