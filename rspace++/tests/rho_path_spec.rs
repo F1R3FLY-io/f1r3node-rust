@@ -128,6 +128,80 @@ fn v2_continuation_preserves_order_and_zero_escaping() {
 }
 
 #[test]
+fn v2_borrowed_receive_positions_keep_duplicates_and_prefix_boundaries() {
+    for (channels, expected_a, expected_ab) in [
+        (vec![&b"a"[..], &b"ab"[..], &b"a"[..]], vec![0, 2], vec![1]),
+        (vec![&b"a"[..], &b"a"[..], &b"ab"[..]], vec![0, 1], vec![2]),
+    ] {
+        let path = RhoPathV2::continuation_key(&channels, b"identity\0suffix").unwrap();
+        let view = RhoPathV2::parse_continuation(&path).unwrap();
+        let positions = view
+            .channel_positions(b"a")
+            .map(|position| position.get())
+            .collect::<Vec<_>>();
+        assert_eq!(positions, expected_a);
+        assert_eq!(
+            view.channel_positions(b"ab")
+                .map(|position| position.get())
+                .collect::<Vec<_>>(),
+            expected_ab
+        );
+        assert_eq!(view.channel_positions(b"a\0").count(), 0);
+        assert!(view.identity_matches(b"identity\0suffix"));
+        assert!(!view.identity_matches(b"identity"));
+        assert!(!view.identity_matches(b"identity\0suffix\0"));
+    }
+
+    let channels = [&b"\0"[..], &b"\0\x01"[..], &b"\0"[..]];
+    let path = RhoPathV2::continuation_key(&channels, b"identity").unwrap();
+    let view = RhoPathV2::parse_continuation(&path).unwrap();
+    assert_eq!(
+        view.channel_positions(b"\0")
+            .map(|position| position.get())
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+    assert_eq!(
+        view.channel_positions(b"\0\x01")
+            .map(|position| position.get())
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+    #[test]
+    fn v2_borrowed_receive_positions_refine_ordered_channel_occurrences(
+        query in proptest::collection::vec(proptest::num::u8::ANY, 0..24),
+        before in proptest::collection::vec(
+            proptest::collection::vec(proptest::num::u8::ANY, 0..24), 0..32,
+        ),
+        after in proptest::collection::vec(
+            proptest::collection::vec(proptest::num::u8::ANY, 0..24), 0..32,
+        ),
+    ) {
+        let mut channels = before;
+        channels.push(query.clone());
+        channels.extend(after);
+        channels.push(query.clone());
+        let expected = channels.iter().enumerate()
+            .filter_map(|(index, channel)| (channel == &query).then_some(index as u64))
+            .collect::<Vec<_>>();
+
+        let refs = channels.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let v2_path = RhoPathV2::continuation_key(&refs, b"id\0suffix").unwrap();
+        let v2_view = RhoPathV2::parse_continuation(&v2_path).unwrap();
+        let v2_actual = v2_view.channel_positions(&query)
+            .map(|position| position.get()).collect::<Vec<_>>();
+        proptest::prop_assert_eq!(&v2_actual, &expected);
+        proptest::prop_assert!(v2_view.identity_matches(b"id\0suffix"));
+
+    }
+}
+
+#[test]
 fn v2_continuation_rejects_count_mismatch_without_fallback() {
     let valid = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
     let mut overdeclared = valid.clone();
@@ -163,6 +237,11 @@ fn v2_wide_repeated_channel_positions_preserve_every_occurrence() {
             .filter(|position| position % 3 != 1)
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+        let borrowed = view
+            .channel_positions(&[0, 1])
+            .map(|position| usize::try_from(position.get()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(borrowed, expected);
         assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

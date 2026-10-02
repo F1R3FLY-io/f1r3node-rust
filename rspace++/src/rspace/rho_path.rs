@@ -596,6 +596,7 @@ pub enum RhoPathError {
     EmptyChannelGroup,
     TruncatedFrame,
     InvalidEscape(u8),
+    PositionOverflow,
     TrailingBytes,
 }
 
@@ -884,6 +885,7 @@ impl fmt::Display for RhoPathError {
             Self::EmptyChannelGroup => f.write_str("RhoPath channel group is empty"),
             Self::TruncatedFrame => f.write_str("truncated RhoPath frame"),
             Self::InvalidEscape(byte) => write!(f, "invalid RhoPath escape {byte:#04x}"),
+            Self::PositionOverflow => f.write_str("RhoPath receive position exceeds u64"),
             Self::TrailingBytes => f.write_str("unexpected bytes after RhoPath prefix"),
         }
     }
@@ -952,6 +954,21 @@ impl<'a> ContinuationPathView<'a> {
 
     pub(crate) fn continuation_identity(&self) -> Vec<u8> {
         decode_frame(self.encoded_continuation_identity)
+    }
+
+    pub(crate) const fn encoded_identity_frame(&self) -> &'a [u8] {
+        self.encoded_continuation_identity
+    }
+
+    pub(crate) fn identity_matches(&self, identity: &[u8]) -> bool {
+        frame_equals(self.encoded_continuation_identity, identity)
+    }
+
+    pub(crate) fn channel_positions<'q>(
+        &self,
+        channel_identity: &'q [u8],
+    ) -> RhoPathChannelPositions<'a, 'q> {
+        RhoPathChannelPositions::new(self.encoded_channels, self.channel_count, channel_identity)
     }
 }
 
@@ -1079,8 +1096,11 @@ impl RhoPathV1 {
         let mut channel_count = 0usize;
         while path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
             let _ = take_frame(path, &mut cursor)?;
-            channel_count += 1;
+            channel_count = channel_count
+                .checked_add(1)
+                .ok_or(RhoPathError::PositionOverflow)?;
         }
+        u64::try_from(channel_count).map_err(|_| RhoPathError::PositionOverflow)?;
         if channel_count == 0 {
             return Err(RhoPathError::EmptyChannelGroup);
         }
@@ -1318,16 +1338,99 @@ pub struct RhoPathV2ContinuationView<'a> {
     identity_frame: &'a [u8],
 }
 
-impl RhoPathV2ContinuationView<'_> {
+impl<'a> RhoPathV2ContinuationView<'a> {
     pub const fn channel_count(&self) -> usize { self.channel_count }
-    pub const fn encoded_identity_frame(&self) -> &[u8] { self.identity_frame }
-    pub fn channel_frames(&self) -> RhoPathV2ChannelFrames<'_> {
+    pub const fn encoded_identity_frame(&self) -> &'a [u8] { self.identity_frame }
+    pub fn identity_matches(&self, identity: &[u8]) -> bool {
+        frame_equals(self.identity_frame, identity)
+    }
+    pub fn channel_frames(&self) -> RhoPathV2ChannelFrames<'a> {
         RhoPathV2ChannelFrames {
             encoded: self.encoded_channels,
             cursor: 0,
             remaining: self.channel_count,
         }
     }
+
+    pub fn channel_positions<'q>(
+        &self,
+        channel_image: &'q [u8],
+    ) -> RhoPathChannelPositions<'a, 'q> {
+        RhoPathChannelPositions::new(self.encoded_channels, self.channel_count, channel_image)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RhoPathReceivePosition(u64);
+
+impl RhoPathReceivePosition {
+    pub const fn get(self) -> u64 { self.0 }
+}
+
+pub struct RhoPathChannelPositions<'a, 'q> {
+    frames: RhoPathV2ChannelFrames<'a>,
+    query: &'q [u8],
+    next_position: u64,
+}
+
+impl<'a, 'q> RhoPathChannelPositions<'a, 'q> {
+    fn new(encoded: &'a [u8], count: usize, query: &'q [u8]) -> Self {
+        Self {
+            frames: RhoPathV2ChannelFrames {
+                encoded,
+                cursor: 0,
+                remaining: count,
+            },
+            query,
+            next_position: 0,
+        }
+    }
+}
+
+impl Iterator for RhoPathChannelPositions<'_, '_> {
+    type Item = RhoPathReceivePosition;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for frame in self.frames.by_ref() {
+            let position = self.next_position;
+            self.next_position = self
+                .next_position
+                .checked_add(1)
+                .expect("validated continuation positions fit u64");
+            if frame_equals(frame, self.query) {
+                return Some(RhoPathReceivePosition(position));
+            }
+        }
+        None
+    }
+}
+
+fn frame_equals(frame: &[u8], raw: &[u8]) -> bool {
+    let mut cursor = 0;
+    let mut offset = 0;
+    while cursor < frame.len() {
+        let byte = frame[cursor];
+        if byte == ESCAPE {
+            let Some(&escaped) = frame.get(cursor + 1) else {
+                return false;
+            };
+            if escaped == FRAME_END {
+                return cursor + 2 == frame.len() && offset == raw.len();
+            }
+            if escaped != ESCAPED_ZERO || raw.get(offset) != Some(&ESCAPE) {
+                return false;
+            }
+            cursor += 2;
+        } else {
+            if raw.get(offset) != Some(&byte) {
+                return false;
+            }
+            cursor += 1;
+        }
+        offset += 1;
+    }
+    false
 }
 
 pub struct RhoPathV2ChannelFrames<'a> {
@@ -1566,4 +1669,66 @@ fn decode_frame(frame: &[u8]) -> Vec<u8> {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod receive_position_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[test]
+    fn v1_borrowed_positions_preserve_repeated_escaped_channels_and_identity() {
+        let channels = vec![b"a\0".to_vec(), b"a".to_vec(), b"a\0".to_vec()];
+        let prefix = RhoPathV1::continuation_prefix(&channels);
+        let path = RhoPathV1::collection_record_path(&prefix, b"body\0peek");
+        let view = RhoPathV1::parse_continuation(&path).unwrap();
+        let escaped_identity = channels[0].rho_path_identity();
+        let plain_identity = channels[1].rho_path_identity();
+        assert_eq!(
+            view.channel_positions(&escaped_identity)
+                .map(|position| position.get())
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            view.channel_positions(&plain_identity)
+                .map(|position| position.get())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(view.channel_positions(b"a\0").count(), 0);
+        assert!(view.identity_matches(b"body\0peek"));
+        assert!(!view.identity_matches(b"body"));
+        assert_eq!(view.encoded_identity_frame().last(), Some(&0));
+    }
+
+    proptest! {
+        #[test]
+        fn v1_borrowed_positions_refine_ordered_channel_occurrences(
+            query in proptest::collection::vec(proptest::num::u8::ANY, 0..24),
+            before in proptest::collection::vec(
+                proptest::collection::vec(proptest::num::u8::ANY, 0..24), 0..32,
+            ),
+            after in proptest::collection::vec(
+                proptest::collection::vec(proptest::num::u8::ANY, 0..24), 0..32,
+            ),
+        ) {
+            let mut channels = before;
+            channels.push(query.clone());
+            channels.extend(after);
+            channels.push(query.clone());
+            let expected = channels.iter().enumerate()
+                .filter_map(|(index, channel)| (channel == &query).then_some(index as u64))
+                .collect::<Vec<_>>();
+
+            let prefix = RhoPathV1::continuation_prefix(&channels);
+            let path = RhoPathV1::collection_record_path(&prefix, b"id\0suffix");
+            let view = RhoPathV1::parse_continuation(&path).unwrap();
+            let actual = view.channel_positions(&query.rho_path_identity())
+                .map(|position| position.get()).collect::<Vec<_>>();
+            prop_assert_eq!(actual, expected);
+            prop_assert!(view.identity_matches(b"id\0suffix"));
+        }
+    }
 }
