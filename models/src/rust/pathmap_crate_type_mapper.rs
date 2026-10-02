@@ -84,14 +84,28 @@ pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
 /// outstanding siblings, with no native recursion and no artificial depth
 /// threshold. The predicate is a side-effect-free conjunction, so this
 /// depth-first evaluation returns the same boolean as the recursive definition.
-pub(crate) fn eval_stable_par(root: &Par) -> bool {
+pub(crate) fn eval_stable_par(root: &Par) -> bool { eval_stable_par_with_policy::<false>(root) }
+
+pub fn is_closed_registry_value(root: &Par) -> bool {
+    eval_stable_par_with_policy::<true>(root)
+}
+
+fn eval_stable_par_with_policy<const CLOSED_DATA: bool>(root: &Par) -> bool {
     let mut current = Some(root);
     let mut deferred: Vec<&Par> = Vec::new();
+    let mut visited = 0usize;
 
     loop {
         let Some(par) = current.take().or_else(|| deferred.pop()) else {
             return true;
         };
+
+        if CLOSED_DATA {
+            if visited == 1_000_000 {
+                return false;
+            }
+            visited += 1;
+        }
 
         if !par.sends.is_empty()
             || !par.receives.is_empty()
@@ -107,9 +121,11 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
         }
 
         let expr = match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
+            ([], []) if CLOSED_DATA => continue,
             // The reflect GPrivate leaf is an unforgeable instead of an expr.
             ([], [unforgeable])
-                if matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) =>
+                if !CLOSED_DATA
+                    && matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) =>
             {
                 continue;
             }
@@ -123,13 +139,21 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
                 ExprInstance::GBool(_)
                 | ExprInstance::GInt(_)
                 | ExprInstance::GString(_)
+                | ExprInstance::GByteArray(_)
+                | ExprInstance::GDouble(_)
+                | ExprInstance::GBigInt(_),
+            ) if CLOSED_DATA => continue,
+            Some(
+                ExprInstance::GBool(_)
+                | ExprInstance::GInt(_)
+                | ExprInstance::GString(_)
                 | ExprInstance::GUri(_)
                 | ExprInstance::GByteArray(_)
                 | ExprInstance::GDouble(_)
                 | ExprInstance::GBigInt(_)
                 | ExprInstance::GBigRat(_)
                 | ExprInstance::GFixedPoint(_),
-            ) => continue,
+            ) if !CLOSED_DATA => continue,
             Some(ExprInstance::EListBody(list))
                 if list.remainder.is_none()
                     && list.locally_free.is_empty()
@@ -138,12 +162,27 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
                 list.ps.as_slice()
             }
             Some(ExprInstance::ETupleBody(tuple))
-                if tuple.locally_free.is_empty() && !tuple.connective_used =>
+                if !CLOSED_DATA && tuple.locally_free.is_empty() && !tuple.connective_used =>
             {
                 tuple.ps.as_slice()
             }
+            Some(ExprInstance::EMapBody(map))
+                if CLOSED_DATA
+                    && map.remainder.is_none()
+                    && map.locally_free.is_empty()
+                    && !map.connective_used =>
+            {
+                for pair in map.kvs.iter().rev() {
+                    let (Some(key), Some(value)) = (&pair.key, &pair.value) else {
+                        return false;
+                    };
+                    deferred.push(value);
+                    deferred.push(key);
+                }
+                continue;
+            }
             // O(1): `EntryTrie` maintains the entry fold as entries change.
-            Some(ExprInstance::EPathmapBody(inner)) if eval_stable_epathmap(inner) => continue,
+            Some(ExprInstance::EPathmapBody(inner)) if !CLOSED_DATA && eval_stable_epathmap(inner) => continue,
             _ => return false,
         };
 
@@ -258,6 +297,44 @@ impl<'a> Iterator for PathFrames<'a> {
 /// Test seam for the exact stability grammar used by canonical paths.
 #[doc(hidden)]
 pub fn eval_stable_par_for_test(par: &Par) -> bool { eval_stable_par(par) }
+
+#[cfg(test)]
+mod registry_value_tests {
+    use super::{eval_stable_par, is_closed_registry_value};
+    use crate::rhoapi::{Bundle, Par, Send};
+    use crate::rust::utils::{
+        new_elist_par, new_emap_par, new_gint_par, new_gstring_par, new_key_value_pair,
+    };
+
+    #[test]
+    fn closed_registry_collections_use_the_existing_explicit_stack() {
+        let mut nested = new_gint_par(7, vec![], false);
+        for _ in 0..4096 {
+            nested = new_elist_par(vec![nested], vec![], false, None, vec![], false);
+        }
+        let record = new_emap_par(
+            vec![new_key_value_pair(new_gstring_par("spec".into(), vec![], false), nested)],
+            vec![],
+            false,
+            None,
+            vec![],
+            false,
+        );
+        assert!(is_closed_registry_value(&record));
+        assert!(!eval_stable_par(&record));
+    }
+
+    #[test]
+    fn registry_values_reject_process_behavior_even_inside_collections() {
+        for forbidden in [
+            Par::default().with_sends(vec![Send::default()]),
+            Par::default().with_bundles(vec![Bundle::default()]),
+        ] {
+            let value = new_elist_par(vec![forbidden], vec![], false, None, vec![], false);
+            assert!(!is_closed_registry_value(&value));
+        }
+    }
+}
 
 pub struct PathMapCrateTypeMapper;
 

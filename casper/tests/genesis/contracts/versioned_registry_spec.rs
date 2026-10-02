@@ -51,6 +51,7 @@ const EXPECTED_TEST_NAMES: &[&str] = &[
     "registry_lookup_legacy_urn_matches_urn_map",
     "registry_lookup_versioned_urn_delegates_to_v1Api",
     "registry_lookup_forms_eval_new_desugaring",
+    "insertVersion_lib_closed_value_roundtrip",
 ];
 
 #[tokio::test]

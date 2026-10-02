@@ -717,6 +717,19 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:registry:closedValue".to_string(),
+            fixed_channel: FixedChannels::registry_closed_value(),
+            arity: 2,
+            body_ref: BodyRefs::REGISTRY_CLOSED_VALUE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.registry_closed_value(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "sys:authToken:ops".to_string(),
             fixed_channel: FixedChannels::sys_authtoken_ops(),
             arity: 3,

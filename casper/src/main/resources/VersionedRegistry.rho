@@ -45,6 +45,7 @@ new
   opsV1(`rho:registry:ops:1.0.0`),
   deployData(`rho:deploy:data`),
   deployerIdOps(`rho:system:deployerId:ops`),
+  closedValue(`rho:registry:closedValue`),
   collectNonDeprecated,
   fireNotifications,
   authenticatedPkHex
@@ -114,48 +115,37 @@ in {
       }
     } |
 
-    // Namespace policy: `serve` accepts registration; `lib` does not.
-    //
-    // The FIP promises importers of a `lib` process that it "is only
-    // permitted to create temporary names" (FIP §lib, line 25) --
-    // meaning it may not leave persistent artifacts in the tuplespace.
-    // Enforcing that requires either static AST scanning of the
-    // submitted `code` for persistent sends / receives / contracts,
-    // or a runtime name-lifetime mechanism (reified rspaces) that
-    // f1r3node-rust does not yet have. Until at least the static
-    // scan lands, we reject `lib` registrations entirely rather
-    // than accept them with an unenforceable safety guarantee that
-    // would mislead importers.
-    //
     // Identity: no caller-supplied deployerId. The store key is the
     // authenticated deployer's pubKey hex; anyone can only insert
     // under their own identity.
     contract v1Api(@"insertVersion", @ns, @projectId, @version, @code, ret) = {
-      if (ns == "serve") {
-        new pkHexCh in {
-          authenticatedPkHex!(*pkHexCh) |
-          for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {
-            match store.get(ns).getOrElse((pkHex, projectId), {}).get(version) {
-              Nil => {
-                _versionedRegistryStore!(
-                  store.set(ns,
-                    store.get(ns).set((pkHex, projectId),
-                      store.get(ns).getOrElse((pkHex, projectId), {}).set(version,
-                        {"code": code, "deprecated": false, "notify": []})))
-                ) |
-                ret!(true)
+      if (ns == "serve" or ns == "lib") {
+        new admitted, pkHexCh in {
+          if (ns == "serve") { admitted!(true) } else { closedValue!(code, *admitted) } |
+          for (@safe <- admitted) {
+            if (safe) {
+              authenticatedPkHex!(*pkHexCh) |
+              for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {
+                match store.get(ns).getOrElse((pkHex, projectId), {}).get(version) {
+                  Nil => {
+                    _versionedRegistryStore!(
+                      store.set(ns,
+                        store.get(ns).set((pkHex, projectId),
+                          store.get(ns).getOrElse((pkHex, projectId), {}).set(version,
+                            {"code": code, "deprecated": false, "notify": []})))
+                    ) |
+                    ret!(true)
+                  }
+                  _ => {
+                    _versionedRegistryStore!(store) |
+                    ret!(false)
+                  }
+                }
               }
-              _ => {
-                _versionedRegistryStore!(store) |
-                ret!(false)
-              }
-            }
+            } else { ret!(false) }
           }
         }
-      } else {
-        // ns == "lib" (rejected pending enforcement), or unknown.
-        ret!(false)
-      }
+      } else { ret!(false) }
     } |
 
     // Identity: no caller-supplied deployerId. Deprecating an entry
@@ -163,10 +153,7 @@ in {
     // hex must be the store key). A different deployer looking up
     // the same (projectId, version) sees no entry and gets `false`.
     contract v1Api(@"deprecateVersion", @ns, @projectId, @version, ret) = {
-      // Only `serve` is registrable (see insertVersion above), so
-      // only `serve` can be deprecated. `lib` and unknown namespaces
-      // never populate the store; reject symmetrically.
-      if (ns == "serve") {
+      if (ns == "serve" or ns == "lib") {
         new pkHexCh in {
           authenticatedPkHex!(*pkHexCh) |
           for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {
@@ -205,9 +192,7 @@ in {
 
     // Identity: no caller-supplied deployerId. See deprecateVersion.
     contract v1Api(@"approveVersion", @ns, @projectId, @version, ret) = {
-      // Only `serve` is registrable (see insertVersion above); reject
-      // `lib` and unknown namespaces symmetrically.
-      if (ns == "serve") {
+      if (ns == "serve" or ns == "lib") {
         new pkHexCh in {
           authenticatedPkHex!(*pkHexCh) |
           for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {

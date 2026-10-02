@@ -18,6 +18,7 @@ use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
 use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::pathmap_crate_type_mapper::is_closed_registry_value;
 use models::rust::rholang::implicits::single_expr;
 use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
 use prost::Message;
@@ -275,6 +276,8 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    pub fn registry_closed_value() -> Par { byte_name(38) }
 }
 
 pub struct BodyRefs;
@@ -312,6 +315,7 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+    pub const REGISTRY_CLOSED_VALUE: i64 = 31;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -952,6 +956,19 @@ impl SystemProcesses {
             "registry_lookup: unknown URN: {}",
             urn_str
         )))
+    }
+
+    pub async fn registry_closed_value(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("registry_closed_value"));
+        };
+        let [value, reply] = args.as_slice() else {
+            return Err(illegal_argument_error("registry_closed_value"));
+        };
+        produce(&[new_gbool_par(is_closed_registry_value(value), vec![], false)], reply).await
     }
 
     pub async fn sys_auth_token_ops(

@@ -25,7 +25,7 @@ new
   ddCh, pkbCh, pkHexCh,
 
   // sequencing channels for each test
-  ins1, ack1,
+  unsafe1, ins1, ack1,
   ins2, ack2,
   ins3a, ins3b, ack3,
   ins4, ack4,
@@ -62,7 +62,8 @@ new
   registryLookup(`rho:internal:registry_lookup`),
   rl25, ack25,
   ins26, rl26, ack26,
-  ins27, rl27, dispatch27, ack27
+  ins27, rl27, dispatch27, ack27,
+  ins28, rl28, ack28
 in {
   // ─── Authenticate once, publish the pubKey hex for every test ────────
   deployData!(*ddCh) |
@@ -76,16 +77,10 @@ in {
       // parallel tests each see the same published value.
       for (@pkHex <<- pkHexCh) {
 
-  // 1. insertVersion under lib is rejected. `lib` promises importers
-  //    that the code creates only temporary names (FIP §lib), a
-  //    guarantee f1r3node-rust cannot yet enforce (no static AST
-  //    scan, no name-lifetime mechanism). Until that lands, lib
-  //    registrations are refused rather than accepted with an
-  //    unenforceable safety promise.
-  v1Api!("insertVersion", "lib", "projA", "1.0.0", "codeA", *ins1) |
+  v1Api!("insertVersion", "lib", "projA", "1.0.0", *unsafe1, *ins1) |
   for (@r1 <- ins1) {
     assert!("insertVersion_lib_rejected", 1, (false, "==", r1),
-            "insertVersion under lib should return false until temp-name enforcement lands", *ack1)
+            "lib must reject values containing an unforgeable name", *ack1)
   } |
 
   // 2. insertVersion under serve happy path returns true
@@ -419,6 +414,17 @@ in {
       assert!("registry_lookup_forms_eval_new_desugaring", 1,
               ("code27", "==", boundProcess),
               "for(@x <- registry_lookup!?(URN)) binds x to the resolved code", *ack27)
+    }
+  } |
+  v1Api!("insertVersion", "lib", "p28", "1.0.0",
+         {"schema": "demo", "values": [1, true, Nil]}, *ins28) |
+  for (@accepted <- ins28) {
+    registryLookup!("rho:lib:1.0.0:" ++ pkHex ++ ":p28:1.0.0", *rl28) |
+    for (@stored <- rl28) {
+      assert!("insertVersion_lib_closed_value_roundtrip", 1,
+              ((accepted, stored), "==",
+               (true, {"schema": "demo", "values": [1, true, Nil]})),
+              "closed lib values must round-trip by exact URI", *ack28)
     }
   }
 
