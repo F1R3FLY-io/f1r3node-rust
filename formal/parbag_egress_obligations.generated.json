@@ -1,0 +1,2491 @@
+{
+  "boundary": "Concrete witnesses exercise selected production bytes and slot order. Other formal statements are proof-only; no bincode-specific formal source or clean normal-suite egress-publication witness is claimed.",
+  "causal_mutants": [
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionCapMutant.cfg",
+      "configured_invariants": [
+        "RefusalOnlyWhenTooLarge"
+      ],
+      "expected_invariant_failure": "RefusalOnlyWhenTooLarge",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla",
+      "specification": "CapMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionPartialMutant.cfg",
+      "configured_invariants": [
+        "ReadyImageIsComplete"
+      ],
+      "expected_invariant_failure": "ReadyImageIsComplete",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla",
+      "specification": "PartialMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionStaleMutant.cfg",
+      "configured_invariants": [
+        "WriterCacheMatchesIdentity"
+      ],
+      "expected_invariant_failure": "WriterCacheMatchesIdentity",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla",
+      "specification": "StaleMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionReadMutant.cfg",
+      "configured_invariants": [
+        "EveryReadIsComplete"
+      ],
+      "expected_invariant_failure": "EveryReadIsComplete",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla",
+      "specification": "ReadMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionCloneLossMutant.cfg",
+      "configured_invariants": [
+        "UntouchedCloneSurvivesWriterMutation"
+      ],
+      "expected_invariant_failure": "UntouchedCloneSurvivesWriterMutation",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla",
+      "specification": "CloneLossMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublicMutant.cfg",
+      "configured_invariants": [
+        "PublicImageAtomic"
+      ],
+      "expected_invariant_failure": "PublicImageAtomic",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla",
+      "specification": "PublicMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPreflightMutant.cfg",
+      "configured_invariants": [
+        "InvalidInputHasNoPrefix"
+      ],
+      "expected_invariant_failure": "InvalidInputHasNoPrefix",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla",
+      "specification": "PreflightMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPrematureCommitMutant.cfg",
+      "configured_invariants": [
+        "CommitRequiresCompleteImage"
+      ],
+      "expected_invariant_failure": "CommitRequiresCompleteImage",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla",
+      "specification": "PrematureCommitMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkRollbackMutant.cfg",
+      "configured_invariants": [
+        "AbortedPrivateFrameIsDiscarded"
+      ],
+      "expected_invariant_failure": "AbortedPrivateFrameIsDiscarded",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla",
+      "specification": "RollbackMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoCensusSkipMutant.cfg",
+      "configured_invariants": [
+        "CensusPrefixIsExact"
+      ],
+      "expected_invariant_failure": "CensusPrefixIsExact",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "CensusSkipMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoReplaySwapMutant.cfg",
+      "configured_invariants": [
+        "ReplayConsumesExactOccurrencePrefix"
+      ],
+      "expected_invariant_failure": "ReplayConsumesExactOccurrencePrefix",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "ReplaySwapMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoReplayOverrunMutant.cfg",
+      "configured_invariants": [
+        "ReplayConsumesExactOccurrencePrefix"
+      ],
+      "expected_invariant_failure": "ReplayConsumesExactOccurrencePrefix",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "ReplayOverrunMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoReplayRemainingCommitMutant.cfg",
+      "configured_invariants": [
+        "CommitRequiresExactReplay"
+      ],
+      "expected_invariant_failure": "CommitRequiresExactReplay",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "ReplayRemainingCommitMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoEmptyMemoMutant.cfg",
+      "configured_invariants": [
+        "MemoOnlyForCensusProvenRepeatedOwners"
+      ],
+      "expected_invariant_failure": "MemoOnlyForCensusProvenRepeatedOwners",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "EmptyMemoMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoSingletonMemoMutant.cfg",
+      "configured_invariants": [
+        "MemoOnlyForCensusProvenRepeatedOwners"
+      ],
+      "expected_invariant_failure": "MemoOnlyForCensusProvenRepeatedOwners",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "SingletonMemoMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoEarlyEmissionMutant.cfg",
+      "configured_invariants": [
+        "CensusCompletesBeforeEmission"
+      ],
+      "expected_invariant_failure": "CensusCompletesBeforeEmission",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "EarlyEmissionMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoSwapMutant.cfg",
+      "configured_invariants": [
+        "OutputMatchesDirect"
+      ],
+      "expected_invariant_failure": "OutputMatchesDirect",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "SwapMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoWholeMutant.cfg",
+      "configured_invariants": [
+        "OutputMatchesDirect"
+      ],
+      "expected_invariant_failure": "OutputMatchesDirect",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "WholeMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoWrongOwnerMutant.cfg",
+      "configured_invariants": [
+        "OutputMatchesDirect"
+      ],
+      "expected_invariant_failure": "OutputMatchesDirect",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "WrongOwnerMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoOffByOneMutant.cfg",
+      "configured_invariants": [
+        "OutputMatchesDirect"
+      ],
+      "expected_invariant_failure": "OutputMatchesDirect",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "specification": "OffByOneMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressMutant.cfg",
+      "configured_invariants": [
+        "TypeInvariant",
+        "VisibleImageIsAtomic"
+      ],
+      "expected_invariant_failure": "VisibleImageIsAtomic",
+      "model": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.tla",
+      "specification": "MutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressHeaderMutant.cfg",
+      "configured_invariants": [
+        "TypeInvariant",
+        "PrivateImageCompletesBeforePublish"
+      ],
+      "expected_invariant_failure": "PrivateImageCompletesBeforePublish",
+      "model": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.tla",
+      "specification": "HeaderMutantSpec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressValidationMutant.cfg",
+      "configured_invariants": [
+        "TypeInvariant",
+        "PreflightCompletesBeforeBuild"
+      ],
+      "expected_invariant_failure": "PreflightCompletesBeforeBuild",
+      "model": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.tla",
+      "specification": "ValidationMutantSpec"
+    }
+  ],
+  "executable_witnesses": [
+    {
+      "source": "models/tests/par_protobuf_stack_safety.rs",
+      "test": "par_message_round_trip_is_stack_safe_and_unbounded_by_decode_context"
+    },
+    {
+      "source": "models/tests/protobuf_encoder_space.rs",
+      "test": "par_slot_visitor_uses_generated_sequence_and_map_order_without_descending_into_par"
+    }
+  ],
+  "missing_formal_family": "No bincode-specific TLA/Rocq/Verus source was found in this accepted ParBag/egress slice.",
+  "rocq": [
+    {
+      "obligations": [
+        {
+          "id": "PARBAG-RC-01-001",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "lookup_appended",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-002",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "each_field_refines",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-003",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "ordered_fields_refine",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-004",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "earlier_arena_roots_survive",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-005",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "insertion_preserves_metadata",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-006",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "metadata_update_preserves_authority",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-007",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "connective_update_preserves_authority",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-008",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "explicit_empty_locally_free_replaces",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-009",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "explicit_false_connective_replaces",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-010",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "insertion_failure_preserves_authority",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-011",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "refusal_preserves_committed_state",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-012",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "refusal_does_not_visit_suffix",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-013",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "derived_metadata_mutant_changes_observation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-014",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "union_metadata_mutant_changes_explicit_reset",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-015",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "put_same",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-016",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "put_other",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-017",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "private_write_preserves_protected",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-018",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "rollback_ext",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-019",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "overwrite_then_restore",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-020",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "reverse_journal_restores",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-021",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_private_writes_preserve_others",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-022",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "sealed_root_has_only_sealed_descendants",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-023",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "private_owner_write_cannot_change_snapshot",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-024",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "exclusive_write_preserves_other_builder",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-025",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "postorder_seal_preserves_closed_edges",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-026",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "seal_preserves_payload_and_edges",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-027",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "seal_idempotent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-028",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "sealed_owner_cannot_be_reused",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-029",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "fresh_owner_above_prior_ids",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-030",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "candidate_rewind_restores_prefix",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-031",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "candidate_rewind_preserves_prior_handle",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-032",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "nested_candidate_rewinds_preserve_outer",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-033",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "parent_append_must_follow_rewind",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-034",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "retire_suffix_has_no_prior_handles",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-035",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "confined_live_handles_survive_rewind",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-036",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "left_rotation_preserves_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-037",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "right_rotation_preserves_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-038",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "double_rotation_preserves_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-039",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "terminal_drain_does_not_grow",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-040",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "zero_epm_depth_excludes_pending_descent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-041",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "terminal_control_excludes_nested_descent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-042",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "geometric_retirement_has_linear_move_budget",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-043",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "geometric_retirement_call_bound",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-044",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "zero_retirement_preserves_frames",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-045",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "wrong_journal_order_mutant_is_detected",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-01-046",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "early_rewind_mutant_loses_parent_update",
+          "test_name": null,
+          "test_source": null
+        }
+      ],
+      "print_assumptions": [
+        "each_field_refines",
+        "ordered_fields_refine",
+        "earlier_arena_roots_survive",
+        "insertion_preserves_metadata",
+        "metadata_update_preserves_authority",
+        "connective_update_preserves_authority",
+        "explicit_empty_locally_free_replaces",
+        "explicit_false_connective_replaces",
+        "insertion_failure_preserves_authority",
+        "refusal_preserves_committed_state",
+        "refusal_does_not_visit_suffix",
+        "derived_metadata_mutant_changes_observation",
+        "union_metadata_mutant_changes_explicit_reset",
+        "private_write_preserves_protected",
+        "sealed_root_has_only_sealed_descendants",
+        "private_owner_write_cannot_change_snapshot",
+        "exclusive_write_preserves_other_builder",
+        "postorder_seal_preserves_closed_edges",
+        "seal_preserves_payload_and_edges",
+        "reverse_journal_restores",
+        "successful_private_writes_preserve_others",
+        "seal_idempotent",
+        "sealed_owner_cannot_be_reused",
+        "fresh_owner_above_prior_ids",
+        "candidate_rewind_restores_prefix",
+        "candidate_rewind_preserves_prior_handle",
+        "nested_candidate_rewinds_preserve_outer",
+        "parent_append_must_follow_rewind",
+        "retire_suffix_has_no_prior_handles",
+        "confined_live_handles_survive_rewind",
+        "left_rotation_preserves_order",
+        "right_rotation_preserves_order",
+        "double_rotation_preserves_order",
+        "terminal_drain_does_not_grow",
+        "zero_epm_depth_excludes_pending_descent",
+        "terminal_control_excludes_nested_descent",
+        "geometric_retirement_has_linear_move_budget",
+        "geometric_retirement_call_bound",
+        "zero_retirement_preserves_frames",
+        "wrong_journal_order_mutant_is_detected",
+        "early_rewind_mutant_loses_parent_update"
+      ],
+      "runner_closed_count": 41,
+      "source": "formal/rocq/stack_safe_pda/theories/ProtobufParAccumulation.v"
+    },
+    {
+      "obligations": [
+        {
+          "id": "PARBAG-RC-02-001",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "absent_slot_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-002",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "present_slot_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-003",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "absent_and_present_default_remain_distinct",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-004",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "take_slot_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-005",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "reopen_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-006",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "take_reopen_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-007",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "reopen_present_preserves_child",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-008",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "repeated_default_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-009",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "repeated_append_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-010",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "repeated_append_preserves_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-011",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "default_entry_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-012",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "entry_key_update_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-013",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "entry_value_update_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-014",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "erase_key_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-015",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "keyed_replacement_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-016",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "keyed_lookup_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-017",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_keyed_replacement_is_last_wins",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-018",
+          "mode": "proof_only",
+          "printed": false,
+          "symbol": "erase_preserves_other_lookup",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-019",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_keyed_replacement_preserves_other_keys",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-020",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "oneof_selection_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-021",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "same_oneof_arm_reopens_existing_child",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-022",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "different_oneof_arm_starts_default",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-023",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_oneof_attach_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-024",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_oneof_attach_selects_new_arm",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-025",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "child_attachment_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-026",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "failed_attachment_preserves_committed_parent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-027",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "failed_attachment_allows_later_success",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-028",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "rejected_api_guard_preserves_parent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-029",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "guarded_attachment_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-030",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "optional_attachment_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-031",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "repeated_attachment_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-032",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "repeated_prepend_mutant_changes_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-033",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "absent_collapsed_to_default_mutant_changes_presence",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-034",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "ownership_path_rank_budget",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-035",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "ownership_path_length_is_schema_bounded",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-036",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "strict_schema_rank_excludes_positive_cycles",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-037",
+          "mode": "concrete_witness",
+          "printed": true,
+          "symbol": "method_child_order_commutes",
+          "test_name": "par_slot_visitor_uses_generated_sequence_and_map_order_without_descending_into_par",
+          "test_source": "models/tests/protobuf_encoder_space.rs"
+        },
+        {
+          "id": "PARBAG-RC-02-038",
+          "mode": "concrete_witness",
+          "printed": true,
+          "symbol": "method_child_order_preserves_cardinality",
+          "test_name": "par_slot_visitor_uses_generated_sequence_and_map_order_without_descending_into_par",
+          "test_source": "models/tests/protobuf_encoder_space.rs"
+        },
+        {
+          "id": "PARBAG-RC-02-039",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "method_child_order_retains_target_last",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-040",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "semantic_optional_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-041",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "semantic_optional_absent_retains_absence",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-042",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "semantic_optional_present_retains_presence",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-043",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "component_frontier_selects_incomplete",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-044",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "component_frontier_selects_complete",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-045",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "component_frontier_commutes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-046",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "method_unrotated_mutant_changes_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-047",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "relocated_transition_preserves_payload_or_exact_error",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-048",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_resume_reuses_same_identity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-049",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "arbitrary_suspend_resume_trace_is_exact",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-050",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "arbitrary_successful_trace_keeps_one_owner",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-051",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "boxed_worklist_observes_same_flat_payload_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-052",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "moving_to_continuation_and_back_needs_no_second_identity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-02-053",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "completion_observes_original_retirement_payload",
+          "test_name": null,
+          "test_source": null
+        }
+      ],
+      "print_assumptions": [
+        "absent_slot_commutes",
+        "present_slot_commutes",
+        "absent_and_present_default_remain_distinct",
+        "take_slot_commutes",
+        "reopen_commutes",
+        "take_reopen_commutes",
+        "reopen_present_preserves_child",
+        "repeated_default_commutes",
+        "repeated_append_commutes",
+        "repeated_append_preserves_order",
+        "default_entry_commutes",
+        "entry_key_update_commutes",
+        "entry_value_update_commutes",
+        "keyed_replacement_commutes",
+        "keyed_lookup_commutes",
+        "successful_keyed_replacement_is_last_wins",
+        "successful_keyed_replacement_preserves_other_keys",
+        "oneof_selection_commutes",
+        "same_oneof_arm_reopens_existing_child",
+        "different_oneof_arm_starts_default",
+        "successful_oneof_attach_commutes",
+        "successful_oneof_attach_selects_new_arm",
+        "child_attachment_commutes",
+        "failed_attachment_preserves_committed_parent",
+        "failed_attachment_allows_later_success",
+        "rejected_api_guard_preserves_parent",
+        "guarded_attachment_commutes",
+        "optional_attachment_commutes",
+        "repeated_attachment_commutes",
+        "repeated_prepend_mutant_changes_order",
+        "absent_collapsed_to_default_mutant_changes_presence",
+        "ownership_path_rank_budget",
+        "ownership_path_length_is_schema_bounded",
+        "strict_schema_rank_excludes_positive_cycles",
+        "method_child_order_commutes",
+        "method_child_order_preserves_cardinality",
+        "method_child_order_retains_target_last",
+        "semantic_optional_commutes",
+        "semantic_optional_absent_retains_absence",
+        "semantic_optional_present_retains_presence",
+        "component_frontier_selects_incomplete",
+        "component_frontier_selects_complete",
+        "component_frontier_commutes",
+        "method_unrotated_mutant_changes_order",
+        "relocated_transition_preserves_payload_or_exact_error",
+        "successful_resume_reuses_same_identity",
+        "arbitrary_suspend_resume_trace_is_exact",
+        "arbitrary_successful_trace_keeps_one_owner",
+        "boxed_worklist_observes_same_flat_payload_order",
+        "moving_to_continuation_and_back_needs_no_second_identity",
+        "completion_observes_original_retirement_payload"
+      ],
+      "runner_closed_count": 51,
+      "source": "formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v"
+    },
+    {
+      "obligations": [
+        {
+          "id": "PARBAG-RC-03-001",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "mapped_frame_preserves_control",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-002",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "mapped_frames_preserve_context_order",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-003",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "selected_error_and_contexts_are_preserved",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-004",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "completed_body_restores_exact_parent",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-005",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "unfinished_body_cannot_restore",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-006",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "absent_parent_cannot_restore",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-007",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "enter_preserves_admission_depth",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-008",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "nested_inputs_restore_lifo",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-009",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "snapshot_policy_uses_preincrement_depth",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-010",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "successful_admission_balances_depth",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-011",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "failed_admission_has_no_continuation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-012",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "admission_without_snapshot_is_rejected",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-013",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "routing_composes_payload_refinement",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-014",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "first_error_leaves_suffix_unvisited",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-015",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "reopenable_child_is_not_frozen",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-016",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "freeze_only_at_consuming_boundary",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-017",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "freezing_preserves_denotation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-018",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "reopen_preserves_existing_builder",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-019",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "guards_preserve_live_arena",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-020",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "projection_and_retirement_use_live_arena",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-021",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "final_projection_failure_is_not_published",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-022",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "projection_failure_trace_has_no_publication",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-023",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "success_retires_guards_and_arena_before_publication",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-024",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "every_guard_has_one_retirement_per_owned_slot",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-025",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "reversed_context_mutant_is_observable",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-RC-03-026",
+          "mode": "proof_only",
+          "printed": true,
+          "symbol": "premature_freeze_mutant_loses_reopenable_form",
+          "test_name": null,
+          "test_source": null
+        }
+      ],
+      "print_assumptions": [
+        "mapped_frame_preserves_control",
+        "mapped_frames_preserve_context_order",
+        "selected_error_and_contexts_are_preserved",
+        "completed_body_restores_exact_parent",
+        "unfinished_body_cannot_restore",
+        "absent_parent_cannot_restore",
+        "enter_preserves_admission_depth",
+        "nested_inputs_restore_lifo",
+        "snapshot_policy_uses_preincrement_depth",
+        "successful_admission_balances_depth",
+        "failed_admission_has_no_continuation",
+        "admission_without_snapshot_is_rejected",
+        "routing_composes_payload_refinement",
+        "first_error_leaves_suffix_unvisited",
+        "reopenable_child_is_not_frozen",
+        "freeze_only_at_consuming_boundary",
+        "freezing_preserves_denotation",
+        "reopen_preserves_existing_builder",
+        "guards_preserve_live_arena",
+        "projection_and_retirement_use_live_arena",
+        "final_projection_failure_is_not_published",
+        "projection_failure_trace_has_no_publication",
+        "success_retires_guards_and_arena_before_publication",
+        "every_guard_has_one_retirement_per_owned_slot",
+        "reversed_context_mutant_is_observable",
+        "premature_freeze_mutant_loses_reopenable_form"
+      ],
+      "runner_closed_count": 26,
+      "source": "formal/rocq/stack_safe_pda/theories/ProtobufDecoderComposition.v"
+    }
+  ],
+  "scope": "ParBag protobuf projection, sink, in-frame memo, and RSpace canonical egress",
+  "source_sha256": {
+    "formal/rocq/stack_safe_pda/theories/ProtobufDecoderComposition.v": "08510541823ccd9bf5e017f9da4cf54146ae296c97d723a1523bdce131f0557d",
+    "formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v": "b3656d177b74cb0a048051407b1751a59c526ef96f2073a377e79eabfb5fa399",
+    "formal/rocq/stack_safe_pda/theories/ProtobufParAccumulation.v": "893ea8fe8cc47e8eff6da582759431c1dc105ce3fec2f8bb8546969e4f3476ef",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.cfg": "72866cdf1bcead6816ad9ea8207a2a030046dc1616805113881492d73b5f03b2",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla": "0243eff726af69033c82b03f9a12837cac66ff1b2c3026c79dec1d8fee822179",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoCensusSkipMutant.cfg": "a197248bd4209579900416547d7fb365bf9f2937d83728ea6424d44a34b6b55e",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoEarlyEmissionMutant.cfg": "e3583fee2a74f059909d88339cad4ff5c9046cacb1cf9d2b4750f900b2496094",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoEmptyMemoMutant.cfg": "f4c19fac5eca278d8f973a2b5b00b2a59243f7e867e1cb7c2c88b3627b1a7042",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoOffByOneMutant.cfg": "8a419f02f7bdfbf4639704e07461554c0b2dbfc9c14d67423d9c74df818897a4",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoReplayOverrunMutant.cfg": "0a874bec717561e6db9fef0d0c0ddfb21dc761eeba324134fc91954b178e4aec",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoReplayRemainingCommitMutant.cfg": "e67df768cbbdb566a9da30af405313c48a981524805e2a27ab357f9d4a20e11e",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoReplaySwapMutant.cfg": "25e36236a5f1b6c47ea2dd695a747062ba319c0793160db465f397774e1d9fde",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoSingletonMemoMutant.cfg": "aa5e01f829a17c916a485e26dbad3ae09dbdfee43476cec05b0d292723d5e9e8",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoSwapMutant.cfg": "e10c34b9932bdec989375fe8020be7aec7b5a20cb45d79dbecab4678b3002ece",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoWholeMutant.cfg": "5353283c8b64a95150ebf38cf0e7d10a59d9655cc296f3137659c01fb723691a",
+    "formal/tlaplus/stack_safe_pda/ParBagInFrameMemoWrongOwnerMutant.cfg": "62dcc21e4279fc238e2f2cd880f197f646a2ff1ab82b801c2b3f6eaac2846845",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionCapMutant.cfg": "10e0b81ef89f375cac3e3ef29a379cc3c07064e54df6b302e006a21176ffce57",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionCloneLossMutant.cfg": "bb019c269eb0554b89697402bab03e2fe6c3cbdc18d736ad749f98ddc8ce800a",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.cfg": "a01f0f22f1020faa782a057d6aeb5fa3513ce9fa416cac195f933e67baf38b6d",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla": "b8b1f235dd3c13a537990643b81e4c6f5f0f212934febd46136a687c8fb8ae80",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionPartialMutant.cfg": "2baedb43a0af1d8e3d0dd5bb24ec7bd32ce22f2ea5242ea0d4c118eec7fca774",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionReadMutant.cfg": "c390c7140b9c7d5e96c361be59001393b25b4aa95f734198d52587bd06c64a05",
+    "formal/tlaplus/stack_safe_pda/ParBagProjectionStaleMutant.cfg": "95b41991d35928e41167f54d3cc7207c4b2d1fa3b30d63049839c6ee0b53e7d9",
+    "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPreflightMutant.cfg": "43d97b0542bf0f67be1e0cdab7e85e65aa3602fad9a4eccae90484d8fc6cfa4c",
+    "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPrematureCommitMutant.cfg": "a4e8114c618c1937b47662767a1316b164dc939fd9e496ef9d60501478f708ab",
+    "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublicMutant.cfg": "db1819a05cef486cc8d381d6c4a6e328dfcc6d32cdb6e0b4f03ab8e3dda0afe7",
+    "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.cfg": "a98a061926b543866b7bd29c58ad0aa9b85f411af4c196257d2e05f0b7c3a875",
+    "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla": "6bd8b1be3bb114ce1b8c29a309770f5b25f50a3b5997033e3e78445984d7d2fd",
+    "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkRollbackMutant.cfg": "8214d508c8d1428f15505bb108a0b643ab20585134476861d6697b3f565832ea",
+    "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.cfg": "c450bf6014ac27513d523a519206bf05f22ba04ca54195e9ea468014a3e89525",
+    "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.tla": "922e03bd5a116cb7cd4a4255d48812365ab5d385d55f8f76414bf89af59ee9fb",
+    "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressHeaderMutant.cfg": "d96002ab9e8c0186786d9c2e29ca1956ba14810ef1aceebdef9686a5008b148e",
+    "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressMutant.cfg": "88f76d0f24068dc757898b080cb294d019ed164801fb8c3c048837f9c9ad0a3d",
+    "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressValidationMutant.cfg": "c8295658de039605037e58c0c25f1e5fab030d1fe2e0e230fdf3dbddee32126b",
+    "formal/verus/rspace_canonical_egress.rs": "92897d041c846ba513d875ea0b1c986ab0841880779107ab3abade4b1bc6c997",
+    "models/Cargo.toml": "dbb49d99a0b64ec5b5d6a6e6507b4b487424ffcbaea7564fb03bb6d6130ce0d8",
+    "models/tests/par_protobuf_stack_safety.rs": "991d21786b1e463da13a1c6d84b7edcbc83d92f90c9c4bde7bcfc105de65bb35",
+    "models/tests/protobuf_encoder_space.rs": "29484d06eee89826cdacbdb716cd5e888c9c961e661e3afdac93d513e6eb7fe0"
+  },
+  "tlc": [
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.cfg",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProjectionLifecycle.tla",
+      "obligations": [
+        {
+          "id": "PARBAG-TLA-01-01",
+          "mode": "proof_only",
+          "symbol": "TypeInvariant",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-01-02",
+          "mode": "proof_only",
+          "symbol": "BuildingIsInvisible",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-01-03",
+          "mode": "concrete_witness",
+          "symbol": "ReadyImageIsComplete",
+          "test_name": "par_message_round_trip_is_stack_safe_and_unbounded_by_decode_context",
+          "test_source": "models/tests/par_protobuf_stack_safety.rs"
+        },
+        {
+          "id": "PARBAG-TLA-01-04",
+          "mode": "proof_only",
+          "symbol": "RefusalOnlyWhenTooLarge",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-01-05",
+          "mode": "proof_only",
+          "symbol": "WriterCacheMatchesIdentity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-01-06",
+          "mode": "proof_only",
+          "symbol": "CloneCacheMatchesIdentity",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-01-07",
+          "mode": "proof_only",
+          "symbol": "UntouchedCloneSurvivesWriterMutation",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-01-08",
+          "mode": "concrete_witness",
+          "symbol": "EveryReadIsComplete",
+          "test_name": "par_message_round_trip_is_stack_safe_and_unbounded_by_decode_context",
+          "test_source": "models/tests/par_protobuf_stack_safety.rs"
+        }
+      ]
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.cfg",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla",
+      "obligations": [
+        {
+          "id": "PARBAG-TLA-02-01",
+          "mode": "proof_only",
+          "symbol": "TypeInvariant",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-02-02",
+          "mode": "proof_only",
+          "symbol": "InvalidInputHasNoPrefix",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-02-03",
+          "mode": "proof_only",
+          "symbol": "PublicImageAtomic",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-02-04",
+          "mode": "proof_only",
+          "symbol": "FailedSinkIsNotPublished",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-02-05",
+          "mode": "proof_only",
+          "symbol": "CommitRequiresCompleteImage",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-02-06",
+          "mode": "proof_only",
+          "symbol": "AbortedPrivateFrameIsDiscarded",
+          "test_name": null,
+          "test_source": null
+        }
+      ]
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.cfg",
+      "model": "formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla",
+      "obligations": [
+        {
+          "id": "PARBAG-TLA-03-01",
+          "mode": "proof_only",
+          "symbol": "TypeInvariant",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-02",
+          "mode": "proof_only",
+          "symbol": "CensusPrefixIsExact",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-03",
+          "mode": "proof_only",
+          "symbol": "CensusCompletesBeforeEmission",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-04",
+          "mode": "proof_only",
+          "symbol": "ReplayConsumesExactOccurrencePrefix",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-05",
+          "mode": "proof_only",
+          "symbol": "ReplayExhaustionIffEmissionComplete",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-06",
+          "mode": "proof_only",
+          "symbol": "DirectLaneForEmptyAndSingleton",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-07",
+          "mode": "proof_only",
+          "symbol": "MemoOnlyForCensusProvenRepeatedOwners",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-08",
+          "mode": "proof_only",
+          "symbol": "OutputMatchesDirect",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-09",
+          "mode": "proof_only",
+          "symbol": "CommitRequiresExactReplay",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-03-10",
+          "mode": "proof_only",
+          "symbol": "MemoIsOwnerExact",
+          "test_name": null,
+          "test_source": null
+        }
+      ]
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.cfg",
+      "model": "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.tla",
+      "obligations": [
+        {
+          "id": "PARBAG-TLA-04-01",
+          "mode": "proof_only",
+          "symbol": "TypeInvariant",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-04-02",
+          "mode": "proof_only",
+          "symbol": "PreflightCompletesBeforeBuild",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-04-03",
+          "mode": "proof_only",
+          "symbol": "PrivateImageCompletesBeforePublish",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-04-04",
+          "mode": "proof_only",
+          "symbol": "VisibleImageIsAtomic",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-04-05",
+          "mode": "proof_only",
+          "symbol": "MalformedInputNeverPublishes",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-04-06",
+          "mode": "proof_only",
+          "symbol": "RejectedInputIsNonMutating",
+          "test_name": null,
+          "test_source": null
+        },
+        {
+          "id": "PARBAG-TLA-04-07",
+          "mode": "proof_only",
+          "symbol": "ExactlyOnePublication",
+          "test_name": null,
+          "test_source": null
+        }
+      ]
+    }
+  ],
+  "verus": {
+    "obligations": [
+      {
+        "id": "PARBAG-VS-001",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "final_value_len_spec",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-002",
+        "kind": "exec",
+        "mode": "proof_only",
+        "symbol": "checked_final_value_len",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-003",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "preflight_step_spec",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-004",
+        "kind": "exec",
+        "mode": "proof_only",
+        "symbol": "checked_preflight_step",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-005",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "repeat_canonical_record",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-006",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "repeat_canonical_record_length",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-007",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "legacy_expand",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-008",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "pda_expand_suffix",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-009",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "expansion_suffix_equivalent",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-010",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "canonical_egress_expansion_equivalent",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-011",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "multiplicity_sum",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-012",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "legacy_expansion_cardinality",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-013",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "canonical_record_cell_is_well_formed",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-014",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "split_index_counters_are_coherent",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-015",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "first_wins_continuation_identity",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-016",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "last_wins_continuation_identity_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-017",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "continuation_identity_binding_is_first_wins",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-018",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "last_wins_continuation_identity_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-019",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "insert_canonical_record",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-020",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "canonical_record_insert_has_exact_counts_and_length",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-021",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "canonical_record_insert_preserves_split_index_coherence",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-022",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "join_multiplicity_is_accounted_exactly",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-023",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "collapsed_join_multiplicity_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-024",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "collapsed_join_multiplicity_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-025",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "delete_owned_canonical_record",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-026",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "owned_deletion_has_exact_counts_and_length",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-027",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "owned_deletion_preserves_split_index_coherence",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-028",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "delete_without_group_ownership_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-029",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "cross_group_deletion_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-030",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "delete_without_encoded_length_debit_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-031",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "deletion_length_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-032",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "direct_protobuf_transcript",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-033",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "prepared_protobuf_transcript",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-034",
+        "kind": "proof",
+        "mode": "concrete_witness",
+        "symbol": "prepared_projection_equals_direct",
+        "test_name": "par_message_round_trip_is_stack_safe_and_unbounded_by_decode_context",
+        "test_source": "models/tests/par_protobuf_stack_safety.rs"
+      },
+      {
+        "id": "PARBAG-VS-035",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "projection_mutants_change_the_transcript",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-036",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "projection_fits_spec",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-037",
+        "kind": "exec",
+        "mode": "proof_only",
+        "symbol": "projection_fits",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-038",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "cold_projection_cap_is_exact",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-039",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "empty_projection_fits_zero_cap",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-040",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "projection_cache_valid",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-041",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "projection_state_valid",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-042",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "successful_component_mutation_spec",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-043",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "successful_component_mutation_preserves_validity",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-044",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "projection_preserving_change_spec",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-045",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "rejected_and_metadata_changes_preserve_projection",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-046",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "stale_projection_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-047",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "projection_publication_valid",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-048",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "complete_projection_publication_is_atomic",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-049",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "partial_projection_publication_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-050",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "public_sink_after_result",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-051",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "failed_sink_keeps_public_value",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-052",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "complete_sink_publishes_exact_image",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-053",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "certified_rank_edge",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-054",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "certified_rank_path_is_bounded",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-055",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "self_cycle_has_no_valid_depth_certificate",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-056",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "mutual_cycle_has_no_valid_depth_certificate",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-057",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "underreported_root_bound_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-058",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "reserve_transcript_slot",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-059",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "complete_transcript_slot",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-060",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "transcript_is_sealable",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-061",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "certified_transcript_replay_valid",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-062",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "replay_next_typed_event",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-063",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "typed_replay_is_finished",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-064",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "reservation_appends_one_stable_slot",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-065",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "completion_updates_only_the_reserved_slot",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-066",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "duplicate_completion_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-067",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "wrong_kind_completion_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-068",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "spill_materialization",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-069",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "inline_to_spill_preserves_parent_slot",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-070",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "replay_next_consumes_exact_recorded_event",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-071",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "replay_finish_iff_exactly_exhausted",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-072",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "equal_length_typed_pair",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-073",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "dropped_typed_event_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-074",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "duplicated_typed_event_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-075",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "equal_length_kind_swap_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-076",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "dropped_replay_event_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-077",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "duplicated_replay_event_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-078",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "equal_length_kind_swap_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-079",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "census_policy_uses_direct",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-080",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "census_policy_uses_memo",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-081",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "census_policy_directs_empty_and_singleton_owners",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-082",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "census_policy_memoizes_only_repeated_owners",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-083",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "empty_owner_memo_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-084",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "singleton_owner_memo_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-085",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "certified_frame_is_complete",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-086",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "certified_frame_public_after_result",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-087",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "certified_frame_error_discards_private_and_preserves_public",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-088",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "certified_frame_commit_requires_exact_length_and_replay",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-089",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "premature_replay_commit_mutant_is_rejected",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-090",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "in_frame_component_ranges_admitted",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-091",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "direct_in_frame_par_append",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-092",
+        "kind": "open spec",
+        "mode": "proof_only",
+        "symbol": "try_in_frame_component_range_reuse",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-093",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "admitted_in_frame_reuse_equals_direct_and_preserves_prefix",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-094",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "in_frame_witness_source",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-095",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "in_frame_witness_image",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-096",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "in_frame_witness_ranges",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-097",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "swapped_in_frame_witness_ranges",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-098",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "short_after_in_frame_witness_ranges",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-099",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "omitted_after_in_frame_witness_ranges",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-100",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "whole_prior_par_in_frame_witness_ranges",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-101",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "swapped_in_frame_component_ranges_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-102",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "whole_prior_par_stale_root_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-103",
+        "kind": "spec",
+        "mode": "proof_only",
+        "symbol": "omitted_after_range_mutant",
+        "test_name": null,
+        "test_source": null
+      },
+      {
+        "id": "PARBAG-VS-104",
+        "kind": "proof",
+        "mode": "proof_only",
+        "symbol": "in_frame_component_range_mutants_are_rejected",
+        "test_name": null,
+        "test_source": null
+      }
+    ],
+    "source": "formal/verus/rspace_canonical_egress.rs"
+  }
+}

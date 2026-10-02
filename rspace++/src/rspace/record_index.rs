@@ -2138,6 +2138,13 @@ mod tests {
                 false,
             )
             .unwrap();
+        let record_path =
+            OrderedGroupStore::<String, u8, true>::record_path(&prefix, &[0x01, 0xaa]);
+        let identity_path = OrderedGroupStore::<String, u8, true>::identity_path(&prefix, &[0x01]);
+        let before_group = Arc::clone(store.groups.get(&prefix).unwrap());
+        let before_record = Arc::clone(store.records.get(record_path.as_ref()).unwrap());
+        let before_identity = Arc::clone(store.identities.get(identity_path.as_ref()).unwrap());
+        let before_group_count = store.group_count();
 
         let error = store
             .set_group(
@@ -2153,12 +2160,25 @@ mod tests {
                 "distinct continuation identities resolve to one canonical record path"
             )
         );
+        assert!(Arc::ptr_eq(&before_group, store.groups.get(&prefix).unwrap()));
+        assert!(Arc::ptr_eq(&before_record, store.records.get(record_path.as_ref()).unwrap()));
+        assert!(Arc::ptr_eq(
+            &before_identity,
+            store.identities.get(identity_path.as_ref()).unwrap()
+        ));
+        assert_eq!(store.group_count(), before_group_count);
         assert_eq!(
             store.group_values(&prefix),
             Some(vec![7]),
             "a rejected private replacement must not change any public PathMap root"
         );
         assert_eq!(store.record_count(), 1);
+        assert!(!store.records.contains(
+            OrderedGroupStore::<String, u8, true>::record_path(&prefix, &[0x10, 0x20]).as_ref()
+        ));
+        assert!(!store.identities.contains(
+            OrderedGroupStore::<String, u8, true>::identity_path(&prefix, &[0x10]).as_ref()
+        ));
     }
 
     #[test]

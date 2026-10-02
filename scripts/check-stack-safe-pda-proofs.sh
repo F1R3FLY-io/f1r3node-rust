@@ -746,8 +746,10 @@ rocq_compile_with_closed_count theories/DecoderOracleRouting.v 10 \
   "test-only frozen decoder routing"
 rocq_check_modules "test-only frozen decoder routing" StackSafePDA.DecoderOracleRouting
 rocq_reject_placeholders theories/ProtobufParAccumulation.v
-rocq_compile_with_closed_count theories/ProtobufParAccumulation.v 13 \
+rocq_compile_with_closed_count theories/ProtobufParAccumulation.v 41 \
   "ordered protobuf Par field accumulation"
+python3 "$repo_root/scripts/check-parbag-egress-obligations.py" --check
+python3 "$repo_root/scripts/check-parbag-egress-obligations.py" --self-test
 rocq_check_modules "ordered protobuf Par field accumulation" StackSafePDA.ProtobufParAccumulation
 rocq_reject_placeholders theories/EpmPayloadRepresentation.v
 rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 49 \
@@ -1225,6 +1227,8 @@ if ! grep -q 'Invariant PreflightCompletesBeforeBuild is violated' \
 fi
 tlc_run "$tla_metadir" \
   RSpaceSplitIndexAuthority.cfg RSpaceSplitIndexAuthority.tla -cleanup
+python3 "$repo_root/scripts/check-split-index-authority-obligations.py" --check
+python3 "$repo_root/scripts/check-split-index-authority-obligations.py" --self-test
 for split_authority_mutant in \
   "partial-roots:RSpaceSplitIndexAuthorityPartialRootsMutant.cfg:VisibleRootsAreAtomic" \
   "incomplete-seal:RSpaceSplitIndexAuthorityIncompleteSealMutant.cfg:SealRequiresCompleteStaging" \

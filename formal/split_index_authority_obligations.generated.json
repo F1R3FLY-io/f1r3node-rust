@@ -1,0 +1,99 @@
+{
+  "causal_mutants": [
+    {
+      "action": "PublishPartialRootsMutant",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthorityPartialRootsMutant.cfg",
+      "config_sha256": "4c873b092ec6eae3ce255ae57e3838a6c985ce9833801ed69e0f3469015c3293",
+      "expected_invariant": "VisibleRootsAreAtomic",
+      "id": "SIDX-MUT-01",
+      "specification": "PartialRootsMutantSpec"
+    },
+    {
+      "action": "SealIncompleteAuthorityMutant",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthorityIncompleteSealMutant.cfg",
+      "config_sha256": "162ea31397e3b849787ce6bcbdfffaca11d80501679473d32c1423f791e96af5",
+      "expected_invariant": "SealRequiresCompleteStaging",
+      "id": "SIDX-MUT-02",
+      "specification": "IncompleteSealMutantSpec"
+    },
+    {
+      "action": "PublishBeforeSealMutant",
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthorityPublishBeforeSealMutant.cfg",
+      "config_sha256": "71a7b7e7d8a53cb101b2f89eeb275e2a1b21bc45d1cb2d73178b5ea7b4f62f33",
+      "expected_invariant": "PublicationRequiresSealedAuthority",
+      "id": "SIDX-MUT-03",
+      "specification": "PublishBeforeSealMutantSpec"
+    }
+  ],
+  "config": "formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthority.cfg",
+  "config_sha256": "b475be612b027357ef573fd729310e05f6f55f5e37b3afb32d32ef339a53e81d",
+  "model": "formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthority.tla",
+  "model_sha256": "cba34c21eb43bc9ec337d26d1c422ef533016afc0fe5668cc20777e40bdcc341",
+  "obligations": [
+    {
+      "id": "SIDX-TLA-01",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "TypeInvariant",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-02",
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "PrivateStagingIsInvisible",
+      "test": "distinct_identities_cannot_overwrite_one_canonical_primary_record"
+    },
+    {
+      "id": "SIDX-TLA-03",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "SealRequiresCompleteStaging",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-04",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "PublishedAuthorityIsComplete",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-05",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "VisibleRootsAreAtomic",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-06",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "PublicationRequiresSealedAuthority",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-07",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "PublicationIsExactlyOnce",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-08",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "CountersCoPublishWithCanonicalRecords",
+      "test": null
+    },
+    {
+      "id": "SIDX-TLA-09",
+      "kind": "invariant",
+      "mode": "proof_only",
+      "symbol": "IdentityBindingsCoPublishWithGroups",
+      "test": null
+    }
+  ],
+  "runtime": "rspace++/src/rspace/record_index.rs",
+  "runtime_sha256": "b101e496bbc18b277a20242a04235c893fcd3cfdbb6bc59eb1621461ea3e16d5"
+}
