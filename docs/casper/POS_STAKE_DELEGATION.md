@@ -362,6 +362,7 @@ Observed last-finalized heights during this run were non-uniform across nodes (e
 5. Delegation and undelegation change effective stake immediately. A future protocol revision should move delegation activation/deactivation to an epoch snapshot if consensus requires epoch-fixed validator weights.
 6. Epoch reward distribution still scans the delegation maps. `minimumBond` raises the cost of state-growth attacks, but high-scale delegation should move to reward-per-share or equivalent lazy accounting before broad production use.
 7. Pending undelegation slashability is explicit current behavior. Operators and wallets must show that unlocking stake is still slashable until completion.
+8. Concurrent delegation deploys contend on the single PoS state cell. Merge-rejected delegation deploys are expected to recover through canonical deploy recovery and finalize without double application, but a deploy that loses the merge can see additional inclusion latency.
 
 ## PR Review Risk Register
 
@@ -373,6 +374,7 @@ Observed last-finalized heights during this run were non-uniform across nodes (e
 | Pending undelegations during slash | Current semantics intentionally slash pending undelegation escrow; docs and UI guide call this out explicitly. |
 | Repeated undelegation lifecycle | One pending undelegation per `(delegator, validator)` remains enforced and is regression-tested. |
 | Immediate epoch reward / consensus-weight activation | Still current semantics; must be decided with an epoch-snapshot design before production delegation rollout. |
+| Concurrent delegation contention | Known limitation: all PoS writes share one state cell, so parallel delegation deploys can be merge-rejected and recovered later. Testbed retesting on the PR head confirmed recovered deploys finalized, `delegatedTotals` matched expectations, and no duplicate application occurred. |
 
 ## Minimal Usage Example (Rholang)
 
