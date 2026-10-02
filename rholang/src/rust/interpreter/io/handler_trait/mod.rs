@@ -43,12 +43,14 @@
 // different follower / leader traces under Wave 6 — the regression
 // pins in each submodule's test block catch it at Wave 4.
 
+pub mod consensus_divergence;
 pub mod family;
 pub mod fs_handler;
 pub mod journal_path;
 pub mod reply;
 pub mod syscall_ctx;
 
+pub use consensus_divergence::consensus_divergence_reply;
 pub use family::HandlerFamily;
 pub use fs_handler::FsHandler;
 pub use journal_path::JournalPath;
