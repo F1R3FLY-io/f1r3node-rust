@@ -48,6 +48,7 @@ pub mod family;
 pub mod fs_handler;
 pub mod journal_path;
 pub mod reply;
+pub mod spawn_blocking;
 pub mod syscall_ctx;
 
 pub use consensus_divergence::consensus_divergence_reply;
@@ -55,4 +56,5 @@ pub use family::HandlerFamily;
 pub use fs_handler::FsHandler;
 pub use journal_path::JournalPath;
 pub use reply::HandlerReply;
+pub use spawn_blocking::spawn_blocking_par;
 pub use syscall_ctx::SyscallCtx;
