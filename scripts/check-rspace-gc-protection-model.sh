@@ -34,6 +34,7 @@ for mutant in \
   'OmitCoupledFacetMutant:PublishedClosureProtected' \
   'IgnoreExactPinMutant:ExactOldPinsProtected' \
   'IgnoreDurableExactPinMutant:DurableExactGenerationProtected' \
+  'OmitKnownClosureMutant:KnownPublicationClosureProtected' \
   'PrunePastWalStartMutant:WalFrontierProtected' \
   'BlockWalOnOldPackMutant:ObjectOnlyPinDoesNotBlockWal'
 do
@@ -57,4 +58,4 @@ do
   fi
 done
 
-echo "gc-protection: baseline and five causal mutants passed; logs in $evidence_dir"
+echo "gc-protection: baseline and six causal mutants passed; logs in $evidence_dir"
