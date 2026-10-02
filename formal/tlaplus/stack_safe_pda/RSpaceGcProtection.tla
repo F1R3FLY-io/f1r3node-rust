@@ -2,12 +2,13 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS MaxWalWindow, MaxWalEvents, OmitCoupledFacet, IgnoreExactPin,
-          PrunePastWalStart, BlockWalOnOldPack
+          IgnoreDurableExactPin, PrunePastWalStart, BlockWalOnOldPack
 
 ASSUME MaxWalWindow \in Nat \ {0}
 ASSUME MaxWalEvents \in Nat \ {0}
 ASSUME OmitCoupledFacet \in BOOLEAN
 ASSUME IgnoreExactPin \in BOOLEAN
+ASSUME IgnoreDurableExactPin \in BOOLEAN
 ASSUME PrunePastWalStart \in BOOLEAN
 ASSUME BlockWalOnOldPack \in BOOLEAN
 
@@ -59,10 +60,10 @@ PinRole(token) ==
     [] token = "rollback0" -> "rollback"
 
 VARIABLES phase, catalog, copied, oldPresent, oldPins, newPins,
-          durable, reclaimIntent, walHead, walTail, walStarts
+          durable, oldDurable, reclaimIntent, walHead, walTail, walStarts
 
 vars == <<phase, catalog, copied, oldPresent, oldPins, newPins,
-          durable, reclaimIntent, walHead, walTail, walStarts>>
+          durable, oldDurable, reclaimIntent, walHead, walTail, walStarts>>
 
 ActiveRoles == durable \cup {PinRole(token) : token \in oldPins \cup newPins}
 RequiredObjects == UNION {ProtectionMatrix[role].objects : role \in ActiveRoles}
@@ -83,6 +84,7 @@ Init ==
   /\ oldPins = {}
   /\ newPins = {}
   /\ durable = {"current", "retained"}
+  /\ oldDurable = {}
   /\ reclaimIntent = FALSE
   /\ walHead = 0
   /\ walTail = 0
@@ -92,25 +94,25 @@ StartCopy ==
   /\ phase = "idle"
   /\ phase' = "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail, walStarts>>
 
 CopyOne ==
   /\ phase = "copying"
   /\ \E object \in Objects \ copied : copied' = copied \cup {object}
   /\ UNCHANGED <<phase, catalog, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail, walStarts>>
 
 AbortCopy ==
   /\ phase = "copying"
   /\ phase' = "aborted"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail, walStarts>>
 
 RetryCopy ==
   /\ phase = "aborted"
   /\ phase' = "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail, walStarts>>
 
 Publish ==
   /\ phase = "copying"
@@ -122,7 +124,7 @@ Publish ==
   /\ reclaimIntent' = TRUE
   /\ phase' = "published"
   /\ UNCHANGED <<copied, oldPresent, oldPins, newPins,
-                 durable, walHead, walTail, walStarts>>
+                 durable, oldDurable, walHead, walTail, walStarts>>
 
 AcquireOldPin ==
   /\ oldPresent
@@ -133,7 +135,7 @@ AcquireOldPin ==
                          THEN [walStarts EXCEPT ![token] = start]
                          ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, newPins,
-                 durable, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail>>
 
 AcquireNewPin ==
   /\ catalog = "new"
@@ -145,7 +147,7 @@ AcquireNewPin ==
                          THEN [walStarts EXCEPT ![token] = start]
                          ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins,
-                 durable, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail>>
 
 ReleaseOldPin ==
   /\ oldPins # {}
@@ -155,7 +157,7 @@ ReleaseOldPin ==
                        THEN [walStarts EXCEPT ![token] = NoWalStart]
                        ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, newPins,
-                 durable, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail>>
 
 ReleaseNewPin ==
   /\ newPins # {}
@@ -165,11 +167,15 @@ ReleaseNewPin ==
                        THEN [walStarts EXCEPT ![token] = NoWalStart]
                        ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins,
-                 durable, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail>>
 
 RegisterDurable ==
   /\ \E role \in {"replay", "rollback"} \ durable :
-       /\ (catalog = "old" \/ ProtectionMatrix[role].objects \subseteq copied)
+       /\ \E generation \in {"old", "new"} :
+            /\ (IF generation = "old" THEN oldPresent
+                ELSE catalog = "new" /\ ProtectionMatrix[role].objects \subseteq copied)
+            /\ oldDurable' = IF generation = "old" THEN oldDurable \cup {role}
+                              ELSE oldDurable
        /\ durable' = durable \cup {role}
        /\ \E start \in walHead..walTail :
             walStarts' = [walStarts EXCEPT ![role] = start]
@@ -179,6 +185,7 @@ RegisterDurable ==
 ReleaseDurable ==
   /\ \E role \in durable \ {"current", "retained"} :
        /\ durable' = durable \ {role}
+       /\ oldDurable' = oldDurable \ {role}
        /\ walStarts' = [walStarts EXCEPT ![role] = NoWalStart]
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
                  reclaimIntent, walHead, walTail>>
@@ -187,17 +194,18 @@ Reclaim ==
   /\ phase = "published"
   /\ reclaimIntent
   /\ IF IgnoreExactPin THEN TRUE ELSE oldPins = {}
+  /\ IF IgnoreDurableExactPin THEN TRUE ELSE oldDurable = {}
   /\ oldPresent' = FALSE
   /\ reclaimIntent' = FALSE
   /\ UNCHANGED <<phase, catalog, copied, oldPins, newPins,
-                 durable, walHead, walTail, walStarts>>
+                 durable, oldDurable, walHead, walTail, walStarts>>
 
 AdvanceWal ==
   /\ walTail - walHead < MaxWalWindow
   /\ walTail < MaxWalEvents
   /\ walTail' = walTail + 1
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walHead, walStarts>>
+                 durable, oldDurable, reclaimIntent, walHead, walStarts>>
 
 RotateWal ==
   /\ catalog = "new"
@@ -207,7 +215,7 @@ RotateWal ==
                  THEN ReclaimableWalFrontier + 1
                  ELSE ReclaimableWalFrontier
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walTail, walStarts>>
+                 durable, oldDurable, reclaimIntent, walTail, walStarts>>
 
 Crash ==
   /\ phase \in {"copying", "aborted", "published"}
@@ -216,14 +224,14 @@ Crash ==
   /\ newPins' = {}
   /\ walStarts' = [walStarts EXCEPT !["replay0"] = NoWalStart,
                                    !["rollback0"] = NoWalStart]
-  /\ UNCHANGED <<catalog, copied, oldPresent, durable,
+  /\ UNCHANGED <<catalog, copied, oldPresent, durable, oldDurable,
                  reclaimIntent, walHead, walTail>>
 
 Recover ==
   /\ phase = "crashed"
   /\ phase' = IF catalog = "new" THEN "published" ELSE "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, reclaimIntent, walHead, walTail, walStarts>>
 
 Next == StartCopy \/ CopyOne \/ AbortCopy \/ RetryCopy \/ Publish \/
         AcquireOldPin \/ AcquireNewPin \/ ReleaseOldPin \/ ReleaseNewPin \/
@@ -240,6 +248,7 @@ TypeInvariant ==
   /\ newPins \subseteq PinTokens
   /\ oldPins \cap newPins = {}
   /\ durable \subseteq DurableRoles
+  /\ oldDurable \subseteq durable \cap {"replay", "rollback"}
   /\ walHead \in Nat
   /\ walTail \in Nat
   /\ walTail <= MaxWalEvents
@@ -248,6 +257,7 @@ TypeInvariant ==
 
 PublicationBeforeReclamation == ~oldPresent => catalog = "new"
 ExactOldPinsProtected == oldPins # {} => oldPresent
+DurableExactGenerationProtected == oldDurable # {} => oldPresent
 PublishedClosureProtected == catalog = "new" => DurableRequiredObjects \subseteq copied
 ActiveObjectProtection ==
   \A role \in ActiveRoles :
