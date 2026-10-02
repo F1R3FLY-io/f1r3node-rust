@@ -99,6 +99,31 @@ message MerkleProofStepProto {
   bool  is_sibling_right    = 2;
 }
 
+// Sent by a joiner asking "do you have a serveable snapshot for
+// this block?"  Broadcast + point-to-point; serving nodes reply
+// with HasSnapshotProto when they can serve it.  Mirrors the
+// HasBlockRequestProto / HasBlockProto pattern.
+message HasSnapshotRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes block_hash = 1;
+}
+
+// Response to HasSnapshotRequestProto.  Carries `merkle_root`
+// so the joiner can pin an anchor BEFORE issuing per-chunk
+// requests.  Both merkle_root and chunk_count here are
+// ADVISORY — the joiner MUST re-verify merkle_root against
+// its locally-anchored root (from block finalization) and
+// expect chunk_count to match the actual chunks it later
+// receives via GetSnapshotChunkRequest.  A server
+// reporting an inflated chunk_count would be caught by the
+// per-chunk inclusion-proof check during fetch.
+message HasSnapshotProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes  block_hash  = 1;
+  bytes  merkle_root = 2;   // ADVISORY anchor the joiner can pin
+  uint32 chunk_count = 3;   // ADVISORY count the joiner can budget
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }
