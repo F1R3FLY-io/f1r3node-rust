@@ -81,12 +81,13 @@ const _: () = assert!(
 
 crate::register_consensus_constant!(order = 1, name = MAX_WAL_ENTRIES, u64_be);
 
-/// Opaque marker returned by `Wal::begin_deploy` and consumed by
-/// `Wal::take_deploy_entries_insertion_order` (both in a subsequent slice).
-/// Records the WAL length at the deploy boundary so post-deploy
-/// drain covers exactly the entries this deploy contributed.  Also
-/// usable by soft-checkpoint machinery as a snapshot point to
-/// truncate back to on revert.
+/// Opaque marker returned by [`Wal::begin_deploy`] and consumed
+/// by [`Wal::take_deploy_entries_insertion_order`] or
+/// [`Wal::take_deploy_entries_in_log_order`].  Records the WAL
+/// length at the deploy boundary so post-deploy drain covers
+/// exactly the entries this deploy contributed.  Also usable by
+/// soft-checkpoint machinery as a snapshot point to truncate
+/// back to on revert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalMark {
     pub(crate) len: usize,
@@ -551,12 +552,13 @@ impl Wal {
         self.append_with_ack(entry, [0u8; 32])
     }
 
-    /// Append an entry with its ack-channel hash for later log-
-    /// order-based drain (subsequent slice).  The hash comes from
-    /// `stable_hash_provider::hash(ack_par)` on the handler side.
-    /// A sentinel `[0u8; 32]` disables log-order matching for
-    /// that entry (falls back to insertion order in the eventual
-    /// `take_deploy_entries_in_log_order` walk).
+    /// Append an entry with its ack-channel hash for the
+    /// log-order-based drain in
+    /// [`Self::take_deploy_entries_in_log_order`].  The hash
+    /// comes from `stable_hash_provider::hash(ack_par)` on the
+    /// handler side.  A sentinel `[0u8; 32]` disables log-order
+    /// matching for that entry (the walk routes it through the
+    /// unmatched-at-end tail in insertion order).
     ///
     /// Returns `Err(())` if appending would exceed
     /// `MAX_WAL_ENTRIES`.
@@ -656,9 +658,12 @@ impl Wal {
 
     /// Per-deploy boundary marker.  Called at the top of a deploy
     /// before user code runs.  Paired with
-    /// `take_deploy_entries_insertion_order` (or the yet-to-land
-    /// `take_deploy_entries_in_log_order`) which drains exactly
-    /// the entries this deploy contributed, letting a downstream
+    /// [`Self::take_deploy_entries_insertion_order`] (scheduler-
+    /// order, for tests + soft-checkpoint machinery) or
+    /// [`Self::take_deploy_entries_in_log_order`] (consensus-safe
+    /// log order, for callers hashing the drained Vec into a
+    /// consensus commitment), either of which drains exactly the
+    /// entries this deploy contributed and lets a downstream
     /// slice attach a deploy's WAL contributions to its
     /// `ProcessedDeploy` (either via a proto-schema extension or
     /// via an out-of-band side-map keyed by deploy signature).
