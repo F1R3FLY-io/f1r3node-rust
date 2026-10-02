@@ -85,7 +85,7 @@ where
     let runtime_manager = RuntimeManager::create_with_store(
         r_store,
         m_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     );
 

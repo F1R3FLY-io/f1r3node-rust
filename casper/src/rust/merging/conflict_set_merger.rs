@@ -543,8 +543,9 @@ where
         joins = combined_joins_count);
 
     // Combine all mergeable channels (in sorted order). Per-channel `MergeType`
-    // determines how diffs combine: integer-add uses checked i64 addition, bigint-add
-    // exact addition, bitmask-OR a bitwise OR. Branches must agree on merge_type for a given
+    // determines how diffs combine: integer-add uses checked i64 addition, and an
+    // overflow is an error rather than a wrap; bigint-add uses exact addition;
+    // bitmask-OR uses bitwise OR. Branches must agree on merge_type for a given
     // channel; disagreement yields a tagged error so callers reject the merge
     // rather than crashing the validator.
     let mut all_mergeable_channels = NumberChannelsDiff::new();

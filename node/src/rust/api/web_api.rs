@@ -1141,6 +1141,9 @@ pub enum RhoExpr {
     ExprFloat {
         data: f64,
     },
+    ExprFloat32 {
+        data: f32,
+    },
     ExprBigInt {
         data: String,
     },
@@ -1777,6 +1780,9 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         ExprInstance::GDouble(bits) => RhoExpr::ExprFloat {
             data: f64::from_bits(bits),
         },
+        ExprInstance::GFloat32(bits) => RhoExpr::ExprFloat32 {
+            data: f32::from_bits(bits),
+        },
         ExprInstance::GBigInt(bytes) => {
             let n = BigInt::from_signed_bytes_be(&bytes);
             RhoExpr::ExprBigInt {
@@ -2024,6 +2030,7 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
         RhoExpr::ExprInt { data } => data.to_string(),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
+        RhoExpr::ExprFloat32 { data } => data.to_string(),
         RhoExpr::ExprBigInt { data } => data.clone(),
         RhoExpr::ExprUri { data } => data.clone(),
         RhoExpr::ExprBytes { data } => data.clone(),
@@ -2568,6 +2575,11 @@ mod tests {
             expr_instance: Some(ExprInstance::GDouble(2.5f64.to_bits())),
         });
         assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
+
+        let float32 = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GFloat32(2.5f32.to_bits())),
+        });
+        assert!(matches!(float32, Some(RhoExpr::ExprFloat32 { data }) if data == 2.5));
 
         let big_int = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GBigInt(vec![0x01, 0x00])),
