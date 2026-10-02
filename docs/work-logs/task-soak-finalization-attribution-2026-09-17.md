@@ -3,10 +3,9 @@ task: soak-finalization-attribution
 branch: fix/soak-finalization-attribution
 base_commit: bc23c8667ebef0f3fb7c3310caf85ce106df25fa
 evidence_revision: 7f0ae8182d76005590976b8989f0173c49fe1d33
-handoff_status: blocked
+handoff_status: ready
 next_steps:
-  - Discharge the two pending CbC claims or obtain an explicit maintainer waiver.
-  - Leave PRs 430 through 433 for the user to merge.
+  - PR #441 review by the maintainer. Both records are discharged.
   - Verify workflow activation separately after the prerequisite merge.
 ---
 
@@ -181,3 +180,18 @@ Both records now carry `status: discharged`, an `acceptance` block, and a `previ
 The evidence stays bounded regression tests. The acceptance does not add a formal proof and does not authorize a live soak.
 
 The `Markdown Link Check` of PR #441 failed on an inherited work-log link to an authenticated code-scanning page. Commit `3f42fe2b4` on `formal/soak-casper-consensus` changed that link to a code span. The merge `7fc161e70` carries the fix to this branch.
+
+## Record refresh on 2026-10-02
+
+<!-- claude-session-f3cbc961 -->
+
+The dev merge `369dbfcc4` into this branch changed `casper/src/rust/util/rholang/runtime_manager.rs`. The change comes from PR #469 and PR #457: `spawn_runtime` and `spawn_replay_runtime` return `Result<RhoRuntimeImpl, CasperError>`, and `mergeable_tags` is crate-private. The diagnostic timers of this branch are unchanged. `validate.rs` is unchanged.
+
+The record `casper-src-rust-util-rholang-runtime-manager-rs` now names the merged bytes (`dc895a96…`) and keeps the accepted digest (`70e0c44b…`) as `sha256_at_acceptance`. The acceptance of 2026-10-01 stands for the branch change.
+
+| Check on the merged tree | Result |
+|--------------------------|--------|
+| `cargo check --locked -p casper -p node --tests` | ok |
+| `cargo test -p casper --test mod runtime_manager_test` | 36 passed |
+| `cargo test -p casper --test mod repeat_deploy` | 24 passed (22 before the merge, 2 new from dev) |
+| `cargo test -p casper --lib rust::util::rholang::runtime_manager::tests` | 5 passed |
