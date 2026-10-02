@@ -1,0 +1,426 @@
+{
+  "mcrl2_obligations": [],
+  "rocq_print_assumptions": [
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-01",
+      "symbol": "exact_family_total_is_endpoint_mass"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-02",
+      "symbol": "finite_cap_quotient_preserves_target_constraints"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-03",
+      "symbol": "bounded_interval_fold_preserves_existing_equations"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-04",
+      "symbol": "concrete_expression_minimum_is_exact_nonfree_mass"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-05",
+      "symbol": "exact_feasible_range_preserves_both_constraints"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-06",
+      "symbol": "impossible_lower_bounds_refuse_finite_targets"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-07",
+      "symbol": "zero_complement_requires_the_entire_exact_target"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-08",
+      "symbol": "endpointwise_partitions_conserve_exact_mass"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-09",
+      "symbol": "feasible_filter_preserves_reference_order_and_uniqueness"
+    },
+    {
+      "classification": "proof_only",
+      "id": "SM-ROCQ-10",
+      "symbol": "partition_scratch_size_depends_only_on_distinct_endpoints"
+    }
+  ],
+  "scope_limit": "This SpatialMatcher source family has no dedicated Verus or mCRL2 source. Direct executable rows check concrete normal-suite assertions; finite TLC invariants and abstract Rocq theorems require their proof engines. Mutation-detection and parser/model-only predicates have no claimed executable refinement target. The registry checks source and runner wiring, not proof execution.",
+  "source_sha256": {
+    "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v": "240b3921aead9cb9d3bc6473a773d0625f8703bf6f83c378fccab3dea0d29e8c",
+    "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.cfg": "43b98ede952c2fb89fc503c073a9965f609f19646ebcccb96adf65c419660205",
+    "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.tla": "33c9d71065829f5ca984ed10d1dde54a36302b3929ec3cdac7d597015ef1fe03",
+    "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
+    "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "29407529dbb9d066e85abba188d721b315e3cacd63324e5c6131535a4ae5796e"
+  },
+  "tla_invariants": [
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-01",
+      "symbol": "TypeInvariant",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-02",
+      "symbol": "NoInstructionUnderflow",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "compare(\"ground equality\"",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-03",
+      "symbol": "CompletedEquivalent",
+      "target": "recursive_oracle_and_pda_agree_on_the_semantic_corpus",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": "assert_eq!(ctx.free_map, new_free_map(), \"and the first left nothing\");",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-04",
+      "symbol": "FailedBranchesCarryNoBindings",
+      "target": "control_the_disjunction_arm_is_behaviourally_untouched",
+      "target_source": "rholang/tests/matcher_connective_isolation.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-05",
+      "symbol": "OuterEnvelopeRoutingEquivalent",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "_ => Delegate,",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-06",
+      "symbol": "SameOrUnprovedDelegatesExactly",
+      "target": "encoded_expr_outer_route_rejects_only_proven_different_tags",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": "if target != pattern => RejectProvenDifferent,",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-07",
+      "symbol": "OnlyProvenDifferentMayShortCircuit",
+      "target": "encoded_expr_outer_route_rejects_only_proven_different_tags",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-08",
+      "symbol": "DelegatedInvalidIsNotCollapsedAbsentDifferentTags",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-09",
+      "symbol": "CollapsedDeepFailureMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-10",
+      "symbol": "EncodedParserSoundOnCanonicalCorpus",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-11",
+      "symbol": "EncodedConnectiveRoutingEquivalent",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-12",
+      "symbol": "EncodedUnprovedDelegatesExactly",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-13",
+      "symbol": "MalformedNeverEntersEncodedMachine",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "assert_eq!(ctx.free_map, new_free_map(), \"and the first left nothing\");",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-14",
+      "symbol": "SuccessfulDisjunctionCarriesNoBindings",
+      "target": "control_the_disjunction_arm_is_behaviourally_untouched",
+      "target_source": "rholang/tests/matcher_connective_isolation.rs"
+    },
+    {
+      "assertion": "assert_eq!(ctx.free_map, new_free_map(), \"and nothing else either\");",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-15",
+      "symbol": "AndFailureRestoresWholeFoldSnapshot",
+      "target": "a_refused_conjunction_reverts_the_conjuncts_that_already_bound",
+      "target_source": "rholang/tests/matcher_connective_isolation.rs"
+    },
+    {
+      "assertion": "with.free_map, without.free_map,",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-16",
+      "symbol": "NegationAlwaysRestoresSnapshot",
+      "target": "a_negation_binds_nothing_whatever_its_body_is_made_of",
+      "target_source": "rholang/tests/matcher_connective_isolation.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-17",
+      "symbol": "EncodedCursorEnumeratesChildrenOnceInOrder",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-18",
+      "symbol": "LeakySuccessfulOrMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-19",
+      "symbol": "PerChildAndRestoreMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-20",
+      "symbol": "NotBindingLeakMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-21",
+      "symbol": "CursorMutationsAreDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-22",
+      "symbol": "ParserNoneAsRejectionMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-23",
+      "symbol": "ShallowTagOnlyMalformedMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "\"encoded predicate rejects a different scalar family\"",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-24",
+      "symbol": "PredicateFamilyMappingIsExactAndPayloadIndependent",
+      "target": "byte_native_connective_authority_covers_every_terminal_shape",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-25",
+      "symbol": "PredicatePayloadMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "\"encoded VarRef remains unconditional refusal\"",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-26",
+      "symbol": "VarRefAndAbsentReject",
+      "target": "byte_native_connective_authority_covers_every_terminal_shape",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-27",
+      "symbol": "AbsentAsEmptyAndMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "\"unary spine stops before an inactive Connective child\"",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-28",
+      "symbol": "ChildMetadataDispatchPreservesResidentAuthority",
+      "target": "byte_native_connective_respects_child_and_root_dispatch_metadata",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-29",
+      "symbol": "FalseSummarySingletonDelegatesToConcreteMatch",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-30",
+      "symbol": "UnprovedSummarySingletonDelegatesToConcreteMatch",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-31",
+      "symbol": "FalseSummaryChildDispatchMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-32",
+      "symbol": "UnprovedSummaryChildDispatchMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "\"inactive root Connective remains concrete data\"",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-33",
+      "symbol": "RootMetadataDispatchPreservesResidentAuthority",
+      "target": "byte_native_connective_respects_child_and_root_dispatch_metadata",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-34",
+      "symbol": "FalseSummaryRootDelegatesToConcreteMatch",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-35",
+      "symbol": "UnsafeActiveRootDelegatesToCandidateSelectingMatch",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-36",
+      "symbol": "SafeActiveRootEntersEncodedMatch",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-37",
+      "symbol": "FalseSummaryRootDoesNotCompileConnectiveCandidate",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-38",
+      "symbol": "FalseSummaryRootCandidateMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-39",
+      "symbol": "FalseSummaryRootMatchMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-40",
+      "symbol": "UnsafeActiveRootMatchMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-41",
+      "symbol": "CanonicalScalarByteEqualityIsDecodedEquality",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": "assert_eq!(stats.authoritative_exact_scalar_equal, 2);",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-42",
+      "symbol": "ExactScalarRoutePreservesAuthority",
+      "target": "byte_native_connective_exact_scalar_route_is_complete_and_non_vacuous",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": "assert_eq!(stats.authoritative_exact_scalar_unproved, 2);",
+      "classification": "executable_refinement",
+      "id": "SM-TLA-43",
+      "symbol": "UnprovedScalarBytesDelegateExactly",
+      "target": "byte_native_connective_exact_scalar_route_is_complete_and_non_vacuous",
+      "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-44",
+      "symbol": "ExactScalarMismatchMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "assertion": null,
+      "classification": "proof_only",
+      "id": "SM-TLA-45",
+      "symbol": "UnprovedScalarRejectionMutationIsDetected",
+      "target": null,
+      "target_source": null
+    }
+  ],
+  "verus_obligations": []
+}
