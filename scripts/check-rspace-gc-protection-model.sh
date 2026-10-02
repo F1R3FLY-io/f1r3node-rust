@@ -18,15 +18,39 @@ mkdir -p "$evidence_dir"
 cd "$model_dir"
 metadir="$(tlc_metadir rspace-gc-protection)"
 
-baseline_log="$evidence_dir/baseline.log"
-if ! tlc_run "$metadir" RSpaceGcProtection.cfg RSpaceGcProtection.tla -cleanup >"$baseline_log" 2>&1; then
-  cat "$baseline_log"
-  echo "gc-protection: baseline TLC failed" >&2
+for baseline in \
+  'baseline:RSpaceGcProtection.cfg' \
+  'known-baseline:RSpaceGcProtectionKnown.cfg'
+do
+  label="${baseline%%:*}"
+  config="${baseline#*:}"
+  baseline_log="$evidence_dir/$label.log"
+  if ! tlc_run "$metadir" "$config" RSpaceGcProtection.tla -cleanup >"$baseline_log" 2>&1; then
+    cat "$baseline_log"
+    echo "gc-protection: $label TLC failed" >&2
+    exit 1
+  fi
+  if ! rg -Fq 'Model checking completed. No error has been found.' "$baseline_log"; then
+    cat "$baseline_log"
+    echo "gc-protection: $label TLC did not report a completed clean check" >&2
+    exit 1
+  fi
+done
+
+witness_log="$evidence_dir/known-overlap-witness.log"
+if tlc_run "$metadir" RSpaceGcProtectionKnownOverlapWitness.cfg RSpaceGcProtection.tla -cleanup >"$witness_log" 2>&1; then
+  cat "$witness_log"
+  echo "gc-protection: known-overlap lifecycle witness was not reached" >&2
   exit 1
 fi
-if ! rg -Fq 'Model checking completed. No error has been found.' "$baseline_log"; then
-  cat "$baseline_log"
-  echo "gc-protection: baseline TLC did not report a completed clean check" >&2
+if ! rg -Fq 'Invariant KnownOverlapLifecycleAbsent is violated' "$witness_log"; then
+  cat "$witness_log"
+  echo "gc-protection: known-overlap witness failed without its expected counterexample" >&2
+  exit 1
+fi
+if ! rg -Fq 'The behavior up to this point is:' "$witness_log"; then
+  cat "$witness_log"
+  echo "gc-protection: known-overlap witness has no trace" >&2
   exit 1
 fi
 
@@ -58,4 +82,4 @@ do
   fi
 done
 
-echo "gc-protection: baseline and six causal mutants passed; logs in $evidence_dir"
+echo "gc-protection: both baselines, overlap witness, and six causal mutants passed; logs in $evidence_dir"

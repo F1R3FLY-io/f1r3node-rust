@@ -1,11 +1,12 @@
 ------------------------- MODULE RSpaceGcProtection -------------------------
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS MaxWalWindow, MaxWalEvents, OmitCoupledFacet, IgnoreExactPin,
+CONSTANTS MaxWalWindow, MaxWalEvents, KnownMode, OmitCoupledFacet, IgnoreExactPin,
           IgnoreDurableExactPin, OmitKnownClosure, PrunePastWalStart, BlockWalOnOldPack
 
 ASSUME MaxWalWindow \in Nat \ {0}
 ASSUME MaxWalEvents \in Nat \ {0}
+ASSUME KnownMode \in BOOLEAN
 ASSUME OmitCoupledFacet \in BOOLEAN
 ASSUME IgnoreExactPin \in BOOLEAN
 ASSUME IgnoreDurableExactPin \in BOOLEAN
@@ -13,11 +14,16 @@ ASSUME OmitKnownClosure \in BOOLEAN
 ASSUME PrunePastWalStart \in BOOLEAN
 ASSUME BlockWalOnOldPack \in BOOLEAN
 
-Objects == {"manifest", "semantic", "compatibility", "history",
-            "operationRoot", "replayRoot", "knownRoot"}
-Roles == {"current", "retained", "known", "reader", "export", "import", "replay", "rollback"}
+BaseObjects == {"manifest", "semantic", "compatibility", "history",
+                "operationRoot", "replayRoot"}
+Objects == IF KnownMode THEN BaseObjects \cup {"knownRoot"} ELSE BaseObjects
+BaseRoles == {"current", "retained", "reader", "export", "import", "replay", "rollback"}
+Roles == IF KnownMode THEN BaseRoles \cup {"known"} ELSE BaseRoles
 DurableRoles == {"current", "retained", "replay", "rollback"}
-PinTokens == {"known0", "reader0", "reader1", "export0", "import0", "replay0", "rollback0"}
+PinTokens ==
+  IF KnownMode
+  THEN {"known0", "reader0", "replay0", "rollback0"}
+  ELSE {"reader0", "reader1", "export0", "import0", "replay0", "rollback0"}
 WalIds == {"replay", "rollback", "replay0", "rollback0"}
 NoWalStart == MaxWalEvents + 1
 CoupledFacets == {"semantic", "compatibility", "history"}
@@ -64,10 +70,12 @@ PinRole(token) ==
     [] token = "rollback0" -> "rollback"
 
 VARIABLES phase, catalog, copied, oldPresent, oldPins, newPins,
-          durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts
+          durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+          reclaimIntent, walHead, walTail, walStarts
 
 vars == <<phase, catalog, copied, oldPresent, oldPins, newPins,
-          durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts>>
+          durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+          reclaimIntent, walHead, walTail, walStarts>>
 
 ActiveRoles == durable \cup {PinRole(token) : token \in oldPins \cup newPins}
 RequiredObjects == UNION {ProtectionMatrix[role].objects : role \in ActiveRoles}
@@ -94,6 +102,8 @@ Init ==
   /\ durable = {"current", "retained"}
   /\ oldDurable = {}
   /\ knownAtPublish = FALSE
+  /\ overlapAtPublish = FALSE
+  /\ crashedAfterOverlap = FALSE
   /\ reclaimIntent = FALSE
   /\ walHead = 0
   /\ walTail = 0
@@ -103,25 +113,29 @@ StartCopy ==
   /\ phase = "idle"
   /\ phase' = "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail, walStarts>>
 
 CopyOne ==
   /\ phase = "copying"
   /\ \E object \in Objects \ copied : copied' = copied \cup {object}
   /\ UNCHANGED <<phase, catalog, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail, walStarts>>
 
 AbortCopy ==
   /\ phase = "copying"
   /\ phase' = "aborted"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail, walStarts>>
 
 RetryCopy ==
   /\ phase = "aborted"
   /\ phase' = "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail, walStarts>>
 
 Publish ==
   /\ phase = "copying"
@@ -131,10 +145,12 @@ Publish ==
       ELSE PublishRequiredObjects) \subseteq copied
   /\ catalog' = "new"
   /\ knownAtPublish' = ("known0" \in (oldPins \cup newPins))
+  /\ overlapAtPublish' =
+       ("known0" \in (oldPins \cup newPins) /\ "reader0" \in (oldPins \cup newPins))
   /\ reclaimIntent' = TRUE
   /\ phase' = "published"
   /\ UNCHANGED <<copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, walHead, walTail, walStarts>>
+                 durable, oldDurable, crashedAfterOverlap, walHead, walTail, walStarts>>
 
 AcquireOldPin ==
   /\ oldPresent
@@ -145,7 +161,8 @@ AcquireOldPin ==
                          THEN [walStarts EXCEPT ![token] = start]
                          ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail>>
 
 AcquireNewPin ==
   /\ catalog = "new"
@@ -157,7 +174,8 @@ AcquireNewPin ==
                          THEN [walStarts EXCEPT ![token] = start]
                          ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail>>
 
 ReleaseOldPin ==
   /\ oldPins # {}
@@ -167,7 +185,8 @@ ReleaseOldPin ==
                        THEN [walStarts EXCEPT ![token] = NoWalStart]
                        ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail>>
 
 ReleaseNewPin ==
   /\ newPins # {}
@@ -177,7 +196,8 @@ ReleaseNewPin ==
                        THEN [walStarts EXCEPT ![token] = NoWalStart]
                        ELSE walStarts
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail>>
 
 RegisterDurable ==
   /\ \E role \in {"replay", "rollback"} \ durable :
@@ -190,7 +210,8 @@ RegisterDurable ==
        /\ \E start \in walHead..walTail :
             walStarts' = [walStarts EXCEPT ![role] = start]
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 knownAtPublish, reclaimIntent, walHead, walTail>>
+                 knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail>>
 
 ReleaseDurable ==
   /\ \E role \in durable \ {"current", "retained"} :
@@ -198,7 +219,8 @@ ReleaseDurable ==
        /\ oldDurable' = oldDurable \ {role}
        /\ walStarts' = [walStarts EXCEPT ![role] = NoWalStart]
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 knownAtPublish, reclaimIntent, walHead, walTail>>
+                 knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail>>
 
 Reclaim ==
   /\ phase = "published"
@@ -208,14 +230,16 @@ Reclaim ==
   /\ oldPresent' = FALSE
   /\ reclaimIntent' = FALSE
   /\ UNCHANGED <<phase, catalog, copied, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, walHead, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 walHead, walTail, walStarts>>
 
 AdvanceWal ==
   /\ walTail - walHead < MaxWalWindow
   /\ walTail < MaxWalEvents
   /\ walTail' = walTail + 1
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walStarts>>
 
 RotateWal ==
   /\ catalog = "new"
@@ -225,7 +249,8 @@ RotateWal ==
                  THEN ReclaimableWalFrontier + 1
                  ELSE ReclaimableWalFrontier
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walTail, walStarts>>
 
 Crash ==
   /\ phase \in {"copying", "aborted", "published"}
@@ -234,14 +259,17 @@ Crash ==
   /\ newPins' = {}
   /\ walStarts' = [walStarts EXCEPT !["replay0"] = NoWalStart,
                                    !["rollback0"] = NoWalStart]
+  /\ crashedAfterOverlap' = crashedAfterOverlap \/ (overlapAtPublish /\ oldPresent)
   /\ UNCHANGED <<catalog, copied, oldPresent, durable, oldDurable, knownAtPublish,
+                 overlapAtPublish,
                  reclaimIntent, walHead, walTail>>
 
 Recover ==
   /\ phase = "crashed"
   /\ phase' = IF catalog = "new" THEN "published" ELSE "copying"
   /\ UNCHANGED <<catalog, copied, oldPresent, oldPins, newPins,
-                 durable, oldDurable, knownAtPublish, reclaimIntent, walHead, walTail, walStarts>>
+                 durable, oldDurable, knownAtPublish, overlapAtPublish, crashedAfterOverlap,
+                 reclaimIntent, walHead, walTail, walStarts>>
 
 Next == StartCopy \/ CopyOne \/ AbortCopy \/ RetryCopy \/ Publish \/
         AcquireOldPin \/ AcquireNewPin \/ ReleaseOldPin \/ ReleaseNewPin \/
@@ -260,6 +288,8 @@ TypeInvariant ==
   /\ durable \subseteq DurableRoles
   /\ oldDurable \subseteq durable \cap {"replay", "rollback"}
   /\ knownAtPublish \in BOOLEAN
+  /\ overlapAtPublish \in BOOLEAN
+  /\ crashedAfterOverlap \in BOOLEAN
   /\ walHead \in Nat
   /\ walTail \in Nat
   /\ walTail <= MaxWalEvents
@@ -271,10 +301,38 @@ ExactOldPinsProtected == oldPins # {} => oldPresent
 DurableExactGenerationProtected == oldDurable # {} => oldPresent
 PublishedClosureProtected == catalog = "new" => NewDurableRequiredObjects \subseteq copied
 KnownPublicationClosureProtected ==
-  knownAtPublish => catalog = "new" /\ ProtectionMatrix["known"].objects \subseteq copied
+  IF KnownMode
+  THEN knownAtPublish => catalog = "new" /\ ProtectionMatrix["known"].objects \subseteq copied
+  ELSE ~knownAtPublish
 KnownExactGenerationProtected ==
-  ("known0" \in oldPins => oldPresent) /\
-  ("known0" \in newPins => ProtectionMatrix["known"].objects \subseteq copied)
+  IF KnownMode
+  THEN ("known0" \in oldPins => oldPresent) /\
+       ("known0" \in newPins => ProtectionMatrix["known"].objects \subseteq copied)
+  ELSE TRUE
+OperationRootRoleQuotient ==
+  /\ PinRole("reader0") = "reader"
+  /\ PinRole("export0") = "export"
+  /\ PinRole("import0") = "import"
+  /\ {"reader0", "export0", "import0"} \cap WalIds = {}
+  /\ ProtectionMatrix["reader"].objects = ProtectionMatrix["export"].objects
+  /\ ProtectionMatrix["reader"].objects = ProtectionMatrix["import"].objects
+  /\ ProtectionMatrix["reader"].exactGeneration
+  /\ ProtectionMatrix["export"].exactGeneration
+  /\ ProtectionMatrix["import"].exactGeneration
+  /\ ~ProtectionMatrix["reader"].walBytes
+  /\ ~ProtectionMatrix["export"].walBytes
+  /\ ~ProtectionMatrix["import"].walBytes
+KnownWalOrthogonal ==
+  IF KnownMode
+  THEN ~ProtectionMatrix["known"].walBytes /\ "known0" \notin WalIds /\
+       "known0" \notin ActiveWalIds
+  ELSE TRUE
+OverlapWitnessHistorySound ==
+  /\ (overlapAtPublish => knownAtPublish /\ catalog = "new")
+  /\ (crashedAfterOverlap => overlapAtPublish)
+KnownOverlapLifecycleAbsent ==
+  ~(KnownMode /\ overlapAtPublish /\ crashedAfterOverlap /\ ~oldPresent /\
+    "known0" \in newPins)
 ActiveObjectProtection ==
   \A role \in ActiveRoles :
     (catalog = "old" /\ oldPresent) \/
