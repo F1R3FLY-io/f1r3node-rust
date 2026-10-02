@@ -10,6 +10,7 @@
 //! is performed by `CompiledRholangTemplate::new` at the call site.
 
 pub const REGISTRY: &str = include_str!("../../../main/resources/Registry.rho");
+pub const VERSIONED_REGISTRY: &str = include_str!("../../../main/resources/VersionedRegistry.rho");
 pub const LIST_OPS: &str = include_str!("../../../main/resources/ListOps.rho");
 pub const EITHER: &str = include_str!("../../../main/resources/Either.rho");
 pub const NON_NEGATIVE_NUMBER: &str = include_str!("../../../main/resources/NonNegativeNumber.rho");

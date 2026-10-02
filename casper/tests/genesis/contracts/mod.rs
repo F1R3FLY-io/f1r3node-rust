@@ -21,6 +21,7 @@ pub mod non_negative_number_spec;
 pub mod pos_spec;
 pub mod registry_ops_spec;
 pub mod registry_spec;
+pub mod versioned_registry_spec;
 pub mod rho_spec_contract_spec;
 pub mod rho_spec_floor_spec;
 pub mod stack_spec;

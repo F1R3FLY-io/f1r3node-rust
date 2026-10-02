@@ -679,6 +679,43 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // Versioned-registry helper URN; see the `registry_ops_v1`
+        // handler in system_processes.rs. The legacy `rho:registry:ops`
+        // above is intentionally left untouched.
+        Definition {
+            urn: "rho:registry:ops:1.0.0".to_string(),
+            fixed_channel: FixedChannels::reg_ops_v1(),
+            arity: 3,
+            body_ref: BodyRefs::REG_OPS_V1,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().registry_ops_v1(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        // Unified URN-binding dispatcher. Serves both legacy URNs (via
+        // ProcessContext::urn_map) and versioned URNs (by delegating to
+        // the Rholang lookupVersion contract). Will be the single
+        // dispatch point for eval_new once that refactor lands.
+        Definition {
+            urn: "rho:internal:registry_lookup".to_string(),
+            fixed_channel: FixedChannels::registry_lookup(),
+            arity: 2,
+            body_ref: BodyRefs::REGISTRY_LOOKUP,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().registry_lookup(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
         Definition {
             urn: "sys:authToken:ops".to_string(),
             fixed_channel: FixedChannels::sys_authtoken_ops(),
@@ -1018,6 +1055,7 @@ fn dispatch_table_creator(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    urn_map: Arc<HashMap<String, Par>>,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1042,6 +1080,7 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            urn_map.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1080,6 +1119,31 @@ fn basic_processes() -> HashMap<String, Par> {
         }]),
     );
 
+    // TODO(cleanup): drop this entry once Step 5b lands the eval_new
+    // desugaring for rho:lib:... URNs and the test surface migrates
+    // to the public rho:registry:1.0.0 URN below. Kept for now so the
+    // Step 3-5 tests keep passing while the public URN ships beside it.
+    map.insert(
+        "rho:registry:v1:internal".to_string(),
+        Par::default().with_bundles(vec![Bundle {
+            body: Some(FixedChannels::reg_v1_internal()),
+            write_flag: true,
+            read_flag: false,
+        }]),
+    );
+
+    // Public versioned-registry entry point. Clients use
+    // `new getReg(`rho:registry:1.0.0`), notify in { ... getReg!?(*notify) ... }`
+    // to obtain a `bundle+{v1Api}` carrying the v1 API surface.
+    map.insert(
+        "rho:registry:1.0.0".to_string(),
+        Par::default().with_bundles(vec![Bundle {
+            body: Some(FixedChannels::reg_v1()),
+            write_flag: true,
+            read_flag: false,
+        }]),
+    );
+
     map
 }
 
@@ -1099,6 +1163,7 @@ async fn setup_reducer(
     cost: RuntimeBudget,
 ) -> Arc<DebruijnInterpreter> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
+    let urn_map = Arc::new(urn_map);
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {
         _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
@@ -1116,6 +1181,7 @@ async fn setup_reducer(
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        urn_map.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1127,7 +1193,7 @@ async fn setup_reducer(
     let reducer = Arc::new(DebruijnInterpreter {
         space: rspace.clone(),
         dispatcher: dispatcher.clone(),
-        urn_map: Arc::new(urn_map),
+        urn_map,
         merge_chs,
         mergeable_tags,
         metering: metering.clone(),
