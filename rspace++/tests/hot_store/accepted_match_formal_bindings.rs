@@ -121,9 +121,14 @@ impl Fixture {
 
     fn selected_commit(&self) -> StoredContinuationCommit {
         let (version, loaded) = self.store.get_continuations_versioned(&self.channels);
-        assert_eq!(loaded, vec![self.continuation.clone()]);
+        let matches = loaded
+            .iter()
+            .enumerate()
+            .filter(|(_, continuation)| *continuation == &self.continuation)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
         StoredContinuationCommit {
-            address: ContinuationAddress::new(version, 0),
+            address: ContinuationAddress::new(version, i32::try_from(matches[0].0).unwrap()),
             source: self.continuation.source.clone(),
             persist: self.continuation.persist,
             peeks: self.continuation.peeks.clone(),
@@ -452,6 +457,107 @@ fn frozen_split_predecessor_agrees_with_atomic_success_and_mutants_diverge() {
     let without_arrival = Fixture::new(1, 1, 0, false);
     apply_frozen_split_predecessor(&without_arrival, true, false);
     assert_ne!(without_arrival.counts(), atomic_joins.counts());
+}
+
+#[test]
+fn another_continuation_keeps_joins_when_atomic_match_commits() {
+    fn with_other_continuation() -> Fixture {
+        let fixture = Fixture::new(1, 1, 0, false);
+        let mut other = stored_continuation(false);
+        other.continuation = Arc::new("other-continuation".to_owned());
+        other.source.hash = Blake2b256Hash::from_bytes(vec![8; 32]);
+        assert_eq!(fixture.store.put_continuation(&fixture.channels, other), Some(true));
+        fixture
+    }
+
+    let atomic = with_other_continuation();
+    let transition = atomic.transition(transition_delta(&atomic.paths, 1, 1, 1));
+    assert!(matches!(
+        atomic.store.apply_accepted_match(transition).unwrap(),
+        AcceptedMatchOutcome::Committed { .. }
+    ));
+    let atomic_state = atomic.store.snapshot();
+    assert_eq!(atomic_state.continuations[&atomic.channels].len(), 1);
+    for channel in &atomic.channels {
+        assert_eq!(atomic_state.joins[channel], vec![atomic.channels.clone()]);
+    }
+
+    let predecessor = with_other_continuation();
+    apply_frozen_split_predecessor(&predecessor, true, true);
+    let predecessor_state = predecessor.store.snapshot();
+    assert_eq!(atomic_state.data, predecessor_state.data);
+    assert_eq!(atomic_state.continuations, predecessor_state.continuations);
+    assert_eq!(atomic_state.installed_continuations, predecessor_state.installed_continuations);
+    assert_eq!(atomic_state.joins, predecessor_state.joins);
+    assert_eq!(atomic_state.installed_joins, predecessor_state.installed_joins);
+    let atomic_journal = atomic.store.state.read().unwrap().pending_journal();
+    let predecessor_journal = predecessor.store.state.read().unwrap().pending_journal();
+    assert_eq!(atomic_journal.data, predecessor_journal.data);
+    assert_eq!(atomic_journal.continuations, predecessor_journal.continuations);
+    assert!(
+        atomic_journal
+            .continuation_content
+            .as_ref()
+            .unwrap()
+            .iter()
+            .eq(predecessor_journal
+                .continuation_content
+                .as_ref()
+                .unwrap()
+                .iter())
+    );
+    assert!(
+        atomic_journal
+            .continuation_source_bytes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .eq(predecessor_journal
+                .continuation_source_bytes
+                .as_ref()
+                .unwrap()
+                .iter())
+    );
+    assert!(atomic_journal.joins.as_ref().unwrap().is_empty());
+    assert_eq!(atomic_journal.joins, predecessor_journal.joins);
+
+    assert!(
+        predecessor
+            .store
+            .state
+            .read()
+            .unwrap()
+            .matches_pending_journal(&atomic_journal)
+    );
+
+    // Deliberately bypass the historical guard to show that unconditional
+    // join removal would be visible even though another continuation remains.
+    let unconditional_removal = with_other_continuation();
+    apply_frozen_split_predecessor(&unconditional_removal, false, true);
+    {
+        let mut state = unconditional_removal.store.state.write().unwrap();
+        for channel in &unconditional_removal.channels {
+            assert!(
+                state
+                    .joins
+                    .remove(channel, &unconditional_removal.channels)
+                    .is_some()
+            );
+        }
+        state.advance_journal_version();
+    }
+    let mutant_state = unconditional_removal.store.snapshot();
+    assert_eq!(atomic_state.data, mutant_state.data);
+    assert_eq!(atomic_state.continuations, mutant_state.continuations);
+    assert_ne!(atomic_state.joins, mutant_state.joins);
+    assert!(
+        !unconditional_removal
+            .store
+            .state
+            .read()
+            .unwrap()
+            .matches_pending_journal(&atomic_journal)
+    );
 }
 
 #[test]
