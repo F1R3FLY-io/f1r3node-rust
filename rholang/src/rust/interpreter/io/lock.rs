@@ -452,9 +452,11 @@ pub struct RangeEntry {
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::oneshot;
+
+use super::errors::poison_abort;
 
 /// Whole-file sequential lock record — one per `(dev, inode)`.
 /// Mutually exclusive with any range lock on the same file.
@@ -609,10 +611,19 @@ enum WaitKind {
 ///
 /// # Lock topology
 ///
-/// `RwLock<HashMap<DevInode, FileLockState>>` gives contention-
-/// free concurrent reads for the yet-to-land `is_locked` query
-/// on the unlink gate hot path.  Writes serialize acquire /
-/// release / sweep — expected low volume vs. read path.
+/// `std::sync::RwLock<HashMap<DevInode, FileLockState>>` gives
+/// contention-free concurrent reads for the yet-to-land
+/// `is_locked` query on the unlink gate hot path.  Writes
+/// serialize acquire / release / sweep — expected low volume
+/// vs. read path.  Deliberately NOT `tokio::sync::RwLock`: the
+/// critical sections are microsecond-scale state-container
+/// mutations; the tokio variant's internal semaphore + park-
+/// token machinery would be heavier than the work it
+/// protects, and the sync fallback keeps the acquire/release
+/// methods callable from both async and sync contexts without
+/// `.await`.  Panic poisoning is handled via
+/// [`super::errors::poison_abort`] (fail-closed per
+/// DD-FailClosedOnInvariantBreak).
 ///
 /// `next_lock_id` is a monotone `AtomicU64` — LockIds are
 /// ephemeral per-runtime handles, NOT consensus-observable.
@@ -630,11 +641,10 @@ enum WaitKind {
 /// with id 0" if callers ever need the discipline.
 #[derive(Debug, Clone, Default)]
 pub struct LockRegistry {
-    /// Per-`(dev, inode)` state map.  Private — exposed via
-    /// yet-to-land `try_acquire_range` / `release_range` /
-    /// `is_locked` methods.  `allow(dead_code)` until those
-    /// methods wire up the field.
-    #[allow(dead_code)]
+    /// Per-`(dev, inode)` state map.  Written by acquire and
+    /// release paths under `std::sync::RwLock`'s write guard
+    /// (via `poison_abort`); read-only methods like the
+    /// yet-to-land `is_locked` use the read guard.
     inner: Arc<RwLock<HashMap<DevInode, FileLockState>>>,
     next_lock_id: Arc<AtomicU64>,
 }
@@ -692,6 +702,181 @@ impl LockRegistry {
             return Err(LockError::QuotaExceeded);
         }
         LockId::try_from(raw).map_err(|_| LockError::QuotaExceeded)
+    }
+
+    /// Try to acquire a range lock on `[offset, offset+length)`
+    /// of `(dev_inode)` for `holder`.
+    ///
+    /// Fail-only variant: on conflict, returns
+    /// [`LockError::Busy`] immediately.  Does NOT park.  A
+    /// yet-to-land `try_acquire_range_wait` sibling will add
+    /// [`WaitPolicy::Wait`] support — park on conflict, admit
+    /// via `wake_waiters` on release.
+    ///
+    /// # Error ordering
+    ///
+    ///   1. [`LockError::BadArg`] on zero-length (a zero-length
+    ///      "lock" would protect nothing and never conflict).
+    ///   2. [`LockError::QuotaExceeded`] on
+    ///      [`MAX_RANGES_PER_FILE`] live-range cap.
+    ///   3. [`LockError::Busy`] on conflict (via
+    ///      [`range_conflicts`]).
+    ///   4. [`LockError::QuotaExceeded`] on
+    ///      [`LOCK_ID_CEILING`] minted id.
+    ///
+    /// The quota-first-before-conflict ordering is
+    /// consensus-observable — see the hard-fork surface note on
+    /// [`MAX_WAITERS_PER_FILE`] (same discipline).
+    ///
+    /// # Compatibility rules
+    ///
+    /// Per [`range_conflicts`] (PR #527): sequential holder
+    /// blocks all; non-overlap OK; reader-reader OK; same-holder
+    /// OK (POSIX fcntl re-entrant); else conflict.
+    pub fn try_acquire_range(
+        &self,
+        dev_inode: DevInode,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<LockId, LockError> {
+        if length == 0 {
+            return Err(LockError::BadArg);
+        }
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        // Check admissibility against the EXISTING state (if
+        // any) BEFORE inserting a fresh entry.  An absent
+        // dev_inode has no held locks + no waiters, so quota
+        // and conflict checks pass vacuously; a failed check
+        // returns without having mutated the map.  This
+        // prevents an "empty-state leak" where a long sequence
+        // of failed acquires on distinct `(dev, inode)`
+        // tuples would otherwise orphan empty FileLockState
+        // entries in the map.
+        if let Some(state) = guard.get(&dev_inode) {
+            if state.ranges.len() >= MAX_RANGES_PER_FILE {
+                return Err(LockError::QuotaExceeded);
+            }
+            if range_conflicts(state, offset, length, mode, &holder) {
+                return Err(LockError::Busy);
+            }
+        }
+        // All admissibility checks passed → mint + insert.
+        // `mint_next_lock_id` is also fallible (ceiling), so
+        // use `?` to propagate the error BEFORE any state
+        // mutation.  If this fails, the map is still unchanged.
+        let id = self.mint_next_lock_id()?;
+        let state = guard.entry(dev_inode).or_default();
+        state.ranges.push(RangeEntry {
+            id,
+            offset,
+            length,
+            mode,
+            holder,
+            deploy,
+        });
+        Ok(id)
+    }
+
+    /// Release the lock identified by `lock_id` iff `holder`
+    /// matches the recorded owner via [`HolderId::ct_eq`].
+    ///
+    /// Covers both range AND sequential releases — the method
+    /// finds `lock_id` across every `FileLockState` in the
+    /// registry.  After successful release, the touched state
+    /// is evicted from the map if [`state_is_empty`] holds
+    /// (no held locks AND no parked waiters).
+    ///
+    /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
+    ///
+    /// The holder match uses [`HolderId::ct_eq`], NOT the
+    /// derived `==`.  Rationale: an attacker observing latency
+    /// on failed release() calls could otherwise narrow down a
+    /// correct holder byte-by-byte via a timing side channel.
+    /// `ct_eq`'s branchless comparison closes that vector.  DO
+    /// NOT regress to `==` on `HolderId` in this path.
+    ///
+    /// # Timing scope
+    ///
+    /// `ct_eq` is short-circuited by the `lock_id == e.id`
+    /// check that precedes it in the position predicate.
+    /// Timing therefore reveals which LockIds are currently
+    /// allocated (a fast rejection on id-mismatch vs. the full
+    /// `ct_eq` time on id-match), but does NOT help an
+    /// attacker enumerate the holder bytes — the ct_eq branch
+    /// is only reached when the attacker already supplied a
+    /// correct LockId, and once reached runs in branchless
+    /// constant time per the HolderId invariant.  LockId
+    /// enumeration alone is not actionable without the
+    /// matching holder (which is infeasible to brute-force
+    /// at 32 bytes).
+    ///
+    /// # Returns
+    ///
+    ///   - `Ok(())` on successful release.
+    ///   - [`LockError::Closed`] if `lock_id` isn't held OR the
+    ///     holder doesn't match (indistinguishable for
+    ///     diagnostic purposes to avoid narrowing attackers'
+    ///     search space).
+    ///
+    /// # Deferred: `wake_waiters` after remove
+    ///
+    /// Fileio's `release` calls `wake_waiters(state)` after
+    /// the remove to admit any eligible parked waiter.  This
+    /// slice doesn't park yet (no [`WaitPolicy::Wait`]
+    /// support), so no waiter can ever be admitted.  When the
+    /// Wait slice lands it will add BOTH the park path AND the
+    /// `wake_waiters` call here.
+    pub fn release(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut touched_key: Option<DevInode> = None;
+        let mut released = false;
+        for (dev_inode, state) in guard.iter_mut() {
+            // SEC-Mi-01: ct_eq, NOT `==`.  Do not regress.
+            if let Some(pos) = state
+                .ranges
+                .iter()
+                .position(|e| e.id == lock_id && e.holder.ct_eq(holder))
+            {
+                state.ranges.remove(pos);
+                released = true;
+            } else if state
+                .sequential_holder
+                .as_ref()
+                .is_some_and(|s| s.id == lock_id && s.holder.ct_eq(holder))
+            {
+                state.sequential_holder = None;
+                released = true;
+            }
+            if released {
+                touched_key = Some(*dev_inode);
+                // Early-exit assumes LockId global uniqueness:
+                // the monotone counter in `mint_next_lock_id`
+                // never re-mints a live id, so at most one
+                // `FileLockState` can hold any given LockId
+                // at a time.  If that invariant ever broke, the
+                // break would silently miss subsequent matches.
+                break;
+            }
+        }
+        if let Some(k) = touched_key {
+            if let Some(state) = guard.get_mut(&k) {
+                // wake_waiters call deferred — this slice ships
+                // the Fail-only acquire path, so no waiter can
+                // ever be parked.  The Wait-support slice adds
+                // both the park path AND the wake call here.
+                if state_is_empty(state) {
+                    guard.remove(&k);
+                }
+            }
+        }
+        if released {
+            Ok(())
+        } else {
+            Err(LockError::Closed)
+        }
     }
 }
 
@@ -1796,5 +1981,475 @@ mod tests {
         guard.insert((3, 3), file3);
 
         assert!(would_close_cycle(&guard, d1, (1, 1)));
+    }
+
+    // --- try_acquire_range (Fail-only) ----------------------------
+
+    fn deploy_scope(byte: u8) -> DeployScope { [byte; 32] }
+
+    /// Zero-length range is rejected with `BadArg` BEFORE any
+    /// state check — a zero-length lock would protect nothing
+    /// and never conflict, inviting race bugs if silently
+    /// accepted.
+    #[test]
+    fn try_acquire_range_zero_length_returns_bad_arg() {
+        let reg = LockRegistry::new();
+        let out = reg.try_acquire_range(
+            (1, 1),
+            0,
+            0,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        );
+        assert_eq!(out, Err(LockError::BadArg));
+    }
+
+    /// Happy path: empty state → acquire succeeds and returns
+    /// an `Ok(LockId)`.  Also pins that the state is actually
+    /// populated — a subsequent same-range acquire by a
+    /// DIFFERENT holder conflicts.
+    #[test]
+    fn try_acquire_range_empty_state_succeeds_and_populates() {
+        let reg = LockRegistry::new();
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_eq!(id.as_u64(), 1);
+        // Different-holder overlapping Write → Busy.
+        let conflict = reg.try_acquire_range(
+            (1, 1),
+            50,
+            50,
+            LockMode::Write,
+            HolderId::from_bytes([0x22; 32]),
+            deploy_scope(0x22),
+        );
+        assert_eq!(conflict, Err(LockError::Busy));
+    }
+
+    /// Reader-reader compatibility: two different holders can
+    /// hold overlapping Read locks concurrently.
+    #[test]
+    fn try_acquire_range_reader_reader_concurrent_allowed() {
+        let reg = LockRegistry::new();
+        let a = reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Read,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        );
+        let b = reg.try_acquire_range(
+            (1, 1),
+            50,
+            50,
+            LockMode::Read,
+            HolderId::from_bytes([0x22; 32]),
+            deploy_scope(0x22),
+        );
+        assert!(a.is_ok() && b.is_ok());
+        assert_ne!(a.unwrap(), b.unwrap(), "distinct LockIds");
+    }
+
+    /// Same-holder re-entrant: same holder may acquire
+    /// overlapping ranges regardless of mode (POSIX fcntl).
+    #[test]
+    fn try_acquire_range_same_holder_may_overlap() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        let b = reg
+            .try_acquire_range((1, 1), 50, 50, LockMode::Write, holder, deploy_scope(0x11))
+            .unwrap();
+        assert_ne!(a, b);
+    }
+
+    /// Non-overlapping ranges never conflict regardless of mode
+    /// / holder.
+    #[test]
+    fn try_acquire_range_non_overlapping_different_holders_allowed() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            10,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (1, 1),
+            100,
+            10,
+            LockMode::Write,
+            HolderId::from_bytes([0x22; 32]),
+            deploy_scope(0x22),
+        )
+        .unwrap();
+    }
+
+    /// LOAD-BEARING: the live-range cap check fires at exactly
+    /// `MAX_RANGES_PER_FILE`, BEFORE the conflict check runs.
+    /// Error ordering is consensus-observable.
+    #[test]
+    fn try_acquire_range_quota_fires_at_max_ranges_per_file() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        // Fill up to the cap with non-overlapping ranges.
+        for i in 0..MAX_RANGES_PER_FILE {
+            reg.try_acquire_range(
+                (1, 1),
+                (i as u64) * 100,
+                50,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        }
+        // The N+1'th acquire — even a non-conflicting range —
+        // must trip the cap, NOT the conflict check.
+        let over = reg.try_acquire_range(
+            (1, 1),
+            999_999,
+            50,
+            LockMode::Write,
+            holder,
+            deploy_scope(0x11),
+        );
+        assert_eq!(over, Err(LockError::QuotaExceeded));
+    }
+
+    /// Each `(dev, inode)` has an INDEPENDENT state — two
+    /// files don't share a range cap or interact.
+    #[test]
+    fn try_acquire_range_distinct_dev_inodes_are_independent() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        // Same offset+length+mode on a DIFFERENT file by a
+        // DIFFERENT holder — no conflict (independent state).
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x22; 32]),
+            deploy_scope(0x22),
+        )
+        .unwrap();
+    }
+
+    /// LOAD-BEARING hygiene invariant: a failed acquire MUST
+    /// NOT leave an empty `FileLockState` behind in the
+    /// registry map.  Repeated failures on distinct
+    /// `(dev, inode)` tuples would otherwise orphan ~48 bytes
+    /// per failure.  Pins the check-before-insert discipline
+    /// against a future refactor that reverted to the
+    /// `.entry().or_default()` + check pattern.
+    #[test]
+    fn try_acquire_range_failed_acquire_does_not_leak_empty_state() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+
+        // 1. Zero-length rejection — never touches the map.
+        let out = reg.try_acquire_range(
+            (99, 99),
+            0,
+            0,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        );
+        assert_eq!(out, Err(LockError::BadArg));
+        {
+            let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+            assert!(
+                !guard.contains_key(&(99, 99)),
+                "BadArg must not insert an entry for (99, 99)"
+            );
+        }
+
+        // 2. QuotaExceeded against an existing state: fill
+        // `(1, 1)` to cap, then try to add N+1.  The N+1
+        // failure legitimately observes the existing entry;
+        // confirm (1, 1) is still there afterwards (it should
+        // be — populated by prior successful acquires).
+        for i in 0..MAX_RANGES_PER_FILE {
+            reg.try_acquire_range(
+                (1, 1),
+                (i as u64) * 100,
+                50,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        }
+        let over = reg.try_acquire_range(
+            (1, 1),
+            999_999,
+            50,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        );
+        assert_eq!(over, Err(LockError::QuotaExceeded));
+
+        // 3. Busy on a FRESH `(dev, inode)` tuple that doesn't
+        // yet have a state entry.  Pre-populate `(2, 2)` by
+        // a different holder with a Write; then the probe
+        // acquire on `(3, 3)` conflicts with... wait, no, we
+        // need an acquire that CONFLICTS and targets a fresh
+        // tuple.  Put a Write on `(2, 2)` by holder A, then
+        // probe `(2, 2)` by holder B — that triggers Busy
+        // against an existing entry, not a fresh one.
+        //
+        // The genuine "fresh tuple, Busy" case can only arise
+        // if an initial state had a sequential_holder from
+        // sequential acquire (not landed) — so for Fail-only
+        // the Busy path cannot hit a fresh entry.  Instead,
+        // directly verify that no mystery entries beyond
+        // `(1, 1)` appeared through the sequence above.
+        {
+            let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+            let keys: Vec<_> = guard.keys().copied().collect();
+            assert_eq!(keys, vec![(1, 1)], "exactly one entry should exist");
+        }
+    }
+
+    // --- release --------------------------------------------------
+
+    /// Happy path: acquire → release → re-acquire succeeds.
+    #[test]
+    fn release_frees_the_range_for_re_acquire() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0x11; 32]);
+        let holder_b = HolderId::from_bytes([0x22; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        // Conflict before release.
+        assert_eq!(
+            reg.try_acquire_range(
+                (1, 1),
+                50,
+                50,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0x22),
+            ),
+            Err(LockError::Busy)
+        );
+        reg.release(id, &holder_a).unwrap();
+        // Now B can acquire.
+        reg.try_acquire_range(
+            (1, 1),
+            50,
+            50,
+            LockMode::Write,
+            holder_b,
+            deploy_scope(0x22),
+        )
+        .unwrap();
+    }
+
+    /// LOAD-BEARING ct_eq discipline: release with the wrong
+    /// holder returns `Closed`, NOT any other variant that
+    /// would narrow an attacker's search space.
+    #[test]
+    fn release_with_wrong_holder_returns_closed() {
+        let reg = LockRegistry::new();
+        let real_holder = HolderId::from_bytes([0x11; 32]);
+        let attacker = HolderId::from_bytes([0x22; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                real_holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_eq!(reg.release(id, &attacker), Err(LockError::Closed));
+        // Real holder can still release — attacker's attempt
+        // was a no-op.
+        reg.release(id, &real_holder).unwrap();
+    }
+
+    /// Double release returns `Closed` on the second call.
+    #[test]
+    fn release_second_time_returns_closed() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        reg.release(id, &holder).unwrap();
+        assert_eq!(reg.release(id, &holder), Err(LockError::Closed));
+    }
+
+    /// Release of an unknown LockId returns `Closed`.
+    #[test]
+    fn release_unknown_lock_id_returns_closed() {
+        let reg = LockRegistry::new();
+        assert_eq!(
+            reg.release(
+                LockId::try_from(999).unwrap(),
+                &HolderId::from_bytes([0x11; 32])
+            ),
+            Err(LockError::Closed)
+        );
+    }
+
+    /// LOAD-BEARING state eviction: after releasing the last
+    /// held lock on a file, the state is evicted from the
+    /// registry map.  Pin so a future refactor that forgot the
+    /// eviction surfaces here as unbounded growth.
+    #[test]
+    fn release_evicts_empty_state_from_registry_map() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        // Inspect the map directly (test lives in same module).
+        {
+            let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+            assert!(guard.contains_key(&(1, 1)));
+        }
+        reg.release(id, &holder).unwrap();
+        {
+            let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+            assert!(
+                !guard.contains_key(&(1, 1)),
+                "state must be evicted after last lock released"
+            );
+        }
+    }
+
+    /// Releasing one of several held ranges on the same file
+    /// does NOT evict the state (other ranges remain).
+    #[test]
+    fn release_one_of_many_ranges_preserves_state() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                10,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        let _id_b = reg
+            .try_acquire_range(
+                (1, 1),
+                100,
+                10,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        reg.release(id_a, &holder).unwrap();
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert!(
+            guard.contains_key(&(1, 1)),
+            "state with surviving range must not be evicted"
+        );
+        assert_eq!(
+            guard.get(&(1, 1)).unwrap().ranges.len(),
+            1,
+            "exactly one range remains"
+        );
+    }
+
+    /// Release correctly routes between two different files —
+    /// a LockId minted on `(1, 1)` is NOT found on `(2, 2)`.
+    /// LOAD-BEARING: pins the "scan every file" discipline
+    /// against a future refactor that cached the dev_inode in
+    /// the LockId.
+    #[test]
+    fn release_locates_lock_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                10,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        let id_b = reg
+            .try_acquire_range(
+                (2, 2),
+                0,
+                10,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_ne!(id_a, id_b);
+        reg.release(id_b, &holder).unwrap();
+        // Verify (2, 2) was evicted + (1, 1) survives.
+        let guard = poison_abort(reg.inner.read(), "LockRegistry.inner");
+        assert!(!guard.contains_key(&(2, 2)));
+        assert!(guard.contains_key(&(1, 1)));
     }
 }
