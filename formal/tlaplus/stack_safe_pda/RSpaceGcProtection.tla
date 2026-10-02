@@ -67,7 +67,8 @@ vars == <<phase, catalog, copied, oldPresent, oldPins, newPins,
 
 ActiveRoles == durable \cup {PinRole(token) : token \in oldPins \cup newPins}
 RequiredObjects == UNION {ProtectionMatrix[role].objects : role \in ActiveRoles}
-DurableRequiredObjects == UNION {ProtectionMatrix[role].objects : role \in durable}
+NewDurableRequiredObjects ==
+  UNION {ProtectionMatrix[role].objects : role \in durable \ oldDurable}
 RequiredForPublication == RequiredObjects \cup CoupledFacets
 ActiveWalIds == (durable \cap {"replay", "rollback"}) \cup
                 ((oldPins \cup newPins) \cap {"replay0", "rollback0"})
@@ -258,11 +259,12 @@ TypeInvariant ==
 PublicationBeforeReclamation == ~oldPresent => catalog = "new"
 ExactOldPinsProtected == oldPins # {} => oldPresent
 DurableExactGenerationProtected == oldDurable # {} => oldPresent
-PublishedClosureProtected == catalog = "new" => DurableRequiredObjects \subseteq copied
+PublishedClosureProtected == catalog = "new" => NewDurableRequiredObjects \subseteq copied
 ActiveObjectProtection ==
   \A role \in ActiveRoles :
     (catalog = "old" /\ oldPresent) \/
     ProtectionMatrix[role].objects \subseteq copied \/
+    (oldPresent /\ role \in oldDurable) \/
     (oldPresent /\ \E token \in oldPins : PinRole(token) = role)
 CoupledAliasProtected == catalog = "new" => CoupledFacets \subseteq copied
 WalFrontierProtected ==
