@@ -18563,9 +18563,20 @@ abstraction boundary are recorded in the
 [generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#checked-counter-and-unique-inventory-refinement).
 
 **VERIFICATION BOUNDARY.** The earlier Rocq and Rust logs predate this corrected
-test model. A new capped debug/release focused run and a fresh independent audit
-are required before task 7913 can be claimed complete; no old passing count is
-promoted to evidence for the new object-overflow control.
+test model. At `4d7fa4aac`, the post-correction debug command
+`cargo test --locked -j1 -p rspace_plus_plus --lib incremental_reachability_properties -- --test-threads=1`
+ran in a headless user scope capped at 2 CPUs, 8 GiB memory, and zero
+swap. All 17 selected tests passed; the retained log is
+`target/verification/pathmap-7913-object-overflow-debug.log` at SHA-256
+`d4ff8291745942a00cb0f07b8091759bdf348a5bb6c63543ca35dd314c42e097`.
+The just-built binary at SHA-256
+`397b123b5ab378b9e0812ea1e967ea4881f18ea0d59eb37bd9` also passed the
+normal-suite registry test, one of one, with log
+`target/verification/pathmap-7913-registry-post-correction-debug.log` at SHA-256
+`49918111a9a137b51318265ca1b177b3a2ba91a07a1e096cc764190e6abb6af9`.
+The release build was interrupted when another heavy RSpace compile started;
+it supplies no result. Release tests and fresh independent review of these
+exact logs remain required before task 7913 can be claimed complete.
 
 ## Upstream PathMap integration request register
 
