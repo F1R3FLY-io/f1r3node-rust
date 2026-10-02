@@ -6,9 +6,9 @@ use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
     BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
     ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, HasBlockProto, HasBlockRequestProto,
-    MergeableEntryRequestProto, MergeableEntryResponseProto, NoApprovedBlockAvailableProto,
-    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto,
+    HasSnapshotProto, HasSnapshotRequestProto, MergeableEntryRequestProto,
+    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
+    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -79,6 +79,8 @@ pub enum CasperMessageProto {
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
     GetSnapshotChunkRequest(GetSnapshotChunkRequestProto),
     SnapshotChunkResponse(SnapshotChunkResponseProto),
+    HasSnapshotRequest(HasSnapshotRequestProto),
+    HasSnapshot(HasSnapshotProto),
 }
 
 /// Extract a Packet from a Protocol message
@@ -112,6 +114,11 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
             .map(CasperMessageProto::GetSnapshotChunkRequest),
         "SnapshotChunkResponse" => parse_packet::<SnapshotChunkResponseProto>(packet)
             .map(CasperMessageProto::SnapshotChunkResponse),
+        "HasSnapshotRequest" => parse_packet::<HasSnapshotRequestProto>(packet)
+            .map(CasperMessageProto::HasSnapshotRequest),
+        "HasSnapshot" => {
+            parse_packet::<HasSnapshotProto>(packet).map(CasperMessageProto::HasSnapshot)
+        }
         _ => PacketParseResult::IllegalPacket(format!("Unrecognized typeId: {}", packet.type_id)),
     }
 }
@@ -164,6 +171,10 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
         CasperMessageProto::SnapshotChunkResponse(proto) => {
             Ok(CasperMessage::from_snapshot_chunk_response(proto))
         }
+        CasperMessageProto::HasSnapshotRequest(proto) => {
+            Ok(CasperMessage::from_has_snapshot_request(proto))
+        }
+        CasperMessageProto::HasSnapshot(proto) => Ok(CasperMessage::from_has_snapshot(proto)),
     }
 }
 
@@ -508,5 +519,89 @@ mod tests {
         let domain = casper_message_from_proto(CasperMessageProto::SnapshotChunkResponse(resp))
             .expect("bridge must succeed");
         assert!(matches!(domain, DomainMessage::SnapshotChunkResponse(_)));
+    }
+
+    // --- HasSnapshot lookup pair (Wave 3, PR 3.2) ---------------
+    //
+    // Parallel to the chunk-fetch tests above: pins type_id,
+    // parse roundtrip, dispatch, and domain-model bridge for
+    // both HasSnapshotRequest and HasSnapshot messages.
+
+    #[test]
+    fn has_snapshot_request_parse_roundtrip() {
+        let proto = HasSnapshotRequestProto {
+            block_hash: BlockHash::from(b"block-hash".to_vec()),
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "HasSnapshotRequest");
+
+        let parsed = parse_packet::<HasSnapshotRequestProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.block_hash, proto.block_hash);
+    }
+
+    #[test]
+    fn has_snapshot_parse_roundtrip() {
+        let proto = HasSnapshotProto {
+            block_hash: BlockHash::from(b"block-hash".to_vec()),
+            merkle_root: prost::bytes::Bytes::from(vec![0xEF; 32]),
+            chunk_count: 16,
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "HasSnapshot");
+
+        let parsed = parse_packet::<HasSnapshotProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.block_hash, proto.block_hash);
+        assert_eq!(parsed.merkle_root, proto.merkle_root);
+        assert_eq!(parsed.chunk_count, proto.chunk_count);
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_has_snapshot_request() {
+        let proto = HasSnapshotRequestProto {
+            block_hash: BlockHash::from(b"h".to_vec()),
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(result, CasperMessageProto::HasSnapshotRequest(_)));
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_has_snapshot() {
+        let proto = HasSnapshotProto {
+            block_hash: BlockHash::from(b"h".to_vec()),
+            merkle_root: prost::bytes::Bytes::new(),
+            chunk_count: 0,
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(result, CasperMessageProto::HasSnapshot(_)));
+    }
+
+    #[test]
+    fn casper_message_from_proto_bridges_has_snapshot_variants() {
+        use models::rust::casper::protocol::casper_message::CasperMessage as DomainMessage;
+        let req = HasSnapshotRequestProto {
+            block_hash: BlockHash::from(b"h".to_vec()),
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::HasSnapshotRequest(req))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::HasSnapshotRequest(_)));
+
+        let resp = HasSnapshotProto {
+            block_hash: BlockHash::from(b"h".to_vec()),
+            merkle_root: prost::bytes::Bytes::new(),
+            chunk_count: 3,
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::HasSnapshot(resp))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::HasSnapshot(_)));
     }
 }

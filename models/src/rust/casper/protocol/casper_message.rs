@@ -40,6 +40,8 @@ pub enum CasperMessage {
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
     GetSnapshotChunkRequest(GetSnapshotChunkRequest),
     SnapshotChunkResponse(SnapshotChunkResponse),
+    HasSnapshotRequest(HasSnapshotRequest),
+    HasSnapshot(HasSnapshot),
 }
 
 impl CasperMessage {
@@ -135,6 +137,14 @@ impl CasperMessage {
 
     pub fn from_snapshot_chunk_response(proto: SnapshotChunkResponseProto) -> Self {
         CasperMessage::SnapshotChunkResponse(SnapshotChunkResponse::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot_request(proto: HasSnapshotRequestProto) -> Self {
+        CasperMessage::HasSnapshotRequest(HasSnapshotRequest::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot(proto: HasSnapshotProto) -> Self {
+        CasperMessage::HasSnapshot(HasSnapshot::from_proto(proto))
     }
 }
 
@@ -272,6 +282,64 @@ impl SnapshotChunkResponse {
                 .into_iter()
                 .map(MerkleProofStep::to_proto)
                 .collect(),
+        }
+    }
+}
+
+/// Joiner → serving validator: "do you have a serveable
+/// snapshot for this block?"  Broadcast + point-to-point;
+/// serving nodes reply with [`HasSnapshot`] when they can
+/// serve it.  Mirrors the [`HasBlockRequest`] / [`HasBlock`]
+/// pattern.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasSnapshotRequest {
+    pub block_hash: ByteString,
+}
+
+impl HasSnapshotRequest {
+    pub fn from_proto(proto: HasSnapshotRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+        }
+    }
+
+    pub fn to_proto(self) -> HasSnapshotRequestProto {
+        HasSnapshotRequestProto {
+            block_hash: self.block_hash,
+        }
+    }
+}
+
+/// Response to [`HasSnapshotRequest`].  Carries `merkle_root`
+/// so the joiner can pin an anchor BEFORE issuing per-chunk
+/// requests.  Both `merkle_root` and `chunk_count` are
+/// ADVISORY — the joiner MUST re-verify `merkle_root` against
+/// its locally-anchored root (from block finalization) and
+/// expect `chunk_count` to match the actual chunks it later
+/// receives via [`GetSnapshotChunkRequest`].  A server
+/// reporting an inflated `chunk_count` would be caught by the
+/// per-chunk inclusion-proof check during fetch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasSnapshot {
+    pub block_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+}
+
+impl HasSnapshot {
+    pub fn from_proto(proto: HasSnapshotProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+        }
+    }
+
+    pub fn to_proto(self) -> HasSnapshotProto {
+        HasSnapshotProto {
+            block_hash: self.block_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
         }
     }
 }
@@ -2238,5 +2306,59 @@ mod tests {
         };
         let msg = CasperMessage::from_snapshot_chunk_response(proto.clone());
         assert!(matches!(msg, CasperMessage::SnapshotChunkResponse(_)));
+    }
+
+    // --- HasSnapshot lookup pair roundtrips (Wave 3, PR 3.2) ---
+
+    #[test]
+    fn has_snapshot_request_proto_roundtrip() {
+        let req = HasSnapshotRequest {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+        };
+        let roundtripped = HasSnapshotRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn has_snapshot_proto_roundtrip() {
+        let resp = HasSnapshot {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x22; 32]),
+            chunk_count: 5,
+        };
+        let roundtripped = HasSnapshot::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_has_snapshot_request() {
+        let proto = HasSnapshotRequestProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+        };
+        let msg = CasperMessage::from_has_snapshot_request(proto.clone());
+        match msg {
+            CasperMessage::HasSnapshotRequest(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+            }
+            _ => panic!("expected HasSnapshotRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_has_snapshot() {
+        let proto = HasSnapshotProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x22; 32]),
+            chunk_count: 7,
+        };
+        let msg = CasperMessage::from_has_snapshot(proto.clone());
+        match msg {
+            CasperMessage::HasSnapshot(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+                assert_eq!(inner.merkle_root, proto.merkle_root);
+                assert_eq!(inner.chunk_count, proto.chunk_count);
+            }
+            _ => panic!("expected HasSnapshot variant"),
+        }
     }
 }
