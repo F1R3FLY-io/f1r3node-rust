@@ -37,6 +37,11 @@ pub enum CasperMessage {
     MergeableEntryResponse(MergeableEntryResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
+    // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
+    GetSnapshotChunkRequest(GetSnapshotChunkRequest),
+    SnapshotChunkResponse(SnapshotChunkResponse),
+    HasSnapshotRequest(HasSnapshotRequest),
+    HasSnapshot(HasSnapshot),
 }
 
 impl CasperMessage {
@@ -125,6 +130,22 @@ impl CasperMessage {
     pub fn from_floor_cache_response(proto: FloorCacheResponseProto) -> Self {
         CasperMessage::FloorCacheResponse(FloorCacheResponse::from_proto(proto))
     }
+
+    pub fn from_get_snapshot_chunk_request(proto: GetSnapshotChunkRequestProto) -> Self {
+        CasperMessage::GetSnapshotChunkRequest(GetSnapshotChunkRequest::from_proto(proto))
+    }
+
+    pub fn from_snapshot_chunk_response(proto: SnapshotChunkResponseProto) -> Self {
+        CasperMessage::SnapshotChunkResponse(SnapshotChunkResponse::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot_request(proto: HasSnapshotRequestProto) -> Self {
+        CasperMessage::HasSnapshotRequest(HasSnapshotRequest::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot(proto: HasSnapshotProto) -> Self {
+        CasperMessage::HasSnapshot(HasSnapshot::from_proto(proto))
+    }
 }
 
 // TODO: Remove all into() and to_vec() once we have correct ByteString type in the models crate
@@ -159,6 +180,168 @@ impl BlockRequest {
     pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
     pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+}
+
+// --- Snapshot chunk-fetch (Wave 3, Phase 7b-1) ---------------
+//
+// Joiners fetch a finalized snapshot in 4 MiB chunks keyed by
+// `(block_hash, chunk_index)`.  The response carries the raw
+// chunk bytes, its Blake2b256 hash, the Merkle root anchor over
+// all chunk hashes, the total chunk count, and the chunk's
+// bottom-up Merkle inclusion proof against the root.  The
+// requester rehashes `chunk_bytes` locally and verifies the
+// proof against the anchored root before accepting the chunk.
+
+/// One step of a bottom-up Merkle inclusion proof.
+/// `is_sibling_right = true` means the sibling is the RIGHT
+/// child at this level (concat order: `current || sibling`);
+/// `false` means the sibling is the LEFT child (`sibling ||
+/// current`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MerkleProofStep {
+    pub sibling_hash: ByteString,
+    pub is_sibling_right: bool,
+}
+
+impl MerkleProofStep {
+    pub fn from_proto(proto: MerkleProofStepProto) -> Self {
+        Self {
+            sibling_hash: proto.sibling_hash,
+            is_sibling_right: proto.is_sibling_right,
+        }
+    }
+
+    pub fn to_proto(self) -> MerkleProofStepProto {
+        MerkleProofStepProto {
+            sibling_hash: self.sibling_hash,
+            is_sibling_right: self.is_sibling_right,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GetSnapshotChunkRequest {
+    pub block_hash: ByteString,
+    pub chunk_index: u32,
+}
+
+impl GetSnapshotChunkRequest {
+    pub fn from_proto(proto: GetSnapshotChunkRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            chunk_index: proto.chunk_index,
+        }
+    }
+
+    pub fn to_proto(self) -> GetSnapshotChunkRequestProto {
+        GetSnapshotChunkRequestProto {
+            block_hash: self.block_hash,
+            chunk_index: self.chunk_index,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotChunkResponse {
+    pub block_hash: ByteString,
+    pub chunk_index: u32,
+    pub chunk_bytes: ByteString,
+    pub chunk_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+    pub merkle_proof: Vec<MerkleProofStep>,
+}
+
+impl SnapshotChunkResponse {
+    pub fn from_proto(proto: SnapshotChunkResponseProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            chunk_index: proto.chunk_index,
+            chunk_bytes: proto.chunk_bytes,
+            chunk_hash: proto.chunk_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+            merkle_proof: proto
+                .merkle_proof
+                .into_iter()
+                .map(MerkleProofStep::from_proto)
+                .collect(),
+        }
+    }
+
+    pub fn to_proto(self) -> SnapshotChunkResponseProto {
+        SnapshotChunkResponseProto {
+            block_hash: self.block_hash,
+            chunk_index: self.chunk_index,
+            chunk_bytes: self.chunk_bytes,
+            chunk_hash: self.chunk_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
+            merkle_proof: self
+                .merkle_proof
+                .into_iter()
+                .map(MerkleProofStep::to_proto)
+                .collect(),
+        }
+    }
+}
+
+/// Joiner → serving validator: "do you have a serveable
+/// snapshot for this block?"  Broadcast + point-to-point;
+/// serving nodes reply with [`HasSnapshot`] when they can
+/// serve it.  Mirrors the [`HasBlockRequest`] / [`HasBlock`]
+/// pattern.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasSnapshotRequest {
+    pub block_hash: ByteString,
+}
+
+impl HasSnapshotRequest {
+    pub fn from_proto(proto: HasSnapshotRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+        }
+    }
+
+    pub fn to_proto(self) -> HasSnapshotRequestProto {
+        HasSnapshotRequestProto {
+            block_hash: self.block_hash,
+        }
+    }
+}
+
+/// Response to [`HasSnapshotRequest`].  Carries `merkle_root`
+/// so the joiner can pin an anchor BEFORE issuing per-chunk
+/// requests.  Both `merkle_root` and `chunk_count` are
+/// ADVISORY — the joiner MUST re-verify `merkle_root` against
+/// its locally-anchored root (from block finalization) and
+/// expect `chunk_count` to match the actual chunks it later
+/// receives via [`GetSnapshotChunkRequest`].  A server
+/// reporting an inflated `chunk_count` would be caught by the
+/// per-chunk inclusion-proof check during fetch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasSnapshot {
+    pub block_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+}
+
+impl HasSnapshot {
+    pub fn from_proto(proto: HasSnapshotProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+        }
+    }
+
+    pub fn to_proto(self) -> HasSnapshotProto {
+        HasSnapshotProto {
+            block_hash: self.block_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2044,5 +2227,138 @@ mod tests {
             CasperMessage::from_floor_cache_request(request.clone().to_proto()),
             CasperMessage::FloorCacheRequest(request)
         );
+    }
+
+    // --- Snapshot chunk-fetch roundtrips (Wave 3, Phase 7b-1) ---
+
+    #[test]
+    fn merkle_proof_step_proto_roundtrip() {
+        for is_right in [false, true] {
+            let step = MerkleProofStep {
+                sibling_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+                is_sibling_right: is_right,
+            };
+            let roundtripped = MerkleProofStep::from_proto(step.clone().to_proto());
+            assert_eq!(roundtripped, step);
+        }
+    }
+
+    #[test]
+    fn get_snapshot_chunk_request_proto_roundtrip() {
+        let req = GetSnapshotChunkRequest {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 42,
+        };
+        let roundtripped = GetSnapshotChunkRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn snapshot_chunk_response_proto_roundtrip() {
+        let resp = SnapshotChunkResponse {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 7,
+            chunk_bytes: prost::bytes::Bytes::from(vec![0x22; 1024]),
+            chunk_hash: prost::bytes::Bytes::from(vec![0x33; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x44; 32]),
+            chunk_count: 16,
+            merkle_proof: vec![
+                MerkleProofStep {
+                    sibling_hash: prost::bytes::Bytes::from(vec![0x55; 32]),
+                    is_sibling_right: true,
+                },
+                MerkleProofStep {
+                    sibling_hash: prost::bytes::Bytes::from(vec![0x66; 32]),
+                    is_sibling_right: false,
+                },
+            ],
+        };
+        let roundtripped = SnapshotChunkResponse::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_get_snapshot_chunk_request() {
+        let proto = GetSnapshotChunkRequestProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 3,
+        };
+        let msg = CasperMessage::from_get_snapshot_chunk_request(proto.clone());
+        match msg {
+            CasperMessage::GetSnapshotChunkRequest(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+                assert_eq!(inner.chunk_index, proto.chunk_index);
+            }
+            _ => panic!("expected GetSnapshotChunkRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_snapshot_chunk_response() {
+        let proto = SnapshotChunkResponseProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 0,
+            chunk_bytes: prost::bytes::Bytes::new(),
+            chunk_hash: prost::bytes::Bytes::new(),
+            merkle_root: prost::bytes::Bytes::new(),
+            chunk_count: 1,
+            merkle_proof: Vec::new(),
+        };
+        let msg = CasperMessage::from_snapshot_chunk_response(proto.clone());
+        assert!(matches!(msg, CasperMessage::SnapshotChunkResponse(_)));
+    }
+
+    // --- HasSnapshot lookup pair roundtrips (Wave 3, PR 3.2) ---
+
+    #[test]
+    fn has_snapshot_request_proto_roundtrip() {
+        let req = HasSnapshotRequest {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+        };
+        let roundtripped = HasSnapshotRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn has_snapshot_proto_roundtrip() {
+        let resp = HasSnapshot {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x22; 32]),
+            chunk_count: 5,
+        };
+        let roundtripped = HasSnapshot::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_has_snapshot_request() {
+        let proto = HasSnapshotRequestProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+        };
+        let msg = CasperMessage::from_has_snapshot_request(proto.clone());
+        match msg {
+            CasperMessage::HasSnapshotRequest(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+            }
+            _ => panic!("expected HasSnapshotRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_has_snapshot() {
+        let proto = HasSnapshotProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x22; 32]),
+            chunk_count: 7,
+        };
+        let msg = CasperMessage::from_has_snapshot(proto.clone());
+        match msg {
+            CasperMessage::HasSnapshot(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+                assert_eq!(inner.merkle_root, proto.merkle_root);
+                assert_eq!(inner.chunk_count, proto.chunk_count);
+            }
+            _ => panic!("expected HasSnapshot variant"),
+        }
     }
 }
