@@ -4680,6 +4680,9 @@ separate current/retained/metadata domains, retained-format compatibility and
 production successor construction remain open. No source runtime behavior,
 consensus encoding, persistence bytes, metering or backend selection changes here.
 
+The later checked-arithmetic boundary qualification is recorded in J-242; this
+next-step statement describes the evidence available on 2026-09-06.
+
 ### J-066 — 2026-09-06: retain exact cold-demand semantics in incremental admission
 
 **SCHEDULING AND CONTRACT REFINEMENT.** J-067 completes the caller/limit audit
@@ -4801,6 +4804,9 @@ state, exact/one-below budgets and failed-trial retry. Every refusal must preser
 predecessor authority, inventories, pins and publication state. No benchmark or
 production change resulted from this review; J-065 remains the latest verified
 cursor-model implementation boundary.
+
+J-242 records the later checked-arithmetic follow-on without changing this
+review's 2026-09-06 decision about cold-demand summaries.
 
 ### J-067 — 2026-09-06: separate trusted state authority from cold-execution evidence
 
@@ -18515,6 +18521,49 @@ The changed-file pgmcp bug gate passes and reports no open bug anchored to
 `738be2e4a7b19fae156cd1001e25fbfd4d8905264f8cecf6cb601a5554b79483`.
 The full-suite upstream failure remains a separate unresolved campaign item,
 so the package-level suite is not represented as green.
+
+### J-242 — 2026-10-02: qualify the checked-inventory object overflow boundary
+
+**DERIVED.** This entry follows J-065 and J-066 for task 7913. Their next-step
+statements describe the 2026-09-06 boundary; J-067's description of an
+unverified draft is likewise historical. The committed `CheckedReachability`
+module proves checked reference and weighted-inventory arithmetic over natural
+numbers with a symbolic capacity. Its existing capped Rocq compilation emitted
+112 closed assumption reports, and independent kernel checking succeeded. The
+theory is unchanged at SHA-256
+`5b9e5199c4001e9620d25ff4b0c700f2670fe23303ca5d1b293d53df2a8b7500`.
+Those proof results do not establish production ledger authentication or a
+failure-atomic successor trial.
+
+**EXECUTABLE REFINEMENT.** The prior two-vertex Rust model could overflow
+canonical-byte inventory but could never exceed two distinct objects. Its CR-03
+catalog row therefore overstated executable coverage. The corrected model
+retains two explicit vertices and adds unchanged background object and byte
+summaries. Let $`B_o`$ and $`B_b`$ be those summaries, $`c_v`$ the checked
+reference count, and $`w_v`$ the abstract byte weight of vertex $`v`$. The
+independent `u128` oracle recomputes the inventory after every event as
+
+```math
+O = B_o + \sum_v [c_v > 0], \qquad
+L = B_b + \sum_{v:c_v>0} w_v.
+```
+
+The event under test must agree with the oracle or refuse before changing its
+predecessor. Generated counts include zero, one, one below `u64::MAX`, and
+`u64::MAX`; duplicate edges test that inventory changes only at zero crossings.
+A deterministic one-below object case reaches exactly `u64::MAX`, then another
+activation must refuse. Zero abstract byte weight isolates object-counter
+overflow from byte overflow. The Rocq theorem admits this weight, but production
+canonical objects are not claimed to have zero-length encodings. The existing
+maximum-byte and reference-count controls remain in the same normal suite.
+The exact CR-01–CR-04 theorem names, Rust test bindings, source hashes, and this
+abstraction boundary are recorded in the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#checked-counter-and-unique-inventory-refinement).
+
+**VERIFICATION BOUNDARY.** The earlier Rocq and Rust logs predate this corrected
+test model. A new capped debug/release focused run and a fresh independent audit
+are required before task 7913 can be claimed complete; no old passing count is
+promoted to evidence for the new object-overflow control.
 
 ## Upstream PathMap integration request register
 

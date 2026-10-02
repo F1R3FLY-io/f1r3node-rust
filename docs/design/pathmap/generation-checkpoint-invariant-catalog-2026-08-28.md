@@ -632,8 +632,14 @@ counter limit. The Rust property instantiates that limit at `u64::MAX` and uses
 vertex, its reference count changes on every edge occurrence, while its object
 and byte contributions change only when the count crosses zero. The byte weight
 is the object's declared canonical length; the object weight is one. The test
-model has two vertices, so two distinct large byte weights can cross the `u64`
-inventory boundary without allocating large objects.
+model has two explicit vertices and an unchanged background inventory. The
+background is included in the independent `u128` oracle and never changed by an
+edge event. It permits the exact `u64::MAX` distinct-object boundary without
+allocating that many vertices; the two explicit vertices and large byte weights
+also exercise byte overflow. A zero-weight abstract object isolates the object
+counter's overflow check from the byte counter. That arithmetic control is
+permitted by the natural-number theorem but is not a claim that a zero-length
+canonical object can be admitted by production code.
 
 | ID | Required property and negative-control boundary |
 |---|---|
@@ -641,6 +647,21 @@ inventory boundary without allocating large objects.
 | CR-02 | A checked decrement succeeds exactly for positive counts, refuses at zero, preserves bounded counts and coherence, and leaves its predecessor unchanged on refusal. |
 | CR-03 | Activating a zero-count vertex adds one distinct object and its byte weight exactly; another edge to an active vertex changes neither inventory. Object/byte overflow refuses before changing the predecessor. |
 | CR-04 | Deactivating the last reference subtracts exactly one object and its byte weight; earlier duplicate-edge removals change neither inventory. A coherent exact inventory cannot underflow, and an invalid zero-count decrement is rejected. |
+
+The normal-suite bindings are exact: CR-01 and CR-03 select
+`checked_reference_and_unique_inventory_refine_natural_arithmetic`; CR-02 and
+CR-04 select `checked_inventory_boundary_controls_preserve_predecessor`.
+`model_property_manifest_is_unique_and_exhaustive` checks these
+four bindings against the catalog and included test sources. The eighteen
+`CheckedReachability` theorem names in the derivation matrix below are the
+formal targets; their compiled theory is independently kernel-checked.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v` | `5b9e5199c4001e9620d25ff4b0c700f2670fe23303ca5d1b293d53df2a8b7500` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `0e9288681d9afcbb0bd6441702c6610efb968273d6082e62be0a87648e7a1aef` |
+| `rspace++/tests/persistence/property_support.rs` | `b8e2aa87da27c9a8bfdc8c611a4e9245fb412475406a3398a5f26a8a28d0588b` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `2f4080420cdd91c233e0137c2941abd67864d1190ec1cb6483f528138b65388b` |
 
 These are abstract checked-arithmetic and test-model bindings. They do not yet
 prove that a production successor maintains the exact ledger, authenticates
@@ -728,7 +749,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | IR-21 | `EXEC_ONLY` | `IncrementalReachability.every_cursor_step_spends_exactly_one` | P | Wrong-cost and transition negative controls discriminate the exact model law; they are not an alternative implementation proof. |
 | CR-01 | `EXEC_ONLY` | `CheckedReachability.checked_add_is_exact`, `CheckedReachability.checked_add_refuses_exactly_above_limit`, `CheckedReachability.checked_increment_refines_natural_update`, `CheckedReachability.checked_increment_refuses_exactly_at_capacity`, `CheckedReachability.checked_increment_preserves_bounded_counts` | P | Symbolic limit specializes to `u64::MAX`; generated one-below and exact-maximum counts check the executable refusal boundary. |
 | CR-02 | `EXEC_ONLY` | `CheckedReachability.checked_sub_is_exact`, `CheckedReachability.checked_sub_refuses_exactly_underflow`, `CheckedReachability.checked_decrement_refines_natural_update`, `CheckedReachability.checked_decrement_refuses_exactly_zero`, `CheckedReachability.checked_decrement_preserves_bounded_counts`, `CheckedReachability.checked_updates_preserve_coherence` | P | Zero and positive counts distinguish checked refusal from natural-number saturation; a refused trial preserves its input. |
-| CR-03 | `EXEC_ONLY` | `CheckedReachability.increment_changes_unique_inventory`, `CheckedReachability.checked_inventory_add_is_exact`, `CheckedReachability.checked_inventory_add_refuses_exactly_above_limit` | P | Distinct-object and byte weights share the generic theorem; generated large weights and duplicate references check both inventory boundaries. |
+| CR-03 | `EXEC_ONLY` | `CheckedReachability.increment_changes_unique_inventory`, `CheckedReachability.checked_inventory_add_is_exact`, `CheckedReachability.checked_inventory_add_refuses_exactly_above_limit` | P | A symbolic unchanged background reaches one-below and exact `u64::MAX` distinct-object counts; generated large byte weights and duplicate references independently check byte refusal and zero-crossing behavior. The zero-byte-weight abstract case isolates arithmetic overflow, not production object admission. |
 | CR-04 | `EXEC_ONLY` | `CheckedReachability.decrement_changes_unique_inventory`, `CheckedReachability.deactivated_inventory_is_funded`, `CheckedReachability.checked_inventory_remove_is_exact`, `CheckedReachability.exact_inventory_removal_cannot_underflow` | P | Last-reference removal subtracts one unique contribution; repeated-edge removal and invalid underflow are negative controls. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
