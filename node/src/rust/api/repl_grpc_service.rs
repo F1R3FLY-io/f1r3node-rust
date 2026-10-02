@@ -548,12 +548,34 @@ mod prepared_route_tests {
         let runtime = create_runtime_from_kv_store(
             store,
             Arc::new(HashMap::new()),
-            false,
+            true,
             &mut composition.definitions,
             Arc::new(Box::new(composition.evaluation.matcher.clone())),
             ExternalServices::noop(),
         )
         .await;
+        let registry_contract =
+            rholang::rust::build::compile_rholang_source::CompiledRholangSource::new(
+                casper::rust::genesis::contracts::embedded_rho::VERSIONED_REGISTRY.to_owned(),
+                HashMap::new(),
+                "VersionedRegistry.rho".to_owned(),
+            )
+            .expect("the production versioned registry genesis source compiles");
+        let registry_result = runtime
+            .evaluate_prepared(
+                rholang::rust::interpreter::frontend::PreparedProgram::from_normalized(
+                    registry_contract.term,
+                ),
+                Cost::unsafe_max(),
+                Blake2b512Random::create_from_length(128),
+            )
+            .await
+            .expect("the production versioned registry genesis deploy evaluates");
+        assert!(
+            registry_result.errors.is_empty(),
+            "versioned registry genesis deploy failed: {:?}",
+            registry_result.errors
+        );
         let service = ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation);
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
             "/../../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho"));
@@ -577,6 +599,12 @@ mod prepared_route_tests {
             response.output
         );
         let runtime = service.runtime.lock().await;
+        let nullable_channel = scalar(ExprInstance::GString("regex.nullable".into()));
+        assert!(
+            !runtime.get_data(&nullable_channel).await.is_empty(),
+            "Regex application produced no nullable observation; storage:\n{}",
+            response.output
+        );
         for channel in ["regex.nullable", "regex.match"] {
             assert_observation(&observation(&runtime, channel).await, &[scalar(
                 ExprInstance::GBool(true),
@@ -605,6 +633,18 @@ mod prepared_route_tests {
         );
         assert_eq!(
             observation(&runtime, "regex.guard.input").await,
+            scalar(ExprInstance::GString("ax".into())),
+        );
+        assert_eq!(
+            observation(&runtime, "regex.guard.conjunction").await,
+            scalar(ExprInstance::GString("abcb".into())),
+        );
+        assert_eq!(
+            observation(&runtime, "regex.guard.conjunction.input").await,
+            scalar(ExprInstance::GString("ax".into())),
+        );
+        assert_eq!(
+            observation(&runtime, "regex.guard.disjunction").await,
             scalar(ExprInstance::GString("ax".into())),
         );
     }
