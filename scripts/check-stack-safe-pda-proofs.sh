@@ -968,6 +968,8 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceMatchTransactionMutants \
   StackSafePDA.TwoLevelRSpaceCheckpointRecovery \
   StackSafePDA.TwoLevelRSpaceCheckpointRecoveryMutants
+python3 "$repo_root/scripts/check-free-map-journal-obligations.py" --check
+python3 "$repo_root/scripts/check-free-map-journal-obligations.py" --self-test
 free_map_journal_rocq
 accounting_demand_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/AccountingDemand.v 2>&1

@@ -1,0 +1,298 @@
+{
+  "mcrl2_obligations": [
+    {
+      "classification": "proof_only",
+      "id": "FMJ-MCRL2-01",
+      "kind": "branching_bisimulation",
+      "sources": [
+        "formal/mcrl2/stack_safe_pda/free_map_journal_impl.mcrl2",
+        "formal/mcrl2/stack_safe_pda/free_map_journal_spec.mcrl2"
+      ]
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-MCRL2-02",
+      "kind": "no_binding_leak",
+      "sources": [
+        "formal/mcrl2/stack_safe_pda/free_map_journal_impl.mcrl2",
+        "formal/mcrl2/stack_safe_pda/free_map_journal_no_leak.mcf"
+      ]
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-MCRL2-03",
+      "kind": "or_leak_causal_mutant",
+      "source": "formal/mcrl2/stack_safe_pda/free_map_journal_or_leak_mutant.mcrl2"
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-MCRL2-04",
+      "kind": "partial_apply_causal_mutant",
+      "source": "formal/mcrl2/stack_safe_pda/free_map_journal_partial_apply_mutant.mcrl2"
+    }
+  ],
+  "rocq_print_assumptions": [
+    {
+      "classification": "proof_only",
+      "id": "FMJ-ROCQ-01",
+      "symbol": "journal_connective_control_refines_snapshot_semantics"
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-ROCQ-02",
+      "symbol": "journal_transaction_refines_snapshot_transaction"
+    }
+  ],
+  "scope_limit": "Executable rows identify direct normal-suite transaction assertions for concrete operations. Finite TLA state properties, Rocq theorems, Verus abstract lemmas, and mCRL2 equivalence/no-leak are proof-only. Registry checks source and runner wiring, not proof execution.",
+  "source_sha256": {
+    "formal/mcrl2/stack_safe_pda/free_map_journal_impl.mcrl2": "9e093360960591e01d09dfd50b6089ae803062eb8d0b9cbaf9a3983d736cdc24",
+    "formal/mcrl2/stack_safe_pda/free_map_journal_no_leak.mcf": "1f1908cd5ba2eb814768fe6c58e705dac63725fca25638033126bae3f1216515",
+    "formal/mcrl2/stack_safe_pda/free_map_journal_or_leak_mutant.mcrl2": "8330726a0b14a594c817686b3003691fb01940f528199c54f2f5d777deb85f68",
+    "formal/mcrl2/stack_safe_pda/free_map_journal_partial_apply_mutant.mcrl2": "7e2fd495b9f6b2c90dd3efabf4828abb61fc98372600840df8dbcf96730e8e83",
+    "formal/mcrl2/stack_safe_pda/free_map_journal_spec.mcrl2": "efd7537f1dbc3376e994af54d34c7724aea71bb7d2c276702b7160a336d3d192",
+    "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v": "8d21a475e1a23fa7b655b63aa7bedc0e5cadc0bafd8decc2534cd9d3fdf3a29e",
+    "formal/tlaplus/stack_safe_pda/FreeMapJournal.cfg": "ecf7d832583093ae434cac7e8398e089500923fa193114c3d67a3b63f152b1c2",
+    "formal/tlaplus/stack_safe_pda/FreeMapJournal.tla": "cfd597de648641e75177f79b15caeb01d405c737e2d9407b98d6941eea8fff38",
+    "formal/verus/free_map_transaction.rs": "270c7ae2ac2214b20ae27ea4aec818a3c73da56efedf5bf2f3f7fa4938b1c5f5",
+    "rholang/src/rust/interpreter/matcher/free_map_transaction.rs": "38e98186e5ebb584059d70738c9c6859bde388beebe140441df91259aaba8ede"
+  },
+  "tla_invariants": [
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-01",
+      "symbol": "TypeInvariant",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-TLA-02",
+      "symbol": "SnapshotJournalLockstep",
+      "target": "free_map_transaction_trace_refines_snapshot_oracle",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-03",
+      "symbol": "CheckpointShape",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-TLA-04",
+      "symbol": "CheckpointSnapshotsAgree",
+      "target": "nested_checkpoints_restore_exact_maps_without_discarding_outer_history",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-TLA-05",
+      "symbol": "ActiveRootCanBeRestored",
+      "target": "root_refusal_and_unwind_restore_the_entry_map",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-TLA-06",
+      "symbol": "CompletedStateIsClosed",
+      "target": "successful_root_retains_values_and_clears_history",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-07",
+      "symbol": "ValidationIsAtomic",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-08",
+      "symbol": "JournalBoundedByWrites",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-09",
+      "symbol": "ActionWitnessesAreNonVacuous",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-10",
+      "symbol": "ReverseUndoMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-11",
+      "symbol": "RollbackAllFrameMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-12",
+      "symbol": "ApplyBeforeValidationMutationIsDetected",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-TLA-13",
+      "symbol": "DropWithoutUndoMutationIsDetected",
+      "target": null,
+      "target_source": null
+    }
+  ],
+  "verus_obligations": [
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-01",
+      "kind": "verified_exec",
+      "symbol": "len",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-02",
+      "kind": "open_spec",
+      "symbol": "valid",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-03",
+      "kind": "open_spec",
+      "symbol": "state_at",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-04",
+      "kind": "verified_exec",
+      "symbol": "new",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-05",
+      "kind": "verified_exec",
+      "symbol": "checkpoint",
+      "target": "nested_checkpoints_restore_exact_maps_without_discarding_outer_history",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-06",
+      "kind": "verified_exec",
+      "symbol": "write",
+      "target": "free_map_transaction_trace_refines_snapshot_oracle",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-07",
+      "kind": "verified_exec",
+      "symbol": "rollback",
+      "target": "nested_checkpoints_restore_exact_maps_without_discarding_outer_history",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-08",
+      "kind": "verified_exec",
+      "symbol": "take_delta_and_rollback",
+      "target": "delta_extraction_moves_final_writes_and_restores_the_baseline",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-09",
+      "kind": "verified_exec",
+      "symbol": "abort",
+      "target": "root_refusal_and_unwind_restore_the_entry_map",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-10",
+      "kind": "verified_exec",
+      "symbol": "finish",
+      "target": "successful_root_retains_values_and_clears_history",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-11",
+      "kind": "verified_exec",
+      "symbol": "exec_write_refines_spec",
+      "target": "free_map_transaction_trace_refines_snapshot_oracle",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-12",
+      "kind": "verified_exec",
+      "symbol": "exec_rollback_refines_spec",
+      "target": "nested_checkpoints_restore_exact_maps_without_discarding_outer_history",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-13",
+      "kind": "verified_exec",
+      "symbol": "exec_take_delta_and_rollback_refines_spec",
+      "target": "delta_extraction_moves_final_writes_and_restores_the_baseline",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-14",
+      "kind": "verified_exec",
+      "symbol": "exec_finish_refines_spec",
+      "target": "free_map_transaction_trace_refines_snapshot_oracle",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "executable_refinement",
+      "id": "FMJ-VERUS-15",
+      "kind": "verified_exec",
+      "symbol": "abort_guard_restores_root_spec",
+      "target": "root_refusal_and_unwind_restore_the_entry_map",
+      "target_source": "rholang/src/rust/interpreter/matcher/free_map_transaction.rs"
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-16",
+      "kind": "open_spec",
+      "symbol": "undo_len_after_completed_writes",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-17",
+      "kind": "proof",
+      "symbol": "undo_len_tracks_completed_writes",
+      "target": null,
+      "target_source": null
+    },
+    {
+      "classification": "proof_only",
+      "id": "FMJ-VERUS-18",
+      "kind": "proof",
+      "symbol": "delta_len_is_bounded_by_segment_writes",
+      "target": null,
+      "target_source": null
+    }
+  ]
+}
