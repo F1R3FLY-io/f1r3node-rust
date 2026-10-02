@@ -44,11 +44,13 @@
 // pins in each submodule's test block catch it at Wave 4.
 
 pub mod family;
+pub mod fs_handler;
 pub mod journal_path;
 pub mod reply;
 pub mod syscall_ctx;
 
 pub use family::HandlerFamily;
+pub use fs_handler::FsHandler;
 pub use journal_path::JournalPath;
 pub use reply::HandlerReply;
 pub use syscall_ctx::SyscallCtx;
