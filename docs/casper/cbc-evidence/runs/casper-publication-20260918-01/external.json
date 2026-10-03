@@ -1,77 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-publication-20260918-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-publication-20260918-01.external.tar.gz",
-  "asset_sha256": "c0565a385f05bf5d2c30983ee09d494c8d4ce773503e2c1b192bcb031f8daccf",
-  "asset_bytes": 814915,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "claim-001.json",
-   "bytes": 361,
-   "sha256": "37204bfecbb8300d6a41f9feb4602d7e956df7edc44bb648320bccc115c9f8e0"
+   "asset": "casper-publication-20260918-01.external.tar.gz",
+   "sha256": "c0565a385f05bf5d2c30983ee09d494c8d4ce773503e2c1b192bcb031f8daccf",
+   "bytes": 814915,
+   "members": 12,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "claim-003.json",
-   "bytes": 359,
-   "sha256": "5bb52ccd08d3ff95c08606dd198abffee12cbb93fa83a2ccd1b61b890fbe6a9e"
-  },
-  {
-   "path": "evidence-files.sha256",
-   "bytes": 573736,
-   "sha256": "0f417af15443c6171d65436fe9642be9d1e680f0d16a161f9a38074a49ecbbf0"
-  },
-  {
-   "path": "evidence.tar.gz",
-   "bytes": 664212,
-   "sha256": "9b901c173f2cbfb55a24ca4f2b7bcf3cfec2dbc6354c9291d7b194285fe43257"
-  },
-  {
-   "path": "fixture-inventory.json",
-   "bytes": 19689,
-   "sha256": "c97735862f0ba94bbe085ed85226d107e8b2c929730fa2e586b22267dc19c739"
-  },
-  {
-   "path": "lsp.json",
-   "bytes": 476,
-   "sha256": "f1bcda034ed5ff34e2b5d33ed82d43d3d6ba2f3264af41e8cc9f207d5a4d4166"
-  },
-  {
-   "path": "model-layout.json",
-   "bytes": 663,
-   "sha256": "6b1e409ce194d42cd16c4c742e9a8fcf404655355ac6f8c2996bb13dd7ce23d5"
-  },
-  {
-   "path": "models.json",
-   "bytes": 3793,
-   "sha256": "2c5a01c628052597a378e4309ae6df303f0c4583db05ee92de7cce17c3f06dad"
-  },
-  {
-   "path": "source-files.sha256",
-   "bytes": 2449,
-   "sha256": "00bb02a69f0f31ef528f8ace3fea117084ae9e98040d557adf39a03c6c540b69"
-  },
-  {
-   "path": "source.tar.gz",
-   "bytes": 79172,
-   "sha256": "04a304375aaafdb63cc8508b28464a32ec5bb668949c7068c5d95d54b28f08fd"
-  },
-  {
-   "path": "support.tar.gz",
-   "bytes": 42306,
-   "sha256": "4bdc63de4433d634a7f6c56ad75d548c6ef2f72242c38fde6023fc98716bed9b"
-  },
-  {
-   "path": "symlinks.tsv",
-   "bytes": 203,
-   "sha256": "6c68aa24a00d06000b07adaa0bed365fb5be66fa8d0da77b3d9480591b3444f0"
+   "asset": "casper-publication-20260918-01.metadata.tar.gz",
+   "sha256": "641d6440dad7236fad20b87d02a4c11c4fa6f75b75d04966de830ccee0c14273",
+   "bytes": 2429,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

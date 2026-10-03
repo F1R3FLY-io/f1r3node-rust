@@ -1,77 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-authority-finality-20260918-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-authority-finality-20260918-01.external.tar.gz",
-  "asset_sha256": "ca7afd89019efca82d45344e04c85c8dfb629253bb4c0c3da34828f6aa876491",
-  "asset_bytes": 958577,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "claim-001.json",
-   "bytes": 361,
-   "sha256": "37204bfecbb8300d6a41f9feb4602d7e956df7edc44bb648320bccc115c9f8e0"
+   "asset": "casper-authority-finality-20260918-01.external.tar.gz",
+   "sha256": "ca7afd89019efca82d45344e04c85c8dfb629253bb4c0c3da34828f6aa876491",
+   "bytes": 958577,
+   "members": 12,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "claim-002.json",
-   "bytes": 366,
-   "sha256": "fa8699cd39f89cbb36f17cefd4a231b50e171fac3e32b9eeb01f2ce5cf31d2c2"
-  },
-  {
-   "path": "evidence-files.sha256",
-   "bytes": 686164,
-   "sha256": "36b08904263eeff2a81e358b6aae0fc6bf3ecaefaa6a908a95e6b4a8de77f216"
-  },
-  {
-   "path": "evidence.tar.gz",
-   "bytes": 838981,
-   "sha256": "4c7988ca1a6e515e9c3877e70e104339dac8ff0a197dcd09a62f50b0b4dff6d2"
-  },
-  {
-   "path": "fixture-inventory.json",
-   "bytes": 415,
-   "sha256": "db936511b2808f348f1195b46fee490751981103c544bb87786d7a8c415a5e9a"
-  },
-  {
-   "path": "lsp.json",
-   "bytes": 389,
-   "sha256": "966c09887c05a5b3ca87d5a2778ad0f6ff28e373d1a80d1f100093175e1e1c69"
-  },
-  {
-   "path": "model-layout.json",
-   "bytes": 696,
-   "sha256": "8080b4b1e9e8541e24808dc410a94b9757e918829352fb20abf5ff8f97704b87"
-  },
-  {
-   "path": "models.json",
-   "bytes": 3860,
-   "sha256": "1fdca687fc1348e7a840d20c3189acf00e7fc77cc8bc797591e45e6d7426e450"
-  },
-  {
-   "path": "source-files.sha256",
-   "bytes": 2620,
-   "sha256": "7dc55253301daf6a9c44ca806672235bb8db2d304f17ff1e3db492eb7324d3f9"
-  },
-  {
-   "path": "source.tar.gz",
-   "bytes": 83233,
-   "sha256": "3fa916c901abbb0fa22c0bc5dd417a2e7afab550216fb0eadb368b98271b1cfd"
-  },
-  {
-   "path": "support.tar.gz",
-   "bytes": 5465,
-   "sha256": "3eee98654e0511c46eccf473944d2c85a6a7c074c8b39d7c81e33ba5027d7c3f"
-  },
-  {
-   "path": "symlinks.tsv",
-   "bytes": 155,
-   "sha256": "100b29a137c938f154852df16159ef2218426bcb30951dfd924de9766364d213"
+   "asset": "casper-authority-finality-20260918-01.metadata.tar.gz",
+   "sha256": "754d040420c92cc9f0bd931b24d58bb5099fc540ed7d107a7f0dddd12aa3964c",
+   "bytes": 3016,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

@@ -1,22 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-compatibility-routing-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-compatibility-routing-20260919-01.external.tar.gz",
-  "asset_sha256": "97807b3ee098d0dce400276a59cd2ca539648e9e7f73fc5e30716d05e8d2741d",
-  "asset_bytes": 892,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "records.sha256",
-   "bytes": 1364,
-   "sha256": "e5e94e1db4b9af4eaa19fbc7bded05acb6de0482f6fa36d1f673b3a5b193c415"
+   "asset": "casper-compatibility-routing-20260919-01.external.tar.gz",
+   "sha256": "97807b3ee098d0dce400276a59cd2ca539648e9e7f73fc5e30716d05e8d2741d",
+   "bytes": 892,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-compatibility-routing-20260919-01.metadata.tar.gz",
+   "sha256": "89d6731d1be7ad1c0605503f6e355f278e08dd3aef312b73272eac6e24043607",
+   "bytes": 877,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

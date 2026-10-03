@@ -1,6 +1,6 @@
 {
  "schema_version": 2,
- "package": "casper-positive-search-20260917-01",
+ "package": "casper-authority-client-20260928-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
@@ -10,11 +10,11 @@
  },
  "assets": [
   {
-   "asset": "casper-positive-search-20260917-01.external.tar.gz",
-   "sha256": "51961ea4a6c1492ab8579c76efd1ac071c81d1b692cfc95aa12442169faf8c9f",
-   "bytes": 81593,
-   "members": 120,
-   "bundle_created": "2026-09-19",
+   "asset": "casper-authority-client-20260928-01.metadata.tar.gz",
+   "sha256": "ada6a59b257bb2843edcb3fd7a26c43449bed03634ef88800e537c354c85c5f3",
+   "bytes": 587,
+   "members": 1,
+   "bundle_created": "2026-10-03",
    "inner_manifest": "external-manifest.json"
   }
  ]

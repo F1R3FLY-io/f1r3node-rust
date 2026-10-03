@@ -1,6 +1,6 @@
 {
  "schema_version": 2,
- "package": "casper-campaign-control-20260921-01",
+ "package": "casper-authority-execution-20260928-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
@@ -10,9 +10,9 @@
  },
  "assets": [
   {
-   "asset": "casper-campaign-control-20260921-01.external.tar.gz",
-   "sha256": "670ebf3f8364bf37f143dedf8958737a814c0dfc326f71a31efc42a65bea7cfc",
-   "bytes": 973,
+   "asset": "casper-authority-execution-20260928-01.metadata.tar.gz",
+   "sha256": "f49c9329f2f187ef8596fb562855a426a3a20ad5d5463b62ec5b39e00ee1431e",
+   "bytes": 622,
    "members": 1,
    "bundle_created": "2026-10-03",
    "inner_manifest": "external-manifest.json"

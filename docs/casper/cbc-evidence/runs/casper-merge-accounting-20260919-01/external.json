@@ -1,167 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-merge-accounting-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-merge-accounting-20260919-01.external.tar.gz",
-  "asset_sha256": "cfe999c21ceb9b109e8781d993f34defd77f6905108dee6e50aea560193b24b6",
-  "asset_bytes": 1828848,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "artifact-paths.txt",
-   "bytes": 814,
-   "sha256": "605311202898efc021994f81debbc4736f17c267daf396159ba2e408b60903b9"
+   "asset": "casper-merge-accounting-20260919-01.external.tar.gz",
+   "sha256": "cfe999c21ceb9b109e8781d993f34defd77f6905108dee6e50aea560193b24b6",
+   "bytes": 1828848,
+   "members": 30,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "evidence-files.sha256",
-   "bytes": 1287800,
-   "sha256": "c03d9cddaf9d6674fcd40c4870400132962f20cfaad3b33d14fb218c8209befc"
-  },
-  {
-   "path": "evidence.tar.gz",
-   "bytes": 1674296,
-   "sha256": "d7b43a80a4a6205bf6ae844b81a04a95949817b30b0afb83dee19064e952b329"
-  },
-  {
-   "path": "ledgers.sha256",
-   "bytes": 1737,
-   "sha256": "51ee357af2c48d289a00088c9efa65f9f6ec186181dcc83dd4e132fbf7027cca"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-MC-MergeAccounting-cfg.md",
-   "bytes": 1441,
-   "sha256": "94c99c36d04e1bd5cfe8404fb38f07f9b77930c70fa160d3a05181273dfaea53"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-MC-MergeAccounting-epoch-unsafe-cfg.md",
-   "bytes": 1480,
-   "sha256": "74cbe2c5371027252333ba9254aed19bd147d5fc4796633026d6562d0253de4c"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-MC-MergeAccounting-multiplicity-unsafe-cfg.md",
-   "bytes": 1501,
-   "sha256": "bc79262a727d33712b9579bcca7118c9195eefc20a435ae0357c12acc731f463"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-MC-MergeAccounting-settlement-unsafe-cfg.md",
-   "bytes": 1495,
-   "sha256": "72fc05d532fd73d7a80e82d285a6bd07313edac2d9e0dff1d2d22e0da0933cde"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-MergeAccounting-tla.md",
-   "bytes": 1432,
-   "sha256": "fc90e5de63d96d04f59360fd5a25811913ba86402cf238a635dd07fa169ae863"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-README-md.md",
-   "bytes": 1402,
-   "sha256": "07c9de90704730d11e51c0aada5b36d4cb1bc9b9a816aac2274c8f009ea2c318"
-  },
-  {
-   "path": "ledgers/formal-tlaplus-casper-soak-profiles-merge-accounting-verification-plan-jsonc.md",
-   "bytes": 1444,
-   "sha256": "234750570a8f64c4f555eb428cd01c45f20ff9db3eafe4f191c7b5e8ae7d7b6b"
-  },
-  {
-   "path": "ledgers/github-workflows-casper-merge-accounting-yml.md",
-   "bytes": 1350,
-   "sha256": "9115af0995f99db39c62869954e3cc98d6c6320fd62db94b441133bee0bb1c75"
-  },
-  {
-   "path": "ledgers/scripts-casper-soak-check-merge-accounting-sh.md",
-   "bytes": 1351,
-   "sha256": "5187cd6709ad12cd18ca1ba1fac3e948c027e9cdecef7866f31dea03be9b601f"
-  },
-  {
-   "path": "ledgers/scripts-casper-soak-src-bin-casper-merge-accounting-rs.md",
-   "bytes": 1378,
-   "sha256": "d15bab88ea8b90661645649f68691f22aab945504444532981754b2887ace91b"
-  },
-  {
-   "path": "ledgers/scripts-casper-soak-src-profiles-merge-accounting-rs.md",
-   "bytes": 1372,
-   "sha256": "7eacebb233ea2806edefa6fc2b4a690319c7221b94474b0e264dbcb9b4338387"
-  },
-  {
-   "path": "ledgers/scripts-casper-soak-tests-merge-accounting-rs.md",
-   "bytes": 1351,
-   "sha256": "6f51dd4fcb6db883622c5569f7be598c013396bfc64962df9c5e975359627d6e"
-  },
-  {
-   "path": "postcheck-redactions.tsv",
-   "bytes": 158,
-   "sha256": "38df1fa661b126aca0c6f259197051fbdff5c31789f9631bc6e5f9de194b1081"
-  },
-  {
-   "path": "postchecks/task-017-8-final-clippy.exit",
-   "bytes": 2,
-   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
-  },
-  {
-   "path": "postchecks/task-017-8-final-clippy.txt",
-   "bytes": 143,
-   "sha256": "8afa9864705a3c73254e25149107d7f1fa5618927db934b02287fcbbfa636b58"
-  },
-  {
-   "path": "postchecks/task-017-8-final-static.txt",
-   "bytes": 0,
-   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  },
-  {
-   "path": "private-path-scan.txt",
-   "bytes": 0,
-   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  },
-  {
-   "path": "profile-artifacts.sha256",
-   "bytes": 1606,
-   "sha256": "8f6ffe9ab0802255a3a8b9cd864850f75f6de46b95a4152986d86651e3129d72"
-  },
-  {
-   "path": "redact.rs",
-   "bytes": 2274,
-   "sha256": "d80585cc36c25d3cf31b024ccf893976a4aff22cd5d3a4546691fcef9bd40e69"
-  },
-  {
-   "path": "retain.sh",
-   "bytes": 5984,
-   "sha256": "1eaeacd065c237ff97dd866fc1b8ed25677d6371a3b26869702a9cd48fe9d294"
-  },
-  {
-   "path": "source-files.sha256",
-   "bytes": 3027,
-   "sha256": "376f48f15c4c0733a4927be4b2de6aa260337e0c9ee1cffd342760afdaa2327f"
-  },
-  {
-   "path": "source-paths.txt",
-   "bytes": 1327,
-   "sha256": "27db7c2b0cbfa6099dc62f9c1170031d80056163666eebd2063f59c116611405"
-  },
-  {
-   "path": "source.tar.gz",
-   "bytes": 84830,
-   "sha256": "a563f384b6b86a2e2714f00645bebb9524cc7c0a16a7712f238e27f352975087"
-  },
-  {
-   "path": "static-checks.json",
-   "bytes": 597,
-   "sha256": "d1c2cb709d3c7151a854685bbf2b81c0575dd11a0732a3a390dfe68a6469b482"
-  },
-  {
-   "path": "symlinks.txt",
-   "bytes": 286,
-   "sha256": "504a8ceeda474ea217a4d321f5c075904527757a2e4e9171cc6a2daf8c6d25ed"
-  },
-  {
-   "path": "validate.sh",
-   "bytes": 5040,
-   "sha256": "fb7bfa39f0d976e9e496dc8510a5ff4c6b7bde23018504d8a1bee19987e61fcd"
+   "asset": "casper-merge-accounting-20260919-01.metadata.tar.gz",
+   "sha256": "fd9c40bce0168499f12dcfe48389ad9d23eefe650a07822dec5fe456826cbf05",
+   "bytes": 3301,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

@@ -1,32 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-slashing-acceptance-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-slashing-acceptance-20260919-01.external.tar.gz",
-  "asset_sha256": "5f21cb60104f2dd2a4bcc3d794452d4a2b32d1fed8e161965e99804c72520ee1",
-  "asset_bytes": 4694,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "canonical-ledgers.sha256",
-   "bytes": 1806,
-   "sha256": "764e7fd93d9fb7aea54c3d63f25cfad3c14c81b7af8ea16da477a30ffcbf91ba"
+   "asset": "casper-slashing-acceptance-20260919-01.external.tar.gz",
+   "sha256": "5f21cb60104f2dd2a4bcc3d794452d4a2b32d1fed8e161965e99804c72520ee1",
+   "bytes": 4694,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "checks.sha256",
-   "bytes": 5349,
-   "sha256": "dcb5499ce600f40281c558147b9a33d3dd6b15172a98add458cedda8142be31d"
-  },
-  {
-   "path": "previous-ledgers.tar.gz",
-   "bytes": 2085,
-   "sha256": "a112156258c8407d2b5b498c3cc338085e706f9c743df29abb7eb5aefecb3189"
+   "asset": "casper-slashing-acceptance-20260919-01.metadata.tar.gz",
+   "sha256": "b7c2d32b02ad5aafe5998249c62d428c6b04d0a8836f9e9481953a23c7662b10",
+   "bytes": 1125,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

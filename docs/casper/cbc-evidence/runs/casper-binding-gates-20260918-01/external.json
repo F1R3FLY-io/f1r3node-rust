@@ -1,52 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-binding-gates-20260918-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-binding-gates-20260918-01.external.tar.gz",
-  "asset_sha256": "86287f88a66e377f848218237bb34b706af05d6e55f1979915cd43ce07e6f79d",
-  "asset_bytes": 701920,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "evidence.tar.gz",
-   "bytes": 590549,
-   "sha256": "cea7054adefe02b579e02f52ecc2164b1d7993652a70a3d3cdc12dc9e12aa560"
+   "asset": "casper-binding-gates-20260918-01.external.tar.gz",
+   "sha256": "86287f88a66e377f848218237bb34b706af05d6e55f1979915cd43ce07e6f79d",
+   "bytes": 701920,
+   "members": 7,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "implementation.patch.txt",
-   "bytes": 24236,
-   "sha256": "819c2623a6e3b9436d8e00d41d6560cc87c28ab44f21a4b56ecde2b407b2b773"
-  },
-  {
-   "path": "new-files.patch.txt",
-   "bytes": 10637,
-   "sha256": "fdd74ee2c6fbbdbb4ff2e6dc2f6a6caeab59cded7bb5e1aa8e3ee9a5100695dd"
-  },
-  {
-   "path": "redactions.jsonl",
-   "bytes": 2459,
-   "sha256": "cf3f5191e9ef8a2f0f8d043f1a96addb3187b92ea49240e16ae7e84505a458fb"
-  },
-  {
-   "path": "retained-files.sha256",
-   "bytes": 358161,
-   "sha256": "ff5c92253cdda52c3f97b9540c5ecb2a05fa2318bfcb55a73f3414bbec1a2820"
-  },
-  {
-   "path": "source.tar.gz",
-   "bytes": 63319,
-   "sha256": "59672e7621e77cf760b0dc9fb63f97fee5d498da0367a79444869eb570a30476"
-  },
-  {
-   "path": "sources.sha256",
-   "bytes": 3433,
-   "sha256": "e27bf353a84dd986dfddd22222c35f5f62a768403eb3144bdcd46bc4026b6b1c"
+   "asset": "casper-binding-gates-20260918-01.metadata.tar.gz",
+   "sha256": "b8340115a64969d25085104478e78888fe9e12216b03e34c74764c946cdf9c5c",
+   "bytes": 703,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

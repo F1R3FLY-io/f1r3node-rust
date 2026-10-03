@@ -3,7 +3,6 @@
 ---
 handoff_status: in_progress
 next_steps:
-  - Upload the 23 new bundles to the draft release cbc-evidence-epic-017 under new asset names. Do not replace an existing asset, because accepted reports cite those assets by name.
   - Ask the maintainer to confirm the reduced PR #436 diff, and publish the draft release when the reduction commit lands.
   - Consolidate the work logs of TASK-017-1 through TASK-017-7 in a separate commit, if the maintainer asks for a smaller diff.
 ---
@@ -109,4 +108,24 @@ The existing assets of 22 packages contain every moved file of those packages, b
 - Step 5: not started.
 - Step 6: complete for the reduction. The table above records the results.
 - Step 7: waits for the bundle upload and the user commit.
+
+## Second reduction on 2026-10-03
+
+The 23 new bundles of the first reduction are uploaded to the draft release. A fresh download of each asset matches the digest in its pointer.
+
+The user then asked for two more cuts. No gate reads `validation.json`, `artifacts.sha256`, `redactions.tsv`, or `review-validation.json`, so 93 such files in 45 packages moved to new `<package>.metadata.tar.gz` assets. Each new asset has an inner `external-manifest.json`. No upload replaced an existing asset.
+
+The pointers now use schema version 2. A pointer names each release asset of its package with the asset digest, the size, and the member count. The member list stays in the inner `external-manifest.json` of each bundle. Two older bundles have no inner manifest, `casper-version-phlo-20260919-01` and `casper-version-phlo-verification-20260919-01`, so their pointers keep the member list.
+
+A package now keeps only `report.json` and its `external.json` in the tree. `casper-rust-migration-20260917-01/bindings.tar.gz` also stays. Three more Markdown links now point to package pointers.
+
+| Measure | After the first reduction | After the second reduction |
+| --- | --- | --- |
+| PR #436 diff against `master` | 970 files, about 102,000 added lines | 889 files, about 92,200 added lines |
+| Files under `docs/casper/cbc-evidence/runs/` | 164 kept files and 45 pointers | 71 kept files and 57 pointers |
+| Release assets | 50 | 95 |
+| Claims audit, default and strict | exit 0 and exit 4 | exit 0 and exit 4, same output as the baseline |
+| Bindings inventory | exit 0 | exit 0 |
+| Offline link check of `docs/` | 0 errors | 0 errors |
+| `scripts/casper-soak` tests | 146 passed | 146 passed |
 

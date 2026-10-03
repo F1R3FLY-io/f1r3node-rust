@@ -1,27 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-binding-inventory-renewal-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-binding-inventory-renewal-20260919-01.external.tar.gz",
-  "asset_sha256": "ba4bfc1233c8e972e3f296e3069fb2d8bf6bb4fbcd94bcad4306a8293323f1cc",
-  "asset_bytes": 72105,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "previous-metadata.tar.gz",
-   "bytes": 12602,
-   "sha256": "9d7e06983cf0c357adba8408c1fd716099cf39b4d6e179547162e05738e0026d"
+   "asset": "casper-binding-inventory-renewal-20260919-01.external.tar.gz",
+   "sha256": "ba4bfc1233c8e972e3f296e3069fb2d8bf6bb4fbcd94bcad4306a8293323f1cc",
+   "bytes": 72105,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "verification-metadata.tar.gz",
-   "bytes": 59211,
-   "sha256": "e640bf59642e536505ac80587026909e65bd3fdae8322c5d2b0ffbde856e4fec"
+   "asset": "casper-binding-inventory-renewal-20260919-01.metadata.tar.gz",
+   "sha256": "9a293f332c55629b9fccfbf1a3b0d49ba9c055e0b4b76d6be69f2b43c1075795",
+   "bytes": 6300,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

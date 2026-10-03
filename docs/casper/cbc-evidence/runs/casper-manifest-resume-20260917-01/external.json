@@ -1,37 +1,21 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-manifest-resume-20260917-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-manifest-resume-20260917-01.external.tar.gz",
-  "asset_sha256": "6c0bdbc69ed731ca91aa9dc5d6a3e9e4275c69e2c6356c0f86ce1fcb4b34cb15",
-  "asset_bytes": 416447,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "artifacts.json",
-   "bytes": 182,
-   "sha256": "7859180dfe4176fa4e1a4af0cf9b58c407277f1f0781363d99dcb90664667432"
-  },
-  {
-   "path": "implementation.patch.txt",
-   "bytes": 21211,
-   "sha256": "5bbf30f07c31fc028de8d826577517fb9bfe9f2f73516de0a81f17dd32c728c8"
-  },
-  {
-   "path": "raw-evidence.tar.gz",
-   "bytes": 419172,
-   "sha256": "c0a15d651737d0dd0d0ba350aba830d8e1b1e4bedcd3e1c81d2bc1550c7cc918"
-  },
-  {
-   "path": "source-manifest.json",
-   "bytes": 7704,
-   "sha256": "1b76f6e007711f1da60e6dc0d3398c617f9bf2f49e41bc79a34e4057968fde7b"
+   "asset": "casper-manifest-resume-20260917-01.external.tar.gz",
+   "sha256": "6c0bdbc69ed731ca91aa9dc5d6a3e9e4275c69e2c6356c0f86ce1fcb4b34cb15",
+   "bytes": 416447,
+   "members": 4,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

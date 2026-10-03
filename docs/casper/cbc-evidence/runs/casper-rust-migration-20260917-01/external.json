@@ -1,47 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-rust-migration-20260917-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-rust-migration-20260917-01.external.tar.gz",
-  "asset_sha256": "ba1ab79e41d64ee61dafc21018b60c9879a2b547137181fa4e19c076fa9a7ff5",
-  "asset_bytes": 640524,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "bindings-report.json",
-   "bytes": 293,
-   "sha256": "85cb24628ef9563d38da60334775d78d6f9112dc6c8a77db4f9bed73111240ae"
+   "asset": "casper-rust-migration-20260917-01.external.tar.gz",
+   "sha256": "ba1ab79e41d64ee61dafc21018b60c9879a2b547137181fa4e19c076fa9a7ff5",
+   "bytes": 640524,
+   "members": 6,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "counts.json",
-   "bytes": 56,
-   "sha256": "6ffd846c7cc96397d00dd637a12b586b86c16fb8d6a8425128c2145d180e09b0"
-  },
-  {
-   "path": "implementation.patch.txt",
-   "bytes": 206446,
-   "sha256": "c66262db04fed4346679e8afc7ab4a460a0ead018228d617e218c120d2294acb"
-  },
-  {
-   "path": "source.tar.gz",
-   "bytes": 118682,
-   "sha256": "b6c42cf4bca916802f6f9e0288564023c281c734014f830eedc16c313ec17059"
-  },
-  {
-   "path": "sources.sha256",
-   "bytes": 3657,
-   "sha256": "24f9366fa8aa6be8a198c4e552eb1babef596ec031026f70a30edd0bb66fde93"
-  },
-  {
-   "path": "verification.tar.gz",
-   "bytes": 215609,
-   "sha256": "9979c8a08774e8d0d4ab0ee2f19773df7b25f6ff01868831fbe442663362e947"
+   "asset": "casper-rust-migration-20260917-01.metadata.tar.gz",
+   "sha256": "9f60398d6739ebc191baee05c88d47b153072328521fa8daf561d69f39460006",
+   "bytes": 702,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

@@ -1,22 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-campaign-dispatch-5e26ba4c5-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-campaign-dispatch-5e26ba4c5-01.external.tar.gz",
-  "asset_sha256": "5ff14d8345fa709013482119db8cb81843dc3cc03447ec1fcdf5abc51880ef69",
-  "asset_bytes": 592,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "sources.sha256",
-   "bytes": 512,
-   "sha256": "c40507e52ee2069318680ed453bf8e19b5eef1b3193a6053674134949a0a70c4"
+   "asset": "casper-campaign-dispatch-5e26ba4c5-01.external.tar.gz",
+   "sha256": "5ff14d8345fa709013482119db8cb81843dc3cc03447ec1fcdf5abc51880ef69",
+   "bytes": 592,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-campaign-dispatch-5e26ba4c5-01.metadata.tar.gz",
+   "sha256": "f9aa4ca094eedb676fe8d6d1cef3c2ba6b300f46f51cb5130293008b6df4593c",
+   "bytes": 852,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

@@ -1,72 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-slashing-20260919-02",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-slashing-20260919-02.external.tar.gz",
-  "asset_sha256": "4fd1769cc0eb477e97020eff4f4c1ce7bfc0c3401203d79b7b5f3f90cbaa6eb8",
-  "asset_bytes": 2933175,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "artifact-files.txt",
-   "bytes": 679,
-   "sha256": "53ae3bd86744aadb6dae47a8a9d0e0f209c3432c9dc57e1fd1cd1247d8c667c6"
+   "asset": "casper-slashing-20260919-02.external.tar.gz",
+   "sha256": "4fd1769cc0eb477e97020eff4f4c1ce7bfc0c3401203d79b7b5f3f90cbaa6eb8",
+   "bytes": 2933175,
+   "members": 11,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "evidence.sha256",
-   "bytes": 2020200,
-   "sha256": "6648530899d79ac349cbdc49b6d2c7f62cd19840f392fa7819c6c38ef5b66963"
-  },
-  {
-   "path": "evidence.tar.gz",
-   "bytes": 2674365,
-   "sha256": "42ffc43be4c5ac4a0c7bec4cdfff96ce1229cbc501dd9085a7424d7601b53fd1"
-  },
-  {
-   "path": "private-path-scan.txt",
-   "bytes": 0,
-   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  },
-  {
-   "path": "source-files.txt",
-   "bytes": 1033,
-   "sha256": "9d155301a7f6d28ac31acb765f02a7656ca563c06184dc5459d78de4385d0b76"
-  },
-  {
-   "path": "source.sha256",
-   "bytes": 2617,
-   "sha256": "47c33e8de24e7e5b885bbdbc5e1bf92fe01e5a5688e9bab7e258c4f965c919ec"
-  },
-  {
-   "path": "source.tar.gz",
-   "bytes": 92072,
-   "sha256": "6c41271eeeff5ce51966974a93b423331235d5e1491a255b8246337803830ef6"
-  },
-  {
-   "path": "symlinks.txt",
-   "bytes": 425,
-   "sha256": "37ba55232f495257e00d6c1d4da605cd556164477f95f2af102ccf6b898b58b1"
-  },
-  {
-   "path": "validate.sh",
-   "bytes": 6712,
-   "sha256": "fbfbb6742ca66ddae46d004d226bb430b5b559476fa1936fd32353000c3c1e7c"
-  },
-  {
-   "path": "validation-files.sha256",
-   "bytes": 701,
-   "sha256": "09734788092bdc4aaf068111d5c630535167248ca686bbc0769848d166fca17d"
-  },
-  {
-   "path": "validation-history.tar.gz",
-   "bytes": 64240,
-   "sha256": "af4a1635e594b51c458583192d84db8687fae2d234a89f6e7fc4b42550c2ee0a"
+   "asset": "casper-slashing-20260919-02.metadata.tar.gz",
+   "sha256": "7ea110807bd1bb921ad0fadb79794d547637fae2608e5ce8e653234c07e028ab",
+   "bytes": 3425,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

@@ -1,27 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-formal-area-records-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-formal-area-records-20260919-01.external.tar.gz",
-  "asset_sha256": "a28d054a3c62a4cc03c65db7ad74b03433263923700ce292437fd09d45219dba",
-  "asset_bytes": 1895,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "evidence-inputs.sha256",
-   "bytes": 3288,
-   "sha256": "36c7bf5cba65a1a7b2c867496ec7ca75bb0d361be5d6896cb21fade46eca1404"
+   "asset": "casper-formal-area-records-20260919-01.external.tar.gz",
+   "sha256": "a28d054a3c62a4cc03c65db7ad74b03433263923700ce292437fd09d45219dba",
+   "bytes": 1895,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "source-artifacts.sha256",
-   "bytes": 220,
-   "sha256": "4decfcc4241bad0ea03af7dd59c7e71833c8b67d87b3e0c9a486c1ed21f88800"
+   "asset": "casper-formal-area-records-20260919-01.metadata.tar.gz",
+   "sha256": "96d94b5bc4455ba9d6c6306f50dc773878c225d3812446d0b07dd8380010da67",
+   "bytes": 2654,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

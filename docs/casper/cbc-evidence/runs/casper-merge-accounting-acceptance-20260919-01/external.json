@@ -1,27 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-merge-accounting-acceptance-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-merge-accounting-acceptance-20260919-01.external.tar.gz",
-  "asset_sha256": "b2a790fe7f2e8f8a9812252f888ecc513bb26d64a2e227c0275af5db86f92286",
-  "asset_bytes": 2086,
-  "bundle_created": "2026-10-03"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "canonical-ledgers.sha256",
-   "bytes": 1941,
-   "sha256": "b797ab0f667c15f1b7cff44100401d960230b803862ff254112f9a9d9d317956"
+   "asset": "casper-merge-accounting-acceptance-20260919-01.external.tar.gz",
+   "sha256": "b2a790fe7f2e8f8a9812252f888ecc513bb26d64a2e227c0275af5db86f92286",
+   "bytes": 2086,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "checks.sha256",
-   "bytes": 2983,
-   "sha256": "23fe115b8ae3becf2a710bbefabffc623abecadbe402898d5c976ff6bf73c0db"
+   "asset": "casper-merge-accounting-acceptance-20260919-01.metadata.tar.gz",
+   "sha256": "a08144f07930ab5a04981757e5388ddb784700064753b60f0fe4cd66b7378ea2",
+   "bytes": 1045,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

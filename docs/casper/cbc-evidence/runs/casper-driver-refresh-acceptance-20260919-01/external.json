@@ -1,137 +1,29 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-driver-refresh-acceptance-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-driver-refresh-acceptance-20260919-01.external.tar.gz",
-  "asset_sha256": "6337a2c0a4c45edd5a04081200a92df77de550c795237781a6b07bc85486eb3a",
-  "asset_bytes": 398152,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "accept.sh",
-   "bytes": 8645,
-   "sha256": "c91750f1e40d86725c269d39d1431af80afb862ccd31adc50963794dd9ec6e7e"
+   "asset": "casper-driver-refresh-acceptance-20260919-01.external.tar.gz",
+   "sha256": "6337a2c0a4c45edd5a04081200a92df77de550c795237781a6b07bc85486eb3a",
+   "bytes": 398152,
+   "members": 24,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   },
   {
-   "path": "attempts/pre-approval-claim-audit-strict.json",
-   "bytes": 1904,
-   "sha256": "da252d576735a2a96799c0ceb0e6cd488675b1fa4a53004003ca46b3ac49e2ae"
-  },
-  {
-   "path": "attempts/pre-approval-claim-audit.json",
-   "bytes": 1904,
-   "sha256": "da252d576735a2a96799c0ceb0e6cd488675b1fa4a53004003ca46b3ac49e2ae"
-  },
-  {
-   "path": "claim-audit-strict.json",
-   "bytes": 1907,
-   "sha256": "92cf73b337f35d76293d1e7b6685571dc190bb3690abe7f3644741cb082fe535"
-  },
-  {
-   "path": "claim-audit.json",
-   "bytes": 1907,
-   "sha256": "92cf73b337f35d76293d1e7b6685571dc190bb3690abe7f3644741cb082fe535"
-  },
-  {
-   "path": "evidence/binding-check/artifacts.sha256",
-   "bytes": 172823,
-   "sha256": "28474ff3ff84266d617de76dcbc4ee41e504dfa8882313f4b72f17cf9f2fff10"
-  },
-  {
-   "path": "evidence/binding-check/counts.json",
-   "bytes": 172,
-   "sha256": "dfbda691843923fbfe2f92b2ba9818eb30a2c032dfa6fad7e07bed7bc7bf2053"
-  },
-  {
-   "path": "evidence/binding-check/evidence.tar.gz",
-   "bytes": 337812,
-   "sha256": "74bc1c76da2edf277961e48f5ae4ef60ac27f415a2f18d3d2edf7e7dd29786c7"
-  },
-  {
-   "path": "evidence/binding-check/report.json",
-   "bytes": 385,
-   "sha256": "e0d24ccd932d50416fe2b8ab76d945ad0605ce93094009c6052d33c0eceba763"
-  },
-  {
-   "path": "evidence/binding-check/source-check.txt",
-   "bytes": 13803,
-   "sha256": "14c7d8dc8cdfdfdbb19a288f0f91ed819ca5efe921219cc71387f0265a5ea044"
-  },
-  {
-   "path": "evidence/binding-check/sources.sha256",
-   "bytes": 25831,
-   "sha256": "832e5d4cff1cc31e446654131578202a71d38e0f745eb18f218b19a3800dbbcb"
-  },
-  {
-   "path": "evidence/binding-check/suite-results.txt",
-   "bytes": 732,
-   "sha256": "3dc5a5f4af083c93c7f941ccb6d363169e73c4261b1ff627fc8f8937564ae9b0"
-  },
-  {
-   "path": "ledgers.txt",
-   "bytes": 1804,
-   "sha256": "83258c9e81ee86a45af931b74107eb44f9495eeab934cb477b745a9bd70a9160"
-  },
-  {
-   "path": "production-equivalence/accepted-host_control.rs",
-   "bytes": 21534,
-   "sha256": "126969ad1aa4b638523e4368b5ad5c9c162b54b46a7d082ee85f678b4c8ae87e"
-  },
-  {
-   "path": "production-equivalence/accepted-production.rs",
-   "bytes": 12504,
-   "sha256": "a9afbbf1e5ae84d1d62531016b82c7a28bdd1ac58b4ca1e1f76ee528597c28da"
-  },
-  {
-   "path": "production-equivalence/current-host_control.rs",
-   "bytes": 21964,
-   "sha256": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9"
-  },
-  {
-   "path": "production-equivalence/current-production.rs",
-   "bytes": 12504,
-   "sha256": "a9afbbf1e5ae84d1d62531016b82c7a28bdd1ac58b4ca1e1f76ee528597c28da"
-  },
-  {
-   "path": "production-equivalence/digests.sha256",
-   "bytes": 358,
-   "sha256": "eb4c170fb6bfd94c36cd986d298708551d6c23f9152efc020f3227ce47f881f5"
-  },
-  {
-   "path": "production-equivalence/result.txt",
-   "bytes": 10,
-   "sha256": "1cc103f316d7707bb7ead8d7a203934bbf0f1251b615eb6056deb22c90d6144f"
-  },
-  {
-   "path": "production-equivalence/strip-tests.sh",
-   "bytes": 281,
-   "sha256": "15962f72d1a573283de0140c309b63f4a4400846c647e18a71781cb583f6edb3"
-  },
-  {
-   "path": "review-report.json",
-   "bytes": 12286,
-   "sha256": "43474d5210ee88f21319abdcfc151ae205824419f0ca18a53c672e138ca9cb77"
-  },
-  {
-   "path": "review-source-files.sha256",
-   "bytes": 7292,
-   "sha256": "aead4a161aed7d12d8763079242f634e1f1dc05b26611823f7eed3ac64a43d8b"
-  },
-  {
-   "path": "source-files.sha256",
-   "bytes": 7292,
-   "sha256": "7bfe6272a129a6667d9b00843b231f822098d89568162e8f1949db36b15a2923"
-  },
-  {
-   "path": "validate.sh",
-   "bytes": 2448,
-   "sha256": "a50c2d09052f6b18dc91ef810e7e4cba1e5558a470de00d6090ed4642c75b4fd"
+   "asset": "casper-driver-refresh-acceptance-20260919-01.metadata.tar.gz",
+   "sha256": "10f4884100209e17f4a8a0c60bde936f07455f44a1274bcdb52b491011eb93fb",
+   "bytes": 1794,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

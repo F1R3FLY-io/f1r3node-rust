@@ -1,57 +1,21 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-prerequisite-evidence-audit-20260917-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-prerequisite-evidence-audit-20260917-01.external.tar.gz",
-  "asset_sha256": "bade0b0f46e72a67d19a0994d56c63827550296ff010aa3f3a1116ec9db89fa4",
-  "asset_bytes": 2428,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "10056856375/tlc-carrier_index-MC_CarrierIndex.txt",
-   "bytes": 1415,
-   "sha256": "8d4a0a893c4a32efef8040cf4bd4977f8440e0f852a0629a35bb04412f25c977"
-  },
-  {
-   "path": "10056856375/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
-   "bytes": 1453,
-   "sha256": "c38aa4d69d6e5083043fdf6304aa9f2c6fafe9ca8ce93ac54fe291871c51a50c"
-  },
-  {
-   "path": "10056856375/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
-   "bytes": 1900,
-   "sha256": "072ec7d2008a1833ae3ad1fbdf3b36ec6887116556ca1ccd0e97d85c751801d1"
-  },
-  {
-   "path": "10056856375/tlc-replay_liveness-MC_ReplayHotLoop.txt",
-   "bytes": 1625,
-   "sha256": "b9932e4892926b8006bc4575ea331aca36ac88bf3698444cbdc93dd5a49334f7"
-  },
-  {
-   "path": "10063312912/tlc-carrier_index-MC_CarrierIndex.txt",
-   "bytes": 1417,
-   "sha256": "beb57c8b531ce2c8d34cde1d00600dd5154fa762ebdf0ef7f69d0ca0e228dd40"
-  },
-  {
-   "path": "10063312912/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
-   "bytes": 1452,
-   "sha256": "51b0c9bb00ecf3d86f64977a2f83f4f374d4eb298fb29527d2f73165947721a9"
-  },
-  {
-   "path": "10063312912/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
-   "bytes": 1900,
-   "sha256": "e1cfa9198c8fd4026930a368a7c8ca473fda8309ee8e49e3673f64e8490a4cca"
-  },
-  {
-   "path": "10063312912/tlc-replay_liveness-MC_ReplayHotLoop.txt",
-   "bytes": 1624,
-   "sha256": "6b29b66e04e31f04f29defbe997d972bbcfa8dc8e38f3073e1f5a42eaff1223b"
+   "asset": "casper-prerequisite-evidence-audit-20260917-01.external.tar.gz",
+   "sha256": "bade0b0f46e72a67d19a0994d56c63827550296ff010aa3f3a1116ec9db89fa4",
+   "bytes": 2428,
+   "members": 8,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

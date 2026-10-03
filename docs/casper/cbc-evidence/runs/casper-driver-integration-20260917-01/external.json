@@ -1,32 +1,21 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-driver-integration-20260917-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-driver-integration-20260917-01.external.tar.gz",
-  "asset_sha256": "1ead08b462c80639397276ecbf8236ac03504a5f6f87ae915f56636594c254b8",
-  "asset_bytes": 444826,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "artifacts.json",
-   "bytes": 3217506,
-   "sha256": "06362f209b4793389927562969bb249636af908b79af53ba5f9ed47a9cda0ce8"
-  },
-  {
-   "path": "implementation.patch.txt",
-   "bytes": 8291,
-   "sha256": "233f440e4c3c8b001e11706e2cf861d7f1c03e7a9eecfe9b67c7a66294ebb959"
-  },
-  {
-   "path": "source-manifest.json",
-   "bytes": 30435,
-   "sha256": "964e8c6010f1caeac24a3fd3b457b739bb34a504274ea99db4959935f1c45698"
+   "asset": "casper-driver-integration-20260917-01.external.tar.gz",
+   "sha256": "1ead08b462c80639397276ecbf8236ac03504a5f6f87ae915f56636594c254b8",
+   "bytes": 444826,
+   "members": 3,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

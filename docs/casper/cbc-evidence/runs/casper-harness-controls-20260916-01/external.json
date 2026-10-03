@@ -1,82 +1,21 @@
 {
- "schema_version": 1,
+ "schema_version": 2,
  "package": "casper-harness-controls-20260916-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
   "kind": "github-release",
   "repository": "F1R3FLY-io/f1r3node-rust",
-  "tag": "cbc-evidence-epic-017",
-  "asset": "casper-harness-controls-20260916-01.external.tar.gz",
-  "asset_sha256": "4960f956e39d4e9392d044b871fe8039906819d74459a2a4194e35ffb57f0536",
-  "asset_bytes": 4133,
-  "bundle_created": "2026-09-19"
+  "tag": "cbc-evidence-epic-017"
  },
- "members": [
+ "assets": [
   {
-   "path": "MC_CasperSoakHarness.txt",
-   "bytes": 1338,
-   "sha256": "272981919efeecae1a0431da19640fc136776520cdce48802df53cabb1be2daa"
-  },
-  {
-   "path": "MC_CasperSoakHarness_cleanup_unsafe.txt",
-   "bytes": 4024,
-   "sha256": "691520151b70a0a6ee80d84b5ffacc4b96e07ecc4deb022927729f4abef363fc"
-  },
-  {
-   "path": "MC_CasperSoakHarness_control_unsafe.txt",
-   "bytes": 3303,
-   "sha256": "4781204363007b65a7991e19b4aac5fcebf2916ff5f511fb26378fba86946d75"
-  },
-  {
-   "path": "MC_CasperSoakHarness_evidence_unsafe.txt",
-   "bytes": 11355,
-   "sha256": "49c78a1d95a26c4de254ec27c7df2357f9b478244cd01dbe7deb3f1575a06677"
-  },
-  {
-   "path": "MC_CasperSoakHarness_failure_unsafe.txt",
-   "bytes": 4753,
-   "sha256": "ef4efc22f601add7f466bf18ee6ca3e880d8132210ee2801bd4a50947ede59a8"
-  },
-  {
-   "path": "MC_CasperSoakHarness_identity_unsafe.txt",
-   "bytes": 3294,
-   "sha256": "049c3cb97fb6951bb07ed4da8d097178676da8d7725a7d88cfe42620ec3c528c"
-  },
-  {
-   "path": "MC_CasperSoakHarness_merge_unsafe.txt",
-   "bytes": 2576,
-   "sha256": "6dd7c0db7ed59b06c0cecc0d2cfa9353ec6ca668385411502e70d8892f80992a"
-  },
-  {
-   "path": "MC_CasperSoakHarness_policy_unsafe.txt",
-   "bytes": 3302,
-   "sha256": "a6619123736b24d79d0d30069527f7c7da4512b7e42158a5eb04a21ab999c913"
-  },
-  {
-   "path": "MC_CasperSoakHarness_resume_unsafe.txt",
-   "bytes": 4754,
-   "sha256": "9a4cafe52e16179f0b6bff99050cd3c99e68a449c54fa3ba1f712f982396cc0c"
-  },
-  {
-   "path": "MC_CasperSoakHarness_samples_unsafe.txt",
-   "bytes": 4021,
-   "sha256": "28111f933dbedce3573dd308fad37a666159df71564d8a0d8cc5bc20e4c3aac8"
-  },
-  {
-   "path": "MC_CasperSoakHarness_stop_unsafe.txt",
-   "bytes": 4023,
-   "sha256": "8460fdd27154ba2ff82d2e1b5ad611dd7b793c7d20ed5bfadb6dd1527983025f"
-  },
-  {
-   "path": "java-launcher-error.txt",
-   "bytes": 244,
-   "sha256": "5ea79eaf9afd03bbfbfd103c3ac0a744275f7d1aaeef2df4370907b2ebb498e0"
-  },
-  {
-   "path": "runner-tests.txt",
-   "bytes": 1827,
-   "sha256": "2c73194e572e476f7a3dc318068ee762020bc8cfbe569f3da0f89d99ad8a4c75"
+   "asset": "casper-harness-controls-20260916-01.external.tar.gz",
+   "sha256": "4960f956e39d4e9392d044b871fe8039906819d74459a2a4194e35ffb57f0536",
+   "bytes": 4133,
+   "members": 13,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
   }
  ]
 }

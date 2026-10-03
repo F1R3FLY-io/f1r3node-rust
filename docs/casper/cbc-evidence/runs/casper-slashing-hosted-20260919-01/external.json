@@ -1,6 +1,6 @@
 {
  "schema_version": 2,
- "package": "casper-positive-search-20260917-01",
+ "package": "casper-slashing-hosted-20260919-01",
  "task": "TASK-017-14",
  "recorded_on": "2026-10-03",
  "store": {
@@ -10,11 +10,11 @@
  },
  "assets": [
   {
-   "asset": "casper-positive-search-20260917-01.external.tar.gz",
-   "sha256": "51961ea4a6c1492ab8579c76efd1ac071c81d1b692cfc95aa12442169faf8c9f",
-   "bytes": 81593,
-   "members": 120,
-   "bundle_created": "2026-09-19",
+   "asset": "casper-slashing-hosted-20260919-01.metadata.tar.gz",
+   "sha256": "dff6200d8c68b90ec79485d44999d2666729580265e3ab5867c4a5e3a872703e",
+   "bytes": 917,
+   "members": 2,
+   "bundle_created": "2026-10-03",
    "inner_manifest": "external-manifest.json"
   }
  ]
