@@ -1,0 +1,51 @@
+{
+  "command": [
+    "/opt/homebrew/bin/bash",
+    "../../SA/top-level-gitlab-profile/AItools/scripts/cbc.sh",
+    "discharge",
+    "--files",
+    "block-storage/src/rust/dag/block_dag_key_value_storage.rs block-storage/src/rust/dag/block_metadata_store.rs block-storage/src/rust/dag/mod.rs block-storage/src/rust/dag/soak_snapshot.rs block-storage/src/rust/key_value_block_store.rs block-storage/tests/soak_snapshot.rs formal/tlaplus/node_observation/BoundedCapture.tla formal/tlaplus/node_observation/MC_BoundedCapture.cfg formal/tlaplus/node_observation/MC_BoundedCapture.tla formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla formal/tlaplus/node_observation/MC_ObserverSession.cfg formal/tlaplus/node_observation/MC_ObserverSession.tla formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla formal/tlaplus/node_observation/ObserverSession.tla formal/tlaplus/node_observation/README.md formal/tlaplus/node_observation/bindings.json formal/tlaplus/node_observation/verification-plan.json node/src/rust/configuration/commandline/config_mapper.rs node/src/rust/configuration/commandline/options.rs node/src/rust/configuration/mod.rs node/src/rust/configuration/model.rs node/src/rust/diagnostics/tests.rs node/src/rust/mod.rs node/src/rust/runtime/node_runtime.rs node/src/rust/soak_observer.rs node/tests/soak_observer.rs scripts/ci/check-node-observation-bindings.py scripts/ci/check-node-observation.py scripts/ci/check-tla-invariants.sh scripts/ci/test-check-node-observation-bindings.py scripts/ci/test-check-node-observation.py scripts/ci/test-check-tla-invariants.sh shared/src/rust/store/mod.rs shared/src/rust/store/soak_snapshot.rs shared/tests/soak_snapshot.rs",
+    "--strict",
+    "--json"
+  ],
+  "exit": 4,
+  "result": {
+    "total": 8,
+    "gaps": 8,
+    "items": [
+      {
+        "status": "pending",
+        "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs"
+      },
+      {
+        "status": "pending",
+        "path": "block-storage/src/rust/dag/soak_snapshot.rs"
+      },
+      {
+        "status": "pending",
+        "path": "block-storage/tests/soak_snapshot.rs"
+      },
+      {
+        "status": "pending",
+        "path": "node/src/rust/soak_observer.rs"
+      },
+      {
+        "status": "pending",
+        "path": "node/tests/soak_observer.rs"
+      },
+      {
+        "status": "pending",
+        "path": "scripts/ci/check-tla-invariants.sh"
+      },
+      {
+        "status": "pending",
+        "path": "shared/src/rust/store/soak_snapshot.rs"
+      },
+      {
+        "status": "pending",
+        "path": "shared/tests/soak_snapshot.rs"
+      }
+    ]
+  },
+  "stderr": ""
+}

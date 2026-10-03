@@ -66,6 +66,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
     last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
+    observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
 ) -> Result<
     (
         Arc<dyn PacketHandler>,
@@ -314,7 +315,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let engine_cell = {
         use casper::rust::engine::engine_cell::EngineCell;
 
-        EngineCell::init()
+        match observer {
+            Some(observer) => EngineCell::observed(observer),
+            None => EngineCell::init(),
+        }
     };
 
     // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)

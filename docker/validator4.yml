@@ -19,7 +19,8 @@ services:
     networks:
       - f1r3fly
     environment:
-      # Passed only when set, so logging.filter in the node config applies by default.
+      # Passed only when set, so logging.filter in the node config
+      # applies by default.
       - RUST_LOG
     logging:
       driver: json-file
@@ -28,12 +29,15 @@ services:
         max-file: "3"
     container_name: ${VALIDATOR4_HOST:-rnode.validator4}
     command:
+      - --log-sink=stdout
       - run
       - --host=${VALIDATOR4_HOST:-rnode.validator4}
       - --allow-private-addresses
       - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404
       - --validator-public-key=${VALIDATOR4_PUBLIC_KEY:-04d26c6103d7269773b943d7a9c456f9eb227e0d8b1fe30bccee4fca963f4446e3385d99f6386317f2c1ad36b9e6b0d5f97bb0a0041f05781c60a5ebca124a251d}
-      - --validator-private-key=${VALIDATOR4_PRIVATE_KEY:?VALIDATOR4_PRIVATE_KEY must be set}
+      - >-
+        --validator-private-key=${VALIDATOR4_PRIVATE_KEY:?VALIDATOR4_PRIVATE_KEY
+        must be set}
     ports:
       - "40440:40400"
       - "40441:40401"

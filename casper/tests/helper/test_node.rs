@@ -1154,6 +1154,7 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            observer: std::sync::OnceLock::new(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),

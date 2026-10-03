@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-controlled-preparation-009262781-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-controlled-preparation-009262781-01.external.tar.gz",
+   "sha256": "32ee3f0f4a4544cbd13985f88f902171ff5416f0abb503fd738db9aa23407690",
+   "bytes": 14121,
+   "members": 10,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

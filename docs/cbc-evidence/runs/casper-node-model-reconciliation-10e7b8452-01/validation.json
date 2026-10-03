@@ -1,0 +1,39 @@
+{
+  "kind": "node-view-integrity-not-discharge",
+  "status": "passed",
+  "input_files": 80,
+  "claim_artifacts": 70,
+  "mandatory_artifacts": 59,
+  "node_records": 57,
+  "shared_historical_records": 2,
+  "shared_record_node_digest_pins": 0,
+  "node_claim_digests_checked": 61,
+  "gate_view_claim_digests_checked": 2,
+  "source_digest_mismatches": 0,
+  "claim_digest_mismatches": 0,
+  "report_digest_mismatches": 0,
+  "report_sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c",
+  "selected_evidence": {
+    "manifest": "selected-evidence.sha256",
+    "sha256": "2c0e9f2b6f3095d4d9cf16371cb379627c777e978c3d24f6d95406da00f99ce6",
+    "files_checked": 298,
+    "scope": "Selected retained files, including compiled Rocq objects. Build-cache trees and copied source directories have separate manifests."
+  },
+  "tlc_tool_identity": {
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "source": "Previously pinned local TLC jar, mounted read-only for verification.",
+    "revalidated_after_run": true,
+    "revalidated_before_this_run": false
+  },
+  "prior_node_records_checked": 57,
+  "strict_gate": {
+    "exit": 4,
+    "total": 59,
+    "gaps": 59
+  },
+  "claim_gate": "blocked",
+  "maintainer_acceptance": null,
+  "retained_validation_failure": "The first final validation reported unbaselined legacy tracker prose. The original log and unchanged-base baseline remain retained.",
+  "human_ste_review": "not-recorded",
+  "full_ste_conformance": "not-claimed"
+}
