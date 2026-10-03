@@ -89,7 +89,7 @@ The controlled recovery test reaches handshake timeout. It does not establish su
 TASK-020-2 has [local file-budget verification](work-logs/task-020-2-byte-bounded-logging-20260930.md).
 The file sink defaults to 100 MiB per file and 2 GiB across its log directory.
 TASK-020-3 has [local deployment checks](work-logs/task-020-3-deployment-log-caps-20260930.md) for single sinks and container caps.
-The external single-sink correction remains open because system-integration still selects both sinks.
+The external single-sink correction merged into system-integration `dev` through PR #146 at `ccd717195`.
 TASK-020-4 still requires guardian enforcement.
 Integration-test references remain empty until actual deployment tests exist. No generated specification is treated as executed evidence.
 
