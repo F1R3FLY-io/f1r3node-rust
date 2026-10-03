@@ -1079,6 +1079,10 @@ impl ReducerCore {
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
 
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
+
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
         // (b) tuple channels with a head that ISN'T in the tag registry
@@ -2082,6 +2086,24 @@ impl ReducerCore {
                     }
                 }
 
+                (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    let f1 = f32::from_bits(d1);
+                    let f2 = f32::from_bits(d2);
+                    if f1.is_nan() || f2.is_nan() {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(false)),
+                        })
+                    } else {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(relopi(
+                                f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                                0,
+                            ))),
+                        })
+                    }
+                }
+
                 (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                     self.metering
                         .reserve_primitive(bigint_comparison_cost(b1.len(), b2.len()))?;
@@ -2148,6 +2170,10 @@ impl ReducerCore {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
                 }),
 
+                ExprInstance::GFloat32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(*x)),
+                }),
+
                 ExprInstance::GBigInt(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GBigInt(x.clone())),
                 }),
@@ -2184,6 +2210,12 @@ impl ReducerCore {
                             let f = f64::from_bits(bits);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
+                            })
+                        }
+                        ExprInstance::GFloat32(bits) => {
+                            let f = f32::from_bits(bits);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32((-f).to_bits())),
                             })
                         }
                         ExprInstance::GBigInt(bytes) => {
@@ -2242,6 +2274,13 @@ impl ReducerCore {
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(multiplication_cost())?;
+                            let result = f32::from_bits(d1) * f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -2322,6 +2361,13 @@ impl ReducerCore {
                             let result = f64::from_bits(d1) / f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(division_cost())?;
+                            let result = f32::from_bits(d1) / f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -2407,7 +2453,8 @@ impl ReducerCore {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
+                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
                             ))
@@ -2504,6 +2551,14 @@ impl ReducerCore {
                             })
                         }
 
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(sum_cost())?;
+                            let result = f32::from_bits(d1) + f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
+                            })
+                        }
+
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                             self.metering
                                 .reserve_primitive(bigint_sum_cost(b1.len(), b2.len()))?;
@@ -2559,6 +2614,7 @@ impl ReducerCore {
 
                         (ExprInstance::GInt(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2593,6 +2649,14 @@ impl ReducerCore {
                             let result = f64::from_bits(d1) - f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(subtraction_cost())?;
+                            let result = f32::from_bits(d1) - f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -2670,6 +2734,7 @@ impl ReducerCore {
 
                         (ExprInstance::GInt(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -7847,6 +7912,7 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
         ExprInstance::GDouble(_) => String::from("float"),
+        ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),
         ExprInstance::GFixedPoint(_) => String::from("fixedpoint"),
@@ -7897,6 +7963,7 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 fn par_contains_nan_double(par: &Par) -> bool {
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(ExprInstance::GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
@@ -8156,3 +8223,70 @@ mod economic_failure_tests;
 #[cfg(test)]
 #[path = "reduce_byte_receipts_tests.rs"]
 mod byte_receipts_tests;
+#[cfg(test)]
+mod is_mergeable_channel_tests {
+    use models::rhoapi::{ETuple, Expr};
+    use models::rust::utils::new_gstring_par;
+
+    use super::*;
+    use crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name;
+    use crate::rust::interpreter::test_utils::resources::with_runtime;
+
+    fn tuple(ps: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps,
+                locally_free: vec![],
+                connective_used: false,
+            })),
+        }])
+    }
+
+    async fn merge_type(chan: Par) -> Option<MergeType> {
+        with_runtime("is-mergeable-channel-", |runtime| async move {
+            runtime.reducer.is_mergeable_channel(&chan)
+        })
+        .await
+    }
+
+    fn other() -> Par { new_gstring_par("x".to_string(), vec![], false) }
+
+    #[tokio::test]
+    async fn a_channel_that_is_not_a_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(bitmask_or_mergeable_tag_name()).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_empty_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_with_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_without_a_tag_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![other()])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_tuple_whose_head_is_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name(), other()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_after_the_head_is_not_matched() {
+        assert_eq!(
+            merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
+            None
+        );
+    }
+}

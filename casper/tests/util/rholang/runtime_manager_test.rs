@@ -25,7 +25,9 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
+use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
@@ -254,7 +256,7 @@ where
     F: Fn(&S::Result) -> bool,
     <S as SystemDeployTrait>::Result: PartialEq,
 {
-    let runtime = runtime_manager.spawn_runtime().await;
+    let runtime = runtime_manager.spawn_runtime().await.unwrap();
     {
         runtime
             .set_block_data(BlockData {
@@ -280,7 +282,7 @@ where
         } => {
             result_assertion(&play_result);
 
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
             {
                 replay_runtime
                     .set_block_data(BlockData {
@@ -744,6 +746,84 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                 .unwrap();
 
             assert!(bonds2 == bonds3);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let bad_rholang =
+                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
+            let deploy = construct_deploy::source_deploy_now_full(
+                bad_rholang.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let result = compute_state(
+                &mut runtime_manager,
+                &genesis_context,
+                deploy,
+                &genesis_block.body.state.post_state_hash,
+            )
+            .await;
+
+            assert!(result.1.is_failed);
+            assert!(result.1.cost.cost == bad_rholang.len() as u64);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_state_should_charge_for_parsing_and_execution() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let correct_rholang =
+                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(2) } "#;
+            let rand = Blake2b512Random::create_from_bytes(&Vec::new());
+            let inital_phlo = Cost::unsafe_max();
+            let deploy = construct_deploy::source_deploy_now_full(
+                correct_rholang.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
+            runtime.cost.set(inital_phlo.clone());
+            let _legacy_scope = runtime.cost.enter_legacy_scope();
+            let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
+            let _ = runtime.inj(term, Env::new(), rand).await;
+            let phlos_left = runtime.cost.get();
+            let reduction_cost = inital_phlo - phlos_left;
+
+            let parsing_cost = Cost::create(correct_rholang.len() as i64, "parsing");
+
+            let result = compute_state(
+                &mut runtime_manager,
+                &genesis_context,
+                deploy,
+                &genesis_block.body.state.post_state_hash,
+            )
+            .await;
+
+            assert_eq!(
+                result.1.cost.cost,
+                (reduction_cost + parsing_cost).value as u64
+            );
         },
     )
     .await
@@ -1846,7 +1926,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -2235,7 +2315,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -2773,7 +2853,7 @@ in {
                 .to_string();
 
             // Checkpoint via a fresh runtime so exploratory deploy can see the state
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut runtime_ops = RuntimeOps::new(runtime);
             runtime_ops
                 .runtime
@@ -3014,7 +3094,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -3717,7 +3797,7 @@ async fn strict_exploratory_query_propagates_execution_failure() {
             let failing_par =
                 Compiler::source_to_adt(failing_source).expect("compile failing term");
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut ops = RuntimeOps::new(runtime);
 
             // Lenient path (display/API callers): degrades to an empty result.

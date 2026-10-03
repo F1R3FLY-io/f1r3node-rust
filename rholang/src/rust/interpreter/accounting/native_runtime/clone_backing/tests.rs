@@ -388,6 +388,7 @@ fn every_expression_and_container_payload_has_clone_backing() {
         GBool(true),
         GInt(1),
         GDouble(1),
+        GFloat32(1),
         GString("text".repeat(32)),
         GUri("uri".repeat(32)),
         GByteArray(vec![0; 128]),

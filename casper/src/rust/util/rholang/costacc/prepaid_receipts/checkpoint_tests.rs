@@ -25,11 +25,11 @@ async fn history(operations: Vec<(usize, u8, u8)>) {
         Arc::new(Default::default()),
         ExternalServices::noop(),
     );
-    let mut initial = manager.spawn_runtime().await;
+    let mut initial = manager.spawn_runtime().await.unwrap();
     let mut published = initial.create_checkpoint().await.root;
     let mut values = [None, None, None, None];
     for (prefix, outcome, seed) in operations {
-        let mut candidate = RuntimeOps::new(manager.spawn_runtime().await);
+        let mut candidate = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
         candidate.runtime.reset(&published).await.unwrap();
         let fallback = candidate.runtime.create_soft_checkpoint().await;
         let before = values;
@@ -54,7 +54,7 @@ async fn history(operations: Vec<(usize, u8, u8)>) {
             (candidate.runtime.create_checkpoint().await.root, log)
         });
         reached.await.unwrap();
-        let mut observer = RuntimeOps::new(manager.spawn_runtime().await);
+        let mut observer = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
         observer.runtime.reset(&published).await.unwrap();
         assert_values(&observer, before).await;
         if outcome == 0 {
@@ -65,7 +65,7 @@ async fn history(operations: Vec<(usize, u8, u8)>) {
             if outcome == 1 {
                 assert_eq!(root, published);
             } else {
-                let mut replay = RuntimeOps::new(manager.spawn_replay_runtime().await);
+                let mut replay = RuntimeOps::new(manager.spawn_replay_runtime().await.unwrap());
                 replay.runtime.reset(&published).await.unwrap();
                 replay.runtime.rig(log).await.unwrap();
                 for index in 0..4 {

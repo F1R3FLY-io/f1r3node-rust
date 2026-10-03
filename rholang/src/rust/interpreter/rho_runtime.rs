@@ -266,7 +266,7 @@ pub struct RhoRuntimeImpl {
     pub block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
-    pub merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    pub(crate) merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -1597,7 +1597,7 @@ fn insert_mergeable_bindings(
     mergeable_tags: &HashMap<Par, MergeType>,
 ) -> Result<(), InterpreterError> {
     let conflict =
-        |uri| InterpreterError::ReduceError(format!("duplicate mergeable tag URI: {uri}"));
+        |uri| InterpreterError::SetupError(format!("duplicate mergeable tag URI: {uri}"));
     let tag_uri_bindings = mergeable_tag_uri_bindings(mergeable_tags).map_err(conflict)?;
     for (uri, tag_par) in tag_uri_bindings {
         let merge_type = mergeable_tags
@@ -1961,12 +1961,15 @@ pub async fn create_rho_env<T>(
     extra_system_processes: &mut Vec<Definition>,
     cost: RuntimeBudget,
     external_services: ExternalServices,
-) -> (
-    Arc<DebruijnInterpreter>,
-    Arc<tokio::sync::RwLock<BlockData>>,
-    InvalidBlocks,
-    Arc<tokio::sync::RwLock<DeployData>>,
-)
+) -> Result<
+    (
+        Arc<DebruijnInterpreter>,
+        Arc<tokio::sync::RwLock<BlockData>>,
+        InvalidBlocks,
+        Arc<tokio::sync::RwLock<DeployData>>,
+    ),
+    InterpreterError,
+>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
@@ -1977,7 +1980,7 @@ where
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    insert_mergeable_bindings(&mut urn_map, &mergeable_tags).unwrap();
+    insert_mergeable_bindings(&mut urn_map, &mergeable_tags)?;
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
@@ -2023,7 +2026,7 @@ where
         core,
     });
 
-    (reducer, block_data_ref, invalid_blocks, deploy_data_ref)
+    Ok((reducer, block_data_ref, invalid_blocks, deploy_data_ref))
 }
 
 // This is from Nassim Taleb's "Skin in the Game"
@@ -2049,7 +2052,7 @@ async fn create_runtime<T>(
     init_registry: bool,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl
+) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
@@ -2068,7 +2071,7 @@ where
         cost.clone(),
         external_services,
     )
-    .await;
+    .await?;
 
     let (reducer, block_ref, invalid_blocks, deploy_ref) = rho_env;
     let mut runtime = RhoRuntimeImpl::new(
@@ -2085,7 +2088,7 @@ where
         runtime.create_checkpoint().await;
     }
 
-    runtime
+    Ok(runtime)
 }
 
 /// Creates a runtime for executing Rholang code.
@@ -2118,7 +2121,7 @@ pub async fn create_rho_runtime<T>(
     init_registry: bool,
     extra_system_processes: &mut Vec<Definition>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl
+) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
@@ -2160,7 +2163,7 @@ pub async fn create_replay_rho_runtime<T>(
     init_registry: bool,
     extra_system_processes: &mut Vec<Definition>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl
+) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
@@ -2185,7 +2188,7 @@ pub(crate) async fn _create_runtimes<T, R>(
     additional_system_processes: &mut Vec<Definition>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
-) -> (RhoRuntimeImpl, RhoRuntimeImpl)
+) -> Result<(RhoRuntimeImpl, RhoRuntimeImpl), InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
@@ -2205,7 +2208,7 @@ where
         additional_system_processes,
         external_services.clone(),
     )
-    .await;
+    .await?;
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay_space,
@@ -2214,9 +2217,9 @@ where
         additional_system_processes,
         external_services,
     )
-    .await;
+    .await?;
 
-    (rho_runtime, replay_rho_runtime)
+    Ok((rho_runtime, replay_rho_runtime))
 }
 
 #[tracing::instrument(
@@ -2231,18 +2234,16 @@ pub async fn create_runtime_from_kv_store(
     additional_system_processes: &mut Vec<Definition>,
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl {
+) -> Result<RhoRuntimeImpl, InterpreterError> {
     let space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> =
         RSpace::create(stores, matcher).unwrap();
 
-    let runtime = create_rho_runtime(
+    create_rho_runtime(
         space,
         mergeable_tags,
         init_registry,
         additional_system_processes,
         external_services,
     )
-    .await;
-
-    runtime
+    .await
 }

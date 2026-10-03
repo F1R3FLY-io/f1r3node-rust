@@ -454,7 +454,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         wallet_log.extend(wallet_events.iter().cloned());
         let mut replay_runtime = manager
             .spawn_offered_replay_runtime(offered_grant_issue_call_limits(), budget.clone())
-            .await;
+            .await?;
         replay_runtime.set_block_data(self.block_data.clone()).await;
         replay_runtime
             .set_deploy_data(DeployData::from_envelope(processed.envelope()))
@@ -1501,7 +1501,7 @@ impl RuntimeManager {
         let root = settlement_root(before, exported.root().clone(), user_failure);
         let mut runtime = RuntimeOps::new(
             self.spawn_offered_runtime(offered_grant_issue_call_limits(), host.clone())
-                .await,
+                .await?,
         );
         runtime
             .runtime
@@ -1677,7 +1677,7 @@ impl RuntimeManager {
         );
         let mut runtime = RuntimeOps::new(
             self.spawn_offered_runtime(offered_grant_issue_call_limits(), settlement_host)
-                .await,
+                .await?,
         );
         runtime.runtime.set_block_data(context.block_data).await;
         runtime

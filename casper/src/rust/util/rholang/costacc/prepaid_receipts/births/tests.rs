@@ -56,7 +56,7 @@ async fn verify_live_birth_capture(
         Arc::new(Default::default()),
         ExternalServices::noop(),
     );
-    let mut runtime = RuntimeOps::new(manager.spawn_runtime().await);
+    let mut runtime = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
     let empty = runtime.runtime.create_checkpoint().await;
     let owners = (0..wallets)
         .map(|index| CostSignature {

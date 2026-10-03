@@ -539,10 +539,11 @@ where
         joins = combined_joins_count);
 
     // Combine all mergeable channels (in sorted order). Per-channel `MergeType`
-    // determines how diffs combine: integer-add uses wrapping addition; bitmask-OR
-    // uses bitwise OR through u64. Branches must agree on merge_type for a given
-    // channel; disagreement yields a tagged error so callers reject the merge
-    // rather than crashing the validator.
+    // determines how diffs combine: integer-add uses checked addition, and an
+    // overflow is an error rather than a wrap; bitmask-OR uses bitwise OR
+    // through u64. Branches must agree on merge_type for a given channel;
+    // disagreement yields a tagged error so callers reject the merge rather
+    // than crashing the validator.
     let mut all_mergeable_channels = NumberChannelsDiff::new();
     for item in &to_merge_items {
         let item_channels = mergeable_channels(item);

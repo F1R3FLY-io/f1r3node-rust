@@ -72,7 +72,7 @@ async fn fixture() -> (RuntimeManager, RuntimeOps) {
         Arc::new(Default::default()),
         ExternalServices::noop(),
     );
-    let runtime = RuntimeOps::new(manager.spawn_runtime().await);
+    let runtime = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
     (manager, runtime)
 }
 

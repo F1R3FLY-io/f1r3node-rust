@@ -330,7 +330,7 @@ impl RuntimeManager {
         let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
         let mut runtime = RuntimeOps::new(
             self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
-                .await,
+                .await?,
         );
         let block_data = context.block_data.clone();
         runtime.runtime.set_block_data(context.block_data).await;
@@ -421,7 +421,7 @@ impl RuntimeManager {
             context.host_work,
         )?;
         let root = policy.snapshot().wallets().pre_state_root();
-        let mut runtime = RuntimeOps::new(self.spawn_runtime().await);
+        let mut runtime = RuntimeOps::new(self.spawn_runtime().await?);
         runtime.runtime.set_block_data(context.block_data).await;
         runtime
             .runtime

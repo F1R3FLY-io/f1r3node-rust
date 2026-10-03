@@ -74,7 +74,7 @@ async fn general_wallet_cost_settlement_advances_both_cursors_once() {
         let before = balance(&manager, &initial, &payer).await;
         assert_eq!(cursor(&manager, &initial, [0xe2; 32]).await, None);
         assert_eq!(cursor(&manager, &initial, [0xe3; 32]).await, None);
-        let mut runtime = RuntimeOps::new(manager.spawn_runtime().await);
+        let mut runtime = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
         let first = match runtime
             .play_system_deploy(&initial, &mut request(&payer, &recipient, 0, 0))
             .await

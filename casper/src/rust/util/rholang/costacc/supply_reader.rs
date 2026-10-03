@@ -137,7 +137,7 @@ impl RuntimeManagerSupplyReader<'_> {
 
     async fn query_at_root(&self, source: String) -> Result<Vec<Par>, CasperError> {
         let query = Compiler::source_to_adt(&source).map_err(CasperError::InterpreterError)?;
-        let mut runtime = RuntimeOps::new(self.runtime_manager.spawn_runtime().await);
+        let mut runtime = RuntimeOps::new(self.runtime_manager.spawn_runtime().await?);
         runtime
             .play_exploratory_par_strict(query, &self.pre_state_hash)
             .await
@@ -252,7 +252,7 @@ mod tests {
             Arc::new(Default::default()),
             ExternalServices::noop(),
         );
-        let mut runtime = manager.spawn_runtime().await;
+        let mut runtime = manager.spawn_runtime().await.unwrap();
         let head = CostSignature {
             value: Some(Value::Ground(b"rooted-purse".to_vec())),
         };

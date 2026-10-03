@@ -146,7 +146,8 @@ async fn replay_process_with_funding(
         budget.clone(),
         ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
     block_data.write().await.block_number = 123;
     deploy_data.write().await.timestamp = 456;
     let scope = budget.enter_comm_accounting_scope();

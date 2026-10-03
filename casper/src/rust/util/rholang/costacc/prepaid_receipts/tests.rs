@@ -29,7 +29,8 @@ async fn runtime() -> RuntimeOps {
             Arc::new(Box::new(Matcher)),
             ExternalServices::noop(),
         )
-        .await,
+        .await
+        .unwrap(),
     )
 }
 

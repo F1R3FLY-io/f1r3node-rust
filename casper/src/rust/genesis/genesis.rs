@@ -1,6 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/Genesis.scala
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
@@ -48,6 +49,10 @@ impl Genesis {
 
     pub fn default_mergeable_tags() -> HashMap<Par, MergeType> {
         mergeable_tags::default_mergeable_tags()
+    }
+
+    pub fn default_mergeable_tags_arc() -> Arc<HashMap<Par, MergeType>> {
+        Arc::new(Self::default_mergeable_tags())
     }
 
     pub fn default_blessed_terms_with_timestamp(

@@ -185,7 +185,7 @@ impl TestFixture {
         let (runtime_manager, history_repo) = RuntimeManager::create_with_history(
             rspace_store.clone(), // Clone the Arc-wrapped store (cheap operation)
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 

@@ -226,7 +226,7 @@ async fn signed_v2_delegated_source_requires_its_root_and_envelope() {
         Arc::new(Default::default()),
         ExternalServices::noop(),
     );
-    let mut runtime = RuntimeOps::new(manager.spawn_runtime().await);
+    let mut runtime = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
     let original: [u8; 32] = runtime
         .runtime
         .create_checkpoint()

@@ -146,7 +146,8 @@ async fn create_runtimes_with_cost_log(
         additional_system_processes,
         ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay,
@@ -155,7 +156,8 @@ async fn create_runtimes_with_cost_log(
         additional_system_processes,
         ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     (rho_runtime, replay_rho_runtime, history_repository)
 }
