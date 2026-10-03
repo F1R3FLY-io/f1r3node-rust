@@ -318,6 +318,12 @@ impl FixedChannels {
     /// via `openat(O_NOFOLLOW)` + metadata.  Verifying observation
     /// (slice 4.18).
     pub fn fs_exists() -> Par { byte_name(52) }
+
+    /// `rho:io:fs:native:1.0.0/stat` — path-based file/dir metadata
+    /// via `openat(O_NOFOLLOW)` + metadata.  Returns a stat record
+    /// with cmode-gated host-transient field stripping.  Verifying
+    /// observation (slice 4.19).
+    pub fn fs_stat() -> Par { byte_name(51) }
 }
 
 pub struct BodyRefs;
@@ -382,6 +388,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/exists` body-ref (slice 4.18).
     pub const FS_EXISTS: i64 = 52;
+
+    /// `rho:io:fs:native:1.0.0/stat` body-ref (slice 4.19).
+    pub const FS_STAT: i64 = 51;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

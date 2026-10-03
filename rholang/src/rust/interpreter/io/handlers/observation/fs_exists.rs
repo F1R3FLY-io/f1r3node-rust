@@ -53,7 +53,6 @@
 // lands.
 
 use std::future::Future;
-use std::os::fd::FromRawFd;
 use std::path::PathBuf;
 use std::pin::Pin;
 
@@ -68,7 +67,7 @@ use crate::rust::interpreter::io::handler_trait::{
     HandlerReply, JournalPath, SyscallCtx, FS_HANDLERS,
 };
 use crate::rust::interpreter::io::path::descend::safe_descend_verified;
-use crate::rust::interpreter::io::path::{quarantine_err_reply, QuarantineError, SafeParent};
+use crate::rust::interpreter::io::path::{fstatat_meta, quarantine_err_reply, QuarantineError};
 use crate::rust::interpreter::io::response::{err, ok_bool};
 use crate::rust::interpreter::io::{resolve_cmode, ConsensusMode};
 use crate::rust::interpreter::rho_type::RhoString;
@@ -86,30 +85,6 @@ pub struct FsExistsArgs {
     rel: String,
     #[allow(dead_code)] // Will be used by the gated resolver (yet to land).
     cmode: ConsensusMode,
-}
-
-/// Inline `fstatat_meta`: open the leaf via openat(O_NOFOLLOW)
-/// off the parent dirfd + read metadata.  Symlink leaf → ELOOP
-/// (caller folds into `false`).  Centralized here for one call
-/// site; will migrate to a shared helper when fs_stat lands.
-fn fstatat_meta(parent: &SafeParent) -> std::io::Result<std::fs::Metadata> {
-    // SAFETY: `parent` (a SafeParent) owns an open dirfd for its
-    // lifetime, and `parent.leaf_ptr()` is a NUL-terminated
-    // CString ptr owned by the same SafeParent.  On openat
-    // success, `File::from_raw_fd` takes ownership of the fresh
-    // fd so Drop closes it on every exit path.
-    unsafe {
-        let fd = libc::openat(
-            parent.as_raw_fd(),
-            parent.leaf_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        );
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let file = std::fs::File::from_raw_fd(fd);
-        file.metadata()
-    }
 }
 
 impl FsHandler for FsExistsHandler {
