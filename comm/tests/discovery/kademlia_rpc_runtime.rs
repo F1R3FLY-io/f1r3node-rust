@@ -207,7 +207,10 @@ pub async fn get_free_port() -> Result<u16, std::io::Error> {
 const SETUP_ATTEMPTS: usize = 5;
 
 fn address_in_use(error: &CommError) -> bool {
-    matches!(error, CommError::InternalCommunicationError(message) if message.contains("Address already in use"))
+    matches!(error, CommError::InternalCommunicationError(message)
+        if ["Address already in use", "(os error 48)", "(os error 98)"]
+            .iter()
+            .any(|marker| message.contains(marker)))
 }
 
 /// Simplified two nodes test result
@@ -258,7 +261,12 @@ where
             .await
         {
             Ok(server) => break (env1, local, remote, server),
-            Err(error) if address_in_use(&error) && attempt < SETUP_ATTEMPTS => attempt += 1,
+            Err(error) if address_in_use(&error) && attempt < SETUP_ATTEMPTS => {
+                eprintln!(
+                    "kademlia test setup attempt {attempt}/{SETUP_ATTEMPTS}: port {port2} is in use; retrying with fresh ports"
+                );
+                attempt += 1;
+            }
             Err(error) => return Err(error),
         }
     };
