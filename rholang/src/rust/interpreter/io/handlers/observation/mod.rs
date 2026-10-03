@@ -20,4 +20,5 @@ pub mod fs_exists;
 pub mod fs_flush;
 pub mod fs_seek;
 pub mod fs_size;
+pub mod fs_stat;
 pub mod fs_tell;
