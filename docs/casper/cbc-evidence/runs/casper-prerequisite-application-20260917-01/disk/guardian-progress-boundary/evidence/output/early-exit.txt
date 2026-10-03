@@ -1,1 +1,0 @@
-host_protection_breach: The host guardian failed its iteration admission check. Workload termination is unconfirmed.

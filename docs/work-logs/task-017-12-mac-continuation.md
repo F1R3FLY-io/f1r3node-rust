@@ -603,7 +603,7 @@ The node dependency comprises paired fork-choice observations and captured displ
 
 The live adapter must then connect qualified observations to the profile. Its current `live_adapter_unqualified` rejection remains necessary until that path has separate verification.
 
-The [validation record](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/validation.json) confirms source digests and external Python syntax. This source review executed no provider operations and establishes no live qualification.
+The [validation record](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/external.json) confirms source digests and external Python syntax. This source review executed no provider operations and establishes no live qualification.
 
 TASK-017-12 remains in progress. Candidate qualification, executable workload pins, campaign service qualification, required acceptance, preflight, and both full baselines remain outstanding.
 
