@@ -705,6 +705,25 @@ mod prepared_route_tests {
         assert_eq!(one_trace.last(), Some(&expected_terminal));
         let one_failure = observation(&runtime, "regex.lookahead.one.failure").await;
         assert_eq!(trace_pathmap(&one_failure).len(), 0);
+        let truncated_channel = scalar(ExprInstance::GString(
+            mettail_rholang_runtime::lookahead::SPEC_TRUNCATED_V2_CHANNEL.into(),
+        ));
+        let reports = runtime.get_data(&truncated_channel).await;
+        assert_eq!(
+            reports.len(),
+            4,
+            "each v2 lookahead request has a typed report"
+        );
+        let mut truncated_lengths = Vec::with_capacity(reports.len());
+        for report in reports {
+            assert_eq!(report.a.pars.len(), 1);
+            let fields = list(&report.a.pars[0]);
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0], scalar(ExprInstance::GInt(2)));
+            truncated_lengths.push(trace_pathmap(&fields[1]).len());
+        }
+        truncated_lengths.sort_unstable();
+        assert_eq!(truncated_lengths, [0, 0, 1, 1]);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
