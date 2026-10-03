@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "status": "verified-binding-accepted-pending-recording",
+  "scope": "bounded-controlled-transcript-profiles",
+  "phase": "pre_pr216_merge",
+  "base": "ba32d5c98eeeec366b2fa790d4f85926c20faddb",
+  "observed_head": "490d21093a751b902ad4856b3bcadbf3f4af3069",
+  "verified_at": "2026-09-19T02:59:51Z",
+  "claims": [
+    "CLAIM-CASPER-SOAK-002",
+    "CLAIM-CASPER-SOAK-003",
+    "CLAIM-CASPER-SOAK-004"
+  ],
+  "claim_discharge": "pending",
+  "binding_acceptance": {
+    "confirmation": "yes - I authorized acceptance",
+    "scope": "claims-002-003-004-bounded-pre-merge-only"
+  },
+  "tasks_complete": false,
+  "profiles": [
+    {
+      "profile": "authority-finality",
+      "tests": 8,
+      "cases": 58,
+      "invocations": 65,
+      "threshold_cases": 2000,
+      "generated_states": 3281,
+      "distinct_states": 1681
+    },
+    {
+      "profile": "publication",
+      "tests": 6,
+      "cases": 79,
+      "invocations": 83,
+      "new_regressions": 22,
+      "generated_states": 3281,
+      "distinct_states": 1681
+    },
+    {
+      "profile": "recovery",
+      "tests": 7,
+      "cases": 52,
+      "invocations": 55,
+      "generated_states": 841,
+      "distinct_states": 441
+    }
+  ],
+  "platforms": [
+    "native-macos",
+    "isolated-linux-aarch64-musl"
+  ],
+  "models": {
+    "clean": 3,
+    "named_negatives": 9,
+    "scenarios": 2,
+    "observation_slots": 3,
+    "negative_exit": 12
+  },
+  "shared_native_tests": 11,
+  "publication_red": {
+    "exit": 101,
+    "expected_profile_exit": 2,
+    "observed_profile_exit": 0,
+    "observed_verdict": "passed"
+  },
+  "publication_green": true,
+  "audits": {
+    "ordinary": 0,
+    "strict_001": 4,
+    "strict_002": 4,
+    "strict_003": 4,
+    "strict_004": 4,
+    "strict_bundle": 4
+  },
+  "lifecycle": {
+    "status": "pending",
+    "cause": "prior-host-control-function-move",
+    "changed_by_this_review": false,
+    "prior_67_source_check": "failed-four-declared-differences"
+  },
+  "ratified_workflow_tags": [
+    ".github/workflows/casper-authority-finality.yml",
+    ".github/workflows/casper-publication.yml",
+    ".github/workflows/casper-recovery.yml"
+  ],
+  "tags_applied": true,
+  "limits": [
+    "D-07 interpretation unresolved",
+    "Live adapters unqualified",
+    "Binary bytes not archived; executable hashes retained",
+    "Bounded models do not prove node correctness",
+    "Containment assumptions remain",
+    "Post-merge execution blocked"
+  ],
+  "construction": "not-applicable",
+  "node_execution": false,
+  "policy_activation": false,
+  "soak_verdict": "non_passing",
+  "source_files": 104,
+  "evidence_files": 15297,
+  "previous_ledgers": 36,
+  "candidate_ledgers": 36
+}

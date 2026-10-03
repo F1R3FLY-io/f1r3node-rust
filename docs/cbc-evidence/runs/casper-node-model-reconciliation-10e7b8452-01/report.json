@@ -1,0 +1,254 @@
+{
+  "kind": "canonical-model-reconciliation-not-discharge",
+  "status": "blocked",
+  "checkout_base": "10e7b8452824e12a1fe2743dca7989b79fce2133",
+  "base_branch": "feature/casper-node-observation",
+  "base_reachable": true,
+  "working_tree": true,
+  "executed_commit": null,
+  "downstream_input_revision": "8a379f05a07974ae9af6b450e6cea5fa6da80e0f",
+  "downstream_revision_is_evidence_base": false,
+  "claim_artifacts": 70,
+  "input_files": 80,
+  "mandatory_artifacts": 59,
+  "source_manifest_sha256": "213e7d63a314d32f12825def54ce894d9ba85c1edbf39943bd93066cdb1d915b",
+  "input_archive_sha256": "18e5f30e4feb21fc19972ca41baef53361f51e672aca8a2f9ed8b27f3b741a0d",
+  "bulk": "target/node-model-reconciliation-10e7b8452-de0inv",
+  "gate_registration_view": {
+    "ref": "gate-registrations.json",
+    "sha256": "6fcea2fa5c3588b9f3ca4693174a0e525b26dc2179649dae510750ef1841825d"
+  },
+  "record_policy": {
+    "node_owned_records": 57,
+    "shared_historical_records": 2,
+    "harness_primary_preserved": true,
+    "node_claim_digests_in_harness_record": false
+  },
+  "models": [
+    {
+      "module": "MC_ObserverSession",
+      "classified_exit": 0,
+      "invariant": null,
+      "log_sha256": "c91134bc254794ce0d00f20c6bd3a983e0819e78e05f45ea46697c53aa6baef3"
+    },
+    {
+      "module": "MC_ObserverSession_challenge_unsafe",
+      "classified_exit": 12,
+      "invariant": "FreshChallenge",
+      "log_sha256": "fbbb49fc3aa94015ec326f601a5d74c502d7433d2d6395180972b85033a7c246"
+    },
+    {
+      "module": "MC_ObserverSession_identity_unsafe",
+      "classified_exit": 12,
+      "invariant": "BoundIdentity",
+      "log_sha256": "6085bc71b89d3e0a7cd24ffb528499369f7a941863ac7eaf1e982aa981ea5aaa"
+    },
+    {
+      "module": "MC_ObserverSession_frame_unsafe",
+      "classified_exit": 12,
+      "invariant": "BoundFrame",
+      "log_sha256": "46e2780df80e17e9cd0493ec3e233a541114f438c59ea56c7cf8f67b97597dd9"
+    },
+    {
+      "module": "MC_ObserverSession_deadline_unsafe",
+      "classified_exit": 12,
+      "invariant": "BoundDeadline",
+      "log_sha256": "4efc75ec0203a554fdb3fce9c04fe0902c2dfbdb815b4c6e537b52ad7a2d4edb"
+    },
+    {
+      "module": "MC_ObserverSession_repeat_unsafe",
+      "classified_exit": 12,
+      "invariant": "OneRequest",
+      "log_sha256": "85adc54def3caddcbb554e8e8842a97c470290bf3065255bef14ed2d037c8172"
+    },
+    {
+      "module": "MC_ObserverSession_budget_unsafe",
+      "classified_exit": 12,
+      "invariant": "SessionBudget",
+      "log_sha256": "422db5b38d3e3ff176cc75e1a7a19b6633d6344f1de38ed3985226aef623c2a3"
+    },
+    {
+      "module": "MC_BoundedCapture",
+      "classified_exit": 0,
+      "invariant": null,
+      "log_sha256": "f4542b8e9f90279846cbda3bd1469b1618428493a1040aa00a4b4e85bdc847eb"
+    },
+    {
+      "module": "MC_BoundedCapture_admission_unsafe",
+      "classified_exit": 12,
+      "invariant": "ValidAdmission",
+      "log_sha256": "64784e5f9dc1ecb8c35cef749e5dffaf59f608e52ccdc78fbe40b7030864e2e4"
+    },
+    {
+      "module": "MC_BoundedCapture_deadline_unsafe",
+      "classified_exit": 12,
+      "invariant": "BoundLockWait",
+      "log_sha256": "3514a4b2e48b49e118b46163061ee8dc605ade6a2b1a75481fd27de67ca63a7e"
+    },
+    {
+      "module": "MC_BoundedCapture_order_unsafe",
+      "classified_exit": 12,
+      "invariant": "GuardOrder",
+      "log_sha256": "5f246e34d465e6bd9db392d6c95c2f12f105a1b17683b3ee9169ebde42104ab0"
+    },
+    {
+      "module": "MC_BoundedCapture_open_unsafe",
+      "classified_exit": 12,
+      "invariant": "OpenIdentity",
+      "log_sha256": "61a578b6cb2cd4a73949e4b4bfab95bf6604d4b0972924b7b227041249f6998a"
+    },
+    {
+      "module": "MC_BoundedCapture_validation_unsafe",
+      "classified_exit": 12,
+      "invariant": "ValidatedIdentity",
+      "log_sha256": "01dd17ebabb07bf66121e77e879031a540964d5bf92f040909396a1f0a8e71c4"
+    },
+    {
+      "module": "MC_BoundedCapture_generation_unsafe",
+      "classified_exit": 12,
+      "invariant": "GenerationStable",
+      "log_sha256": "88a204faa2e2ad3038287eb07b360126220f5657aa4cb832dceb9cc190df94a2"
+    },
+    {
+      "module": "MC_BoundedCapture_incomplete_unsafe",
+      "classified_exit": 12,
+      "invariant": "CompleteRows",
+      "log_sha256": "7f004548d346747c4cc29e3bdd3057920834a1fa4c300473b631d4b859cd4099"
+    },
+    {
+      "module": "MC_BoundedCapture_bytes_unsafe",
+      "classified_exit": 12,
+      "invariant": "BoundBytes",
+      "log_sha256": "08acfdc0465a1608f1ff318fa5eb6d8c0b405d450801027bd67796642ceb1514"
+    },
+    {
+      "module": "MC_BoundedCapture_release_unsafe",
+      "classified_exit": 12,
+      "invariant": "Detached",
+      "log_sha256": "b5993868ccd6b6aa841e258a0aa41c79fd521989ff7a44fb60fb70e53cccb436"
+    },
+    {
+      "module": "MC_BoundedCapture_write_unsafe",
+      "classified_exit": 12,
+      "invariant": "ReadOnly",
+      "log_sha256": "70c0c29dd3fc8e3b318bdfae5916fa8d5f4c9668f756820a4a17c714e9f88863"
+    },
+    {
+      "module": "MC_ObserverSession_freshness_pre_fix",
+      "classified_exit": 12,
+      "invariant": "FreshChallenges",
+      "log_sha256": "7d2bbcd50bd57916179332d63b18a9d706dea703a25379c3230f4f1e7dc3c026"
+    }
+  ],
+  "refutation": {
+    "positive_cases": 2,
+    "negative_cases": 17,
+    "session": {
+      "generated_states": 745,
+      "distinct_states": 689,
+      "max_sessions": 3,
+      "nonces": 2,
+      "deadline_units": 2,
+      "frame_sizes": [
+        0,
+        2,
+        3
+      ],
+      "frame_limit": 2
+    },
+    "capture": {
+      "generated_states": 20376,
+      "distinct_states": 10066,
+      "environments": 2,
+      "commits_per_environment": 2,
+      "generation_changes": 1,
+      "guards": 3,
+      "copied_sizes": [
+        1,
+        2,
+        3
+      ],
+      "copy_limit": 2
+    },
+    "gate_positive_cases": 15,
+    "gate_negative_cases": 78,
+    "gate_exit": 0,
+    "fixture_exit": 0,
+    "old_gate_fixture_exit": 1,
+    "old_gate_failure": "The gate accepted a negative control without a trace.",
+    "proof_image": "sha256:94ef660b2d199df5fc82033ec7bd9ce209e25d8111866574fc527b02b5231c77"
+  },
+  "construction": {
+    "prover": "Coq 8.16.1",
+    "project": "formal/rocq/node_observation",
+    "kernel_check": "passed",
+    "closed_assumption_sets": 4,
+    "custom_assumptions": 0,
+    "projection_machine_checked": false,
+    "additional_session_properties_proved": false,
+    "capture_construction_proved": false,
+    "full_existing_suite_rerun": false
+  },
+  "binding": {
+    "image": "sha256:70e057d54eb606661197319a1fedcd6e824b3abdb2cd9162225fa104d62d4623",
+    "driver_exit": 0,
+    "node_library_executions": 257,
+    "interface_executions": 19,
+    "total_executions": 276,
+    "ignored": 1,
+    "verified_cache_files": 23314,
+    "host_built_project_objects_imported": false,
+    "fresh_target": false,
+    "raw_and_derived_executables_distinct": true,
+    "allocated_sections_and_program_headers_match": true,
+    "input_hashes_checked_before_and_after": true,
+    "test_references_checked": 64,
+    "property_rows": [
+      10,
+      13
+    ],
+    "machine_checked_refinement": false,
+    "storage_suites_rerun": false,
+    "workspace_check_rerun": false,
+    "clippy_rerun": false
+  },
+  "standalone_checker": {
+    "present_in_node_tree": false,
+    "executed": false,
+    "new_workspace": false,
+    "new_lockfile": false,
+    "supply_chain_files_changed": false,
+    "downstream_action": "Remove the downstream crate or include it in the supply-chain audit before acceptance.",
+    "downstream_binding_parser": "Update fixed suite counts and preserve supplemental tests and gaps."
+  },
+  "diagnostics": {
+    "active_paths": 5,
+    "clean_paths": 5,
+    "scope": "Changed shell and JSON files only."
+  },
+  "retained_failures": [
+    "The initial Git blob decoder rejected wrapped base64.",
+    "The initial STE check reported an unchanged legacy sentence.",
+    "The second STE check used an incomplete baseline path inventory.",
+    "The old gate accepted a trace-free negative result."
+  ],
+  "remaining": [
+    "Both combined claims remain pending.",
+    "Cross-incarnation freshness remains unresolved.",
+    "The node revision lacks the downstream deterministic generation-rejection test.",
+    "Complete construction and Rust correspondence remain pending.",
+    "Kani arithmetic harnesses and named applicability review remain pending.",
+    "Named maintainer acceptance remains pending."
+  ],
+  "claims": {
+    "CLAIM-CASPER-NODE-OBSERVATION-001": "pending",
+    "CLAIM-CASPER-NODE-OBSERVATION-002": "pending"
+  },
+  "b2_planning": "blocked",
+  "maintainer_acceptance": null,
+  "hosted_execution": false,
+  "assistant_git_mutations": false,
+  "external_index_change": true,
+  "human_ste_review": "not-recorded",
+  "full_ste_conformance": "not-claimed"
+}

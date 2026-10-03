@@ -1,3 +1,6 @@
+#[path = "support/compose_logging.rs"]
+mod compose_logging;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
