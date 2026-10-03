@@ -84,7 +84,7 @@ evaluate() {
     def compared: type=="object" and (.base|revision) and (.head|revision) and (.behind_by|count) and
       (.status=="ahead" or .status=="identical" or .status=="behind" or .status=="diverged");
     $r[0] as $r | $f[0] as $f | .plan as $p |
-    ($r.run_attempt|count) and ($r.event|type=="string" and test("^[a-z_]{1,32}$")) and
+    ($r.run_attempt|count) and ($r.head_sha|revision) and ($r.event|type=="string" and test("^[a-z_]{1,32}$")) and
     ($r.status|type=="string" and test("^[a-z_]{1,32}$")) and
     ($r.conclusion==null or ($r.conclusion|type=="string" and test("^[a-z_]{1,32}$"))) and
     ($p.node_revision|revision) and ($p.harness_revision|revision) and
@@ -101,6 +101,8 @@ evaluate() {
     ($f.master_revision|revision) and
     ($f.revision_in_master|compared) and
     $f.revision_in_master.base==$p.node_revision and $f.revision_in_master.head==$f.master_revision and
+    ($f.workflow_in_master|compared) and
+    $f.workflow_in_master.base==$r.head_sha and $f.workflow_in_master.head==$f.master_revision and
     (if $f.required_commit_source=="pull_request_not_merged"
      then $f.required_commit==null and $f.required_in_revision==null
      else ($f.required_commit_source=="pull_request" or $f.required_commit_source=="dispatch_input") and
@@ -115,11 +117,13 @@ evaluate() {
     $r[0] as $r | $x[0] as $x | $f[0] as $f | $x.plan as $p |
     [{id:1,criterion:"The soaked revision is on master and contains the required commit.",
       satisfied:($f.required_in_revision!=null and ($f.required_in_revision|ancestor) and ($f.revision_in_master|ancestor))},
-     {id:2,criterion:"The workflow is Merge Recovery Soak, with the stage campaign-stability-60h.",
-      satisfied:($r.path==$workflow and $r.event=="workflow_dispatch" and $p.stage=="stability")},
+     {id:2,criterion:"The workflow is Merge Recovery Soak from a revision on master, with the stage campaign-stability-60h.",
+      satisfied:($r.path==$workflow and $r.event=="workflow_dispatch" and $p.stage=="stability" and
+        ($f.workflow_in_master|ancestor))},
      {id:3,criterion:"The workload window is 216,000 seconds, and the run completes the full window.",
       satisfied:($p.duration_seconds==$window and
         ($x.workload_elapsed_seconds|type=="number" and floor==. and .>=$window) and
+        ($x.started_epoch==null or ($x.finished_epoch-$x.started_epoch)>=$window) and
         $x.measurement_completeness=="complete")},
      {id:4,criterion:"The terminal verdict is a pass.",
       satisfied:($r.status=="completed" and $r.conclusion=="success" and $r.run_attempt==1 and
@@ -314,6 +318,9 @@ collect() (
   master="$(jq -r '.object.sha // ""' "$out/master.json")"
   [[ "$master" =~ ^[a-f0-9]{40}$ ]] || fail 'The revision of master is not valid.'
   comparison "$revision" "$master" "$out/revision-in-master.json"
+  workflow="$(jq -r '.head_sha // ""' "$out/run.json")"
+  [[ "$workflow" =~ ^[a-f0-9]{40}$ ]] || fail 'The workflow revision of the run is not valid.'
+  comparison "$workflow" "$master" "$out/workflow-in-master.json"
   if [[ -n "$required" ]]; then
     comparison "$required" "$revision" "$out/required-in-revision.json"
   else
@@ -321,9 +328,11 @@ collect() (
   fi
   jq -n --arg source "$source" --arg required "$required" --arg master "$master" \
     --arg archive "$archive" --arg result "$(hash_file "$out/result.json")" \
-    --slurpfile m "$out/revision-in-master.json" --slurpfile q "$out/required-in-revision.json" '
+    --slurpfile m "$out/revision-in-master.json" --slurpfile q "$out/required-in-revision.json" \
+    --slurpfile w "$out/workflow-in-master.json" '
     {schema_version:1,required_commit:(if $required=="" then null else $required end),
      required_commit_source:$source,master_revision:$master,revision_in_master:$m[0],
+     workflow_in_master:$w[0],
      required_in_revision:$q[0],result_archive_sha256:$archive,result_sha256:$result}
   ' > "$out/facts.json"
   evaluate "$out/run.json" "$out/artifact.json" "$out/result.json" "$out/facts.json" "$out/evaluation"
@@ -369,9 +378,15 @@ record() {
   ' "$out/partner-comments.json")"
   for partner in $partners; do
     attempt collect "$partner" "$out/partner-$partner" "$required"
-    [[ "$code" == 0 ]] || continue
+    if [[ "$code" != 0 ]]; then
+      printf 'The partner run %s cannot be collected again (exit %s). The check skips it.\n' "$partner" "$code" >&2
+      continue
+    fi
     attempt pair "$verdict" "$out/partner-$partner/evaluation/verdict.json" "$out/pair"
-    [[ "$code" == 0 ]] || continue
+    if [[ "$code" != 0 ]]; then
+      printf 'The partner run %s does not pair with this run (exit %s). The check skips it.\n' "$partner" "$code" >&2
+      continue
+    fi
     completion "$out/pair/obligation.json" > "$out/completion.md"
     publish "$out/completion.md" "<!-- soak-obligation O1 complete revision=$revision " "$out" completion
     jq -e '.evidence_complete==true' "$out/pair/obligation.json" >/dev/null || return 0
@@ -382,6 +397,10 @@ record() {
     attempt mark "$out/issue-body.md" > "$out/issue-body-marked.md"
     [[ "$code" == 0 ]] || fail 'The issue text cannot be marked.'
     if ! cmp -s "$out/issue-body.md" "$out/issue-body-marked.md"; then
+      api_get "repos/$REPOSITORY/issues/$ISSUE" "$out/issue-recheck.json"
+      check_json "$out/issue-recheck.json"
+      jq -r .body "$out/issue-recheck.json" > "$out/issue-body-recheck.md"
+      cmp -s "$out/issue-body.md" "$out/issue-body-recheck.md" || fail 'The issue text changed during the check.'
       jq -n --rawfile body "$out/issue-body-marked.md" '{body:($body|rtrimstr("\n"))}' > "$out/issue-payload.json"
       api_send PATCH "repos/$REPOSITORY/issues/$ISSUE" "$out/issue-payload.json" "$out/issue-response.json"
     fi
