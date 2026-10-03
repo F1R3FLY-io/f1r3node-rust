@@ -42,6 +42,9 @@ pub enum CasperMessage {
     SnapshotChunkResponse(SnapshotChunkResponse),
     HasSnapshotRequest(HasSnapshotRequest),
     HasSnapshot(HasSnapshot),
+    // Between-snapshot WAL payload fetch (Wave 3, Phase 7b-2).
+    GetWalPayloadRequest(GetWalPayloadRequest),
+    WalPayloadResponse(WalPayloadResponse),
 }
 
 impl CasperMessage {
@@ -145,6 +148,14 @@ impl CasperMessage {
 
     pub fn from_has_snapshot(proto: HasSnapshotProto) -> Self {
         CasperMessage::HasSnapshot(HasSnapshot::from_proto(proto))
+    }
+
+    pub fn from_get_wal_payload_request(proto: GetWalPayloadRequestProto) -> Self {
+        CasperMessage::GetWalPayloadRequest(GetWalPayloadRequest::from_proto(proto))
+    }
+
+    pub fn from_wal_payload_response(proto: WalPayloadResponseProto) -> Self {
+        CasperMessage::WalPayloadResponse(WalPayloadResponse::from_proto(proto))
     }
 }
 
@@ -340,6 +351,70 @@ impl HasSnapshot {
             block_hash: self.block_hash,
             merkle_root: self.merkle_root,
             chunk_count: self.chunk_count,
+        }
+    }
+}
+
+/// Joiner → serving validator: "please send the raw bytes for
+/// this payload hash."  The requested hash is the content
+/// address — the joiner recomputes `Blake2b256(payload_bytes)`
+/// against the response and compares with the ORIGINAL
+/// request's hash (not the echoed field).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GetWalPayloadRequest {
+    pub payload_hash: ByteString,
+}
+
+impl GetWalPayloadRequest {
+    pub fn from_proto(proto: GetWalPayloadRequestProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+        }
+    }
+
+    pub fn to_proto(self) -> GetWalPayloadRequestProto {
+        GetWalPayloadRequestProto {
+            payload_hash: self.payload_hash,
+        }
+    }
+}
+
+/// Serving validator → joiner: raw bytes for the requested
+/// payload hash.
+///
+/// # ADVISORY `payload_hash` echo
+///
+/// The echoed `payload_hash` is a convenience for pipelining
+/// (multiple in-flight requests, echo lets the joiner match
+/// response → request).  The joiner MUST recompute
+/// `Blake2b256(payload_bytes)` and compare against the
+/// ORIGINAL request's hash — a server returning mismatched
+/// bytes with a correct-looking echoed hash would otherwise
+/// skip the real content-integrity check.
+///
+/// `Hash` is intentionally NOT derived — `payload_bytes` can
+/// be up to MAX_PAYLOAD_BYTES (4 MiB) and shouldn't be a
+/// HashSet key.  `Eq` IS derived for exact-match comparison
+/// in tests + replay-apply correctness checks (where the
+/// bytes are already in memory).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WalPayloadResponse {
+    pub payload_hash: ByteString,
+    pub payload_bytes: ByteString,
+}
+
+impl WalPayloadResponse {
+    pub fn from_proto(proto: WalPayloadResponseProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+            payload_bytes: proto.payload_bytes,
+        }
+    }
+
+    pub fn to_proto(self) -> WalPayloadResponseProto {
+        WalPayloadResponseProto {
+            payload_hash: self.payload_hash,
+            payload_bytes: self.payload_bytes,
         }
     }
 }
@@ -2359,6 +2434,57 @@ mod tests {
                 assert_eq!(inner.chunk_count, proto.chunk_count);
             }
             _ => panic!("expected HasSnapshot variant"),
+        }
+    }
+
+    // --- WAL payload fetch roundtrips (Wave 3, PR 3.3) ---------
+
+    #[test]
+    fn get_wal_payload_request_proto_roundtrip() {
+        let req = GetWalPayloadRequest {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let roundtripped = GetWalPayloadRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn wal_payload_response_proto_roundtrip() {
+        let resp = WalPayloadResponse {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_bytes: prost::bytes::Bytes::from(vec![0xCD; 1024]),
+        };
+        let roundtripped = WalPayloadResponse::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_get_wal_payload_request() {
+        let proto = GetWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let msg = CasperMessage::from_get_wal_payload_request(proto.clone());
+        match msg {
+            CasperMessage::GetWalPayloadRequest(inner) => {
+                assert_eq!(inner.payload_hash, proto.payload_hash);
+            }
+            _ => panic!("expected GetWalPayloadRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_wal_payload_response() {
+        let proto = WalPayloadResponseProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_bytes: prost::bytes::Bytes::from(vec![0xCD; 256]),
+        };
+        let msg = CasperMessage::from_wal_payload_response(proto.clone());
+        match msg {
+            CasperMessage::WalPayloadResponse(inner) => {
+                assert_eq!(inner.payload_hash, proto.payload_hash);
+                assert_eq!(inner.payload_bytes, proto.payload_bytes);
+            }
+            _ => panic!("expected WalPayloadResponse variant"),
         }
     }
 }
