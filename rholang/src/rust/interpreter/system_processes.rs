@@ -313,6 +313,11 @@ impl FixedChannels {
     /// `rho:io:fs:native:1.0.0/size` — fd-based size via
     /// `fstat`.  Verifying observation (slice 4.17).
     pub fn fs_size() -> Par { byte_name(48) }
+
+    /// `rho:io:fs:native:1.0.0/exists` — path-based existence check
+    /// via `openat(O_NOFOLLOW)` + metadata.  Verifying observation
+    /// (slice 4.18).
+    pub fn fs_exists() -> Par { byte_name(52) }
 }
 
 pub struct BodyRefs;
@@ -374,6 +379,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/size` body-ref (slice 4.17).
     pub const FS_SIZE: i64 = 48;
+
+    /// `rho:io:fs:native:1.0.0/exists` body-ref (slice 4.18).
+    pub const FS_EXISTS: i64 = 52;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
