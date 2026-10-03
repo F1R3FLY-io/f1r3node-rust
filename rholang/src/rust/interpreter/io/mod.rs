@@ -8,6 +8,7 @@
 
 pub mod consensus_constants;
 pub mod consensus_fingerprint;
+pub mod costs;
 pub mod dir_handle_table;
 pub mod errors;
 pub mod handle_table;
