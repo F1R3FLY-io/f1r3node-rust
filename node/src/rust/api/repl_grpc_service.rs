@@ -450,6 +450,7 @@ mod prepared_route_tests {
         use mettail_rholang_runtime::rholang_ast::RholangPreparationPolicy;
         use models::rhoapi::expr::ExprInstance;
         use models::rhoapi::Expr;
+        use models::rust::epathmap_trie_codec::EPathMapMode;
 
         use crate::rust::runtime::f1r3lang::{inline_language_install_policy, F1r3langComposition};
 
@@ -495,6 +496,14 @@ mod prepared_route_tests {
             );
         }
 
+        fn trace_pathmap(value: &Par) -> &models::rhoapi::EPathMap {
+            assert_eq!(value.exprs.len(), 1, "expected one PathMap expression");
+            match &value.exprs[0].expr_instance {
+                Some(ExprInstance::EPathmapBody(map)) => map,
+                other => panic!("expected a trace PathMap, got {other:?}"),
+            }
+        }
+
         fn reflected_text(owner: &str, text: &str) -> Par {
             let tag =
                 models::rust::rholang::implicits::GPrivateBuilder::new_par_from_string(format!(
@@ -511,6 +520,20 @@ mod prepared_route_tests {
                 Vec::new(),
                 false,
             )
+        }
+
+        fn reflected_constructor(owner: &str, label: &str, children: Vec<Par>) -> Par {
+            let tag = |label: &str| {
+                models::rust::rholang::implicits::GPrivateBuilder::new_par_from_string(format!(
+                    "{}{}.{}",
+                    mettail_rholang_runtime::REFLECTED_TERM_ABI_PREFIX,
+                    owner,
+                    label,
+                ))
+            };
+            let mut elements = vec![tag(label), tag("^gnd")];
+            elements.extend(children);
+            models::rust::utils::new_elist_par(elements, Vec::new(), false, None, Vec::new(), false)
         }
 
         let mut composition = F1r3langComposition::new(
@@ -605,10 +628,32 @@ mod prepared_route_tests {
                 ExprInstance::GBool(true),
             )]);
         }
+        let success = observation(&runtime, "regex.lookahead.success").await;
+        let success = trace_pathmap(&success);
+        assert_eq!(success.mode(), EPathMapMode::Set);
+        assert_eq!(success.len(), 1, "nullable(a?) must have one success trace");
+        let first_key = success.next_value_key(&[]).expect("success trace key");
+        let trace = success
+            .leaf_at_encoded_key(&first_key)
+            .expect("success trace member");
+        let trace = list(&trace);
+        assert!(trace.len() >= 2, "lookahead must record a guest transition");
+        let expected_terminal =
+            reflected_constructor(&expected_owner, "DoneBool", vec![reflected_constructor(
+                &expected_owner,
+                "BTrue",
+                Vec::new(),
+            )]);
+        assert_ne!(trace.first(), trace.last(), "nullable(a?) must reduce");
         assert_eq!(
-            observation(&runtime, "regex.lookahead.nullable").await,
-            scalar(ExprInstance::GBool(true)),
+            trace.last(),
+            Some(&expected_terminal),
+            "nullable(a?) must produce doneBool(yes)"
         );
+        let failure = observation(&runtime, "regex.lookahead.failure").await;
+        let failure = trace_pathmap(&failure);
+        assert_eq!(failure.mode(), EPathMapMode::Empty);
+        assert_eq!(failure.len(), 0);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
