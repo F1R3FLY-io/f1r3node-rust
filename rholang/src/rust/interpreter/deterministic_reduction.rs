@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -21,7 +21,9 @@ use rspace_plus_plus::rspace::rspace_interface::{
 };
 use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
-use tokio::sync::{oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::{oneshot, Notify, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::task::AbortHandle;
+#[cfg(test)]
 use tokio::task::JoinHandle;
 
 use super::accounting::economic_failure::{
@@ -140,6 +142,124 @@ pub(crate) fn record_evaluator_failures(errors: &[InterpreterError]) {
     }
 }
 
+pub(crate) fn spawn_detached(
+    future: impl Future<Output = Result<(), InterpreterError>> + Send + 'static,
+) {
+    let context = current().expect("detached reduction requires a reduction context");
+    let child = context.split(1).pop().expect("one child context");
+    spawn_detached_in_context(child, future);
+}
+
+pub(crate) fn spawn_detached_in_context(
+    child: ReductionContext,
+    future: impl Future<Output = Result<(), InterpreterError>> + Send + 'static,
+) {
+    let session = child.session.clone();
+    let participant = child.participant.clone();
+    let task_id = session.next_detached_id.fetch_add(1, Ordering::Relaxed);
+    session.detached_count.fetch_add(1, Ordering::AcqRel);
+    let (start, ready) = oneshot::channel();
+    let task_session = session.clone();
+    let mut detached_guard = DetachedGuard::new(task_session.clone(), task_id, participant.clone());
+    let handle = tokio::spawn(scope(child.clone(), async move {
+        if ready.await.is_ok() {
+            if let Err(error) = future.await {
+                record_evaluator_failures(std::slice::from_ref(&error));
+                task_session
+                    .detached_errors
+                    .lock()
+                    .expect("detached reduction errors lock")
+                    .push((participant, error));
+            }
+        }
+        detached_guard.finished = true;
+        drop(detached_guard);
+    }));
+    let mut tasks = session
+        .detached_tasks
+        .lock()
+        .expect("detached reduction tasks lock");
+    if tasks.canceled {
+        handle.abort();
+    } else {
+        tasks.handles.insert(task_id, handle.abort_handle());
+    }
+    drop(tasks);
+    let _ = start.send(());
+}
+
+struct DetachedTasks {
+    canceled: bool,
+    handles: HashMap<u64, AbortHandle>,
+}
+
+struct DetachedGuard {
+    session: Arc<ReductionSession>,
+    task_id: u64,
+    participant: ParticipantId,
+    finished: bool,
+}
+
+impl DetachedGuard {
+    fn new(session: Arc<ReductionSession>, task_id: u64, participant: ParticipantId) -> Self {
+        Self {
+            session,
+            task_id,
+            participant,
+            finished: false,
+        }
+    }
+}
+
+impl Drop for DetachedGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.session
+                .failures
+                .record(EvaluationFailureSummary::single(PhloFailure::Platform));
+            self.session
+                .detached_errors
+                .lock()
+                .expect("detached reduction errors lock")
+                .push((
+                    self.participant.clone(),
+                    InterpreterError::ReduceError("detached reduction task failed".to_string()),
+                ));
+        }
+        self.session.complete(&self.participant);
+        self.session
+            .detached_tasks
+            .lock()
+            .expect("detached reduction tasks lock")
+            .handles
+            .remove(&self.task_id);
+        if self.session.detached_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.session.detached_done.notify_waiters();
+        }
+    }
+}
+
+struct RootCancellationGuard {
+    session: Arc<ReductionSession>,
+    complete: bool,
+}
+
+impl Drop for RootCancellationGuard {
+    fn drop(&mut self) {
+        if !self.complete {
+            let mut tasks = self
+                .session
+                .detached_tasks
+                .lock()
+                .expect("detached reduction tasks lock");
+            tasks.canceled = true;
+            for task in tasks.handles.values() {
+                task.abort();
+            }
+        }
+    }
+}
+
 pub fn reserve_host_work(
     dimension: HostWorkDimension,
     units: HostWorkUnits,
@@ -161,14 +281,17 @@ async fn internal_scope<T>(future: impl Future<Output = T>) -> T {
     INTERNAL_REDUCTION.scope((), future).await
 }
 
+#[cfg(test)]
 pub(crate) struct ScopedJoinHandle<T> {
     inner: JoinHandle<T>,
 }
 
+#[cfg(test)]
 impl<T> ScopedJoinHandle<T> {
     pub(crate) fn new(inner: JoinHandle<T>) -> Self { Self { inner } }
 }
 
+#[cfg(test)]
 impl<T> Future for ScopedJoinHandle<T> {
     type Output = Result<T, tokio::task::JoinError>;
 
@@ -180,6 +303,7 @@ impl<T> Future for ScopedJoinHandle<T> {
     }
 }
 
+#[cfg(test)]
 impl<T> Drop for ScopedJoinHandle<T> {
     fn drop(&mut self) { self.inner.abort(); }
 }
@@ -232,10 +356,10 @@ pub(crate) async fn root_with_observation<T>(
     coordinator: ReductionCoordinator,
     host_work: Option<HostWorkBudget>,
     future: impl Future<Output = T>,
-) -> (T, EvaluationFailureSummary) {
+) -> (T, EvaluationFailureSummary, Vec<InterpreterError>) {
     if let Some(context) = current() {
         let result = future.await;
-        return (result, context.session.failures.snapshot());
+        return (result, context.session.failures.snapshot(), Vec::new());
     }
     let session_id = budget.deploy_id();
     let evaluation_guard = coordinator.enter_evaluation().await;
@@ -245,17 +369,34 @@ pub(crate) async fn root_with_observation<T>(
         host_work,
         evaluation_guard,
     ));
+    let mut cancellation = RootCancellationGuard {
+        session: session.clone(),
+        complete: false,
+    };
     let context = ReductionContext::root(session.clone(), session_id);
     session.register(CausalPath::new());
     let guard = ParticipantGuard::new(session.clone(), CausalPath::new());
     let result = scope(context, future).await;
     drop(guard);
+    session.wait_for_detached().await;
     if session.budget.native_execution_active() && !session.has_complete_cut() {
         session
             .failures
             .record(EvaluationFailureSummary::single(PhloFailure::Platform));
     }
-    (result, session.failures.snapshot())
+    let mut errors = std::mem::take(
+        &mut *session
+            .detached_errors
+            .lock()
+            .expect("detached reduction errors lock"),
+    );
+    errors.sort_by(|left, right| left.0.cmp(&right.0));
+    cancellation.complete = true;
+    (
+        result,
+        session.failures.snapshot(),
+        errors.into_iter().map(|(_, error)| error).collect(),
+    )
 }
 
 pub(crate) struct ParticipantGuard {
@@ -271,6 +412,7 @@ impl ParticipantGuard {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn for_context(context: &ReductionContext) -> Self {
         Self::new(context.session.clone(), context.participant.clone())
     }
@@ -322,6 +464,11 @@ struct ReductionSession {
     failure_work: Option<HostWorkBudget>,
     state: Mutex<SessionState>,
     evaluation_guard: Mutex<Option<OwnedRwLockReadGuard<()>>>,
+    next_detached_id: AtomicU64,
+    detached_count: AtomicUsize,
+    detached_done: Notify,
+    detached_tasks: Mutex<DetachedTasks>,
+    detached_errors: Mutex<Vec<(ParticipantId, InterpreterError)>>,
 }
 
 enum Intent {
@@ -427,6 +574,18 @@ struct PreparedIntent {
 }
 
 impl ReductionSession {
+    async fn wait_for_detached(&self) {
+        loop {
+            let notified = self.detached_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.detached_count.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            notified.await;
+        }
+    }
+
     fn has_complete_cut(&self) -> bool {
         let state = self.state.lock().expect("reduction session lock");
         state.participants.is_empty() && state.intents.is_empty() && !state.driving
@@ -452,6 +611,14 @@ impl ReductionSession {
                 driving: false,
             }),
             evaluation_guard: Mutex::new(Some(evaluation_guard)),
+            next_detached_id: AtomicU64::new(0),
+            detached_count: AtomicUsize::new(0),
+            detached_done: Notify::new(),
+            detached_tasks: Mutex::new(DetachedTasks {
+                canceled: false,
+                handles: HashMap::new(),
+            }),
+            detached_errors: Mutex::new(Vec::new()),
         }
     }
 
@@ -1309,7 +1476,7 @@ mod tests {
         let (_, reducer) =
             create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
                 .await;
-        let (_, incomplete) = root_with_observation(
+        let (_, incomplete, _) = root_with_observation(
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
@@ -1322,7 +1489,7 @@ mod tests {
         .await;
         assert!(incomplete.contains(PhloFailure::Platform));
 
-        let (_, complete) = root_with_observation(
+        let (_, complete, _) = root_with_observation(
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
@@ -1331,6 +1498,144 @@ mod tests {
         )
         .await;
         assert_eq!(complete, EvaluationFailureSummary::default());
+    }
+
+    #[tokio::test]
+    async fn detached_reduction_is_drained_and_reports_its_failure() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (result, summary, errors) = root_with_observation(
+            reducer.space.clone(),
+            reducer.metering.budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                spawn_detached(async {
+                    tokio::task::yield_now().await;
+                    Err(InterpreterError::UserAbortError)
+                });
+            },
+        )
+        .await;
+        assert_eq!(result, ());
+        assert_eq!(summary, EvaluationFailureSummary::single(PhloFailure::User));
+        assert_eq!(errors, vec![InterpreterError::UserAbortError]);
+    }
+
+    #[tokio::test]
+    async fn native_root_waits_for_detached_complete_cut() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (_, summary, errors) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                spawn_detached(async {
+                    tokio::task::yield_now().await;
+                    Ok(())
+                });
+            },
+        )
+        .await;
+        assert_eq!(summary, EvaluationFailureSummary::default());
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn canceled_root_aborts_its_detached_reduction() {
+        struct MarkDrop(Arc<AtomicBool>);
+
+        impl Drop for MarkDrop {
+            fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+        }
+
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let entered_child = entered.clone();
+        let dropped_child = dropped.clone();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async move {
+                    spawn_detached(async move {
+                        let _guard = MarkDrop(dropped_child);
+                        entered_child.notify_one();
+                        std::future::pending::<Result<(), InterpreterError>>().await
+                    });
+                    entered.notified().await;
+                    std::future::pending::<()>().await;
+                },
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached reduction should be aborted");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async {},
+            ),
+        )
+        .await
+        .expect("canceled reduction should release its session");
+    }
+
+    #[tokio::test]
+    async fn canceled_session_aborts_detached_child_before_first_poll() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let polled = Arc::new(AtomicBool::new(false));
+        let child_polled = polled.clone();
+        let (_, summary, errors) = tokio::time::timeout(
+            Duration::from_secs(2),
+            root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async move {
+                    let context = current().expect("reduction context");
+                    let child = context.split(1).pop().expect("child context");
+                    child
+                        .session
+                        .detached_tasks
+                        .lock()
+                        .expect("detached reduction tasks lock")
+                        .canceled = true;
+                    spawn_detached_in_context(child, async move {
+                        child_polled.store(true, Ordering::SeqCst);
+                        Ok(())
+                    });
+                },
+            ),
+        )
+        .await
+        .expect("canceled child must complete");
+        assert!(!polled.load(Ordering::SeqCst));
+        assert!(summary.contains(PhloFailure::Platform));
+        assert_eq!(errors.len(), 1);
     }
 
     struct NearLimitBackend {

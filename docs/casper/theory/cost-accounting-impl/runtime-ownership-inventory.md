@@ -214,13 +214,16 @@ Sources:
 | Reduction session | Contexts, participant guards, and a driver task share the session. | The last context, guard, and driver reference drop. | Include the asynchronously spawned driver, not only the caller future. |
 | Evaluation guard | The session owns an optional read guard on its coordinator boundary. | The quiescent completion path takes and drops the guard. | Prove that cancelled participants and pending intents cannot retain the boundary indefinitely. |
 | Participant and intent maps | Session state owns participant states, operation payloads, and result channels. | Completion removes the participant and its waiting intent. The driver consumes executable intents. | Test cancellation at each transfer boundary. |
-| Scoped child handle | `ScopedJoinHandle` owns a Tokio join handle. | Drop requests task abort. | Abort is not synchronous destruction. Observe child completion before claiming complete release. |
+| Detached child task | The session owns each task abort handle and child participant. | Its guard removes the handle and participant after task completion or abort. The evaluation permit releases after all participants complete. | Check root cancellation before child polling and after child start. Check that checkpoint entry waits for child termination. |
 | Runtime budget | Reducer forks share counters, attempt queues, reconciliation state, and authority state. | Reset clears per-deploy contents. Last owner drop releases the allocation. | Reset assumes no in-flight deployment operation. Verify that the coordinator enforces this assumption. |
 | Cost and authority evidence | Budget queues and maps own attempts, byte events, introductions, reservations, and reconciliation results. | Reconciliation transfers ownership. Reset clears contents. Published evidence has its own owner. | A cleared vector can retain capacity. Preserve evidence required by settlement and replay. |
 
 Sources:
 [reduction coordinator](../../../../rholang/src/rust/interpreter/deterministic_reduction.rs) and
 [accounting runtime](../../../../rholang/src/rust/interpreter/accounting/mod.rs).
+The [Rocq task relation](../../../../formal/rocq/cost_accounted_rho/theories/CountedDetachedBisimulation.v)
+and [TLA+ lifecycle model](../../../../formal/tlaplus/deterministic_parallel_reduction/CountedDetachedReduction.tla)
+check selected-task replay, charges, cancellation, and permit retention.
 
 The runtime constructor stores a weak reducer reference in the dispatcher's `OnceLock`.
 This back-reference does not create a strong reducer-dispatcher ownership cycle.

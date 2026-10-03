@@ -973,6 +973,9 @@ matching_external=0
 if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
     matching_external=$((matching_external + 1))
 fi
+if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
+    matching_external=$((matching_external + 1))
+fi
 if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]]; then
     matching_external=$((matching_external + 1))
 fi
@@ -1199,6 +1202,45 @@ if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
         failed_specs+=("EvaluationBoundary_cancel(expected-refutation)")
         echo "$boundary_output" | tail -10 | sed 's/^/    /'
     fi
+fi
+
+if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
+    counted_module="$REDUCTION_TLA_DIR/CountedDetachedReduction.tla"
+    counted_safe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction.cfg"
+    printf "  %-40s " "CountedDetachedReduction"
+    counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction" \
+        "$counted_safe" "$counted_module" -deadlock 2>&1 || true)
+    if grep -q "Model checking completed. No error has been found" <<<"$counted_output"; then
+        echo "PASS"
+        passes=$((passes + 1))
+    else
+        echo "FAIL"
+        failures=$((failures + 1))
+        failed_specs+=("CountedDetachedReduction")
+        echo "$counted_output" | tail -10 | sed 's/^/    /'
+    fi
+
+    for control in count charge permit; do
+        counted_unsafe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction_${control}_unsafe.cfg"
+        case "$control" in
+            count) expected_invariant="CountExact" ;;
+            charge) expected_invariant="ChargeEqual" ;;
+            permit) expected_invariant="PermitUntilQuiescence" ;;
+        esac
+        printf "  %-40s " "CountedDetachedReduction_${control} (expected refutation)"
+        counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction_${control}" \
+            "$counted_unsafe" "$counted_module" -deadlock 2>&1 || true)
+        if grep -Fq "Invariant $expected_invariant is violated" <<<"$counted_output"; then
+            echo "PASS (refuted $expected_invariant)"
+            passes=$((passes + 1))
+            expected_refutations=$((expected_refutations + 1))
+        else
+            echo "FAIL (expected $expected_invariant counterexample)"
+            failures=$((failures + 1))
+            failed_specs+=("CountedDetachedReduction_${control}(expected-refutation)")
+            echo "$counted_output" | tail -10 | sed 's/^/    /'
+        fi
+    done
 fi
 
 # ─────────────────────────────────────────────────────────────────────────

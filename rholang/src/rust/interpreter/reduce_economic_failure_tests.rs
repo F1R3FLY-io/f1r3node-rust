@@ -52,7 +52,7 @@ async fn economic_observation_preserves_fault_hidden_by_legacy_abort() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
-    let (legacy, observed) = deterministic_reduction::root_with_observation(
+    let (legacy, observed, _) = deterministic_reduction::root_with_observation(
         reducer.space.clone(),
         reducer.metering.budget(),
         reducer.reduction_coordinator.clone(),
@@ -81,7 +81,7 @@ async fn economic_observation_quota_does_not_change_execution_budget_or_legacy_e
             .await;
     let execution = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
     let before = execution.report();
-    let (legacy, observed) = deterministic_reduction::root_with_observation(
+    let (legacy, observed, _) = deterministic_reduction::root_with_observation(
         reducer.space.clone(),
         reducer.metering.budget(),
         reducer.reduction_coordinator.clone(),
@@ -115,7 +115,7 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
         if reverse {
             errors.reverse();
         }
-        let (legacy, observed) = deterministic_reduction::root_with_observation(
+        let (legacy, observed, _) = deterministic_reduction::root_with_observation(
             reducer.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
@@ -130,7 +130,7 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
                 .union(EvaluationFailureSummary::single(PhloFailure::Certificate))
                 .union(EvaluationFailureSummary::single(PhloFailure::Unclassified))
         );
-        let (legacy, next) = deterministic_reduction::root_with_observation(
+        let (legacy, next, _) = deterministic_reduction::root_with_observation(
             reducer.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
@@ -151,7 +151,7 @@ async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() 
             .await;
     let child_a = reducer.clone();
     let child_b = reducer.clone();
-    let (legacy, observed) = deterministic_reduction::root_with_observation(
+    let (legacy, observed, detached_errors) = deterministic_reduction::root_with_observation(
         reducer.space.clone(),
         reducer.metering.budget(),
         reducer.reduction_coordinator.clone(),
@@ -177,7 +177,10 @@ async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() 
         },
     )
     .await;
-    assert!(matches!(legacy, Err(InterpreterError::UserAbortError)));
+    assert!(matches!(
+        reducer.finish_detached_errors(legacy.map(|_| ()), detached_errors),
+        Err(InterpreterError::UserAbortError)
+    ));
     assert_eq!(
         observed,
         EvaluationFailureSummary::single(PhloFailure::User)
@@ -212,7 +215,7 @@ async fn economic_observation_cancellation_does_not_leak_into_the_next_root() {
             result = observed => result.unwrap(),
         }
     }
-    let (_, next) = tokio::time::timeout(
+    let (_, next, _) = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         deterministic_reduction::root_with_observation(
             reducer.space.clone(),

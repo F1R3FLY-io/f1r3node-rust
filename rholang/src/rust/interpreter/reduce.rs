@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -58,9 +57,7 @@ use super::accounting::costs::{
     string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
-use super::deterministic_reduction::{
-    self, DeterministicRSpace, ParticipantGuard, ReductionCoordinator, ScopedJoinHandle,
-};
+use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -260,12 +257,17 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: deterministic_reduction::root(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                self.eval_inner(par, env, rand, CostAuthority::default()),
-            ),
+            inner: async move {
+                let (result, _, errors) = deterministic_reduction::root_with_observation(
+                    self.space.clone(),
+                    self.metering.budget(),
+                    self.reduction_coordinator.clone(),
+                    None,
+                    self.eval_inner(par, env, rand, CostAuthority::default()),
+                )
+                .await;
+                self.finish_detached_errors(result, errors)
+            },
         })
     }
 
@@ -281,13 +283,17 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: deterministic_reduction::root_with_host_work(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                Some(host_work),
-                self.eval_inner(par, env, rand, CostAuthority::default()),
-            ),
+            inner: async move {
+                let (result, _, errors) = deterministic_reduction::root_with_observation(
+                    self.space.clone(),
+                    self.metering.budget(),
+                    self.reduction_coordinator.clone(),
+                    Some(host_work),
+                    self.eval_inner(par, env, rand, CostAuthority::default()),
+                )
+                .await;
+                self.finish_detached_errors(result, errors)
+            },
         })
     }
 
@@ -303,13 +309,50 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: deterministic_reduction::root(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                self.eval_inner(par, env, rand, authority),
-            ),
+            inner: async move {
+                let (result, _, errors) = deterministic_reduction::root_with_observation(
+                    self.space.clone(),
+                    self.metering.budget(),
+                    self.reduction_coordinator.clone(),
+                    None,
+                    self.eval_inner(par, env, rand, authority),
+                )
+                .await;
+                self.finish_detached_errors(result, errors)
+            },
         })
+    }
+
+    pub(crate) async fn eval_continuation(
+        self: &Arc<Self>,
+        par: Par,
+        env: Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        if deterministic_reduction::current().is_none() {
+            return self.eval(par, &env, rand).await;
+        }
+        let reducer = self.clone();
+        deterministic_reduction::spawn_detached(async move {
+            reducer
+                .eval_inner(par, &env, rand, CostAuthority::default())
+                .await
+        });
+        Ok(())
+    }
+
+    fn finish_detached_errors(
+        &self,
+        result: Result<(), InterpreterError>,
+        mut errors: Vec<InterpreterError>,
+    ) -> Result<(), InterpreterError> {
+        if errors.is_empty() {
+            return result;
+        }
+        if let Err(error) = result {
+            errors.insert(0, error);
+        }
+        self.aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     async fn eval_inner(
@@ -401,54 +444,13 @@ impl ReducerCore {
 
             self.spawned_eval_tasks
                 .fetch_add(futures.len() as u64, Ordering::Relaxed);
-            let join_start = std::time::Instant::now();
-            let mut unordered = FuturesUnordered::new();
             let parent_context = deterministic_reduction::current()
                 .expect("parallel evaluation requires a reduction context");
             let child_contexts = parent_context.split(futures.len());
-            for ((index, fut), child_context) in futures.into_iter().enumerate().zip(child_contexts)
-            {
-                // Spawn each branch as its own task. This preserves actual runtime
-                // parallelism and gives deeply recursive branches an independent
-                // task stack while still reporting errors in source order below.
-                let guard = ParticipantGuard::for_context(&child_context);
-                let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
-                    child_context,
-                    async move {
-                        let _guard = guard;
-                        fut.await
-                    },
-                )));
-                unordered.push(async move { (index, handle.await) });
+            for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+                deterministic_reduction::spawn_detached_in_context(child_context, fut);
             }
-
-            let mut flattened_results: Vec<(usize, InterpreterError)> = Vec::new();
-            while let Some((index, joined)) = unordered.next().await {
-                match joined {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => flattened_results.push((index, err)),
-                    Err(join_error) => flattened_results.push((
-                        index,
-                        InterpreterError::ReduceError(format!(
-                            "parallel eval task failed: {join_error}"
-                        )),
-                    )),
-                }
-            }
-            parent_context.rejoin();
-            metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
-                .increment(join_start.elapsed().as_nanos() as u64);
-
-            flattened_results.sort_by_key(|(index, _)| *index);
-            let stable_errors = flattened_results
-                .into_iter()
-                .map(|(_, err)| err)
-                .collect::<Vec<_>>();
-
-            match self.aggregate_evaluator_errors(stable_errors) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
+            Ok(())
         }
     }
 
@@ -466,7 +468,7 @@ impl ReducerCore {
         super::accounting::economic_failure::EvaluationFailureSummary,
     ) {
         let env = Env::new();
-        StackGrowingFuture {
+        let (result, summary, errors) = StackGrowingFuture {
             inner: deterministic_reduction::root_with_observation(
                 self.space.clone(),
                 self.metering.budget(),
@@ -485,7 +487,8 @@ impl ReducerCore {
                 },
             ),
         }
-        .await
+        .await;
+        (self.finish_detached_errors(result, errors), summary)
     }
 
     pub async fn inj_with_host_work(
@@ -1019,42 +1022,15 @@ impl ReducerCore {
             >,
         >,
     ) -> Result<DispatchType, InterpreterError> {
-        let mut unordered = FuturesUnordered::new();
         let parent_context = deterministic_reduction::current()
             .expect("parallel dispatch requires a reduction context");
         let child_contexts = parent_context.split(futures.len());
-        for ((index, fut), child_context) in futures.into_iter().enumerate().zip(child_contexts) {
-            // Persistent/peek continuations must progress independently; spawning
-            // preserves parallel execution and isolates deep recursive branches.
-            let guard = ParticipantGuard::for_context(&child_context);
-            let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
-                child_context,
-                async move {
-                    let _guard = guard;
-                    fut.await
-                },
-            )));
-            unordered.push(async move { (index, handle.await) });
+        for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+            deterministic_reduction::spawn_detached_in_context(child_context, async move {
+                fut.await.map(|_| ())
+            });
         }
-
-        let mut errors = Vec::new();
-        while let Some((index, joined)) = unordered.next().await {
-            match joined {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => errors.push((index, err)),
-                Err(join_error) => errors.push((
-                    index,
-                    InterpreterError::ReduceError(format!(
-                        "parallel dispatch task failed: {join_error}"
-                    )),
-                )),
-            }
-        }
-        parent_context.rejoin();
-
-        errors.sort_by_key(|(index, _)| *index);
-        let stable_errors = errors.into_iter().map(|(_, err)| err).collect();
-        self.aggregate_evaluator_errors(stable_errors)
+        Ok(DispatchType::Skip)
     }
 
     /* Collect mergeable channels */
