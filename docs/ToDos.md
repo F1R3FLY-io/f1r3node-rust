@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-08-19
+last_updated: 2026-09-21
 mr_status:
   ready: false
   target_branch: master
@@ -23,6 +23,8 @@ This document tracks implementation work through **epics** (logical groupings of
 ---
 
 ## Active Coordination
+
+- **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
      entries that previously accumulated at the top of this file; the full
@@ -66,6 +68,1659 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-020: Node Log and Accept-Path Self-Limits
+
+```yaml
+---
+epic_id: EPIC-020
+title: "Node Log and Accept-Path Self-Limits"
+status: in_progress
+priority: p0
+user_story: US-009
+user_flow: FLOW-002
+blocked_by: []
+created_at: 2026-09-23
+updated_at: 2026-09-30
+claimed_by: null
+branch: fix/node-log-and-accept-backoff
+pr_base_branch: dev
+stack_order: "Branches from dev and merges to dev before PR #447. PR #447 then merges dev. The soak branch inherits the fix through its next merge of the observation branch."
+origin: "On 2026-09-23 a nine-day compose network from a system-integration checkout filled 2.7 TB in one day. Its bootstrap ran out of file descriptors, the transport accept loop retried with no backoff and logged one ERROR line per attempt, the node wrote every line to its data volume and to stdout, and the container's json-file log had no size cap."
+execution_contract:
+  base_branch: dev
+  scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
+  cbc_decision: "The maintainer decided on 2026-09-30 that the accept path stays untagged for TASK-020-1. The regression tests in f1r3fly_server_resource_tests.rs are the verification."
+tasks:
+  - id: TASK-020-1
+    title: "Back off and rate-limit the transport accept-error path"
+    status: complete
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-30T00:40:00Z
+    verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    verification_claimed_at: 2026-09-30T01:03:01Z
+    verification_status: in_progress
+    blocked_by: []
+    work_log: docs/work-logs/transport-accept-resource-review-20260923.md
+    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. The approved story and flow repair now links EPIC-020 to US-009 and FLOW-002."
+    hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
+    hosted_run: 36651370411
+    hosted_job: 109688126217
+    unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
+    completion_blocker: null
+    remaining: []
+    files:
+      - comm/src/rust/transport/f1r3fly_server.rs
+    acceptance:
+      - "On an accept error the listener sleeps with exponential backoff, capped at one second, before the next accept."
+      - "Under sustained descriptor exhaustion the listener emits at most one ERROR line per backoff window and one summary line per minute with the suppressed count."
+      - "A test injects descriptor exhaustion against the listener and asserts the bounded line count and the recovery once descriptors return."
+      - "Ordinary accept throughput is unchanged. No backoff applies to a successful accept."
+    implementation_plan:
+      - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
+      - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
+      - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
+    completion_gaps: []
+    completed_date: 2026-09-30
+  - id: TASK-020-2
+    title: "Bound the file log by bytes, not only by time"
+    status: complete
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T01:20:37Z
+    blocked_by: []
+    work_log: docs/work-logs/task-020-2-byte-bounded-logging-20260930.md
+    files:
+      - shared/src/rust/tracing_init/mod.rs
+      - shared/src/rust/tracing_init/bounded_file.rs
+      - node/src/main/resources/defaults.conf
+      - node/src/rust/configuration/mod.rs
+    acceptance:
+      - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
+      - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
+      - "A test drives a hot error loop through the appender and asserts the directory never exceeds the bound."
+      - "The defaults comment no longer describes minutely rotation as the only way to bound disk use."
+    implementation_plan:
+      - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
+      - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
+      - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
+    unit_tests: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
+    completion_gaps: []
+    completed_date: 2026-09-30
+  - id: TASK-020-3
+    title: "One sink per deployment and a container log cap check"
+    status: complete
+    completed_on: "2026-09-30"
+    recorded_by: claude-session-f3cbc961
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T02:23:57Z
+    claimed_at_source: clock_checkpoint_after_claim
+    blocked_by: []
+    work_log: docs/work-logs/task-020-3-deployment-log-caps-20260930.md
+    implementation_status: "The node deployment commands and repository guards pass at 7d64c9d03. The external single-sink change merged into system-integration dev on 2026-09-30. Its main promotion is pending and is appended when it lands."
+    external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
+    external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    external_single_sink_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
+    external_change:
+      repository: F1R3FLY-io/system-integration
+      pull_request: 146
+      branch: fix/single-log-sink-per-deployment
+      base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+      receiver: claude-session-fbb1f4d0
+      dev_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
+      dev_merged_at: 2026-09-30T22:10:44Z
+      main_promotion_revision: null
+      request_record: "system-integration docs/ToDos.md, section REQUEST: one node log sink per deployment (SI-TASK-020-3)"
+    sink_contract:
+      compose_and_smoke_test: "stdout through sink = stdout in conf/rust.conf and conf/standalone-dev.conf, bounded by json-file 100m x 3, read by docker logs and shardctl"
+      integration_docker_provider: "file through --log-sink=file before run at 6 launch sites (NODE_LOG_SINK_ARGS in integration-tests/test/infra/compose.py), read from /var/lib/rnode/logs/node.log*"
+      integration_subprocess_provider: "stdout through the conf, read from the captured process output"
+      development_override: "both only through an explicit --log-sink=both before run"
+    external_verification:
+      - "unit-tests/test_log_sink_policy.py at ccd717195: 34 passed (run from a git archive export with the repository Poetry environment)."
+      - "poetry run pytest unit-tests at the PR head: 355 passed. ruff 0.16.0 check and format clean."
+      - "docker compose config for the 5 node variants: 11 node services, all json-file 100m and 3 files, Compose files unchanged."
+      - "Live suites (system-integration commit e7163d57): test_heartbeat passed in PR CI. test_token_metadata standalone and shared, and test_shard_degradation: 15 of 15 passed locally with F1R3FLY_NODE_DEFAULTS_CONF set."
+    node_verification_at_7d64c9d03:
+      - "scripts/ci/test-compose-log-policy.sh: shard-vps2 3, ci-shard 5, ci-standalone 1 node services passed."
+      - "cargo nextest run -p node --test log_sink_cli: 3 passed."
+      - "scripts/supply-chain cargo test --test repository: 18 passed."
+      - "Pre-commit fmt, clippy, test, and deny passed at the merge commit 7d64c9d03 (dev ccd4a4823 merged)."
+    remaining_outside_this_task:
+      - "The byte limits of node commit 6e1c8833a reach system-integration runs through the next node repin of SYSTEM_INTEGRATION_REF. TASK-020-4 on formal/soak-casper-consensus enforces them in the harness."
+      - "Append the system-integration main promotion revision to external_change when it lands."
+    unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
+    files:
+      - Cargo.lock
+      - scripts/supply-chain/Cargo.toml
+      - scripts/supply-chain/tests/repository.rs
+      - scripts/supply-chain/tests/support/compose_logging.rs
+      - scripts/ci/test-compose-log-policy.sh
+      - node/tests/log_sink_cli.rs
+      - docker/shard.yml
+      - docker/standalone.yml
+      - docker/observer.yml
+      - docker/validator4.yml
+      - docker/shard.vps1.yml
+      - docker/shard.vps2.yml
+      - docs/node/README.md
+    acceptance:
+      - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
+      - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
+      - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
+      - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
+    notes:
+      - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
+      - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
+      - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
+  - id: TASK-020-4
+    title: "Harness enforcement of node log growth under EPIC-017"
+    status: pending
+    claimed_by: null
+    owner_branch: formal/soak-casper-consensus
+    blocked_by: [TASK-020-1, TASK-020-2]
+    acceptance:
+      - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
+      - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
+      - "CLAIM-SOAK-001 records the log cap as an enforced check instead of an assumption."
+    notes:
+      - "This task is tracked here for ordering only. The downstream agent mirrors it into EPIC-017 on the soak branch, where the claim and the driver live."
+---
+```
+
+**Current state:** Created on 2026-09-23 after the disk incident. No branch exists yet. The fix branch is created from dev in the single checkout when the observation branch has no uncommitted work.
+
+---
+
+### EPIC-019: Casper Node Observation Interface
+
+```yaml
+---
+epic_id: EPIC-019
+title: "Casper Node Observation Interface"
+status: in_progress
+priority: p0
+user_story: US-006
+blocked_by: []
+created_at: 2026-09-21
+updated_at: 2026-09-22
+claimed_by: claude-session-7015f552
+claimed_at: 2026-09-21T16:40:00Z
+branch: feature/casper-node-observation
+pull_request: 447
+pr_base_branch: dev
+consumer: "EPIC-017 TASK-017-12 on formal/soak-casper-consensus. PR #436 temporarily targets this branch."
+plans:
+  - docs/plans/casper-node-observation-batch-b.md
+claims:
+  - docs/claims/casper-node-observation.md
+  - docs/claims/casper-node-authority-snapshot.md
+execution_contract:
+  base_branch: dev
+  base_revision: 6940a5beb4aa806d3d75f6df3be9f238512fcc2f
+  scope: "Deliver the node-side observation interfaces that the soak harness consumes: local capability interface, bounded detached DAG capture, observer evaluation, and publication controls. The node remains the system under test."
+  batch_policy: "Each batch requires its own file-scope confirmation before implementation. Confirmation of one batch does not authorize the next."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  evidence_policy: "Every batch registers a pending claim before implementation, keeps compact records under docs/cbc-evidence/, and keeps bulk evidence outside Git."
+  completion_policy: "Close after every batch claim is accepted, PR #447 merges to dev, and PR #436 returns to dev."
+tasks:
+  - id: TASK-019-1
+    title: "Batch A: local capability interface and runtime shutdown correction"
+    status: complete
+    claimed_by: pi-casper-node-observation
+    completed_at: 2026-09-19
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-001]
+    revisions: [877cea722, d021a1d53, 799e2136a]
+    evidence:
+      - docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/report.json
+      - docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/report.json
+    work_log: docs/work-logs/casper-node-observer-shutdown-review.md
+    notes:
+      - "Opt-in local socket observer with session identity, bounded frames, peer credentials, and capability reporting. All five profile capabilities report unsupported."
+      - "The shutdown correction returns the node-program result before observer cleanup. The regression checks source ordering, not an end-to-end node shutdown."
+      - "Implementation is complete. The claim remains pending until source-bound verification and explicit acceptance under TASK-019-4."
+  - id: TASK-019-2
+    title: "Batch B1: bounded detached DAG capture"
+    status: complete
+    completed_on: "2026-09-23"
+    claimed_by: claude-session-7015f552
+    claimed_at: 2026-09-21T14:00:00Z
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-002]
+    revisions: [a38d44185, 38d083bff, 619882128]
+    evidence:
+      - docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json
+    work_log: docs/work-logs/casper-node-observation-batch-b1.md
+    blocked_by: []
+    files:
+      - shared/src/rust/store/soak_snapshot.rs
+      - shared/src/rust/store/mod.rs
+      - shared/tests/soak_snapshot.rs
+      - block-storage/src/rust/dag/soak_snapshot.rs
+      - block-storage/src/rust/dag/mod.rs
+      - block-storage/src/rust/dag/block_dag_key_value_storage.rs
+      - block-storage/src/rust/dag/block_metadata_store.rs
+      - block-storage/src/rust/key_value_block_store.rs
+      - block-storage/tests/soak_snapshot.rs
+    notes:
+      - "The user confirmed the nine-file scope, the pending claim, and four high-weight mandatory tags on 2026-09-21."
+      - "Bounded LMDB reader, transaction identity checks, detached snapshot with canonical digest, scratch construction, and observer-only bounded block decoding landed in a38d44185."
+      - "The continuation at 38d083bff corrected reader budget retention, key bounds, checked arithmetic, and short-decompression acceptance, with red tests retained."
+      - "The completion review addresses all four source findings. It records 301 passing test executions and a negative compile check for mutable snapshot access."
+    remaining_work: []
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance:
+      - "Every limit is checked before the allocation or store operation it bounds."
+      - "Capture rejects any environment or generation change between open and validation, including restored values."
+      - "Production store bytes are unchanged by successful and rejected captures."
+      - "Two scratch views share no mutable store with each other or with production."
+      - "The canonical identity covers every field that scratch construction and evaluation consume."
+  - id: TASK-019-3
+    title: "Batch B2: observer handle, detached evaluation, and reference comparison"
+    status: complete
+    completed_on: "2026-09-23"
+    claimed_by: codex-batch-b2-20260923
+    blocked_by: []
+    plan: docs/plans/casper-node-observation-batch-b.md
+    planning_status: "Steps 1 through 4 complete at cef1f4b721b8109019459f11c53d49df00eb68f9."
+    planning_authorization: "The user authorized planning steps 1 through 4 on 2026-09-23, before TASK-019-4 acceptance."
+    implementation_authorized: true
+    implementation_authorization: "The user requested B2 completion on 2026-09-23. PR #447 review 5294038948 records predecessor acceptance at 4c0c0dbe7."
+    claim: docs/claims/casper-node-authority-evaluation.md
+    work_log: docs/work-logs/task-019-3-node-authority-evaluation.md
+    implementation_status: complete
+    verification_package: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json
+    verification_status: "976 focused tests and all commit checks pass. The full Casper run exceeded 30 minutes."
+    completion_gate: "Complete. The named maintainer accepted claim 003 on 2026-09-23 at 237e43d72."
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance_revision: 237e43d723b9867985cd47fdfe312fd8d06352e8
+    acceptance_package: docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02
+    construction_cycle: batch-b2-construction-01
+    construction_project: formal/rocq/node_authority
+    construction_theorems: 15
+    applicability_review: formal/tlaplus/node_observation/README.md#batch-b2-applicability-review
+    tiers_reached:
+      refutation: "Inherited from the accepted session and capture models only. B2 adds no bounded model."
+      construction: "15 kernel-checked theorems with closed assumption sets; complete for C3 and C5, partial for C4, C9, and C12, inherited for C7 and C8, pending for C2, C6, C10, C11, C14, and C15."
+      binding: "Every property maps to named tests in the bindings manifest; 14 casper observer tests, 20 node observer tests, and 28 capture tests pass."
+    strict_cbc_result: "Exit 4 with 13 pending mandatory records."
+    prerequisites:
+      - "Both predecessor claims must pass source-bound verification and named maintainer acceptance before B2 acceptance."
+      - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
+      - "A reference evaluation path that differs from the measured path. Repeating the production tips computation is not independent coverage."
+      - "Separate fields for the exact oracle decision, the original fault-tolerance result, and the display projection, each naming its input snapshot."
+      - "Counters that increment at actual traversal and clique-search operations, with missing counters reported as unavailable."
+      - "A registered pending claim and ratified tags before implementation."
+    acceptance:
+      - "Attachment installs no observer state by default and never invokes the finalizer, the production snapshot, or validator identity."
+      - "An instance rejects conflicting handle attachment. Coverage begins at successful attachment."
+      - "Record overflow or observer failure never blocks consensus or invents a successful observation."
+      - "A derivation, an attempted effect, and persisted finalization are distinct records."
+    implementation_plan:
+      - "Step 1. Fix the final file list in the batch plan: node runtime and setup, engine cell, Casper constructor, multi-parent types and dispatch, the six test fixtures that need the observer field, and a work-bound review of util/clique.rs and the traversal helpers."
+      - "Step 2. Design the handle: an optional observer field on the Casper instance that defaults to none, attached once at engine installation, rejecting a second attachment, with coverage starting at successful attachment."
+      - "Step 3. Design the evaluation: an authority-snapshot request that runs the B1 capture, then evaluates floor and oracle over the scratch view with scratch stores only. The reference path must not reuse the production tips computation."
+      - "Step 4. Define the record schema: oracle decision, original fault-tolerance result, and display projection as separate fields, each naming the snapshot digest it used, plus traversal and clique counters that report unavailable when not incremented."
+      - "Step 5. Register CLAIM-CASPER-NODE-OBSERVATION-003, propose mandatory tags for the new handle and evaluation files, and create pending records before any implementation."
+      - "Step 6. Implement with tests: default startup installs nothing, conflicting attachment is rejected, record overflow never blocks consensus, and derivation, attempted effect, and persisted finalization are distinct."
+      - "Step 7. Package evidence, rerun the gate, and obtain acceptance under the same rules as TASK-019-4."
+  - id: TASK-019-4
+    title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
+    status: complete
+    completed_on: "2026-09-23"
+    claimed_by: claude-session-7015f552
+    claimed_at: 2026-09-23T17:10:00Z
+    previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    previous_claimed_at: 2026-09-22T14:15:47Z
+    handoff_revision: 8789c1c3e
+    blocked_by: []
+    execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
+    correction_checkout_base: 4561e064a70b495fe07cbcf779bff375d636aaad
+    correction_working_tree: true
+    correction_source_manifest: docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256
+    work_log: docs/work-logs/task-019-4-node-claim-verification.md
+    evidence:
+      - docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json
+      - docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json
+    verification_scope_confirmed: true
+    verification_cycle: combined-b11-cycle-03
+    merged_source_cycle_checkout_base: 38e576041
+    merged_source_cycle_working_tree: true
+    sibling_cycle_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json
+    sibling_cycle_branch: feature/casper-node-observation
+    reconciliation_checkout_base: 10e7b8452824e12a1fe2743dca7989b79fce2133
+    reconciliation_working_tree: true
+    handoff_cycle_checkout_base: 8789c1c3e
+    handoff_cycle_working_tree: true
+    handoff_cycle_02_checkout_base: 78d696ea6
+    handoff_cycle_02_working_tree: true
+    tiers_reached:
+      refutation: "The local bounded gate passes 16 configurations and 88 controls. Hosted run 35906410283 passes 31 configurations and the same controls."
+      construction: "All 33 node theorem exports have closed assumption sets and pass kernel checking. B11 contributes eight byte-schema exports. Boundary assumptions require review."
+      binding: "The hosted and ARM64 Linux drivers each pass 334 test executions, including two B11 export tests. Eight current Kani harnesses pass."
+    applicability_review: formal/tlaplus/node_observation/README.md#applicability-per-property
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
+    eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
+    proposed_reviewer: jltatbeach
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
+    acceptance_reviewed_at: 2026-09-23T16:55:28Z
+    acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
+    notes:
+      - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
+      - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
+      - "Maintainer identities do not constitute acceptance. Approval must name the reviewed revision, both claims, and the evidence package."
+      - "The initial intake had seven pending mandatory artifacts and no observer-specific formal inputs. The confirmed verification scope adds formal and gate artifacts."
+      - "The initial package retains the lock-deadline counterexample and the interface fixture failure."
+      - "The user approved the five-file correction. All three capture locks use a checked deadline, and the test hashes its executable before the handshake."
+      - "The corrected isolated run passed 577 test executions, strict Clippy, the workspace check, and formatting checks. The interface executable has a separate debug-stripped identity."
+      - "Production limits remain unchanged. The repeated-nonce regression failed before the correction and passed afterward. The new isolated run passed 580 test executions."
+      - "TLC passed the challenge model and its expected freshness violation. Four allocation theorems passed Rocq kernel checking with closed assumption sets."
+      - "The bounded TLC gate passed 14 positive configurations and 62 expected violations. These results do not discharge either combined claim."
+      - "The canonical model set combines the broader downstream models with the node freshness control. Both claim records remain pending."
+      - "The reconciliation gate passed 15 positive configurations and 78 expected violations. All 17 node controls remain registered, with four closed Rocq assumption sets."
+      - "The isolated binding driver passed 276 executions. Its input base is node revision 10e7b8452, not a harness merge revision."
+      - "The node package owns gate registration evidence. The harness keeps its primary gate record without node claim digests."
+      - "The handoff cycle at 8789c1c3e added the BoundedCapture Rocq module and qualified tokens, a capture bisimilarity oracle, Kani harnesses, the applicability review, and refreshed records including the DAG storage file after the dev merge."
+      - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
+      - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
+      - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "Batch B2 changed six accepted artifacts after acceptance: the TLA+ README, the DAG storage file, the capture tests, the node observer, its tests, and the formal gate script. Their records are pending for claim 003 at the current digest and retain the acceptance of claims 001 and 002 at 4c0c0dbe7 with the accepted digests. The other 52 accepted records stay discharged."
+      - "The named maintainer accepted claim 003 on 2026-09-23 at 237e43d72 on the construction-cycle package. The six changed artifacts are discharged again under claim 003 and keep both acceptances in their records."
+      - "The named maintainer accepted both claims on 2026-09-23 at 4c0c0dbe7 on the cycle 02 package, with the five bounded-by-design decisions and the recorded construction gaps accepted. All 58 node records are discharged. The two gate-claim records in the union inventory stay pending under CLAIM-SOAK-GATE-001."
+      - "Handoff cycle 02 at 78d696ea6 pulled the deterministic generation-rejection test across from the soak branch, reran the TLA gate and the Rocq kernel check, and refreshed every node record. Three blocking items remain: the applicability review, the acceptance, and the open construction proofs."
+      - "The merged-source cycle 02 at 00f91ca11 refreshed every node record and the package after the port of the withheld cycle. The node branch refreshed its records at 78d696ea6 in parallel; that package is not merged here."
+      - "Cycle 02 retained the hosted strip failure. Commit 38e576041 corrects array entry-size normalization and preserves the other allocated-section checks."
+      - "Cycle 03 verifies the current sources with local Rocq, retained ARM64 Kani tooling, and successful hosted binding and correspondence jobs."
+      - "The current package refreshes 68 node records and preserves two primary governance records. The strict audit keeps all 70 mandatory records pending."
+      - "B11 correspondence checks 75 production wire cases and six rejection controls. The strip fixture rejects 12 executable mutations."
+    acceptance:
+      - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
+      - "Refutation, construction, and binding tiers are recorded with retained failing controls."
+      - "An isolated rebuild runs the interface and capture suites. The Batch A and B1 reports record native runs only."
+      - "Acceptance is recorded by a named maintainer. Passing tests alone do not discharge a claim."
+    implementation_plan:
+      - "Step 1. Refutation tier. Author bounded TLA+ models under formal/tlaplus/node_observation/: MC_ObserverSession for challenge freshness, one request per session, deadline expiry, and session budget; MC_BoundedCapture for guard order, transaction-identity interval, environment-change rejection, incomplete-row rejection, and guard release. Register each clean configuration and one expected-violation configuration per defect class in scripts/ci/check-tla-invariants.sh. The clean run must pass and each violation must fail on its named invariant with TLC exit 12. Record the instance bounds in the area README. This tier yields bounded refutation evidence only."
+      - "Step 2. Applicability review per property. For each property in both claims, record in the area README whether it is bounded by design or unbounded, following docs/cbc-verification-tiers.md. A resource limit, timeout, frame size, or test fixture does not make a property bounded by design, and a smaller TLC instance does not cover a larger permitted domain. Construction may be recorded as not applicable only after a named maintainer accepts the bounded-by-design justification with evidence that verification covers the complete permitted domain. Capture consistency over every permitted DAG and session isolation over every request are unbounded and require promotion. A claim closes only when every constituent property has a reviewed classification."
+      - "Step 3. Construction tier. For every promoted property, add a Rocq project under formal/rocq/node_observation/ that exports one MainTheorem module, register it in scripts/ci/check-formal-invariants.sh, and require a clean coqchk run with a counted assumption set that contains no Axiom, Admitted, or Parameter. Until the theorem lands, every record keeps construction pending. Passing TLC checks never satisfy this tier."
+      - "Step 4. Binding tier. Source hashes establish identity only. Bind the Rust to the models with a bisimilarity test that runs the production capture and observer paths against a hand-translated oracle on the same inputs, keep the retained pre-fix regressions for the five corrected findings, and add a Kani harness for the length-prefix and block-decode limit arithmetic. Record which binding forms each claim reached."
+      - "Step 5. Gate rerun. Rerun the gate at the corrected revision de93425ee or later with an isolated rebuild and the strict explicit-inventory audit. Package it as casper-node-claim-gate-<revision>-02 with the tiers reached, the construction field, and construction_assumptions for each theorem."
+      - "Step 6. Acceptance. Request acceptance from the proposed reviewer as a PR #447 review comment that names the revision, both claim IDs, and the package path. Record accepted_by and acceptance_record."
+      - "Step 7. Status follows evidence. Change a tier field only when its evidence exists, and change a claim status only when every required tier is verified and acceptance is recorded. The audit result follows the statuses. Never change a status to make the audit pass. A claim with construction still pending stays pending, with the promotion decision recorded."
+  - id: TASK-019-5
+    title: "Batch C: publication writer inventory and consistency contract"
+    status: complete
+    claimed_by: null
+    completed_on: "2026-09-23"
+    completion_scope: research_only
+    research: docs/plans/casper-node-observation-batch-c.md
+    research_authorization: "The user requested Batch C research before TASK-019-3 completion."
+    research_results:
+      - "The inventory covers all 15 block and DAG databases, adjacent custody stores, dependency storage, and runtime state."
+      - "The contract separates read consistency, partial publication, recovery evidence, and unsupported occurrence identity."
+    review_status: pending_named_maintainer
+    implementation_authorized: false
+    implementation_dependencies: [TASK-019-3]
+    qualification_prerequisites:
+      - "PR #216 merged to dev. Occurrence-level recovery qualification has no occurrence store to observe before that merge."
+    acceptance:
+      - "Occurrence identity is never inferred from deploy signatures."
+      - "The contract and inventory are reviewed before any Batch C implementation approval."
+  - id: TASK-019-6
+    title: "Review minimum necessary scope, merge PR #447 to dev, and return PR #436 to dev"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-4, TASK-019-8]
+    acceptance:
+      - "Review every branch change before merge and justify why each retained component is necessary for an approved requirement."
+      - "Identify components that can be removed, combined, or moved into test tooling instead of the production node."
+      - "Review duplicate data, custom serialization, scratch stores, public interfaces, configuration, tests, documentation, and evidence files."
+      - "Preserve required safety checks, negative tests, evidence identities, and reachable historical evidence during any approved reduction."
+      - "Record source, test, documentation, and total diff sizes before and after reduction."
+      - "Run affected checks and obtain maintainer acceptance of the minimum necessary codebase scope before merge."
+      - "PR #447 merges with all accepted claims and the pre-commit gate passing without a skip."
+      - "PR #436 on formal/soak-casper-consensus retargets dev after the merge."
+      - "EPIC-017 TASK-017-12 updates its node interface status to the merged revision."
+  - id: TASK-019-7
+    title: "Publish dev candidate images for adapter qualification"
+    status: in_progress
+    claimed_by: codex-candidate-images-20260923
+    blocked_by: [TASK-019-6]
+    work_log: docs/work-logs/task-019-7-candidate-images.md
+    baseline_status: "Published amd64 and arm64 digests verified for dev revision 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a."
+    baseline_executable_status: "Both executable hashes, image configurations, platform manifests, and the index were independently verified by immutable digest."
+    baseline_handoff: docs/work-logs/task-019-7-candidate-images.md#task-017-12-candidate-handoff
+    review_evidence: target/task-019-7-review-20260923/report.json
+    lifecycle_fix_pr: https://github.com/F1R3FLY-io/system-integration/pull/144
+    lifecycle_dev_merge: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+    lifecycle_promotion_pr: https://github.com/F1R3FLY-io/system-integration/pull/145
+    lifecycle_promotion_status: "Merged to main on 2026-09-23. The merged tree matches the reviewed and tested tree."
+    lifecycle_main_merge: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    lifecycle_review_status: "Independent review found no blocking code issue. All 42 lifecycle and resolver tests pass."
+    lifecycle_live_status: "Passed on amd64 and arm64 with Docker and subprocess providers. Each suite passed all 110 tests."
+    lifecycle_live_evidence: target/task-019-7-pin-e3c4e1418/ci/live-validation.json
+    node_pin_status: "All three pins name e3c4e141. Local checks and PR CI pass."
+    node_pin_evidence: target/task-019-7-pin-e3c4e1418/report.json
+    node_pin_patch: target/task-019-7-pin-e3c4e1418/node-pin.patch
+    node_pin_branch: ci/repin-validator-lifecycle-settlement
+    node_pin_publication: "PR #450 remains open at the user's direction. CI run 35921674172 passed."
+    node_pin_authorization: "The agent created the commit and PR without required explicit approval. No merge authorization exists."
+    node_pin_pr: https://github.com/F1R3FLY-io/f1r3node-rust/pull/450
+    node_pin_commit: 6497dd76a029481d63e49c2af6f0f91c4bd71fe2
+    node_pin_ci_run: 35921674172
+    observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
+    external_dependencies:
+      - "The system-integration fix, promotion, and live validation are complete. The node PR merge and subsequent dev image publication remain pending."
+    proposed_external_branch: fix/validator-lifecycle-settlement-budget
+    external_pr_target: dev
+    external_promotion_target: main
+    consumer: "EPIC-017 TASK-017-12 candidate repin on formal/soak-casper-consensus."
+    pin_sites:
+      - .github/oci-validation.env
+      - .github/workflows/_integration-pipeline.yml
+      - .github/workflows/merge-recovery-soak.yml
+    implementation_plan:
+      - "Step 1. In system-integration, target dev, then promote dev to main. Record both merge revisions. Commits and pushes require separate consent."
+      - "Step 2. Use scripts/repin-system-integration.sh to align all three SYSTEM_INTEGRATION_REF sites in a small PR to dev. Update the soak branch separately."
+      - "Step 3. Let dev CI publish the image for the current dev revision, and record the immutable image digests for amd64 and arm64 with the dev revision they were built from."
+      - "Step 4. Hand the digests to TASK-017-12 for candidate repin and admission. This baseline image carries no observer interface."
+      - "Step 5. After TASK-019-6 merges PR #447, repeat Step 3 for the observer-capable dev revision. Authority and publication adapter qualification needs that second image, not the baseline."
+    acceptance:
+      - "The pin names the 40-character system-integration main revision that contains the promoted fix."
+      - "Each published image is recorded by immutable digest, platform, and source dev revision."
+      - "The baseline and observer-capable images are recorded as distinct candidates."
+      - "No candidate is repinned from a rebuilt or mutable tag."
+  - id: TASK-019-8
+    title: "Final branch cleanup before the PR #447 merge"
+    status: in_progress
+    claimed_by: claude-session-7015f552
+    claimed_at: 2026-09-23T21:40:00Z
+    work_log: docs/work-logs/task-019-8-branch-cleanup.md
+    blocked_by: []
+    precedes: [TASK-019-6]
+    scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
+    retention_rules:
+      - "Keep every file that an accepted claim, a CbC record, or the tracker cites by path or digest. Removing one breaks the source-bound audit."
+      - "Keep the claim files, the per-artifact records, and one compact report.json plus validation.json per evidence run that a record cites."
+      - "Keep the acceptance record and the handoff notes that name decisions, owners, and open findings."
+      - "Bulk evidence stays outside Git. Anything that leaves the tree is recorded with its external location and digest, following the TASK-017-14 precedent on the soak branch."
+    inventory_status: refreshed
+    inventory_completed_on: "2026-09-23"
+    inventory_refreshed_on: "2026-09-23"
+    removals_authorized: false
+    cleanup_acceptance: pending
+    before_checks:
+      strict_audit_claims_001_002: "exit 4; 58 discharged, 2 pending under CLAIM-SOAK-GATE-001"
+      strict_audit_claim_003: "exit 0; 19 discharged"
+      link_check: "lychee offline over docs and formal: 2188 links, 0 errors"
+      ste_check: "baseline recorded for every branch Markdown file"
+    diff_before:
+      total: {files: 239, added: 24288, deleted: 323}
+      docs: {files: 135, added: 12047, deleted: 13}
+      formal: {files: 53, added: 2746, deleted: 0}
+      tests: {files: 10, added: 3513, deleted: 0}
+      workflows_and_scripts: {files: 8, added: 310, deleted: 17}
+      source: {files: 33, added: 5672, deleted: 293}
+    inventory:
+      head: 51febc379838b6383e240e917f7be1ed9c01b9ab
+      dev: 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a
+      comparison: "git diff --name-status dev...HEAD -- docs formal .github"
+      merge_base_equals_dev: true
+      total_files: 192
+      classifications: {"integral": 138, "removable": 5, "cited": 49}
+      method:
+        - "The inventory covers every committed branch path in the three directories at the refreshed head. No working-tree-only file remains."
+        - "Integral files support required functionality, verification, policy, an accepted claim, or an accepted package."
+        - "Cited files retain an inbound path or digest reference from a claim, record, task, handoff, plan, or package, with the TASK-019-8 inventory excluded from the reference corpus."
+        - "Every report.json and validation.json companion is retained by the retention rule whether or not a path cites it."
+        - "The two packages named in the maintainer acceptances keep their complete manifests. Removing a file from an accepted package would change the accepted package."
+        - "Companion manifests inside a package that a claim, record, or report cites by directory are retained as package members."
+        - "Removable files are the self-manifests of packages that no acceptance names. Their content is reproducible from the retained files, and their digests are recorded below."
+        - "Work logs are one per task. Each is cited by the tracker, a claim, or a plan, so none is removable under the retention rules."
+      reasons:
+        workflow_gate: "The workflow runs node binding checks and the registered formal gate."
+        task_record: "The tracker retains task scope, dependencies, review gates, and the cleanup decision."
+        research_terms: "The glossary defines the terms used by the Batch C contract."
+        tier_policy: "The claim review requires the property classification and tier rules."
+        claim_specification: "The file defines an observation claim and its required evidence."
+        formal_verification: "The claim verification uses this model, control, theorem, project input, binding map, or applicability record."
+        artifact_record: "The source-bound audit requires the per-artifact CbC record."
+        task_plan: "TASK-019-3 or TASK-019-5 cites this research and implementation boundary."
+        task_handoff: "The tracker, a claim, or a plan cites this handoff, its decisions, or its open findings."
+        retained_report: "A claim, per-artifact record, task, or retained handoff cites this report."
+        retained_validation: "The retention rule requires the validation companion for this cited report."
+        accepted_package_manifest: "A maintainer acceptance names this package. Its manifest stays so the accepted package remains verifiable."
+        validation_digest: "The package validation records this checksum file digest."
+        package_member: "The package directory is cited by a claim, record, or report, and this companion is part of the cited package."
+        uncited_checksum: "No acceptance names this package and no path or digest cites this self-manifest. The retained report and companions carry the same identities."
+      proposed_removals:
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/artifacts.sha256", "sha256": "35eebe6533eec1ef9dc52ec45d380f4c73c457d4daa64305b67642e61567e673", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256", "sha256": "a12319c726123e2be0014a6cb8847d1d350c4202a44eda2825afd2bde1606929", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256", "sha256": "21ad765308be31beb8ac8fc6e747b0a1b122c1d797a6a0fc21e867710e963adb", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256", "sha256": "8ffa6cc12210ee0fe5c47f797ad4b803c77e982a605fa34e7b4b97931a7e9023", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256", "sha256": "ce5315cce7c4070d01cd250f0b1ecd01a8a7ced7edc83ef973f341133944e5e7", "reason": "uncited_checksum"}
+      files:
+        - {"path": ".github/oci-validation.env", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": ".github/workflows/_integration-pipeline.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": ".github/workflows/merge-recovery-soak.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": ".github/workflows/slashing-tests.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": "docs/Glossary.md", "change": "M", "classification": "integral", "reason": "research_terms"}
+        - {"path": "docs/ToDos.md", "change": "M", "classification": "integral", "reason": "task_record"}
+        - {"path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-finality-floor-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-safety-clique-oracle-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-soak-observer-evaluation-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-soak-observer-reference-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-util-clique-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-tests-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-CoqProject.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-theories-AuthorityObserver-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-theories-AuthorityWork-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-theories-MainTheorem-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-CoqProject.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-BoundedCapture-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-MainTheorem-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-ObserverSession-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-BoundedCapture-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-ObserverSession-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-bindings-json.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-verification-plan-json.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md", "change": "M", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/node-tests-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/cbc-audit.json", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/executables.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/logs.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/artifacts.sha256", "change": "A", "classification": "integral", "reason": "accepted_package_manifest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/artifacts.sha256", "change": "A", "classification": "integral", "reason": "accepted_package_manifest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/gate-registrations.json", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/artifacts.sha256", "change": "A", "classification": "cited", "reason": "validation_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md", "change": "M", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/shared-src-rust-dag-observation-work-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/shared-src-rust-store-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/shared-tests-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-verification-tiers.md", "change": "M", "classification": "integral", "reason": "tier_policy"}
+        - {"path": "docs/claims/casper-node-authority-evaluation.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
+        - {"path": "docs/claims/casper-node-authority-snapshot.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
+        - {"path": "docs/claims/casper-node-observation.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
+        - {"path": "docs/plans/casper-node-observation-batch-b.md", "change": "A", "classification": "cited", "reason": "task_plan"}
+        - {"path": "docs/plans/casper-node-observation-batch-c.md", "change": "A", "classification": "cited", "reason": "task_plan"}
+        - {"path": "docs/work-logs/casper-node-observation-batch-b1.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/casper-node-observer-shutdown-review.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/task-019-3-node-authority-evaluation.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/task-019-4-node-claim-verification.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/task-019-7-candidate-images.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "formal/rocq/node_authority/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/_CoqProject", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/theories/AuthorityObserver.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/theories/AuthorityWork.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/theories/MainTheorem.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/_CoqProject", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/theories/BoundedCapture.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/theories/MainTheorem.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/theories/ObserverSession.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/BoundedCapture.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/ObserverSession.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/bindings.json", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/verification-plan.json", "change": "A", "classification": "integral", "reason": "formal_verification"}
+    implementation_plan:
+      - "Step 1. Inventory every docs/, formal/, and .github change on the branch against dev, and classify each file as integral, cited, or removable."
+      - "Step 2. Consolidate the work logs to one per task, keeping decisions, acceptance records, and open findings, and dropping run-by-run narrative that a retained report already records."
+      - "Step 3. Remove superseded evidence run packages, historical red-source snapshots, and plan drafts that no claim or record cites. Record each removal with its reason."
+      - "Step 4. Run the strict claims audit, the link check, and the STE check before and after, and require identical results."
+      - "Step 5. Record the file and line counts of the diff against dev before and after, and obtain maintainer confirmation of the reduced diff before TASK-019-6 proceeds."
+    acceptance:
+      - "No removal changes a claim status, a record status, a tier field, or an audit result."
+      - "Every file an accepted claim cites is still present at its recorded digest."
+      - "Each removed file is listed with a reason, and any externalized evidence names its location and digest."
+      - "The maintainer confirms the reduced diff before the merge."
+---
+```
+
+**Current state:** Batch A and B1 have implementation evidence. The first approved verification cycle corrects challenge reuse within one observer lifetime and records 580 passing isolated test executions.
+
+Both claims remain pending on complete formal evidence and named maintainer acceptance under TASK-019-4.
+
+B2 planning steps 1 through 4 and TASK-019-5 research are complete.
+B2 and Batch C implementation remain unapproved. The Batch C inventory and contract await named maintainer review.
+
+TASK-019-7 records verified baseline image and executable digests.
+The lifecycle fix merged to system-integration `dev` through PR #144.
+Promotion PR #145 merged to `main`. The three-file node pin update is prepared.
+Node pin publication, live validation, and the observer candidate remain pending. PR #447 targets `dev`.
+
+**Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
+
+---
+
+### EPIC-017: Ratified Casper Conformance and Soak Evidence
+
+```yaml
+---
+epic_id: EPIC-017
+title: "Ratified Casper Conformance and Soak Evidence"
+status: in_progress
+priority: p0
+user_story: US-006
+user_flow: FLOW-001
+blocked_by: []
+created_at: 2026-09-16
+updated_at: 2026-09-17
+claimed_by: pi-casper-ratification-planning
+claimed_at: 2026-09-16T20:29:37Z
+branch: formal/soak-casper-consensus
+plan: docs/plans/casper-ratified-soak-2026-09-16.md
+related_epics: [EPIC-010, EPIC-012, EPIC-013, EPIC-015, EPIC-016, EPIC-018]
+phase: pre_pr216_merge
+scaffold_status: drafted
+claim_index: docs/claims/casper-soak-harness.md
+formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
+cycle_plan: docs/tdd-plans/casper-soak-harness.md
+follow_on_epic: EPIC-018
+source_prs: [216, 390, 430, 431, 432, 433]
+execution_contract:
+  base_branch: dev
+  authority: "The 2026-09-16 ratification meeting controls the selected dispositions. Current dev remains the default Casper authority."
+  integration_order: "PR #430 -> #431 -> #432 -> #433. PR #390 records decisions. PR #216 remains a candidate implementation."
+  planned_stack_parent: docs/consensus-neutral-execution
+  stack_integration_status: verified
+  stack_parent_revision: 65f7f6daa832c0acb6fddf2b462db1b9d5461729
+  stack_merge_revision: 0f1ccdf38f9ab3b056e7601b93961cb56c0a51e9
+  stack_verification: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
+  pull_request: 436
+  pr_base_branch: docs/consensus-neutral-execution
+  dependency_approval_date: 2026-09-17
+  implementation_tasks: [TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
+  implementation_prerequisites:
+    TASK-017-2: "contract_status=complete"
+    TASK-017-3: "prerequisite_application=complete"
+  implementation_policy: "The listed tasks may proceed together against the completed contract and applied prerequisites. Tracker closure is not their implementation prerequisite."
+  final_workload_pinning_task: TASK-017-12
+  scope: "Verify only the soak harness and profiles: generation, fault scheduling, collection, classification, and evidence handling. The node is the system under test."
+  git_policy: "Do not merge, commit, push, or create a PR without separate user authorization."
+  completion_policy: "Close after pre-merge scope claims pass, baseline evidence is reviewed, and the EPIC-018 handoff is accepted. PR #216 merge is not a blocker."
+  evidence_boundary: "Node correctness, runtime repairs, and Rocq proofs are outside both epics. Post-merge work adapts and reverifies harness profiles only."
+files:
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/casper-soak/src/manifest.rs
+  - scripts/casper-soak/tests/manifest.rs
+  - scripts/bench/write-soak-summary.sh
+  - scripts/ci/check-tla-invariants.sh
+  - .github/workflows/merge-recovery-soak.yml
+  - formal/tlaplus/casper_soak/README.md
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/CasperSoakHarness.tla
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
+  - scripts/ci/check-casper-soak-models.sh
+  - scripts/ci/check-casper-soak-bindings.sh
+  - scripts/casper-soak/Cargo.toml
+  - scripts/casper-soak/src/lib.rs
+  - scripts/casper-soak/src/main.rs
+  - scripts/casper-soak/src/models.rs
+  - scripts/casper-soak/src/runtime.rs
+  - scripts/casper-soak/tests/models.rs
+  - scripts/casper-soak/tests/driver.rs
+  - scripts/bench/casper-soak.sh
+  - scripts/bench/fixtures/casper-lifecycle-executor.sh
+  - .github/workflows/slashing-tests.yml
+  - scripts/casper-soak/src/bin/check-casper-bindings.rs
+  - scripts/casper-soak/tests/bindings.rs
+  - scripts/casper-soak/tests/interruption.rs
+  - scripts/casper-soak/src/bin/check-casper-claims.rs
+  - scripts/casper-soak/tests/claims.rs
+  - scripts/casper-soak/task-complete.sh
+  - scripts/casper-soak/src/profiles/authority_finality.rs
+  - scripts/casper-soak/src/bin/casper-authority-finality.rs
+  - scripts/casper-soak/tests/authority_finality.rs
+  - scripts/casper-soak/check-authority-finality.sh
+  - .github/workflows/casper-authority-finality.yml
+  - formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
+  - scripts/casper-soak/src/profiles/carrier_index.rs
+  - scripts/casper-soak/src/bin/casper-carrier-index.rs
+  - scripts/casper-soak/tests/carrier_index.rs
+  - scripts/casper-soak/check-carrier-index.sh
+  - .github/workflows/casper-carrier-index.yml
+  - formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/carrier_index/README.md
+tasks:
+  - id: TASK-017-1
+    title: "Reconcile ratifications, existing epics, and source dependencies"
+    status: complete
+    claimed_by: pi-casper-ratification-planning
+    work_log: docs/work-logs/task-017-1-3-completion.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/report.json
+    completion_blocker: null
+    unit_tests: [docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh]
+    files: [docs/plans/casper-ratified-soak-2026-09-16.md, docs/work-logs/task-017-1-3-completion.md]
+    blocked_by: []
+    acceptance:
+      - "The branch plan maps D-01 through D-12 to tasks, activation conditions, and evidence."
+      - "The inventory separates current dev, local ratification records, and open PR revisions."
+      - "Existing epic overlaps, claims, parser limitations, and stale specification conflicts are recorded."
+      - "The maintainer reviews the pre/post split and plan before implementation starts."
+
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-2
+    title: "Define harness and profile claims, fixture expectations, and source scope"
+    scaffold_status: specified
+    contract_status: complete
+    interface_contract: docs/casper/design/soak-interface-contract.md
+    work_log: docs/work-logs/task-017-2-interface-contract-2026-09-17.md
+    completion_blocker: null
+    completion_review: docs/work-logs/task-017-1-3-completion.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/report.json
+    unit_tests: [docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh]
+    files: [docs/casper/design/soak-interface-contract.md]
+    claim_index: docs/claims/casper-soak-harness.md
+    status: complete
+    claimed_by: pi-casper-harness
+    claimed_at: 2026-09-16T22:18:38Z
+    blocked_by: [TASK-017-1]
+    decisions: [D-02, D-03, D-04, D-06, D-11]
+    acceptance:
+      - "Each claim names harness inputs, outputs, assumptions, finite bounds, negative controls, and executable fixtures."
+      - "Profile expectations follow the ratifications without importing conflicting legacy node claims."
+      - "Mandatory scope contains harness, workflow, model, and profile artifacts only."
+      - "Node source paths and node correctness claims are not discharge obligations for either epic."
+      - "Unavailable interfaces remain explicit scenario blockers. No mock result becomes product evidence."
+      - "Each profile identifies its post-merge interface adaptation under EPIC-018."
+
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-3
+    title: "Integrate reviewed harness prerequisites and record initial candidate identities"
+    status: complete
+    claimed_by: pi-casper-harness
+    claimed_at: 2026-09-17T01:43:26Z
+    execution_scope: "Approved prerequisites and initial candidate identities only. Final executable workload pinning belongs to TASK-017-12. No Git publication or merge is authorized."
+    work_log: docs/work-logs/task-017-3-prerequisite-application-2026-09-17.md
+    prerequisite_review: docs/work-logs/task-017-3-prerequisite-review-2026-09-17.md
+    prerequisite_application: complete
+    candidate_matrix: docs/casper/design/soak-candidate-matrix.jsonc
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-prerequisite-application-20260917-01/report.json
+    completion_blocker: null
+    completion_review: docs/work-logs/task-017-1-3-completion.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/report.json
+    unit_tests: [docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh]
+    files: [docs/casper/design/soak-candidate-matrix.jsonc, docs/work-logs/task-017-1-3-completion.md]
+    blocked_by: [TASK-017-1]
+    external_prs: [390, 430, 431, 432, 433]
+    acceptance:
+      - "Approved prerequisite integration preserves the #430 -> #431 -> #432 -> #433 order."
+      - "Initial node, harness, model, image, and configuration-source identities are recorded for every candidate."
+      - "TASK-017-12 owns final executable workload pinning. The initial matrix remains non-dispatchable until qualification and required verification pass."
+      - "PR #431 containment limitations and inherited evidence remain explicit."
+      - "The 15-minute and two-minute bounded-tier descriptions are reconciled against the implemented gate."
+      - "The system-integration fixture contract is reviewed before any coordinated harness edit or repin."
+      - "PR #216 stays an optional candidate reference. Its merge does not gate this phase."
+
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-4
+    title: "Bind experiment manifests and formal controls to workflow evidence"
+    claims: [CLAIM-CASPER-SOAK-001]
+    claim_spec: docs/claims/casper-soak-harness.md
+    formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
+    cycle_plan: docs/tdd-plans/casper-soak-harness.md
+    status: complete
+    claimed_by: pi-casper-harness
+    claimed_at: 2026-09-16T22:18:38Z
+    execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
+    work_log: docs/work-logs/task-017-4-acceptance.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/validation.json
+    unit_tests:
+      - scripts/casper-soak/tests/manifest.rs
+      - scripts/casper-soak/tests/models.rs
+      - scripts/casper-soak/tests/driver.rs
+      - scripts/casper-soak/tests/bindings.rs
+      - scripts/casper-soak/tests/interruption.rs
+      - scripts/casper-soak/tests/claims.rs
+    files:
+      - scripts/run-merge-recovery-soak.sh
+      - scripts/bench/fixtures/casper-lifecycle-executor.sh
+      - scripts/casper-soak/src/main.rs
+      - scripts/casper-soak/src/runtime.rs
+      - scripts/casper-soak/src/bin/check-casper-bindings.rs
+      - scripts/casper-soak/src/bin/check-casper-claims.rs
+      - scripts/casper-soak/tests/driver.rs
+      - scripts/casper-soak/tests/bindings.rs
+      - scripts/casper-soak/tests/interruption.rs
+      - scripts/casper-soak/tests/claims.rs
+      - scripts/casper-soak/task-complete.sh
+      - scripts/ci/check-casper-soak-bindings.sh
+      - formal/tlaplus/casper_soak/verification-plan.jsonc
+      - .github/workflows/slashing-tests.yml
+    completion_blocker: null
+    blocked_by: []
+    decisions: [D-11]
+    acceptance:
+      - "The evidence contract includes revisions, seeds, run IDs, tool versions, bounds, assumptions, artifacts, and terminal outcomes."
+      - "Positive models must pass and registered negative controls must violate their named property."
+      - "Unexpected success, timeout, cancellation, missing evidence, and tool failure cannot become a passing control."
+      - "Deterministic conformance and soak profiles remain separate."
+      - "Deferred policies cannot become a production default or a node-local block-validity switch."
+      - "Property tiers report their actual case counts, and claim-discharge scripts run in workflows."
+      - "Implement H01 through H10 with a clean TLC configuration, named negative controls, and real-driver fixtures."
+      - "Construction is not applicable to these harness and profile claims. Runtime proofs remain outside these epics."
+
+    completion_gaps: []
+    completed_date: 2026-09-18
+  - id: TASK-017-5
+    title: "Verify authority and finality profile generation and verdicts"
+    claims: [CLAIM-CASPER-SOAK-002]
+    claim_spec: docs/claims/casper-soak-authority-finality.md
+    status: complete
+    claimed_by: pi-casper-authority-finality
+    claimed_at: 2026-09-18T13:08:20Z
+    work_log: docs/work-logs/task-017-5-authority-finality.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
+    tests:
+      - scripts/casper-soak/tests/authority_finality.rs
+      - scripts/casper-soak/check-authority-finality.sh
+    files:
+      - scripts/casper-soak/src/profiles/authority_finality.rs
+      - scripts/casper-soak/src/bin/casper-authority-finality.rs
+      - scripts/casper-soak/tests/authority_finality.rs
+      - scripts/casper-soak/check-authority-finality.sh
+      - .github/workflows/casper-authority-finality.yml
+      - formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
+    blocked_by: []
+    decisions: [D-02, D-03, D-04]
+    related_tasks: [TASK-012-19, TASK-012-20, TASK-015-1]
+    acceptance:
+      - "Paired comparisons use identical DAG fixtures, seeds, candidate identities, and declared electorate inputs."
+      - "Fixtures prove that head mismatches are reported and missing finality observations cannot pass."
+      - "Profile definitions cover ratified threshold boundaries, metadata holds, replay, restart, and dependencies."
+      - "The collector reports traversal counters without inferring a node work-bound proof."
+      - "Unsupported node test interfaces block the scenario rather than expand this epic into runtime implementation."
+
+    unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-6
+    title: "Verify publication and restart fault profiles and observations"
+    claims: [CLAIM-CASPER-SOAK-003]
+    claim_spec: docs/claims/casper-soak-publication.md
+    status: complete
+    claimed_by: pi-casper-publication
+    claimed_at: 2026-09-18T14:39:27Z
+    work_log: docs/work-logs/task-017-6-publication.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
+    tests:
+      - scripts/casper-soak/tests/publication.rs
+      - scripts/casper-soak/check-publication.sh
+    files:
+      - scripts/casper-soak/src/profiles/publication.rs
+      - scripts/casper-soak/src/bin/casper-publication.rs
+      - scripts/casper-soak/tests/publication.rs
+      - scripts/casper-soak/check-publication.sh
+      - .github/workflows/casper-publication.yml
+      - formal/tlaplus/casper_soak/profiles/publication/Publication.tla
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/publication/README.md
+    blocked_by: []
+    decisions: [D-05]
+    acceptance:
+      - "Fault coverage requires an observed crash acknowledgment, not only a requested injection."
+      - "The collector correlates publication tuples and restart observations by node and run identity."
+      - "Planted torn tuples, stale publications, and lost-work observations produce product failures."
+      - "Missing durable-state observations remain incomplete evidence."
+      - "Baseline and optional parallel profiles remain separate and cannot change production defaults."
+
+    unit_tests: [scripts/casper-soak/tests/publication.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-7
+    title: "Prepare isolated heartbeat and retry experiments against the baseline"
+    claims: [CLAIM-CASPER-SOAK-004]
+    claim_spec: docs/claims/casper-soak-recovery.md
+    status: complete
+    claimed_by: pi-casper-recovery
+    claimed_at: 2026-09-18T15:43:03Z
+    work_log: docs/work-logs/task-017-7-recovery.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
+    tests:
+      - scripts/casper-soak/tests/recovery.rs
+      - scripts/casper-soak/check-recovery.sh
+    files:
+      - scripts/casper-soak/src/profiles/recovery.rs
+      - scripts/casper-soak/src/bin/casper-recovery.rs
+      - scripts/casper-soak/tests/recovery.rs
+      - scripts/casper-soak/check-recovery.sh
+      - .github/workflows/casper-recovery.yml
+      - formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/recovery/README.md
+    blocked_by: []
+    decisions: [D-06, D-07]
+    related_tasks: [TASK-016-5, TASK-016-6, TASK-016-7]
+    acceptance:
+      - "Profiles compare frontier follow, rotating versus all-eligible recovery, and progress-clock variants."
+      - "Profiles compare one-parent versus collective coverage and current leadership versus leader-free custody."
+      - "Paused validators, delayed messages, split frontiers, and empty or deploy-bearing workloads are covered."
+      - "Reports include duplicates, custody consistency, retry completion, expiry, recovery time, cadence, latency, and resources."
+      - "The profile records lease and objective-height inputs and reports observed violations without changing retry authorization."
+      - "An experiment cannot grant authority to activate its policy."
+      - "Record baseline results and candidate availability. The merged-runtime comparison belongs to TASK-018-5."
+
+    unit_tests: [scripts/casper-soak/tests/recovery.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-8
+    title: "Verify merge and accounting workload generation and measurement"
+    claims: [CLAIM-CASPER-SOAK-005]
+    claim_spec: docs/claims/casper-soak-merge-accounting.md
+    status: complete
+    claimed_by: pi-casper-merge-accounting
+    claimed_at: 2026-09-19T05:47:48Z
+    work_log: docs/work-logs/task-017-8-merge-accounting.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json
+    completion_evidence: docs/work-logs/task-017-8-merge-accounting.md
+    completion_blocker: null
+    tests:
+      - scripts/casper-soak/tests/merge_accounting.rs
+      - scripts/casper-soak/check-merge-accounting.sh
+    files:
+      - scripts/casper-soak/src/profiles/merge_accounting.rs
+      - scripts/casper-soak/src/bin/casper-merge-accounting.rs
+      - scripts/casper-soak/tests/merge_accounting.rs
+      - scripts/casper-soak/check-merge-accounting.sh
+      - .github/workflows/casper-merge-accounting.yml
+      - formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla
+      - formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc
+    blocked_by: []
+    decisions: [D-08]
+    external_prs: [216]
+    related_tasks: [TASK-016-1, TASK-016-3, TASK-016-4]
+    acceptance:
+      - "Generated workloads distinguish repeated observations from independent executions with identical effects."
+      - "The collector retains execution identities, causal relationships, admission outcomes, settlement data, and token domains."
+      - "Controlled transcripts expose multiplicity loss, missing settlements, and mislabeled compatibility."
+      - "Accounting expectations use pinned fixture values. The profile does not implement or prove node accounting."
+      - "Conditional additive profiles remain isolated and do not authorize protocol activation."
+
+    unit_tests: [scripts/casper-soak/tests/merge_accounting.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-9
+    title: "Verify slashing scenario scheduling and result classification"
+    claims: [CLAIM-CASPER-SOAK-006]
+    claim_spec: docs/claims/casper-soak-slashing.md
+    status: complete
+    claimed_by: pi-casper-slashing
+    claimed_at: 2026-09-19T07:13:31Z
+    work_log: docs/work-logs/task-017-9-slashing.md
+    implementation_status: controlled-transcript-implemented
+    binding_status: accepted
+    binding_acceptance: docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35452747041
+    workflow_tag_status: ratified
+    workflow_tag_ratification: docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/validation.json
+    completion_evidence: docs/work-logs/task-017-9-slashing.md
+    completion_blocker: null
+    unit_tests: [scripts/casper-soak/tests/slashing.rs]
+    blocked_by: []
+    decisions: [D-09]
+    acceptance:
+      - "The profile schedules merge-lost slash, rebond, stale-epoch, missing-evidence, forged-deploy, and restart scenarios."
+      - "Observed delivery order and epochs remain distinct from requested scheduling."
+      - "Fixtures prove that planted authorization mismatches are reported rather than suppressed."
+      - "Node slash authorization, reconstruction, and bisimilarity proofs remain outside this epic."
+    completion_gaps: []
+    completed_date: 2026-09-19
+
+  - id: TASK-017-10
+    title: "Verify carrier-index comparison inputs and telemetry classification"
+    status: complete
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T06:11:36Z
+    work_log: docs/work-logs/task-017-10-carrier-index.md
+    blocked_by: []
+    decisions: [D-10]
+    claims: [CLAIM-CASPER-SOAK-008]
+    claim_spec: docs/claims/casper-soak-carrier-index.md
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    binding_status: accepted
+    binding_acceptance: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35429044639
+    workflow_tag_status: ratified
+    evidence_publication_status: verified
+    evidence_asset_id: 575126186
+    workflow_tag_ratification: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    completion_evidence: docs/work-logs/task-017-10-carrier-index.md
+    completion_blocker: null
+    unit_tests: [scripts/casper-soak/tests/carrier_index.rs]
+    files:
+      - scripts/casper-soak/src/profiles/carrier_index.rs
+      - scripts/casper-soak/src/bin/casper-carrier-index.rs
+      - scripts/casper-soak/tests/carrier_index.rs
+      - scripts/casper-soak/check-carrier-index.sh
+      - .github/workflows/casper-carrier-index.yml
+      - formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/carrier_index/README.md
+    acceptance:
+      - "Paired index and reference runs use the same candidate, DAG, window, and availability fixture."
+      - "The profile records valid, invalid, and approved carrier cases and supported failure injections."
+      - "Fixtures reject unobserved path engagement, mismatched scan windows, and missing counters treated as zero."
+      - "Unsupported identity-domain interfaces block those scenarios without authorizing runtime changes."
+      - "CLAIM-FINALITY-002 remains an external node claim, not an obligation of this epic."
+
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-11
+    title: "Verify protocol and Phlo profile inputs and captured outcomes"
+    claims: [CLAIM-CASPER-SOAK-007]
+    claim_spec: docs/claims/casper-soak-version-phlo.md
+    status: complete
+    claimed_by: pi-casper-slashing
+    claimed_at: 2026-09-19T18:23:10Z
+    previous_claimed_by: pi-soak-carrier-index-linux
+    previous_claimed_at: 2026-09-19T15:57:08Z
+    work_log: docs/work-logs/task-017-11-version-phlo.md
+    implementation_status: controlled-transcript-implemented
+    binding_status: passed
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35459964874
+    workflow_tag_status: ratified
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json
+    completion_blocker: null
+    unit_tests: [scripts/casper-soak/tests/version_phlo.rs]
+    files:
+      - scripts/casper-soak/src/profiles/version_phlo.rs
+      - scripts/casper-soak/src/bin/casper-version-phlo.rs
+      - scripts/casper-soak/tests/version_phlo.rs
+      - scripts/casper-soak/check-version-phlo.sh
+      - .github/workflows/casper-version-phlo.yml
+      - formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/version_phlo/README.md
+    blocked_by: []
+    decisions: [D-01, D-12]
+    external_prs: [216, 430]
+    acceptance:
+      - "The manifest distinguishes Casper protocol from accounting authority."
+      - "Generated requests and captured observations retain both phloLimit and phloPrice."
+      - "Fixtures expose omitted fields, conflated versions, and ignored settlement mismatches."
+      - "Profiles report version rejection, minimum-price, prepayment, refund, and exhaustion outcomes against reviewed fixture expectations."
+      - "The harness cannot authorize protocol activation or undefined funding policies."
+
+    completion_gaps: []
+    completed_date: 2026-09-19
+  - id: TASK-017-12
+    title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
+    candidate_review_note: "Current dev b465313a2 has no matching published candidate tag. CI run 35677113121 failed the amd64 subprocess validator lifecycle test and skipped image release. Verified candidate pins still cover 6940a5beb."
+    readiness_evidence: docs/casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json
+    integration_fix_evidence: docs/casper/cbc-evidence/runs/casper-integration-timeout-fix-20260922-01/report.json
+    integration_fix_status: "The validator lifecycle timeout fix is applied locally in system-integration. All 39 targeted tests pass. Publication, suite pin updates, and hosted verification remain pending."
+    candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
+    live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
+    manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
+    completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
+    claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
+    node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
+    node_interface_status: "PR #447 remains open at 4561e064a. TASK-019-4 reports missing formal evidence and a new B1 lock-wait finding. Batch B2 planning waits for source-bound verification and named maintainer acceptance. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
+    stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
+    reservation_work_log: docs/work-logs/task-017-12-reservations.md
+    reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
+    execution_control_plan: docs/plans/casper-campaign-execution-controls.md
+    execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
+    hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json
+    source_coverage_evidence: docs/casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json
+    stability_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json
+    publication_gate: "Deferred to EPIC-018 after this branch merges and PR #216 integrates. This is not a PR #216 dependency for this branch."
+    phase_boundary_status: "Implemented and locally verified. Pre-merge admission requires authority/finality. Publication and recovery remain explicitly pending for EPIC-018 and cannot count as passed."
+    phase_boundary_evidence: docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json
+    deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
+    storage_deployment_preparation: docs/plans/casper-campaign-storage.md
+    storage_preparation_status: "The bucket request and object-specific policy are prepared. The controller service user and inherited policies were reviewed. Workflow credential binding, supervisor identity, final configuration, deployment, and live qualification remain pending."
+    continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
+    execution_control_status: "Hosted run 35752941906 passes at 58e952c6f. The archive digest and all 51 source hashes match. It covers the stability and phase changes. Deployment, timing qualification, live execution, and acceptance remain pending."
+    github_access_status: "Explicit GITHUB_PERSONAL_ACCESS_TOKEN selection verifies all six reviewer roles. Default GITHUB_TOKEN selection still returns HTTP 403 for role queries. The authorized campaign environment is configured and its branch restriction is verified."
+    github_environment_evidence: docs/casper/cbc-evidence/runs/casper-campaign-environment-20260922-01/report.json
+    compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
+    execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
+    drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003]
+    claim_index: docs/claims/casper-soak-harness.md
+    campaign_claim_index: docs/claims/casper-soak-campaign.md
+    reservation_claim_index: docs/claims/casper-campaign-reservation.md
+    status: in_progress
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T19:20:00Z
+    previous_claimed_by: claude-session-9f19b46c
+    previous_claimed_at: 2026-09-19T06:35:51Z
+    handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
+    execution_scope: "Qualify the pre-merge candidate capabilities under the corrected campaign phase boundary. This branch merges before PR #216 integrates. Occurrence-dependent publication and recovery qualification belong to EPIC-018. A passing preflight must precede both full baselines."
+    repin_tool: scripts/ci/resolve-dev-candidate.sh
+    dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
+    work_log: docs/work-logs/task-017-12-preparation.md
+    blocked_by: [TASK-019-3, TASK-019-4]
+    remaining_prerequisites:
+      - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
+      - "Pin executable workloads and accept the refreshed campaign model inventory. All 225 model hashes and four configuration hashes match. Recheck candidate identities before dispatch."
+      - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
+      - "Hosted run 35752941906 covers the published stability and phase changes at 58e952c6f. The campaign workflow still requires qualification against deployed services."
+      - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
+      - "Provision and qualify the authoritative OCI object and independent supervisor. The implementation does not establish deployed timing guarantees. Missing activation evidence blocks execution."
+      - "The user authorized both architectures on 2026-09-22. Each stability runner has 64 GB and a 64-hour maximum lifetime. Both full baselines must pass first."
+      - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
+    deferred_after_branch_merge:
+      - "Integrate PR #216 after this branch merges. Qualify occurrence-dependent publication and recovery under EPIC-018 with actual occurrence records."
+      - "Keep unavailable occurrence profiles pending. Do not report deferred qualification as a pass or infer occurrences from deploy signatures."
+    related_epics: [EPIC-010, EPIC-013]
+    resource_approval: "The user amended the approval on 2026-09-19. Separate preflight and baseline dispatches may use one 64 GB preflight runner for four hours and two 64 GB baseline runners for 26 hours each. Each candidate receives one full 24-hour baseline. The user also approved a 60-hour TASK-017-12 campaign after a passing baseline. On 2026-09-22, the user authorized one 64 GB stability runner per architecture, each with a 64-hour maximum lifetime. Both baselines must pass first. Additional repetitions remain unapproved."
+    resource_approval_original: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covered two candidates, one preflight, and two runner virtual machines for 26 hours each. The later approval amends that machine count and authorizes the 60-hour campaign."
+    resource_approval_memory: "The maintainer approved 64 GB per runner on 2026-09-19, which corrects the 48 GB figure in the original proposal. The soak workflow already sets RUNNER_MEM_GB_OVERRIDE to 64. The sizing invariant needs about 60,416 MB, from a 45,056 MB ceiling, about 7,168 MB of host overhead, and an 8,192 MB floor. A 48 GB machine overruns that by about 11 GB, and a ceiling small enough to fit falls below the measured 36,008 MB healthy peak. No workflow or runtime file changes."
+    resource_approval_record: docs/work-logs/task-017-12-preparation.md
+    first_dispatch_step: "After source acceptance, deployment qualification, and live admission pass, run campaign-preflight before either baseline. A non-passing preflight blocks both baseline dispatches."
+    acceptance:
+      - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
+      - "A preflight-only dispatch on this branch passes before any baseline soak dispatch. Its run ID and outcome are recorded."
+      - "Every dispatched candidate has qualified interfaces and immutable executable workload, node, harness, model, image, and configuration identities."
+      - "Required pre-dispatch harness and profile verification must pass. Missing capabilities and null workload pins block dispatch."
+      - "The disk-protected harness completes required pre-merge baseline profiles or reports an explicit non-passing outcome."
+      - "Unavailable #216 candidate profiles remain pending for EPIC-018 and are not reported as passes."
+      - "Every report retains exact revisions, seeds, run IDs, configuration, metrics, and artifact digests."
+      - "Infrastructure termination does not erase prior product failures."
+      - "Deferred policy findings return to the team for a separate decision."
+
+  - id: TASK-017-13
+    title: "Close pre-merge CbC scope and hand off post-merge obligations"
+    claim_index: docs/claims/casper-soak-harness.md
+    status: in_progress
+    claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    claimed_at: 2026-09-21T14:31:52Z
+    execution_scope: "Deliver the independent formal gate on dev and verify the approved protection change. Review TASK-017-12 evidence before final handoff acceptance."
+    work_log: docs/work-logs/task-017-13-gate-handoff-2026-09-21.md
+    preparation_log: docs/work-logs/task-017-13-preparation.md
+    handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
+    handoff_preparation_status: "Prepared for review, not accepted. Baseline delivery and named recipients remain pending."
+    handoff_preparation_review: docs/casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json
+    evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
+    canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-gate-documentation-20260919-01/report.json
+    canonical_record_status: "The review at 2530b8385 reports Claim001 pending and seven profile claims discharged. All eight soak fields remain pending."
+    compatibility_review: docs/casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json
+    compatibility_status: "The current default gate reports 29 gaps across 149 changed mandatory artifacts. The canonical diagnostic reports 28 gaps. Both gates exit 4."
+    formal_gate_implementation: docs/work-logs/soak-formal-gate-implementation.md
+    formal_gate_hosted_renewal: docs/work-logs/soak-formal-gate-hosted-renewal.md
+    formal_gate_authorization: docs/work-logs/soak-formal-gate-authorization.md
+    blocked_by: [TASK-017-12]
+    remaining_prerequisites:
+      - "Make the verified formal gate available on dev. Then apply the approved protection change, verify enforcement, and record evidence-backed acceptance."
+      - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
+      - "Review current-source registration and discharge for all campaign controls owned by TASK-017-12, including CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, and CLAIM-CASPER-CAMPAIGN-003."
+      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. Record the required scope of the approved 60-hour phase."
+      - "TASK-018 owners are confirmed as of 2026-09-22: @jeffrey-l-turner or @jltatbeach for each task. Obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
+    decisions: [D-11]
+    acceptance:
+      - "Every changed mandatory artifact has current pre-merge claim evidence or an explicitly approved waiver."
+      - "Strict discharge passes for the actual pre-merge changed scope, not only for the planning documents."
+      - "Check every required claim ID, source digest, phase, and tier. One legacy artifact status cannot discharge the claim bundle."
+      - "The scan benchmark and concurrency-gate obligations have baseline evidence and named post-merge rerun tasks."
+      - "The handoff lists model and artifact digests, seeds, assumptions, pending bindings, and TASK-018 owners."
+      - "The review separates bounded harness models, executable profile fixtures, and observed product outcomes. Node proofs are outside scope."
+      - "No required pre-merge claim is deferred merely to close this epic. Post-merge obligations stay pending, not waived."
+
+  - id: TASK-017-14
+    title: "Reduce the branch diff to the formal-verification deliverables"
+    status: in_progress
+    claimed_by: claude-session-9f19b46c
+    claimed_at: 2026-09-19T05:52:15Z
+    execution_scope: "Preparation steps 0 through 5 only: retention rule, external store, bundles, consumer review, and work-log consolidation. Steps 6 and 7, the verification and the reduction commit, wait for TASK-017-13."
+    work_log: docs/work-logs/task-017-14-preparation.md
+    blocked_by: [TASK-017-13]
+    created_at: 2026-09-17
+    rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
+    measured_at: 490d21093
+    evidence_store: "Draft GitHub release cbc-evidence-epic-017 on this repository, created 2026-09-19 with 24 assets: one bundle per package, SHA256SUMS, and index.json. Publish it when the reduction commit lands."
+    stack_review_baseline: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
+    removal_targets:
+      - "Evidence run packages under docs/casper/cbc-evidence/runs/: 23 packages, 948 files, 29 MB, of which 32 archives are 15 MB. Six packages are live because a canonical ledger record cites them. Seventeen are historical and only work logs or this tracker cite them."
+      - "Files applied verbatim from PR #430 through PR #433. Resolved: the PR base now contains those merges, and only scripts/bench/test-soak-disk-admission.sh and its record remain in the diff as driver-repair deliverables."
+      - "Compatibility symlinks in docs/cbc-evidence/: 80 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
+      - "Historical hosted TLC transcripts recovered in the evidence audit. Keep the audit report and digests, not the transcript copies."
+      - "Work logs: 21 files and about 2,300 lines. TASK-017-4 alone has four logs. Fold each task's logs into one log that keeps handoff and decision content."
+    implementation_plan:
+      - "Step 0. Apply the evidence retention rule in docs/plans/casper-ratified-soak-2026-09-16.md to every package created after 2026-09-19, so that no new package adds bulk while this task waits on TASK-017-13."
+      - "Step 1. Choose the external evidence store and record its location format. Upload every archive, transcript set, candidate-ledger set, attempt, and upstream snapshot from the 23 existing packages. Record each upload as a path plus SHA-256."
+      - "Step 2. Live packages (driver-rebind, driver-rebind-acceptance, driver-refresh-acceptance, profile-binding-review, profile-acceptance, manifest-resume, harness-controls): keep report.json, validation.json, and the digest lists in the tree. Replace each in-tree archive reference in the canonical ledger records, including previous_ledger references, with the external location and digest. The strict claims audit hashes the cited report.json and reads source digests from it, so those reports stay in the tree and the audit result does not change."
+      - "Step 3. Historical packages (the other sixteen): keep report.json only, or remove the package and record its external location and digest in the work log or tracker entry that cites it."
+      - "Step 4. Compatibility symlinks: identify every consumer of docs/cbc-evidence/. If the shared CbC gate accepts module paths, delete all 80 links. If it does not, add module routing to the gate in one change and then delete the links."
+      - "Step 5. Work logs: consolidate per task. Keep the acceptance records, the human decision records, and handoff notes. Drop run-by-run narrative that a retained report already records."
+      - "Step 6. Verify. Run the strict claims audit, the bindings inventory, the link check, and the STE check before and after. Record the before and after file and line counts against the PR base and against dev in this entry."
+      - "Step 7. Land the reduction as one commit with the counts in its message. Ask the maintainer to confirm the reduced diff before PR #436 leaves draft."
+    expected_result: "Measured in the 2026-09-19 rehearsal: evidence files 1,049 to 78 and evidence lines 185,612 to 19,777, with the strict audit unchanged. Projected PR diff about 375 files and about 41,000 added lines. The remainder is the crate, the models, the claims, the ledger records, and the retained reports, which are the deliverables."
+    acceptance:
+      - "The PR diff against its confirmed stack parent contains only Casper soak harness deliverables. The report also measures the cumulative diff against dev."
+      - "Record the actual stack parent revision and PR base after integration. Planned stack membership alone cannot justify file deletion."
+      - "Each removed file is either reproducible from a recorded digest and revision, or duplicated upstream on dev, or listed with an explicit reason."
+      - "No removal changes a claim status, a ledger record status, or a discharge result. Pending claims stay pending."
+      - "Evidence that a claim cites remains reachable. A record names the external location and digest of any artifact that leaves the tree."
+      - "The task records the file and line counts of the diff before and after reduction."
+      - "The link check, the STE check, and the strict CbC gate produce the same results after reduction as before it."
+      - "The maintainer confirms the reduced diff meets the PR review standard before the PR opens."
+
+  - id: TASK-017-15
+    title: "Retrieve and publish the external evidence release"
+    status: pending
+    claimed_by: null
+    claimed_at: null
+    blocked_by: [TASK-017-13, TASK-017-14]
+    created_at: 2026-09-19
+    ordering: "Final task for this branch and for PR #436. Run step 2 after the reduction commit lands and before the PR leaves draft."
+    evidence_store: "Draft GitHub release cbc-evidence-epic-017, release ID 391939637, target 09b0a60063815b750979864225a0a56387d6ed80, 24 assets as of 2026-09-19."
+    execution_scope: "Step 1 needs no new authorization and unblocks evidence consumers today. Step 2 exposes evidence on a public surface and requires recorded maintainer authorization at the time of the action."
+    rationale: "A draft release carries no Git tag. The endpoint repos/F1R3FLY-io/f1r3node-rust/releases/tags/cbc-evidence-epic-017 returns 404 for every credential. That result blocked carrier-index retrieval under TASK-017-10 on 2026-09-19. The numeric release ID resolves the same release and lists its 24 assets. A branch merge does not create the tag, because publication creates it."
+    implementation_plan:
+      - "Step 1. Address the release by its numeric ID while it stays a draft. List assets through repos/F1R3FLY-io/f1r3node-rust/releases/391939637. Download each asset by its asset ID with an octet-stream accept header. Record the retrieval check in the consuming task's evidence."
+      - "Step 2. Publish the release after the reduction commit lands. Confirm or update the target revision first, because publication creates the tag at that commit. Publication makes the by-tag endpoint work and makes the assets publicly visible."
+    acceptance:
+      - "Every consumer of the external evidence store addresses the release by its ID while the release stays a draft."
+      - "No task records a credential failure for a draft-release lookup. Each record names the absent tag as the cause."
+      - "Publication happens only after the reduction commit lands and only with recorded maintainer authorization."
+      - "The published release pins the revision that the reduction commit produced. The record names that revision."
+      - "Asset digests after publication match the digests recorded at upload time."
+      - "Publication does not change a claim status, a ledger record status, or a discharge result."
+---
+```
+
+**Current state:** TASK-017-1 through TASK-017-4 are complete. The repaired lifecycle binding is accepted. Three controlled-transcript profiles await acceptance. Four profiles remain unimplemented. Baseline soaks remain pending.
+
+**Approved sequence:** TASK-017-4 and TASK-017-5 through TASK-017-11 may proceed together against the completed contract and applied prerequisites. TASK-017-12 requires final workload pins, qualification, verification, and dispatch approval.
+
+**Verified stack:** Merge `0f1ccdf38` includes PR #433 at `65f7f6daa`. PR #436 targets `docs/consensus-neutral-execution`. CLAIM-CASPER-SOAK-001 passes strict discharge. The seven profile claims remain pending.
+
+**Tracker compatibility:** The shared CLI still rejects TASK-* identifiers. The completion review invokes its unchanged task function for the three reviewed preparation tasks. The TASK-017-4 adapter remains unchanged.
+
+The [interface contract](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
+
+**Scope:** This epic covers the pre-#216 PR only. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
+
+**Final task:** TASK-017-15 closes the branch and PR #436. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
+
+---
+
+### EPIC-018: Post-Merge Casper Soak Formal Verification
+
+```yaml
+---
+epic_id: EPIC-018
+title: "Post-Merge Casper Soak Formal Verification"
+status: blocked
+priority: p0
+user_story: null
+blocked_by: [EPIC-017]
+created_at: 2026-09-16
+updated_at: 2026-09-16
+claimed_by: null
+claimed_at: null
+phase: post_pr216_merge
+claim_index: docs/claims/casper-soak-harness.md
+formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
+proposed_branch: formal/soak-casper-post-cost-accounting
+plan: docs/plans/casper-ratified-soak-2026-09-16.md
+related_epics: [EPIC-010, EPIC-013, EPIC-017]
+external_dependencies:
+  - repo: F1R3FLY-io/f1r3node-rust
+    pr: 216
+    required_state: open_or_merged
+    required_ancestor_of: origin/dev
+    ancestor_required_by: "merge of the EPIC-018 follow-on pull request"
+execution_contract:
+  base_branch: dev
+  scope: "A separate follow-on formal-methods PR for the soak harness, stacked on PR #216."
+  start_gate: "EPIC-017 handoff accepted. The follow-on branch may start from the PR #216 head before that pull request merges."
+  branch_policy: "Cut the follow-on branch from the PR #216 head and target that pull request. Retarget it to dev after PR #216 merges. Record the PR #216 head revision at branch creation, the actual merge revision, and the baseline revisions."
+  amendment_2026_09_19: "The maintainer amended this contract on 2026-09-19 to allow stacking. The earlier contract required PR #216 to be merged and an ancestor of origin/dev before EPIC-018 started, and it stated that an open candidate head was insufficient. Stacking lets the follow-on work begin earlier. It also means the branch starts from a revision that can still change, so the owner rebases on each PR #216 update and records the revision it verified against. Discharge of a post-merge claim still requires the actual merge revision."
+  completion_policy: "Require updated harness models, profile fixtures, completed soaks, and harness-only CbC discharge. No node proof is required."
+  authority: "Merge does not authorize deferred policies, waive ratification conditions, or replace FIPS activation approval."
+files:
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/casper-soak/src/manifest.rs
+  - scripts/casper-soak/tests/manifest.rs
+  - scripts/bench/write-soak-summary.sh
+  - scripts/ci/check-tla-invariants.sh
+  - .github/workflows/merge-recovery-soak.yml
+  - formal/tlaplus/casper_soak/README.md
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/CasperSoakHarness.tla
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
+  - scripts/ci/check-casper-soak-models.sh
+  - scripts/ci/check-casper-soak-bindings.sh
+  - scripts/casper-soak/Cargo.toml
+  - scripts/casper-soak/src/lib.rs
+  - scripts/casper-soak/src/main.rs
+  - scripts/casper-soak/src/models.rs
+  - scripts/casper-soak/src/runtime.rs
+  - scripts/casper-soak/tests/models.rs
+  - scripts/casper-soak/tests/driver.rs
+  - scripts/bench/casper-soak.sh
+  - scripts/bench/fixtures/casper-lifecycle-executor.sh
+  - .github/workflows/slashing-tests.yml
+  - scripts/casper-soak/src/bin/check-casper-bindings.rs
+  - scripts/casper-soak/tests/bindings.rs
+  - scripts/casper-soak/tests/interruption.rs
+  - scripts/casper-soak/src/bin/check-casper-claims.rs
+  - scripts/casper-soak/tests/claims.rs
+  - scripts/casper-soak/task-complete.sh
+tasks:
+  - id: TASK-018-1
+    title: "Verify the merge gate and establish the post-merge baseline"
+    claims: [CLAIM-CASPER-SOAK-001]
+    status: blocked
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
+    blocked_by: [TASK-017-13]
+    external_prs: [216]
+    acceptance:
+      - "PR #216 is merged and its merge commit is an ancestor of the selected updated dev baseline."
+      - "The pre-merge evidence handoff is accepted and its exact revisions are available."
+      - "The follow-on branch and PR are separate from formal/soak-casper-consensus."
+      - "Record the actual merge SHA, node revision, harness revision, image digest, configuration, and protocol version."
+
+  - id: TASK-018-2
+    title: "Adapt harness and profile interfaces after the merge"
+    claim_index: docs/claims/casper-soak-harness.md
+    status: pending
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
+    blocked_by: [TASK-018-1]
+    decisions: [D-11]
+    acceptance:
+      - "Identify changed node interfaces consumed by the harness without claiming node correctness."
+      - "Adapt profiles, collectors, and fixtures to the merged APIs, wire fields, and metrics."
+      - "Rerun affected harness models and negative controls with current artifact digests."
+      - "Do not copy pre-merge discharge statuses onto changed harness or profile artifacts."
+      - "Report ratification mismatches as product findings. Do not silently relax profile expectations."
+
+  - id: TASK-018-3
+    title: "Reverify consensus-observation profiles against merged interfaces"
+    claims: [CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-003, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-SOAK-006]
+    status: pending
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
+    blocked_by: [TASK-018-2]
+    decisions: [D-02, D-03, D-04, D-05, D-06, D-07, D-09]
+    acceptance:
+      - "Rerun TASK-017-5, TASK-017-6, TASK-017-7, and TASK-017-9 profile models and executable fixtures."
+      - "Demonstrate correct fault acknowledgments, observation correlation, and mismatch classification through supported merged interfaces."
+      - "Missing interfaces block the affected scenario. Runtime fixes and node proofs belong to separate work."
+
+  - id: TASK-018-4
+    title: "Reverify accounting, identity, and Phlo observation profiles"
+    claims: [CLAIM-CASPER-SOAK-005, CLAIM-CASPER-SOAK-007, CLAIM-CASPER-SOAK-008]
+    status: pending
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
+    blocked_by: [TASK-018-2]
+    decisions: [D-01, D-08, D-10, D-12]
+    acceptance:
+      - "Adapt TASK-017-8, TASK-017-10, and TASK-017-11 generators and collectors to the merged test interfaces."
+      - "Rerun profile controls for identity correlation, missing measurements, expected values, and verdict classification."
+      - "Preserve both Phlo fields and separate authority labels in profile inputs and reports."
+      - "Node conservation, carrier equivalence, and protocol proofs remain outside scope."
+
+  - id: TASK-018-5
+    title: "Run the post-merge comparative soak campaign"
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
+    status: pending
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
+    blocked_by: [TASK-018-3, TASK-018-4]
+    decisions: [D-06, D-07, D-11]
+    acceptance:
+      - "The maintainer approves the post-merge matrix, resource budget, durations, and repetitions before dispatch."
+      - "Run the merged baseline and isolated deferred-policy experiments with new run IDs and artifact digests."
+      - "Compare against pre-merge evidence only when workload, environment, and metric definitions are compatible."
+      - "Report recovery, retry expiry, duplicates, custody, finalization, work bounds, disk, and memory outcomes."
+      - "Rerun the scan benchmark and concurrency gate. Preserve failures, timeouts, and incomplete outcomes."
+
+  - id: TASK-018-6
+    title: "Discharge post-merge claims and submit the formal harness PR evidence"
+    claim_index: docs/claims/casper-soak-harness.md
+    status: pending
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
+    blocked_by: [TASK-018-5]
+    decisions: [D-11]
+    acceptance:
+      - "Strict CbC discharge covers only the changed harness and profile artifacts and their required fixture bindings."
+      - "The report separates harness model results, executable fixture results, and product observations. It makes no node-proof claim."
+      - "No required pending or refuted claim is hidden by epic completion."
+      - "The follow-on PR links the meeting, pre-merge handoff, actual #216 merge revision, and new evidence."
+      - "Deferred-policy activation requires a separate team decision even when experimental evidence passes."
+---
+```
+
+**Start condition:** PR #216 must merge before this follow-on branch starts. TASK-018-1 enforces the external gate explicitly.
+
+**Current state:** Blocked. No follow-on branch, PR, model run, or soak run has been created.
 
 ---
 
@@ -1436,6 +3091,12 @@ tasks:
 ## Epic Dependency Graph
 
 ```text
+PR #390 meeting record + PR #216 candidate ─> EPIC-017 pre-merge plan and baseline
+PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisites
+EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
+EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
+EPIC-020 (node log and accept-path limits, fix branch -> dev) ─> merges before PR #447
+EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)

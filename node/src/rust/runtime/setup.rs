@@ -146,14 +146,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
-    // First-boot repeat-deploy carrier-index watermark (same pattern as
-    // the LFB migration above): records the height since which every
-    // insert records carriers, which gates the fast path's absence
-    // proofs. No backfill walk exists — blocks below the watermark are
-    // never claimed.
+    // Repeat-deploy carrier-index watermark (same pattern as the LFB
+    // migration above): the height since which every insert records carriers,
+    // which gates the fast path's absence proofs. An empty database gets none
+    // here — the history root is not known until genesis or restore completes.
     let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
     info!(
-        carrier_index_watermark,
+        carrier_index_watermark = ?carrier_index_watermark,
         "repeat-deploy carrier index checked"
     );
 
@@ -232,13 +231,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         rho_runtime::create_runtime_from_kv_store(
             eval_stores,
-            Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
+            casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
             false,
             &mut Vec::new(),
             Arc::new(Box::new(Matcher)),
             external_services.clone(),
         )
-        .await
+        .await?
     };
 
     // Runtime manager (play and replay runtimes)
@@ -259,7 +258,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
-            Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             external_services.clone(),
             {
                 let exploratory = ExploratoryDeployConfig::resolve(

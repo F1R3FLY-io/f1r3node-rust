@@ -27,6 +27,7 @@ use super::runtime_manager::RuntimeManager;
 use crate::rust::block_status::{BlockError, BlockStatus};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::block_facts::{block_facts, held_block_facts};
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::merging::dag_merger;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
@@ -49,6 +50,18 @@ use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
+}
+
+/// The sigs a merge applied: sorted, since the set is unordered, and bounded.
+fn named_sigs(sigs: &std::collections::HashSet<prost::bytes::Bytes>) -> String {
+    const NAMED: usize = 8;
+    let mut ids: Vec<String> = sigs
+        .iter()
+        .map(|sig| hex::encode(&sig[..8.min(sig.len())]))
+        .collect();
+    ids.sort();
+    ids.truncate(NAMED);
+    ids.join(",")
 }
 
 /// Sigs whose LATEST canonical disposition across the FULL merge scope is a WIN.
@@ -98,7 +111,7 @@ fn block_in_base_merge_scope(
 /// (who currently stands), the latest kept rejection record (the
 /// adjudication a retry settles against), and the first carrier (whose
 /// sender is the deploy's recovery owner).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SigDisposition {
     /// Latest disposition as `(height, won)`. A win and a rejection never
     /// share a height (a merge sits one block above its siblings), so the
@@ -183,31 +196,18 @@ pub(crate) fn canonical_dispositions(
         // A block this walk cannot read is a gap, not a "no": a partial
         // disposition map silently misreads the retry gate and the
         // canonical-won filter. Absence keeps its name so callers defer.
-        let Some(block) = block_store.get(&hash)? else {
-            return Err(CasperError::BlockNotHeld(
-                hash,
-                MissingBlockContext::new("parents-post-state body read"),
-            ));
-        };
-        let bn = block.body.state.block_number;
+        let facts = block_facts(block_store, &hash, "parents-post-state body read")?;
+        let bn = facts.block_number;
         if bn < earliest_block_number {
             continue;
         }
-        for pd in &block.body.deploys {
-            note_inclusion(
-                &mut dispositions,
-                pd.deploy.sig.clone(),
-                bn,
-                &hash,
-                &block.sender,
-            );
+        for sig in &facts.deploy_sigs {
+            note_inclusion(&mut dispositions, sig.clone(), bn, &hash, &facts.sender);
         }
-        for rd in proto_util::kept_rejected_records(&block) {
+        for rd in facts.kept_rejected() {
             note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
         }
-        for p in &block.header.parents_hash_list {
-            queue.push_back(p.clone());
-        }
+        queue.extend(facts.parents.iter().cloned());
     }
     Ok(dispositions)
 }
@@ -237,19 +237,15 @@ fn rejected_sig_has_visible_non_source_win(
         if hash == source_block {
             continue;
         }
-        let Some(block) = block_store.get(hash)? else {
+        let Some(facts) = held_block_facts(block_store, hash)? else {
             continue;
         };
-        let bn = block.body.state.block_number;
-        for pd in &block.body.deploys {
-            if pd.deploy.sig == *sig {
-                record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
-            }
+        let bn = facts.block_number;
+        if facts.deploy_sigs.contains(sig) {
+            record_disposition(&mut disposition, sig.clone(), bn, true);
         }
-        for rd in proto_util::kept_rejected_records(&block) {
-            if rd.sig == *sig {
-                record_disposition(&mut disposition, rd.sig.clone(), bn, false);
-            }
+        if facts.kept_rejected().any(|rd| rd.sig == *sig) {
+            record_disposition(&mut disposition, sig.clone(), bn, false);
         }
     }
     Ok(disposition.get(sig).map(|(_, won)| *won).unwrap_or(false))
@@ -276,10 +272,9 @@ fn suppress_already_recorded_rejections(
 
     let mut visible_records: HashSet<RejectedDeploy> = HashSet::new();
     for hash in visible_blocks {
-        let Some(block) = block_store.get(hash)? else {
-            continue;
-        };
-        visible_records.extend(block.body.rejected_deploys.iter().cloned());
+        if let Some(facts) = held_block_facts(block_store, hash)? {
+            visible_records.extend(facts.rejected.iter().cloned());
+        }
     }
     if visible_records.is_empty() {
         return Ok(0);
@@ -1283,6 +1278,11 @@ pub async fn compute_parents_post_state(
                     post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
                     n_rejected = cached.rejected_user.len(),
                     n_rejected_slash = cached.rejected_slashes.len(),
+                    // The FLOOR line carries this on a miss; without it here the
+                    // block's state parent goes unrecorded.
+                    base = cached.merge_base.as_ref().map(|hash| hex::encode(&hash[..8.min(hash.len())])),
+                    n_applied = cached.applied_from_scope.len(),
+                    applied = %named_sigs(&cached.applied_from_scope),
                     "merge.cpps: cache hit, merge skipped"
                 );
                 return Ok(cached);
@@ -1699,7 +1699,7 @@ pub async fn compute_parents_post_state(
             // ~30 per-sig lineage walks per merge, each loading full block
             // bodies. Each closure now builds its applied-sig set with ONE
             // walk on the first probe (`settled_sigs_of_lineage`, backed by
-            // the per-block lineage-step cache) and answers every probe by
+            // the block-facts cache) and answers every probe by
             // membership. Built lazily so a merge that never probes never
             // walks; RefCell suffices because the merge is synchronous on
             // this thread. The FIRST probe's wrapper-counter sample folds
@@ -1773,15 +1773,9 @@ pub async fn compute_parents_post_state(
                     cursor = s.dag.main_parent(&hash);
                     count_visible.insert(hash);
                 }
-                // Records load through the lineage-step cache (one decode
-                // per block process-wide, store-revalidated) instead of a
-                // full body decode per visible block per merge — the same
-                // batching CLAIM-FINALITY-001 applied to the settled
-                // probes, for the walk that was next in the run
-                // 33099406770 attribution (~47ms/merge).
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
-                    crate::rust::finality::deploy_lifecycle::rejected_records_of(block_store, hash)
-                        .map(|records| records.as_ref().clone())
+                    block_facts(block_store, hash, "prior-rejection records read")
+                        .map(|facts| facts.rejected.as_ref().clone())
                 })?
             };
             let prior_rejection_elapsed = prior_rejection_started.elapsed();
@@ -2145,6 +2139,7 @@ pub async fn compute_parents_post_state(
                 n_rejected = merged.rejected_user.len(),
                 n_rejected_slash = merged.rejected_slashes.len(),
                 n_applied = merged.applied_from_scope.len(),
+                applied = %named_sigs(&merged.applied_from_scope),
                 "merge.cpps: cache put merged parents-post-state"
             );
             runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
@@ -2417,6 +2412,239 @@ mod backstop_tests {
             Some((1, carrier.block_hash.clone())),
             "the height-1 inclusion is the first carrier",
         );
+    }
+
+    #[tokio::test]
+    async fn a_repeat_disposition_walk_decodes_no_block_body() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@9!(9)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let (_, sender) = Secp256k1.new_key_pair();
+        let carrier = disposition_test_block(1, sender.bytes.clone(), Vec::new(), vec![
+            ProcessedDeploy::empty(deploy),
+        ]);
+        block_store
+            .put_block_message(&carrier)
+            .expect("store block");
+        let first = canonical_dispositions(&block_store, &[carrier.block_hash.clone()], i64::MIN)
+            .expect("walk");
+        assert!(first.contains_key(&sig));
+
+        // A body stored under an existing hash is visible only to a walk that decodes it again.
+        let mut rewritten = carrier.clone();
+        rewritten.body.deploys.clear();
+        block_store
+            .put_block_message(&rewritten)
+            .expect("overwrite body");
+
+        let second = canonical_dispositions(&block_store, &[carrier.block_hash.clone()], i64::MIN)
+            .expect("walk");
+        assert!(
+            second.contains_key(&sig),
+            "the second walk must read the block's cached facts, not its body"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_disposition_walk_matches_a_body_decoding_walk() {
+        fn decoding_walk(
+            block_store: &KeyValueBlockStore,
+            parents: &[BlockHash],
+            earliest_block_number: i64,
+        ) -> std::collections::HashMap<Bytes, super::SigDisposition> {
+            let mut dispositions = std::collections::HashMap::new();
+            let mut visited = HashSet::new();
+            let mut queue: std::collections::VecDeque<BlockHash> =
+                parents.iter().cloned().collect();
+            while let Some(hash) = queue.pop_front() {
+                if !visited.insert(hash.clone()) {
+                    continue;
+                }
+                let block = block_store.get(&hash).expect("read").expect("held");
+                let bn = block.body.state.block_number;
+                if bn < earliest_block_number {
+                    continue;
+                }
+                for pd in &block.body.deploys {
+                    super::note_inclusion(
+                        &mut dispositions,
+                        pd.deploy.sig.clone(),
+                        bn,
+                        &hash,
+                        &block.sender,
+                    );
+                }
+                for rd in block
+                    .body
+                    .rejected_deploys
+                    .iter()
+                    .filter(|rd| !rd.duplicate)
+                {
+                    super::note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
+                }
+                queue.extend(block.header.parents_hash_list.iter().cloned());
+            }
+            dispositions
+        }
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag = generated_disposition_dag(&block_store);
+        let layer = dag.tips;
+
+        for earliest in [i64::MIN, 4, 9] {
+            let expected = decoding_walk(&block_store, &layer, earliest);
+            for _pass in 0..2 {
+                let actual = canonical_dispositions(&block_store, &layer, earliest).expect("walk");
+                assert_eq!(
+                    actual, expected,
+                    "cached walk diverged at earliest {}",
+                    earliest
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_visible_win_check_matches_a_body_decoding_check() {
+        fn decoding_check(
+            block_store: &KeyValueBlockStore,
+            visible_blocks: &HashSet<BlockHash>,
+            sig: &Bytes,
+            source_block: &BlockHash,
+        ) -> bool {
+            let mut disposition = std::collections::HashMap::new();
+            for hash in visible_blocks {
+                if hash == source_block {
+                    continue;
+                }
+                let block = block_store.get(hash).expect("read").expect("held");
+                let bn = block.body.state.block_number;
+                for pd in &block.body.deploys {
+                    if pd.deploy.sig == *sig {
+                        super::record_disposition(&mut disposition, sig.clone(), bn, true);
+                    }
+                }
+                for rd in block
+                    .body
+                    .rejected_deploys
+                    .iter()
+                    .filter(|rd| !rd.duplicate)
+                {
+                    if rd.sig == *sig {
+                        super::record_disposition(&mut disposition, sig.clone(), bn, false);
+                    }
+                }
+            }
+            disposition.get(sig).map(|(_, won)| *won).unwrap_or(false)
+        }
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag = generated_disposition_dag(&block_store);
+        let visible: HashSet<BlockHash> = dag.blocks.iter().cloned().collect();
+
+        for _pass in 0..2 {
+            for sig in &dag.sigs {
+                for source in &dag.blocks {
+                    assert_eq!(
+                        rejected_sig_has_visible_non_source_win(
+                            &block_store,
+                            &visible,
+                            sig,
+                            source
+                        )
+                        .expect("check"),
+                        decoding_check(&block_store, &visible, sig, source),
+                        "cached visible-win check diverged for source {}",
+                        hex::encode(&source[..8.min(source.len())]),
+                    );
+                }
+            }
+        }
+    }
+
+    struct GeneratedDispositionDag {
+        blocks: Vec<BlockHash>,
+        tips: Vec<BlockHash>,
+        sigs: Vec<Bytes>,
+    }
+
+    /// Twelve layers of 1–3 blocks with random multi-parent links, repeated and
+    /// failed deploys of six sigs, and kept and duplicate-flagged rejection records.
+    fn generated_disposition_dag(block_store: &KeyValueBlockStore) -> GeneratedDispositionDag {
+        let mut seed: u64 = 0x5eed;
+        let mut rand = |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let senders: Vec<Bytes> = (0..3).map(|_| Secp256k1.new_key_pair().1.bytes).collect();
+        let deploys: Vec<_> = (0..6)
+            .map(|n| construct_deploy::basic_deploy_data(900 + n, None, None).expect("deploy"))
+            .collect();
+
+        let mut layer: Vec<BlockHash> = Vec::new();
+        let mut blocks: Vec<BlockHash> = Vec::new();
+        for height in 0..12 {
+            let mut next = Vec::new();
+            for _ in 0..=rand(3) {
+                let parents: Vec<BlockHash> = layer
+                    .iter()
+                    .filter(|_| rand(2) == 0)
+                    .cloned()
+                    .chain(layer.first().cloned())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let body_deploys = (0..rand(3))
+                    .map(|_| {
+                        let mut pd = ProcessedDeploy::empty(deploys[rand(6) as usize].clone());
+                        pd.is_failed = rand(4) == 0;
+                        pd
+                    })
+                    .collect();
+                let mut block = disposition_test_block(
+                    height,
+                    senders[rand(3) as usize].clone(),
+                    parents,
+                    body_deploys,
+                );
+                block.body.rejected_deploys = (0..rand(3))
+                    .filter(|_| !blocks.is_empty())
+                    .map(|_| RejectedDeploy {
+                        sig: deploys[rand(6) as usize].sig.clone(),
+                        duplicate: rand(3) == 0,
+                        carrier: blocks[rand(blocks.len() as u64) as usize].clone(),
+                    })
+                    .collect();
+                block_store.put_block_message(&block).expect("store block");
+                next.push(block.block_hash.clone());
+            }
+            blocks.extend(next.iter().cloned());
+            layer = next;
+        }
+        GeneratedDispositionDag {
+            blocks,
+            tips: layer,
+            sigs: deploys.iter().map(|d| d.sig.clone()).collect(),
+        }
     }
 
     /// The tripwire errors exactly when a NON-duplicate record rejects a

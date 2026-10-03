@@ -1471,9 +1471,9 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
     });
 }
 
-/// The watermark is written once per database: 0 on an empty DAG
-/// (complete from the first insert), the next height above the current
-/// max on an existing DAG, and never overwritten on a later start.
+/// The watermark is written once per database: nothing on an empty DAG, where
+/// the history root is not yet known, the next height above the current max on
+/// an existing one, and never overwritten on a later start.
 #[test]
 fn carrier_watermark_initializes_once_per_database() {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
@@ -1485,8 +1485,8 @@ fn carrier_watermark_initializes_once_per_database() {
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
         assert_eq!(
             dag_storage.ensure_carrier_watermark().unwrap(),
-            0,
-            "an empty database is complete from the first insert"
+            None,
+            "an empty database cannot yet know where its history is rooted"
         );
 
         let genesis = genesis_block();
@@ -1494,9 +1494,19 @@ fn carrier_watermark_initializes_once_per_database() {
         let block = chain_block(1, vec![genesis.block_hash.clone()]);
         dag_storage.insert(&block, InsertMode::Normal).unwrap();
         assert_eq!(
-            dag_storage.ensure_carrier_watermark().unwrap(),
+            dag_storage.record_carrier_coverage_from(0).unwrap(),
+            0,
+            "a genesis-rooted node is complete from 0"
+        );
+        assert_eq!(
+            dag_storage.record_carrier_coverage_from(140_343).unwrap(),
             0,
             "the watermark is write-once"
+        );
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            Some(0),
+            "a later start does not overwrite it"
         );
 
         // A database that predates the index gets max height + 1: the
@@ -1512,7 +1522,7 @@ fn carrier_watermark_initializes_once_per_database() {
         pre_existing.insert(&b1, InsertMode::Normal).unwrap();
         let dag = pre_existing.get_representation().unwrap();
         assert_eq!(dag.carrier_index_watermark().unwrap(), None);
-        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), 2);
+        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), Some(2));
         let dag = pre_existing.get_representation().unwrap();
         assert_eq!(dag.carrier_index_watermark().unwrap(), Some(2));
     });
@@ -2297,4 +2307,83 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
     let dag = dag_storage.get_representation().unwrap();
     assert!(dag.is_finalized(&b1.block_hash));
     assert_eq!(dag.last_finalized_block(), b1.block_hash);
+}
+
+/// Genesis can reach the DAG as an ordinary block before the approved-block
+/// handshake completes. The approved insert is the only thing that marks it
+/// finalized, and it returns early on a block already stored, so the mark is
+/// skipped — while the API answers `isFinalized` from exactly that mark.
+///
+/// Nothing repairs it later: the finalization sweep gates descent on
+/// `!is_finalized`, so it stops at the first finalized ancestor and never
+/// reaches a genesis left behind under one.
+#[tokio::test]
+async fn genesis_is_finalized_even_when_it_reached_the_dag_before_the_approved_insert() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let genesis = genesis_block();
+    dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&genesis.block_hash),
+        "the approved insert marks genesis finalized however it first arrived"
+    );
+
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    let b2 = chain_block(2, vec![b1.block_hash.clone()]);
+    dag_storage.insert(&b1, InsertMode::Normal).unwrap();
+    dag_storage.insert(&b2, InsertMode::Normal).unwrap();
+    dag_storage
+        .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    dag_storage
+        .record_directly_finalized(b2.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&genesis.block_hash),
+        "the sweep stops at the first finalized ancestor, so a genesis missed \
+         at insert stays unfinalized for the life of the node"
+    );
+}
+
+/// The same race on the LFS restore path, where the approved block is the
+/// trimmed anchor rather than genesis. The anchor is the only finalized seed a
+/// restored node has, and floors derive forward from it, so an anchor that
+/// reached the DAG as settled history before the approved insert must still
+/// become the last finalized block.
+#[tokio::test]
+async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_history() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let genesis = genesis_block();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+    let anchor = chain_block(5, vec![BlockHash::from(vec![0xaa; 32])]);
+    dag_storage
+        .insert(&anchor, InsertMode::SettledHistory)
+        .unwrap();
+    dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&anchor.block_hash),
+        "the approved insert marks the restore anchor however it first arrived"
+    );
+    assert_eq!(
+        dag.last_finalized_block(),
+        anchor.block_hash,
+        "the anchor is the seed every derived floor descends from"
+    );
 }

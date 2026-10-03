@@ -97,9 +97,10 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .genesis_block
         .block_hash
         .clone()]);
-    // With multi-parent merging, all validators' latest blocks are included as parents
-    // (block0 from node0, block1 from node1, genesis from node2 who hasn't created a block yet)
-    assert_eq!(multiparent_block.header.parents_hash_list.len(), 3);
+    // With multi-parent merging, every validator's latest block is a parent —
+    // except node2, which has not created one: its slot holds the genesis
+    // placeholder, which is abstained rather than cited.
+    assert_eq!(multiparent_block.header.parents_hash_list.len(), 2);
     assert!(nodes[0].contains(&multiparent_block.block_hash));
     assert!(nodes[1].contains(&multiparent_block.block_hash));
     assert_eq!(multiparent_block.body.rejected_deploys.len(), 0);
@@ -381,10 +382,9 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     // Under multi-parent merging, a proposed block links the latest message of
     // every bonded validator as a parent. The genesis is bonded to three
-    // validators but only two nodes exist, so the parents are block0
-    // (validator 0), block1 (validator 1) and — for the third bonded-but-absent
-    // validator — the genesis block itself.
-    assert_eq!(single_parent_block.header.parents_hash_list.len(), 3);
+    // validators but only two nodes exist; the third's slot holds the genesis
+    // placeholder, which is abstained, so the parents are block0 and block1.
+    assert_eq!(single_parent_block.header.parents_hash_list.len(), 2);
     assert!(single_parent_block
         .header
         .parents_hash_list

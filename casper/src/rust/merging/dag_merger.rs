@@ -18,7 +18,7 @@ use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
-use super::conflict_set_merger;
+use super::conflict_set_merger::{self, Branch};
 use super::deploy_chain_index::DeployChainIndex;
 use crate::rust::errors::CasperError;
 use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
@@ -1444,7 +1444,7 @@ pub fn merge(
     }
 
     // Create history reader for base state
-    let history_reader = std::sync::Arc::new(
+    let history_reader = Arc::new(
         history_repository
             .get_history_reader(base_post_state)
             .map_err(|e| CasperError::HistoryError(e))?,
@@ -1610,15 +1610,15 @@ pub fn merge(
     // Branch event-log combination is fallible —
     // a MergeType mismatch propagates as a hard error so the merge is
     // rejected rather than silently absorbing the invariant violation.
-    let compute_conflict_map_fn = |branches_set: &HashableSet<HashableSet<DeployChainIndex>>| -> Result<
-        HashMap<HashableSet<DeployChainIndex>, HashableSet<HashableSet<DeployChainIndex>>>,
+    let compute_conflict_map_fn = |branches_set: &HashableSet<Branch<DeployChainIndex>>| -> Result<
+        HashMap<Branch<DeployChainIndex>, HashableSet<Branch<DeployChainIndex>>>,
         rspace_plus_plus::rspace::errors::HistoryError,
     > {
         // Snapshot branch references in a stable order so the parallel
         // arrays passed into the indexed map and the deploy-id pass below
         // line up.
-        let branches_refs: Vec<&HashableSet<DeployChainIndex>> = branches_set.0.iter().collect();
-        let branches_owned: Vec<HashableSet<DeployChainIndex>> =
+        let branches_refs: Vec<&Branch<DeployChainIndex>> = branches_set.0.iter().collect();
+        let branches_owned: Vec<Branch<DeployChainIndex>> =
             branches_refs.iter().map(|b| (*b).clone()).collect();
         let branch_derived: Vec<BranchDerived> = branches_refs
             .iter()
@@ -1737,14 +1737,20 @@ pub fn merge(
     // emits depends pairs in a single pass, then groups via
     // `gather_related_sets`.
     let compute_branches_fn =
-        |merge_set: &HashableSet<DeployChainIndex>| -> HashableSet<HashableSet<DeployChainIndex>> {
+        |merge_set: &HashableSet<DeployChainIndex>| -> HashableSet<Branch<DeployChainIndex>> {
             let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
             let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
                 chains_vec.iter().map(|c| &c.event_log_index).collect();
             #[allow(clippy::mutable_key_type)]
             let depends_map =
                 merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
-            let branches = merging_logic::gather_related_sets(&depends_map);
+            let branches = HashableSet(
+                merging_logic::gather_related_sets(&depends_map)
+                    .0
+                    .into_iter()
+                    .map(Arc::new)
+                    .collect(),
+            );
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 tracing::debug!(target: "f1r3fly.merge.step", step = "compute_branches_fn.ENTER",
                     n_chains = chains_vec.len(), n_branches = branches.0.len());
@@ -3174,18 +3180,18 @@ mod tests {
                 merge_set
                     .0
                     .iter()
-                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .map(|chain| Arc::new(HashableSet(HashSet::from([chain.clone()]))))
                     .collect(),
             )
         };
         // The two branches conflict: both consume the same base datum.
-        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+        let compute_conflict_map = |branches: &HashableSet<Branch<DeployChainIndex>>| {
             #[allow(clippy::mutable_key_type)]
             let mut map = HashMap::new();
-            let all: Vec<HashableSet<DeployChainIndex>> = branches.0.iter().cloned().collect();
+            let all: Vec<Branch<DeployChainIndex>> = branches.0.iter().cloned().collect();
             for branch in &all {
                 #[allow(clippy::mutable_key_type)]
-                let others: HashSet<HashableSet<DeployChainIndex>> = all
+                let others: HashSet<Branch<DeployChainIndex>> = all
                     .iter()
                     .filter(|other| *other != branch)
                     .cloned()
@@ -3263,17 +3269,17 @@ mod tests {
                 merge_set
                     .0
                     .iter()
-                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .map(|chain| Arc::new(HashableSet(HashSet::from([chain.clone()]))))
                     .collect(),
             )
         };
-        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+        let compute_conflict_map = |branches: &HashableSet<Branch<DeployChainIndex>>| {
             #[allow(clippy::mutable_key_type)]
             let mut map = HashMap::new();
-            let all: Vec<HashableSet<DeployChainIndex>> = branches.0.iter().cloned().collect();
+            let all: Vec<Branch<DeployChainIndex>> = branches.0.iter().cloned().collect();
             for branch in &all {
                 #[allow(clippy::mutable_key_type)]
-                let others: HashSet<HashableSet<DeployChainIndex>> = all
+                let others: HashSet<Branch<DeployChainIndex>> = all
                     .iter()
                     .filter(|other| *other != branch)
                     .cloned()
@@ -3403,16 +3409,16 @@ mod tests {
                 merge_set
                     .0
                     .iter()
-                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .map(|chain| Arc::new(HashableSet(HashSet::from([chain.clone()]))))
                     .collect(),
             )
         };
-        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+        let compute_conflict_map = |branches: &HashableSet<Branch<DeployChainIndex>>| {
             // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
             #[allow(clippy::mutable_key_type)]
             let mut map: HashMap<
-                HashableSet<DeployChainIndex>,
-                HashableSet<HashableSet<DeployChainIndex>>,
+                Branch<DeployChainIndex>,
+                HashableSet<Branch<DeployChainIndex>>,
             > = branches
                 .0
                 .iter()
@@ -3578,9 +3584,15 @@ mod tests {
                 #[allow(clippy::mutable_key_type)]
                 let depends_map =
                     merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
-                merging_logic::gather_related_sets(&depends_map)
+                HashableSet(
+                    merging_logic::gather_related_sets(&depends_map)
+                        .0
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect(),
+                )
             };
-            let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+            let compute_conflict_map = |branches: &HashableSet<Branch<DeployChainIndex>>| {
                 #[allow(clippy::mutable_key_type)]
                 let mut map = HashMap::new();
                 for branch in branches.0.iter() {
@@ -3737,9 +3749,9 @@ mod tests {
         let no_mergeable = |_: &DeployChainIndex| BTreeMap::new();
         let no_continuations = |_: &Vec<Blake2b256Hash>| Ok(Vec::new());
         let one_branch = |merge_set: &HashableSet<DeployChainIndex>| {
-            HashableSet(HashSet::from([HashableSet(merge_set.0.clone())]))
+            HashableSet(HashSet::from([Arc::new(HashableSet(merge_set.0.clone()))]))
         };
-        let no_conflicts = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+        let no_conflicts = |branches: &HashableSet<Branch<DeployChainIndex>>| {
             Ok(branches
                 .0
                 .iter()
@@ -3836,16 +3848,16 @@ mod tests {
                 merge_set
                     .0
                     .iter()
-                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .map(|chain| Arc::new(HashableSet(HashSet::from([chain.clone()]))))
                     .collect(),
             )
         };
-        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+        let compute_conflict_map = |branches: &HashableSet<Branch<DeployChainIndex>>| {
             // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
             #[allow(clippy::mutable_key_type)]
             let mut map: HashMap<
-                HashableSet<DeployChainIndex>,
-                HashableSet<HashableSet<DeployChainIndex>>,
+                Branch<DeployChainIndex>,
+                HashableSet<Branch<DeployChainIndex>>,
             > = branches
                 .0
                 .iter()
