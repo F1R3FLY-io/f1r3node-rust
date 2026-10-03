@@ -13,4 +13,5 @@
 //
 // Family: [`HandlerFamily::Lifecycle`](super::super::handler_trait::family::HandlerFamily::Lifecycle).
 
+pub mod fs_close;
 pub mod fs_quarantine;

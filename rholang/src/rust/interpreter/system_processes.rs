@@ -290,6 +290,11 @@ impl FixedChannels {
     /// echo of the caller-supplied joined path.  Non-verifying
     /// lifecycle helper (slice 4.12).
     pub fn fs_quarantine() -> Par { byte_name(61) }
+
+    /// `rho:io:fs:native:1.0.0/close` — fd release + Phase-2
+    /// shadow-remove on replay.  Non-verifying lifecycle
+    /// (slice 4.13).
+    pub fn fs_close() -> Par { byte_name(39) }
 }
 
 pub struct BodyRefs;
@@ -336,6 +341,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/quarantine` body-ref (slice 4.12).
     pub const FS_QUARANTINE: i64 = 61;
+
+    /// `rho:io:fs:native:1.0.0/close` body-ref (slice 4.13).
+    pub const FS_CLOSE: i64 = 39;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
