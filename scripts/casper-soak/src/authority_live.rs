@@ -483,7 +483,7 @@ fn capture(
     binding: &Value,
     authority: &Value,
     output: &Path,
-    nonce: &str,
+    request_key: &str,
     deadline: Instant,
     incarnation: &Value,
     owner: &Value,
@@ -494,7 +494,7 @@ fn capture(
     ensure!(remaining >= 50, "The capture deadline expired.");
     let mut binding = binding.clone();
     binding["timeout_ms"] = number(&binding["timeout_ms"])?.min(remaining).into();
-    let id = hash(nonce.as_bytes());
+    let id = hash(request_key.as_bytes());
     binding["request_id"] = format!(
         "{}-{}-{}-{}-{}",
         &id[..8],
