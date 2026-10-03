@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::soak_snapshot::{
@@ -39,17 +39,13 @@ const DAG_STORES: [&str; 11] = [
 ];
 const BLOCK_STORES: [&str; 2] = ["blocks", "blocks-approved"];
 
-fn unique_dir(tag: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "f1r3-soak-snapshot-{tag}-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::canonicalize(dir).unwrap()
+fn unique_dir(tag: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new()
+        .prefix(&format!("f1r3-soak-snapshot-{tag}-"))
+        .tempdir()
+        .unwrap();
+    let dir = std::fs::canonicalize(temp.path()).unwrap();
+    (temp, dir)
 }
 
 fn env_config(name: &str) -> LmdbEnvConfig {
@@ -77,6 +73,7 @@ struct Fixture {
     blocks: KeyValueBlockStore,
     handles: HashMap<&'static str, Arc<dyn KeyValueStore>>,
     chain: Vec<BlockMessage>,
+    _temp: tempfile::TempDir,
 }
 
 impl Fixture {
@@ -149,7 +146,7 @@ fn child(number: i64, parents: Vec<BlockHash>, justify: Option<BlockHash>) -> Bl
 }
 
 fn fixture(tag: &str) -> Fixture {
-    let dir = unique_dir(tag);
+    let (temp, dir) = unique_dir(tag);
     let runtime = Runtime::new().unwrap();
     let (dag, blocks, handles) = runtime.block_on(async {
         let mut kvm = LmdbDirStoreManager::new(dir.clone(), mapping());
@@ -192,6 +189,7 @@ fn fixture(tag: &str) -> Fixture {
         blocks,
         handles,
         chain,
+        _temp: temp,
     }
 }
 
