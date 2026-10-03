@@ -46,7 +46,9 @@
 pub mod family;
 pub mod journal_path;
 pub mod reply;
+pub mod syscall_ctx;
 
 pub use family::HandlerFamily;
 pub use journal_path::JournalPath;
 pub use reply::HandlerReply;
+pub use syscall_ctx::SyscallCtx;
