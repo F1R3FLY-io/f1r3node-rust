@@ -28,5 +28,6 @@
 //   - `lock`: yet to land.
 //   - `removedir`: trait-exempt (yet to land as inline handler).
 
+pub mod helpers;
 pub mod lifecycle;
 pub mod observation;
