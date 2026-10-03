@@ -10,8 +10,10 @@ Controlled verification does not qualify a node candidate. Source-bound acceptan
     "commit": "25ddb7779f9e0342bd0ca712804fc530bf6464a9",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "e63d620db4586c96b48b8ed6b643bedfcefb372c64275ccb4ad90c6fc9f3b125",
-    "sha256_before_continuation": "efd1ed4d2e868889bf56070e8c0d203d62bf84e2813981222c4244452f5609c2"
+    "sha256": "b1b83e9cd5a862fbbd55d71b8ac258c1507d63fc34eea1c0564454b0c2ddd005",
+    "sha256_before_continuation": "efd1ed4d2e868889bf56070e8c0d203d62bf84e2813981222c4244452f5609c2",
+    "sha256_before_parameter_rename": "e63d620db4586c96b48b8ed6b643bedfcefb372c64275ccb4ad90c6fc9f3b125",
+    "parameter_rename": "2026-10-03: the capture parameter nonce became request_key, so CodeQL rust/hardcoded-crypto-value no longer matches a value that only derives the request correlation identifier. Behavior is unchanged. The record status stays pending."
   },
   "claim": "docs/claims/casper-authority-live-executor.md",
   "claim_ids": [
