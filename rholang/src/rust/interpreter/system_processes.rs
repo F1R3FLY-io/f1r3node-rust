@@ -304,6 +304,11 @@ impl FixedChannels {
     /// (`lseek(SEEK_CUR, 0)`).  Non-verifying observation
     /// (slice 4.15).
     pub fn fs_tell() -> Par { byte_name(47) }
+
+    /// `rho:io:fs:native:1.0.0/seek` — move fd position
+    /// (`lseek(off, whence)`).  Verifying observation; advances
+    /// shadow position via the `journal` hook (slice 4.16).
+    pub fn fs_seek() -> Par { byte_name(46) }
 }
 
 pub struct BodyRefs;
@@ -359,6 +364,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/tell` body-ref (slice 4.15).
     pub const FS_TELL: i64 = 47;
+
+    /// `rho:io:fs:native:1.0.0/seek` body-ref (slice 4.16).
+    pub const FS_SEEK: i64 = 46;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
