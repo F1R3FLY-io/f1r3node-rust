@@ -654,6 +654,35 @@ mod prepared_route_tests {
         let failure = trace_pathmap(&failure);
         assert_eq!(failure.mode(), EPathMapMode::Empty);
         assert_eq!(failure.len(), 0);
+        let choices = observation(&runtime, "regex.lookahead.choices.success").await;
+        let choices = trace_pathmap(&choices);
+        assert_eq!(choices.mode(), EPathMapMode::Set);
+        assert_eq!(
+            choices.len(),
+            2,
+            "both installed rewrite choices must survive"
+        );
+        let first_choice = choices.next_value_key(&[]).expect("first choice trace key");
+        let second_choice = choices
+            .next_value_key(&first_choice)
+            .expect("second choice trace key");
+        assert_ne!(
+            first_choice, second_choice,
+            "proof-distinct traces need distinct keys"
+        );
+        assert!(choices.next_value_key(&second_choice).is_none());
+        for key in [&first_choice, &second_choice] {
+            let trace = choices
+                .leaf_at_encoded_key(key)
+                .expect("choice trace member");
+            let trace = list(&trace);
+            assert!(trace.len() >= 2, "each choice must include a guest rewrite");
+            assert_eq!(trace.last(), Some(&expected_terminal));
+        }
+        let choice_failure = observation(&runtime, "regex.lookahead.choices.failure").await;
+        let choice_failure = trace_pathmap(&choice_failure);
+        assert_eq!(choice_failure.mode(), EPathMapMode::Empty);
+        assert_eq!(choice_failure.len(), 0);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
