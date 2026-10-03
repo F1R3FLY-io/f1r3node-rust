@@ -161,6 +161,29 @@ message WalPayloadResponseProto {
   bytes payload_bytes = 2;  // raw payload bytes; joiner rehashes to verify
 }
 
+// Sent by a joiner asking "do you have bytes for this payload
+// hash?"  Broadcast + point-to-point; serving nodes reply with
+// HasWalPayloadProto when they can serve it.  Mirrors the
+// HasSnapshotRequestProto / HasSnapshotProto pattern.
+message HasWalPayloadRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes payload_hash = 1;
+}
+
+// Response to HasWalPayloadRequestProto.  Carries `payload_size`
+// so the joiner can budget before issuing the full fetch via
+// GetWalPayloadRequest.  Size is ADVISORY — the receiver MUST
+// cap at MAX_PAYLOAD_BYTES (4 MiB) regardless of what the
+// server claims here, and the actual response's byte count is
+// the authoritative truth.  A server over-reporting here would
+// get caught by the comm-layer message-size limit before memory
+// pressure.
+message HasWalPayloadProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes  payload_hash = 1;
+  uint32 payload_size = 2;   // ADVISORY count the joiner can budget
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }
