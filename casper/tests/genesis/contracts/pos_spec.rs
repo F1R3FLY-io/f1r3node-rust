@@ -12,6 +12,72 @@ use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use crate::helper::rho_spec::{timeout_phase, RhoSpec, EVAL_TEST_SOURCE_PHASE};
 use crate::util::genesis_builder::GenesisBuilder;
 
+#[derive(Clone, Copy)]
+struct PosSpecShard {
+    name: &'static str,
+    tests: &'static [&'static str],
+}
+
+const POS_SPEC_SHARDS: &[PosSpecShard] = &[
+    PosSpecShard {
+        name: "basic-delegation",
+        tests: &[
+            "PoS is created with empty rewards",
+            "closeBlock finishes successfully",
+            "bonding success",
+            "delegation success",
+            "undelegation success",
+        ],
+    },
+    PosSpecShard {
+        name: "delegation-withdraw",
+        tests: &[
+            "delegator rewards can be claimed",
+            "withdraw fails when validator has active delegations",
+            "withdraw succeeds",
+            "validator is paid after withdraw",
+        ],
+    },
+    PosSpecShard {
+        name: "payments",
+        tests: &[
+            "multiple bondings work",
+            "payment works",
+            "payment refund works",
+            "payment is not distributed to inactive validators",
+        ],
+    },
+    PosSpecShard {
+        name: "bond-validation-and-random",
+        tests: &[
+            "bonding fails if deposit fails",
+            "bonding fails if already bonded",
+            "bonding fails if bond is too small",
+            "bonding fails if bond is not positive",
+            "bonding fails if bond is too large",
+            "commited random matches its image",
+        ],
+    },
+    PosSpecShard {
+        name: "slash-regressions-a",
+        tests: &[
+            "bonding success",
+            "Slashing transfers funds appropriately",
+            "pending undelegation is slashed before completion",
+            "slash handles active and pending delegated exposure",
+        ],
+    },
+    PosSpecShard {
+        name: "slash-regressions-b",
+        tests: &[
+            "slash only affects target validator across multiple delegators",
+            "slash one validator preserves delegation to another",
+            "delegate enforces maximum effective bond cap",
+            "active set tracks effective bonds on closeBlock",
+        ],
+    },
+];
+
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
     let (hex_string, balance) = vault_data;
 
@@ -26,33 +92,28 @@ fn prepare_vault(vault_data: (&str, u64)) -> Vault {
 }
 
 fn test_vaults() -> Vec<Vault> {
-    vec![
-        ("0".repeat(130).as_str(), 10000),
-        ("1".repeat(130).as_str(), 10000),
-        ("2".repeat(130).as_str(), 10000),
-        ("3".repeat(130).as_str(), 10000),
-        ("4".repeat(130).as_str(), 10000),
-        ("5".repeat(130).as_str(), 10000),
-        ("6".repeat(130).as_str(), 10000),
-        ("7".repeat(130).as_str(), 10000),
-        ("8".repeat(130).as_str(), 10000),
-        ("9".repeat(130).as_str(), 10000),
-        ("a".repeat(130).as_str(), 10000),
-        ("b".repeat(130).as_str(), 10000),
-        ("c".repeat(130).as_str(), 10000),
-        ("d".repeat(130).as_str(), 10000),
-        ("e".repeat(130).as_str(), 10000),
+    [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e",
     ]
     .into_iter()
-    .map(prepare_vault)
+    .map(|token| token.repeat(130))
+    .chain(
+        [
+            "6a", "7b", "8c", "9d", "ae", "bc", "bf", "c1", "c2", "cd", "d1", "d2", "d3", "d4",
+            "de", "e1", "e2", "e3", "e4", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8",
+        ]
+        .into_iter()
+        .map(|token| token.repeat(65)),
+    )
+    .map(|pk| prepare_vault((&pk, 10000)))
     .collect()
 }
 
-fn run_pos_spec_once() -> Result<(), InterpreterError> {
+fn run_pos_spec_shard_once(shard: PosSpecShard) -> Result<(), InterpreterError> {
     // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let test_object =
                     crate::util::rholang::test_rho_loader::load_test_rho("PoSTest.rho")
@@ -81,25 +142,34 @@ fn run_pos_spec_once() -> Result<(), InterpreterError> {
                 genesis_parameters.2.proof_of_stake.minimum_bond = 2;
                 genesis_parameters.2.proof_of_stake.maximum_bond = 100_000;
 
-                let spec = RhoSpec::new_with_genesis_parameters(
+                let spec = RhoSpec::new_with_genesis_parameters_and_enabled_tests(
                     compiled,
                     vec![],
-                    // pos_spec runs the full 16-test PoSTest.rho through the interpreter over a
-                    // custom-param genesis with test vaults (an unavoidable GENESIS_CACHE miss) —
-                    // the heaviest genesis-contract spec, ~10-50s in isolation. The bound is a
-                    // WEDGE-CATCHER: pos_spec intermittently wedges under parallel suite
-                    // execution (all tokio workers parked, zero runnable tasks; the timed run
-                    // localized it to the 'eval-test-source' phase — the interpreter evaluating
-                    // PoSTest.rho), and the previous 1800s value burned half an hour per
-                    // occurrence. The RhoSpec harness times the WHOLE pipeline and names the
-                    // wedged phase in the failure message, so an expiry here is diagnostic
-                    // signal, not lost work; a healthy run that trips it under load should be
-                    // retried, not accommodated with a wider bound.
                     Duration::from_secs(60),
                     genesis_parameters,
+                    shard.tests.iter().map(|test| (*test).to_string()).collect(),
                 );
 
-                spec.run_tests().await.map(|_| ())
+                let result = spec.run_tests().await?;
+
+                for expected in shard.tests {
+                    assert!(
+                        result.assertions.contains_key(*expected),
+                        "PoSSpec shard '{}' did not record assertions for '{}'",
+                        shard.name,
+                        expected
+                    );
+                }
+                for actual in result.assertions.keys() {
+                    assert!(
+                        shard.tests.contains(&actual.as_str()),
+                        "PoSSpec shard '{}' unexpectedly recorded assertions for '{}'",
+                        shard.name,
+                        actual
+                    );
+                }
+
+                Ok(())
             })
         })
         .unwrap()
@@ -113,17 +183,27 @@ fn run_pos_spec_once() -> Result<(), InterpreterError> {
 /// not hide a regression behind the retry.
 #[test]
 fn pos_spec() {
-    match run_pos_spec_once() {
-        Err(err)
-            if timeout_phase(&err) == Some(EVAL_TEST_SOURCE_PHASE)
-                && std::env::var_os("RHO_SPEC_NO_RETRY").is_none() =>
-        {
-            eprintln!(
-                "PoSSpec timed out in phase '{EVAL_TEST_SOURCE_PHASE}' under parallel load. \
-                 The test will retry once (set RHO_SPEC_NO_RETRY=1 to disable): {err:?}"
-            );
-            run_pos_spec_once().expect("PoSSpec tests failed after timeout retry");
+    for shard in POS_SPEC_SHARDS {
+        match run_pos_spec_shard_once(*shard) {
+            Err(err)
+                if timeout_phase(&err) == Some(EVAL_TEST_SOURCE_PHASE)
+                    && std::env::var_os("RHO_SPEC_NO_RETRY").is_none() =>
+            {
+                eprintln!(
+                    "PoSSpec shard '{}' timed out in phase '{EVAL_TEST_SOURCE_PHASE}' under \
+                     parallel load. The test will retry once (set RHO_SPEC_NO_RETRY=1 to \
+                     disable): {err:?}",
+                    shard.name
+                );
+                run_pos_spec_shard_once(*shard).unwrap_or_else(|err| {
+                    panic!(
+                        "PoSSpec shard '{}' failed after timeout retry: {err:?}",
+                        shard.name
+                    )
+                });
+            }
+            result => result
+                .unwrap_or_else(|err| panic!("PoSSpec shard '{}' failed: {err:?}", shard.name)),
         }
-        result => result.expect("PoSSpec tests failed"),
     }
 }
