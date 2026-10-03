@@ -1,1 +1,0 @@
-PASS: Stale guardian progress prevented admission and preserved failure (guardian-progress-boundary).

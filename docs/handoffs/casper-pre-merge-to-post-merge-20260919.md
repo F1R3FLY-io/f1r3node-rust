@@ -47,9 +47,9 @@ The accepted claims use `bounded-safety-pass`, `not-applicable`, and `passed` fo
 
 The [claim index](../claims/casper-soak-harness.md) links all eight specifications. The source-bound audit checks 123 declared artifacts across these claims.
 
-The [previous source manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/source-artifacts.sha256) records 127 artifact hashes. It covers the accepted inventories and the expanded mandatory scope.
+The [previous source manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/external.json) records 127 artifact hashes. It covers the accepted inventories and the expanded mandatory scope.
 
-The [previous input manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/reviewed-inputs.sha256) records the reviewed specifications, reports, and coordination documents at that earlier revision.
+The [previous input manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/external.json) records the reviewed specifications, reports, and coordination documents at that earlier revision.
 
 The initial review package retains its earlier 125-source and 142-input manifests. Those historical manifests do not describe the new campaign helpers.
 

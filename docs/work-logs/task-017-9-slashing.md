@@ -118,7 +118,7 @@ Additional checks reject future rebond epochs and unauthorized positive fixture 
 
 The [review report](../casper/cbc-evidence/runs/casper-slashing-20260919-02/report.json) binds 24 source files and archives 12614 evidence files.
 
-The [validation result](../casper/cbc-evidence/runs/casper-slashing-20260919-02/validation.json) checks 1430 nested references, both platform inventories, and 12 pending canonical ledgers.
+The [validation result](../casper/cbc-evidence/runs/casper-slashing-20260919-02/external.json) checks 1430 nested references, both platform inventories, and 12 pending canonical ledgers.
 
 Twelve compatibility links point to the new canonical ledgers. Existing independent compatibility records remain unchanged.
 
@@ -185,7 +185,7 @@ The previous review package and hosted report remain unchanged. Their pending-st
 
 The accepted-state native runner passed seven tests, 66 cases, 72 invocations, and all four model controls. Eleven shared regression tests also passed.
 
-The [acceptance validation](../casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/validation.json) confirms strict discharge for Claims001 through 006. The full bundle exits 4 for Claims007 and 008.
+The [acceptance validation](../casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/external.json) confirms strict discharge for Claims001 through 006. The full bundle exits 4 for Claims007 and 008.
 
 The reviewed isolated Linux evidence uses identical implementation bytes. This acceptance step did not repeat the isolated Linux run.
 

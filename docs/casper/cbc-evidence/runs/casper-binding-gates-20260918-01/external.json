@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-binding-gates-20260918-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-binding-gates-20260918-01.external.tar.gz",
+   "sha256": "86287f88a66e377f848218237bb34b706af05d6e55f1979915cd43ce07e6f79d",
+   "bytes": 701920,
+   "members": 7,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-binding-gates-20260918-01.metadata.tar.gz",
+   "sha256": "b8340115a64969d25085104478e78888fe9e12216b03e34c74764c946cdf9c5c",
+   "bytes": 703,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

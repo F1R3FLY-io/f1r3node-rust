@@ -187,7 +187,7 @@ TASK-017-10 remains in progress. This checkpoint does not close either task, cha
 
 The user instructed this session to proceed with Claim 008 acceptance, audit, and closure. Relay message `01a0bab7-2e7a-7d91-b6ef-545592fecbca` records that instruction.
 
-The [acceptance report](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json) binds the exact approval, reviewed sources, published archive, and verified receipt. The [validation record](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/validation.json) records the final audits and task integrity.
+The [acceptance report](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json) binds the exact approval, reviewed sources, published archive, and verified receipt. The [validation record](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/external.json) records the final audits and task integrity.
 
 The starting revision is `f7b0cb32f4d4ac8ac28996e99e75e0cd8cdb68c6`. All 21 reviewed source hashes matched before the acceptance update. Only the claim status, binding status, and acceptance prose changed within that source inventory.
 
