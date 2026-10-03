@@ -683,6 +683,34 @@ mod prepared_route_tests {
         let choice_failure = trace_pathmap(&choice_failure);
         assert_eq!(choice_failure.mode(), EPathMapMode::Empty);
         assert_eq!(choice_failure.len(), 0);
+        let twins = observation(&runtime, "regex.lookahead.twins.success").await;
+        let twins = trace_pathmap(&twins);
+        assert_eq!(twins.mode(), EPathMapMode::Set);
+        assert_eq!(
+            twins.len(),
+            2,
+            "equal-target rewrite proofs must not coalesce"
+        );
+        let first_twin_key = twins.next_value_key(&[]).expect("first twin proof key");
+        let second_twin_key = twins
+            .next_value_key(&first_twin_key)
+            .expect("second twin proof key");
+        assert_ne!(first_twin_key, second_twin_key);
+        assert!(twins.next_value_key(&second_twin_key).is_none());
+        let first_twin = twins
+            .leaf_at_encoded_key(&first_twin_key)
+            .expect("first twin proof trace");
+        let second_twin = twins
+            .leaf_at_encoded_key(&second_twin_key)
+            .expect("second twin proof trace");
+        let first_twin = list(&first_twin);
+        let second_twin = list(&second_twin);
+        assert_ne!(first_twin, second_twin, "proof links must remain distinct");
+        assert_eq!(first_twin.first(), second_twin.first());
+        assert_eq!(first_twin.last(), Some(&expected_terminal));
+        assert_eq!(second_twin.last(), Some(&expected_terminal));
+        let twin_failure = observation(&runtime, "regex.lookahead.twins.failure").await;
+        assert_eq!(trace_pathmap(&twin_failure).len(), 0);
         let zero_success = observation(&runtime, "regex.lookahead.zero.success").await;
         let zero_success = trace_pathmap(&zero_success);
         assert_eq!(zero_success.mode(), EPathMapMode::Empty);
@@ -711,7 +739,7 @@ mod prepared_route_tests {
         let reports = runtime.get_data(&truncated_channel).await;
         assert_eq!(
             reports.len(),
-            4,
+            5,
             "each v2 lookahead request has a typed report"
         );
         let mut truncated_lengths = Vec::with_capacity(reports.len());
@@ -723,7 +751,7 @@ mod prepared_route_tests {
             truncated_lengths.push(trace_pathmap(&fields[1]).len());
         }
         truncated_lengths.sort_unstable();
-        assert_eq!(truncated_lengths, [0, 0, 1, 1]);
+        assert_eq!(truncated_lengths, [0, 0, 0, 1, 1]);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
