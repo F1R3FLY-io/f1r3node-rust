@@ -605,6 +605,10 @@ mod prepared_route_tests {
                 ExprInstance::GBool(true),
             )]);
         }
+        assert_eq!(
+            observation(&runtime, "regex.lookahead.nullable").await,
+            scalar(ExprInstance::GBool(true)),
+        );
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
