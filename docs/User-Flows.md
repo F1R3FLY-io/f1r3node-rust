@@ -74,9 +74,9 @@ Use the persona name in each flow's `Personas:` field.
 - The listener emits at most one accept-error ERROR line per second and a suppressed-count summary after each minute with continuing errors.
 - The controlled Linux fault test observes one to six accept errors and less than 1,024 log bytes during 500 ms.
 - After descriptor release, the controlled test reaches the new connection's handshake timeout within two seconds without another accept error.
-- TASK-020-2 must establish file and directory byte limits.
-- TASK-020-3 must verify one sink and container log caps across the required deployments.
-- TASK-020-4 must verify the soak guardian's log-growth budgets.
+- The node file sink keeps each log file at or below 100 MiB and its log directory at or below 2 GiB.
+- Each required deployment selects one node log sink, and each container log is capped at three files of 100 MiB.
+- The soak guardian stops the run when a node log directory or a container log exceeds its budget.
 
 **Verification Boundary:**
 
@@ -90,7 +90,7 @@ TASK-020-2 has [local file-budget verification](work-logs/task-020-2-byte-bounde
 The file sink defaults to 100 MiB per file and 2 GiB across its log directory.
 
 TASK-020-3 has [local deployment checks](work-logs/task-020-3-deployment-log-caps-20260930.md) for single sinks and container caps.
-The external single-sink correction remains open because system-integration still selects both sinks.
+The external single-sink correction merged into system-integration `dev` through PR #146 at `ccd717195`.
 TASK-020-4 still requires guardian enforcement.
 Integration-test references remain empty until actual deployment tests exist. No generated specification is treated as executed evidence.
 

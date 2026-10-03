@@ -1,6 +1,6 @@
 # Transport resource review after the bootstrap log incident
 
-**Status:** TASK-020-1 passed hosted transport regression verification and strict completion. TASK-020-2, TASK-020-3, TASK-020-4, and full resource qualification remain open.
+**Status:** TASK-020-1 passed hosted transport regression verification and strict completion. TASK-020-2 and TASK-020-3 are complete. TASK-020-4 and full resource qualification remain open.
 
 Earlier sections retain their original results and limitations. The final section records the approved linkage repair and task closure.
 
