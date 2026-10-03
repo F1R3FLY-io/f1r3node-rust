@@ -225,7 +225,12 @@ impl F1r3flyServer {
                 let accepted = tokio::select! {
                     biased;
                     _ = tx.closed() => break,
-                    Some(_) = handshakes.join_next(), if !handshakes.is_empty() => continue,
+                    Some(joined) = handshakes.join_next(), if !handshakes.is_empty() => {
+                        if let Err(e) = joined {
+                            tracing::warn!("TLS handshake task ended abnormally: {e}");
+                        }
+                        continue;
+                    }
                     accepted = tcp_listener_stream.next() => accepted,
                 };
 
