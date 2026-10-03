@@ -630,3 +630,170 @@ The area README and both claim files changed in this recording, so their digests
 
 The soak field in both claim files is outside the acceptance and stays as recorded. TASK-019-2 and TASK-019-4 are complete.
 
+## Merged-source cycle: e4d97bb83
+
+This cycle verifies the merged working tree above `e4d97bb8356996a9371d6f54b6d9c05afe6378cb`. It creates no commit or merge.
+
+The harness session ported the source, proof, driver, and claim changes of this cycle onto the node branch on 2026-09-23. The prefix parser keeps the node branch design from `03d7f1b27`. The node records and the package remain pending.
+
+The earlier `casper-node-claim-gate-8789c1c3e-01` package was absent. The package for this cycle was withheld from the tree because it carried bulk logs and home-directory paths. The node session regenerates it under the evidence retention rule.
+
+### Changes
+
+`InterfaceSafety` adds conditional proofs for directory admission, peer identity, socket cleanup, awaited shutdown, and deadline admission.
+
+`CaptureIntegrity` adds complete-row proofs, a logical framing proof, and scratch-store isolation proofs. The formal gate now requires 25 closed assumption sets.
+
+The new Rust checks cover all 4,096 leaf permission values, peer mismatches, socket identity fields, expired writes, and awaited shutdown.
+
+The canonical reader independently decodes four capture cases. Scratch checks compare allocation identities and test frontier mutation isolation.
+
+The binding driver now runs the observer and capture suites. It also requires every test in `bindings.json` to report success.
+
+B8 now names the retained `generation_change_after_validation_rejects_capture` regression. The merged branch already contained that test.
+
+### Verification
+
+The bounded TLA gate passed 16 positive configurations and 88 expected violations. The node subset contains two positive configurations and 17 controls.
+
+The TLA fixture passed all 88 controls. The formal gate fixture passed 47 exact-exit refusal controls.
+
+The full Rocq gate passed with Rocq 9.1.1. All 25 node theorem exports have closed assumption sets.
+
+The final isolated Linux run passed 330 tests. One helper test is ignored by the test runner and invoked by its cross-process parent.
+
+Strict Clippy, the workspace check, formatting, and source identity comparisons passed. The driver retains separate identities for raw and debug-stripped observer executables.
+
+All nine Kani harnesses passed with Kani 0.67.0 and CBMC 6.8.0 on ARM64 Linux. The compiler uses the 2025-11-21 nightly.
+
+Kani checks the production prefix parser and compressed-length preflight. Public paths retain native tests for allocation, diagnostic formatting, and complete decoding.
+
+The prefix refactor preserves public errors and return values. The block decoder calls the extracted preflight before varint decoding or decompression.
+
+Kani 0.68 produced a compiler error and stalled on allocation paths. Retained logs also record the disk exhaustion and the unsuccessful solver attempts.
+
+### Limits
+
+The filesystem proofs assume accurate metadata and a stable namespace under trusted owners. Cleanup can still fail if unlink fails.
+
+Deadline proofs depend on the lock library, monotone clocks, and cooperative scheduling. They do not establish operating-system latency bounds.
+
+The canonical theorem covers logical framing. Complete refinement of the Rust wire schema remains pending, including every field and collection representation.
+
+The five proposed finite-domain classifications remain unaccepted. Both claims and all ledger tiers remain pending until the required evidence and named review exist.
+
+The existing workflow and TLA gate governance records keep their prior claim identities. The regenerated package will supply separate node claim views for those files.
+
+The six remaining STE findings occur in unchanged prose. The new and revised prose received a separate sentence-length review.
+
+## Merged-source cycle 02: 00f91ca11
+
+This cycle refreshes the verification evidence at the merged revision `00f91ca11fd1153183818cde605d7d19eea00a7f`. The harness session ran it on 2026-09-23 while the node session worked on B11.
+
+The node branch refreshed its own records at `78d696ea6` in parallel. That package, `casper-node-claim-gate-78d696ea6-01`, is not merged into this branch. The next merge must reconcile the two record sets.
+
+### Refutation tier
+
+The bounded gate ran alone on a clean export of the execution base. It passed 16 clean configurations and 88 expected violations with exit zero.
+
+Both node models passed: `MC_ObserverSession` with 689 distinct states and `MC_BoundedCapture` with 10,066 distinct states. All 17 node controls exited 12 on their named invariants.
+
+The hosted full tier in run 35895550078 passed 31 clean configurations and 88 expected violations. The registry fixture passed all 88 controls in a separate run.
+
+A first attempt ran the fixture and the gate at the same time. The fixture overwrote eleven shared TLC logs, so the gate misclassified eleven controls. The recorded run avoids that overlap.
+
+### Construction tier
+
+Local Rocq execution was not possible. Docker Desktop routes container traffic through a TLS-intercepting proxy, so apt and opam cannot install Rocq inside a container.
+
+The hosted Rocq job in run 35895550078 ran `scripts/ci/check-formal-invariants.sh --rocq` with Rocq 9.2.0 from opam. It passed with 36 closed assumption sets across four projects, including all 25 node exports.
+
+The formal gate fixture passed 47 exact-exit refusal controls locally.
+
+### Binding tier
+
+The hosted binding driver built the shared, block-storage, and node test targets on x86_64. It then stopped at its strip-equivalence check before any test executed.
+
+The cause is a binutils detail. After `objcopy --strip-debug`, the `.init_array` EntSize field changes from 00 to 08, and the driver compares that column. The same defect made the node branch's own binding job fail before the port.
+
+The rocq-build job with the wire correspondence check was not created, because it needs the binding job. The retained artifact holds the build logs, the input digests, and the section tables.
+
+Native macOS runs of the shared and block-storage suites passed 303 tests and failed 4. The four failures are the known `/private/var` path comparisons that PR #447 corrects. The node observer suites are Linux-only.
+
+Kani did not run in this cycle. The eight recorded harnesses keep their prior results from the handoff cycle.
+
+Lint with warnings denied and formatting passed on the clean export.
+
+### Records and package
+
+The package `casper-node-claim-gate-00f91ca11-01` keeps four compact files. The 58 scoped records now pin the merged revision, the refreshed claim digests, and this package. Two new records cover `InterfaceSafety.v` and `CaptureIntegrity.v`.
+
+The strict audit returned exit 4 before the refresh with the two new modules unrecorded. It is expected to return exit 4 after the refresh with all 62 mandatory records pending.
+
+Both claims remain pending. Acceptance still needs named maintainer review, the B11 canonical-schema construction, and a hosted binding run after the driver correction.
+
+## Hosted binding strip correction
+
+The hosted section tables differ only in the `.init_array` entry size, from `00` to `08`. Their program segments and section-content hashes match.
+
+The driver now normalizes zero entry sizes for `PREINIT_ARRAY`, `INIT_ARRAY`, and `FINI_ARRAY` to the ELF pointer width. Other entry sizes remain checked.
+
+The [ELF specification](https://gabi.xinuos.com/elf/09-dynamic.html#initialization-and-termination-functions) defines these arrays as function pointers. Dynamic entries supply their addresses and total sizes.
+
+The driver retains original section headers and compares normalized allocated-section metadata, program segments, and section-content hashes. It rejects empty allocated-section inventories.
+
+The new fixture builds a Rust executable and reproduces the original entry-size mismatch with GNU objcopy. Both original and stripped executables run successfully.
+
+Twelve controls alter code bytes, array bytes, flags, sizes, alignment, entry sizes, program flags, or the entry point. Each control requires exit one.
+
+CI runs the fixture before the binding driver. Both claim inventories include the fixture, and both claims remain pending.
+
+The native ARM64 Linux binding driver passed 332 tests and two B11 export tests. The strip fixture rejected all twelve mutations.
+
+Actionlint and all 47 formal gate refusal controls passed. The first binding rerun failed during linking because the container disk was full.
+
+The rerun passed after disposable incremental build cache was removed. Retained logs are under `target/strip-equivalence-fix/`.
+
+The hosted x86_64 rerun and combined evidence refresh remain pending. This correction changes no claim acceptance status.
+
+## Combined B11 evidence cycle 03: 38e576041
+
+The current package is `docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json`. Its execution base is `38e57604187feab97cb45f000f95270b12a9f8bf`.
+
+Both node projects pass local and hosted Rocq checking. The gate checks 25 parent exports and eight B11 exports, with 33 closed assumption sets.
+
+The complete formal gate checks 44 closed assumption sets across five projects. The package lists every node export and retains the kernel logs.
+
+B11 verifies 75 production wire cases and six rejection controls. These finite cases do not establish universal refinement of the Rust implementation.
+
+The local bounded TLA gate passes 16 configurations and 88 expected violations. Hosted run 35906410283 passes 31 configurations and the same controls.
+
+Both node models pass, with all 17 node controls. Earlier local attempts failed because of the Java environment and sandbox socket restrictions.
+
+The hosted x86_64 and native ARM64 binding drivers each pass 332 tests and two B11 export tests. One ignored helper executes through its parent test.
+
+The hosted strip fixture rejects all 12 executable mutations. The formal gate fixture passes 47 refusal controls.
+
+Kani 0.67.0 and CBMC 6.8.0 verify all eight harnesses in the current source. The package records symbolic inputs, prefix bounds, assumptions, and compiler flags.
+
+The Kani compiler uses nightly-2025-11-21 on ARM64 Linux. Explicit AES and NEON configuration permits dependency compilation without disabling verification checks.
+
+Kani does not verify complete decompression, allocation behavior at arbitrary sizes, or the complete observer. Native tests and conditional model proofs retain their separate scopes.
+
+The package retains unsuccessful Kani setup attempts. The earlier nine-harness result describes a different source revision and does not supply this cycle's count.
+
+The hosted binding, TLA, Rocq correspondence, and formal gate jobs all pass. Other workflow jobs do not determine these node claim results.
+
+The current inventory contains 81 artifacts, including 70 mandatory artifacts. The refresh updates 60 node records and creates eight records for B11 and the strip fixture.
+
+The workflow and TLA gate keep their primary governance records. The package supplies separate node registration views for those two files.
+
+Source hashes bind the current files. Changes after execution affect claim text, the applicability table, and binding metadata only.
+
+The package retains the original execution manifests and identifies those metadata differences. Every tested Rust, proof, model, and driver file matches its execution source.
+
+The strict audit returns exit four with 70 pending records and no missing records. A separate digest check verifies artifact, claim, and report identities.
+
+Both claims remain pending. Acceptance requires named maintainer review of applicability decisions, conditional assumptions, and the sufficiency of finite Rust correspondence.
+
+Bulk logs and previous records remain in the ignored archive named by the report. No claim acceptance, commit, or push occurs in this cycle.

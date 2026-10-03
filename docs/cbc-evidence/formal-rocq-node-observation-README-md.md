@@ -1,6 +1,8 @@
 # CbC Evidence: formal/rocq/node_observation/README.md
 
-The approved verification artifact is pending implementation and verification.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -15,7 +17,8 @@ The approved verification artifact is pending implementation and verification.
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-001"
+    "CLAIM-CASPER-NODE-OBSERVATION-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
     "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38"
@@ -37,6 +40,7 @@ The approved verification artifact is pending implementation and verification.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "formal/rocq/node_observation/README.md",
     "path": "docs/cbc-evidence/formal-rocq-node-observation-README-md.md",
     "sha256": "0abe16c9a4c56dc52d002d0ff0ae5060ec148b4a747d785799969f0f0d4a085d",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

@@ -1,16 +1,16 @@
 # CbC Evidence: scripts/ci/test-check-tla-invariants.sh
 
-The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9839b0e` on 2026-10-01 (PR #447, comment 5924422936). This record is discharged for the Batch E bytes of the file. The registration gap stays recorded in `registration_gap`.
+The merge `c9ca12821` combined the changes of both branches to this script. This record is pending for the merged bytes. The earlier accepted or verified version is in `previous_record`.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/test-check-tla-invariants.sh",
     "id": "scripts-ci-test-check-tla-invariants-sh",
-    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "commit": "c9ca128214ce137708f852cdc252840e217df7a2",
     "commit_is_base": true,
     "working_tree": false,
-    "sha256": "ac647001494500c87fdff20b5c1743508e643fab96cc41505b15762fbf7b8c00",
+    "sha256": "a17031a06f349c91dc877cf1acff173b84eddb2d3637b93360fc93a5194e5654",
     "sha256_at_registration": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
     "sha256_before_refresh": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
     "sha256_before_verification_refresh": "ac647001494500c87fdff20b5c1743508e643fab96cc41505b15762fbf7b8c00"
@@ -24,27 +24,25 @@ The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9
     "docs/claims/casper-node-fork-choice-observation.md": "c007214aad05afbcd100c0e37fd18b166463147b5fa2e1e797743ab814b15a49",
     "docs/claims/casper-node-display-projection.md": "6310f626415a6ba2d1250e2d656fdcb576415c6153deda1a26da55c617b8faad"
   },
-  "status": "discharged",
-  "scope": "batch-e-acceptance-01",
+  "status": "pending",
+  "scope": "stack-merge-refresh-20261001-01",
   "previous_record": {
     "artifact": "scripts/ci/test-check-tla-invariants.sh",
     "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
-    "sha256": "fc43bf19189b617169c580510201a2372ba9db82c3415ef4032580da66939386",
-    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f"
+    "sha256": "c11b46b862dc89d091e545c4b36133dec7d96c78be14fb9aa4ad3f863ec966ab",
+    "commit": "c9ca128214ce137708f852cdc252840e217df7a2",
+    "status": "discharged",
+    "scope": "batch-e-acceptance-01"
   },
-  "evidence": {
-    "kind": "tiered-evidence-accepted",
-    "ref": "docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/report.json",
-    "sha256": "52f766491135dcf59b72d935e8ef697251fba1cebbe2a5d3f11ae5d47f87393a"
-  },
+  "evidence": null,
   "tiers": {
-    "refutation": "recorded",
-    "construction": "recorded-partial",
-    "binding": "recorded"
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "pending"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-10-01T03:59:08+00:00",
+  "verified_at": null,
   "previous_refresh_record": {
     "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
     "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
@@ -72,12 +70,6 @@ The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9
     "binding": "named-source-tests-passed-not-refinement",
     "adapter_discharge": false
   },
-  "acceptance": {
-    "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-005",
-    "accepted_by": "jltatbeach",
-    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
-    "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
-    "reviewed_at": "2026-10-01T03:56:25Z"
-  }
+  "refresh_reason": "The merge c9ca12821 of feature/casper-node-observation into formal/soak-casper-consensus combined the changes of both branches to this script. The accepted record applies to the earlier bytes only."
 }
 ```

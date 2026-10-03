@@ -22,6 +22,7 @@ The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-004 at revision `3ab
     "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940"
   },
   "previous_record": {
+    "artifact": "node/src/rust/soak_observer.rs",
     "path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md",
     "sha256": "40056a192ee92617fda09d8f2953ff76371eb1dabb20e51e89cec46738466d76",
     "commit": "2d4af9134db60ff1393442e844e313be9e907813",

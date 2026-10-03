@@ -96,6 +96,34 @@ Integration-test references remain empty until actual deployment tests exist. No
 
 ---
 
+
+### FLOW-001: Verify Casper harness evidence
+
+**Status:** In Progress
+**Implemented in:** EPIC-017
+**Related Stories:** US-006
+**Related Flows:** None
+**Personas:** release engineer
+**Integration Tests:** None
+
+**Journey:** Pin inputs -> Run controls -> Run isolated fixtures -> Audit claims
+
+**Steps:**
+1. **Pin inputs** - Record exact source, executable, fixture, and configuration identities.
+2. **Run controls** - Check the clean model and each named negative control.
+3. **Run isolated fixtures** - Exercise the real driver with controlled processes and retain all outcomes.
+4. **Audit claims** - Check claim identities, source digests, phase evidence, and remaining gaps.
+
+**Key Interactions:**
+- A changed manifest cannot resume an existing run.
+- A terminal transition cannot admit another workload.
+- Incomplete evidence cannot produce a passing soak verdict.
+
+**Success Metrics:**
+- Every registered invocation has a matching exit record.
+
+---
+
 ## Planned Flows
 
 No planned flows are defined.

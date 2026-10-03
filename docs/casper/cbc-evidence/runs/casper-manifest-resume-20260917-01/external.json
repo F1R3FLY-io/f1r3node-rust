@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-manifest-resume-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-manifest-resume-20260917-01.external.tar.gz",
+   "sha256": "6c0bdbc69ed731ca91aa9dc5d6a3e9e4275c69e2c6356c0f86ce1fcb4b34cb15",
+   "bytes": 416447,
+   "members": 4,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

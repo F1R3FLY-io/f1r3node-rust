@@ -1,6 +1,8 @@
 # CbC Evidence: formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg
 
-The approved verification artifact is pending implementation and verification.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -36,6 +38,7 @@ The approved verification artifact is pending implementation and verification.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-cfg.md",
     "sha256": "aa444f5a654e27a2175f961cf982208c371526b34669e11f7a3901b4d09e5858",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

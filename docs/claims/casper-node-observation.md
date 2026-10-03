@@ -38,11 +38,13 @@ artifacts:
   - formal/rocq/node_observation/_CoqProject
   - formal/rocq/node_observation/README.md
   - formal/rocq/node_observation/theories/ObserverSession.v
+  - formal/rocq/node_observation/theories/InterfaceSafety.v
   - formal/rocq/node_observation/theories/MainTheorem.v
   - scripts/ci/check-tla-invariants.sh
   - scripts/ci/test-check-tla-invariants.sh
   - scripts/ci/check-formal-invariants.sh
   - scripts/ci/check-node-observation-bindings.sh
+  - scripts/ci/test-check-node-observation-bindings.sh
   - .github/workflows/slashing-tests.yml
 refutation: recorded
 construction: recorded-partial
@@ -186,9 +188,13 @@ This reconciliation does not establish complete Rust correspondence or claim acc
 
 The TASK-019-4 handoff cycle on 2026-09-23 added incarnation-qualified tokens to the `ObserverSession` Rocq module. Tokens from distinct incarnations never match, and replay refusal holds within one incarnation.
 
-Incarnation distinctness is an assumption about UUID generation at observer start, not a theorem. Properties 5 and 6 have recorded theorems, property 7 has theorems for the budget counter only, and properties 1, 2, 8, and 10 carry proposed bounded-by-design classifications.
+Incarnation distinctness remains an assumption about UUID generation at observer start. Properties 5 and 6 have recorded theorems.
 
-The session oracle test and the repeated-entropy tests remain the binding evidence for challenge allocation. Properties 3, 4, and 9 keep construction gaps that were accepted as recorded, with Rust tests only.
+Property 7 has counter proofs and a conditional write-deadline proof. Properties 1, 2, 8, and 10 retain proposed bounded-by-design classifications.
+
+The session oracle test and the repeated-entropy tests provide binding evidence for challenge allocation. Properties 3, 4, and 9 have conditional construction proofs and Rust tests.
+
+The acceptance at `4c0c0dbe7` recorded properties 3, 4, and 9 as construction gaps accepted as recorded. The conditional proofs added after that revision await named maintainer review.
 
 The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. The named maintainer reviewed each decision and accepted this claim on 2026-09-23 in PR #447 review 5294038948 at revision `4c0c0dbe7`. The soak field is outside that acceptance and is unchanged.
 
@@ -201,3 +207,17 @@ Verify disabled behavior and existing configuration regressions. Verify that sou
 Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance were recorded on 2026-09-23.
 
 This work does not change the harness claims, approve a campaign, publish images, or merge a pull request.
+
+## Merged-source verification
+
+The current package is [casper-node-claim-gate-38e576041-01](../cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json). It records the combined B11 and strip-correction verification cycle.
+
+The checkout did not contain the previously named `casper-node-claim-gate-8789c1c3e-01` package. This cycle supplies new evidence instead of reconstructing that missing result.
+
+The two node projects export 33 construction results. The [proof correspondence](../../formal/rocq/node_observation/README.md#boundary-correspondence) states their assumptions and limitations.
+
+The binding driver now includes the shared and block capture suites. It also runs the retained lock deadline and generation-change regressions.
+
+B11 records byte-schema proofs and finite Rust correspondence. A universal Rust refinement proof remains outside this evidence.
+
+All applicability decisions, source correspondence, and both claims still require named maintainer acceptance.

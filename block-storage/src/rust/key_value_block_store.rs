@@ -32,6 +32,17 @@ impl BlockDecodeLimits {
         }
         Ok(())
     }
+
+    fn check_compressed_length(&self, observed: usize) -> Result<(), SnapshotError> {
+        if observed > self.max_compressed_bytes {
+            return Err(SnapshotError::LimitExceeded {
+                kind: "compressed block bytes",
+                limit: self.max_compressed_bytes,
+                observed,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -323,13 +334,7 @@ impl KeyValueBlockStore {
         use prost::encoding::decode_varint;
 
         limits.validate()?;
-        if bytes.len() > limits.max_compressed_bytes {
-            return Err(SnapshotError::LimitExceeded {
-                kind: "compressed block bytes",
-                limit: limits.max_compressed_bytes,
-                observed: bytes.len(),
-            });
-        }
+        limits.check_compressed_length(bytes.len())?;
         let mut cursor = Cursor::new(bytes);
         let declared = decode_varint(&mut cursor).map_err(|err| {
             SnapshotError::Malformed(format!("block length prefix is not a varint: {err}"))
@@ -1206,5 +1211,26 @@ mod kani_proofs {
             && limits.max_decompressed_bytes > 0
             && limits.max_expansion_ratio > 0;
         assert_eq!(limits.validate().is_ok(), positive);
+    }
+
+    #[kani::proof]
+    fn compressed_input_preflight_is_exact() {
+        let limits = BlockDecodeLimits {
+            max_compressed_bytes: kani::any(),
+            max_decompressed_bytes: kani::any(),
+            max_expansion_ratio: kani::any(),
+        };
+        let len: usize = kani::any();
+        match limits.check_compressed_length(len) {
+            Err(SnapshotError::LimitExceeded {
+                limit, observed, ..
+            }) => {
+                assert!(len > limits.max_compressed_bytes);
+                assert_eq!(limit, limits.max_compressed_bytes);
+                assert_eq!(observed, len);
+            }
+            Ok(()) => assert!(len <= limits.max_compressed_bytes),
+            _ => panic!("The compressed length check returned an unrelated error."),
+        }
     }
 }

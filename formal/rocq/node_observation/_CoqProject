@@ -1,4 +1,6 @@
 -Q theories NodeObservation
 theories/ObserverSession.v
 theories/BoundedCapture.v
+theories/InterfaceSafety.v
+theories/CaptureIntegrity.v
 theories/MainTheorem.v

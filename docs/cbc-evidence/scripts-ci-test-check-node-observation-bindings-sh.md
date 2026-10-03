@@ -1,40 +1,43 @@
 # CbC Evidence: scripts/ci/test-check-node-observation-bindings.sh
 
-The isolated Linux regression accepts normalized strip output and refuses twelve executable mutations.
-The [report](runs/node-observation-ci-refresh-20260930-01/report.json) records the source identities and verification limits.
-The new artifact requires claim-inventory review and named maintainer acceptance.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/test-check-node-observation-bindings.sh",
     "id": "scripts-ci-test-check-node-observation-bindings-sh",
-    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+    "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
     "commit_is_base": true,
-    "working_tree": false,
+    "working_tree": true,
     "sha256": "1841a3861695d32b89f511624af3f4057faed3f82422ed6389230c7fbdc60fa7"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-001"
+    "CLAIM-CASPER-NODE-OBSERVATION-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
-  "status": "pending",
-  "scope": "agent-b-ci-correction-refresh-20260930-01",
-  "adapter": null,
-  "evidence": {
-    "kind": "source-bound-hosted-checks-and-elf-mutation-controls",
-    "ref": "docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json",
-    "sha256": "7e844fe3c4dfb287de00c093d355ceddf3cbb32209c699577b00eb3b5092bbb3"
+  "claim_digests": {
+    "docs/claims/casper-node-observation.md": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6",
+    "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
   },
-  "verification_status": "recorded",
-  "acceptance_status": "pending",
+  "adapter": null,
+  "status": "pending",
+  "scope": "task-019-4-combined-b11-cycle-03",
+  "evidence": {
+    "kind": "tiered-evidence-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+    "sha256": "785a7188828a9aa0688dc28cfdac0303937f592f47d47e082d1ba752131c2e3e"
+  },
+  "tiers": {
+    "refutation": "recorded",
+    "construction": "recorded-partial",
+    "binding": "recorded-partial"
+  },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-30T04:44:34.480367+00:00",
-  "limits": "The report states the verification limits. Earlier acceptance does not cover the corrected source.",
-  "claim_digests": {
-    "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38"
-  },
-  "claim_registration_status": "pending claim-inventory review"
+  "verified_at": null
 }
 ```

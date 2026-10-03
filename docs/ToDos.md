@@ -24,7 +24,7 @@ This document tracks implementation work through **epics** (logical groupings of
 
 ## Active Coordination
 
-- **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) defines the handoff, separate completion gates, and deferred-policy restrictions.
+- **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
      entries that previously accumulated at the top of this file; the full
@@ -218,10 +218,14 @@ tasks:
       - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-10-02T15:30:00Z
+    mirrored_as: TASK-017-17
+    design: docs/casper/design/soak-log-budget-guardian.md
     owner_branch: formal/soak-casper-consensus
-    blocked_by: [TASK-020-1, TASK-020-2]
+    blocked_by: []
+    blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
     acceptance:
       - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
       - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
@@ -1535,20 +1539,54 @@ tasks:
     candidate_review_note: "Current dev b465313a2 has no matching published candidate tag. CI run 35677113121 failed the amd64 subprocess validator lifecycle test and skipped image release. Verified candidate pins still cover 6940a5beb."
     readiness_evidence: docs/casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json
     integration_fix_evidence: docs/casper/cbc-evidence/runs/casper-integration-timeout-fix-20260922-01/report.json
-    integration_fix_status: "The validator lifecycle timeout fix is applied locally in system-integration. All 39 targeted tests pass. Publication, suite pin updates, and hosted verification remain pending."
+    integration_fix_status: "PR #450 merged to dev at 0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2. This checkout inherits the three suite pins. The candidate matrix now records the inherited suite revision and configuration digest."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
     claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "PR #447 remains open at 4561e064a. TASK-019-4 reports missing formal evidence and a new B1 lock-wait finding. Batch B2 planning waits for source-bound verification and named maintainer acceptance. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
+    node_interface_status: "This checkout includes Batch B2 and its recorded claim acceptances through merge 211a4e73a. Selected candidate qualification remains pending. Occurrence-dependent publication qualification belongs to EPIC-018."
+    observer_client_claim: docs/claims/casper-authority-observer-client.md
+    observer_client_evidence: docs/casper/cbc-evidence/runs/casper-authority-client-20260928-01/report.json
+    observer_client_status: "The Linux observer client passes nine controlled tests. Eight mapping tests and ten process receipt tests also pass on Linux. Native client and synthetic profile regressions pass. Candidate qualification remains pending."
+    authority_adapter_claim: docs/claims/casper-authority-adapter.md
+    authority_adapter_evidence: docs/casper/cbc-evidence/runs/casper-authority-adapter-20260928-01/report.json
+    authority_adapter_status: "The client retains exact numeric mappings, separate oracle and persisted observations, and raw work counters. The owned subprocess recorder verifies pause and restart evidence. Controlled verification passes. The live profile remains blocked."
+    live_mapping_evidence: docs/casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/report.json
+    live_mapping_review: docs/work-logs/task-017-12-mac-continuation.md#authority-interface-mapping-correction-2026-09-28
+    live_interface_gaps: "The source mapping is complete. The observer lacks paired fork-choice heads and captured equivocation inputs for display projection. These additions belong to EPIC-019. Existing providers support ordinary pause and restart. Their receipts belong to this task."
+    executable_binding_evidence: docs/casper/cbc-evidence/runs/casper-authority-execution-20260928-01/report.json
+    executable_binding_status: "All nine scenario kinds execute through the production generator, receipt binding, collector, and classifier with controlled providers. Claim002 requires renewed acceptance. Live qualification remains pending."
+    live_executor_claim: docs/claims/casper-authority-live-executor.md
+    live_executor_evidence: docs/casper/cbc-evidence/runs/casper-authority-live-20260928-01/report.json
+    live_executor_guide: docs/casper/design/authority-live-executor.md
+    live_executor_status: "The executor selects the captured head for the member evaluator. The isolated Linux run passes 13 executor, 13 mapper, and 9 observer tests. Candidate qualification and campaign admission remain pending."
+    node_interface_mapping_evidence: docs/casper/cbc-evidence/runs/casper-node-interface-adapter-20261001-01/report.json
+    node_interface_mapping_work_log: docs/work-logs/task-017-12-node-interface-20261001.md
+    live_provider_evidence: docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json
+    live_provider_guide: docs/casper/design/authority-provider-adaptation.md
+    live_provider_status: "The Rust driver submits pinned blocks through the production TLS transport. Owned process receipts connect pause and restart to captures. Explicit successor enrollment supports random node incarnations. Candidate qualification remains pending."
+    live_executor_security_review:
+      status: assessed_false_positive_pending_maintainer_review
+      review: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#discussion_r4128609240"
+      alert: "https://github.com/F1R3FLY-io/f1r3node-rust/security/code-scanning/41"
+      finding: "CodeQL reports a hard-coded cryptographic value at authority_live.rs:769, where capture_attempt starts at zero."
+      source_review: "The counter contributes to a request ID through the execution digest. The normal executor supplies fresh entropy in execution_nonce."
+      remaining: "Obtain maintainer review of the full SARIF trace and supported correlation-identifier assessment. The remote alert remains open. Caller-supplied nonces have no global freshness guarantee."
+      access_limit: "The earlier API query returned HTTP 403. The authenticated read on 2026-10-01 retrieved alert 41 and SARIF analysis 1871610769."
+      work_log: docs/work-logs/task-017-12-node-interface-20261001.md#codeql-review
+    live_mapping_remaining: "The mapper retains paired heads, separate display inputs, and named work paths. Prepare candidate block histories and captured input exports. Qualify exact traversal measurements and the live provider. Docker fault receipts remain unimplemented."
+    candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
+    candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
     execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
     hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json
+    control_renewal_evidence: docs/casper/cbc-evidence/runs/casper-campaign-renewal-20260928-01/report.json
+    control_renewal_status: "Current-source verification passes 133 planner checks, 32 controller tests, three model-runner tests, and 16 isolated Linux reservation tests. The model and five negative controls pass. The workflow evidence digest is refreshed. Acceptance and live qualification remain pending."
     source_coverage_evidence: docs/casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json
     stability_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json
     publication_gate: "Deferred to EPIC-018 after this branch merges and PR #216 integrates. This is not a PR #216 dependency for this branch."
@@ -1561,27 +1599,51 @@ tasks:
     execution_control_status: "Hosted run 35752941906 passes at 58e952c6f. The archive digest and all 51 source hashes match. It covers the stability and phase changes. Deployment, timing qualification, live execution, and acceptance remain pending."
     github_access_status: "Explicit GITHUB_PERSONAL_ACCESS_TOKEN selection verifies all six reviewer roles. Default GITHUB_TOKEN selection still returns HTTP 403 for role queries. The authorized campaign environment is configured and its branch restriction is verified."
     github_environment_evidence: docs/casper/cbc-evidence/runs/casper-campaign-environment-20260922-01/report.json
-    compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
+    compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. Claims001 and 002 now remain pending. Claim002 preserves its historical acceptance."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003, CLAIM-CASPER-AUTHORITY-CLIENT-001, CLAIM-CASPER-AUTHORITY-ADAPTER-001, CLAIM-CASPER-AUTHORITY-LIVE-001]
     claim_index: docs/claims/casper-soak-harness.md
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md
     status: in_progress
-    claimed_by: pi-soak-carrier-index-linux
-    claimed_at: 2026-09-19T19:20:00Z
-    previous_claimed_by: claude-session-9f19b46c
-    previous_claimed_at: 2026-09-19T06:35:51Z
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-10-01T06:00:00Z
+    claim_chain: ["pi-soak-carrier-index-linux (to 2026-09-28)", "codex-task-017-12-20260928 (2026-09-28 to 2026-10-01)", "pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa (2026-10-01, mapping slice 2bfd6d88d)", "claude-session-f3cbc961 (from 2026-10-01)"]
+    claim_transfer: "The user transferred the task to the Batch E owner on 2026-10-01. The EPIC-019 prerequisites TASK-019-3 and TASK-019-4 are complete, and the merge c9ca12821 brings the paired fork-choice observation (claim 004) and the detached display projection (claim 005) to this branch."
+    handoff_2026_10_01_from_agent_b:
+      delivered: "Commit 2bfd6d88d: separate display and oracle digests, paired evaluator heads, named fork-choice work paths, captured display metadata, live snapshot head selection. 35 isolated Linux tests and 12 host profile tests passed. Report docs/casper/cbc-evidence/runs/casper-node-interface-adapter-20261001-01/report.json."
+      codeql_alert_41: "Assessed as a false positive: the retry counter at authority_live.rs:769 feeds a request identifier, not a key or nonce. The remote alert stays open. Maintainer review pending."
+      work_log: docs/work-logs/task-017-12-node-interface-20261001.md
+    critical_path_2026_10_01:
+      finding: "ci.yml publishes node images only on pushes to dev, master, or a v tag. No candidate image contains the observer (claims 004 and 005) until PR #451 and PR #447 merge to dev. The matrix pins node 6940a5beb, which predates the observer."
+      order: "PR #451 to dev, PR #447 to dev (TASK-019-6), dev image publication (TASK-019-7), candidate repin and workload pin, controlled and live qualification, maintainer acceptance, preflight and baselines (user dispatch)."
+      controlled_preparation: "A local image from node/Dockerfile on this branch supports the authority_finality workload pin, the captured input exports, the candidate block histories, and the exact traversal qualification in controlled mode. It is not an immutable candidate identity."
+    controlled_preparation_2026_10_01:
+      evidence: docs/casper/cbc-evidence/runs/casper-controlled-preparation-009262781-01/report.json
+      evidence_sha256: 0fd60687d7dc5e1d2933e7099ad3dc0b75e61d2d5868d015213428ae043a8647
+      status: controlled-pinned-unqualified
+      result: "A release build of 009262781 ran in a Linux container. The owner launched a non-validator target node. The p2p driver delivered a 5-block single-validator history. Two manual captures and a 4-operation casper-authority-live run (4 receipts, 8 captures, zero errors) show the paired heads, the display projection, and the equivocation capture end to end. The executor status is incomplete because the p2p driver reports unknown and exports no observed inputs."
+      adapter_findings: "C1 owner-only observer access, C3 non-validator target, C4 capture not synchronized with block processing, C5 applied path needs a driver with input exports, C9 clear the observer directory before each launch."
+      qualifies_candidate: false
+      work_log: docs/work-logs/task-017-12-node-interface-20261001.md#controlled-preparation-results-on-2026-10-01
+    handoff_scope_2026_10_01:
+      agent_now: "Map the Batch D fields (fork_choice bounded and reference heads, comparison, work paths 4 and 5) and the Batch E fields (display inputs, display projection, equivocation capture) in the harness profile. Prepare candidate block histories and captured input exports. Qualify the provider in controlled tests. Triage the CodeQL finding at authority_live.rs:769."
+      user_decisions: "OCI runner dispatches (two 24-hour baselines, the 60-hour campaign), the authoritative OCI object and supervisor provisioning, and live admission stay with the user. No dispatch follows from this transfer."
+      critical_path: "TASK-017-13 reviews this task's evidence. TASK-017-14 and TASK-017-15 chain behind it."
+    previous_claimed_by: pi-soak-carrier-index-linux
+    previous_claimed_at: 2026-09-19T19:20:00Z
     handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
     execution_scope: "Qualify the pre-merge candidate capabilities under the corrected campaign phase boundary. This branch merges before PR #216 integrates. Occurrence-dependent publication and recovery qualification belong to EPIC-018. A passing preflight must precede both full baselines."
     repin_tool: scripts/ci/resolve-dev-candidate.sh
     dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
-    blocked_by: [TASK-019-3, TASK-019-4]
+    blocked_by: [TASK-019-6, TASK-019-7]
+    blockers_cleared: "TASK-019-3 and TASK-019-4 complete and accepted on 2026-09-23. The EPIC-019 observer additions landed on this branch in c9ca12821."
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
-      - "Pin executable workloads and accept the refreshed campaign model inventory. All 225 model hashes and four configuration hashes match. Recheck candidate identities before dispatch."
+      - "Qualify a live executor against the selected node with the implemented receipt binding. Client, adapter, and renewed Claim002 acceptance remain pending."
+      - "Pin executable workloads and accept the refreshed campaign inventory. All 225 model hashes and four configuration hashes match after suite reconciliation."
       - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
       - "Hosted run 35752941906 covers the published stability and phase changes at 58e952c6f. The campaign workflow still requires qualification against deployed services."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
@@ -1612,9 +1674,18 @@ tasks:
     title: "Close pre-merge CbC scope and hand off post-merge obligations"
     claim_index: docs/claims/casper-soak-harness.md
     status: in_progress
-    claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
-    claimed_at: 2026-09-21T14:31:52Z
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-28T20:30:00Z
+    previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    previous_claimed_at: 2026-09-21T14:31:52Z
+    claim_transfer_note: "The maintainer assigned this task to claude-session-f3cbc961 on 2026-09-28 for work in parallel with TASK-017-12. The two tasks commit together."
     execution_scope: "Deliver the independent formal gate on dev and verify the approved protection change. Review TASK-017-12 evidence before final handoff acceptance."
+    current_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260928-01/report.json
+    current_review_status: "The review at 211a4e73a covers 181 changed mandatory artifacts. The default gate reports 50 gaps and the Casper-directory diagnostic reports 61. Both gates exit 4. Claim001 is pending and seven profile claims are discharged."
+    gap_owners: "TASK-017-12 owns 38 gaps in campaign artifacts. EPIC-019 owns 10 node observation gaps, which need named maintainer acceptance of the cycle 03 package. This task owns 2 formal-gate gaps."
+    handoff_acceptance_maintainer: "@jltatbeach"
+    gate_candidate_status: "A gate-only candidate against dev at 0b9ae5bce passes its fixture suites in scratch files. The maintainer decided on 2026-09-28 that the gate branch starts from the top of the stack. The formal gate thus reaches dev with the stack merge, and the candidate stays a record."
+    campaign_60h_scope: "The maintainer decided on 2026-09-28 that the 60-hour phase is not a closure requirement for this branch or for PR #436. The phase cannot run before the branch is merged. TASK-018-7 owns the run and its record after the changes are in master."
     work_log: docs/work-logs/task-017-13-gate-handoff-2026-09-21.md
     preparation_log: docs/work-logs/task-017-13-preparation.md
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
@@ -1633,7 +1704,7 @@ tasks:
       - "Make the verified formal gate available on dev. Then apply the approved protection change, verify enforcement, and record evidence-backed acceptance."
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
       - "Review current-source registration and discharge for all campaign controls owned by TASK-017-12, including CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, and CLAIM-CASPER-CAMPAIGN-003."
-      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. Record the required scope of the approved 60-hour phase."
+      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. The 60-hour phase is a post-merge obligation under TASK-018-7, per campaign_60h_scope."
       - "TASK-018 owners are confirmed as of 2026-09-22: @jeffrey-l-turner or @jltatbeach for each task. Obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
     decisions: [D-11]
     acceptance:
@@ -1647,12 +1718,16 @@ tasks:
 
   - id: TASK-017-14
     title: "Reduce the branch diff to the formal-verification deliverables"
-    status: in_progress
-    claimed_by: claude-session-9f19b46c
-    claimed_at: 2026-09-19T05:52:15Z
-    execution_scope: "Preparation steps 0 through 5 only: retention rule, external store, bundles, consumer review, and work-log consolidation. Steps 6 and 7, the verification and the reduction commit, wait for TASK-017-13."
+    status: complete
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-03T16:05:00Z
+    completed_at: 2026-10-03T16:23:26Z
+    completion_record: "Commits 90f94317d and 3bdd523cc moved 1,216 evidence files to the published release cbc-evidence-epic-017. The PR #436 diff against master fell from 2,048 files and 307,232 added lines to 889 files and 92,225 added lines. The maintainer jltatbeach confirmed the reduced diff at 3bdd523cc: https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#issuecomment-5971043357"
+    previous_claimed_by: claude-session-9f19b46c
+    execution_scope: "Steps 0 through 7. The user transferred the task to this session on 2026-10-03 and lifted the TASK-017-13 block, because PR #436 is now the bottom of the stack (PR #451 and PR #447 merged) and its diff against master is 2,048 files and 307,232 added lines."
     work_log: docs/work-logs/task-017-14-preparation.md
-    blocked_by: [TASK-017-13]
+    blocked_by: []
+    previous_blocked_by: [TASK-017-13]
     created_at: 2026-09-17
     rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
     measured_at: 490d21093
@@ -1684,6 +1759,30 @@ tasks:
       - "The link check, the STE check, and the strict CbC gate produce the same results after reduction as before it."
       - "The maintainer confirms the reduced diff meets the PR review standard before the PR opens."
 
+  - id: TASK-017-17
+    title: "Enforce the node log budgets in the soak guardian"
+    status: in_progress
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-10-02T15:30:00Z
+    created_at: 2026-10-02
+    mirror_of: TASK-020-4
+    branch: formal/soak-casper-consensus
+    design: docs/casper/design/soak-log-budget-guardian.md
+    placement_note: "Recorded before TASK-017-15 so that the TASK-017-16 record of branch 4 merges without a conflict."
+    blocked_by: []
+    scope: "The host guardian samples the container json-file log and the node log directory of each owned node container and stops the run when either exceeds its budget. A fixture covers the budgets, the probe failures, and descriptor exhaustion. CLAIM-SOAK-001 records the log caps as a checked invariant."
+    files:
+      - scripts/run-merge-recovery-soak.sh
+      - scripts/bench/test-soak-log-budget.sh
+      - .github/workflows/ci.yml
+      - scripts/ci/check-casper-soak-bindings.sh
+      - docs/claims/soak-disk-protection.md
+    acceptance:
+      - "The guardian samples the container log bytes and the node log directory bytes of each owned container every 15 seconds, with budgets SOAK_CONTAINER_LOG_BUDGET_MB (default 400) and SOAK_NODE_LOG_BUDGET_MB (default 2560). A value of 0 disables a probe."
+      - "Three consecutive samples over a budget, or one sample at two times a budget, is a breach: breach record, writers stopped, health tag stamped, run refused. An unreadable probe refuses admission or records a breach during execution."
+      - "scripts/bench/test-soak-log-budget.sh passes its 10 scenarios in CI, including descriptor-exhaustion."
+      - "CLAIM-SOAK-001 names the log budgets as a checked invariant with the fixture as evidence. The disk floor, the memory floor, and the stop path are unchanged."
+      - "The records of the driver and the fixture refresh in the TASK-017-13 ledger cycle."
   - id: TASK-017-15
     title: "Retrieve and publish the external evidence release"
     status: pending
@@ -1716,9 +1815,9 @@ tasks:
 
 **Tracker compatibility:** The shared CLI still rejects TASK-* identifiers. The completion review invokes its unchanged task function for the three reviewed preparation tasks. The TASK-017-4 adapter remains unchanged.
 
-The [interface contract](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
+The [interface contract](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/casper/design/soak-interface-contract.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/casper/design/soak-interface-contract.md`) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
 
-**Scope:** This epic covers the pre-#216 PR only. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
+**Scope:** This epic covers the pre-#216 PR only. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) records both phases and their evidence boundary.
 
 **Final task:** TASK-017-15 closes the branch and PR #436. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
 
@@ -1744,6 +1843,28 @@ formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 proposed_branch: formal/soak-casper-post-cost-accounting
 plan: docs/plans/casper-ratified-soak-2026-09-16.md
 related_epics: [EPIC-010, EPIC-013, EPIC-017]
+post_merge_obligations:
+  record: https://github.com/F1R3FLY-io/f1r3node-rust/issues/473
+  label: post-merge-obligation
+  decided_on: 2026-09-28
+  rule: "One issue records all obligations that stay open when the stack merges into master. The issue closes only when each obligation has passing evidence or a recorded waiver."
+  automation_plan:
+    branch: ci/soak-obligation-gate
+    base_branch: feature/randomized-exercise-soak
+    status: planned
+    instructions:
+      - "Create ci/soak-obligation-gate from feature/randomized-exercise-soak."
+      - "Open its PR against feature/randomized-exercise-soak and place it at the top of the PR stack."
+      - "Use this branch to implement automatic result recording for all stack obligations in issue 473."
+  obligations:
+    O1: TASK-018-7
+    O2: TASK-018-1
+    O3: TASK-018-2
+    O4: [TASK-018-3, TASK-018-4]
+    O5: TASK-018-5
+    O6: TASK-018-6
+    O7: CLAIM-SOAK-GATE-001
+    O8: TASK-017-15
 external_dependencies:
   - repo: F1R3FLY-io/f1r3node-rust
     pr: 216
@@ -1896,6 +2017,32 @@ tasks:
       - "No required pending or refuted claim is hidden by epic completion."
       - "The follow-on PR links the meeting, pre-merge handoff, actual #216 merge revision, and new evidence."
       - "Deferred-policy activation requires a separate team decision even when experimental evidence passes."
+
+  - id: TASK-018-7
+    title: "Run and record the 60-hour stability soak after the EPIC-017 changes are in master"
+    claims: [CLAIM-CASPER-SOAK-001]
+    status: blocked
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-28
+    created_at: 2026-09-28
+    origin: "The maintainer decided on 2026-09-28 that the approved 60-hour phase is a post-merge obligation. It is not a closure requirement for TASK-017-13 or for PR #436."
+    blocked_by: [TASK-017-12, TASK-017-13]
+    external_gate: "The merge commit of the EPIC-017 changes is an ancestor of origin/master."
+    resource_approval: "The approval of 2026-09-22 applies: one 64 GB stability runner for each architecture, with a maximum lifetime of 64 hours. Both full 24-hour baselines must pass first. More repetitions are not approved."
+    workflow_stage: campaign-stability-60h
+    github_record: 473
+    github_record_url: https://github.com/F1R3FLY-io/f1r3node-rust/issues/473
+    github_record_label: post-merge-obligation
+    github_record_obligation: O1
+    github_record_note: "The maintainer requested issue 473 on 2026-09-28. It is the single record of all post-merge obligations of the stack, and this task is obligation O1. The automatic update is planned for the branch ci/soak-obligation-gate, which the maintainer creates on top of the stack from feature/randomized-exercise-soak."
+    stage_decision: "The maintainer confirmed the stage campaign-stability-60h on 2026-09-28."
+    acceptance:
+      - "The soaked revision is on master and contains the merge commit of the EPIC-017 changes."
+      - "Each architecture completes the full 216,000-second workload window. A shortened window does not satisfy this task."
+      - "The record names the run IDs, the revision, the seeds, the image digests, the terminal verdict, and the evidence digests."
+      - "A failure, a timeout, or an infrastructure stop stays in the record. A later passing run does not remove it."
+      - "The obligation record closes only on passing evidence for the two architectures."
 ---
 ```
 

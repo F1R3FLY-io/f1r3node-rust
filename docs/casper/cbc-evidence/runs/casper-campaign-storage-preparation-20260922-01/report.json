@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "oci-reservation-deployment-preparation",
+  "review_date": "2026-09-22",
+  "source_head_revision": "18f85fa279979c3ef3da18417a1b217f0b8bad4c",
+  "preparation": "complete",
+  "deployment": "not-applied",
+  "claim_discharge": "pending",
+  "configuration": {
+    "path": "docs/plans/casper-campaign-storage.jsonc",
+    "sha256": "8dad2740e17cc31ac3da0b39c9780982edd8a9f258619f00d195f5ff3acb8a65"
+  },
+  "inventory": {
+    "region": "us-sanjose-1",
+    "compartment_parent": "ocid1.tenancy.oc1..aaaaaaaaii7udpmtqhokgof6mqewbfipvbgu4ux4vvpm2gaghfnnuvgjb6fq",
+    "bucket_count": 0,
+    "compartment_policy_count": 0,
+    "root_policy_count": 8,
+    "controller_user_id": "ocid1.user.oc1..aaaaaaaaszbg5udehtriel4cqhrx5xhhqqyt6lxhzspdntoksdtzqzkdq36a",
+    "controller_groups": [
+      {
+        "id": "ocid1.group.oc1..aaaaaaaaelq2kduax34emgh56c53shhfpgkvjcmxw7goiybizhnemnskgfba",
+        "name": "ci-runner-launchers",
+        "state": "ACTIVE"
+      }
+    ],
+    "supervisor_function_exists": false,
+    "supervisor_dynamic_group_exists": false
+  },
+  "inheritance_review": {
+    "root_and_direct_child_checked": true,
+    "controller_storage_grant_found": false,
+    "operator_is_tenancy_administrator": true,
+    "operator_is_runtime_principal": false,
+    "workflow_secret_identity_verified": false
+  },
+  "initial_state": {
+    "version": 2,
+    "slot_count": 5,
+    "all_slots_empty": true,
+    "configuration_bound": false,
+    "upload_permitted": false
+  },
+  "request_digests": {
+    "bucket-create.json": "1981644c474f63a3a2745a652c116329e82df356caaba1d6a303d42ff2030d3f",
+    "policy-create.json": "81060c1d3e32bcae3d0b85aaa446301cd60a16e1c4180fda648d120a7498feb0",
+    "initial-state-template.json": "c815f01dbc3ea37af1222282b83bd5505b7ae50c294bdacd3036bbd742c95ac9"
+  },
+  "source_digests": {
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/campaign_control/mod.rs": "1131012be392236d3ccaaf0e3df4bc36cc8686d3fdd019342b5fc5d465a5662b",
+    "scripts/casper-soak/src/campaign_control/operations.rs": "a4e9d61ab8acedb102f34c4df58fdb25ef0ea593d11592885160bafad20b3358",
+    "scripts/casper-soak/src/campaign_control/transport.rs": "e0b8843bb7d9fe2f0e1580441ba6e89c09a21bdabaa52c21c9b97e7fc0530f64",
+    "scripts/casper-soak/src/bin/casper-campaign-control.rs": "dbf6d2e263744217e66ada6cca0f8308b534e9e22e5a7f3065bc29999f48c515",
+    "scripts/casper-soak/tests/campaign_control.rs": "747558394babc26d3996392ebf8d8196197f61a77e3caa0957803c13f23333a4"
+  },
+  "retained_inventory_digests": {
+    "buckets.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "compartment-policies.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "controller-groups.json": "6a7ef8f90dcacfd7b457e4f9e7808cd5b9f2eb55b15a5cb21f1bf6e5cacd726b",
+    "dynamic-groups.json": "a2b778af8108a779bbb489510a5990198e31d375b4002e58d617aafdda5dac48",
+    "functions.json": "0ff7b8e056cefc9dc49bf928d8bed02fe2f11d2ea21b0dcee3412329b2f75958",
+    "root-policies.json": "c07f407a7543c1fb9c6d413dafc63832fa418b1e86129c16cb86d88cb753e70d"
+  },
+  "verification": {
+    "json_parsing": "passed",
+    "controller_source_review": "passed-with-unresolved-bindings",
+    "live_policy_validation": "not-run",
+    "live_conditional_updates": "not-run",
+    "rust_configuration_checks": {
+      "passed": 2,
+      "failed": 0,
+      "command": "cargo test --locked --offline --manifest-path target/task-017-12-storage-preparation-20260922-01/Cargo.toml --test storage_preparation",
+      "scope": "Synthetic configuration bindings and the prepared policy digest, using current controller source.",
+      "runtime_service_qualification": false,
+      "dependency_packages_match_repository_lock": 80,
+      "harness_sha256": "c3adb22069fdfa5da9822fb6ad16f8775de889ffffaeac3ac7045b86280b13c1",
+      "manifest_sha256": "d424c5cdbae4df52d7e0466be7a2614eb8c384343a820fde9367304eda3e43a9",
+      "lock_sha256": "34383c808040b52fab6145472913785567e12a3ea181f5064841436deeb27e0f",
+      "log_sha256": "48aced8d57d146f214c555209b62352e9468fc6842b257809c9dbe6820bf0bc1"
+    }
+  },
+  "prior_attempts": [
+    {
+      "operation": "sandboxed-tenancy-read",
+      "outcome": "interrupted-after-no-completion"
+    },
+    {
+      "operation": "sandboxed-bucket-input-generation-without-explicit-namespace",
+      "outcome": "interrupted-after-no-completion"
+    },
+    {
+      "operation": "iam-user-group-membership-list",
+      "outcome": "unsupported-cli-command",
+      "correction": "iam user list-groups"
+    },
+    {
+      "operation": "rust-helper-compilation",
+      "outcome": "missing-tempfile-dependency",
+      "correction": "Added the existing controller dependency to the local helper manifest."
+    },
+    {
+      "operation": "prepared-policy-digest-check",
+      "outcome": "failed-before-newline-correction",
+      "passed": 1,
+      "failed": 1,
+      "log_sha256": "822f91dcbc168cfdac7b3f53c4764ef1f8bbee949daa04e1cab91396f056c251"
+    }
+  ],
+  "bulk_evidence": "target/task-017-12-storage-preparation-20260922-01",
+  "remote_writes": 0,
+  "node_launches": 0,
+  "cloud_launches": 0
+}

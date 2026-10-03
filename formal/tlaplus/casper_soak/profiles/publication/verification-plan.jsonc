@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-003",
+  "model": "formal/tlaplus/casper_soak/profiles/publication/Publication.tla",
+  "scope": "bounded-publication-classification-only",
+  "construction": "not-applicable",
+  "bounds": { "scenarios": 2, "observations_per_scenario": 3 },
+  "assumptions": [
+    "Collection slots abstract a prior snapshot, a compound fault receipt, and a recovered snapshot.",
+    "Acknowledgment abstracts matching boundary, exit, readiness, and causal-order evidence.",
+    "Restart matching abstracts all candidate, node, predecessor, and successor identities.",
+    "Tuple completeness abstracts equality with a pinned complete tuple, not node execution.",
+    "Other fields are valid and there are no independent earlier failures in this abstraction.",
+    "Work inventories and filesystem behavior require separate executable bindings."
+  ],
+  "positive_control": {
+    "configuration": "MC_Publication.cfg",
+    "expected_exit": 0,
+    "properties": ["FaultAcknowledged", "RestartIdentityMatched", "TornTupleReported"]
+  },
+  "negative_controls": [
+    { "configuration": "MC_Publication_fault_unsafe.cfg", "expected_exit": 12, "property": "FaultAcknowledged", "knob": "AssumeCrashApplied", "fixture": "publication_fault_unacknowledged" },
+    { "configuration": "MC_Publication_restart_unsafe.cfg", "expected_exit": 12, "property": "RestartIdentityMatched", "knob": "MixRestartObservations", "fixture": "publication_restart_mismatch" },
+    { "configuration": "MC_Publication_tuple_unsafe.cfg", "expected_exit": 12, "property": "TornTupleReported", "knob": "HideTupleMismatch", "fixture": "publication_torn_tuple" }
+  ]
+}
