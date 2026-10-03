@@ -29,3 +29,4 @@
 //   - `removedir`: trait-exempt (yet to land as inline handler).
 
 pub mod lifecycle;
+pub mod observation;
