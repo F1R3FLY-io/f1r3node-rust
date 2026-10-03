@@ -278,11 +278,9 @@ mod linux {
             {
                 return Err(ObserverError::ResourceLimit);
             }
-            let mut bytes = Vec::new();
-            executable
-                .take(MAX_EXECUTABLE_BYTES + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > MAX_EXECUTABLE_BYTES {
+            let (executable_digest, executable_bytes) =
+                Sha256Hasher::hash_reader(executable.take(MAX_EXECUTABLE_BYTES + 1))?;
+            if executable_bytes > MAX_EXECUTABLE_BYTES {
                 return Err(ObserverError::ResourceLimit);
             }
             let identity = Identity {
@@ -291,7 +289,7 @@ mod linux {
                 pid: std::process::id(),
                 process_start_ticks: process_start_ticks(std::process::id())?,
                 declared_source_revision: config.source_revision.clone(),
-                executable_sha256: sha256(bytes),
+                executable_sha256: hex::encode(executable_digest),
                 configuration_sha256: sha256(
                     serde_json::to_vec(&public).map_err(|_| ObserverError::Configuration)?,
                 ),
