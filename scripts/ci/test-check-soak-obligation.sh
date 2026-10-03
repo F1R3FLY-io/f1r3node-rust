@@ -14,6 +14,7 @@ MASTER="$(printf '4%.0s' {1..40})"
 OTHER="$(printf '5%.0s' {1..40})"
 MIXED="$(printf '6%.0s' {1..40})"
 FULL="$(printf '7%.0s' {1..40})"
+RACE="$(printf '8%.0s' {1..40})"
 EVIDENCE='.seeds=[11,12] | .started_epoch=1800000000 | .finished_epoch=1800216004'
 HEX="$(printf 'a%.0s' {1..64})"
 export FIXTURE_API="$OUT/api"
@@ -71,10 +72,12 @@ make_result() {
      measurement_completeness:"complete",product_failures:[],infrastructure_failures:[]}'
 }
 make_facts() {
-  jq -n --arg result "$(hash "$1")" --arg archive "$2" --arg node "$NODE" --arg required "$REQUIRED" --arg master "$MASTER" '
+  jq -n --arg result "$(hash "$1")" --arg archive "$2" --arg node "$NODE" --arg required "$REQUIRED" --arg master "$MASTER" \
+    --arg harness "$HARNESS" '
     {schema_version:1,required_commit:$required,required_commit_source:"pull_request",
      master_revision:$master,
      revision_in_master:{base:$node,head:$master,status:"ahead",behind_by:0},
+     workflow_in_master:{base:$harness,head:$master,status:"ahead",behind_by:0},
      required_in_revision:{base:$required,head:$node,status:"ahead",behind_by:0},
      result_archive_sha256:$archive,result_sha256:$result}'
 }
@@ -141,6 +144,8 @@ required_ahead_with_missing_commits;1;.;.;.required_in_revision.behind_by=1
 revision_not_on_master;1;.;.;.revision_in_master.status="diverged" | .revision_in_master.behind_by=4
 source_not_merged;1;.;.;.required_commit=null | .required_in_revision=null | .required_commit_source="pull_request_not_merged"
 scheduled_event;2;.event="schedule";.;.
+workflow_not_on_master;2;.;.;.workflow_in_master.status="diverged" | .workflow_in_master.behind_by=1
+window_shorter_than_elapsed;3;.;.started_epoch=1800000000 | .finished_epoch=1800000001;.
 shortened_window;3;.;.plan.duration_seconds=86400 | .workload_elapsed_seconds=86400;.
 elapsed_below_window;3;.;.workload_elapsed_seconds=215999;.
 elapsed_fraction;3;.;.workload_elapsed_seconds=216000.5;.
@@ -187,6 +192,9 @@ workload_path_with_markup;.;.plan.workload.path="docs/[x](y)";.;.
 duration_text;.;.plan.duration_seconds="216000";.;.
 facts_for_other_revision;.;.;.revision_in_master.base="5555555555555555555555555555555555555555";.
 facts_for_other_master;.;.;.revision_in_master.head="5555555555555555555555555555555555555555";.
+facts_for_other_workflow;.;.;.workflow_in_master.base="5555555555555555555555555555555555555555";.
+workflow_comparison_missing;.;.;del(.workflow_in_master);.
+run_revision_malformed;.head_sha="HEAD";.;.;.
 required_for_other_revision;.;.;.required_in_revision.head="5555555555555555555555555555555555555555";.
 required_without_comparison;.;.;.required_in_revision=null;.
 required_source_unknown;.;.;.required_commit_source="manual";.
@@ -309,7 +317,10 @@ case "$method" in
   GET)
     [[ "$1" != --paginate ]] || shift
     [[ -f "$FIXTURE_API/$(key "$1")" ]] || exit 97
-    cat "$FIXTURE_API/$(key "$1")" ;;
+    cat "$FIXTURE_API/$(key "$1")"
+    if [[ "$1" == "$issue" && -f "$FIXTURE_API/issue-swap" ]]; then
+      mv "$FIXTURE_API/issue-swap" "$FIXTURE_API/$(key "$issue")"
+    fi ;;
   POST)
     [[ "$1" == "$issue/comments" && "$2" == --input ]] || exit 96
     store="$FIXTURE_API/$(key "$issue/comments?per_page=100")"
@@ -339,7 +350,8 @@ serve "$API/git/ref/heads/master" "$OUT/runs/master.json"
 jq -n '{status:"ahead",ahead_by:3,behind_by:0,commits:[],files:[]}' > "$OUT/runs/compare.json"
 serve "$API/compare/$NODE...$MASTER?per_page=1" "$OUT/runs/compare.json"
 serve "$API/compare/$REQUIRED...$NODE?per_page=1" "$OUT/runs/compare.json"
-for revision in "$MIXED" "$FULL"; do
+serve "$API/compare/$HARNESS...$MASTER?per_page=1" "$OUT/runs/compare.json"
+for revision in "$MIXED" "$FULL" "$RACE"; do
   serve "$API/compare/$revision...$MASTER?per_page=1" "$OUT/runs/compare.json"
   serve "$API/compare/$REQUIRED...$revision?per_page=1" "$OUT/runs/compare.json"
 done
@@ -444,6 +456,17 @@ verify full_update_has_text_only jq -e 'keys==["body"]' "$OUT/runs/execute-613/i
 expect full_second_again 0 bash "$CHECK" execute 613 "$OUT/runs/execute-613-again"
 verify full_completion_once test "$(count "O1 complete revision=$FULL")" = 1
 verify full_mark_once test "$(writes PATCH)" = 1
+
+jq -n --rawfile body "$OUT/cases/issue-body.md" '{state:"open",body:$body}' > "$ISSUE"
+jq '.body+="\nA maintainer edit.\n"' "$ISSUE" > "$OUT/runs/issue-edited.json"
+publish_run 631 831 amd64 . ".plan.node_revision=\"$RACE\" | $EVIDENCE"
+publish_run 633 833 arm64 . ".plan.node_revision=\"$RACE\" | $EVIDENCE"
+expect race_first 0 bash "$CHECK" execute 631 "$OUT/runs/execute-631"
+cp "$OUT/runs/issue-edited.json" "$FIXTURE_API/issue-swap"
+expect race_issue_changed 2 bash "$CHECK" execute 633 "$OUT/runs/execute-633"
+verify race_reason grep -F 'The issue text changed during the check.' "$OUT/cases/race_issue_changed.stderr"
+verify race_no_mark test "$(writes PATCH)" = 1
+verify race_edit_kept cmp "$OUT/runs/issue-edited.json" "$ISSUE"
 
 publish_run 604 804 amd64 . .
 jq '.digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' "$OUT/runs/604/artifact.json" > "$OUT/runs/604/artifact-changed.json"

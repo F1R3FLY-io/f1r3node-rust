@@ -148,3 +148,54 @@ if bash "$SCRIPT_DIR/extend-issue24-metrics.sh" "$tmp/missing-report.py"; then
     exit 1
 fi
 cmp "$tmp/missing-report-before.py" "$tmp/missing-report.py"
+
+cat > "$tmp/early-return.py" <<'PY'
+METRICS_TO_SCRAPE = [
+]
+
+COUNTERS_TO_SCRAPE = [
+]
+
+
+def compute_metric_deltas(before, after):
+    result = {}
+    return result
+
+
+def format_node_metrics(metrics):
+    summary = "  (no node metrics available)"
+    if not metrics:
+        return summary
+    lines = ["existing report"]
+    return "\n".join(lines)
+PY
+cp "$tmp/early-return.py" "$tmp/early-return-before.py"
+if bash "$SCRIPT_DIR/extend-issue24-metrics.sh" "$tmp/early-return.py"; then
+    exit 1
+fi
+cmp "$tmp/early-return-before.py" "$tmp/early-return.py"
+
+cat > "$tmp/registry-name.py" <<'PY'
+METRICS_TO_SCRAPE = [
+]
+
+COUNTERS_TO_SCRAPE = [
+]
+
+_ISSUE24_HISTOGRAMS = ["unrelated"]
+
+
+def compute_metric_deltas(before, after):
+    result = {}
+    return result
+
+
+def format_node_metrics(metrics):
+    lines = ["existing report"]
+    return "\n".join(lines)
+PY
+cp "$tmp/registry-name.py" "$tmp/registry-name-before.py"
+if bash "$SCRIPT_DIR/extend-issue24-metrics.sh" "$tmp/registry-name.py"; then
+    exit 1
+fi
+cmp "$tmp/registry-name-before.py" "$tmp/registry-name.py"

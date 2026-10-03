@@ -2,8 +2,8 @@
 
 ## Status
 
-TASK-020-3 is claimed and in progress. The local implementation passes its checks.
-The external single-sink correction and its verified merge revision remain open.
+TASK-020-3 is complete on 2026-09-30. The local implementation passes its checks.
+The external single-sink correction merged into system-integration `dev` through PR #146 at `ccd717195`. The [completion section](#completion-on-2026-09-30) records the details. The sections between this status and the completion section record the work in its sequence.
 
 - Implementer: `pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa`.
 - Clock checkpoint after claim: `2026-09-30T02:23:57Z`.

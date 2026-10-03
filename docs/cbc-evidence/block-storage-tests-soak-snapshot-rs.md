@@ -1,19 +1,20 @@
 # CbC Evidence: block-storage/tests/soak_snapshot.rs
 
-The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9839b0e` on 2026-10-01 (PR #447, comment 5924422936). This record is discharged for the Batch E bytes of the file. The registration gap stays recorded in `registration_gap`.
+The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9839b0e` on 2026-10-01 (PR #447, comment 5924422936). This record is discharged for the Batch E bytes of the file. The registration gap stays recorded in `registration_gap`. The artifact bytes changed on 2026-10-02 through the PR #447 review remediation `490dc0d51`: the test fixtures hold a `tempfile::TempDir`, so the LMDB directories are removed. The acceptance covers the bytes at `1a9839b0e`. The maintainer has not reviewed the remediation.
 
 ```json
 {
   "artifact": {
     "path": "block-storage/tests/soak_snapshot.rs",
     "id": "block-storage-tests-soak-snapshot-rs",
-    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
-    "commit_is_base": true,
+    "commit": "cf11229eb0b1e49fecd098b4c26782cf624fea9b",
+    "commit_is_base": false,
     "working_tree": false,
-    "sha256": "f04c69d90ee1559ac48cf0e7bab7abfb0c4dd83769ecea46caa8a4cc99a2ef2b",
+    "sha256": "66d8854484290af7a227ba8cbd653c814c38c8ec236c8522a76771774ae46a09",
     "sha256_at_registration": "15840e51d9ba769d2053760972ad35d71a7a67419ff3c0e4d981852372c90b09",
     "sha256_before_refresh": "15840e51d9ba769d2053760972ad35d71a7a67419ff3c0e4d981852372c90b09",
-    "sha256_before_verification_refresh": "89b316b204937a1721adbd711ae3bf87ed56ccbe3bbe5f142445f92621c2b520"
+    "sha256_before_verification_refresh": "89b316b204937a1721adbd711ae3bf87ed56ccbe3bbe5f142445f92621c2b520",
+    "sha256_at_acceptance": "f04c69d90ee1559ac48cf0e7bab7abfb0c4dd83769ecea46caa8a4cc99a2ef2b"
   },
   "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
@@ -29,10 +30,11 @@ The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9
   "status": "discharged",
   "scope": "batch-e-acceptance-01",
   "previous_record": {
-    "artifact": "block-storage/tests/soak_snapshot.rs",
     "path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md",
-    "sha256": "1f4efefa3362eb40b4c9ade3a9aacc2a0f2d319ecf7c786880cdecbb1d441225",
-    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f"
+    "sha256": "c81add42ebb1daacba185e48307f3123f1820b8d3cd40feb5761b520e987ad3c",
+    "commit": "e38e7433e3deae7da36fe2b5f9d6b39403b283db",
+    "status": "discharged",
+    "artifact_sha256": "f04c69d90ee1559ac48cf0e7bab7abfb0c4dd83769ecea46caa8a4cc99a2ef2b"
   },
   "evidence": {
     "kind": "tiered-evidence-accepted",
@@ -46,7 +48,7 @@ The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-10-01T03:59:08+00:00",
+  "verified_at": "2026-10-03T14:10:00+00:00",
   "previous_refresh_record": {
     "path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md",
     "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
@@ -82,6 +84,13 @@ The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-005 at revision `1a9
     "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
     "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
     "reviewed_at": "2026-10-01T03:56:25Z"
+  },
+  "refresh": {
+    "date": "2026-10-03",
+    "reason": "Review remediation 490dc0d51 changed unique_dir to return the TempDir guard with the path and stored the guard in the fixture. Test assertions are unchanged.",
+    "delta_source": "branch commit 490dc0d51 (PR #447 review, comment 5965523714)",
+    "branch_bytes_unchanged": false,
+    "acceptance_covers_branch_change": false
   }
 }
 ```
