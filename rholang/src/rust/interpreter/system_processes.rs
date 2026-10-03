@@ -275,6 +275,21 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    // -----------------------------------------------------------
+    // Fileio handlers — `rho:io:fs:native:*` URN space.
+    //
+    // Byte-name identifiers match fileio's assignment (see Wave 4
+    // triage plan).  Numbering has intentional gaps so sibling
+    // fs_* handlers land at their fileio-canonical slots as later
+    // slices port them (fs_open at 38, fs_close at 39, ...,
+    // fs_lock_range at 62, etc.).
+    // -----------------------------------------------------------
+
+    /// `rho:io:fs:native:1.0.0/quarantine` — safe_descend_verified
+    /// echo of the caller-supplied joined path.  Non-verifying
+    /// lifecycle helper (slice 4.12).
+    pub fn fs_quarantine() -> Par { byte_name(61) }
 }
 
 pub struct BodyRefs;
@@ -312,6 +327,15 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+
+    // Fileio handlers — see `FixedChannels` above for the URN
+    // space.  Numbering matches fileio's BodyRefs assignment; gaps
+    // reserve slots for sibling fs_* handlers landing in future
+    // slices (fs_open = 38, fs_close = 39, ..., fs_lock_range = 62,
+    // etc.).
+
+    /// `rho:io:fs:native:1.0.0/quarantine` body-ref (slice 4.12).
+    pub const FS_QUARANTINE: i64 = 61;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
