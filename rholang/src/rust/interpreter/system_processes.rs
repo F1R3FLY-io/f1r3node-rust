@@ -330,6 +330,12 @@ impl FixedChannels {
     /// length-parameterized cost; advances shadow position by
     /// bytes returned on all paths (slice 4.20).
     pub fn fs_read() -> Par { byte_name(42) }
+
+    /// `rho:io:fs:native:1.0.0/readAt` — positional fd-based read
+    /// via `libc::pread`.  Verifying observation with
+    /// length-parameterized cost; does NOT advance shadow
+    /// position per POSIX pread semantics (slice 4.21).
+    pub fn fs_read_at() -> Par { byte_name(43) }
 }
 
 pub struct BodyRefs;
@@ -400,6 +406,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/read` body-ref (slice 4.20).
     pub const FS_READ: i64 = 42;
+
+    /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
+    pub const FS_READ_AT: i64 = 43;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
