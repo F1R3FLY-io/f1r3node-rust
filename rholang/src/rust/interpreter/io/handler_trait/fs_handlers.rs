@@ -163,7 +163,7 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 /// finished), count reaches 27 — fs_remove_dir trait-exempt
 /// (see `handler_trait::fs_handler` module docstring).
 ///
-/// Current: 6 handlers migrated.
+/// Current: 7 handlers migrated.
 ///
 /// Wave 4 slice progression:
 ///   - 4.10: 0 (empty registry infrastructure).
@@ -173,7 +173,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.15: +1 (`fs_tell`).  Count = 4.
 ///   - 4.16: +1 (`fs_seek`, FIRST VERIFYING).  Count = 5.
 ///   - 4.17: +1 (`fs_size`).  Count = 6.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 6;
+///   - 4.18: +1 (`fs_exists`).  Count = 7.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 7;
 
 #[cfg(test)]
 mod tests {
@@ -235,6 +236,7 @@ mod tests {
             "fs_tell",       // slice 4.15
             "fs_seek",       // slice 4.16 (first verifying)
             "fs_size",       // slice 4.17
+            "fs_exists",     // slice 4.18
         ];
 
         assert_eq!(
