@@ -711,6 +711,21 @@ mod prepared_route_tests {
         assert_eq!(second_twin.last(), Some(&expected_terminal));
         let twin_failure = observation(&runtime, "regex.lookahead.twins.failure").await;
         assert_eq!(trace_pathmap(&twin_failure).len(), 0);
+        let hole_success = observation(&runtime, "regex.lookahead.hole.success").await;
+        let hole_success = trace_pathmap(&hole_success);
+        assert_eq!(hole_success.mode(), EPathMapMode::Set);
+        assert_eq!(hole_success.len(), 1, "received Pattern hole must reduce");
+        let hole_key = hole_success
+            .next_value_key(&[])
+            .expect("received-hole success key");
+        let hole_trace = hole_success
+            .leaf_at_encoded_key(&hole_key)
+            .expect("received-hole trace");
+        let hole_trace = list(&hole_trace);
+        assert!(hole_trace.len() >= 2);
+        assert_eq!(hole_trace.last(), Some(&expected_terminal));
+        let hole_failure = observation(&runtime, "regex.lookahead.hole.failure").await;
+        assert_eq!(trace_pathmap(&hole_failure).len(), 0);
         let zero_success = observation(&runtime, "regex.lookahead.zero.success").await;
         let zero_success = trace_pathmap(&zero_success);
         assert_eq!(zero_success.mode(), EPathMapMode::Empty);
@@ -739,7 +754,7 @@ mod prepared_route_tests {
         let reports = runtime.get_data(&truncated_channel).await;
         assert_eq!(
             reports.len(),
-            5,
+            6,
             "each v2 lookahead request has a typed report"
         );
         let mut truncated_lengths = Vec::with_capacity(reports.len());
@@ -751,7 +766,7 @@ mod prepared_route_tests {
             truncated_lengths.push(trace_pathmap(&fields[1]).len());
         }
         truncated_lengths.sort_unstable();
-        assert_eq!(truncated_lengths, [0, 0, 0, 1, 1]);
+        assert_eq!(truncated_lengths, [0, 0, 0, 0, 1, 1]);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
