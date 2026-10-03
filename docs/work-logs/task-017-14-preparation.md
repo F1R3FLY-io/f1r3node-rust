@@ -1,10 +1,9 @@
 # TASK-017-14 Preparation
 
 ---
-handoff_status: in_progress
+handoff_status: complete
 next_steps:
-  - Ask the maintainer to confirm the reduced PR #436 diff, and publish the draft release when the reduction commit lands.
-  - Consolidate the work logs of TASK-017-1 through TASK-017-7 in a separate commit, if the maintainer asks for a smaller diff.
+  - None for this task. Step 5, the work-log consolidation, was not needed for the maintainer confirmation.
 ---
 
 ## Scope
@@ -128,4 +127,10 @@ A package now keeps only `report.json` and its `external.json` in the tree. `cas
 | Bindings inventory | exit 0 | exit 0 |
 | Offline link check of `docs/` | 0 errors | 0 errors |
 | `scripts/casper-soak` tests | 146 passed | 146 passed |
+
+## Completion on 2026-10-03
+
+The release `cbc-evidence-epic-017` was published on 2026-10-03 at 16:20 UTC with 95 assets. The tag resolves for readers without write access.
+
+The maintainer `jltatbeach` confirmed the reduced diff of PR #436 at revision `3bdd523cc` in [comment 5971043357](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#issuecomment-5971043357). GitHub reports 889 files, 92,225 added lines, and 825 removed lines.
 

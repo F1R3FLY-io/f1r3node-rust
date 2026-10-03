@@ -1718,9 +1718,11 @@ tasks:
 
   - id: TASK-017-14
     title: "Reduce the branch diff to the formal-verification deliverables"
-    status: in_progress
+    status: complete
     claimed_by: claude-session-aa467dea
     claimed_at: 2026-10-03T16:05:00Z
+    completed_at: 2026-10-03T16:23:26Z
+    completion_record: "Commits 90f94317d and 3bdd523cc moved 1,216 evidence files to the published release cbc-evidence-epic-017. The PR #436 diff against master fell from 2,048 files and 307,232 added lines to 889 files and 92,225 added lines. The maintainer jltatbeach confirmed the reduced diff at 3bdd523cc: https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#issuecomment-5971043357"
     previous_claimed_by: claude-session-9f19b46c
     execution_scope: "Steps 0 through 7. The user transferred the task to this session on 2026-10-03 and lifted the TASK-017-13 block, because PR #436 is now the bottom of the stack (PR #451 and PR #447 merged) and its diff against master is 2,048 files and 307,232 added lines."
     work_log: docs/work-logs/task-017-14-preparation.md
