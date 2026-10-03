@@ -683,6 +683,28 @@ mod prepared_route_tests {
         let choice_failure = trace_pathmap(&choice_failure);
         assert_eq!(choice_failure.mode(), EPathMapMode::Empty);
         assert_eq!(choice_failure.len(), 0);
+        let zero_success = observation(&runtime, "regex.lookahead.zero.success").await;
+        let zero_success = trace_pathmap(&zero_success);
+        assert_eq!(zero_success.mode(), EPathMapMode::Empty);
+        assert_eq!(zero_success.len(), 0, "[0] cannot fire a guest rewrite");
+        let zero_failure = observation(&runtime, "regex.lookahead.zero.failure").await;
+        assert_eq!(trace_pathmap(&zero_failure).len(), 0);
+
+        let one_success = observation(&runtime, "regex.lookahead.one.success").await;
+        let one_success = trace_pathmap(&one_success);
+        assert_eq!(one_success.mode(), EPathMapMode::Set);
+        assert_eq!(one_success.len(), 1, "[1] completes only ForkYesDirect");
+        let one_key = one_success
+            .next_value_key(&[])
+            .expect("one-step success key");
+        let one_trace = one_success
+            .leaf_at_encoded_key(&one_key)
+            .expect("one-step success trace");
+        let one_trace = list(&one_trace);
+        assert!(one_trace.len() >= 2);
+        assert_eq!(one_trace.last(), Some(&expected_terminal));
+        let one_failure = observation(&runtime, "regex.lookahead.one.failure").await;
+        assert_eq!(trace_pathmap(&one_failure).len(), 0);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
