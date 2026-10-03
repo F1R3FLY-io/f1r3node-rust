@@ -1,11 +1,11 @@
 # TASK-017-14 Preparation
 
 ---
-handoff_status: paused
+handoff_status: in_progress
 next_steps:
-  - Wait for TASK-017-13. Then run the rehearsed reduction against the live tree and redirect the one dangling work-log link.
-  - Consolidate the work logs of TASK-017-1 through TASK-017-7 in the same commit.
-  - Publish the draft release when the reduction commit lands, so the tag resolves for readers without write access.
+  - Upload the 23 new bundles to the draft release cbc-evidence-epic-017 under new asset names. Do not replace an existing asset, because accepted reports cite those assets by name.
+  - Ask the maintainer to confirm the reduced PR #436 diff, and publish the draft release when the reduction commit lands.
+  - Consolidate the work logs of TASK-017-1 through TASK-017-7 in a separate commit, if the maintainer asks for a smaller diff.
 ---
 
 ## Scope
@@ -84,3 +84,29 @@ The handoff from `pi-casper-merge-accounting` asks that the accepted report byte
 - Step 4, symlinks: reviewed. No change on this branch.
 - Steps 2, 3, 6: rehearsed in the scratch copy. Not applied.
 - Steps 5, 7: not started.
+
+## Reduction on 2026-10-03
+
+`claude-session-aa467dea` took over the task on 2026-10-03 at the request of the user. PR #451 and PR #447 merged, so PR #436 is the bottom of the stack, and no lower branch can conflict with a removal. The upper branches change no file under `runs/`.
+
+The reduction keeps every ledger record and every `report.json` byte-identical. Each package that loses files gets a sibling `external.json`. It names the release tag, the asset, and the asset digest, and it lists the path, size, and SHA-256 of each moved file. Records keep their original paths, so a cited path resolves through the `external.json` of its package.
+
+The keep rule of the rehearsal applies: `report.json`, `validation.json`, `review-validation.json`, `redactions.tsv`, and `artifacts.sha256` stay in each package. `casper-rust-migration-20260917-01/bindings.tar.gz` also stays, because `scripts/ci/check-casper-soak-bindings.sh` and `scripts/casper-soak/tests/bindings.rs` read it.
+
+The existing assets of 22 packages contain every moved file of those packages, byte for byte. The other 23 packages need new deterministic bundles, 8.0 MB in total. Three Markdown links that pointed to moved files now point to the `external.json` of their package.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| PR #436 diff against `master` | 2,048 files, 307,232 added lines | 970 files, about 102,000 added lines |
+| Files under `docs/casper/cbc-evidence/runs/` | 1,287 files, 53 MB | 164 kept files and 45 pointers |
+| Claims audit, default and strict | exit 0 and exit 4 | exit 0 and exit 4, same output |
+| Bindings inventory | exit 0 | exit 0, same report |
+| Offline link check of `docs/` | 0 errors | 0 errors |
+| `scripts/casper-soak` tests | not measured | 146 passed, 0 failed |
+
+- Steps 2 and 3: applied to 45 packages. 1,123 files moved to the release.
+- Step 4: no change. The compatibility symlinks stay.
+- Step 5: not started.
+- Step 6: complete for the reduction. The table above records the results.
+- Step 7: waits for the bundle upload and the user commit.
+

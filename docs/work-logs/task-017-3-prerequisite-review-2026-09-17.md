@@ -220,7 +220,7 @@ TASK-017-4 must validate artifact completeness separately from dashboard aggrega
 
 The [retained report](../casper/cbc-evidence/runs/casper-prerequisite-fixtures-20260917-01/report.json) records source digests, tool versions, invocation, duration, and fixture outcome.
 
-The [probe record](../casper/cbc-evidence/runs/casper-prerequisite-fixtures-20260917-01/malformed-metric-probe/result.json) retains input/output digests and the observed gap.
+The [probe record](../casper/cbc-evidence/runs/casper-prerequisite-fixtures-20260917-01/external.json) retains input/output digests and the observed gap.
 
 The malformed input uses a `.txt` archive suffix. Its mapping records the original runtime filename for reproduction.
 

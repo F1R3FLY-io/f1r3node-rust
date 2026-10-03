@@ -1,0 +1,32 @@
+{
+ "schema_version": 1,
+ "package": "casper-formal-gate-renewal-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-formal-gate-renewal-20260919-01.external.tar.gz",
+  "asset_sha256": "f939356c71a5ce9ed034e8ccf1e34f6d71eee1163e89cc340bad670eb7f75178",
+  "asset_bytes": 143669,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "previous-metadata.tar.gz",
+   "bytes": 23531,
+   "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9"
+  },
+  {
+   "path": "source-artifacts.sha256",
+   "bytes": 4380,
+   "sha256": "2f9686aa07afd85c99a8ead79879f2777247e2a02a8e92efa8c9b155ec572b05"
+  },
+  {
+   "path": "verification-metadata.tar.gz",
+   "bytes": 116726,
+   "sha256": "b759ab5ee4ff9122c43bdec3c52e70fa741ef3594a745d60c3d678d05581cf16"
+  }
+ ]
+}

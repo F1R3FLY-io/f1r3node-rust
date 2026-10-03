@@ -1,0 +1,67 @@
+{
+ "schema_version": 1,
+ "package": "casper-controlled-preparation-009262781-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-controlled-preparation-009262781-01.external.tar.gz",
+  "asset_sha256": "32ee3f0f4a4544cbd13985f88f902171ff5416f0abb503fd738db9aa23407690",
+  "asset_bytes": 14121,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "authority-request.json",
+   "bytes": 637,
+   "sha256": "592ff753d6553383b8a69395c9e112cfa64616b7d0af9ea31b9c06409d93dfc2"
+  },
+  {
+   "path": "block-exporter.Cargo.toml",
+   "bytes": 373,
+   "sha256": "c6decc05f1aaed76e798c04f8b40be3996355d065a5906828755a0b7f2df8227"
+  },
+  {
+   "path": "block-exporter.rs",
+   "bytes": 2282,
+   "sha256": "1f8ebd311d9bbc09315988bd13a9ac3f436296c81e3a4a84a9756d7d88916252"
+  },
+  {
+   "path": "captures-summary.json",
+   "bytes": 6457,
+   "sha256": "b8721304105e6ecfecbc2920a7b2e1ea3d2a0ac5901737e750a2cdc3e7f11e39"
+  },
+  {
+   "path": "controlled-run.sh",
+   "bytes": 15352,
+   "sha256": "96178b601212c8adbb4e5fd76f9c91bb4ee6ec5cd51917d976e20262a12302e5"
+  },
+  {
+   "path": "live-report.json",
+   "bytes": 2150,
+   "sha256": "c442e538328b9018d030c29790b242c0fd475bf87248829485bda51de0ccc864"
+  },
+  {
+   "path": "mapping-after-delivery.json",
+   "bytes": 13902,
+   "sha256": "229d14eff61a4118e9aec0ba35e1f301871bddfa09fc635fc6d2eecc0d0d22f2"
+  },
+  {
+   "path": "mapping-before-delivery.json",
+   "bytes": 8649,
+   "sha256": "405a4d1ec64b32f07d4f3cc93f3a4501daa7eb28b7bafa4bed93f3c0f406c6a9"
+  },
+  {
+   "path": "public-config.json",
+   "bytes": 173,
+   "sha256": "4e409888063d80910b9fc6d9919e64795c078e6359d51fe4f40d2e580ddd3dba"
+  },
+  {
+   "path": "sources.sha256",
+   "bytes": 3422,
+   "sha256": "d17c0180225fe7ce3df3a4d454155a1649f0aeda351667f89744cdb701832fec"
+  }
+ ]
+}

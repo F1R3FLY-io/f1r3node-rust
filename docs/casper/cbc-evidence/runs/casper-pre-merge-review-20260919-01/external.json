@@ -1,0 +1,27 @@
+{
+ "schema_version": 1,
+ "package": "casper-pre-merge-review-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-pre-merge-review-20260919-01.external.tar.gz",
+  "asset_sha256": "52e4b13feb6b01a7ae6284417bdeeb2b9334a8f2f005393d1ccb868b85dba860",
+  "asset_bytes": 13321,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "evidence-inputs.sha256",
+   "bytes": 20923,
+   "sha256": "2970d99fed57373b11e49c8021172e8b2fa702f567d1c3ed3cce1b30a6e376d0"
+  },
+  {
+   "path": "source-artifacts.sha256",
+   "bytes": 15365,
+   "sha256": "0520c44c12fab0d3bbf1550747c31f7a6e0724aeacbf96bb6188bc7c604aa3fb"
+  }
+ ]
+}

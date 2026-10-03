@@ -1,0 +1,52 @@
+{
+ "schema_version": 1,
+ "package": "casper-prerequisite-fixtures-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-prerequisite-fixtures-20260917-01.external.tar.gz",
+  "asset_sha256": "c387b821a91a89add7a5fe3fdf67f8d1c0e16ae25bf9dd6ea9a910320f8c1276",
+  "asset_bytes": 1926,
+  "bundle_created": "2026-09-19"
+ },
+ "members": [
+  {
+   "path": "malformed-metric-probe/iteration-00001-docker/metrics.json",
+   "bytes": 75,
+   "sha256": "f8f04d45d5203f691346f592527cc52220595e04d56bcf6296568c68b2f8a860"
+  },
+  {
+   "path": "malformed-metric-probe/iteration-00002-docker/metrics.json.txt",
+   "bytes": 16,
+   "sha256": "ed29fd7e055853bb9b23dbfbcc875141832308e97b61a1bda6f2127af190ff72"
+  },
+  {
+   "path": "malformed-metric-probe/iterations.json",
+   "bytes": 114,
+   "sha256": "08f8b1bc187f5a51acc93dcd54e81c894d0447aa413ab00dd74d363c58cd70a4"
+  },
+  {
+   "path": "malformed-metric-probe/result.json",
+   "bytes": 1878,
+   "sha256": "40187be3490043683b50f553fb44d36a225e10d712e8a06435a2189553887de9"
+  },
+  {
+   "path": "malformed-metric-probe/summary.json",
+   "bytes": 1035,
+   "sha256": "720b3138069dc0aa37f8c82055016d432687a3826021e31c923a08eb46c6afdc"
+  },
+  {
+   "path": "malformed-metric-probe/writer.txt",
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "summary-fixture.txt",
+   "bytes": 33,
+   "sha256": "e5932a2b8042b930bc55b739d26886dc3caaecf5005f99a75d82c431dc6ae133"
+  }
+ ]
+}

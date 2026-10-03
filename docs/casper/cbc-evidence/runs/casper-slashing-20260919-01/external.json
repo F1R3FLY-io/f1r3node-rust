@@ -1,0 +1,57 @@
+{
+ "schema_version": 1,
+ "package": "casper-slashing-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-slashing-20260919-01.external.tar.gz",
+  "asset_sha256": "0980ee716c705c7cef0dcbe28413280ae45a2ebeec02f24423ece42abcea9d9c",
+  "asset_bytes": 2867920,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "artifact-files.txt",
+   "bytes": 679,
+   "sha256": "53ae3bd86744aadb6dae47a8a9d0e0f209c3432c9dc57e1fd1cd1247d8c667c6"
+  },
+  {
+   "path": "evidence.sha256",
+   "bytes": 2020200,
+   "sha256": "074620777a6f2bf6ff37312e75f303ff7b89eab33657b3661d726d5b7a9caa4a"
+  },
+  {
+   "path": "evidence.tar.gz",
+   "bytes": 2674536,
+   "sha256": "a8f4cd4d51256fa23ed2d28c481779ec806d864f2db800fd18e105a24e8fedbd"
+  },
+  {
+   "path": "private-path-scan.txt",
+   "bytes": 205,
+   "sha256": "3ecff309a6d0b155fb23b67cc1f6b1a97f81d78f9c8c8ac0230ccbd6e22c0369"
+  },
+  {
+   "path": "source-files.txt",
+   "bytes": 1033,
+   "sha256": "9d155301a7f6d28ac31acb765f02a7656ca563c06184dc5459d78de4385d0b76"
+  },
+  {
+   "path": "source.sha256",
+   "bytes": 2617,
+   "sha256": "47c33e8de24e7e5b885bbdbc5e1bf92fe01e5a5688e9bab7e258c4f965c919ec"
+  },
+  {
+   "path": "source.tar.gz",
+   "bytes": 92069,
+   "sha256": "c25e5056df379f0b9eb86faddd9c55abc676d132a70e479ad5f90842f7665a21"
+  },
+  {
+   "path": "symlinks.txt",
+   "bytes": 425,
+   "sha256": "37ba55232f495257e00d6c1d4da605cd556164477f95f2af102ccf6b898b58b1"
+  }
+ ]
+}

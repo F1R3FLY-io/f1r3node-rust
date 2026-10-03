@@ -1,0 +1,87 @@
+{
+ "schema_version": 1,
+ "package": "casper-task-017-4-acceptance-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-task-017-4-acceptance-01.external.tar.gz",
+  "asset_sha256": "0e27ab9f76cf85d735f9e4dcf7679d389575c24f96c09a4530ad0930ca8d5edb",
+  "asset_bytes": 916639,
+  "bundle_created": "2026-09-19"
+ },
+ "members": [
+  {
+   "path": "acceptance-support.patch.txt",
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "bundle-audit.json",
+   "bytes": 1907,
+   "sha256": "20b2d94bd4255eb4215557134b884657fc32e298bd1d99e1d8ae593872f63b09"
+  },
+  {
+   "path": "claim-audit.json",
+   "bytes": 361,
+   "sha256": "37204bfecbb8300d6a41f9feb4602d7e956df7edc44bb648320bccc115c9f8e0"
+  },
+  {
+   "path": "completion.txt",
+   "bytes": 35,
+   "sha256": "9c92f4955b54cc82d54342a0fa236cf950a19f008ec1dd64f4bdfc768b286139"
+  },
+  {
+   "path": "integrity.json",
+   "bytes": 97,
+   "sha256": "80e94d6ff090dbe41baa350311e32367e82af2691a67f8f3bc3956ce9c040d40"
+  },
+  {
+   "path": "postcommit-evidence.tar.gz",
+   "bytes": 344113,
+   "sha256": "9a499ed68944a92cb6f0dad1a8eccb39037bcc0f6830ff6689703b373e39c44e"
+  },
+  {
+   "path": "postcommit-files.sha256",
+   "bytes": 182670,
+   "sha256": "b87dde03b9d439b186eeda34551e6572b1926cc697c5d6f04eef9056e61b3292"
+  },
+  {
+   "path": "prior-ledgers.tar.gz",
+   "bytes": 5039,
+   "sha256": "4869ed3996b96dda70f84cc666ceb6f86d529f982f8c847b260287738d333e52"
+  },
+  {
+   "path": "prior-ledgers.txt",
+   "bytes": 2488,
+   "sha256": "f4474efa9c10aa372f8c569f7276e191091658e24befdc1cbb0af90895fa4f91"
+  },
+  {
+   "path": "source-digests.json",
+   "bytes": 4428,
+   "sha256": "fec84b4fb8d949013007ffee9f1048d09491a179c670a065c5e5233814919a6a"
+  },
+  {
+   "path": "source.tar.gz",
+   "bytes": 137232,
+   "sha256": "962c05eb0245e6fc37008ec29c026ade13cabdb5d9dc820d6d38d0b132003e93"
+  },
+  {
+   "path": "validation-evidence.tar.gz",
+   "bytes": 377988,
+   "sha256": "3faf1f481fae09a3f56c1dca478629df75b55657632f3bcfa1bbbdd04f18a823"
+  },
+  {
+   "path": "validation-files.sha256",
+   "bytes": 204054,
+   "sha256": "18df5cea2a6c2decbcc2e0429a6b9794ee30996da1cceb750f7e8ffdba7209c1"
+  },
+  {
+   "path": "validation-redactions.tsv",
+   "bytes": 624,
+   "sha256": "2e7fb6f10a3d56dae869d913a370f494bea25e06e35f7dcbcf20f7d8321985c8"
+  }
+ ]
+}

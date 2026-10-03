@@ -1,0 +1,22 @@
+{
+ "schema_version": 1,
+ "package": "soak-formal-gate-implementation-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "soak-formal-gate-implementation-20260919-01.external.tar.gz",
+  "asset_sha256": "8e78bcf203bc1c78e3b4a8b05fd0f811deb26419466adc883dd49182e2f4a57d",
+  "asset_bytes": 599,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "source-artifacts.sha256",
+   "bytes": 503,
+   "sha256": "d8e6f70fc9a2dd749b87ad4befe7b5d20132d9d77d109ab8908c6516232e6ec2"
+  }
+ ]
+}

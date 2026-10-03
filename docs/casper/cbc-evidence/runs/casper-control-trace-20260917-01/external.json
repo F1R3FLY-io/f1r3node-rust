@@ -1,0 +1,612 @@
+{
+ "schema_version": 1,
+ "package": "casper-control-trace-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-control-trace-20260917-01.external.tar.gz",
+  "asset_sha256": "40f8167b6b875a002ef37cb13955d4819161d9b60804e2271bebf53fe13cda5a",
+  "asset_bytes": 81283,
+  "bundle_created": "2026-09-19"
+ },
+ "members": [
+  {
+   "path": "casper-model/MC_CasperSoakHarness.log.txt",
+   "bytes": 1488,
+   "sha256": "0b7849413cac4674e5a1bf98954b6e078d0d34df1aa77639ad3faf305ff91e15"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_cleanup_unsafe.log.txt",
+   "bytes": 4174,
+   "sha256": "9c7254030f559e38861f19cd07279b69da9cf6ea8e5ecd09d6e807f89ad62092"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_control_unsafe.log.txt",
+   "bytes": 3453,
+   "sha256": "2bc0e1c9578dbad92c1b7cfb7c666e25be43e24a15bf3ef6c28c16fc2bf8d967"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_evidence_unsafe.log.txt",
+   "bytes": 11503,
+   "sha256": "be856ca46c1a7bdbfcb949e66531840b8ec5c248f74cab2a372772d50389f457"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_failure_unsafe.log.txt",
+   "bytes": 4903,
+   "sha256": "66cb1c95ec30ccf23d183f2384c6b5d4073fc2b088e66918026fb25634153384"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_identity_unsafe.log.txt",
+   "bytes": 3444,
+   "sha256": "f2d560ef46b607c94268098dba358f4c7e991fd3e1978710f685a031d36addc0"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_merge_unsafe.log.txt",
+   "bytes": 2728,
+   "sha256": "39731440d186a816282ed173c7c941227c0bec7d4901c125d278125655ab9808"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_policy_unsafe.log.txt",
+   "bytes": 3452,
+   "sha256": "56afccf21f29e3182443f9e7fcf578efbd73bd2c1ce996399482e631ee5837c6"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_resume_unsafe.log.txt",
+   "bytes": 4903,
+   "sha256": "070a3b776bceb865f4dec7ef931a9e16a526c15905db6a0ac8d4ebc362170b7e"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_samples_unsafe.log.txt",
+   "bytes": 4171,
+   "sha256": "1a3171302b60a864e9b721f2cd509fbd659efc87ba283fe0e5f2f94b48b91f78"
+  },
+  {
+   "path": "casper-model/MC_CasperSoakHarness_stop_unsafe.log.txt",
+   "bytes": 4173,
+   "sha256": "8e7518d9573446027afe2c843742ec601cfab38a3f80d97185903335393d57ac"
+  },
+  {
+   "path": "casper-model/report.json.txt",
+   "bytes": 19926,
+   "sha256": "719b8a06042ac6dd0a024f118df14576e9b47ffea2e397b6541730cc45fc26d9"
+  },
+  {
+   "path": "cbc-gate.json",
+   "bytes": 2362,
+   "sha256": "a353b362c35f798ca7b808dcf21bd5d20208a08e4fcfadb47a16878fdb6ee5ae"
+  },
+  {
+   "path": "cbc-gate.stderr",
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "green/evidence/bash.txt",
+   "bytes": 314,
+   "sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+  },
+  {
+   "path": "green/evidence/exit.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+   "path": "green/evidence/java.txt",
+   "bytes": 225,
+   "sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1"
+  },
+  {
+   "path": "green/evidence/run.txt",
+   "bytes": 149,
+   "sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f"
+  },
+  {
+   "path": "green/report.json",
+   "bytes": 771,
+   "sha256": "f6070dfd7d25e76b311935914c770f39024698a8853401527ef7db68234133a9"
+  },
+  {
+   "path": "green/sources/.github/workflows/slashing-tests.yml.txt",
+   "bytes": 18489,
+   "sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+  },
+  {
+   "path": "green/sources/scripts/ci/check-formal-invariants.sh.txt",
+   "bytes": 4460,
+   "sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876"
+  },
+  {
+   "path": "green/sources/scripts/ci/check-tla-invariants.sh.txt",
+   "bytes": 15212,
+   "sha256": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8"
+  },
+  {
+   "path": "green/sources/scripts/ci/test-check-tla-invariants.sh.txt",
+   "bytes": 11712,
+   "sha256": "369fe3ed9899c28f1bf9d2a3f29cfc251e25dd41d92aa75b69120281b4c19c8c"
+  },
+  {
+   "path": "implementation.patch.txt",
+   "bytes": 3275,
+   "sha256": "b4bac4e192e3ceeb0d15e8fd4afef6d66e78e38c1fe99b69c39f581fcb838a0a"
+  },
+  {
+   "path": "red/evidence/bash.txt",
+   "bytes": 314,
+   "sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+  },
+  {
+   "path": "red/evidence/exit.txt",
+   "bytes": 2,
+   "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  {
+   "path": "red/evidence/java.txt",
+   "bytes": 225,
+   "sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1"
+  },
+  {
+   "path": "red/evidence/run.txt",
+   "bytes": 94,
+   "sha256": "f1b52d6930b05b9f9ee44f4193f586d3aa5487181ab9a088681dae27b161c4ef"
+  },
+  {
+   "path": "red/missing-trace.txt",
+   "bytes": 94,
+   "sha256": "58790dbc176209c2005d349f6f9630ff90adc31248f80936ed7406317e1c10d8"
+  },
+  {
+   "path": "red/report.json",
+   "bytes": 768,
+   "sha256": "823c703de41bf595f7a127fc02d14b18b871538ed8bfc24aba542898766ec060"
+  },
+  {
+   "path": "red/sources/.github/workflows/slashing-tests.yml.txt",
+   "bytes": 18489,
+   "sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+  },
+  {
+   "path": "red/sources/scripts/ci/check-formal-invariants.sh.txt",
+   "bytes": 4460,
+   "sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876"
+  },
+  {
+   "path": "red/sources/scripts/ci/check-tla-invariants.sh.txt",
+   "bytes": 14894,
+   "sha256": "f353a3f809086033a076d98a4768fd15e3734d0d6cad3b6b5b5d7a98c9564afb"
+  },
+  {
+   "path": "red/sources/scripts/ci/test-check-tla-invariants.sh.txt",
+   "bytes": 11712,
+   "sha256": "369fe3ed9899c28f1bf9d2a3f29cfc251e25dd41d92aa75b69120281b4c19c8c"
+  },
+  {
+   "path": "runner-tests.txt",
+   "bytes": 1827,
+   "sha256": "2c73194e572e476f7a3dc318068ee762020bc8cfbe569f3da0f89d99ad8a4c75"
+  },
+  {
+   "path": "source-manifest.json",
+   "bytes": 24964,
+   "sha256": "3b2cfd1ffba3516f100865eb6517e5f60fae129b83f1e8bdd1da105efd8d5c1a"
+  },
+  {
+   "path": "tlc/evidence/bash.txt",
+   "bytes": 314,
+   "sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+  },
+  {
+   "path": "tlc/evidence/exit.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+   "path": "tlc/evidence/java.txt",
+   "bytes": 225,
+   "sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1"
+  },
+  {
+   "path": "tlc/evidence/run.txt",
+   "bytes": 12777,
+   "sha256": "852e10dd16f70dd782bff07aa4b494205f161b6da39061ca0534c7146bc73483"
+  },
+  {
+   "path": "tlc/report.json",
+   "bytes": 774,
+   "sha256": "adb5f65355a196dc2060abb8473dcdf972ab63186df73243b3d759ef62de89f2"
+  },
+  {
+   "path": "tlc/sources/.github/workflows/slashing-tests.yml.txt",
+   "bytes": 18489,
+   "sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+  },
+  {
+   "path": "tlc/sources/scripts/ci/check-formal-invariants.sh.txt",
+   "bytes": 4460,
+   "sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876"
+  },
+  {
+   "path": "tlc/sources/scripts/ci/check-tla-invariants.sh.txt",
+   "bytes": 15212,
+   "sha256": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8"
+  },
+  {
+   "path": "tlc/sources/scripts/ci/test-check-tla-invariants.sh.txt",
+   "bytes": 11712,
+   "sha256": "369fe3ed9899c28f1bf9d2a3f29cfc251e25dd41d92aa75b69120281b4c19c8c"
+  },
+  {
+   "path": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex.txt",
+   "bytes": 1441,
+   "sha256": "687cb8d88740b47fc840d3f67858e28fe665550af68ae005d48c03ce8f2cee3b"
+  },
+  {
+   "path": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
+   "bytes": 1476,
+   "sha256": "4daaca590794d4f8e32eec7fd45b1ede621ee5b0160b16d3c7d195a893df417c"
+  },
+  {
+   "path": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
+   "bytes": 1924,
+   "sha256": "1e0b99437f59daf260480f7560e6169763b4b4e4c8f8083b6717b4c9fb1838a0"
+  },
+  {
+   "path": "tlc/transcripts/tlc-deploy_storage-MC_DeployStorageBound.txt",
+   "bytes": 1886,
+   "sha256": "7650dc0967cc469e4c4aa2fa5cc70046b24fd7a0e958f1c9c9b4982d1abd04a3"
+  },
+  {
+   "path": "tlc/transcripts/tlc-deploy_storage-MC_DeployStorageBound_unmetered_pre_fix.txt",
+   "bytes": 1960,
+   "sha256": "47441708a7af26a8b5e33ec8dd932d8f99c21521b7c049f3677c852a52419f74"
+  },
+  {
+   "path": "tlc/transcripts/tlc-replay_liveness-MC_ReplayHotLoop.txt",
+   "bytes": 1650,
+   "sha256": "18acd0640a5123a1da38bda5c971a3b84808220e9c607aeb97466271624d9ceb"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline.txt",
+   "bytes": 1285,
+   "sha256": "bfe738c0f03ed29021de3d73105de1c06ca77aae802ac3c1f52f5741e53c7745"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline_available.txt",
+   "bytes": 1305,
+   "sha256": "3c103760c8d3c1e48eb5fce985d02858ef300e875c52a0a389e9a9dc8e5b1332"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline_zero_pre_fix.txt",
+   "bytes": 1294,
+   "sha256": "9893fa56ecb5ad62fc0a0db55f01981f068d000b2cdab517e4a5e94f60fe8f30"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricMonotonicity.txt",
+   "bytes": 1377,
+   "sha256": "edf5fa30daa44b505c3f7b337a8792173dfe818a2ca96cf7ebd0283dcd48deeb"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricMonotonicity_unchecked_pre_fix.txt",
+   "bytes": 1772,
+   "sha256": "502d6a32b7dc85b9adf7d5d831072d7ea4269ba8eaf9bc99325a7321e8c21f5c"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSampleValidity.txt",
+   "bytes": 1518,
+   "sha256": "e8d7c1f9c86d85f35f75ac17fd082fa73a5ceb17f7e4adc7129fd8f26634592a"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSampleValidity_unchecked_pre_fix.txt",
+   "bytes": 1909,
+   "sha256": "3b31a025544c061c808ea32dc4d45385eb845b8f61aaffc147802b084bb912df"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSummary.txt",
+   "bytes": 1426,
+   "sha256": "f2d21474ec7d0e5f2b76a3cfd7bfb95f839820aa48e0376cad9e633e1ad024ab"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSummary_omitted_pre_fix.txt",
+   "bytes": 1727,
+   "sha256": "74093d7b619666bea99d26a08e2cc1323fb3faf4ec0a95b25d23cd4576322dae"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_ReserveBound.txt",
+   "bytes": 1352,
+   "sha256": "aed06d0fe67b4e6edcf722d88cd01fcfae4d4ad40fbda14024d184a102bbea9a"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_ReserveBound_unbounded_pre_fix.txt",
+   "bytes": 2166,
+   "sha256": "84aa27b3a4fdfc1786e1c74ab4e8e2c671d5f34b3ba4fd6b9eeb594a0f2234c7"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_RetentionReserve.txt",
+   "bytes": 1367,
+   "sha256": "27c0eaae34a50fb64a71045d2225b2cbee2f2ac14b1388c5acadd3d70b290671"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_RetentionReserve_unskipped_pre_fix.txt",
+   "bytes": 1725,
+   "sha256": "30d7fa3b9fb13443f38a1d55cdb2c8ced26a00d8a6c3d58eba56ef958a0e4c88"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission.txt",
+   "bytes": 2063,
+   "sha256": "a7a482f664d40f1e9a97983fd678cb4406c5c1098175d8e579a1f390eaf9f952"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_age_only_pre_fix.txt",
+   "bytes": 9716,
+   "sha256": "f2492be39f5bc984bfc3fd9d07d93fd756b2c5f95caf59357a255d86301a5d2e"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_attribute_first_pre_fix.txt",
+   "bytes": 6264,
+   "sha256": "fd9b19abffd68086d5420706da6e09b8560659cea98fdd95ac6d9dee8e63d721"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_benchmark_band_pre_fix.txt",
+   "bytes": 5083,
+   "sha256": "696a46f965db52f9b4175f5ecaab153ac7e2a3454e67cca6b38a9cc1e70246eb"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_floor_only_pre_fix.txt",
+   "bytes": 15525,
+   "sha256": "47c77e4dc86a94e06fd27e0cee511820a6dc2bbbf69c65586539c4255c516cdc"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_global_prune_pre_fix.txt",
+   "bytes": 9732,
+   "sha256": "8ce5d9bc359b4c390741eb1405bc9daf5554ef4c198c4ef406469ece0461ad99"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_ignore_errors_pre_fix.txt",
+   "bytes": 15538,
+   "sha256": "d2024de234885fa513cf1de2efd4eb4ea21009c04b93a53276f789c29b66258a"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_in_place_pre_fix.txt",
+   "bytes": 5099,
+   "sha256": "17bff3516d4418a99ca8216c8116f5270f290d7581a32f9ce2ce7682cfcba730"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_iteration_only_pre_fix.txt",
+   "bytes": 5104,
+   "sha256": "7d9f0de524ed174bf4905a07e25067628243aad504be43ebaeed7f452afc604e"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_late_guardian_pre_fix.txt",
+   "bytes": 5084,
+   "sha256": "2d4308d74cecf080b7ae87ad04bb80a2ca762281a49e873dfebb7c37942fd79e"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_missing_sample_pre_fix.txt",
+   "bytes": 10875,
+   "sha256": "30a39b5676652ee1aea4b47befc994fd30c21dce8862094f22634c998303ea51"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_numeric_prefix_pre_fix.txt",
+   "bytes": 10931,
+   "sha256": "9cdd30a39ad6d42db09f5073cc603a20aa11fa7e26d4065588aba9325cb4ad37"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_pathname_pre_fix.txt",
+   "bytes": 5088,
+   "sha256": "d28039dc176689b559a18ab10e5ed55502a46259924f046758b9a56b91349df1"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_retained_breach_pre_fix.txt",
+   "bytes": 5091,
+   "sha256": "621374c35e1718a48fd57f9c34c3c4b0c375156c576c0a94c1f0b91fe1219bab"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unbounded_hygiene_pre_fix.txt",
+   "bytes": 12063,
+   "sha256": "db7a49dcf054d82f4afb28edd3a94b38c95c8ed3fa55addd4f6e94c03dc5f94f"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_guardian_pre_fix.txt",
+   "bytes": 6257,
+   "sha256": "0126cf1257cb8d2cace304e3dd2cf2eb93e6e7819ec55f5a30f25a0fef062096"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_monitor_pre_fix.txt",
+   "bytes": 6256,
+   "sha256": "5ca6332e48e78fa59c21d7da0c73adca4b00558faef886c40935757c2d2118e1"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_placement_pre_fix.txt",
+   "bytes": 5115,
+   "sha256": "4be74a37e53656a88eb1779e80f1f7a5e17531c3f3e7f78538a211b4ed07c95d"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_producer_pre_fix.txt",
+   "bytes": 6281,
+   "sha256": "0cbd9b0cb1523882ae971e8c666f3d73e4d2bf0752cd55e923e8dfe4398910e4"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_progress_pre_fix.txt",
+   "bytes": 6261,
+   "sha256": "2e49cb0e7e91dfe9cecae82f6173d8c825319795f794fd0191f06680f8673075"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_range_pre_fix.txt",
+   "bytes": 5100,
+   "sha256": "ce790a59c585dfa031f55479455f1c1fddda3f5e030caeb4944503d20bdbce6b"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix.txt",
+   "bytes": 5104,
+   "sha256": "478fd8f6e25ae95c40f25b7eff130cffa86e16af6a68904d85faaea0ed423994"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_pre_fix.txt",
+   "bytes": 5073,
+   "sha256": "72ded1d2361e81971af59a96a8b4f19c25dd28e69605cb7cdca24883bf887f74"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_breach_pre_fix.txt",
+   "bytes": 5099,
+   "sha256": "11f96b13554749047fc4564afd58053845714ed06ab7e8350a6e6f8b52e22962"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_death_pre_fix.txt",
+   "bytes": 5096,
+   "sha256": "f649e9c0c2f48b16e77e1cf0ad7c988aa803b4ef621d14defbe562cd236e03aa"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian.txt",
+   "bytes": 1781,
+   "sha256": "3c094f3bf2eaaa17a45b0385415b2dc08639fb944197bab48a6e405dbac7b131"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_alive_only_pre_fix.txt",
+   "bytes": 5471,
+   "sha256": "02c65749d36203e5ef6464379226d3b036847b82dd232918282f54b981cb2b8f"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_blocking_pre_fix.txt",
+   "bytes": 6442,
+   "sha256": "16c021fcab441554faf5a80402790aa1e33f70868c72eff131dbdeec213d927e"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_cleared_breach_pre_fix.txt",
+   "bytes": 15142,
+   "sha256": "e2fa85b718bf3db90c94c18c24e61c6cb6be73182dc8c446f11d93ba097df6a1"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_client_only_pre_fix.txt",
+   "bytes": 5452,
+   "sha256": "4462cb095a624af6749d0f8df35b8a4a38f60e5c38ea3b2fb21ce4e1338fcc12"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_drain_first_pre_fix.txt",
+   "bytes": 12223,
+   "sha256": "e58f66e0780489cc2d17906de0fbf5974046da18c574ece370c939870e5e2a6e"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_host_pattern_only_pre_fix.txt",
+   "bytes": 5476,
+   "sha256": "ded354f9c2604ae1ba0fdddeb704f3964cf65808d9973cdb73a4bc04470d7411"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_ignored_pre_fix.txt",
+   "bytes": 5446,
+   "sha256": "2aa339e6c4d7320e30f5670a06d435fd6a7684b7ca170a97ed86e8e8fbc9f331"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_name_only_pre_fix.txt",
+   "bytes": 5452,
+   "sha256": "fd972097198b2fd477183d869103c6d5cbff5cb415a64109c78cd4d1e761e8db"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_oom_pattern_only_pre_fix.txt",
+   "bytes": 4505,
+   "sha256": "9fe6af6c49152a41f3029f8cafa1672cd84eeda801a2a5440d62073f8ea9a7b1"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_parent_group_pre_fix.txt",
+   "bytes": 5469,
+   "sha256": "2051e9bcde6e8b1e135159e1bb8b82f7ddf1d5bc40a5e298e56fb233b2d8b92b"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_parent_only_pre_fix.txt",
+   "bytes": 3533,
+   "sha256": "328180506bd86f05e43aab21c932ab8fe47398144a9b942b817ea6c2b191766b"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_per_root_deadline_pre_fix.txt",
+   "bytes": 11282,
+   "sha256": "6536bd70f95753d7ae15fa4705b5d392f18c3456af8b6bac4cebaa0db8c879b8"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_periodic_name_pre_fix.txt",
+   "bytes": 4509,
+   "sha256": "7faabc67c49136581ba301eb9ea7ee241bfba2aaea2ee140788465a6a7c76167"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix.txt",
+   "bytes": 7399,
+   "sha256": "f43c316d590cd21d7981180a0fc2c9b24e35f06ad7aa0c971df3708d55788791"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_start_first_pre_fix.txt",
+   "bytes": 3534,
+   "sha256": "2b2542d7cdfc40bc96287506edcf2ac2d81dc8df4accea2b4a7f04ef978ac129"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_startup_only_pre_fix.txt",
+   "bytes": 5480,
+   "sha256": "3416dd8083867f7124e066527fd365509f5d1639ad194c44fc0b101281fe30ea"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_stop_first_pre_fix.txt",
+   "bytes": 8357,
+   "sha256": "57f689c95c0bf1950ea2671e9e46ed6cb5443c0faa3b003a8f908bd62ebceede"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unavailable_sample_pre_fix.txt",
+   "bytes": 6460,
+   "sha256": "9cdc92db154cf0e30931e6d7c5e9486e4053cade1b4c382d8c3610d8b55d0769"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_pre_fix.txt",
+   "bytes": 16085,
+   "sha256": "a5d6aecec8bef96da45c07fdcf57b50491ad92cf07a8d5d65964216260d98803"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_probe_pre_fix.txt",
+   "bytes": 7406,
+   "sha256": "1a89e8549d6d9616bb86eab5142409e74c7e14002bf4671995a2bbde8afd9397"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_stop_pre_fix.txt",
+   "bytes": 11260,
+   "sha256": "9e86435ef2cb43dc5bd43006dc41381264db29e95ea74b38b1971e0cef37666b"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unconditional_pre_fix.txt",
+   "bytes": 6439,
+   "sha256": "ed6d28a318b0e7b84583c6f1a52b91423ee8e33efcf87a72f612b29e8db83d4c"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unconfirmed_stop_pre_fix.txt",
+   "bytes": 16093,
+   "sha256": "8f9264802dcf465f3815ca41e73f1c698c2d90b61b410127e21b1689cc9d49bc"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unmanaged_pre_fix.txt",
+   "bytes": 5489,
+   "sha256": "44b12f1384ed975b779cb745424bd6e14061e222a390bdea9a74204060305733"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unwatched_pre_fix.txt",
+   "bytes": 5472,
+   "sha256": "245ff3b41e9a878fc9532746235c7c4afdb28d7a1c340e330f7c46eaf722ebc2"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget.txt",
+   "bytes": 1880,
+   "sha256": "4a757b03bd48967d265f8bd31a33fb5954e9b068cac746f66f02460298c4bf61"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_blocks_pre_fix.txt",
+   "bytes": 2441,
+   "sha256": "abc015d55cd8821ceca2c7ef5ae8f56c65a498a4d1736731901e0d3658db4f99"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_history_pre_fix.txt",
+   "bytes": 2643,
+   "sha256": "118e958a714464108541091eb892dee985de36f0fc0a3fc8a034f8a8c5451544"
+  },
+  {
+   "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_logs_pre_fix.txt",
+   "bytes": 2436,
+   "sha256": "f4fa50d64253bd7f1a28c955ef04116b8c93a9c89178f809d80c01261b241d53"
+  }
+ ]
+}

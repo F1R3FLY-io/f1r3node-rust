@@ -1,1 +1,0 @@
-FAIL: An incomplete baseline search passed the pull-request gate.

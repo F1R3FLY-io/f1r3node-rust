@@ -1,0 +1,22 @@
+{
+ "schema_version": 1,
+ "package": "casper-campaign-reservation-9dd92a007-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-campaign-reservation-9dd92a007-01.external.tar.gz",
+  "asset_sha256": "77eb5501ffbc016f5b5edc922ecbc97307616ad87291c57807f3912f1fee3a2e",
+  "asset_bytes": 986,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "sources.sha256",
+   "bytes": 1284,
+   "sha256": "476d5d5b73b96c65e27d7494fb8c2e3ce235dd4e2f0e4504ffd7b1e87da5ab8d"
+  }
+ ]
+}

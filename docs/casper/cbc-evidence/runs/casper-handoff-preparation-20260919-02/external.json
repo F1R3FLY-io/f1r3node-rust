@@ -1,0 +1,72 @@
+{
+ "schema_version": 1,
+ "package": "casper-handoff-preparation-20260919-02",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-handoff-preparation-20260919-02.external.tar.gz",
+  "asset_sha256": "8d0f36357d4c9cf12375cdb3b28d4ef17f336f3b420e7da412b1dda5932e70bd",
+  "asset_bytes": 17070,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "accepted-report-sources.sha256",
+   "bytes": 15683,
+   "sha256": "2d347fcd646b49d010be4fcf69b54a70fbf126c1b197d0f26453c2ccf851385b"
+  },
+  {
+   "path": "canonical-gate.json",
+   "bytes": 14518,
+   "sha256": "2039d573bce249e69f23290d0af6d3a5a8be9f306aa5413c0e54b1ebfe7d800a"
+  },
+  {
+   "path": "claims.json",
+   "bytes": 1931,
+   "sha256": "79f98eacb31fa16728f7c1a5dd1c30a4c833570850b21356bfd37bd7d578df23"
+  },
+  {
+   "path": "declared-paths.txt",
+   "bytes": 7027,
+   "sha256": "74af0ff427bfa85c9432fec917ed3454054ae9ffdd4cc69d17eee9d0247eed07"
+  },
+  {
+   "path": "default-gate.json",
+   "bytes": 14515,
+   "sha256": "d25f082c9a20f499ad9a0e829c74cf1145a27d6aa4a3a7f0694467e442c24d8d"
+  },
+  {
+   "path": "inventory-selection-refusal.txt",
+   "bytes": 238,
+   "sha256": "36630b93bc19cd0d1e0ac86ee2bdc96be1833f34fcded2f47fbc28ee45d830e2"
+  },
+  {
+   "path": "mandatory-paths.txt",
+   "bytes": 7106,
+   "sha256": "82bf1816478f28a315447b8597e881478b1c5a66204c6dfc9173da769240a6c3"
+  },
+  {
+   "path": "pr216.json",
+   "bytes": 171,
+   "sha256": "13e7527a2797810621e7049ccfce197cfdeb423f2b57de03a778e8b8491dd167"
+  },
+  {
+   "path": "pr436.json",
+   "bytes": 149,
+   "sha256": "8497c8725fb7d34cc56fa022bed6d5b25e00c61ce4bd8eb19c2c27c2ab422f9a"
+  },
+  {
+   "path": "reviewed-inputs.sha256",
+   "bytes": 3090,
+   "sha256": "8e4d9a876eb870561358e3f795a1e81e05f52bcba3ec8bd5d9ff8a836f22125c"
+  },
+  {
+   "path": "source-artifacts.sha256",
+   "bytes": 15566,
+   "sha256": "c1f329608d9340df7e2981bce031761a036c86b5739b3df1f239ec8557c0c3ee"
+  }
+ ]
+}

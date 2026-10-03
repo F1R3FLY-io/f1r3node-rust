@@ -1719,11 +1719,13 @@ tasks:
   - id: TASK-017-14
     title: "Reduce the branch diff to the formal-verification deliverables"
     status: in_progress
-    claimed_by: claude-session-9f19b46c
-    claimed_at: 2026-09-19T05:52:15Z
-    execution_scope: "Preparation steps 0 through 5 only: retention rule, external store, bundles, consumer review, and work-log consolidation. Steps 6 and 7, the verification and the reduction commit, wait for TASK-017-13."
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-03T16:05:00Z
+    previous_claimed_by: claude-session-9f19b46c
+    execution_scope: "Steps 0 through 7. The user transferred the task to this session on 2026-10-03 and lifted the TASK-017-13 block, because PR #436 is now the bottom of the stack (PR #451 and PR #447 merged) and its diff against master is 2,048 files and 307,232 added lines."
     work_log: docs/work-logs/task-017-14-preparation.md
-    blocked_by: [TASK-017-13]
+    blocked_by: []
+    previous_blocked_by: [TASK-017-13]
     created_at: 2026-09-17
     rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
     measured_at: 490d21093

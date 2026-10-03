@@ -1,0 +1,262 @@
+{
+ "schema_version": 1,
+ "package": "casper-profile-acceptance-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-profile-acceptance-20260919-01.external.tar.gz",
+  "asset_sha256": "ccb61d63cc01ac290f4329ff9be33c909a585d9709ac58fc367afc74fbc5a137",
+  "asset_bytes": 1606128,
+  "bundle_created": "2026-09-19"
+ },
+ "members": [
+  {
+   "path": "accepted-ledgers.sha256",
+   "bytes": 5329,
+   "sha256": "7b0ede3de7c7394694ff4c56365224c96cab34b25ce2c90ebbf281a5c7751edb"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-AuthorityFinality-tla.md",
+   "bytes": 1848,
+   "sha256": "abc1047b5626b86b6efe424852bde8a43580942a6c894fe3e3037e59efd16838"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-cfg.md",
+   "bytes": 1860,
+   "sha256": "36c98d854c58f5988f0b1609c90ea753792ad268f0716c5b23dfc4ae1a27ecc4"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-finality-unsafe-cfg.md",
+   "bytes": 1924,
+   "sha256": "74608b4a05ba153f6b16b4aef72acb7e563a24d0f8dc9fe87194e42022ccd7e3"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-head-unsafe-cfg.md",
+   "bytes": 1908,
+   "sha256": "835a5cbf4d15bb857acaf28bf24c35ba3529139e3bc2aff448f24c5198f5c4a8"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-pair-unsafe-cfg.md",
+   "bytes": 1908,
+   "sha256": "ca745f705a4f86c10d4647ceeada2e36f0e4e6dbe569d07b7e764a4f12ba1e9e"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-README-md.md",
+   "bytes": 1800,
+   "sha256": "94c4387afadb043ad1bac7bacf164fefd7a8993d96e62c7d1118d9acfd4523a7"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-authority-finality-verification-plan-jsonc.md",
+   "bytes": 1856,
+   "sha256": "6b4bc09a148fd35835d22eef0e389f7890fc13585c8da69c7fcde01c88e8d6ea"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-MC-Publication-cfg.md",
+   "bytes": 1787,
+   "sha256": "3e4218c8c180d33c2fb361f5ad33eab8aa34b3c9f3e367287f4d3f4fdf4cdf47"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-MC-Publication-fault-unsafe-cfg.md",
+   "bytes": 1839,
+   "sha256": "531b4c5841963add1e1d19b9059a74d7173cdc58f5afec52468dd1a334f53c9e"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-MC-Publication-restart-unsafe-cfg.md",
+   "bytes": 1847,
+   "sha256": "fc65dcd876c0fe7ebc23b48a508e584b205cb64c778ec58c84aaf9d2083cff04"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-MC-Publication-tuple-unsafe-cfg.md",
+   "bytes": 1839,
+   "sha256": "07b097ad272ca0fa795368157da823049845e7b7b6f3ed658882f9c1c3f90f0a"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-Publication-tla.md",
+   "bytes": 1775,
+   "sha256": "384e76f3f555bd0efa59495734f159505ba0ee115d83267aa233be8213714746"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-README-md.md",
+   "bytes": 1751,
+   "sha256": "35b9a49ce9b9df02b1168be42ea0a9a6dcb6c0ae99ec50e0d37b2c22dec79a17"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-publication-verification-plan-jsonc.md",
+   "bytes": 1807,
+   "sha256": "4e5102cc7bfeecb85e4a7e81f3096ed3f6c0031a239d480afc5781f1fc49d172"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-MC-Recovery-cfg.md",
+   "bytes": 1754,
+   "sha256": "4d92fe22d876ed1d107c201ff35cab6d916c30d2eaf04fd7b6b43c8701c0f60b"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-MC-Recovery-lane-unsafe-cfg.md",
+   "bytes": 1802,
+   "sha256": "f73b9f0873d4455011926b504517a4634abbcbd50a15038098b8ceec5fa3afc8"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-MC-Recovery-occurrence-unsafe-cfg.md",
+   "bytes": 1826,
+   "sha256": "ab7da5037b2a54f19496fb6cffcf3282ad2e0575dfefe07ce237dc3f8dc61f78"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-MC-Recovery-pause-unsafe-cfg.md",
+   "bytes": 1806,
+   "sha256": "ba35a88bd390e4e0550a5bb0b9c2458eaf61016c3059bdb1d9e3ace5930d3265"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-README-md.md",
+   "bytes": 1730,
+   "sha256": "6a17f188cd6b7453c01236540efa408a20f56d586b5e1f7551620c6bdce1d068"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-Recovery-tla.md",
+   "bytes": 1742,
+   "sha256": "0b64146a601e8d692bbb1f5f716800d5018c6422382653f5016e6631dc5e2267"
+  },
+  {
+   "path": "accepted-ledgers/formal-tlaplus-casper-soak-profiles-recovery-verification-plan-jsonc.md",
+   "bytes": 1786,
+   "sha256": "7129720b6a4a61ecd5b68c318c596745d1bc8c6695d5be633a1ddb3d9f3a686e"
+  },
+  {
+   "path": "accepted-ledgers/github-workflows-casper-authority-finality-yml.md",
+   "bytes": 1730,
+   "sha256": "aa4d27bad71c8af299a1dbe7bdc762146021070649aaf4de4d9c29db01e1877c"
+  },
+  {
+   "path": "accepted-ledgers/github-workflows-casper-publication-yml.md",
+   "bytes": 1681,
+   "sha256": "b5c07bb1abb84a1cffc77fde39af46b0ec1814ea7029f463c6ed326eca7a7492"
+  },
+  {
+   "path": "accepted-ledgers/github-workflows-casper-recovery-yml.md",
+   "bytes": 1660,
+   "sha256": "bb33696fe0acd131c146d70927a57ece307f9a35bddf2a2d5a874c756fffc6ff"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-check-authority-finality-sh.md",
+   "bytes": 1732,
+   "sha256": "c3f1ffc5e67c4dc09cb37208cb37f4c7bad13ae0654e5ade66f7772fe76110e1"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-check-publication-sh.md",
+   "bytes": 1683,
+   "sha256": "c31323d39da31261c3ac0836c7c76729c2aac67a34f81876b3aebef1dcb5b50a"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-check-recovery-sh.md",
+   "bytes": 1662,
+   "sha256": "ac3424269f28de292eea98f257400cc7374879733adffb8cbd54797fdc07946a"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-src-bin-casper-authority-finality-rs.md",
+   "bytes": 1768,
+   "sha256": "f285de869eeca564217b6e2c34e49a9b12b51d80a9ed421a1293cc8d9a28c455"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-src-bin-casper-publication-rs.md",
+   "bytes": 1719,
+   "sha256": "c15f7396b57c544dbe53633ee14f4feddfd39d7bc97ce147c8e6d1d14d8e274f"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-src-bin-casper-recovery-rs.md",
+   "bytes": 1698,
+   "sha256": "9eec921bdd393a8ddebdea6a44bc7e6f141c94060cef8b567aab97fa53bd5911"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-src-profiles-authority-finality-rs.md",
+   "bytes": 1760,
+   "sha256": "ba377c3bc1d19fdf6dbb489239204e2c8958c147046c374206f440fe480ff42a"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-src-profiles-publication-rs.md",
+   "bytes": 1711,
+   "sha256": "660d9eb9d25ff1d04f9ca80c586ae1e84950793bb5cb618f5a6de83023275759"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-src-profiles-recovery-rs.md",
+   "bytes": 1690,
+   "sha256": "3098002b92ff30ec5e88c1b47325807a82df2e8b15cb89395111d7cb2a4e3753"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-tests-authority-finality-rs.md",
+   "bytes": 1732,
+   "sha256": "2bc974e34c264b64a9ecb5ac974eb6f3ac09fa3976f13e8a5cd25c938a5b8bbe"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-tests-publication-rs.md",
+   "bytes": 1683,
+   "sha256": "a5cc082917f30f04f230f313bf6a6d762389a8467b9830ad70c079a9bbafe45a"
+  },
+  {
+   "path": "accepted-ledgers/scripts-casper-soak-tests-recovery-rs.md",
+   "bytes": 1662,
+   "sha256": "e1266dae20a22291a8e3c6198b236305a7d99e9a8709dc99948c176a53f2ecaf"
+  },
+  {
+   "path": "complete.sh",
+   "bytes": 2389,
+   "sha256": "69d0b8fe90ac5e887a723119604ac478831233212acc0844e78f0b56a9ed0c4c"
+  },
+  {
+   "path": "evidence-files.sha256",
+   "bytes": 980517,
+   "sha256": "deb86649b8672bb442589fc6ed6cf38cad7c16319b07fe1efa03f9e060a9cd04"
+  },
+  {
+   "path": "evidence.tar.gz",
+   "bytes": 1415055,
+   "sha256": "dfc8bc61881800b06726bca021ac8eeb7de19729f7db544556583523c512bc4b"
+  },
+  {
+   "path": "private-path-scan.txt",
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "record.sh",
+   "bytes": 5370,
+   "sha256": "dac4d2b79aa85aa99c5563b403889b76193db1889e751c21eadc3d4eed8eb1d1"
+  },
+  {
+   "path": "refresh-record.sh",
+   "bytes": 2462,
+   "sha256": "ae127f84037730f0a86fa45137c3ac5f57a627ab130c8540ebefe090192bd61d"
+  },
+  {
+   "path": "retain.sh",
+   "bytes": 2416,
+   "sha256": "22df1c8f5788bc576526cca0e823f8492e8c446b81ec3e707bb06866baa71fa7"
+  },
+  {
+   "path": "source-files.sha256",
+   "bytes": 6693,
+   "sha256": "f95f19fae75cfe04d780c5eb48003c4eade17340dc3196d6529de6970bba9223"
+  },
+  {
+   "path": "source.tar.gz",
+   "bytes": 115266,
+   "sha256": "824a2605cd09a9214ba19ca1263a018533f4bc2002eb965aee88813689c1bfae"
+  },
+  {
+   "path": "symlinks.tsv",
+   "bytes": 147,
+   "sha256": "4aa56165c66a25a2040cb65b9cb286e9fd7a14afd37086b1339ef2626b62ee87"
+  },
+  {
+   "path": "validate-review.sh",
+   "bytes": 6153,
+   "sha256": "4b117e0cc88071ec1ee7148b3963dbb1d986c5de02fa172f4befb29a71bba976"
+  },
+  {
+   "path": "validate.sh",
+   "bytes": 3965,
+   "sha256": "fddd18be9588e42f65827a42125cbb0147fc67bf82ad0d42e0840de5b47147b8"
+  }
+ ]
+}

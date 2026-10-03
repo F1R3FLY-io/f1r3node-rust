@@ -1,0 +1,162 @@
+{
+ "schema_version": 1,
+ "package": "casper-authority-provider-20260928-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017",
+  "asset": "casper-authority-provider-20260928-01.external.tar.gz",
+  "asset_sha256": "be7120dcd71772f2de74c6c48ad1cba7c7340bea86fb7cba79327da29ec3a908",
+  "asset_bytes": 42724,
+  "bundle_created": "2026-10-03"
+ },
+ "members": [
+  {
+   "path": "artifact-audit.json",
+   "bytes": 2983,
+   "sha256": "d8b50ec1fc95c7dc8ecec2de503854c075f764d75fcade8d9f8143445cfe5ecc"
+  },
+  {
+   "path": "claims.json",
+   "bytes": 1922,
+   "sha256": "98caad54aca471004bdaa6919252a919e044b9bb248c56acc51cb5b7fe0fcae2"
+  },
+  {
+   "path": "gate-clippy.txt",
+   "bytes": 132,
+   "sha256": "0d45955140ce7fde8f692e81283f53bc3ed68744ce3d61744e0c233983354bbe"
+  },
+  {
+   "path": "gate-report.json",
+   "bytes": 185,
+   "sha256": "6fa73f8fb9760c1732436e5ab15158e36d1961ecf74840a397e9830bf4b1b1e6"
+  },
+  {
+   "path": "gate-source-after.sha256",
+   "bytes": 35327,
+   "sha256": "8154eea48d19b62e52fb45ad6b3fc8ea843a1ce8460e00c233a4dcd51afef07e"
+  },
+  {
+   "path": "gate-source-before.sha256",
+   "bytes": 35327,
+   "sha256": "8154eea48d19b62e52fb45ad6b3fc8ea843a1ce8460e00c233a4dcd51afef07e"
+  },
+  {
+   "path": "gate-tests.txt",
+   "bytes": 3059,
+   "sha256": "b66aef59a7886efd7187dab1018d2f501a07e5ebce669d34eb389680d911df29"
+  },
+  {
+   "path": "previous-records/docs-casper-design-authority-live-executor-md.md",
+   "bytes": 1372,
+   "sha256": "3805bf2b7dbd03a75c026b643871df536cbd5a9f83a505a1c5d12922facd605a"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-AuthorityFinality-tla.md",
+   "bytes": 3668,
+   "sha256": "c5d67d850995679fecffed20e8a1ec6e97da0238143cb98de976ab643df5d938"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-cfg.md",
+   "bytes": 3689,
+   "sha256": "d02249b468e87e34487aadf92ba0b07f3521edfc9e08d61c556dbf697849e3c5"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-finality-unsafe-cfg.md",
+   "bytes": 3801,
+   "sha256": "65402d985abf4ca375ff30bf4f16e84dc1ed3f28b08a1873ff01010624a16124"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-head-unsafe-cfg.md",
+   "bytes": 3773,
+   "sha256": "22326315bd20b29f1f469b6456ad5b0de70a5ed3dcd9274c9688a1f8009af88a"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-pair-unsafe-cfg.md",
+   "bytes": 3773,
+   "sha256": "7e7b2a0a76b439c25150c2f7dc19022233cff5105dc0e451d2eddcc2f6497592"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-README-md.md",
+   "bytes": 3584,
+   "sha256": "2fe976a9ae8314eecc9b70062bf329b3df67978898121947135f33a26e2b67a7"
+  },
+  {
+   "path": "previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-verification-plan-jsonc.md",
+   "bytes": 3682,
+   "sha256": "b0a3675785dbfe6667317f45059452ee5984c3553c927c71fc55866529b1de31"
+  },
+  {
+   "path": "previous-records/github-workflows-casper-authority-adapter-yml.md",
+   "bytes": 2927,
+   "sha256": "3f8a67380451cbc695e06394ac5c7fbd2bda9996e8d0395999069370cba89758"
+  },
+  {
+   "path": "previous-records/github-workflows-casper-authority-finality-yml.md",
+   "bytes": 3461,
+   "sha256": "40b115f6e4f1f1d68cb2ff41fe940cab5ac726220f0c10ac1a9e81d32cf04299"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-cargo-toml.md",
+   "bytes": 1584,
+   "sha256": "52a7366073d1cde9a6fd2ebb61e5e7d266ee7475e362075f1ee44514a0758a06"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-check-authority-finality-sh.md",
+   "bytes": 3465,
+   "sha256": "7fb041ccb60cd59b99f0f0d93085ea3247c1859cb30d6ad13d6f9fb4ef48b753"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-check-authority-live-sh.md",
+   "bytes": 1366,
+   "sha256": "c3d5830ca4aba50dd5e937a7cb12c1935a07345c58414e529f9abcd1eecf7949"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-src-authority-execution-rs.md",
+   "bytes": 1433,
+   "sha256": "38b602a22bf090aa766821d05b37df8a39185fe2a6fcd4845492e846604516c7"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-src-authority-live-rs.md",
+   "bytes": 1360,
+   "sha256": "b4e20ed820818ed9fb02790ac370cf48122382402ba96590044b8999d1fc8a80"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-src-bin-casper-authority-finality-rs.md",
+   "bytes": 3528,
+   "sha256": "4db483b7043ab6b72ebb1912bb04a285a25f85351d5cdc00d96be28f27c9c93c"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-src-bin-casper-authority-live-rs.md",
+   "bytes": 1393,
+   "sha256": "ef8be7aabec3d6a4c2f3c877bf58735be7ca17f9d950886331665ebd5ef00d5e"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-src-profiles-authority-finality-rs.md",
+   "bytes": 3514,
+   "sha256": "7194255cd7bbc1e3223121a9f1e700e0fe8c02e52314071f1225c0c786096337"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-tests-authority-finality-rs.md",
+   "bytes": 3465,
+   "sha256": "07617eaf898cf0a690862e85bb414df41ed03a51601157fbf84dae2a286fda9a"
+  },
+  {
+   "path": "previous-records/scripts-casper-soak-tests-authority-live-rs.md",
+   "bytes": 1366,
+   "sha256": "f050fb8800b9c8437a53d03ebe2921eaf2033e61c683a5e1bb50840fa08507a9"
+  },
+  {
+   "path": "profile-models.json",
+   "bytes": 3860,
+   "sha256": "dd68debe262d416c906322a84d45ba40f61f0b627bbcc27c2cfc412d6d19c7de"
+  },
+  {
+   "path": "profile-summary.json",
+   "bytes": 180,
+   "sha256": "db47002b1a861696cfc69f04ca19b3e30e7757e41f448bb9456b7b0386231355"
+  }
+ ]
+}

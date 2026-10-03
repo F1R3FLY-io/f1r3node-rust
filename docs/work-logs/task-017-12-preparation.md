@@ -392,7 +392,7 @@ The immutable image index matches the earlier retained snapshot byte for byte. T
 
 All 269 files in the pinned external suite match their Git blob identities, byte lengths, and retained SHA-256 inventory. No suite source changed.
 
-The [legacy workload record](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/legacy-load-workload.json) pins the load test, preflight selection, dependency files, providers, and stress options.
+The [legacy workload record](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/external.json) pins the load test, preflight selection, dependency files, providers, and stress options.
 
 That record has scope `legacy-load-only`. Its three stress options are not production defaults. It cannot substitute for the required Casper baseline.
 
@@ -452,7 +452,7 @@ The checkout advanced to `5cc4e665b52f0cc5279ec577ac5075b5b9897caf` during this 
 
 The two incoming commits changed six documentation paths. They did not change the scoped executable sources, workflow, binding inventory, or candidate matrix.
 
-The [provenance record](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/provenance.json) preserves this event and the original request identities. No earlier result becomes execution at the later revision.
+The [provenance record](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/external.json) preserves this event and the original request identities. No earlier result becomes execution at the later revision.
 
 The source snapshots establish byte identity. They do not establish the checkout revision at every earlier command.
 
