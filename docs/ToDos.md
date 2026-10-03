@@ -266,6 +266,43 @@ execution_contract:
   git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
   evidence_policy: "Every batch registers a pending claim before implementation, keeps compact records under docs/cbc-evidence/, and keeps bulk evidence outside Git."
   completion_policy: "Close after every batch claim is accepted, PR #447 merges to dev, and PR #436 returns to dev."
+pending_record_refresh:
+  recorded_by: claude-session-f3cbc961
+  recorded_on: 2026-09-29
+  decided_by: maintainer
+  cause: "This branch received the two CI corrections of formal/soak-casper-consensus, from commits b96aebf84 and 38e576041. PR #447 failed Lint and Node observation binding tests without them."
+  changed_artifacts:
+    - .github/workflows/slashing-tests.yml
+    - scripts/ci/check-node-observation-bindings.sh
+  new_artifacts:
+    - scripts/ci/test-check-node-observation-bindings.sh
+  state: "The evidence records of the two changed artifacts hold the digests from before the corrections. Their recorded acceptance applies to those earlier bytes. No evidence record and no claim status changed."
+  owner: "The owner of this epic refreshes the records in the next verification cycle."
+branch_completion_plan:
+  decided_by: user
+  decided_on: 2026-09-30
+  recorded_by: claude-session-f3cbc961
+  decision: "Finish the work on this branch before the stack merge round continues above it. Branch 1 (fix/node-log-and-accept-backoff at d673a5cf2) is merged into this branch at 7cdfee6b7 and pushed. The merges into formal/soak-casper-consensus and above wait."
+  order:
+    - "TASK-019-9 (Batch D): tracker record, pending claim, file-scope confirmation, implementation, tests, evidence record."
+    - "TASK-019-10 (Batch E): the same sequence, after TASK-019-9."
+    - "pending_record_refresh: refresh the affected mandatory records against the final Batch D and Batch E sources. The final inventory determines the count."
+    - "Proceed with upward stack preparation only with separate Git authorization."
+    - "TASK-019-8: finish final cleanup on branch 4, fix/soak-finalization-attribution (PR #441), after it inherits the final stack sources."
+    - "TASK-019-6 retains its scope review, cleanup dependency, accepted-claim gates, passing-check requirements, and separate merge authorization."
+  cleanup_amendment_2026_09_30:
+    decided_by: user
+    recorded_by: pi-node-observation-agent-b
+    approved_now: "Compact the CI report without changing its parsed JSON data. Shorten repeated work-log content. Keep the required files."
+    final_cleanup_branch: fix/soak-finalization-attribution
+    final_cleanup_pull_request: 441
+    stack_order: [451, 447, 436, 441]
+    deferral_scope: "Final file reduction and its inventory review move to branch 4. Task status, claim acceptance, retention rules, and Git authorization remain unchanged."
+    reduction_log: docs/work-logs/node-observation-agent-b-20260930.md
+  open_inputs:
+    - "Owners on 2026-09-30: agent A (claude-session-f3cbc961) has TASK-019-9 and the TASK-019-8 removals. Agent B (the pi session, docs/work-logs/node-observation-agent-b-20260930.md) has the record refresh, the STE fix, the TASK-019-8 inventory, and TASK-019-10. claude-session-7015f552 keeps the epic claim."
+    - "File-scope confirmation of Batch D, then of Batch E."
+    - "One STE finding from branch 1 in docs/User-Flows.md: a paragraph with 7 sentences."
 tasks:
   - id: TASK-019-1
     title: "Batch A: local capability interface and runtime shutdown correction"
@@ -418,6 +455,11 @@ tasks:
     acceptance_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
     acceptance_reviewed_at: 2026-09-23T16:55:28Z
     acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
+    previous_verification_cycle: handoff-cycle-02
+    handoff_cycle_02_tiers_reached:
+      refutation: "15 clean configurations and 78 expected violations through the TLA gate at the pinned jar; the two node models and 17 controls pass on this revision."
+      construction: "14 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation; construction pending for A3, A4, A9, B9, B11, B12 and the deadline parts of A7 and B2."
+      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, seven Kani harnesses, and the deterministic generation-rejection test that closes the B8 binding gap."
     notes:
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
       - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
@@ -543,13 +585,41 @@ tasks:
       - "The baseline and observer-capable images are recorded as distinct candidates."
       - "No candidate is repinned from a rebuilt or mutable tag."
   - id: TASK-019-8
-    title: "Final branch cleanup before the PR #447 merge"
+    title: "Final node-observation cleanup on stack branch 4"
+    previous_title: "Final branch cleanup before the PR #447 merge"
     status: in_progress
     claimed_by: claude-session-7015f552
     claimed_at: 2026-09-23T21:40:00Z
     work_log: docs/work-logs/task-019-8-branch-cleanup.md
+    execution_branch: fix/soak-finalization-attribution
+    execution_pull_request: 441
+    scheduling_status: deferred_to_stack_branch_4
+    scheduling_decided_by: user
+    scheduling_decided_on: 2026-09-30
+    scheduling_reason: "The user approved report and work-log compaction now, with final cleanup on branch 4 after stack inheritance."
+    final_inventory_required: true
+    limited_reduction:
+      report: docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json
+      lines_before: 511
+      lines_after: 242
+      parsed_data_unchanged: true
+      required_files_removed: 0
+      work_log: docs/work-logs/node-observation-agent-b-20260930.md
     blocked_by: []
     precedes: [TASK-019-6]
+    removals_2026_09_30:
+      authorized_by: user
+      authorized_on: 2026-09-30
+      removed_by: claude-session-f3cbc961
+      base_revision: 97ab3e3d9
+      reason: uncited_checksum
+      history: "The content stays in Git history at 97ab3e3d9 and earlier. The digest of each file is below and in inventory.proposed_removals."
+      files:
+        - {path: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/artifacts.sha256, sha256: 35eebe6533eec1ef9dc52ec45d380f4c73c457d4daa64305b67642e61567e673}
+        - {path: docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256, sha256: a12319c726123e2be0014a6cb8847d1d350c4202a44eda2825afd2bde1606929}
+        - {path: docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256, sha256: 21ad765308be31beb8ac8fc6e747b0a1b122c1d797a6a0fc21e867710e963adb}
+        - {path: docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256, sha256: 8ffa6cc12210ee0fe5c47f797ad4b803c77e982a605fa34e7b4b97931a7e9023}
+        - {path: docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256, sha256: ce5315cce7c4070d01cd250f0b1ecd01a8a7ced7edc83ef973f341133944e5e7}
     scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
     retention_rules:
       - "Keep every file that an accepted claim, a CbC record, or the tracker cites by path or digest. Removing one breaks the source-bound audit."
@@ -815,6 +885,117 @@ tasks:
       - "Every file an accepted claim cites is still present at its recorded digest."
       - "Each removed file is listed with a reason, and any externalized evidence names its location and digest."
       - "The maintainer confirms the reduced diff before the merge."
+  - id: TASK-019-9
+    title: "Batch D: paired fork-choice observation bound to one capture"
+    status: complete
+    completed_on: "2026-09-30"
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-30T04:40:00Z
+    assignment: "User decision 2026-09-30: agent A (this session) takes Batch D and then the removals of TASK-019-8. Agent B (the pi session of 2026-09-30, see docs/work-logs/node-observation-agent-b-20260930.md) takes the record refresh, the STE fix, the TASK-019-8 inventory, and Batch E after Batch D."
+    work_log: docs/work-logs/task-019-9-paired-fork-choice.md
+    recorded_by: claude-session-f3cbc961
+    recorded_on: 2026-09-30
+    blocked_by: []
+    precedes: [TASK-019-10]
+    stage: "All 16 steps complete on 2026-09-30. The named maintainer accepted claim 004 at revision 3ab092cc5 on the evidence package. 21 records are discharged. 8 shared records have Batch E successor versions that point at the accepted Batch D version through previous_record."
+    proposed_reviewer: jltatbeach
+    eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
+    acceptance_request: docs/work-logs/task-019-9-paired-fork-choice.md#step-16-on-2026-09-30-acceptance-request
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665
+    acceptance_form: "Issue comment by the named maintainer, edited 2026-09-30T19:45:09Z. The 2 earlier acceptances were pull request reviews. The text names the claim, the revision, and the package."
+    acceptance_revision: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+    acceptance_reviewed_at: 2026-09-30T19:41:35Z
+    finding_1_decision: "No production change in this batch. An issue for the production score extent is optional and not opened."
+    tiers_reached:
+      refutation: "PairedForkChoice model, 203 distinct states clean, 5 negative controls violate their named invariants. Formal gate clean in both tiers."
+      construction: "Pending for the 13 U rows, accepted as recorded. D1 and D11 inherit accepted theorems. D7, D12, D16 accepted as bounded by design."
+      binding: "16 properties mapped to 30 tests. Observer 39, unit 57, mod.rs 66, node 21 plus 1 ignored, node library 259. Linux binding driver exit 0."
+    strict_cbc_result: "Exit 4 with 29 pending before the acceptance. After the acceptance the 29-file inventory has 20 discharged and 9 pending: 8 Batch E successors and the soak gate record of check-tla-invariants.sh. 21 record files are discharged in total."
+    acceptance_package: docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01
+    evidence_commit: 28606f110
+    consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
+    claim_status: accepted
+    claim_file: docs/claims/casper-node-fork-choice-observation.md
+    plan: docs/plans/casper-node-observation-batch-d.md
+    draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
+    file_scope_confirmed: true
+    file_scope_confirmed_on: 2026-09-30
+    file_scope_confirmed_by: user
+    file_scope_size: "34 files: 17 new and 17 changed (11 Rust source and test files, 16 formal files, 3 gate and tag files, 4 documents), plus 28 ledger records at the end (14 now, 14 at step 5) and 1 run package"
+    decisions: "The 12 recommendations of the draft, accepted by the user on 2026-09-30. Decision 8: estimator.rs, dag_operations.rs, and proto_util.rs get the mandatory tag and 3 ledger records. The table is in the plan."
+    ledger_registration: "14 pending records under scope batch-d-registration: 11 replaced records of changed files (previous_record names the replaced record) and 3 new records of the newly tagged files. 13 records of the model files were written at step 5 with their digests. The record of fork_choice.rs follows at step 10 (user decision 2026-09-30: a record is written when its file exists). scripts/ci/check-tla-invariants.sh keeps its record under CLAIM-SOAK-GATE-001, as at the Batch B2 registration."
+    scope: "Add a paired fork-choice observation to the authority_snapshot operation. One capture supplies the inputs of the 2 evaluations. No new consensus rule and no new production limit."
+    acceptance:
+      - "The response of authority_snapshot carries the selected head of the bounded evaluation and of the reference evaluation, with the input digest of the shared capture."
+      - "The estimator, the common ancestor walk, the weight read, and fork_choice_floor have metered entry points, and the current entry points call them with NoopWork."
+      - "The work paths of observation_work.rs increase from 4 to 6, with tests for the limits."
+      - "The node capability list has the fork_choice entry, and node/tests/soak_observer.rs tests its admission."
+      - "CLAIM-CASPER-NODE-OBSERVATION-004 is registered as pending before the first code change, and its evidence record is source bound."
+    constraints:
+      - "No code before the user confirms the exact file list of the plan draft."
+      - "Confirmation of this batch does not authorize Batch E."
+  - id: TASK-019-10
+    title: "Batch E: equivocation input capture for the detached display projection"
+    status: complete
+    completed_on: "2026-10-01"
+    closed_by: claude-session-f3cbc961
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T17:45:58Z
+    proposed_owner: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    recorded_by: claude-session-f3cbc961
+    recorded_on: 2026-09-30
+    blocked_by: []
+    implementation_dependency: TASK-019-9_step_13_handoff
+    handoff_revision: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+    handoff_digests_verified: 7
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-005]
+    claim_status: accepted
+    claim_file: docs/claims/casper-node-display-projection.md
+    work_log: docs/work-logs/task-019-10-display-projection.md
+    plan: docs/plans/casper-node-observation-batch-e.md
+    plan_draft: "target/node-observation-prep-20260928-01/batch-e/ (historical local draft, ignored by Git)"
+    draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
+    scope_reviewed_base: 030384f5f31613c64552f7d5b517ef1fe2552d11
+    file_scope_confirmed: true
+    file_scope_confirmed_by: user
+    file_scope_confirmed_at: 2026-09-30T15:38:36.579734+00:00
+    scope_recorded_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    approval_checkpoint: 06f0d3e8cf85f7072769960cde3746dc0830a68f
+    file_scope_size: "72 files: 39 main files, 31 ledger records, and 2 run files. The scope has 33 new files and 39 changed files."
+    decisions: "All 16 documented recommendations approved, with the complete shared arithmetic, 5 mandatory tags, and the 4096-row ceiling."
+    cbc_tags_ratified: true
+    cbc_tags_applied: true
+    implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+    source_scope_recheck_required: false
+    stage: "Complete on 2026-10-01. The named maintainer accepted claim 005 at revision 1a9839b0e on the evidence package. The 31 Batch E records are discharged. CI on 1a9839b0e was still running at the acceptance; the display admission test fix of that revision is proven by that run."
+    record_refresh_coordination: "All 31 Batch E records bind final sources at c83b16f30 plus 7 working-tree artifact hashes. The 16 original prior-record identities and 19 prior-refresh identities remain exact. Twelve late registrations remain explicit. The PR-base mandatory inventory has 106 sources, so this refresh does not cover the other 75."
+    verification_package: docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01
+    proposed_reviewer: jltatbeach
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936
+    acceptance_form: "Issue comment by the named maintainer. The text names the claim, the revision, the package, and the report SHA-256. The suggested statement appears once as a quote and once as the maintainer's own text."
+    acceptance_revision: 1a9839b0e52e494e20ab13c0a79a55bd2164e34f
+    acceptance_reviewed_at: 2026-10-01T03:56:25Z
+    acceptance_package: docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01
+    acceptance_decisions: "E1, E14, E17 bounded by design. Construction gaps E7, E11, E15 and the other stated limits accepted as recorded. The 12 late source registrations acknowledged."
+    tiers_reached:
+      refutation: "DisplayProjection bounded model with 3 negative controls. 17 positive TLA+ configurations and 86 expected negative controls in the gate."
+      construction: "Scoped integer proofs with declared gaps: 47 closed assumption sets. E7 and E15 tracker wire encoding and E11 IEEE-754 arithmetic stay pending, accepted as recorded."
+      binding: "17 properties mapped to 26 executed named tests. 495 distinct selected tests passed, including 259 isolated node library tests and 22 isolated node integration tests."
+    strict_cbc_result: "Exit 4 with 31 pending records before the acceptance. After the acceptance the 31 Batch E records are discharged."
+    acceptance_request: docs/work-logs/task-019-10-display-projection.md#maintainer-acceptance-request
+    open_questions: "No scope decision remains open. A new implementation path requires a scope amendment."
+    scope: "Capture the equivocation inputs in the same interval as the detached DAG capture, and calculate the display projection from captured inputs only, with the arithmetic of the live calculation."
+    acceptance:
+      - "The detached observer reports the display projection from the captured inputs, not as unavailable."
+      - "The capture reads the equivocation tracker in the same consistency interval as the DAG capture, with a refusal when the read fails."
+      - "The display arithmetic has one source that the live path and the detached path share, with a test that compares the two on equal inputs."
+      - "CLAIM-CASPER-NODE-OBSERVATION-005 is registered as pending before the first code change, and its evidence record is source bound."
+    constraints:
+      - "No code before the user confirms the exact file list of the plan draft."
+      - "Starts after the explicit TASK-019-9 step-13 file handoff, not after full task acceptance. Agent A retains Batch D verification and its step-15 record refresh."
 ---
 ```
 

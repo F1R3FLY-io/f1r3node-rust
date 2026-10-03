@@ -11,6 +11,28 @@ use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
+use shared::rust::store::soak_snapshot::SnapshotError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockDecodeLimits {
+    pub max_compressed_bytes: usize,
+    pub max_decompressed_bytes: usize,
+    pub max_expansion_ratio: usize,
+}
+
+impl BlockDecodeLimits {
+    pub fn validate(&self) -> Result<(), SnapshotError> {
+        if self.max_compressed_bytes == 0
+            || self.max_decompressed_bytes == 0
+            || self.max_expansion_ratio == 0
+        {
+            return Err(SnapshotError::InvalidLimits(
+                "block decode limits must be positive".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct KeyValueBlockStore {
@@ -286,6 +308,69 @@ impl KeyValueBlockStore {
         let bytes = block_proto.encode_to_vec();
         self.store_approved_block
             .put_one(self.approved_block_key.to_vec(), bytes)
+    }
+
+    pub fn soak_capture_store(&self) -> &Arc<dyn KeyValueStore> { &self.store }
+
+    pub fn soak_block_key(block_hash: &BlockHash) -> Vec<u8> { block_hash.to_vec() }
+
+    pub fn decode_block_bounded(
+        bytes: &[u8],
+        limits: &BlockDecodeLimits,
+    ) -> Result<BlockMessage, SnapshotError> {
+        use std::io::Cursor;
+
+        use prost::encoding::decode_varint;
+
+        limits.validate()?;
+        if bytes.len() > limits.max_compressed_bytes {
+            return Err(SnapshotError::LimitExceeded {
+                kind: "compressed block bytes",
+                limit: limits.max_compressed_bytes,
+                observed: bytes.len(),
+            });
+        }
+        let mut cursor = Cursor::new(bytes);
+        let declared = decode_varint(&mut cursor).map_err(|err| {
+            SnapshotError::Malformed(format!("block length prefix is not a varint: {err}"))
+        })?;
+        let decompressed_length = usize::try_from(declared).map_err(|_| {
+            SnapshotError::Malformed(format!(
+                "block length prefix {declared} does not fit the address space"
+            ))
+        })?;
+        if decompressed_length > limits.max_decompressed_bytes {
+            return Err(SnapshotError::LimitExceeded {
+                kind: "decompressed block bytes",
+                limit: limits.max_decompressed_bytes,
+                observed: decompressed_length,
+            });
+        }
+        let compressed_data = &bytes[cursor.position() as usize..];
+        let expansion_ceiling = compressed_data
+            .len()
+            .saturating_mul(limits.max_expansion_ratio);
+        if decompressed_length > expansion_ceiling {
+            return Err(SnapshotError::LimitExceeded {
+                kind: "decode expansion bytes",
+                limit: expansion_ceiling,
+                observed: decompressed_length,
+            });
+        }
+        let mut output = vec![0u8; decompressed_length];
+        let written = lz4_flex::decompress_into(compressed_data, &mut output).map_err(|err| {
+            SnapshotError::Malformed(format!("block decompression failed: {err}"))
+        })?;
+        if written != decompressed_length {
+            return Err(SnapshotError::Malformed(format!(
+                "block length prefix declares {decompressed_length} bytes but decompression produced {written}"
+            )));
+        }
+        let proto = BlockMessageProto::decode(output.as_slice())
+            .map_err(|err| SnapshotError::Malformed(format!("block proto decode failed: {err}")))?;
+        BlockMessage::from_proto(proto).map_err(|err| {
+            SnapshotError::Malformed(format!("block message conversion failed: {err}"))
+        })
     }
 
     fn bytes_to_block_proto(bytes: &[u8]) -> Result<BlockMessageProto, KvStoreError> {
@@ -1103,5 +1188,23 @@ mod tests {
             bs.deploy_sigs(&block.block_hash),
             Err(KvStoreError::SerializationError(_))
         ));
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn decode_limits_validate_iff_all_positive() {
+        let limits = BlockDecodeLimits {
+            max_compressed_bytes: kani::any(),
+            max_decompressed_bytes: kani::any(),
+            max_expansion_ratio: kani::any(),
+        };
+        let positive = limits.max_compressed_bytes > 0
+            && limits.max_decompressed_bytes > 0
+            && limits.max_expansion_ratio > 0;
+        assert_eq!(limits.validate().is_ok(), positive);
     }
 }

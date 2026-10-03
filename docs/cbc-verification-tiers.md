@@ -25,8 +25,9 @@ not extract the executable.
 This division of labor applies to the Rust-facing subsystems that
 [`.gitattributes`](../.gitattributes) marks `cbc=mandatory`. Those subsystems
 are consensus, finality, merging, replay, block storage, the interpreter, and
-cryptography. Their correctness claims are unbounded, and a bounded model
-cannot close them.
+cryptography. Unbounded correctness claims require construction-tier proofs.
+Mandatory verification also covers bounded-by-design properties, as specified
+below.
 
 The soak driver models under
 [`formal/tlaplus/soak_disk/`](../formal/tlaplus/soak_disk) stay in the
@@ -34,6 +35,41 @@ refutation tier only. They describe a Bash driver and its fixtures. A kernel
 theorem about a shell script adds cost without a matching reduction in risk.
 The tier record for those cycles states that the construction tier does not
 apply.
+
+### Applicability per property
+
+Tier applicability depends on each property's scope, not only on its file or
+subsystem. A `cbc=mandatory` tag requires verification, but does not classify
+every property as unbounded.
+
+For each Rust-facing property, record the following information in the area
+README:
+
+- Identify the claim and the permitted inputs, states, configurations, and execution histories that the property covers.
+- State what each universal requirement, such as "every request," includes.
+- Record specification bounds and their enforcement in Rust.
+- Distinguish specification bounds from the limits of each model-checking instance.
+- Name the trusted assumptions and the required evidence for each applicable tier.
+- Record the classification, its justification, and the named maintainer's review.
+
+A bounded-by-design property has a finite domain fixed by the specification.
+Verification must cover that permitted domain. Any abstraction requires
+recorded evidence that it preserves the property across the complete permitted
+domain. A smaller model instance does not establish coverage of larger inputs
+or other configurations.
+
+A finite machine representation, resource limit, timeout, or test fixture does
+not establish this classification. For example, bounded capture work does not
+prove consistency for every permitted DAG.
+
+Record `construction: not-applicable` only after a named maintainer accepts
+the bounded-by-design justification. Unavailable tools or missing proofs do
+not justify that value. Required Rust binding evidence still applies.
+
+A combined claim can use `construction: not-applicable` only when every
+constituent property has that reviewed classification. An unresolved
+construction requirement blocks completion of the combined claim. This review
+does not change the tier definitions or waive other claim requirements.
 
 ## The three tiers
 
@@ -80,6 +116,10 @@ outputs. A pre-fix regression test fails on the code before the fix and passes
 after it. A Kani harness proves a bit-precise property over the whole input
 domain of one function.
 
+Source and executable hashes establish artifact identity, not semantic
+agreement with a model. A source-bound audit supports binding evidence but
+does not replace the required Rust tests or harnesses.
+
 ## The promotion loop
 
 ```mermaid
@@ -107,12 +147,17 @@ The loop runs in this order:
    regression test.
 4. Promote the stable invariant to a Rocq theorem when the claim is
    unbounded. Record the theorem name in the area correspondence table.
-5. Bind the Rust to the theorem with a bisimilarity test or a Kani harness.
+5. Bind the Rust to the model or theorem with a bisimilarity test or a Kani harness.
 6. Record which tiers the cycle reached in its evidence package.
 
-Step 4 is optional only when the claim is bounded by design. A claim about a
-fixed-size table or a finite enum can close in the refutation tier. A claim
-about every block, every deploy, or every validator set cannot.
+Step 4 is optional only after the [applicability review](#applicability-per-property)
+confirms that the complete claim is bounded by design. A fixed-size table or
+finite enum can qualify only when verification covers the permitted domain.
+The Rust binding requirement still applies.
+
+A smaller instance cannot discharge a property over larger or unbounded
+domains. Passing TLC checks remain refutation evidence, including when
+construction does not apply.
 
 ## What each tier does not do
 
@@ -156,8 +201,13 @@ Two fields extend the record for the construction tier:
 | `construction` | `pending`, `not-applicable`, or a theorem name | Whether the unbounded claim is locked, and where |
 | `construction_assumptions` | An integer | The assumption count the gate verified for that theorem |
 
-A cycle in a soak driver model records `construction: not-applicable`. A cycle
-in a mandatory Rust-facing subsystem records `pending` until the theorem lands.
+A cycle in a soak driver model records `construction: not-applicable` under
+the existing exception. For a required construction proof, record `pending`
+until the kernel check and assumption audit pass.
+
+For a Rust-facing claim, link any `not-applicable` value to its
+[reviewed applicability decision](#applicability-per-property). An accepted
+bounded property does not discharge other properties in the same claim.
 The claim inventory under [`docs/claims/`](./claims) binds the theorem file by
 digest in the same way it binds every other input.
 
