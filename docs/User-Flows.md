@@ -74,9 +74,9 @@ Use the persona name in each flow's `Personas:` field.
 - The listener emits at most one accept-error ERROR line per second and a suppressed-count summary after each minute with continuing errors.
 - The controlled Linux fault test observes one to six accept errors and less than 1,024 log bytes during 500 ms.
 - After descriptor release, the controlled test reaches the new connection's handshake timeout within two seconds without another accept error.
-- TASK-020-2 must establish file and directory byte limits.
-- TASK-020-3 must verify one sink and container log caps across the required deployments.
-- TASK-020-4 must verify the soak guardian's log-growth budgets.
+- The node file sink keeps each log file at or below 100 MiB and its log directory at or below 2 GiB.
+- Each required deployment selects one node log sink, and each container log is capped at three files of 100 MiB.
+- The soak guardian stops the run when a node log directory or a container log exceeds its budget.
 
 **Verification Boundary:**
 
