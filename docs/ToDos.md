@@ -218,10 +218,14 @@ tasks:
       - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-10-02T15:30:00Z
+    mirrored_as: TASK-017-17
+    design: docs/casper/design/soak-log-budget-guardian.md
     owner_branch: formal/soak-casper-consensus
-    blocked_by: [TASK-020-1, TASK-020-2]
+    blocked_by: []
+    blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
     acceptance:
       - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
       - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
@@ -1751,6 +1755,30 @@ tasks:
       - "The link check, the STE check, and the strict CbC gate produce the same results after reduction as before it."
       - "The maintainer confirms the reduced diff meets the PR review standard before the PR opens."
 
+  - id: TASK-017-17
+    title: "Enforce the node log budgets in the soak guardian"
+    status: in_progress
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-10-02T15:30:00Z
+    created_at: 2026-10-02
+    mirror_of: TASK-020-4
+    branch: formal/soak-casper-consensus
+    design: docs/casper/design/soak-log-budget-guardian.md
+    placement_note: "Recorded before TASK-017-15 so that the TASK-017-16 record of branch 4 merges without a conflict."
+    blocked_by: []
+    scope: "The host guardian samples the container json-file log and the node log directory of each owned node container and stops the run when either exceeds its budget. A fixture covers the budgets, the probe failures, and descriptor exhaustion. CLAIM-SOAK-001 records the log caps as a checked invariant."
+    files:
+      - scripts/run-merge-recovery-soak.sh
+      - scripts/bench/test-soak-log-budget.sh
+      - .github/workflows/ci.yml
+      - scripts/ci/check-casper-soak-bindings.sh
+      - docs/claims/soak-disk-protection.md
+    acceptance:
+      - "The guardian samples the container log bytes and the node log directory bytes of each owned container every 15 seconds, with budgets SOAK_CONTAINER_LOG_BUDGET_MB (default 400) and SOAK_NODE_LOG_BUDGET_MB (default 2560). A value of 0 disables a probe."
+      - "Three consecutive samples over a budget, or one sample at two times a budget, is a breach: breach record, writers stopped, health tag stamped, run refused. An unreadable probe refuses admission or records a breach during execution."
+      - "scripts/bench/test-soak-log-budget.sh passes its 10 scenarios in CI, including descriptor-exhaustion."
+      - "CLAIM-SOAK-001 names the log budgets as a checked invariant with the fixture as evidence. The disk floor, the memory floor, and the stop path are unchanged."
+      - "The records of the driver and the fixture refresh in the TASK-017-13 ledger cycle."
   - id: TASK-017-15
     title: "Retrieve and publish the external evidence release"
     status: pending

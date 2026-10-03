@@ -157,19 +157,26 @@ impl BoundedFile {
             }
         };
         drop(self.file.take());
-        fs::rename(active, &destination)?;
+        if let Err(error) = fs::rename(&active, &destination) {
+            self.file = Some(OpenOptions::new().append(true).open(&active)?);
+            return Err(error);
+        }
         self.rotated.push_back(RotatedFile {
             path: destination,
             bytes: self.current_bytes,
         });
         self.current_bytes = 0;
+        self.period = next_period;
+        self.open_new_active()
+    }
+
+    fn open_new_active(&mut self) -> io::Result<()> {
         self.file = Some(
             OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(self.directory.join("node.log"))?,
         );
-        self.period = next_period;
         Ok(())
     }
 
@@ -195,10 +202,20 @@ impl BoundedFile {
                 .front()
                 .ok_or_else(|| io::Error::other("The rotated log inventory is unavailable."))?;
             fs::remove_file(&oldest.path)?;
-            self.total_bytes -= oldest.bytes;
+            self.total_bytes = self
+                .total_bytes
+                .checked_sub(oldest.bytes)
+                .ok_or_else(|| io::Error::other("The log byte inventory is inconsistent."))?;
             self.rotated.pop_front();
         }
         Ok(())
+    }
+
+    fn remaining_file_bytes(&self) -> io::Result<u64> {
+        self.config
+            .max_file_size_bytes
+            .checked_sub(self.current_bytes)
+            .ok_or_else(|| io::Error::other("The active log file exceeds its byte budget."))
     }
 
     fn write_at(&mut self, bytes: &[u8], now: SystemTime) -> io::Result<usize> {
@@ -206,29 +223,38 @@ impl BoundedFile {
             return Ok(0);
         }
         if self.file.is_none() {
-            return Err(io::Error::other("The active log file is unavailable."));
+            if self.current_bytes != 0 {
+                return Err(io::Error::other("The active log file is unavailable."));
+            }
+            self.open_new_active()?;
         }
         let next_period = period(self.config.rotation, now)?;
         let input_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let remaining = self.config.max_file_size_bytes - self.current_bytes;
+        let remaining = self.remaining_file_bytes()?;
         if next_period != self.period
             || remaining == 0
             || (input_bytes <= self.config.max_file_size_bytes && input_bytes > remaining)
         {
             self.rotate(next_period)?;
         }
-        let count = bytes.len().min(
-            usize::try_from(self.config.max_file_size_bytes - self.current_bytes)
-                .unwrap_or(usize::MAX),
-        );
+        let count = bytes
+            .len()
+            .min(usize::try_from(self.remaining_file_bytes()?).unwrap_or(usize::MAX));
         self.make_room(count as u64)?;
         let written = self
             .file
             .as_mut()
             .ok_or_else(|| io::Error::other("The active log file is unavailable."))?
             .write(&bytes[..count])?;
-        self.current_bytes += written as u64;
-        self.total_bytes += written as u64;
+        let written_bytes = written as u64;
+        self.current_bytes = self
+            .current_bytes
+            .checked_add(written_bytes)
+            .ok_or_else(|| io::Error::other("The log byte inventory overflowed."))?;
+        self.total_bytes = self
+            .total_bytes
+            .checked_add(written_bytes)
+            .ok_or_else(|| io::Error::other("The log byte inventory overflowed."))?;
         Ok(written)
     }
 }
@@ -579,6 +605,27 @@ mod tests {
             0
         );
         assert!(oldest.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_rotation_keeps_the_active_file_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let logs = root.path().join("logs");
+        let mut writer = BoundedFile::new(root.path(), &config(16, 64)).unwrap();
+        writer.write_all(&[1; 16]).unwrap();
+        fs::set_permissions(&logs, fs::Permissions::from_mode(0o555)).unwrap();
+        let blocked = writer.write_all(&[2; 8]);
+        fs::set_permissions(&logs, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(blocked.is_err());
+        assert!(writer.file.is_some());
+        assert!(writer.rotated.is_empty());
+        writer.write_all(&[3; 8]).unwrap();
+        assert_eq!(writer.rotated.len(), 1);
+        assert_eq!(fs::metadata(logs.join("node.log")).unwrap().len(), 8);
+        assert_bounds(root.path(), &config(16, 64));
     }
 
     #[test]

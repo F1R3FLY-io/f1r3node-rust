@@ -74,7 +74,7 @@ This document captures user stories that drive feature development. User stories
 - [x] TASK-020-1 bounds accept-error retries and log output while preserving error delivery and connection recovery.
 - [x] TASK-020-1 applies no error backoff after a successful accept and releases listener resources when the consumer closes.
 - [x] TASK-020-2 enforces byte limits for each log file and the complete log directory.
-- [ ] TASK-020-3 uses one deployment sink and verifies container log caps, including the coordinated system-integration change.
+- [x] TASK-020-3 uses one deployment sink and verifies container log caps, including the coordinated system-integration change.
 - [ ] TASK-020-4 stops the soak workload when node or container logs exceed their budgets.
 
 **Verification Boundary:**
@@ -86,8 +86,8 @@ These controlled tests do not verify complete deployment storage limits, the des
 TASK-020-2 adds 100 MiB per-file and 2 GiB directory limits for the file sink.
 [Local verification](work-logs/task-020-2-byte-bounded-logging-20260930.md) passed 781 tests across shared, node, and comm, with zero skips.
 TASK-020-3 now has [local deployment verification](work-logs/task-020-3-deployment-log-caps-20260930.md) for explicit single sinks and configured container caps.
-Current system-integration already has container caps, but its Rust configuration still selects both sinks.
-The [external handoff](handoffs/task-020-3-system-integration-20260930.md) records the required contract review and single-sink change.
+The system-integration single-sink change merged into its `dev` branch through PR #146 at `ccd717195`.
+The [external handoff](handoffs/task-020-3-system-integration-20260930.md) records the contract review and the sink contract for each deployment.
 Guardian enforcement and a live deployment exercise remain separate obligations.
 The story remains open until all applicable tasks and deployment checks pass.
 

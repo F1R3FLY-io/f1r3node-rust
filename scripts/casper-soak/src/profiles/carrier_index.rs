@@ -601,10 +601,14 @@ pub fn classify(r: &Value, c: &Value, acknowledgments: &[Value]) -> Result<Value
                     .is_some_and(|before| {
                         before["producer"] == v["producer"]
                             && before["time"]["clock_id"] == v["time"]["clock_id"]
-                            && manifest::decimal(&before["producer_sequence"]).ok()
-                                < manifest::decimal(&v["producer_sequence"]).ok()
-                            && manifest::decimal(&before["time"]["monotonic_ns"]).ok()
-                                <= manifest::decimal(&v["time"]["monotonic_ns"]).ok()
+                            && matches!(
+                                (manifest::decimal(&before["producer_sequence"]), manifest::decimal(&v["producer_sequence"])),
+                                (Ok(earlier), Ok(later)) if earlier < later
+                            )
+                            && matches!(
+                                (manifest::decimal(&before["time"]["monotonic_ns"]), manifest::decimal(&v["time"]["monotonic_ns"])),
+                                (Ok(earlier), Ok(later)) if earlier <= later
+                            )
                     })
             });
             observations.contains(v)

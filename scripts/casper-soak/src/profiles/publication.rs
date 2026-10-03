@@ -59,7 +59,7 @@ pub fn identity() -> Value {
 fn id(v: &Value) -> Result<&str> {
     let s = text(v)?;
     ensure!(
-        !s.trim().is_empty() && s.len() <= 256,
+        !s.trim().is_empty() && s.len() <= 256 && !s.chars().any(char::is_control),
         "An identity is empty or too long."
     );
     Ok(s)
