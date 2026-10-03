@@ -90,6 +90,11 @@ def extend(path, histograms, counters):
         if assignments != {"_ISSUE24_HISTOGRAMS": histograms, "_ISSUE24_COUNTERS": counters}:
             raise ValueError("The diagnostic registry does not match the extension.")
         return
+    registry_names = {"_ISSUE24_HISTOGRAMS", "_ISSUE24_COUNTERS"}
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
+        if any(isinstance(target, ast.Name) and target.id in registry_names for target in targets):
+            raise ValueError("The metrics module already defines a diagnostic registry name.")
     changes = []
     for name, statement in [
         ("compute_metric_deltas", "    result = _issue24_metric_deltas(before, after, result)\n"),
@@ -109,10 +114,13 @@ def extend(path, histograms, counters):
         changes.append((final.lineno - 1, statement))
         if name == "format_node_metrics":
             for node in ast.walk(function):
-                if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-                    replacement = " " * node.col_offset
-                    replacement += f"return {node.value.value!r} + '\\n' + _issue24_metric_report(metrics)\n"
-                    changes.append((node.lineno - 1, replacement, node.end_lineno))
+                if not isinstance(node, ast.Return) or node is final:
+                    continue
+                if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+                    raise ValueError("The metric report has an early return that the extension cannot cover.")
+                replacement = " " * node.col_offset
+                replacement += f"return {node.value.value!r} + '\\n' + _issue24_metric_report(metrics)\n"
+                changes.append((node.lineno - 1, replacement, node.end_lineno))
     lines = source.splitlines(keepends=True)
     for change in sorted(changes, reverse=True):
         start, replacement, *end = change

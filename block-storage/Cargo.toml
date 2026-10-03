@@ -41,6 +41,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tempfile = { workspace = true }
 # Exhaustive thread-interleaving model checker for the
 # `access_equivocations_tracker` non-reentrancy contract (P2-13).
 # See block-storage/tests/loom_equivocations_tracker.rs.

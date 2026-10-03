@@ -17,7 +17,7 @@ for file in bin externals run.sh run-helper.sh.template env.sh; do
 done
 chown -R casper:casper /opt/casper-runner
 sudo -n -l -U casper > /run/casper-sudo-check 2>&1 || true
-if rg -q '\(ALL|NOPASSWD' /run/casper-sudo-check; then exit 2; fi
+if grep -Eq '\(ALL|NOPASSWD' /run/casper-sudo-check; then exit 2; elif [[ $? -ne 1 ]]; then exit 2; fi
 instance="$(curl --connect-timeout 5 --max-time 10 -fsS -H 'Authorization: Bearer Oracle' http://169.254.169.254/opc/v2/instance/)"
 instance_id="$(jq -er .id <<< "$instance")"
 [[ "$instance_id" =~ ^ocid1.instance.[a-zA-Z0-9.]+$ ]]
