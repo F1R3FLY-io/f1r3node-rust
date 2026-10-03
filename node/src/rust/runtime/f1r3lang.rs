@@ -11,6 +11,7 @@ use mettail_rholang_runtime::language_install::{
     LANGUAGE_CAPABILITY_ABI_CURRENT,
 };
 use mettail_rholang_runtime::rholang_ast::{RholangPreparationPolicy, RholangProgramFrontend};
+use mettail_rholang_runtime::speculation::server::LookaheadEngine;
 use mettail_rholang_runtime::{EmptyFltResolver, LanguageRight, LanguageRights, RuntimePolicy};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::frontend::{PreparedProgram, ProgramFrontend};
@@ -166,6 +167,7 @@ pub struct F1r3langEvaluation {
     pub(crate) max_source_bytes: usize,
     pub(crate) funding: Cost,
     pub(crate) matcher: SubstrateGuardMatcher,
+    pub(crate) lookahead: LookaheadEngine,
 }
 
 pub struct F1r3langComposition {
@@ -211,7 +213,9 @@ impl F1r3langComposition {
         }
         let service = Arc::new(LanguageInstallService::new(snapshot, policy));
         let runtime = Arc::new(RholangLanguageRuntime::new(service));
-        let definitions = language_runtime_definitions(runtime.clone());
+        let mut definitions = language_runtime_definitions(runtime.clone());
+        let lookahead = LookaheadEngine::new().with_language_runtime(runtime.clone());
+        definitions.extend(lookahead.definitions());
         validate_extra_system_processes(&definitions)?;
         let matcher = SubstrateGuardMatcher::with_language_runtime(runtime);
         Ok(Self {
@@ -224,6 +228,7 @@ impl F1r3langComposition {
                 )),
                 funding: Cost::create(funding, "F1R3Lang host evaluation policy"),
                 matcher,
+                lookahead,
             },
         })
     }
@@ -427,6 +432,15 @@ mod tests {
         .unwrap();
         assert!(!composition.definitions.is_empty());
         validate_extra_system_processes(&composition.definitions).unwrap();
+        assert_eq!(
+            composition
+                .definitions
+                .iter()
+                .filter(|definition| definition.urn.starts_with("mtl:spec:"))
+                .count(),
+            4
+        );
+        assert!(!composition.evaluation.lookahead.host_bound());
         assert_eq!(composition.evaluation.funding.value, funding);
     }
 }

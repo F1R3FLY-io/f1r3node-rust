@@ -188,6 +188,8 @@ mod prepared_route_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use mettail_rholang_runtime::guard_par_substrate::SubstrateGuardMatcher;
+    use mettail_rholang_runtime::speculation::server::LookaheadEngine;
+    use rholang::rust::interpreter::accounting::has_cost::HasCost;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::frontend::{
         PreparationError, PreparedProgram, ProgramFrontend, PREPARED_PROGRAM_ABI_V1,
@@ -233,13 +235,17 @@ mod prepared_route_tests {
     async fn configured_route_prepares_once_and_never_reparses_the_source() {
         let matcher = SubstrateGuardMatcher::new();
         let calls = Arc::new(AtomicUsize::new(0));
+        let runtime = runtime(matcher.clone()).await;
+        let lookahead = LookaheadEngine::new();
+        assert!(lookahead.bind_host(runtime.cost().clone()));
         let service = ReplGrpcServiceImpl::with_f1r3lang(
-            runtime(matcher.clone()).await,
+            runtime,
             crate::rust::runtime::f1r3lang::F1r3langEvaluation {
                 frontend: Arc::new(CountingFrontend(calls.clone())),
                 max_source_bytes: 4096,
                 funding: Cost::create(10_000, "test host grant"),
                 matcher,
+                lookahead,
             },
         );
         let result = service
@@ -306,6 +312,10 @@ mod prepared_route_tests {
             ExternalServices::noop(),
         )
         .await;
+        assert!(composition
+            .evaluation
+            .lookahead
+            .bind_host(runtime.cost().clone()));
         ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation)
     }
 
@@ -557,6 +567,10 @@ mod prepared_route_tests {
         crate::rust::runtime::f1r3lang::ensure_eval_registry(&mut runtime)
             .await
             .expect("the production eval registry installs");
+        assert!(composition
+            .evaluation
+            .lookahead
+            .bind_host(runtime.cost().clone()));
         let service = ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation);
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
             "/../../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho"));

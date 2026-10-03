@@ -261,10 +261,21 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     #[cfg(feature = "mettail-frontend")]
     let eval_runtime = {
+        use rholang::rust::interpreter::accounting::has_cost::HasCost;
+
         let mut runtime = eval_runtime;
         super::f1r3lang::ensure_eval_registry(&mut runtime)
             .await
             .map_err(CasperError::Other)?;
+        if !f1r3lang
+            .evaluation
+            .lookahead
+            .bind_host(runtime.cost().clone())
+        {
+            return Err(CasperError::Other(
+                "F1R3Lang lookahead host budget was already bound".into(),
+            ));
+        }
         runtime
     };
 
