@@ -1804,6 +1804,46 @@ tasks:
       - "The published release pins the revision that the reduction commit produced. The record names that revision."
       - "Asset digests after publication match the digests recorded at upload time."
       - "Publication does not change a claim status, a ledger record status, or a discharge result."
+  - id: TASK-017-16
+    title: "Stack cleanup on fix/soak-finalization-attribution before the stack merge"
+    status: pending
+    claimed_by: null
+    created_at: 2026-09-30
+    recorded_by: claude-session-f3cbc961
+    recorded_on: 2026-09-30
+    branch: fix/soak-finalization-attribution
+    pull_request: 441
+    blocked_by: [TASK-017-14, TASK-019-8]
+    origin: "The maintainer decided on 2026-09-30 that the cleanup of the work logs, the evidence, and the file count occurs on this branch. EPIC-020, this branch, ci/soak-obligation-gate, and feature/randomized-exercise-soak had no cleanup task."
+    scope: "Reduce the documents and the evidence of the stack to the deliverables and the records that they cite. Production code scope is not in this task."
+    baseline:
+      measured_at: 93b87d802
+      diff_against_dev_files: 2225
+      tree_files: 4651
+      docs_casper_cbc_evidence: "1,468 files and 50.8 MiB"
+      archives_in_docs: "52 archives and 26.5 MiB"
+      files_larger_than_256_kib: "36 files and 43.0 MiB"
+      work_logs: "60 files. TASK-017-4 has 10 logs."
+      compatibility_links: 190
+    rules:
+      - "Keep each file that an accepted claim, an evidence record, a test, or the tracker cites by path or digest."
+      - "Keep report.json, validation.json, and the digest lists of each evidence package that a record cites. Bulk evidence stays outside Git."
+      - "Keep one work log for each task, with the decisions, the acceptance records, and the open findings."
+      - "Record each removal with its reason, its external location, and its digest."
+      - "Do not remove a file that a lower branch of the stack still changes. A removal of such a file causes a conflict in each merge round."
+    stack_refresh: "Decision 2026-09-30: the next merge round starts at the bottom of the stack. dev merges into fix/node-log-and-accept-backoff first, then each branch merges into the branch above it. This task runs after that round reaches this branch."
+    implementation_plan:
+      - "Step 1. Wait for TASK-017-14 on formal/soak-casper-consensus and for TASK-019-8 on feature/casper-node-observation. Wait for the merge round that carries their results to this branch."
+      - "Step 2. Make an inventory of each docs/, formal/, and .github/ file of the diff against dev. Classify each file as a deliverable, a cited record, or removable."
+      - "Step 3. Remove the removable files of EPIC-020 and of this branch. Put the run narrative of each work log into its results table."
+      - "Step 4. Do the same inventory and removal on ci/soak-obligation-gate and on feature/randomized-exercise-soak for the files that only those branches have."
+      - "Step 5. Run the strict claim audit, the link check, and the STE Check before and after. Require equal results."
+      - "Step 6. Record the file count, the line count, and the size of the diff against dev before and after."
+    acceptance:
+      - "No removal changes a claim status, a record status, a tier field, an audit result, a test, or a production file."
+      - "The diff against dev has only the deliverables and the records that they cite."
+      - "The tree has no archive and no file larger than 256 KiB in docs/, or the record gives the reason for each exception."
+      - "The maintainer confirms the reduced diff before the stack merge."
 ---
 ```
 
@@ -1819,7 +1859,7 @@ The [interface contract](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) records both phases and their evidence boundary.
 
-**Final task:** TASK-017-15 closes the branch and PR #436. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
+**Final task:** TASK-017-15 closes the branch and PR #436. TASK-017-16 reduces the documents and the evidence of the stack on `fix/soak-finalization-attribution` (PR #441) before the stack merge. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
 
 ---
 
