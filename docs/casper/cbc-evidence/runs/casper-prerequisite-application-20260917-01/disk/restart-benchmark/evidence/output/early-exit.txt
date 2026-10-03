@@ -1,1 +1,0 @@
-host_protection_breach: recovered guardian record: A prior guardian detected a disk breach. Termination remains unconfirmed.

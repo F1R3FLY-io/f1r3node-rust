@@ -1,11 +1,9 @@
 # TASK-017-14 Preparation
 
 ---
-handoff_status: paused
+handoff_status: complete
 next_steps:
-  - Wait for TASK-017-13. Then run the rehearsed reduction against the live tree and redirect the one dangling work-log link.
-  - Consolidate the work logs of TASK-017-1 through TASK-017-7 in the same commit.
-  - Publish the draft release when the reduction commit lands, so the tag resolves for readers without write access.
+  - None for this task. Step 5, the work-log consolidation, was not needed for the maintainer confirmation.
 ---
 
 ## Scope
@@ -84,3 +82,55 @@ The handoff from `pi-casper-merge-accounting` asks that the accepted report byte
 - Step 4, symlinks: reviewed. No change on this branch.
 - Steps 2, 3, 6: rehearsed in the scratch copy. Not applied.
 - Steps 5, 7: not started.
+
+## Reduction on 2026-10-03
+
+`claude-session-aa467dea` took over the task on 2026-10-03 at the request of the user. PR #451 and PR #447 merged, so PR #436 is the bottom of the stack, and no lower branch can conflict with a removal. The upper branches change no file under `runs/`.
+
+The reduction keeps every ledger record and every `report.json` byte-identical. Each package that loses files gets a sibling `external.json`. It names the release tag, the asset, and the asset digest, and it lists the path, size, and SHA-256 of each moved file. Records keep their original paths, so a cited path resolves through the `external.json` of its package.
+
+The keep rule of the rehearsal applies: `report.json`, `validation.json`, `review-validation.json`, `redactions.tsv`, and `artifacts.sha256` stay in each package. `casper-rust-migration-20260917-01/bindings.tar.gz` also stays, because `scripts/ci/check-casper-soak-bindings.sh` and `scripts/casper-soak/tests/bindings.rs` read it.
+
+The existing assets of 22 packages contain every moved file of those packages, byte for byte. The other 23 packages need new deterministic bundles, 8.0 MB in total. Three Markdown links that pointed to moved files now point to the `external.json` of their package.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| PR #436 diff against `master` | 2,048 files, 307,232 added lines | 970 files, about 102,000 added lines |
+| Files under `docs/casper/cbc-evidence/runs/` | 1,287 files, 53 MB | 164 kept files and 45 pointers |
+| Claims audit, default and strict | exit 0 and exit 4 | exit 0 and exit 4, same output |
+| Bindings inventory | exit 0 | exit 0, same report |
+| Offline link check of `docs/` | 0 errors | 0 errors |
+| `scripts/casper-soak` tests | not measured | 146 passed, 0 failed |
+
+- Steps 2 and 3: applied to 45 packages. 1,123 files moved to the release.
+- Step 4: no change. The compatibility symlinks stay.
+- Step 5: not started.
+- Step 6: complete for the reduction. The table above records the results.
+- Step 7: waits for the bundle upload and the user commit.
+
+## Second reduction on 2026-10-03
+
+The 23 new bundles of the first reduction are uploaded to the draft release. A fresh download of each asset matches the digest in its pointer.
+
+The user then asked for two more cuts. No gate reads `validation.json`, `artifacts.sha256`, `redactions.tsv`, or `review-validation.json`, so 93 such files in 45 packages moved to new `<package>.metadata.tar.gz` assets. Each new asset has an inner `external-manifest.json`. No upload replaced an existing asset.
+
+The pointers now use schema version 2. A pointer names each release asset of its package with the asset digest, the size, and the member count. The member list stays in the inner `external-manifest.json` of each bundle. Two older bundles have no inner manifest, `casper-version-phlo-20260919-01` and `casper-version-phlo-verification-20260919-01`, so their pointers keep the member list.
+
+A package now keeps only `report.json` and its `external.json` in the tree. `casper-rust-migration-20260917-01/bindings.tar.gz` also stays. Three more Markdown links now point to package pointers.
+
+| Measure | After the first reduction | After the second reduction |
+| --- | --- | --- |
+| PR #436 diff against `master` | 970 files, about 102,000 added lines | 889 files, about 92,200 added lines |
+| Files under `docs/casper/cbc-evidence/runs/` | 164 kept files and 45 pointers | 71 kept files and 57 pointers |
+| Release assets | 50 | 95 |
+| Claims audit, default and strict | exit 0 and exit 4 | exit 0 and exit 4, same output as the baseline |
+| Bindings inventory | exit 0 | exit 0 |
+| Offline link check of `docs/` | 0 errors | 0 errors |
+| `scripts/casper-soak` tests | 146 passed | 146 passed |
+
+## Completion on 2026-10-03
+
+The release `cbc-evidence-epic-017` was published on 2026-10-03 at 16:20 UTC with 95 assets. The tag resolves for readers without write access.
+
+The maintainer `jltatbeach` confirmed the reduced diff of PR #436 at revision `3bdd523cc` in [comment 5971043357](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#issuecomment-5971043357). GitHub reports 889 files, 92,225 added lines, and 825 removed lines.
+

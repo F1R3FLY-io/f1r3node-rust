@@ -1,2 +1,0 @@
-Error: Invariant IndexCompleteForWindow is violated.
-Error: The behavior up to this point is:

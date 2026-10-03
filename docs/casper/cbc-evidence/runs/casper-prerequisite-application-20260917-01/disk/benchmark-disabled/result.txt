@@ -1,1 +1,0 @@
-PASS: Opening benchmark admission preserved the allowed path (benchmark-disabled).

@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-prerequisite-evidence-audit-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-prerequisite-evidence-audit-20260917-01.external.tar.gz",
+   "sha256": "bade0b0f46e72a67d19a0994d56c63827550296ff010aa3f3a1116ec9db89fa4",
+   "bytes": 2428,
+   "members": 8,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}
