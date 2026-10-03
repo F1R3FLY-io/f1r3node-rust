@@ -99,7 +99,9 @@ fn id(v: &Value) -> Result<&str> {
     );
     Ok(s)
 }
-fn same(a: &Value, b: &Value, fields: &[&str]) -> bool { fields.iter().all(|k| a[*k] == b[*k]) }
+fn same(a: &Value, b: &Value, fields: &[&str]) -> bool {
+    fields.iter().all(|k| a.get(*k).is_some() && a[*k] == b[*k])
+}
 fn measurement(v: &Value) -> Result<Option<&Value>> {
     match text(&v["presence"])? {
         "observed" => {
