@@ -43,6 +43,8 @@ orchestrator_repository: F1R3FLY-io/f1r3node-rust
 orchestrator_sha: <40-character commit SHA>
 seed: <unsigned integer>
 provider: docker | subprocess
+topology: <shard and validator layout of the run>
+effective_limits: <resource and time limits that the run applied>
 ```
 
 Versioning rules:
@@ -252,24 +254,26 @@ Promotion and revision history remain in Git. Completed run manifests preserve t
 
 ## Delivery roadmap
 
+The stages R1 to R6 are roadmap stages, not tracker epics. Each stage gets a tracker epic ID when it is recorded in `docs/ToDos.md`.
+
 ```mermaid
 flowchart LR
-    E11[EPIC-011 Contract and catalog] --> E12[EPIC-012 Valid workload library]
-    E16[EPIC-016 Trusted CI pins] --> E13[EPIC-013 Seeded scheduler]
-    E11 --> E13
-    E12 --> E13
-    E13 --> E14[EPIC-014 Evidence replay and promotion]
-    E12 --> E15[EPIC-015 Multi-shard expansion]
-    E13 --> E15
-    E14 --> E15
+    R1[R1 Contract and catalog] --> R2[R2 Valid workload library]
+    R6[R6 Trusted CI pins] --> R3[R3 Seeded scheduler]
+    R1 --> R3
+    R2 --> R3
+    R3 --> R4[R4 Evidence replay and promotion]
+    R2 --> R5[R5 Multi-shard expansion]
+    R3 --> R5
+    R4 --> R5
 ```
 
-- **EPIC-011:** Define versioned cross-repository contracts and authoring rules.
-- **EPIC-012:** Implement the first six valid single-shard workload epochs in system-integration.
-- **EPIC-013:** Add deterministic coverage-constrained selection and segment integration.
-- **EPIC-014:** Complete evidence, replay, regression intake, promotion, and later dashboard visibility.
-- **EPIC-015:** Extend the stable model to valid multi-shard operations.
-- **EPIC-016:** Replace duplicated pins with one JSONC registry and split privileged runner code from the fast-moving catalog.
+- **R1:** Define versioned cross-repository contracts and authoring rules.
+- **R2:** Implement the first six valid single-shard workload epochs in system-integration.
+- **R3:** Add deterministic coverage-constrained selection and segment integration.
+- **R4:** Complete evidence, replay, regression intake, promotion, and later dashboard visibility.
+- **R5:** Extend the stable model to valid multi-shard operations.
+- **R6:** Keep one system-integration pin through `scripts/repin-system-integration.sh` and `.github/oci-validation.env`, and add the catalog compatibility check that runs before a runner is launched.
 
 ## Stigmergic collaboration
 
