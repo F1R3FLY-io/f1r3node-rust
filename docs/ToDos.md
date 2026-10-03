@@ -71,6 +71,94 @@ mr_status:
 
 ---
 
+### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
+
+```yaml
+---
+epic_id: EPIC-021
+title: "Issue #24 Replay Throughput Root Cause Under the CbC Harness"
+status: in_progress
+priority: p0
+user_story: null
+issues: [24]
+blocked_by: []
+created_at: 2026-10-03
+updated_at: 2026-10-03
+claimed_by: claude-session-aa467dea
+claimed_at: 2026-10-03T21:10:00Z
+branch: fix/issue-24
+pr_base_branch: dev
+origin: "The weekend-60h soak 37090117438 on master fce422a7d stopped after about 8 hours. Eight passive iterations failed first, then the disk guardian stopped all nodes in iteration 26 at 3,683 MB free against a 4,096 MB floor. The verdict was regress, with finalization p95 50.7 s against a baseline of 40.9 s plus 20 percent. Issue #24 records the same sustained-phase finalization failure since 2026-09."
+execution_contract:
+  base_branch: fix/issue-24
+  base_revision: f93b72699565e45097b37a99b0413cef16bacd00
+  scope: "Find the root cause of the issue #24 sustained-phase finalization failure with the soak harness of EPIC-017, the stage metrics of PR #441, and a new pending CbC claim. Separate the host disk breach, the passive iteration failures, and the finalization lag before any fix."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  cbc_policy: "Register the new claim as pending before any code change. The claims audit of CLAIM-CASPER-SOAK-001 to -008 requires exactly those eight claims, so the new claim uses its own identifier, specification, and verification plan outside formal/tlaplus/casper_soak/verification-plan.jsonc."
+  pr_policy: "The branch starts from master f93b72699. Its PR targets dev after PR #569 brings master into dev, or after the branch merges dev."
+evidence:
+  failed_run: 37090117438
+  new_run: 37153082817
+  new_run_target: f93b72699565e45097b37a99b0413cef16bacd00
+  issue_comments: ["2026-09-16 nightly soak evidence for 2026-09-12 to 2026-09-15", "2026-09-25 submit-to-finalization breakdown on dev 6d6d4fed6"]
+tasks:
+  - id: TASK-021-1
+    title: "Attribute the failure of soak 37090117438 with the existing evidence"
+    status: in_progress
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-03T21:10:00Z
+    blocked_by: []
+    acceptance:
+      - "The analysis separates three causes: the disk guardian breach, the eight passive iteration failures, and the finalization p95 regression."
+      - "Each cause has a first-failure time, the failed assertion or guardian rule, and the artifact path that shows it."
+      - "The analysis compares the failure with the issue #24 evidence of 2026-09-12 to 2026-09-15 and the 2026-09-25 stage breakdown, and states what matches and what is new."
+      - "The analysis states which questions need the stage metrics of run 37153082817, because master fce422a7d did not have them."
+  - id: TASK-021-2
+    title: "Register a pending claim for replay latency and finalization lag under sustained load"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-1]
+    acceptance:
+      - "A new specification, for example docs/claims/casper-replay-throughput.md, registers CLAIM-REPLAY-THROUGHPUT-001 with status pending before any code change."
+      - "The claim names its observables in terms of the stage metrics of PR #441: block replay runtime lock wait, execute, and save-mergeable time, history checkpoint stages, and repeat-deploy stages."
+      - "The claim states a bound on per-block replay latency and on finalization lag in the sustained phase, with the workload, topology, and window of the bound."
+      - "The claims audit of CLAIM-CASPER-SOAK-001 to -008 still passes with exit 0."
+  - id: TASK-021-3
+    title: "Add a replay-throughput soak profile with a bounded model and executable bindings"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-2]
+    acceptance:
+      - "A bounded TLA+ model of the replay pipeline has one clean configuration and negative controls that violate the claim invariants as intended."
+      - "Executable bindings check the claim against the ISSUE24_METRICS records of a soak run, with fixtures for a passing run and for each violation."
+      - "A check script and a hosted workflow follow the pattern of the existing profiles, with the pinned TLA+ tools."
+      - "The profile records refutation bounded-safety-pass and binding passed before maintainer review."
+  - id: TASK-021-4
+    title: "Attribute finalization lag by replay stage with soak 37153082817"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-1]
+    acceptance:
+      - "The analysis gives the per-stage share of block replay time in each phase, from the stage metrics of run 37153082817."
+      - "The analysis states whether the host disk headroom stayed above the guardian floor with the node log caps of PR #451, and reports the lowest free value."
+      - "The profile of TASK-021-3 evaluates the run, and its verdict is recorded on issue #24."
+  - id: TASK-021-5
+    title: "Propose the root-cause fix and verify it with the profile"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-3, TASK-021-4]
+    acceptance:
+      - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
+      - "The maintainer chooses the fix before implementation."
+      - "The fix passes the replay-throughput profile and a soak run, and the maintainer accepts CLAIM-REPLAY-THROUGHPUT-001."
+      - "The branch PR targets dev with a diff that contains only the claim, the profile, the fix, and the cited evidence."
+---
+```
+
+**Current state:** Created on 2026-10-03 after soak 37090117438 failed. Soak 37153082817 runs weekend-60h on master f93b72699 with the stage metrics. TASK-021-1 starts from the failed run, and TASK-021-4 waits for the new run.
+
+---
+
 ### EPIC-020: Node Log and Accept-Path Self-Limits
 
 ```yaml
@@ -3480,6 +3568,7 @@ PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisit
 EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
 EPIC-020 (node log and accept-path limits, fix branch -> dev) ─> merges before PR #447
+EPIC-017 harness + PR #441 stage metrics ─> EPIC-021 (issue #24 root cause, fix/issue-24 -> dev)
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
