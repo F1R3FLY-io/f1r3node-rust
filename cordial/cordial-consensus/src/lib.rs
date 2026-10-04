@@ -9,11 +9,18 @@ use k256::ecdsa::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 mod execution;
+mod node;
+mod runtime;
 mod store;
 pub use execution::{
     Application, CommittedExecution, CommittedExecutor, ExecutionCheckpoint, ExecutionReceipt,
     MAX_RECEIPT_BYTES, MAX_RECEIPT_DEPLOYS, Submission,
 };
+pub use node::{
+    CordialNode, CordialQueries, NodeOptions, PeerNetwork, Progress, SUBMIT_PACKET_KIND,
+    SYNC_PACKET_KIND,
+};
+pub use runtime::{BLOCK_PACKET_KIND, CordialIngressAdapter};
 pub use store::{Admission, DurableBlocklace, EquivocationRecord, HistoryPage, StoreConfig};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
