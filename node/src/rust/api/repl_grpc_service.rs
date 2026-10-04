@@ -441,6 +441,34 @@ mod prepared_route_tests {
     }
 
     #[tokio::test]
+    async fn public_native_lookahead_refuses_forged_owner_without_reply() {
+        let service = finite_public_service(10_000_000).await;
+        let response = public_eval(
+            &service,
+            r#"new forged in {
+                @"^spec-all-v2"!([2, "a", [[[], *forged, "Scalar", 0]]], "public.forged.reply")
+            }"#,
+        )
+        .await;
+        assert!(
+            !response.output.starts_with("Error:"),
+            "{}",
+            response.output
+        );
+        let errors = public_values(
+            &service,
+            mettail_rholang_runtime::lookahead::SPEC_ERR_CHANNEL,
+        )
+        .await;
+        assert_eq!(errors.len(), 1, "one typed authority refusal");
+        let rendered = mettail_rholang_runtime::observation::render_par_text(&errors[0]);
+        assert!(rendered.contains("not authorized for Reduce"), "{rendered}");
+        assert!(public_values(&service, "public.forged.reply")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn actual_regex_application_uses_shared_provider_public_route() {
         use mettail_rholang_runtime::guard_discharge::LoweringOptions;
         use mettail_rholang_runtime::language_install::{
