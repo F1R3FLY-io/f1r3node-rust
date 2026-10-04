@@ -84,6 +84,7 @@ sysinfo = "0.28"
 tonic-reflection = "0.14"
 
 [dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 rspace_plus_plus = { path = "../rspace++" }
