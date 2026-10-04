@@ -726,6 +726,48 @@ mod prepared_route_tests {
         assert_eq!(hole_trace.last(), Some(&expected_terminal));
         let hole_failure = observation(&runtime, "regex.lookahead.hole.failure").await;
         assert_eq!(trace_pathmap(&hole_failure).len(), 0);
+        let speculation_error_channel = scalar(ExprInstance::GString(
+            mettail_rholang_runtime::lookahead::SPEC_ERR_CHANNEL.into(),
+        ));
+        let speculation_errors = runtime.get_data(&speculation_error_channel).await;
+        let rendered_errors = speculation_errors
+            .iter()
+            .flat_map(|datum| datum.a.pars.iter())
+            .map(mettail_rholang_runtime::observation::render_par_text)
+            .collect::<Vec<_>>();
+        assert!(
+            rendered_errors.is_empty(),
+            "lookahead refusals: {rendered_errors:?}"
+        );
+        let request_channel = scalar(ExprInstance::GString(
+            mettail_rholang_runtime::lookahead::SPEC_ALL_V2_CHANNEL.into(),
+        ));
+        let pending_requests = runtime.get_data(&request_channel).await;
+        let pending_requests = pending_requests
+            .iter()
+            .flat_map(|datum| datum.a.pars.iter())
+            .map(mettail_rholang_runtime::observation::render_par_text)
+            .collect::<Vec<_>>();
+        assert!(
+            pending_requests.is_empty(),
+            "unserved v2 requests: {pending_requests:?}"
+        );
+        let native_success = observation(&runtime, "regex.lookahead.native.success").await;
+        let native_success = trace_pathmap(&native_success);
+        assert_eq!(native_success.mode(), EPathMapMode::Set);
+        assert_eq!(native_success.len(), 1, "bound Scalar literal is quiescent");
+        let native_key = native_success
+            .next_value_key(&[])
+            .expect("native Scalar trace key");
+        let native_trace = native_success
+            .leaf_at_encoded_key(&native_key)
+            .expect("native Scalar trace");
+        let native_trace = list(&native_trace);
+        let native_value = scalar(ExprInstance::GString("a".into()));
+        assert_eq!(native_trace.first(), Some(&native_value));
+        assert_eq!(native_trace.last(), Some(&native_value));
+        let native_failure = observation(&runtime, "regex.lookahead.native.failure").await;
+        assert_eq!(trace_pathmap(&native_failure).len(), 0);
         let zero_success = observation(&runtime, "regex.lookahead.zero.success").await;
         let zero_success = trace_pathmap(&zero_success);
         assert_eq!(zero_success.mode(), EPathMapMode::Empty);
@@ -754,7 +796,7 @@ mod prepared_route_tests {
         let reports = runtime.get_data(&truncated_channel).await;
         assert_eq!(
             reports.len(),
-            6,
+            7,
             "each v2 lookahead request has a typed report"
         );
         let mut truncated_lengths = Vec::with_capacity(reports.len());
@@ -766,7 +808,7 @@ mod prepared_route_tests {
             truncated_lengths.push(trace_pathmap(&fields[1]).len());
         }
         truncated_lengths.sort_unstable();
-        assert_eq!(truncated_lengths, [0, 0, 0, 0, 1, 1]);
+        assert_eq!(truncated_lengths, [0, 0, 0, 0, 0, 1, 1]);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
