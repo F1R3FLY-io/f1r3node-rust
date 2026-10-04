@@ -44,15 +44,23 @@
 // pins in each submodule's test block catch it at Wave 4.
 
 pub mod consensus_divergence;
+pub mod dispatch;
 pub mod family;
 pub mod fs_handler;
+pub mod fs_handlers;
+pub mod fs_processes;
 pub mod journal_path;
 pub mod reply;
+pub mod spawn_blocking;
 pub mod syscall_ctx;
 
 pub use consensus_divergence::consensus_divergence_reply;
+pub use dispatch::{dispatch_via_trait, dispatch_via_trait_owned};
 pub use family::HandlerFamily;
 pub use fs_handler::FsHandler;
+pub use fs_handlers::{FsHandlerEntry, EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS};
+pub use fs_processes::FsProcesses;
 pub use journal_path::JournalPath;
 pub use reply::HandlerReply;
+pub use spawn_blocking::spawn_blocking_par;
 pub use syscall_ctx::SyscallCtx;
