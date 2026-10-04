@@ -19,12 +19,27 @@
    - linear_charge_example: the legacy linear charge (one comparison per
      entry) exceeds the bound by orders of magnitude.
 
+   C14 (decision record DR-79) charges replay authority tree visits with the
+   same bound and adds:
+   - height_bound_monotone: a larger size never has a smaller height bound.
+   - search_visits_le_height: a search reads at most h nodes.
+   - search_within_bound: a search in a map with at most n entries makes at
+     most 11 * height_bound n comparisons and reads at most height_bound n
+     nodes. A charge is sound if its size bounds the map when the search
+     runs.
+   - pre_operation_size_undercharges and summed_size_undercharges: two
+     negative controls. A deferred search charged at the size before the
+     operation, and one bound for the summed size of two maps, both charge
+     less than the real search.
+
    Rust correspondence: shared/src/rust/collection_backing.rs
    (tree_height_bound, tree_search_bound); its users are the produce-counter
    lookups in rspace++/src/rspace/replay_rspace/native_candidate/metered.rs
-   (prepare_metered_produce_counter, metered_produce_count, metered_comm).
-   The extracted property tests count the comparisons of the real BTreeMap
-   with a counting key type. *)
+   (prepare_metered_produce_counter, metered_produce_count, metered_comm) and
+   the replay authority charges in rholang/src/rust/interpreter/accounting/
+   native_runtime/replay_authority/backing.rs (tree_update,
+   reserve_event_lookup, reserve_changes). The extracted property tests count
+   the comparisons of the real BTreeMap with a counting key type. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.
@@ -223,8 +238,139 @@ Qed.
 Example linear_charge_example : height_bound 2000 = 4.
 Proof. vm_compute. reflexivity. Qed.
 
+(* C14 (decision record DR-79): the replay authority charges each B-tree
+   visit by the height bound of a size that holds when the visit runs. The
+   results below extend the C3 model for that use. *)
+
+Lemma height_search_lower : forall remaining entries height,
+  2 * pow6 (height - 1) - 1 <= entries ->
+  2 * pow6 (height_search remaining entries height - 1) - 1 <= entries.
+Proof.
+  induction remaining as [| remaining IH]; intros entries height fits;
+    cbn [height_search]; [exact fits |].
+  destruct (Nat.leb (2 * pow6 height - 1) entries) eqn:step; [| exact fits].
+  apply IH. apply Nat.leb_le in step. replace (S height - 1) with height by lia.
+  exact step.
+Qed.
+
+Lemma height_search_upper : forall remaining entries height,
+  1 <= height -> entries < height + remaining ->
+  entries < 2 * pow6 (height_search remaining entries height) - 1.
+Proof.
+  induction remaining as [| remaining IH]; intros entries height positive fuel;
+    cbn [height_search].
+  - destruct (pow6_grows height) as [grows | zero]; lia.
+  - destruct (Nat.leb (2 * pow6 height - 1) entries) eqn:step.
+    + apply IH; lia.
+    + apply Nat.leb_gt in step. exact step.
+Qed.
+
+Lemma height_bound_upper : forall entries, entries < 2 * pow6 (height_bound entries) - 1.
+Proof.
+  intros [| entries]; unfold height_bound; [simpl; lia |].
+  apply height_search_upper; lia.
+Qed.
+
+Lemma height_bound_lower : forall entries, 1 <= entries ->
+  2 * pow6 (height_bound entries - 1) - 1 <= entries.
+Proof.
+  intros [| entries] positive; [lia |]. unfold height_bound.
+  apply height_search_lower. simpl. lia.
+Qed.
+
+(* A larger size never has a smaller height bound. *)
+Theorem height_bound_monotone : forall a b, a <= b -> height_bound a <= height_bound b.
+Proof.
+  intros a b ab.
+  destruct a as [| a]; [apply Nat.le_0_l |].
+  destruct (Nat.le_gt_cases (height_bound (S a)) (height_bound b)) as [ok | wrong];
+    [exact ok |].
+  exfalso.
+  pose proof (height_bound_lower (S a) ltac:(lia)) as lower.
+  pose proof (height_bound_upper b) as upper.
+  pose proof (root_minimum_monotone (height_bound b) (height_bound (S a) - 1) ltac:(lia))
+    as mono.
+  lia.
+Qed.
+
+(* The nodes that one search reads: this node, then at most one child. *)
+Fixpoint search_visits (fuel : nat) (t : btree) (target : nat) : nat :=
+  match fuel, t with
+  | 0, _ => 0
+  | S fuel, Node keys children =>
+      let (_, position) := scan keys target in
+      S match nth_error children position with
+        | Some child => search_visits fuel child target
+        | None => 0
+        end
+  end.
+
+Theorem search_visits_le_height : forall h root t target fuel,
+  wf root h t -> search_visits fuel t target <= h.
+Proof.
+  induction h as [| h IH]; intros root [keys children] target fuel well; [contradiction |].
+  destruct fuel as [| fuel]; simpl; [lia |].
+  destruct well as [_ [_ rest]].
+  destruct (scan keys target) as [comparisons position] eqn:scanned. simpl in *.
+  destruct h as [| lower].
+  - subst children. destruct position; simpl; lia.
+  - destruct rest as [_ children_wf].
+    destruct (nth_error children position) as [child |] eqn:found; [| lia].
+    apply nth_error_In in found.
+    rewrite Forall_forall in children_wf.
+    pose proof (IH false child target fuel (children_wf child found)). lia.
+Qed.
+
+(* A search in a map with at most [entries] entries makes at most
+   11 * height_bound entries comparisons and reads at most height_bound
+   entries nodes. This is the charge of one replay authority visit. *)
+Theorem search_within_bound : forall t target fuel h entries,
+  wf true h t -> size t <= entries ->
+  search_comparisons fuel t target <= 11 * height_bound entries /\
+  search_visits fuel t target <= height_bound entries.
+Proof.
+  intros t target fuel h entries well sized.
+  pose proof (btree_search_comparisons h true t target fuel well).
+  pose proof (search_visits_le_height h true t target fuel well).
+  pose proof (btree_height_bound h t well).
+  pose proof (height_bound_monotone (size t) entries sized).
+  split; lia.
+Qed.
+
+(* Negative control 1: a deferred search charged at the size before the
+   operation. The map is empty when the charge is computed, so the bound is
+   0, but it holds one entry when the search runs. *)
+Example pre_operation_size_undercharges :
+  wf true 1 (Node [5] []) /\ size (Node [5] []) = 1 /\
+  11 * height_bound 0 < search_comparisons 1 (Node [5] []) 5.
+Proof. split; [simpl; repeat split; lia |]. split; reflexivity || (simpl; lia). Qed.
+
+(* Negative control 2: one bound for the summed size of two maps. Each map
+   is a well-formed tree of height 2 with 77 entries, and a search for a key
+   above every stored key makes 22 comparisons in each. The bound of the
+   summed size, 154 entries, allows only 33. *)
+Definition full_leaf : btree := Node (repeat 0 11) [].
+Definition minimal_leaf : btree := Node (repeat 0 5) [].
+Definition dense_tree : btree := Node (repeat 0 11) (repeat minimal_leaf 11 ++ [full_leaf]).
+
+Example summed_size_undercharges :
+  wf true 2 dense_tree /\ size dense_tree = 77 /\
+  search_comparisons 2 dense_tree 1 = 22 /\
+  11 * height_bound (size dense_tree + size dense_tree) <
+    search_comparisons 2 dense_tree 1 + search_comparisons 2 dense_tree 1.
+Proof.
+  split.
+  - simpl. repeat split; try lia. repeat constructor; simpl; lia.
+  - split; [reflexivity |]. split; [reflexivity |]. vm_compute. lia.
+Qed.
+
 Print Assumptions btree_size_lower_bound.
 Print Assumptions btree_search_comparisons.
 Print Assumptions btree_height_bound.
 Print Assumptions search_within_size_bound.
 Print Assumptions linear_charge_example.
+Print Assumptions height_bound_monotone.
+Print Assumptions search_visits_le_height.
+Print Assumptions search_within_bound.
+Print Assumptions pre_operation_size_undercharges.
+Print Assumptions summed_size_undercharges.

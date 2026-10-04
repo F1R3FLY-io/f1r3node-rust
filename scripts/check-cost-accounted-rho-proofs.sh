@@ -3029,6 +3029,11 @@ Print Assumptions OrderedLookupBound.btree_search_comparisons.
 Print Assumptions OrderedLookupBound.btree_height_bound.
 Print Assumptions OrderedLookupBound.search_within_size_bound.
 Print Assumptions OrderedLookupBound.linear_charge_example.
+Print Assumptions OrderedLookupBound.height_bound_monotone.
+Print Assumptions OrderedLookupBound.search_visits_le_height.
+Print Assumptions OrderedLookupBound.search_within_bound.
+Print Assumptions OrderedLookupBound.pre_operation_size_undercharges.
+Print Assumptions OrderedLookupBound.summed_size_undercharges.
 Quit.
 EOF
 then

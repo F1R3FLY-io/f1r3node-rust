@@ -1,0 +1,68 @@
+' Sizes of the replay authority charges (DR-79, cap root cause C14).
+' One replay publication: prepare reserves every charge under the authority
+' lock, mutates the reserved ledger and the pending map, and the same
+' synchronous window publishes or aborts. Each charge group is sized by the
+' maps it searches, after the operation for the deferred publish and abort
+' searches. Native execution serializes each frontier (footprint key [2, 0]),
+' so the live sizes are a function of the canonical execution.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-79);
+'                  rholang/src/rust/interpreter/accounting/native_runtime/
+'                  replay_authority/backing.rs (tree_update, reserve_event_lookup,
+'                  reserve_changes); replay_authority.rs (prepare, publish, Drop).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/OrderedLookupBound.v
+'                  (search_within_bound, pre_operation_size_undercharges,
+'                  summed_size_undercharges).
+' Palette:  scheduling = control amber · charges = gate teal · prepare mutations = process lilac
+'           publish = pool green · abort = surface coral · notes = note green / note indigo
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/replay-authority-charge-sizes.puml
+'          (or: ./render.sh replay-authority-charge-sizes.puml)
+
+@startuml replay-authority-charge-sizes
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+title Replay authority charge sizes for one publication (DR-79)
+
+start
+:native session driver runs one intent at a time
+(every intent carries footprint key [2, 0], so each frontier is one component); <<$ca_control>>
+:**prepare** takes the authority lock; <<$ca_process>>
+:identity lookups in pending_stack_event_ids, pending_replay_events, events
+3 visits at <latex>\max(|S|, |P|, |E|)</latex> (searched at once); <<$ca_gate>>
+:only when the allocation is enforced: the dominance scan,
+<latex>|R|</latex> visits at <latex>|A|</latex>; <<$ca_gate>>
+if (granted COMM with a debit of <latex>k</latex> lanes?) then (yes)
+  :ledger visits for each lane: 2 + 9 + 4
+  at <latex>L = \max(|R|, |Z|) + k</latex>, and at least <latex>|A|</latex> when the allocation is enforced; <<$ca_gate>>
+  :event-map visits: 3 + 1, with 2 inserts
+  at <latex>\max(|P|, |E|) + 1</latex>; <<$ca_gate>>
+  :validate, add the debit to R, insert into P; <<$ca_process>>
+else (no: denied COMM)
+  :frontier insert: 1 visit at <latex>|F| + 1</latex>; <<$ca_gate>>
+endif
+note right
+  Every charge is reserved before the first mutation.
+  No .await separates prepare from publish, and the driver
+  runs no other intent and no participant in between.
+end note
+if (operation completes?) then (publish)
+  :remove from P, add the debit to Z,
+  insert into E (or into F for a denied COMM); <<$ca_pool>>
+else (abort)
+  :remove from P, subtract the debit from R; <<$ca_surface>>
+endif
+:each search ran on a map no larger than its charged size
+<latex>\Rightarrow</latex> at most <latex>11 \cdot h(n)</latex> comparisons and <latex>h(n)</latex> nodes (search_within_bound); <<$ca_note_green>>
+stop
+
+legend right
+  S = pending stack identities, P = pending replay events, E = events,
+  F = frontier, R = reserved, Z = realized, A = allocation, k = debit lanes.
+  Pre-operation sizes and one bound on summed sizes undercharge
+  (pre_operation_size_undercharges, summed_size_undercharges).
+endlegend
+@enduml

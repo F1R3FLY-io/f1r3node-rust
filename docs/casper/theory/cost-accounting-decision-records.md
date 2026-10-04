@@ -5171,3 +5171,176 @@ show that every reservation comes before the state changes.
 
 **Cross-refs.** DR-77. Leaves `ofp-2-cap-c3-logarithmic-lookup-charge` and
 `ofp-2-cap-root-causes`.
+
+## DR-79 — Replay authority tree visits charge the B-tree bound of the live map size
+
+**Status.** Implemented 2026-10-04 for cap root cause C14 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- The *replay authority binding* (`ReplayAuthorityBinding`) re-checks the
+  cost accounting of an offered-funded deploy during native replay. For each
+  COMM row, it records an authority event and updates two ledgers for each
+  signature lane. A denied COMM goes into the frontier.
+- A *publication* is one `prepare` followed by `publish`, or by an abort
+  (`Drop`).
+- A *visit* is one B-tree search that `tree_update` charges.
+- $`h(n)`$ is the height bound and $`c(n) = 11 \cdot h(n)`$ is the search
+  bound of a map with $`n`$ entries (DR-78).
+- The maps are $`S`$ (pending stack identities), $`P`$ (pending replay
+  events), $`E`$ (events), $`F`$ (frontier), $`R`$ (reserved), $`Z`$
+  (realized) and $`A`$ (allocation). A debit has $`k`$ lanes.
+
+**Context.** `tree_update` charged every visit as a search in a tree of 65
+levels (`usize::BITS + 1`). That is 715 comparisons and 66 nodes for each
+visit, about 63 KB of `VerificationBytes`. One granted COMM with one lane
+makes 22 visits.
+
+The probe of the gateway funding block showed these charges as 10.3% of each
+replay budget's `VerificationBytes` (659 MB of 6.43 GB). They were also 5.6%
+of its `SearchStateBytes`. The maps hold dozens of entries, so their height is
+at most 3. The binding and its charges exist only on this branch.
+
+**Decision.**
+
+1. `tree_update` takes the size $`n`$ of the maps that its visits search. A
+   visit charges $`c(n)`$ comparisons, the key bytes of each comparison, and
+   $`h(n) + 1`$ nodes. An insert also charges $`h(n) + 1`$ nodes of
+   `SearchStateBytes`. The 65-level lines stay in the source, commented out
+   with their reason.
+2. Each charge group gets the size of the maps that it searches:
+
+   | Group | Visits | Searches | Charged size |
+   | --- | --- | --- | --- |
+   | Identity lookups | 3 | $`S`$, $`P`$, $`E`$ at prepare | $`\max(\lvert S\rvert, \lvert P\rvert, \lvert E\rvert)`$ |
+   | Dominance scan (enforced allocation only) | $`\lvert R\rvert`$ | $`A`$ at prepare | $`\lvert A\rvert`$ |
+   | Ledger, for each lane | 2 + 9 + 4 | $`R`$ and $`Z`$ (and $`A`$ when enforced) at prepare, publish and abort | $`\max(\lvert R\rvert, \lvert Z\rvert) + k`$, at least $`\lvert A\rvert`$ when enforced |
+   | Event maps | 3 + 1, two inserts | $`P`$ at prepare, publish and abort, $`E`$ at publish | $`\max(\lvert P\rvert, \lvert E\rvert) + 1`$ |
+   | Frontier (denied COMM) | 1, one insert | $`F`$ at publish | $`\lvert F\rvert + 1`$ |
+
+3. The visit counts and the insert flags do not change.
+4. The approved test "replay charges equal for play and replay" cannot hold,
+   because play never uses the binding. Play charges authority work through
+   `reserve_authority_identity`. Two tests replace it:
+   - replays of one trace on a current-thread runtime and on multi-thread
+     runtimes report the same use.
+   - play and replay end with equal authority state.
+
+**Algorithm (literate form).**
+
+```text
+⟨tree update⟩(insert, visits, n) ≡
+  h ← ⟨height bound⟩(n)                      -- DR-78
+  c ← 11 · h · visits
+  charge VerificationOperations c
+  charge VerificationBytes c · |K| + node · (h + 1) · visits
+  if insert then charge SearchStateBytes node · (h + 1)
+
+⟨publication charge⟩(state, row) ≡
+  ⟨tree update⟩(false, 3, max(|S|, |P|, |E|))
+  if the allocation is enforced then
+    repeat |R| times ⟨tree update⟩(false, 1, |A|)
+  if the row is a granted COMM with a debit of k lanes then
+    L ← max(|R|, |Z|) + k
+    if the allocation is enforced then L ← max(L, |A|)
+    for each lane:
+      ⟨tree update⟩(false, 2, L)
+      ⟨tree update⟩(lane not in R, 9, L)
+      ⟨tree update⟩(lane not in Z, 4, L)
+    N ← max(|P|, |E|) + 1
+    ⟨tree update⟩(true, 3, N)
+    ⟨tree update⟩(true, 1, N)
+  if the row is a denied COMM then
+    ⟨tree update⟩(true, 1, |F| + 1)
+```
+
+![Activity diagram of one replay authority publication. The native session driver runs one intent at a time, because every intent carries the footprint key [2, 0]. Prepare takes the authority lock. The three identity lookups are charged at the largest of the sizes of the pending stack identities, the pending replay events and the events. When the allocation is enforced, the dominance scan is charged as one visit for each reserved entry at the allocation size. For a granted COMM with k lanes, the ledger visits are charged at the larger reserved or realized size plus k, and the event-map visits and two inserts at the larger pending or events size plus one. Then prepare validates, adds the debit to the reserved ledger and inserts the pending event. For a denied COMM, the frontier insert is charged at the frontier size plus one. A note states that every charge comes before the first mutation, and that no await, no other intent and no participant runs between prepare and publish. Publish removes the pending event, adds the debit to the realized ledger and inserts the event or frontier entry. An abort removes the pending event and subtracts the debit from the reserved ledger. Each search thus runs on a map no larger than its charged size, so it makes at most 11 times h of n comparisons and reads at most h of n nodes. A legend defines the map letters and names the two negative controls.](diagrams/replay-authority-charge-sizes.svg)
+
+(*Source: [`diagrams/replay-authority-charge-sizes.puml`](diagrams/replay-authority-charge-sizes.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/replay-authority-charge-sizes.puml`.*)
+
+**Soundness.** The argument has five steps.
+
+1. *Search bound.* By `search_within_bound`, a search in a map with at most
+   $`n`$ entries makes at most $`c(n)`$ comparisons and reads at most
+   $`h(n)`$ nodes.
+2. *Charged sizes.* Each charged size bounds its maps when the searches run:
+   - The identity lookups and the dominance scan run at once, under the
+     lock, at the live sizes.
+   - Between prepare and publish or abort, only this publication changes
+     the ledgers. The debit adds at most $`k`$ keys to $`R`$ or to $`Z`$, so
+     $`\max(\lvert R\rvert, \lvert Z\rvert) + k`$ bounds both maps at every
+     ledger search. Under enforcement, the allocation lookups search $`A`$.
+   - $`P`$ holds the pending event until publish or abort, and $`E`$ grows
+     by one entry at publish. $`F`$ grows by one entry at publish.
+3. *Removals.* A removal can read one sibling on each level below the root,
+   in addition to its search path. For each lane, the ledger groups charge
+   15 visits for at most 10 searches. The event-map group charges 4 visits
+   for 3 operations. Each spare visit is sized by the map that removes.
+4. *Insert allocation.* An insert allocates at most $`h + 1`$ nodes: one on
+   each level that splits, and a new root. `tree_backing` sizes a node larger
+   than an internal node of the standard map.
+5. *Determinism.* The live sizes are a function of the canonical execution:
+   - Native execution adds the footprint key `[2, 0]` to every intent, so
+     each frontier is one conflict component. Its intents run one at a time
+     in canonical causal order.
+   - No `.await` separates `ticket.prepare` from `completion.publish` in the
+     native replay operations.
+   - Participants, and their cost-stack transfers, do not run while the
+     driver runs a frontier.
+
+**Precondition.** Step 2 requires that no other publication and no
+cost-stack transfer change the maps between a prepare and its publish. The
+binding API allows several publications in flight, and two unit tests use
+that. Under such use, a later publication can grow $`E`$ or $`Z`$ before an
+earlier one publishes. The deferred searches of the earlier publication can
+then exceed their charged sizes. Production never does this, by step 5. This
+record documents the precondition, and the binding does not check it at run
+time.
+
+**Scope.** This change is cost-accounting work. The binding and its charges
+exist only on this branch. The change alters host-work charges of protocol
+6, which is not yet released. It changes no evidence encoding and no
+observable value.
+
+**Out of scope.** Four findings stay recorded in pgmcp and are not changed:
+
+- the full dominance scan of `validate_add` depends on interleaving under
+  concurrent publications.
+- play-side cost-stack transfer charges use live sizes while parallel
+  participants run.
+- cost-stack commit searches are paid at prepare-time sizes.
+- `SearchStateBytes` charges use `size_of`.
+
+**Verification.** `OrderedLookupBound.v` adds five results without axioms:
+
+- `height_bound_monotone`: a larger size never has a smaller height bound.
+- `search_visits_le_height`: a search reads at most $`h`$ nodes.
+- `search_within_bound`: step 1 above.
+- `pre_operation_size_undercharges`: a negative control. A deferred search
+  charged at the size before the operation charges less than the search.
+- `summed_size_undercharges`: a negative control. Two 77-entry trees take 44
+  comparisons, but one bound on the summed size allows 33.
+
+Tests:
+
+- `authority_update_charge_covers_std_btree_work` (128 cases). Each case
+  builds a random authority state, with up to 700 events and frontier
+  entries, 120 ledger entries and 8 lanes. The case is enforced or not,
+  granted or denied, and publishes or aborts. A counting key type and the test
+  allocator measure the real map work, which uses the real `sparse_ledger`
+  functions. The charge covers the comparisons, 64 bytes for each comparison,
+  and the allocated bytes.
+- `deferred_searches_are_charged_after_the_operation`: the exact operation
+  charge, at sizes on both sides of the height steps.
+- `retry_comparison_exhaustion_preserves_published_authority`: updated to
+  the live-size lookup charge.
+- `native_replay_authority_charge_is_schedule_independent`. It replays a
+  deploy with parallel branches and 17 COMMs on a current-thread runtime and
+  on runtimes with 2, 4 and 8 workers. The use is identical in all 16
+  dimensions.
+- `native_replay_authority_state_matches_recorded_execution` (existing):
+  play and replay end with equal events, realized ledger and frontier.
+
+**Cross-refs.** DR-78. Leaves `ofp-2-cap-c14-authority-tree-bound` and
+`ofp-2-cap-root-causes`.

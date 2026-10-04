@@ -137,7 +137,10 @@ impl ReplayAuthorityBinding {
         for (slot, row) in observed.into_iter().enumerate() {
             let Some(row) = row else { continue };
             if row.observation.kind == AuthorityByteEventKind::Comm {
-                backing::reserve_event_lookup(&host)?;
+                // Changed by C14 (DR-79): the lookup is charged at the live sizes
+                // of the three identity maps.
+                // backing::reserve_event_lookup(&host)?;
+                backing::reserve_event_lookup(&state, &host)?;
                 clone_backing::inspect(row.observation.as_ref(), &host)?;
                 clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
                 let id = row.observation.event_id;
