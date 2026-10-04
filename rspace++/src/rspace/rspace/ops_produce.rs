@@ -254,7 +254,7 @@ where
             .enumerate()
             .map(|(i, d)| (d, i as i32))
             .collect::<Vec<_>>();
-        if indexed_vec.len() >= 2 {
+        if indexed_vec.len() >= 2 && !crate::rspace::deterministic::stable_matching() {
             indexed_vec.shuffle(&mut rand::rng());
         }
         indexed_vec

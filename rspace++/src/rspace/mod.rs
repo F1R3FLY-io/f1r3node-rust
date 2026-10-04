@@ -7,6 +7,7 @@ pub mod rspace;
 mod space_matcher;
 mod striped_locks;
 pub mod checkpoint;
+pub mod deterministic;
 pub mod hot_store_action;
 pub mod shared;
 pub mod hot_store_trie_action;

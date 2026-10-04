@@ -1217,6 +1217,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordial-rholang"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "casper",
+ "consensus-api",
+ "consensus-runtime",
+ "cordial-consensus",
+ "crypto",
+ "hex",
+ "k256",
+ "models",
+ "prost 0.14.4",
+ "rholang",
+ "rspace_plus_plus",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

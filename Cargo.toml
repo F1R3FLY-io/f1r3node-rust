@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+	"cordial/cordial-rholang",
 	"cordial/cordial-consensus",
 	"cordial/cordial-miners-core",
 	"cordial/cordial-app-runtime",
