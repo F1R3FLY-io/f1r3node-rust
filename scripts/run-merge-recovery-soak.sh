@@ -178,9 +178,11 @@ fi
 # remains for harness versions that write logs there. Every search for monitor
 # output, node logs, breach markers or SOAK_METRIC lines must cover all roots.
 # Created up front so multi-root find never ENOENTs.
+HARNESS_DATA_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/data"
+HARNESS_ARCHIVE_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
 HARNESS_TELEMETRY_DIRS=(
-	"$SYSTEM_INTEGRATION_DIR/integration-tests/data"
-	"$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
+	"$HARNESS_DATA_DIR"
+	"$HARNESS_ARCHIVE_DIR"
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
 )
 mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
@@ -192,10 +194,18 @@ mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
 # failure-evidence copy duplicated all of them into each failed iteration:
 # run 37153082817 reached the disk floor after 15 iterations with 13.6GB of
 # copies. The workflow resets the same two roots after the preflight.
+# The reset runs only after every reader of the roots, and a breach leaves the
+# loop before it, so breach evidence stays in place. Each deletion runs under
+# the emergency deadline. A failure is logged and is not fatal, because the
+# disk guardian still enforces the floor.
 reset_harness_archives() {
-	local root
-	for root in "${HARNESS_TELEMETRY_DIRS[0]}" "${HARNESS_TELEMETRY_DIRS[1]}"; do
-		[ ! -d "$root" ] || find "$root" -mindepth 1 -delete 2>/dev/null || true
+	local root error
+	for root in "$HARNESS_DATA_DIR" "$HARNESS_ARCHIVE_DIR"; do
+		[ -d "$root" ] || continue
+		error="$(session_bounded "$EMERGENCY_DEADLINE_SECONDS" find "$root" -mindepth 1 -delete 2>&1 >/dev/null)" &&
+			continue
+		printf 'harness archive reset incomplete for %s (non-fatal; the disk guardian still enforces the floor): %s\n' \
+			"$root" "$(printf '%s\n' "${error:-deletion timed out}" | head -1)" >&2
 	done
 }
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
@@ -1959,6 +1969,8 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		sleep 30
 	fi
 	persist_soak_state || exit 2
+	# Keep this after the metrics, the failure-evidence copy, and the breach
+	# checks above. Moving it earlier deletes the evidence they read.
 	reset_harness_archives
 
 	if target_ref_moved; then

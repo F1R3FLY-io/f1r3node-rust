@@ -152,6 +152,7 @@ status=$?
 set -e
 DRIVER_PID=""
 [ "$status" -eq 1 ]
+test -s "$TMP/system-integration/integration-tests/log-archive/session/validator1.log"
 
 test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
 grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
@@ -345,7 +346,38 @@ second="$(find "$TMP/output4" -maxdepth 1 -type d -name 'iteration-00002-*' | he
 test -s "$second/log-archive/session-2/validator1.log"
 test ! -e "$second/log-archive/session-1"
 test ! -e "$TMP/si4/integration-tests/log-archive/session-1"
+test -z "$(ls -A "$TMP/si4/integration-tests/log-archive")"
 jq -e '.failures >= 2' "$TMP/output4/summary.json" >/dev/null
+
+# Scenario 5: the archive reset cannot delete. The driver must log the failed
+# reset with its root and continue, and the session stays in place.
+mkdir -p "$TMP/bin5" "$TMP/si5"
+cat >"$TMP/bin5/find" <<SH
+#!/usr/bin/env bash
+for argument in "\$@"; do
+	[ "\$argument" != -delete ] || { echo 'find: cannot delete: Permission denied' >&2; exit 1; }
+done
+exec $(command -v find) "\$@"
+SH
+chmod +x "$TMP/bin5/find"
+status=0
+timeout --signal=TERM --kill-after=5 120 env PATH="$TMP/bin5:$TMP/bin4:$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-5.pid" \
+	FAKE_SESSION_COUNTER="$TMP/fake-session-counter-5" \
+	FAKE_ARCHIVE_DIR="$TMP/si5/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=5 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si5" \
+	SOAK_OUTPUT_DIR="$TMP/output5" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_DISK_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver5.log" 2>&1 || status=$?
+[ "$status" -ne 124 ] || { cat "$TMP/driver5.log" >&2; echo 'soak driver did not finish the failed-reset scenario' >&2; exit 1; }
+grep -q "harness archive reset incomplete for $TMP/si5/integration-tests/log-archive .*Permission denied" "$TMP/driver5.log" ||
+	{ cat "$TMP/driver5.log" >&2; echo 'the failed archive reset was not logged' >&2; exit 1; }
+test -s "$TMP/si5/integration-tests/log-archive/session-1/validator1.log"
 
 for state_case in valid executable duplicate unknown missing overflow; do
 	state_output="$TMP/state-$state_case"
@@ -377,4 +409,4 @@ for state_case in valid executable duplicate unknown missing overflow; do
 	[ ! -e "$TMP/state-child.pid" ]
 done
 
-printf 'legacy soak driver tests passed (fail-closed + deadline + disk-band + evidence scope + restart state)\n'
+printf 'legacy soak driver tests passed (fail-closed + deadline + disk-band + evidence scope + failed reset + restart state)\n'
