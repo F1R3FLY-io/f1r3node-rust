@@ -15,20 +15,29 @@ use crate::rspace::metrics_constants::{
 type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
 
 pub(crate) fn deterministic_candidates<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
+    if data.len() <= 1 {
+        return data.into_iter().map(|datum| (datum, 0)).collect();
+    }
     use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     let hash =
         |candidate: &D| Blake2b256Hash::new(&bincode::serialize(candidate).unwrap_or_default());
     let mut indexed: Vec<_> = data
         .into_iter()
         .enumerate()
-        .map(|(index, datum)| (datum, index as i32))
+        .map(|(index, datum)| {
+            let digest = hash(&datum);
+            (datum, index as i32, digest)
+        })
         .collect();
-    indexed.sort_by(|(left, left_index), (right, right_index)| {
-        hash(left)
-            .cmp(&hash(right))
+    indexed.sort_by(|(_, left_index, left_hash), (_, right_index, right_hash)| {
+        left_hash
+            .cmp(right_hash)
             .then_with(|| left_index.cmp(right_index))
     });
     indexed
+        .into_iter()
+        .map(|(datum, index, _)| (datum, index))
+        .collect()
 }
 
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
@@ -201,5 +210,47 @@ where
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod deterministic_candidates_tests {
+    use super::deterministic_candidates;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    fn per_comparison_hash_order<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
+        let hash = |candidate: &D| {
+            Blake2b256Hash::new(&bincode::serialize(candidate).expect("test candidate serializes"))
+        };
+        let mut indexed: Vec<(D, i32)> = data
+            .into_iter()
+            .enumerate()
+            .map(|(index, datum)| (datum, index as i32))
+            .collect();
+        indexed.sort_by(|(left, left_index), (right, right_index)| {
+            hash(left)
+                .cmp(&hash(right))
+                .then_with(|| left_index.cmp(right_index))
+        });
+        indexed
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `NativeCandidateDigestCache.v`:
+        /// `cached_comparison_is_original_comparison` and
+        /// `caching_preserves_candidate_order`. Hashing each candidate once yields
+        /// the same order as hashing inside every comparison, including duplicate
+        /// candidates (index tie-break) and the `n <= 1` fast path.
+        #[test]
+        fn hash_once_order_equals_per_comparison_hash_order(
+            data in proptest::collection::vec((0u8..4, "[a-c]{0,3}"), 0..12),
+        ) {
+            proptest::prop_assert_eq!(
+                deterministic_candidates(data.clone()),
+                per_comparison_hash_order(data)
+            );
+        }
     }
 }

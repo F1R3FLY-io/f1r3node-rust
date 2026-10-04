@@ -618,6 +618,7 @@ theories/CheckpointLocalHandoff.v
 theories/NativeBorrowedHistory.v
 theories/NativeReplayAccounting.v
 theories/NativeReplayAuthentication.v
+theories/NativeCandidateDigestCache.v
 theories/OfferedOnlyActivation.v
 theories/GenesisVersionAdoption.v
 theories/NativePathDeltaCodec.v
