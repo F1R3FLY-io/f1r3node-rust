@@ -1,0 +1,123 @@
+' 02 Namespace bytes: how the Reified RSpaces namespace uses the tag byte 0xE0.
+'
+' Source of the figure "Namespace bytes" in the campaign glossary and README.
+' The figure restates decisions 7 and 18 and the namespace table of the
+' realignment plan (see ../decision-register.md). It adds no new value.
+'
+' Reading order:
+'   1. An id whose first byte is 0xE0 belongs to the Reified namespace.
+'   2. A 2-byte id [0xE0, idx] names a factory, a system process, an internal
+'      operation, a syntax marker or AGENT_TAG (right table).
+'   3. A longer id 0xE0 || KIND || body names storage, a default-space object
+'      or a space name (left table). Byte 1 is the KIND letter.
+'   4. Notes give the space id derivation and the length classes that keep
+'      the namespace apart from ordinary names.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 02-namespace-bytes.puml   Check: ./render.sh --check
+
+@startuml 02-namespace-bytes
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam rectangle {
+  BorderColor $rrs_relation
+  RoundCorner 8
+}
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.4
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Reified RSpaces namespace: the tag byte 0xE0 and the byte layouts under it
+
+rectangle ROOT $rrs_tag [
+**An id whose first byte is 0xE0**
+The Reified namespace tag (decision 7).
+A survey found no other user of 0xE0.
+<latex>\mathit{id} = \mathtt{0xE0} \mathbin{\Vert} b_{1} \mathbin{\Vert} \cdots</latex>
+]
+
+rectangle KINDS [
+**Three-part ids:** <latex>\mathtt{0xE0} \mathbin{\Vert} \mathit{KIND} \mathbin{\Vert} \mathit{body}</latex>
+Byte 1 is a KIND letter. The KIND selects the body layout.
+Spaces with the default qualifier use the uppercase KINDs.
+Temp and seq spaces use the lowercase forms (decision I-4).
+
+|= KIND |= byte |= layout |= persistence |= writer |
+|<$rrs_storage> **D** data |<$rrs_storage> 0x44 |<$rrs_storage> <latex>\mathtt{E0} \Vert \mathtt{D} \Vert \mathit{sid} \Vert \mathrm{canon}(\mathit{inner})</latex> |<$rrs_storage> trie |<$rrs_storage> space transaction, with events |
+|<$rrs_storage> **C** config |<$rrs_storage> 0x43 |<$rrs_storage> <latex>\mathtt{E0} \Vert \mathtt{C} \Vert \mathit{sid}</latex> |<$rrs_storage> trie: one immutable datum |<$rrs_storage> factory (Produce event) |
+|<$rrs_storage> **I** path-index |<$rrs_storage> 0x49 |<$rrs_storage> <latex>\mathtt{E0} \Vert \mathtt{I} \Vert \mathit{sid} \Vert \mathrm{prefix\_key}(q)</latex> |<$rrs_storage> trie: path markers and waiters |<$rrs_storage> PathMap outer store |
+|<$rrs_storage> **A** allocator |<$rrs_storage> 0x41 |<$rrs_storage> <latex>\mathtt{E0} \Vert \mathtt{A} \Vert \mathit{sid}</latex> |<$rrs_storage> trie: counter datum |<$rrs_storage> Array and Vector gensym |
+|<$rrs_storage> **S** sequence counter |<$rrs_storage> 0x53 |<$rrs_storage> <latex>\mathtt{E0} \Vert \mathtt{S} \Vert \mathit{sid} \; [\Vert\, \mathit{key}]</latex> |<$rrs_storage> trie: envelope-wrapped counters |<$rrs_storage> ordered collections, PathMap (M-1) |
+|<$rrs_object> **H** handle |<$rrs_object> 0x48 |<$rrs_object> <latex>\mathtt{E0} \Vert \mathtt{H} \Vert \mathit{sid}</latex> |<$rrs_object> trie: persistent forwarder receive |<$rrs_object> factory |
+|<$rrs_object> **X** matcher |<$rrs_object> 0x58 |<$rrs_object> <latex>\mathtt{E0} \Vert \mathtt{X} \Vert \mathrm{prost}(\mathit{state})</latex> |<$rrs_object> trie: persistent forwarder receive |<$rrs_object> user-agent translation |
+|<$rrs_object> **B** body |<$rrs_object> 0x42 |<$rrs_object> <latex>\mathtt{E0} \Vert \mathtt{B} \Vert \mathit{tag}_{32}</latex> |<$rrs_object> trie: one receive with the body |<$rrs_object> user-agent translation |
+|<$rrs_name> **N** name |<$rrs_name> 0x4E |<$rrs_name> <latex>\mathtt{E0} \Vert \mathtt{N} \Vert \mathit{sid} \Vert \mathit{tail}</latex> |<$rrs_name> none: a routing stamp |<$rrs_name> gensym, new x : s, new in use |
+|<$rrs_ephemeral> **d c i a s h n** |<$rrs_ephemeral> lowercase letter |<$rrs_ephemeral> same layout as the uppercase KIND |<$rrs_ephemeral> hot store only, swept at deploy end |<$rrs_ephemeral> temp and seq spaces |
+|<$rrs_reserved> **M** |<$rrs_reserved> 0x4D |<$rrs_reserved> reserved: engine-owned state |<$rrs_reserved> held (MeTTa first) |<$rrs_reserved> none |
+|<$rrs_reserved> **T** |<$rrs_reserved> 0x54 |<$rrs_reserved> <latex>\mathtt{E0} \Vert \mathtt{T} \Vert \mathit{content\_hash}</latex> |<$rrs_reserved> reserved: theory and space-spec values |<$rrs_reserved> none |
+]
+
+rectangle TWO [
+**Two-byte ids:** <latex>[\mathtt{0xE0}, \mathit{idx}]</latex>
+Byte 1 is an index. Ranges that the table omits are unassigned.
+
+|= idx |= assignment |= status |
+|<$rrs_factory> 0x00 to 0x1F |<$rrs_factory> 32 outer-first structural factory families (two FIPS aliases share one id) |<$rrs_factory> installed, URN-bound |
+|<$rrs_reserved> 0x20 |<$rrs_reserved> native-engine factories (rho:space:metta first) |<$rrs_reserved> reserved, held |
+|<$rrs_system> 0x21 |<$rrs_system> getSpaceAgent |<$rrs_system> installed, URN-bound |
+|<$rrs_system> 0x22 |<$rrs_system> rho:assert:assertEqual |<$rrs_system> installed, URN-bound |
+|<$rrs_system> 0x23 |<$rrs_system> rho:lang:vector |<$rrs_system> installed, URN-bound |
+|<$rrs_object> 0x30 |<$rrs_object> HANDLE_OP |<$rrs_object> installed, URN-bound: rho:reified:internal:handleOp (decision 32) |
+|<$rrs_object> 0x31 |<$rrs_object> MATCHER_OP |<$rrs_object> planned in P8: URN-bound, as every installed definition (decision 32) |
+|<$rrs_object> 0x32 |<$rrs_object> SINK_OP |<$rrs_object> planned in P8: URN-bound, as every installed definition (decision 32) |
+|<$rrs_syntax> 0xD0 |<$rrs_syntax> USE marker |<$rrs_syntax> never installed |
+|<$rrs_syntax> 0xD1 |<$rrs_syntax> NEWSPACE marker |<$rrs_syntax> never installed |
+|<$rrs_syntax> 0xD2 |<$rrs_syntax> PARAMS marker |<$rrs_syntax> never installed |
+|<$rrs_syntax> 0xD3 |<$rrs_syntax> QUERY marker |<$rrs_syntax> never installed |
+|<$rrs_syntax> 0xD4 |<$rrs_syntax> FREE marker |<$rrs_syntax> never installed |
+|<$rrs_name> 0xFF |<$rrs_name> AGENT_TAG (agent-minted names) |<$rrs_name> never installed |
+]
+
+note as SID
+**Space id** (decision I-19)
+<latex>\mathit{sid} = \mathrm{next}\left(\mathrm{split}_{\mathtt{SPACE\_ID}}\left(\mathrm{split}_{\mathtt{0xE0}}\left(r_{\mathit{call}}\right)\right)\right)</latex>
+<latex>r_{\mathit{call}}</latex>: the Blake2b512Random state of the factory call
+<latex>\vert \mathit{sid} \vert = 32</latex> bytes
+<latex>\mathrm{canon}(\mathit{inner})</latex>: bincode bytes of the substituted,
+sorted, ground inner channel (canonical_inner_channel_bytes),
+the preimage of its store identity (decision 32)
+<latex>\mathit{tail}</latex> of KIND N: 32 random bytes, or the u64
+big-endian index from A(sid) for Array and Vector
+end note
+
+note as LEN
+**Disjointness by length and tag**
+<latex>\vert \mathit{id} \vert = 1</latex>: byte names
+<latex>\vert \mathit{id} \vert = 2</latex>: the two-byte ids above
+<latex>\vert \mathit{id} \vert = 32</latex>: ordinary names from new
+<latex>\vert \mathit{id} \vert = 34</latex>: MeTTaIL ids, tags 0xF0 to 0xF9
+Routing classifies every 2-byte id as System.
+A capability check tests the KIND and the length,
+never the first byte alone.
+end note
+
+ROOT -[$rrs_flow]-> TWO : <latex>\vert \mathit{id} \vert = 2</latex>\nbyte 1 is an index
+ROOT -[$rrs_flow]-> KINDS : <latex>\vert \mathit{id} \vert > 2</latex>\nbyte 1 is a KIND
+KINDS .[$rrs_relation]. SID
+ROOT .[$rrs_relation]. LEN
+
+legend bottom
+**Concept colors**
+|<$rrs_tag>        | namespace tag 0xE0 |
+|<$rrs_storage>    | durable storage KIND (history trie) |
+|<$rrs_object>     | default-space object and the internal operation it forwards to |
+|<$rrs_name>       | name: KIND N and AGENT_TAG |
+|<$rrs_ephemeral>  | ephemeral KIND (hot store only) |
+|<$rrs_factory>    | factory id |
+|<$rrs_system>     | system id |
+|<$rrs_syntax>     | syntax marker (decision 18) |
+|<$rrs_reserved>   | reserved or held |
+endlegend
+@enduml

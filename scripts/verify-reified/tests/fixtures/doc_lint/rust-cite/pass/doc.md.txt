@@ -1,0 +1,4 @@
+# Rust citation fixture
+
+The function `second` (`src/rust_cite_fixture.rs:3-5`, `1`) does the work.
+The short path `rust_cite_fixture.rs:1` names the same source.

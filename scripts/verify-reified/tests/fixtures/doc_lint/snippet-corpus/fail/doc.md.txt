@@ -1,0 +1,7 @@
+# Snippet fixture
+
+This block is not a row of a listed corpus.
+
+```rholang
+new z in { z!(3) }
+```

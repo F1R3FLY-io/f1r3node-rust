@@ -1,0 +1,3 @@
+# Semicolon fixture
+
+The space stores data; it also stores waiters.

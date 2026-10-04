@@ -1,0 +1,144 @@
+' 06 Commit of a space transaction: SpaceTxn::commit as an activity.
+'
+' Source of Figure S5.2 in ../design.md (section S5.2). The figure restates
+' HostTxn::commit, commit_staged and commit_operation in
+' rspace++/src/rspace/space_store_handle.rs, and the apply_op of
+' PlayBackend (rspace/space_play.rs) and of ReplayBackend
+' (replay_rspace/space_replay.rs). It adds no new fact.
+'
+' Reading order:
+'   1. The commit refuses a closed transaction, takes what begin holds, and
+'      clears the staged pairings and the counter delta.
+'   2. Two checks run before any operation: the hot store must be the one of
+'      begin, and the parent order must be fresh in the evaluation scope.
+'   3. Each staged operation i runs under sub_order(parent, i): read-only
+'      checks, the host call sequence of its mode, and the event correlation.
+'   4. Every error after the take step releases the locks and then the
+'      registration. An error of operation i leaves operations 0 to i - 1
+'      applied (prefix atomicity).
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 06-space-txn-commit.puml   Check: ./render.sh --check
+
+@startuml 06-space-txn-commit
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Commit of a space transaction: SpaceTxn::commit
+
+start
+:commit() on an open HostTxn; <<$rrs_substrate>>
+if (the transaction is open?) then (yes)
+else (no)
+  :fail with **Finished**
+  no effect; <<$rrs_reject>>
+  stop
+endif
+:take the locks and the registration
+mark the transaction finished
+clear the paired COMM events and <latex>\delta</latex>; <<$rrs_substrate>>
+if (the captured hot store is the current one?) then (yes)
+else (no)
+  :fail with **StoreSwapped**
+  no effect; <<$rrs_reject>>
+  :release the locks, then the registration; <<$rrs_substrate>>
+  stop
+endif
+if (an operation order is current?) then (yes: parent)
+  if (parent path already committed in this evaluation scope?) then (no)
+    :record the parent path (FR-5'); <<$rrs_substrate>>
+  else (yes)
+    :fail with **ParentOrderReused**
+    no effect; <<$rrs_reject>>
+    :release the locks, then the registration; <<$rrs_substrate>>
+    stop
+  endif
+else (no)
+  :commit untracked, with no sub-orders; <<$rrs_substrate>>
+endif
+while (next staged operation i, in staging order?) is (yes)
+  partition "Operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>" {
+    :read-only checks of the changed entries (FR-7'):
+    joins of the produce channel unchanged,
+    room in the host counter of a non-persistent produce,
+    <latex>\mathrm{live\_comm} = \mathrm{staged\ COMM}</latex>,
+    removed entries at their staged positions; <<$rrs_substrate>>
+    if (a check fails?) then (yes)
+      :fail with **Inconsistent** or **CounterOverflow**
+      operations 0 to i - 1 stay applied; <<$rrs_reject>>
+      stop
+    else (no)
+    endif
+    :before_observe(source): the authority registration of the reducer; <<$rrs_agent>>
+    :start_accounting_operation(source, channels, joins); <<$rrs_host>>
+    if (replay or reporting, and the observer returns a directive?) then (yes)
+      :fail with **NativeReplayDirectiveUnsupported**
+      observer finish: Rejected, operations 0 to i - 1 stay applied; <<$rrs_reject>>
+      stop
+    else (no)
+    endif
+    :observe_produce or observe_consume; <<$rrs_host>>
+    if (replay produce?) then (yes)
+      :increment_produce_counter; <<$rrs_host>>
+    else (no)
+    endif
+    switch (outcome of operation i)
+    case (Store)
+      :log_produce, then store_data:
+      put_datum at the head of the list; <<$rrs_storage>>
+    case (Park)
+      :log_consume, then store_waiting_continuation:
+      put_continuation, then put_join for each channel; <<$rrs_storage>>
+    case (Fire)
+      :observe_comm with the staged COMM; <<$rrs_host>>
+      :log the produce or consume event, then the COMM event
+      (play: the event log, replay: the logger); <<$rrs_host>>
+      :remove a non-persistent continuation (produce side)
+      remove the stored non-persistent records, unless the fire retains
+      remove the fired joins
+      the incoming datum is never stored (FR-10); <<$rrs_storage>>
+      :replay and reporting: remove_bindings_for(COMM); <<$rrs_host>>
+    endswitch
+    :observe_operation_finish: Stored or Matched; <<$rrs_host>>
+    :correlate the staged effects with the events of operation i; <<$rrs_substrate>>
+    if (an effect lacks its event?) then (yes)
+      :fail with **EventCoverage**, a defect
+      operations 0 to i stay applied; <<$rrs_reject>>
+      stop
+    else (no)
+    endif
+    :receipt i: Stored, Parked, or Fired; <<$rrs_substrate>>
+  }
+endwhile (no more)
+:release the locks, then the registration; <<$rrs_substrate>>
+:return the receipts in staging order; <<$rrs_substrate>>
+stop
+
+note right
+**Host errors** (OutOfPhlogistons, HostWorkRejected,
+an authority conflict) can reject operation i at
+before_observe, at the observer start, or at an observe
+call. Operation i then logs no event and changes no
+store entry, and operations 0 to i - 1 stay applied.
+A failed replay fire rolls its counter back.
+After every error, the commit releases the locks
+and then the registration.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | substrate of P1: checks and bookkeeping |
+|<$rrs_host>       | host call at the baseline: observer, events, bindings |
+|<$rrs_storage>    | effect on the hot store |
+|<$rrs_agent>      | callback of the space agent |
+|<$rrs_reject>     | failure: the commit stops |
+endlegend
+@enduml

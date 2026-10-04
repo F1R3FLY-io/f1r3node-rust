@@ -1,0 +1,66 @@
+' ============================================================================
+' Reified RSpaces: concept colors for the campaign diagrams
+' ----------------------------------------------------------------------------
+' One concept has one color in every campaign diagram. Every value below is
+' an alias of a variable in the shared house palette, so this file holds no
+' hexadecimal color code. Change a color in the shared palette, never here.
+'
+' Include order in every diagram of this directory:
+'     !include ../../../casper/theory/diagrams/palette.iuml
+'     !include concept-colors.iuml
+'
+' render.sh renders only *.puml files, so it never renders this include.
+' ============================================================================
+
+' The namespace tag byte 0xE0.
+!$rrs_tag = $ca_control
+
+' Durable storage KINDs D, C, I, A and S: records in the history trie.
+!$rrs_storage = $ca_supply
+
+' Default-space objects H, X and B, and the internal operations that they
+' forward to (HANDLE_OP, MATCHER_OP and SINK_OP).
+!$rrs_object = $ca_process
+
+' Names: KIND N and the AGENT_TAG marker for agent-minted names.
+!$rrs_name = $ca_capability
+
+' Lowercase ephemeral KINDs: hot store only, swept at the end of the deploy.
+!$rrs_ephemeral = $ca_delta
+
+' Factory ids [0xE0, 0x00] to [0xE0, 0x1F].
+!$rrs_factory = $ca_pool
+
+' System ids [0xE0, 0x21] to [0xE0, 0x23].
+!$rrs_system = $ca_gate
+
+' Syntax markers [0xE0, 0xD0] to [0xE0, 0xD4].
+!$rrs_syntax = $ca_surface
+
+' Reserved or held ids: KINDs M and T, and [0xE0, 0x20].
+!$rrs_reserved = $ca_note_grey
+
+' The storage substrate of phase P1: SpaceStoreHandle, SpaceTxn, TxnCore,
+' the staged view and the mode backends (new code in rspace++).
+!$rrs_substrate = $ca_note_green
+
+' Baseline host code that the substrate calls and never changes: RSpace,
+' ReplayRSpace, ReportingRspace, the hot store API, the accounting
+' observer, the lock stripes, the event log, the replay table and the
+' reducer.
+!$rrs_host = $ca_note_indigo
+
+' Space agents: the operations behind HANDLE_OP. They implement the
+' internal operations, so they share the color of the default-space objects.
+!$rrs_agent = $rrs_object
+
+' A rejection: an error that fails an operation or a transaction closed.
+!$rrs_reject = $ca_rejectfill
+
+' Arrows: a classification step, and a neutral relation.
+!$rrs_flow = $ca_instantiate
+!$rrs_relation = $ca_neutral
+
+' Arrows: a committed effect, and a failure path.
+!$rrs_effect = $ca_credit
+!$rrs_fail = $ca_debit

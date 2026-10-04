@@ -1,0 +1,4 @@
+# Link fixture
+
+Read the [missing file](missing.md) and the [missing anchor](target.md#no-such-section).
+The [reference form][no-such-label] has no definition.

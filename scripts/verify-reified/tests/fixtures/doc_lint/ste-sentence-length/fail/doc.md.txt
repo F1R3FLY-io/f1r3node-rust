@@ -1,0 +1,3 @@
+# Sentence fixture
+
+The factory derives the space id from the random state of the call, and it stages the config datum before the commit of the new transaction.

@@ -1,0 +1,7 @@
+# Snippet fixture
+
+The block matches the syntax corpus, but the example manifest is missing.
+
+```rholang
+new x in { x!(1) }
+```

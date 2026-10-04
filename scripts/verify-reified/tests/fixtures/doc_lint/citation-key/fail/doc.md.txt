@@ -1,0 +1,7 @@
+# Citation fixture
+
+The calculus [[XY99](#ref-xy99)] has no reference entry.
+
+## References
+
+<a id="ref-mr05"></a>[MR05] L. G. Meredith and M. Radestock, "A reflective higher-order calculus," *Electronic Notes in Theoretical Computer Science*, vol. 141, no. 5, pp. 49–67, 2005. [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)

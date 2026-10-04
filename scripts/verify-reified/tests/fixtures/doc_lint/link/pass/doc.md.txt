@@ -1,0 +1,7 @@
+# Link fixture
+
+Read the [target section](target.md#target-section) and the [whole target](target.md).
+The [first section](#link-fixture) of this file is the title.
+The [reference form][target] also resolves.
+
+[target]: target.md#target-section

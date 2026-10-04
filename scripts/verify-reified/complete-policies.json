@@ -1,0 +1,61 @@
+{
+  "forbidden_non_test": [
+    {"pattern": "panic!", "reason": "no panic paths in non-test code"},
+    {"pattern": "assert!", "reason": "no assertions in non-test code"},
+    {"pattern": "assert_eq!", "reason": "no assertions in non-test code"},
+    {"pattern": "assert_ne!", "reason": "no assertions in non-test code"},
+    {"pattern": "unreachable!", "reason": "no panic paths in non-test code"},
+    {"pattern": "todo!", "reason": "no placeholders"},
+    {"pattern": "unimplemented!", "reason": "no placeholders"},
+    {"pattern": ".unwrap()", "reason": "prefer typed errors; only lock expects are allowed"},
+    {"pattern": "TODO", "reason": "no placeholders"},
+    {"pattern": "FIXME", "reason": "no placeholders"},
+    {"pattern": "debug_assertions", "reason": "checks run in every build profile (FR-7)"},
+    {"pattern": "saturating_", "reason": "checked arithmetic only (FR-6)"},
+    {"pattern": "remove_data_at_recorded", "reason": "do-not-use: records a logical produce instead of the real source"},
+    {"pattern": "remove_all_continuations", "reason": "do-not-use: leaves join entries behind"}
+  ],
+  "forbidden_anywhere": [
+    {"pattern": "datum_index_key", "reason": "consensus checklist: no arity index"},
+    {"pattern": "search_data_candidates", "reason": "consensus checklist: no backtracking search"},
+    {"pattern": "event_coverage", "reason": "consensus checklist: no production EventCoverage"},
+    {"pattern": "write_exclusive", "reason": "M-1 replaced write_exclusive"},
+    {"pattern": "writeExclusive", "reason": "M-1 replaced write_exclusive"},
+    {"pattern": "suffix_key", "reason": "I-1 dropped suffix_key"}
+  ],
+  "allowed_expect": "\\.expect\\(\"[^\"]* lock\"\\)",
+  "test_region_start": "^#\\[cfg\\(test\\)\\]\\s*$",
+  "phases": {
+    "p1": {
+      "description": "P1 storage substrate (decision 19 and the fix rules FR-1 to FR-10).",
+      "sources": [
+        "rspace++/src/rspace/space_store_handle.rs",
+        "rspace++/src/rspace/rspace/space_play.rs",
+        "rspace++/src/rspace/replay_rspace/space_replay.rs"
+      ],
+      "entry_points": [
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub trait SpaceTxnHost<"},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub trait SpaceTxn<"},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub struct SpaceStoreHandle<"},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub fn sub_order("},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub fn begin_evaluation_scope("},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "fn sweep_volatile("},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "fn root_leaf_record_count("},
+        {"file": "rspace++/src/rspace/rspace/space_play.rs", "pattern": "SpaceTxnHost<C, P, A, K> for RSpace<C, P, A, K>"},
+        {"file": "rspace++/src/rspace/replay_rspace/space_replay.rs", "pattern": "SpaceTxnHost<C, P, A, K> for ReplayRSpace<C, P, A, K>"},
+        {"file": "rspace++/src/rspace/replay_rspace/space_replay.rs", "pattern": "SpaceTxnHost<C, P, A, K> for ReportingRspace<C, P, A, K>"}
+      ],
+      "tests": [
+        "rspace++/tests/reified_space_store_handle.rs",
+        "rspace++/tests/reified_space_store_handle_props.rs",
+        "rspace++/tests/reified_space_store_handle/support.rs",
+        "rholang/tests/reified_space_store_handle_par.rs",
+        "rholang/tests/reified_space_txn_host_bounds.rs"
+      ],
+      "property_files": [
+        "rspace++/tests/reified_space_store_handle_props.rs",
+        "rholang/tests/reified_space_store_handle_par.rs"
+      ]
+    }
+  }
+}

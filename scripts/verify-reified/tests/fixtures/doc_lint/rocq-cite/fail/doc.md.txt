@@ -1,0 +1,6 @@
+# Rocq citation fixture
+
+The lemma `sample_value_is_three` (`Sample.v:2`) fixes the value.
+The lemma `no_such_lemma` (`Sample.v:4`) does not exist.
+The name `hidden_name` in `Sample.v` occurs only in a comment.
+The citation `Sample.v:4` has no name before it.

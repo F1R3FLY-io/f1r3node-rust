@@ -1,0 +1,7 @@
+# Fence fixture
+
+The block below has a closing fence.
+
+```text
+plain text
+```

@@ -1,0 +1,132 @@
+' 07 Checkpoint, replay, and sweep: one deploy with a space transaction, from
+' play on the proposer to replay on a validator.
+'
+' Source of Figure S7 in ../design.md (section S7). The figure restates the
+' P1 substrate (rspace++/src/rspace/space_store_handle.rs and the two
+' backends) and the host steps that it relies on: rig and check_replay_data
+' (replay_rspace.rs), changes (hot_store.rs), and the radix delete of an
+' absent key (history/radix_tree.rs). The reducer hooks are the calls that
+' P4 and P7 add (decision 19, D1). The figure adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. Play: the scope starts, the agent stages and commits one transaction,
+'      and the sweep removes the volatile state at the end of the deploy.
+'   2. Checkpoint: the hot store changes become history actions. The deletes
+'      of swept keys find no leaf, so the root covers the durable state only.
+'   3. Replay: rig binds the recorded COMM events, the agent stages the same
+'      operations, verify pairs each fire under its trigger key, the commit
+'      removes the bindings, and the sweep runs at the same point.
+'   4. The replay checkpoint reaches the root of play.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 07-checkpoint-replay-sweep.puml   Check: ./render.sh --check
+
+@startuml 07-checkpoint-replay-sweep
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam DatabaseBorderColor $rrs_relation
+skinparam CollectionsBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Checkpoint, replay, and sweep of a deploy with a space transaction
+autonumber
+
+participant "Casper\nruntime" as CASPER $rrs_host
+participant "Reducer\nroot evaluation" as RED $rrs_host
+participant "Space agent\n(P4)" as AGENT $rrs_agent
+participant "SpaceStoreHandle" as HANDLE $rrs_substrate
+participant "SpaceTxn\n(HostTxn)" as TXN $rrs_substrate
+participant "Host space\nRSpace, ReplayRSpace" as HOSTSPACE $rrs_host
+collections "Event log, or\nreplay table" as LOG $rrs_host
+database "Hot store" as HOT $rrs_storage
+database "History trie" as HIST $rrs_storage
+
+== Play on the proposer ==
+CASPER -[$rrs_flow]> RED : evaluate the deploy
+RED -[$rrs_flow]> HANDLE : begin_evaluation_scope()
+note right of HANDLE : the tracker of parent orders resets (FR-5')
+AGENT -[$rrs_flow]> HANDLE : begin(lock keys)
+HANDLE -[$rrs_flow]> HOSTSPACE : begin(lock keys, registration)
+HOSTSPACE -[$rrs_relation]> HOSTSPACE : consume_lock: phase A,\nthen phase B, ascending
+HOSTSPACE -[$rrs_flow]-> AGENT : an open SpaceTxn
+AGENT -[$rrs_flow]> TXN : read data, continuations, joins
+TXN -[$rrs_relation]> HOT : load the lists\n(history read-through)
+AGENT -[$rrs_flow]> TXN : stage produce or consume with an outcome
+TXN -[$rrs_relation]> TXN : validate, compute the COMM:\n<latex>\mathit{times}(p) = \kappa_v(p) + [\neg \mathit{persist} \wedge p = \mathit{src}]</latex>
+AGENT -[$rrs_flow]> TXN : commit()
+loop operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>
+  TXN -[$rrs_flow]> HOSTSPACE : read-only checks, then the play calls\nof the host operation
+  HOSTSPACE -[$rrs_effect]> LOG : Produce, Consume, and COMM events
+  HOSTSPACE -[$rrs_effect]> HOT : put and remove entries
+end
+TXN -[$rrs_flow]-> AGENT : receipts, locks released
+RED -[$rrs_flow]> HANDLE : sweep_volatile(volatile channels of the deploy)
+HANDLE -[$rrs_flow]> HOSTSPACE : validate (read-only), then remove
+HOSTSPACE -[$rrs_effect]> HOT : remove continuations, joins, and data\nno event, no observer call
+
+== Checkpoint ==
+CASPER -[$rrs_flow]> HOSTSPACE : create_checkpoint()
+HOSTSPACE -[$rrs_relation]> HOT : changes()
+HOT -[$rrs_relation]-> HOSTSPACE : inserts of the durable keys,\ndeletes of the swept keys
+HOSTSPACE -[$rrs_effect]> HIST : process the actions
+note right of HIST
+A swept key has no leaf in the trie,
+so its delete finds nothing and the
+action drops (radix_tree.rs).
+The root covers the durable state
+only (H15, T2, T4).
+end note
+HIST -[$rrs_relation]-> HOSTSPACE : the new root
+HOSTSPACE -[$rrs_flow]-> CASPER : the checkpoint: root and event log
+CASPER -[$rrs_relation]> CASPER : the block holds the deploy,\nthe event log, and the root
+
+== Replay on a validator ==
+CASPER -[$rrs_flow]> HOSTSPACE : rig(event log), then reset to the pre-state root
+HOSTSPACE -[$rrs_effect]> LOG : bind each COMM under each\nof its logged IO events
+CASPER -[$rrs_flow]> RED : evaluate the deploy again
+RED -[$rrs_flow]> HANDLE : begin_evaluation_scope()
+AGENT -[$rrs_flow]> HANDLE : begin(lock keys)
+AGENT -[$rrs_flow]> TXN : stage the same operations
+TXN -[$rrs_relation]> LOG : verify under the trigger key:\n<latex>\lfloor b / m \rfloor > \mathrm{paired}</latex>
+alt a free recorded occurrence exists
+  TXN -[$rrs_relation]> TXN : pair the COMM
+  AGENT -[$rrs_flow]> TXN : commit()
+  TXN -[$rrs_flow]> HOSTSPACE : read-only checks, then the replay calls
+  HOSTSPACE -[$rrs_effect]> HOT : put and remove entries
+  HOSTSPACE -[$rrs_effect]> LOG : remove_bindings_for(COMM)
+else no free occurrence
+  TXN -[$rrs_fail]-> AGENT : ReplayDivergence at staging, no effect
+end
+RED -[$rrs_flow]> HANDLE : sweep_volatile at the same point as play
+HANDLE -[$rrs_flow]> HOSTSPACE : the same sweep, and the estimate\nof waiting continuations goes down
+CASPER -[$rrs_flow]> HOSTSPACE : check_replay_data()
+HOSTSPACE -[$rrs_relation]-> CASPER : no unused binding\n(otherwise UnusedCommEvent)
+CASPER -[$rrs_flow]> HOSTSPACE : create_checkpoint()
+HOSTSPACE -[$rrs_effect]> HIST : the same actions
+HIST -[$rrs_relation]-> HOSTSPACE : the new root
+HOSTSPACE -[$rrs_flow]-> CASPER : the root of play (T1, T2)
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | substrate of P1 |
+|<$rrs_host>       | host at the baseline: runtime, reducer, host space, log |
+|<$rrs_agent>      | space agent (P4) |
+|<$rrs_storage>    | stored state |
+**Arrows**
+|<$rrs_flow>       | call or return |
+|<$rrs_effect>     | effect on the host state |
+|<$rrs_relation>   | read or internal step |
+|<$rrs_fail>       | failure |
+endlegend
+@enduml

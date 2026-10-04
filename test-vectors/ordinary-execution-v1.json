@@ -1,0 +1,2518 @@
+{
+  "capture_command": "export TMPDIR=$PWD/target/tmp CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 RRS_CAPTURE_ORDINARY_OUT=$PWD/target/verification/reified-rspaces/p1-capture/fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- cargo test -p rholang --test reified_ordinary_regression > target/verification/reified-rspaces/p1-capture/capture.log 2>&1",
+  "captured_at_revision": "6f7a80da335569c0c4661b7e64c0103465ea2ae9",
+  "code_identical_to": "e748426",
+  "name": "ordinary_execution_v1",
+  "r1_comm_produce_sort": {
+    "consume_triggered": {
+      "bind_order": [
+        "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
+        "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+        "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44"
+      ],
+      "channels": {
+        "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b": "rrs-r1-consume-b",
+        "d5e9f39f425e89e4924b52753bde0596cbd3560a104ae7f2e510dd3c333372a3": "rrs-r1-consume-out",
+        "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44": "rrs-r1-consume-c",
+        "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d": "rrs-r1-consume-a"
+      },
+      "comm": {
+        "consume": {
+          "channel_hashes": [
+            "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+            "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+            "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
+          ],
+          "hash": "f7c37c356e7d65f31e03134113a72f024b11b128431255ee5d0df9d44573c162",
+          "kind": "consume",
+          "persistent": false
+        },
+        "kind": "comm",
+        "peeks": [],
+        "produces": [
+          {
+            "channel_hash": "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+            "failed": false,
+            "hash": "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+            "failed": false,
+            "hash": "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
+            "failed": false,
+            "hash": "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "times_repeated": [
+          [
+            "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+            0
+          ],
+          [
+            "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+            0
+          ],
+          [
+            "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+            0
+          ]
+        ]
+      },
+      "comm_equals_comm_new_canonical_sort": true,
+      "comm_produce_order": [
+        "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+        "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+        "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
+      ],
+      "evaluation_order": [
+        "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
+        "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+        "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44"
+      ],
+      "logs": {
+        "data": {
+          "events": [
+            {
+              "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
+              "failed": false,
+              "hash": "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+              "is_deterministic": true,
+              "kind": "produce",
+              "output_value": [],
+              "persistent": false
+            },
+            {
+              "channel_hash": "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+              "failed": false,
+              "hash": "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+              "is_deterministic": true,
+              "kind": "produce",
+              "output_value": [],
+              "persistent": false
+            },
+            {
+              "channel_hash": "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+              "failed": false,
+              "hash": "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+              "is_deterministic": true,
+              "kind": "produce",
+              "output_value": [],
+              "persistent": false
+            }
+          ],
+          "kinds": [
+            "produce",
+            "produce",
+            "produce"
+          ]
+        },
+        "receive": {
+          "events": [
+            {
+              "channel_hashes": [
+                "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+                "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+                "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
+              ],
+              "hash": "f7c37c356e7d65f31e03134113a72f024b11b128431255ee5d0df9d44573c162",
+              "kind": "consume",
+              "persistent": false
+            },
+            {
+              "consume": {
+                "channel_hashes": [
+                  "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+                  "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+                  "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
+                ],
+                "hash": "f7c37c356e7d65f31e03134113a72f024b11b128431255ee5d0df9d44573c162",
+                "kind": "consume",
+                "persistent": false
+              },
+              "kind": "comm",
+              "peeks": [],
+              "produces": [
+                {
+                  "channel_hash": "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
+                  "failed": false,
+                  "hash": "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+                  "is_deterministic": true,
+                  "kind": "produce",
+                  "output_value": [],
+                  "persistent": false
+                },
+                {
+                  "channel_hash": "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
+                  "failed": false,
+                  "hash": "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+                  "is_deterministic": true,
+                  "kind": "produce",
+                  "output_value": [],
+                  "persistent": false
+                },
+                {
+                  "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
+                  "failed": false,
+                  "hash": "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+                  "is_deterministic": true,
+                  "kind": "produce",
+                  "output_value": [],
+                  "persistent": false
+                }
+              ],
+              "times_repeated": [
+                [
+                  "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+                  0
+                ],
+                [
+                  "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+                  0
+                ],
+                [
+                  "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+                  0
+                ]
+              ]
+            },
+            {
+              "channel_hash": "d5e9f39f425e89e4924b52753bde0596cbd3560a104ae7f2e510dd3c333372a3",
+              "failed": false,
+              "hash": "5ece26c391423d323474e8287f59912ec31c3e0e8136783da8ea27486ca96b59",
+              "is_deterministic": true,
+              "kind": "produce",
+              "output_value": [],
+              "persistent": false
+            }
+          ],
+          "kinds": [
+            "consume",
+            "comm",
+            "produce"
+          ]
+        }
+      }
+    },
+    "produce_triggered": {
+      "bind_order": [
+        "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
+        "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+        "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8"
+      ],
+      "channels": {
+        "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390": "rrs-r1-produce-b",
+        "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8": "rrs-r1-produce-c",
+        "60517d6b81d801794d0fbfb4f4d80429a5c85671073923e33d72a2a7aa321e4e": "rrs-r1-produce-out",
+        "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236": "rrs-r1-produce-a"
+      },
+      "comm": {
+        "consume": {
+          "channel_hashes": [
+            "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+            "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+            "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
+          ],
+          "hash": "efc24991d7cbc76ecaa923300220192623a691355f84f277ad4cf8a3c5e78b2d",
+          "kind": "consume",
+          "persistent": false
+        },
+        "kind": "comm",
+        "peeks": [],
+        "produces": [
+          {
+            "channel_hash": "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+            "failed": false,
+            "hash": "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+            "failed": false,
+            "hash": "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
+            "failed": false,
+            "hash": "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "times_repeated": [
+          [
+            "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+            0
+          ],
+          [
+            "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+            0
+          ],
+          [
+            "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+            1
+          ]
+        ]
+      },
+      "comm_equals_comm_new_canonical_sort": true,
+      "comm_produce_order": [
+        "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+        "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+        "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
+      ],
+      "evaluation_order": [
+        "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+        "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
+        "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390"
+      ],
+      "logs": {
+        "receive": {
+          "events": [
+            {
+              "channel_hashes": [
+                "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+                "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+                "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
+              ],
+              "hash": "efc24991d7cbc76ecaa923300220192623a691355f84f277ad4cf8a3c5e78b2d",
+              "kind": "consume",
+              "persistent": false
+            }
+          ],
+          "kinds": [
+            "consume"
+          ]
+        },
+        "sends": [
+          {
+            "events": [
+              {
+                "channel_hash": "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+                "failed": false,
+                "hash": "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "kinds": [
+              "produce"
+            ],
+            "source": "@\"rrs-r1-produce-c\"!(3)"
+          },
+          {
+            "events": [
+              {
+                "channel_hash": "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
+                "failed": false,
+                "hash": "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "kinds": [
+              "produce"
+            ],
+            "source": "@\"rrs-r1-produce-a\"!(1)"
+          },
+          {
+            "events": [
+              {
+                "channel_hash": "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+                "failed": false,
+                "hash": "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              },
+              {
+                "consume": {
+                  "channel_hashes": [
+                    "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+                    "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+                    "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
+                  ],
+                  "hash": "efc24991d7cbc76ecaa923300220192623a691355f84f277ad4cf8a3c5e78b2d",
+                  "kind": "consume",
+                  "persistent": false
+                },
+                "kind": "comm",
+                "peeks": [],
+                "produces": [
+                  {
+                    "channel_hash": "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
+                    "failed": false,
+                    "hash": "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+                    "is_deterministic": true,
+                    "kind": "produce",
+                    "output_value": [],
+                    "persistent": false
+                  },
+                  {
+                    "channel_hash": "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
+                    "failed": false,
+                    "hash": "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+                    "is_deterministic": true,
+                    "kind": "produce",
+                    "output_value": [],
+                    "persistent": false
+                  },
+                  {
+                    "channel_hash": "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
+                    "failed": false,
+                    "hash": "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+                    "is_deterministic": true,
+                    "kind": "produce",
+                    "output_value": [],
+                    "persistent": false
+                  }
+                ],
+                "times_repeated": [
+                  [
+                    "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+                    0
+                  ],
+                  [
+                    "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+                    0
+                  ],
+                  [
+                    "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+                    1
+                  ]
+                ]
+              },
+              {
+                "channel_hash": "60517d6b81d801794d0fbfb4f4d80429a5c85671073923e33d72a2a7aa321e4e",
+                "failed": false,
+                "hash": "441d655d17f4bef6d8496640c7510bfc9b43c19e931831656de5dd0c486e747c",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "kinds": [
+              "produce",
+              "comm",
+              "produce"
+            ],
+            "source": "@\"rrs-r1-produce-b\"!(2)"
+          }
+        ]
+      }
+    }
+  },
+  "r2_peek_removes_and_reproduces": {
+    "continuation_first": {
+      "channels": {
+        "0e961ae9d6d3d015107bd1d291b4aceb26aaafec0ea5bf9617fcdc03a7a76b54": "rrs-r2-continuation-first-seen",
+        "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7": "rrs-r2-continuation-first"
+      },
+      "outcome": {
+        "comm_peeks": [
+          0
+        ],
+        "remaining_data_count": 1,
+        "remaining_datum": {
+          "pars": [
+            "42"
+          ],
+          "persist": false,
+          "source": {
+            "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
+            "failed": false,
+            "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        },
+        "reproduce": {
+          "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
+          "failed": false,
+          "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+          "is_deterministic": true,
+          "kind": "produce",
+          "output_value": [],
+          "persistent": false
+        },
+        "reproduce_hash_equals_original": true
+      },
+      "peek": {
+        "events": [
+          {
+            "channel_hashes": [
+              "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7"
+            ],
+            "hash": "3ede97962cb71682bb0f6dd67d11558404705dd8e0cd2c03ffccd68842bc980d",
+            "kind": "consume",
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "consume"
+        ]
+      },
+      "seen_data_count": 1,
+      "send": {
+        "events": [
+          {
+            "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
+            "failed": false,
+            "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "consume": {
+              "channel_hashes": [
+                "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7"
+              ],
+              "hash": "3ede97962cb71682bb0f6dd67d11558404705dd8e0cd2c03ffccd68842bc980d",
+              "kind": "consume",
+              "persistent": false
+            },
+            "kind": "comm",
+            "peeks": [
+              0
+            ],
+            "produces": [
+              {
+                "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
+                "failed": false,
+                "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "times_repeated": [
+              [
+                "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+                1
+              ]
+            ]
+          },
+          {
+            "channel_hash": "0e961ae9d6d3d015107bd1d291b4aceb26aaafec0ea5bf9617fcdc03a7a76b54",
+            "failed": false,
+            "hash": "47466d8094e38bad8f50d499ff5021e3b38232aac1a99908ac61c907eaf154d0",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
+            "failed": false,
+            "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "produce",
+          "comm",
+          "produce",
+          "produce"
+        ]
+      },
+      "waiting_peeks": [
+        0
+      ],
+      "waiting_persist": false
+    },
+    "data_first": {
+      "channels": {
+        "50676adee8d2f8ac0c06b7df8c938bc828af20159182857b2edaef3305360ac9": "rrs-r2-data-first-seen",
+        "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b": "rrs-r2-data-first"
+      },
+      "outcome": {
+        "comm_peeks": [
+          0
+        ],
+        "remaining_data_count": 1,
+        "remaining_datum": {
+          "pars": [
+            "42"
+          ],
+          "persist": false,
+          "source": {
+            "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
+            "failed": false,
+            "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        },
+        "reproduce": {
+          "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
+          "failed": false,
+          "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+          "is_deterministic": true,
+          "kind": "produce",
+          "output_value": [],
+          "persistent": false
+        },
+        "reproduce_hash_equals_original": true
+      },
+      "peek": {
+        "events": [
+          {
+            "channel_hashes": [
+              "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b"
+            ],
+            "hash": "3b26aaa6498d14e8b9d565e3ecd7ede407e8ea1b904739875cbb50198381c437",
+            "kind": "consume",
+            "persistent": false
+          },
+          {
+            "consume": {
+              "channel_hashes": [
+                "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b"
+              ],
+              "hash": "3b26aaa6498d14e8b9d565e3ecd7ede407e8ea1b904739875cbb50198381c437",
+              "kind": "consume",
+              "persistent": false
+            },
+            "kind": "comm",
+            "peeks": [
+              0
+            ],
+            "produces": [
+              {
+                "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
+                "failed": false,
+                "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "times_repeated": [
+              [
+                "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+                0
+              ]
+            ]
+          },
+          {
+            "channel_hash": "50676adee8d2f8ac0c06b7df8c938bc828af20159182857b2edaef3305360ac9",
+            "failed": false,
+            "hash": "0a6432d8cd2549032fca514dd21ac1f1f096fb8fdb1ada009beccd5df6805b22",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
+            "failed": false,
+            "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "consume",
+          "comm",
+          "produce",
+          "produce"
+        ]
+      },
+      "seen_data_count": 1,
+      "send": {
+        "events": [
+          {
+            "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
+            "failed": false,
+            "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "produce"
+        ]
+      }
+    }
+  },
+  "r3_greedy_join_first_match": {
+    "control": {
+      "backtracking_assignment_exists": true,
+      "channels": {
+        "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e": "rrs-r3-control-names",
+        "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028": "rrs-r3-control",
+        "8b4de448d934974bd6a857881e721202b31ba8886cb94b3624c281eb94c098cf": "rrs-r3-control-out"
+      },
+      "comm_count": 1,
+      "data": {
+        "events": [
+          {
+            "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+            "failed": false,
+            "hash": "46d2526ab3a161d814259f881ec421dea3182ab7d0958bd96cf61df5ca6bbaca",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+            "failed": false,
+            "hash": "faecd8c89b2cb5f63f9eaef68a4c189ea147bf8e0dbce818f7fabfcdd58403de",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "produce",
+          "produce"
+        ]
+      },
+      "deterministic_data_order": [
+        [
+          "[7, 6]"
+        ],
+        [
+          "[1, 9]"
+        ]
+      ],
+      "greedy_assignment": [
+        1,
+        0
+      ],
+      "match_matrix": [
+        [
+          false,
+          true
+        ],
+        [
+          true,
+          false
+        ]
+      ],
+      "normalized_bind_patterns": [
+        [
+          "[1, free0]"
+        ],
+        [
+          "[free0, 6]"
+        ]
+      ],
+      "output_data_count": 1,
+      "receive": {
+        "events": [
+          {
+            "channel_hash": "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e",
+            "failed": false,
+            "hash": "61ed95e8ebf7ce9b7557b6edfeace062f5afd66a6906c48243abd65a6f051bfa",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hashes": [
+              "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e"
+            ],
+            "hash": "608268ad5d0acfe93055678a094297214e3d00288f3dc0b54c6ccbd356095fc0",
+            "kind": "consume",
+            "persistent": false
+          },
+          {
+            "consume": {
+              "channel_hashes": [
+                "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e"
+              ],
+              "hash": "608268ad5d0acfe93055678a094297214e3d00288f3dc0b54c6ccbd356095fc0",
+              "kind": "consume",
+              "persistent": false
+            },
+            "kind": "comm",
+            "peeks": [],
+            "produces": [
+              {
+                "channel_hash": "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e",
+                "failed": false,
+                "hash": "61ed95e8ebf7ce9b7557b6edfeace062f5afd66a6906c48243abd65a6f051bfa",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "times_repeated": [
+              [
+                "61ed95e8ebf7ce9b7557b6edfeace062f5afd66a6906c48243abd65a6f051bfa",
+                1
+              ]
+            ]
+          },
+          {
+            "channel_hashes": [
+              "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+              "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028"
+            ],
+            "hash": "a8bfb2191c78ce8be315e3bd494c6d7a4c0accf06ab26a49f270ad15373971aa",
+            "kind": "consume",
+            "persistent": false
+          },
+          {
+            "consume": {
+              "channel_hashes": [
+                "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+                "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028"
+              ],
+              "hash": "a8bfb2191c78ce8be315e3bd494c6d7a4c0accf06ab26a49f270ad15373971aa",
+              "kind": "consume",
+              "persistent": false
+            },
+            "kind": "comm",
+            "peeks": [],
+            "produces": [
+              {
+                "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+                "failed": false,
+                "hash": "46d2526ab3a161d814259f881ec421dea3182ab7d0958bd96cf61df5ca6bbaca",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              },
+              {
+                "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+                "failed": false,
+                "hash": "faecd8c89b2cb5f63f9eaef68a4c189ea147bf8e0dbce818f7fabfcdd58403de",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "times_repeated": [
+              [
+                "46d2526ab3a161d814259f881ec421dea3182ab7d0958bd96cf61df5ca6bbaca",
+                0
+              ],
+              [
+                "faecd8c89b2cb5f63f9eaef68a4c189ea147bf8e0dbce818f7fabfcdd58403de",
+                0
+              ]
+            ]
+          },
+          {
+            "channel_hash": "8b4de448d934974bd6a857881e721202b31ba8886cb94b3624c281eb94c098cf",
+            "failed": false,
+            "hash": "f2546465eff48472a0aaa33971497a85886b9fef083663d3b614ecf6c18a8178",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "produce",
+          "consume",
+          "comm",
+          "consume",
+          "comm",
+          "produce"
+        ]
+      },
+      "remaining_data_count": 0,
+      "waiting_continuation_count": 0
+    },
+    "greedy": {
+      "backtracking_assignment_exists": true,
+      "channels": {
+        "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979": "rrs-r3-greedy-names",
+        "58f8d6f76cef65cb25331ad4dae7cca8221ce3fea14472bddf17f21ee4891e6f": "rrs-r3-greedy-out",
+        "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae": "rrs-r3-greedy"
+      },
+      "comm_count": 0,
+      "data": {
+        "events": [
+          {
+            "channel_hash": "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
+            "failed": false,
+            "hash": "22de7bd210d1f8805fdd3b791a80007e59268c06033c0e6f8015f1b43125ad84",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
+            "failed": false,
+            "hash": "a60dd908c8c13846881cdcd7605e335f15884b1c2a8bda88a807c2d50fa1480e",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "produce",
+          "produce"
+        ]
+      },
+      "deterministic_data_order": [
+        [
+          "[1, 6]"
+        ],
+        [
+          "[1, 5]"
+        ]
+      ],
+      "greedy_assignment": null,
+      "match_matrix": [
+        [
+          true,
+          true
+        ],
+        [
+          true,
+          false
+        ]
+      ],
+      "normalized_bind_patterns": [
+        [
+          "[1, free0]"
+        ],
+        [
+          "[free0, 6]"
+        ]
+      ],
+      "output_data_count": 0,
+      "receive": {
+        "events": [
+          {
+            "channel_hash": "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979",
+            "failed": false,
+            "hash": "b4099e35a0aba55f718a1f7c1ead4b01e582f6df772e17976fc691a9ce4c00c2",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hashes": [
+              "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979"
+            ],
+            "hash": "77f73f6baba563083897dbf72963ef450bc41ba42701646b56ef95847e251c26",
+            "kind": "consume",
+            "persistent": false
+          },
+          {
+            "consume": {
+              "channel_hashes": [
+                "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979"
+              ],
+              "hash": "77f73f6baba563083897dbf72963ef450bc41ba42701646b56ef95847e251c26",
+              "kind": "consume",
+              "persistent": false
+            },
+            "kind": "comm",
+            "peeks": [],
+            "produces": [
+              {
+                "channel_hash": "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979",
+                "failed": false,
+                "hash": "b4099e35a0aba55f718a1f7c1ead4b01e582f6df772e17976fc691a9ce4c00c2",
+                "is_deterministic": true,
+                "kind": "produce",
+                "output_value": [],
+                "persistent": false
+              }
+            ],
+            "times_repeated": [
+              [
+                "b4099e35a0aba55f718a1f7c1ead4b01e582f6df772e17976fc691a9ce4c00c2",
+                1
+              ]
+            ]
+          },
+          {
+            "channel_hashes": [
+              "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
+              "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae"
+            ],
+            "hash": "63c82f4f2c3f7d2caa1c7881821382ad097a5ec97312f455ee50d913edff75ac",
+            "kind": "consume",
+            "persistent": false
+          }
+        ],
+        "kinds": [
+          "produce",
+          "consume",
+          "comm",
+          "consume"
+        ]
+      },
+      "remaining_data_count": 2,
+      "waiting_continuation_count": 1
+    },
+    "syntactic_same_channel_join": {
+      "normalization": "ReceiveOnSameChannelsError { source_span: SourceSpan { start: SourcePos { line: 1, col: 67 }, end: SourcePos { line: 1, col: 70 } } }",
+      "source": "for (@[y, 6] <- @\"rrs-r3-greedy\" & @[1, x] <- @\"rrs-r3-greedy\") { Nil }"
+    }
+  },
+  "r4_leaf_bytes": {
+    "checkpoint_root": "44dbc86595d1ce54e5cd87d749b384bf3c9ccb5c18418221407d02d0bcc9487b",
+    "continuations": [
+      {
+        "channels": [
+          "@{\"rrs-r4-wait\"}"
+        ],
+        "key": "5b68310b8092cbd63b297f0d83813ae29aa8a8c9271f22a167e6bc4dd84c9d31",
+        "leaf": [
+          "01000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000101000000000000002000000000000000cb5ed344a4e244215543492e089074e7c55f6a2e92a2bcbddaad72a47f07b6be0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72342d6e65766572000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f680000000000000000000000000000000800000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000010000000000000020000000000000008a636121f28a06e08d105251da010758749b5aeefca0a102f81b1d90b3cce79c20000000000000005d060f1be46e768fc8b53b3d9b0f7ee986dc9827da5b0794a6a1c25c3e7fd52300"
+        ]
+      },
+      {
+        "channels": [
+          "@{\"rrs-r4-join-left\"}",
+          "@{\"rrs-r4-join-right\"}"
+        ],
+        "key": "4de95e19ac16e41c3fd2fd6385afdd726a2081f3f32ac2eb8976d1993bd4eb3a",
+        "leaf": [
+          "020000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000010000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000101000000000000002000000000000000f0469428349bba4cd783e4e54078a217111cc5cdf3a70ccad3bb5cac6b2cefc80101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72342d6e6576657200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f6800000000000000000000000000000008000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000200000000000000200000000000000051bd19f00d0e3ca266f69982e0c2d5d58efca85ecea2d87942d66151f83f81462000000000000000b6c8562cbf5dd5dc2418fe4fc48d9b7937b3a7f8f6444c5a4e5bfd042321dfa52000000000000000747617036896e53660ef518dea95787ea24562f3a598e95e47f5343472bdc54500"
+        ]
+      }
+    ],
+    "data": {
+      "channel": "@{\"rrs-r4-data\"}",
+      "key": "7136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e91",
+      "leaf": [
+        "0100000000000000000000000000000000000000000000000000000000000000010000000000000001010000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f680000000000000000000000000000000800000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000010100000000000000200000000000000041475bff957da8c521a05049806207225b8979d36ba15852cf42fb349f37582a0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000120000000000000007136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e9120000000000000003d31f54c954e153b157195bd3a121c2ae76e55ae8a2bb122a4318e24b0806e980101000000000000000000",
+        "02000000000000000000000000000000000000000000000000000000000000000100000000000000010100000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001020000000500000000000000736576656e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f6800000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000101000000000000002000000000000000883d26260435df7d7b2f71047c89d1e9958b93edc63a42bb3fd93644b3ba457b0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000020000000000000007136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e91200000000000000026be58783e42f3cbecd4460abbaa8aa9f792beca0b479fdc774a0178bf0189050001000000000000000000"
+      ]
+    },
+    "data_channel_joins_leaf": [],
+    "empty_root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+    "joins": [
+      {
+        "channel": "@{\"rrs-r4-wait\"}",
+        "key": "8a636121f28a06e08d105251da010758749b5aeefca0a102f81b1d90b3cce79c",
+        "leaf": [
+          "0100000000000000000000000000000000000000000000000000000000000000010000000000000001020000000b000000000000007272732d72342d776169740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r4-join-left\"}",
+        "key": "b6c8562cbf5dd5dc2418fe4fc48d9b7937b3a7f8f6444c5a4e5bfd042321dfa5",
+        "leaf": [
+          "02000000000000000000000000000000000000000000000000000000000000000100000000000000010200000010000000000000007272732d72342d6a6f696e2d6c65667400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010200000011000000000000007272732d72342d6a6f696e2d72696768740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r4-join-right\"}",
+        "key": "51bd19f00d0e3ca266f69982e0c2d5d58efca85ecea2d87942d66151f83f8146",
+        "leaf": [
+          "02000000000000000000000000000000000000000000000000000000000000000100000000000000010200000010000000000000007272732d72342d6a6f696e2d6c65667400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010200000011000000000000007272732d72342d6a6f696e2d72696768740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        ]
+      }
+    ],
+    "kinds": [
+      "produce",
+      "produce",
+      "consume",
+      "consume"
+    ],
+    "program": "@\"rrs-r4-data\"!(7, \"seven\") | @\"rrs-r4-data\"!!(8) | for (@a <- @\"rrs-r4-wait\") { @\"rrs-r4-never\"!(a) } | for (@b <- @\"rrs-r4-join-left\" & @c <- @\"rrs-r4-join-right\") { @\"rrs-r4-never\"!(b, c) }"
+  },
+  "r5_event_struct_and_proto_bytes": {
+    "comm": {
+      "bincode": "020000000000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac2000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9200000000000000080db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c00020000000000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac20000000000000004d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc188201010000000000000000002000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b920000000000000007f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f0001000000000000000000010000000000000001000000020000000000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac20000000000000004d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc18820101000000000000000000000000002000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b920000000000000007f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f000100000000000000000001000000",
+      "blake2b256_bincode": "c0315faed8d76fd44003a797431d44a14afe38fd8e1d9c73f97130e649f75672",
+      "candidate_order": [
+        "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+        "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882"
+      ],
+      "canonical_order": [
+        "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882",
+        "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f"
+      ],
+      "cost_identity": "5609d2d57a9a780ab34710735094f7ab6546a020c29dbb73ae52926594847a03",
+      "fields": {
+        "consume": {
+          "channel_hashes": [
+            "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+            "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+          ],
+          "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+          "kind": "consume",
+          "persistent": false
+        },
+        "kind": "comm",
+        "peeks": [
+          1
+        ],
+        "produces": [
+          {
+            "channel_hash": "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+            "failed": false,
+            "hash": "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": true
+          },
+          {
+            "channel_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+            "failed": false,
+            "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          }
+        ],
+        "times_repeated": [
+          [
+            "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882",
+            0
+          ],
+          [
+            "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+            1
+          ]
+        ]
+      }
+    },
+    "consume": {
+      "bincode": "020000000000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac2000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9200000000000000080db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c00",
+      "blake2b256_bincode": "55412740ddbb239f7c716fb531a0208e1bfb892e7af08f0be14f6efbe95f7820",
+      "fields": {
+        "channel_hashes": [
+          "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+          "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+        ],
+        "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+        "kind": "consume",
+        "persistent": false
+      },
+      "io_event_bincode": "01000000020000000000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac2000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9200000000000000080db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c00"
+    },
+    "datum": {
+      "bincode": "010000000000000000000000000000000000000000000000000000000000000001000000000000000101000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001802000000000000bcb644ec1d021c203fb4f0aeb4697795a4be90bd69876df832b4ee19f40ead78947b5642218e4ac0aa61e7acfa2b862f1cde74463a367379543e83c1c4dff56c800000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b920000000000000007f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f0001000000000000000000",
+      "fields": {
+        "a": "0a042a02100e129804bcb644ec1d021c203fb4f0aeb4697795a4be90bd69876df832b4ee19f40ead78947b5642218e4ac0aa61e7acfa2b862f1cde74463a367379543e83c1c4dff56c80000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "persist": false,
+        "source": {
+          "channel_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+          "failed": false,
+          "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+          "is_deterministic": true,
+          "kind": "produce",
+          "output_value": [],
+          "persistent": false
+        }
+      }
+    },
+    "produce_linear": {
+      "bincode": "2000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b920000000000000007f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f0001000000000000000000",
+      "blake2b256_bincode": "e85fe49211d786d9b2475d76698f5a8501345706b83ba90b30826e0cee2db9c9",
+      "fields": {
+        "channel_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+        "failed": false,
+        "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+        "is_deterministic": true,
+        "kind": "produce",
+        "output_value": [],
+        "persistent": false
+      },
+      "io_event_bincode": "000000002000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b920000000000000007f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f0001000000000000000000"
+    },
+    "produce_persistent": {
+      "bincode": "20000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac20000000000000004d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc18820101000000000000000000",
+      "blake2b256_bincode": "9f90c22e5648844df327a63497f33a7a9b125854d384cde2722ced1c26624c64",
+      "fields": {
+        "channel_hash": "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+        "failed": false,
+        "hash": "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882",
+        "is_deterministic": true,
+        "kind": "produce",
+        "output_value": [],
+        "persistent": true
+      },
+      "io_event_bincode": "0000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac20000000000000004d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc18820101000000000000000000"
+    },
+    "proto_construction": "direct",
+    "proto_messages": {
+      "comm": {
+        "casper_event": {
+          "comm": {
+            "consume": {
+              "channels_hashes": [
+                "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+                "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+              ],
+              "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+              "persistent": false
+            },
+            "peeks": [
+              1
+            ],
+            "produces": [
+              {
+                "channels_hash": "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+                "failed": false,
+                "hash": "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882",
+                "is_deterministic": true,
+                "output_value": [],
+                "persistent": true,
+                "times_repeated": 0
+              },
+              {
+                "channels_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+                "failed": false,
+                "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+                "is_deterministic": true,
+                "output_value": [],
+                "persistent": false,
+                "times_repeated": 1
+              }
+            ]
+          }
+        },
+        "message": {
+          "comm": {
+            "consume": {
+              "channels_hashes": [
+                "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+                "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+              ],
+              "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+              "persistent": false
+            },
+            "peeks": [
+              1
+            ],
+            "produces": [
+              {
+                "channels_hash": "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+                "failed": false,
+                "hash": "4d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc1882",
+                "is_deterministic": true,
+                "output_value": [],
+                "persistent": true,
+                "times_repeated": 0
+              },
+              {
+                "channels_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+                "failed": false,
+                "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+                "is_deterministic": true,
+                "output_value": [],
+                "persistent": false,
+                "times_repeated": 1
+              }
+            ]
+          }
+        },
+        "prost": "1a80020a660a200a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac0a20182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9122080db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c12480a200a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac12204d1835ec28e63611a8b6c3329d75fb8cccc7826d213c3d1a900a5f7677fc18821801280112480a20182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b912207f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f200128011a020801"
+      },
+      "consume": {
+        "casper_event": {
+          "consume": {
+            "channels_hashes": [
+              "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+              "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+            ],
+            "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+            "persistent": false
+          }
+        },
+        "message": {
+          "consume": {
+            "channels_hashes": [
+              "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+              "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+            ],
+            "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+            "persistent": false
+          }
+        },
+        "prost": "12660a200a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac0a20182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9122080db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c"
+      },
+      "produce": {
+        "casper_event": {
+          "produce": {
+            "channels_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+            "failed": false,
+            "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+            "is_deterministic": true,
+            "output_value": [],
+            "persistent": false,
+            "times_repeated": 0
+          }
+        },
+        "message": {
+          "produce": {
+            "channels_hash": "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9",
+            "failed": false,
+            "hash": "7f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f",
+            "is_deterministic": true,
+            "output_value": [],
+            "persistent": false,
+            "times_repeated": 0
+          }
+        },
+        "prost": "0a460a20182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b912207f2c1e6d4a34dc71d28fb06389e9ed054603b8fa80365f38a604b616af3d515f2801"
+      }
+    },
+    "waiting_continuation": {
+      "bincode": "0200000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000100000001000000000000000000000000000000000000000000000000000000000000000100000000000000010200000004000000000000006265746100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000100000000000000000000000000000000000000000000000001000000000000000101000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001802000000000000ec5a8699f98a6017281eb71bebc7e1001ccf945f41842dbf54accd98cdfd23edae67049bae12815716a26d20d87e47798cf5f96eed067f4b00644b11c197e5798000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001000000020000000000000020000000000000000a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac2000000000000000182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9200000000000000080db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c00",
+      "fields": {
+        "continuation": "0aa1040a042a021002129804ec5a8699f98a6017281eb71bebc7e1001ccf945f41842dbf54accd98cdfd23edae67049bae12815716a26d20d87e47798cf5f96eed067f4b00644b11c197e57980000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "patterns": [
+          "0a0b2a079a01040a02100050011801",
+          "0a082a061a0462657461"
+        ],
+        "peeks": [
+          1
+        ],
+        "persist": false,
+        "source": {
+          "channel_hashes": [
+            "0a24710294bbfed004300f00c5d2cd96063eefef234110d0f7e8d1d87970b5ac",
+            "182b131128e579862b466e70e36acea881763107689828f8a56e6f936691d2b9"
+          ],
+          "hash": "80db1b405d2f672379f3e375b654989a78b2cea2dadf733346aed0a757fb600c",
+          "kind": "consume",
+          "persistent": false
+        }
+      }
+    }
+  },
+  "r6_cost_vectors": {
+    "programs": {
+      "arithmetic": {
+        "host_work": {
+          "cost": 703,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 5,
+            "PrimitiveInputBytes": 192,
+            "ReductionSteps": 1,
+            "ReductionTermBytes": 90,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 139,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 0,
+            "SubstitutionBytes": 25,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 2,
+            "AuthorityNodes": 2,
+            "PrimitiveCalls": 5,
+            "PrimitiveInputBytes": 192,
+            "ReductionSteps": 1,
+            "ReductionTermBytes": 90,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 19054,
+            "StructuralBytes": 210,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 0,
+            "SubstitutionBytes": 25,
+            "VerificationBytes": 2289304,
+            "VerificationOperations": 286770,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 2109,
+          "operation_count": 1
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "@\"rrs-r6-arithmetic\"!((7 * 6 - 2) / 4 % 3 + 10)",
+        "standard": {
+          "cost": 703,
+          "errors": [],
+          "quantitative_byte_cost": 703
+        }
+      },
+      "join": {
+        "host_work": {
+          "cost": 4421,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 3,
+            "PrimitiveInputBytes": 35,
+            "ReductionSteps": 4,
+            "ReductionTermBytes": 274,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 361,
+            "StructuralItems": 3,
+            "SubstitutionBindings": 4,
+            "SubstitutionBytes": 209,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            4
+          ],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 10,
+            "AuthorityNodes": 14,
+            "PrimitiveCalls": 3,
+            "PrimitiveInputBytes": 35,
+            "ReductionSteps": 4,
+            "ReductionTermBytes": 274,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 140295,
+            "StructuralBytes": 858,
+            "StructuralItems": 3,
+            "SubstitutionBindings": 4,
+            "SubstitutionBytes": 209,
+            "VerificationBytes": 9623236,
+            "VerificationOperations": 1186322,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 32130,
+          "operation_count": 4
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "@\"rrs-r6-join-left\"!(1) | @\"rrs-r6-join-right\"!(2) | for (@x <- @\"rrs-r6-join-left\" & @y <- @\"rrs-r6-join-right\") { @\"rrs-r6-join-out\"!(x + y) }",
+        "standard": {
+          "cost": 4421,
+          "errors": [],
+          "quantitative_byte_cost": 4420
+        }
+      },
+      "match": {
+        "host_work": {
+          "cost": 698,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 6,
+            "PrimitiveInputBytes": 118,
+            "ReductionSteps": 2,
+            "ReductionTermBytes": 286,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 272,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 6,
+            "SubstitutionBytes": 96,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 2,
+            "AuthorityNodes": 2,
+            "PrimitiveCalls": 6,
+            "PrimitiveInputBytes": 118,
+            "ReductionSteps": 2,
+            "ReductionTermBytes": 286,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 19034,
+            "StructuralBytes": 343,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 6,
+            "SubstitutionBytes": 96,
+            "VerificationBytes": 2289259,
+            "VerificationOperations": 286770,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 2094,
+          "operation_count": 1
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "match [1, 2, 3] {\n  [a, b, c] => @\"rrs-r6-match\"!(a + b + c)\n  _ => Nil\n}",
+        "standard": {
+          "cost": 698,
+          "errors": [],
+          "quantitative_byte_cost": 698
+        }
+      },
+      "new": {
+        "host_work": {
+          "cost": 2986,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 3,
+            "PrimitiveInputBytes": 6,
+            "ReductionSteps": 4,
+            "ReductionTermBytes": 280,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 165,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 12,
+            "SubstitutionBytes": 186,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            2
+          ],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 8,
+            "AuthorityNodes": 10,
+            "PrimitiveCalls": 3,
+            "PrimitiveInputBytes": 6,
+            "ReductionSteps": 4,
+            "ReductionTermBytes": 280,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 110598,
+            "StructuralBytes": 520,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 12,
+            "SubstitutionBytes": 186,
+            "VerificationBytes": 7128204,
+            "VerificationOperations": 884999,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 14693,
+          "operation_count": 3
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "new a, b in { a!(1) | for (@x <- a) { b!(x) } }",
+        "standard": {
+          "cost": 2986,
+          "errors": [],
+          "quantitative_byte_cost": 2985
+        }
+      },
+      "out_of_phlo": {
+        "host_work": {
+          "cost": 20000,
+          "errors": [
+            "OutOfPhlogistonsError"
+          ],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 28,
+            "PrimitiveInputBytes": 316,
+            "ReductionSteps": 16,
+            "ReductionTermBytes": 1220,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 194,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 31,
+            "SubstitutionBytes": 775,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            2,
+            2
+          ],
+          "errors": [
+            "OutOfPhlogistonsError"
+          ],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 13,
+            "AuthorityNodes": 17,
+            "PrimitiveCalls": 4,
+            "PrimitiveInputBytes": 28,
+            "ReductionSteps": 4,
+            "ReductionTermBytes": 320,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 207631,
+            "StructuralBytes": 762,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 7,
+            "SubstitutionBytes": 199,
+            "VerificationBytes": 9739280,
+            "VerificationOperations": 1195335,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 14738,
+          "operation_count": 4
+        },
+        "native_limit": 20000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 20000,
+        "source": "new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) }",
+        "standard": {
+          "cost": 20000,
+          "errors": [
+            "OutOfPhlogistonsError"
+          ],
+          "quantitative_byte_cost": 19872
+        }
+      },
+      "peek": {
+        "host_work": {
+          "cost": 3596,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 1,
+            "PrimitiveInputBytes": 2,
+            "ReductionSteps": 3,
+            "ReductionTermBytes": 144,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 185,
+            "StructuralItems": 2,
+            "SubstitutionBindings": 2,
+            "SubstitutionBytes": 114,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            2
+          ],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 10,
+            "AuthorityNodes": 12,
+            "PrimitiveCalls": 1,
+            "PrimitiveInputBytes": 2,
+            "ReductionSteps": 3,
+            "ReductionTermBytes": 144,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 125393,
+            "StructuralBytes": 611,
+            "StructuralItems": 2,
+            "SubstitutionBindings": 2,
+            "SubstitutionBytes": 114,
+            "VerificationBytes": 9461881,
+            "VerificationOperations": 1173752,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 16523,
+          "operation_count": 4
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "@\"rrs-r6-peek\"!(1) | for (@x <<- @\"rrs-r6-peek\") { @\"rrs-r6-peek-out\"!(x) }",
+        "standard": {
+          "cost": 3596,
+          "errors": [],
+          "quantitative_byte_cost": 3595
+        }
+      },
+      "persistent_receive": {
+        "host_work": {
+          "cost": 5128,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 2,
+            "PrimitiveInputBytes": 4,
+            "ReductionSteps": 5,
+            "ReductionTermBytes": 289,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 342,
+            "StructuralItems": 3,
+            "SubstitutionBindings": 4,
+            "SubstitutionBytes": 243,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            2,
+            2
+          ],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 20,
+            "AuthorityNodes": 24,
+            "PrimitiveCalls": 2,
+            "PrimitiveInputBytes": 4,
+            "ReductionSteps": 5,
+            "ReductionTermBytes": 289,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 255820,
+            "StructuralBytes": 1123,
+            "StructuralItems": 3,
+            "SubstitutionBindings": 4,
+            "SubstitutionBytes": 243,
+            "VerificationBytes": 16669022,
+            "VerificationOperations": 2067291,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 26854,
+          "operation_count": 7
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "for (@x <= @\"rrs-r6-persistent-receive\") { @\"rrs-r6-persistent-receive-out\"!(x) } | @\"rrs-r6-persistent-receive\"!(1) | @\"rrs-r6-persistent-receive\"!(2)",
+        "standard": {
+          "cost": 5128,
+          "errors": [],
+          "quantitative_byte_cost": 5126
+        }
+      },
+      "persistent_send": {
+        "host_work": {
+          "cost": 2943,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 1,
+            "PrimitiveInputBytes": 2,
+            "ReductionSteps": 3,
+            "ReductionTermBytes": 188,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 251,
+            "StructuralItems": 2,
+            "SubstitutionBindings": 2,
+            "SubstitutionBytes": 158,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            2
+          ],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 8,
+            "AuthorityNodes": 10,
+            "PrimitiveCalls": 1,
+            "PrimitiveInputBytes": 2,
+            "ReductionSteps": 3,
+            "ReductionTermBytes": 188,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 119716,
+            "StructuralBytes": 606,
+            "StructuralItems": 2,
+            "SubstitutionBindings": 2,
+            "SubstitutionBytes": 158,
+            "VerificationBytes": 7166513,
+            "VerificationOperations": 885235,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 14564,
+          "operation_count": 3
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "@\"rrs-r6-persistent-send\"!!(1) | for (@x <- @\"rrs-r6-persistent-send\") { @\"rrs-r6-persistent-send-out\"!(x) }",
+        "standard": {
+          "cost": 2943,
+          "errors": [],
+          "quantitative_byte_cost": 2942
+        }
+      },
+      "receive": {
+        "host_work": {
+          "cost": 714,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 0,
+            "PrimitiveInputBytes": 0,
+            "ReductionSteps": 1,
+            "ReductionTermBytes": 41,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 80,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 0,
+            "SubstitutionBytes": 29,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 2,
+            "AuthorityNodes": 2,
+            "PrimitiveCalls": 0,
+            "PrimitiveInputBytes": 0,
+            "ReductionSteps": 1,
+            "ReductionTermBytes": 41,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 19490,
+            "StructuralBytes": 151,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 0,
+            "SubstitutionBytes": 29,
+            "VerificationBytes": 2298512,
+            "VerificationOperations": 286946,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 2142,
+          "operation_count": 1
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "for (@x <- @\"rrs-r6-receive\") { Nil }",
+        "standard": {
+          "cost": 714,
+          "errors": [],
+          "quantitative_byte_cost": 714
+        }
+      },
+      "send": {
+        "host_work": {
+          "cost": 697,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 0,
+            "PrimitiveInputBytes": 0,
+            "ReductionSteps": 1,
+            "ReductionTermBytes": 23,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 43,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 0,
+            "SubstitutionBytes": 19,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 2,
+            "AuthorityNodes": 2,
+            "PrimitiveCalls": 0,
+            "PrimitiveInputBytes": 0,
+            "ReductionSteps": 1,
+            "ReductionTermBytes": 23,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 19030,
+            "StructuralBytes": 114,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 0,
+            "SubstitutionBytes": 19,
+            "VerificationBytes": 2289258,
+            "VerificationOperations": 286770,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 2091,
+          "operation_count": 1
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "@\"rrs-r6-send\"!(1)",
+        "standard": {
+          "cost": 697,
+          "errors": [],
+          "quantitative_byte_cost": 697
+        }
+      },
+      "system_process": {
+        "host_work": {
+          "cost": 1478,
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 0,
+            "AuthorityNodes": 0,
+            "PrimitiveCalls": 1,
+            "PrimitiveInputBytes": 2,
+            "ReductionSteps": 2,
+            "ReductionTermBytes": 112,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 0,
+            "StructuralBytes": 137,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 2,
+            "SubstitutionBytes": 41,
+            "VerificationBytes": 0,
+            "VerificationOperations": 0,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          }
+        },
+        "native": {
+          "comm_identity_counts": [
+            2
+          ],
+          "errors": [],
+          "host_work_rejection": "None",
+          "host_work_usage": {
+            "AuthorityDepth": 4,
+            "AuthorityNodes": 4,
+            "PrimitiveCalls": 1,
+            "PrimitiveInputBytes": 2,
+            "ReductionSteps": 2,
+            "ReductionTermBytes": 112,
+            "SearchCandidates": 0,
+            "SearchStateBytes": 66417,
+            "StructuralBytes": 279,
+            "StructuralItems": 1,
+            "SubstitutionBindings": 2,
+            "SubstitutionBytes": 41,
+            "VerificationBytes": 2419682,
+            "VerificationOperations": 298506,
+            "WitnessBytes": 0,
+            "WitnessFields": 0
+          },
+          "native_phlo_usage": 6223,
+          "operation_count": 1
+        },
+        "native_limit": 1000000,
+        "native_weights": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "phlo_limit": 100000000,
+        "source": "new stdout(`rho:io:stdout`) in { stdout!(\"rrs-r6-system-process\") }",
+        "standard": {
+          "cost": 1478,
+          "errors": [],
+          "quantitative_byte_cost": 1477
+        }
+      }
+    }
+  },
+  "r7_term_prost_and_bincode_bytes": {
+    "terms": {
+      "bundles": {
+        "bincode": "0000000000000000000000000000000001000000000000000400000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000d000000000000007272732d72372d62756e646c6500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000100000000000000000000000000000000000000000000000001000000000000000113000000010100000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010000000000000000000000000000000000000000000000000100000000000000011300000001010000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "228f010808128a010a81010a112a0f1a0d7272732d72372d62756e646c65121b4a04000000015a130a0f2a079a01040a0208064a0400000001100112194a030000015a120a0e2a079a01040a0208044a03000001180112154a0200015a0f0a0d2a079a01040a0208024a02000112174a01015a120a0c2a079a01040a0208004a0101100118012a04010101014a0401010101",
+        "source": "new w, r, n, rw in { @\"rrs-r7-bundle\"!(bundle+ {*w}, bundle- {*r}, bundle0 {*n}, bundle {*rw}) }",
+        "stable_hash": "9623e69cb9a57421eebecf6eb17a55f2416d2803265255cb86fad6286994325d"
+      },
+      "contract": {
+        "bincode": "000000000000000001000000000000000100000000000000030000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6164640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000010100000000000000010000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010900000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000113000000010100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "1285010a390a0b2a079a01040a02100050010a0b2a079a01040a02100250010a0b2a079a01040a0210045001120e2a0c1a0a7272732d72372d616464200312440a3d0a0c2a079a01040a0208004a010112282a214a1f0a0e2a079a01040a0208044a03000001120d2a079a01040a0208024a0200014a030001012a030101014a0301010118012803",
+        "source": "contract @\"rrs-r7-add\"(@a, @b, ret) = { ret!(a + b) }",
+        "stable_hash": "c2fb9e8be063b6466e14bc56c62c51e4d75c5f7c26c4d4c6e8a7b8401de28c46"
+      },
+      "if_else": {
+        "bincode": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010000000000000000000000000000000000000000000000000100000000000000010b0000000100000000000000000000000000000000000000000000000001000000000000000101000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000101000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010100000000000000010000000000000000000000000000000000000000000000000100000000000000010200000009000000000000007272732d72372d6966000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010100000000000000010000000000000000000000000000000000000000000000000100000000000000010200000009000000000000007272732d72372d696600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "62440a102a0e5a0c0a042a02100212042a02100412170a150a0d2a0b1a097272732d72372d696612042a0210021a170a150a0d2a0b1a097272732d72372d696612042a021004",
+        "source": "if (1 < 2) { @\"rrs-r7-if\"!(1) } else { @\"rrs-r7-if\"!(2) }",
+        "stable_hash": "6c3682e403590b490dce7d8d996df430096068515960e6668c4f73e7a9e50a26"
+      },
+      "join": {
+        "bincode": "00000000000000000100000000000000020000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000b000000000000007272732d72372d6c656674000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72372d7269676874000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6f757400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "1280010a200a0b2a079a01040a0210005001120f2a0d1a0b7272732d72372d6c65667420010a210a0b2a079a01040a021000500112102a0e1a0c7272732d72372d7269676874200112370a310a0e2a0c1a0a7272732d72372d6f7574120d2a079a01040a0208024a020001120c2a079a01040a0208004a01012a0201014a0201012802",
+        "source": "for (@x <- @\"rrs-r7-left\" & @y <- @\"rrs-r7-right\") { @\"rrs-r7-out\"!(x, y) }",
+        "stable_hash": "702216d13592afc588c542c9c6bcc8dd1cb6c3a85fd83597d5b900a2682c4ec9"
+      },
+      "list": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000b000000000000007272732d72372d6c69737400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001140000000300000000000000000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000114000000020000000000000000000000000000000000000000000000000000000000000001000000000000000101000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010100000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001140000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a380a0f2a0d1a0b7272732d72372d6c69737412252a23a201200a042a0210020a112a0fa2010c0a042a0210040a042a0210060a052a03a20100",
+        "source": "@\"rrs-r7-list\"!([1, [2, 3], []])",
+        "stable_hash": "d04528bd32e50e92546edb19fb7e5c03fc540dc38582d2d5025bfea154af62fa"
+      },
+      "map": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6d617000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001170000000300000000000000010000000000000000000000000000000000000000000000000100000000000000010100000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000011400000001000000000000000000000000000000000000000000000000000000000000000100000000000000010100000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010200000001000000000000006b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010200000006000000000000006e6573746564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001170000000100000000000000010000000000000000000000000000000000000000000000000100000000000000010200000001000000000000007a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a5b0a0e2a0c1a0a7272732d72372d6d617012492a47ba01440a130a042a021004120b2a09a201060a042a0210060a0d0a052a031a016b12042a0210020a1e0a0a2a081a066e657374656412102a0eba010b0a090a052a031a017a1200",
+        "source": "@\"rrs-r7-map\"!({\"k\": 1, 2: [3], \"nested\": {\"z\": Nil}})",
+        "stable_hash": "cc78f20e79b020c613f070c6d1ed2cd3d16ee273425657edda1850e7cde2b065"
+      },
+      "match_cases": {
+        "bincode": "000000000000000000000000000000000000000000000000000000000000000001000000000000000100000000000000000000000000000000000000000000000001000000000000000114000000020000000000000000000000000000000000000000000000000000000000000001000000000000000101000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010100000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000001000000000000000000000000000000000000000000000000010000000000000001140000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6f7574000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010900000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000113000000010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000100000000000000000000000000000000000000000000000001000000000000000113000000010102000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "3290010a112a0fa2010c0a042a0210020a042a021004126a0a232a1fa2011c0a0b2a079a01040a02100050010a0b2a079a01040a02100250012001500112410a3b0a0e2a0c1a0a7272732d72372d6f757412252a1f4a1d0a0d2a079a01040a0208024a020001120c2a079a01040a0208004a01014a0201012a0201014a0201011802120f0a0b2a079a01040a021a0050011200",
+        "source": "match [1, 2] {\n  [a, b] => @\"rrs-r7-out\"!(a + b)\n  _ => Nil\n}",
+        "stable_hash": "300cb78ca5570b6f28e08f2bdadd9751d4d26c6bebdb330ad3bb58b4c5519050"
+      },
+      "method_calls": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000d000000000000007272732d72372d6d6574686f64000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000100000000000000011800000003000000000000006e7468010000000000000000000000000000000000000000000000000100000000000000011400000003000000000000000000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000101000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011800000006000000000000006c656e67746801000000000000000000000000000000000000000000000000010000000000000001020000000300000000000000616263000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001180000000300000000000000676574010000000000000000000000000000000000000000000000000100000000000000011700000001000000000000000100000000000000000000000000000000000000000000000001000000000000000102000000010000000000000061000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010200000001000000000000006100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001180000000b00000000000000746f5574663842797465730100000000000000000000000000000000000000000000000001000000000000000102000000010000000000000078000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a9a010a112a0f1a0d7272732d72372d6d6574686f6412292a27c201240a036e746812172a15a201120a042a0210020a042a0210040a042a0210061a042a02100212162a14c201110a066c656e67746812072a051a0361626312272a25c201220a0367657412142a12ba010f0a0d0a052a031a016112042a0210021a052a031a016112192a17c201140a0b746f55746638427974657312052a031a0178",
+        "source": "@\"rrs-r7-method\"!([1, 2, 3].nth(1), \"abc\".length(), {\"a\": 1}.get(\"a\"), \"x\".toUtf8Bytes())",
+        "stable_hash": "e7a5d431ae15d01118454c7909c51d5b322b8e16b172dca9e28907a860d4df48"
+      },
+      "new_names": {
+        "bincode": "0000000000000000000000000000000001000000000000000300000001020000000000000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000100000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "227a080612760a210a0d2a079a01040a0208024a020001120c2a079a01040a0208004a01012a0201010a240a0e2a079a01040a0208044a03000001120d2a079a01040a0208024a0200012a0300010112260a1d0a0b2a079a01040a0210005001120c2a079a01040a0208004a01012001120028013201014a03010101",
+        "source": "new a, b, c in { a!(*b) | b!(*c) | for (@x <- c) { Nil } }",
+        "stable_hash": "f93ee9003aa81e819ce37c1545f5923bf85a83c3116549beb57928f4279ec51b"
+      },
+      "new_with_uri": {
+        "bincode": "00000000000000000000000000000000010000000000000001000000010100000000000000010000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010200000006000000000000007272732d7237000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000d0000000000000072686f3a696f3a7374646f75740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "2235080212220a1d0a0c2a079a01040a0208004a0101120a2a081a067272732d72372a01014a01011a0d72686f3a696f3a7374646f7574",
+        "source": "new stdout(`rho:io:stdout`) in { stdout!(\"rrs-r7\") }",
+        "stable_hash": "5485d4d3bdcf141f4182cd73069c018b2fbaef69aed175515b9914242b11ab2b"
+      },
+      "operators": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6f707300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000100000000000000010a0000000100000000000000000000000000000000000000000000000001000000000000000109000000010000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010700000001000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000011f000000010000000000000000000000000000000000000000000000000100000000000000010800000001000000000000000000000000000000000000000000000000010000000000000001010000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000101000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000112000000010000000000000000000000000000000000000000000000000100000000000000010500000001000000000000000000000000000000000000000000000000010000000000000001000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000011100000001000000000000000000000000000000000000000000000000010000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011d000000010000000000000000000000000000000000000000000000000100000000000000010200000001000000000000006100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000102000000010000000000000062000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010b00000001000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010c00000001000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010d00000001000000000000000000000000000000000000000000000000010000000000000001010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010e00000001000000000000000000000000000000000000000000000000010000000000000001010000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001010000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010f000000010000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000110000000010000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010100000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000101000000fbffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a81020a0e2a0c1a0a7272732d72372d6f707312412a3f523d0a1c2a1a4a180a042a02100212102a0e3a0c0a042a02100412042a021006121d2a1bfa01180a102a0e420c0a042a02100812042a02100412042a02100612242a2292011f0a0a2a082a060a042a02080112112a0f8a010c0a042a02080012042a02080112132a11ea010e0a052a031a016112052a031a016212102a0e5a0c0a042a02100212042a02100412102a0e620c0a042a02100412042a02100412102a0e6a0c0a042a02100612042a02100212102a0e720c0a042a02100812042a02100812102a0e7a0c0a042a02100212042a02100212112a0f82010c0a042a02100212042a02100412042a021009",
+        "source": "@\"rrs-r7-ops\"!(1 + 2 * 3 - 4 / 2 % 3, not true or false and true, \"a\" ++ \"b\", 1 < 2, 2 <= 2, 3 > 1, 4 >= 4, 1 == 1, 1 != 2, -5)",
+        "stable_hash": "642f8d99430b659c0678a4c10ce592b9072542dcb64fb08afbf7a736035ad19c"
+      },
+      "persistent_and_peek_receive": {
+        "bincode": "00000000000000000200000000000000010000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000b000000000000007272732d72372d7065656b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101000000000000000000000000000100000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010200000019000000000000007272732d72372d70657273697374656e742d726563656976650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "12280a200a0b2a079a01040a0210005001120f2a0d1a0b7272732d72372d7065656b200112002001280112360a2e0a0b2a079a01040a0210005001121d2a1b1a197272732d72372d70657273697374656e742d726563656976652001120018012801",
+        "source": "for (@x <= @\"rrs-r7-persistent-receive\") { Nil } | for (@y <<- @\"rrs-r7-peek\") { Nil }",
+        "stable_hash": "a4209426a53ef62b6fcbbda6aea59979a7299cb78de805c968aae36c2a6fe0bf"
+      },
+      "persistent_send": {
+        "bincode": "0100000000000000010000000000000000000000000000000000000000000000000100000000000000010200000011000000000000007272732d72372d70657273697374656e74000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010100000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a1f0a152a131a117272732d72372d70657273697374656e7412042a02100e1801",
+        "source": "@\"rrs-r7-persistent\"!!(7)",
+        "stable_hash": "c8abc487792298b5c30988d83d8e15450430953f149cbb7448b1394f6958b77e"
+      },
+      "quote_and_eval": {
+        "bincode": "00000000000000000100000000000000010000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72372d71756f7465000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "124c0a210a0b2a079a01040a021000500112102a0e1a0c7272732d72372d71756f7465200112250a170a0c2a079a01040a0208004a010112042a0210022a01012a079a01040a0208004a01012801",
+        "source": "for (x <- @\"rrs-r7-quote\") { *x | @{*x | Nil}!(1) }",
+        "stable_hash": "2f51dbc872cd6bcadec440643372ac5c6e75dc03294d2166f50112503d3cac5a"
+      },
+      "receive_with_patterns": {
+        "bincode": "0000000000000000010000000000000001000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001140000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010102000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000e000000000000007272732d72372d72656365697665000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6f7574000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000010900000001000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000001000000000000000113000000010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "128f010a480a232a1fa2011c0a0b2a079a01040a02100050010a0b2a079a01040a0210025001200150010a0b2a079a01040a021a00500112122a101a0e7272732d72372d72656365697665200212410a3b0a0e2a0c1a0a7272732d72372d6f757412252a1f4a1d0a0d2a079a01040a0208024a020001120c2a079a01040a0208004a01014a0201012a0201014a0201012802",
+        "source": "for (@[x, y], _ <- @\"rrs-r7-receive\") { @\"rrs-r7-out\"!(x + y) }",
+        "stable_hash": "2a144ab2678386db5600fd98d71bb7b4c5e10b160552df0657ccceef60d3c792"
+      },
+      "receive_with_remainder": {
+        "bincode": "000000000000000001000000000000000100000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000010000000000000000000000000000000000000000000000000100000000000000010200000010000000000000007272732d72372d72656d61696e646572000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001010100000001000000020000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d6f757400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "12660a290a0b2a079a01040a021000500112142a121a107272732d72372d72656d61696e6465721a021002200212370a310a0e2a0c1a0a7272732d72372d6f7574120d2a079a01040a0208024a020001120c2a079a01040a0208004a01012a0201014a0201012802",
+        "source": "for (@first, ...@rest <- @\"rrs-r7-remainder\") { @\"rrs-r7-out\"!(first, rest) }",
+        "stable_hash": "0f602c49da62b3a4936ea0ad42f42dc74ba6d83ed3eb95bfcc72f3b9e6a83197"
+      },
+      "send_many_arguments": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000b000000000000007272732d72372d73656e6400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000102000000030000000000000074776f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000114000000020000000000000000000000000000000000000000000000000000000000000001000000000000000101000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010100000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001150000000200000000000000000000000000000000000000000000000000000000000000010000000000000001010000000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000101000000060000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a4c0a0f2a0d1a0b7272732d72372d73656e6412042a02100212072a051a0374776f12042a02080112112a0fa2010c0a042a0210060a042a02100812112a0faa010c0a042a02100a0a042a02100c",
+        "source": "@\"rrs-r7-send\"!(1, \"two\", true, [3, 4], (5, 6))",
+        "stable_hash": "66096a3940d687825c34e8c73854bc5863579a6521d61432fc84dbc8a3a79357"
+      },
+      "set": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000a000000000000007272732d72372d73657400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001160000000300000000000000000000000000000000000000000000000000000000000000010000000000000001010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000101000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000010100000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001160000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a300a0e2a0c1a0a7272732d72372d73657412172a15b201120a042a0210020a042a0210040a042a02100612052a03b20100",
+        "source": "@\"rrs-r7-set\"!(Set(3, 1, 2), Set())",
+        "stable_hash": "a2ea3a79e3ac325abf3383b2714468bf78efba5ee2778005de036f257cfe253c"
+      },
+      "tuple": {
+        "bincode": "010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72372d7475706c65000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000100000000000000011500000002000000000000000000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011500000003000000000000000000000000000000000000000000000000000000000000000100000000000000010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000101000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "0a3e0a102a0e1a0c7272732d72372d7475706c6512112a0faa010c0a042a0210020a042a02100412172a15aa01120a042a0210020a042a0210040a042a021006",
+        "source": "@\"rrs-r7-tuple\"!((1, 2), (1, 2, 3))",
+        "stable_hash": "ab5d1e21a84552aa9d8e6c5b5ccf18509bd48a0d9db40b83e190796988ae194e"
+      },
+      "tuple_process": {
+        "bincode": "0000000000000000010000000000000001000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000b000000000000007272732d72372d706169720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000010000000000000000000000000000000000000000000000000100000000000000011500000002000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000113000000010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "prost": "125d0a2d0a0b2a079a01040a02100050010a0b2a079a01040a0210025001120f2a0d1a0b7272732d72372d706169722002122a2a24aa01210a0d2a079a01040a0208024a0200010a0c2a079a01040a0208004a01011a0201014a0201012802",
+        "source": "for (@x, @y <- @\"rrs-r7-pair\") { (x, y) }",
+        "stable_hash": "a7c91fb08cdbe89b61bc01b623a21ed75acd389ab8779d5770908aa3677582cf"
+      }
+    }
+  },
+  "r8_state_dump": {
+    "continuations": [
+      {
+        "channels": [
+          "@{\"rrs-r8-join-left\"}",
+          "@{\"rrs-r8-join-right\"}"
+        ],
+        "continuations": [
+          {
+            "continuation": {
+              "body": {
+                "par": "\"rrs-r8-never\"!(x-2, x-1)"
+              },
+              "guard": null,
+              "has_cost_authority": true
+            },
+            "patterns": [
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              },
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              }
+            ],
+            "peeks": [],
+            "persist": false
+          }
+        ]
+      },
+      {
+        "channels": [
+          "@{\"rrs-r8-join-right\"}",
+          "@{Unforgeable(0x692b57dff0b4a5b512c703e60b00743a310d85d4354ecc245db4ffecf2bbf782)}"
+        ],
+        "continuations": [
+          {
+            "continuation": {
+              "body": {
+                "par": "Nil"
+              },
+              "guard": null,
+              "has_cost_authority": true
+            },
+            "patterns": [
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              },
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              }
+            ],
+            "peeks": [],
+            "persist": false
+          }
+        ]
+      },
+      {
+        "channels": [
+          "@{\"rrs-r8-peek-wait\"}"
+        ],
+        "continuations": [
+          {
+            "continuation": {
+              "body": {
+                "par": "Nil"
+              },
+              "guard": null,
+              "has_cost_authority": true
+            },
+            "patterns": [
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              }
+            ],
+            "peeks": [
+              0
+            ],
+            "persist": false
+          }
+        ]
+      },
+      {
+        "channels": [
+          "@{\"rrs-r8-persistent-wait\"}"
+        ],
+        "continuations": [
+          {
+            "continuation": {
+              "body": {
+                "par": "Nil"
+              },
+              "guard": null,
+              "has_cost_authority": true
+            },
+            "patterns": [
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              }
+            ],
+            "peeks": [],
+            "persist": true
+          }
+        ]
+      },
+      {
+        "channels": [
+          "@{\"rrs-r8-wait\"}"
+        ],
+        "continuations": [
+          {
+            "continuation": {
+              "body": {
+                "par": "\"rrs-r8-never\"!(x-1)"
+              },
+              "guard": null,
+              "has_cost_authority": true
+            },
+            "patterns": [
+              {
+                "free_count": 1,
+                "patterns": [
+                  "free0"
+                ],
+                "remainder": null
+              }
+            ],
+            "peeks": [],
+            "persist": false
+          }
+        ]
+      }
+    ],
+    "data": [
+      {
+        "channel": "@{Unforgeable(0x692b57dff0b4a5b512c703e60b00743a310d85d4354ecc245db4ffecf2bbf782)}",
+        "data": [
+          {
+            "pars": [
+              "{\"k\" : Set(5)}"
+            ],
+            "persist": false
+          }
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-data\"}",
+        "data": [
+          {
+            "pars": [
+              "1",
+              "\"one\""
+            ],
+            "persist": false
+          },
+          {
+            "pars": [
+              "2",
+              "\"two\""
+            ],
+            "persist": false
+          }
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-persistent-data\"}",
+        "data": [
+          {
+            "pars": [
+              "[3, 4]"
+            ],
+            "persist": true
+          }
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-result\"}",
+        "data": [
+          {
+            "pars": [
+              "10"
+            ],
+            "persist": false
+          }
+        ]
+      }
+    ],
+    "joins": [
+      {
+        "channel": "@{Unforgeable(0x692b57dff0b4a5b512c703e60b00743a310d85d4354ecc245db4ffecf2bbf782)}",
+        "joins": [
+          [
+            "@{\"rrs-r8-join-right\"}",
+            "@{Unforgeable(0x692b57dff0b4a5b512c703e60b00743a310d85d4354ecc245db4ffecf2bbf782)}"
+          ]
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-join-left\"}",
+        "joins": [
+          [
+            "@{\"rrs-r8-join-left\"}",
+            "@{\"rrs-r8-join-right\"}"
+          ]
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-join-right\"}",
+        "joins": [
+          [
+            "@{\"rrs-r8-join-left\"}",
+            "@{\"rrs-r8-join-right\"}"
+          ],
+          [
+            "@{\"rrs-r8-join-right\"}",
+            "@{Unforgeable(0x692b57dff0b4a5b512c703e60b00743a310d85d4354ecc245db4ffecf2bbf782)}"
+          ]
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-peek-wait\"}",
+        "joins": [
+          [
+            "@{\"rrs-r8-peek-wait\"}"
+          ]
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-persistent-wait\"}",
+        "joins": [
+          [
+            "@{\"rrs-r8-persistent-wait\"}"
+          ]
+        ]
+      },
+      {
+        "channel": "@{\"rrs-r8-wait\"}",
+        "joins": [
+          [
+            "@{\"rrs-r8-wait\"}"
+          ]
+        ]
+      }
+    ],
+    "kinds": [
+      "produce",
+      "produce",
+      "produce",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "consume",
+      "consume",
+      "consume",
+      "produce",
+      "consume"
+    ],
+    "program": "\n@\"rrs-r8-data\"!(1, \"one\") |\n@\"rrs-r8-data\"!(2, \"two\") |\n@\"rrs-r8-persistent-data\"!!([3, 4]) |\nfor (@x <- @\"rrs-r8-wait\") { @\"rrs-r8-never\"!(x) } |\nfor (@a <- @\"rrs-r8-join-left\" & @b <- @\"rrs-r8-join-right\") { @\"rrs-r8-never\"!(a, b) } |\nfor (@y <= @\"rrs-r8-persistent-wait\") { Nil } |\nfor (@z <<- @\"rrs-r8-peek-wait\") { Nil } |\n@\"rrs-r8-consumed\"!(5) |\nfor (@w <- @\"rrs-r8-consumed\") { @\"rrs-r8-result\"!(w * 2) } |\nnew private in { private!({\"k\": Set(5)}) | for (@v <- private & @u <- @\"rrs-r8-join-right\") { Nil } }\n"
+  },
+  "r9_play_replay_equality": {
+    "event_kinds": [
+      "produce",
+      "produce",
+      "produce",
+      "produce",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "consume",
+      "comm",
+      "produce",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "consume",
+      "comm",
+      "produce",
+      "comm",
+      "produce",
+      "produce",
+      "comm",
+      "consume"
+    ],
+    "event_log_length": 36,
+    "play_cost": 23794,
+    "play_root": "ec4b24bd3a41de3aa40774312cf1298cb06754527daf9ab4ff451126f5188170",
+    "program": "\nnew loop, result, stdout(`rho:io:stdout`) in {\n  contract loop(@n, @acc) = {\n    match n {\n      0 => result!(acc)\n      _ => loop!(n - 1, acc + n)\n    }\n  } |\n  loop!(4, 0) |\n  for (@total <- result) {\n    @\"rrs-r9-total\"!(total) |\n    stdout!([\"rrs-r9\", total])\n  } |\n  @\"rrs-r9-left\"!(1) |\n  @\"rrs-r9-right\"!(2) |\n  for (@l <- @\"rrs-r9-left\" & @r <- @\"rrs-r9-right\") { @\"rrs-r9-joined\"!(l + r) } |\n  @\"rrs-r9-peek\"!(\"seen\") |\n  for (@s <<- @\"rrs-r9-peek\") { @\"rrs-r9-peeked\"!(s) } |\n  @\"rrs-r9-persistent\"!!(10) |\n  for (@p <- @\"rrs-r9-persistent\") { @\"rrs-r9-persistent-seen\"!(p) }\n}\n",
+    "replay_root_equals_play_root": true,
+    "start_root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
+  },
+  "rustc_version": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)"
+}

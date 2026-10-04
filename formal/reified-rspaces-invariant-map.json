@@ -1,0 +1,792 @@
+{
+  "schema": "reified-rspaces-invariant-map/2",
+  "title": "Reified RSpaces: formal headlines and TLA+ invariants with their property-based tests",
+  "checker": "scripts/verify-reified/check-invariant-map.py",
+  "tla_config_dir": "formal/tlaplus/reified_rspaces",
+  "auxiliary_tla_invariants": {
+    "TypeOK": "The type invariant of each module. TLC checks it in every configuration. It is not a property of the substrate.",
+    "IndInv": "The inductive strengthening of T3 and T4 (CheckpointReplay) for the Apalache BASE and STEP checks. TLC checks it on every reachable state of the two safe CheckpointReplay configurations.",
+    "LockIndInv": "The inductive strengthening of T5 (TxnLockCoverage) for the Apalache BASE and STEP checks. TLC checks it on every reachable state of MC_TxnLockCoverage.",
+    "CommitOrderWitness": "When the ghost serialOk holds, the commit order itself witnesses T5. TLC checks it on every reachable state of MC_TxnLockCoverage."
+  },
+  "phases": {
+    "P1": {
+      "title": "P1: the storage substrate (SpaceTxnHost, SpaceStoreHandle, SpaceTxn)",
+      "design": "p1-design-report §5(a) (headlines and invariants) and §5(c) (property-based tests), the P1 fix rules (prompts/p1-fix-rules.md: H4, H9, H15 changed, H17-H22 and T5 new), the round-2 rules FR-1', FR-5', FR-7' and FR-9' (H13, H17, H20, H22 and T5 changed), and the round-3 rule FR-10 (H11 changed). witness_tests lists the deterministic tests of the round-2 and round-3 rules.",
+      "test_status": "required",
+      "test_files": [
+        "rspace++/tests/reified_space_store_handle_props.rs",
+        "rholang/tests/reified_space_store_handle_par.rs"
+      ],
+      "expected_properties": 24,
+      "formal": {
+        "H1": {
+          "kind": "rocq",
+          "name": "commit_trace_eq_host",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_play_trace_equals_host",
+            "prop_space_txn_repeated_channel_groups_equal_host"
+          ]
+        },
+        "H2": {
+          "kind": "rocq",
+          "name": "commit_state_eq_host",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_play_root_equals_host",
+            "prop_space_txn_repeated_channel_groups_equal_host"
+          ]
+        },
+        "H3": {
+          "kind": "rocq",
+          "name": "counter_timing_play_replay",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_counter_timing_play_equals_replay"
+          ]
+        },
+        "H4": {
+          "kind": "rocq",
+          "name": "verify_sound_complete",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_replay_divergence_typed_and_inert",
+            "prop_space_txn_replay_requires_trigger_event"
+          ]
+        },
+        "H5": {
+          "kind": "rocq",
+          "name": "replay_pairs_each_comm_once",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_replay_pairs_play_log",
+            "prop_space_txn_repeated_channel_groups_equal_host",
+            "prop_space_txn_peek_retention"
+          ]
+        },
+        "H6": {
+          "kind": "rocq",
+          "name": "view_commit_coherent",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_view_equals_committed_store"
+          ]
+        },
+        "H7": {
+          "kind": "rocq",
+          "name": "joins_lockstep_preserved",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_joins_lockstep"
+          ]
+        },
+        "H8": {
+          "kind": "rocq",
+          "name": "sub_order_between",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_sub_orders_contiguous_and_disjoint"
+          ]
+        },
+        "H9": {
+          "kind": "rocq",
+          "name": "abort_inert",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_abort_inert",
+            "prop_space_txn_non_canonical_inputs_fail_closed"
+          ]
+        },
+        "H10": {
+          "kind": "rocq",
+          "name": "coverage_total",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_event_coverage_holds_for_generated_commits"
+          ]
+        },
+        "H11": {
+          "kind": "rocq",
+          "name": "peek_retention_trace_eq_host",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_peek_retention"
+          ]
+        },
+        "H12": {
+          "kind": "rocq",
+          "name": "reporting_trace_is_replay_trace",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_reporting_equals_replay",
+            "prop_space_txn_peek_retention"
+          ]
+        },
+        "H13": {
+          "kind": "rocq",
+          "name": "sweep_exact",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "tests": [
+            "prop_sweep_volatile_exact_and_root_neutral"
+          ]
+        },
+        "H14": {
+          "kind": "rocq",
+          "name": "delete_absent_identity",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "tests": [
+            "prop_sweep_volatile_exact_and_root_neutral"
+          ]
+        },
+        "H15": {
+          "kind": "rocq",
+          "name": "sweep_root_neutral",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "tests": [
+            "prop_sweep_volatile_exact_and_root_neutral"
+          ]
+        },
+        "H16": {
+          "kind": "rocq",
+          "name": "leaf_count_is_length",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "tests": [
+            "prop_root_leaf_record_count_matches_history"
+          ]
+        },
+        "H17": {
+          "kind": "rocq",
+          "name": "non_canonical_fails_closed",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_non_canonical_inputs_fail_closed",
+            "prop_space_txn_repeated_channel_groups_equal_host"
+          ]
+        },
+        "H18": {
+          "kind": "rocq",
+          "name": "canonical_reads_root_neutral",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "tests": [
+            "prop_space_txn_reads_root_neutral"
+          ]
+        },
+        "H19": {
+          "kind": "rocq",
+          "name": "directive_fails_closed",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_replay_directive_fails_closed"
+          ]
+        },
+        "H20": {
+          "kind": "rocq",
+          "name": "parent_order_single_txn",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_parent_order_single_commit"
+          ]
+        },
+        "H21": {
+          "kind": "rocq",
+          "name": "view_identity_is_store_identity",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "tests": [
+            "prop_space_txn_store_identity_ignores_ord_only_fields",
+            "prop_space_txn_par_identity_ignores_locally_free"
+          ]
+        },
+        "H22": {
+          "kind": "rocq",
+          "name": "checkpoint_rejects_duplicate_key_actions",
+          "file": "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+          "tests": [
+            "prop_space_txn_non_canonical_inputs_fail_closed"
+          ]
+        },
+        "T1": {
+          "kind": "tla",
+          "name": "ReplayPrefixEqual",
+          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+          "tests": [
+            "prop_space_txn_replay_pairs_play_log",
+            "prop_space_txn_cross_replay_with_host",
+            "prop_space_txn_repeated_channel_groups_equal_host"
+          ]
+        },
+        "T2": {
+          "kind": "tla",
+          "name": "SameRootIffSameState",
+          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+          "tests": [
+            "prop_space_txn_play_root_equals_host"
+          ]
+        },
+        "T3": {
+          "kind": "tla",
+          "name": "PairedOnce",
+          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+          "tests": [
+            "prop_space_txn_replay_divergence_typed_and_inert"
+          ]
+        },
+        "T4": {
+          "kind": "tla",
+          "name": "NoVolatileResidue",
+          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+          "tests": [
+            "prop_sweep_volatile_exact_and_root_neutral"
+          ]
+        },
+        "T5": {
+          "kind": "tla",
+          "name": "Serializable",
+          "file": "formal/tlaplus/reified_rspaces/TxnLockCoverage.tla",
+          "tests": [
+            "prop_space_txn_rejects_uncovered_channels"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_space_txn_play_trace_equals_host",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H1"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_space_txn_play_root_equals_host",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H2",
+            "T2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_space_txn_replay_pairs_play_log",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H5",
+            "T1"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_space_txn_cross_replay_with_host",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "T1"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_space_txn_replay_divergence_typed_and_inert",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H4",
+            "T3"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_space_txn_view_equals_committed_store",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H6"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "prop_space_txn_joins_lockstep",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H7"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "prop_sweep_volatile_exact_and_root_neutral",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H13",
+            "H14",
+            "H15",
+            "T4"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "prop_sub_orders_contiguous_and_disjoint",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H8"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "prop_space_txn_abort_inert",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H9"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "prop_event_coverage_holds_for_generated_commits",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H10"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "prop_space_txn_peek_retention",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H5",
+            "H11",
+            "H12"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "prop_space_txn_reporting_equals_replay",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H12"
+          ]
+        },
+        {
+          "number": 14,
+          "test": "prop_root_leaf_record_count_matches_history",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H16"
+          ]
+        },
+        {
+          "number": 15,
+          "test": "prop_counter_timing_play_equals_replay",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H3"
+          ]
+        },
+        {
+          "number": 16,
+          "test": "prop_space_txn_replay_requires_trigger_event",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H4"
+          ]
+        },
+        {
+          "number": 17,
+          "test": "prop_space_txn_non_canonical_inputs_fail_closed",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H17",
+            "H22",
+            "H9"
+          ]
+        },
+        {
+          "number": 18,
+          "test": "prop_space_txn_reads_root_neutral",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H18"
+          ]
+        },
+        {
+          "number": 19,
+          "test": "prop_space_txn_replay_directive_fails_closed",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H19"
+          ]
+        },
+        {
+          "number": 20,
+          "test": "prop_space_txn_parent_order_single_commit",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H20"
+          ]
+        },
+        {
+          "number": 21,
+          "test": "prop_space_txn_store_identity_ignores_ord_only_fields",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H21"
+          ]
+        },
+        {
+          "number": 22,
+          "test": "prop_space_txn_rejects_uncovered_channels",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "T5"
+          ]
+        },
+        {
+          "number": 23,
+          "test": "prop_space_txn_par_identity_ignores_locally_free",
+          "file": "rholang/tests/reified_space_store_handle_par.rs",
+          "covers": [
+            "H21"
+          ]
+        },
+        {
+          "number": 24,
+          "test": "prop_space_txn_repeated_channel_groups_equal_host",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H1",
+            "H2",
+            "H5",
+            "H17",
+            "T1"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "space_store_handle_repeated_group_consume_fire_binds_distinct_records",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-1'",
+          "covers": [
+            "H1",
+            "H2",
+            "H17"
+          ]
+        },
+        {
+          "test": "space_store_handle_repeated_group_produce_fire_binds_incoming_once",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-1'",
+          "covers": [
+            "H1",
+            "H2",
+            "H9",
+            "H17"
+          ]
+        },
+        {
+          "test": "space_store_handle_unsorted_repeat_fails_closed",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-1'",
+          "covers": [
+            "H9",
+            "H17",
+            "H18"
+          ]
+        },
+        {
+          "test": "space_store_handle_evaluation_scope_resets_parent_orders",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-5'",
+          "covers": [
+            "H20"
+          ]
+        },
+        {
+          "test": "space_store_handle_store_reset_resets_parent_orders",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-5'",
+          "covers": [
+            "H20"
+          ]
+        },
+        {
+          "test": "space_store_handle_sweep_in_open_transaction_fails_closed",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-9'",
+          "covers": [
+            "H13"
+          ]
+        },
+        {
+          "test": "space_store_handle_commit_checks_cost_changed_entries",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-7'",
+          "covers": [],
+          "unmodeled": "FR-7' bounds the cost of the always-on checks. The models do not include cost. H6 and H10 show that the checks never fail for a staged transaction."
+        },
+        {
+          "test": "space_store_handle_retained_produce_fire_leaves_incoming_unstored",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H5",
+            "H6",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_peek_reoffer_fires_next_waiter",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H3",
+            "H6",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_peek_reoffer_stores_without_waiter",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H1",
+            "H3",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_peek_reoffer_equals_head_reproduce",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H1",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_peek_reoffer_authority_conflict_fails_at_reoffer",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H1",
+            "H6",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_peek_reoffer_replay_and_report",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H1",
+            "H4",
+            "H5",
+            "H11",
+            "H12",
+            "T1"
+          ]
+        },
+        {
+          "test": "space_store_handle_peek_fire_receipt_flags",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H1",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_receipt_marks_only_retained_stored_results",
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H11"
+          ]
+        }
+      ]
+    },
+    "P2": {
+      "title": "P2: the marker-tuple wire encoding of the Reified RSpaces syntax (Encoding.v)",
+      "design": "p2-design-report-2 §5 (-fv: the 12 headline theorems, -invariant-pbt: one test for each theorem, with 4 and 5 sharing reified_markers_disjoint)",
+      "test_status": "planned",
+      "test_files": [
+        "models/tests/reified_encoding.rs",
+        "rholang/tests/reified_marker_recognition.rs"
+      ],
+      "expected_properties": 11,
+      "formal": {
+        "E1": {
+          "kind": "rocq",
+          "name": "decode_encode",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_encoding_roundtrip"
+          ]
+        },
+        "E2": {
+          "kind": "rocq",
+          "name": "encode_injective",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_encoding_injective"
+          ]
+        },
+        "E3": {
+          "kind": "rocq",
+          "name": "decode_sound",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_decode_accepts_only_canonical_image"
+          ]
+        },
+        "E4": {
+          "kind": "rocq",
+          "name": "markers_pairwise_distinct",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_markers_disjoint"
+          ]
+        },
+        "E5": {
+          "kind": "rocq",
+          "name": "markers_disjoint_reserved",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_markers_disjoint"
+          ]
+        },
+        "E6": {
+          "kind": "rocq",
+          "name": "named_params_canonical",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_params_canonical_key_order"
+          ]
+        },
+        "E7": {
+          "kind": "rocq",
+          "name": "recognize_complete",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "marker_tuple_recognized_only_in_specified_positions"
+          ]
+        },
+        "E8": {
+          "kind": "rocq",
+          "name": "marker_forging_grants_no_capability",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "marker_forging_grants_no_capability"
+          ]
+        },
+        "E9": {
+          "kind": "rocq",
+          "name": "marker_inert_elsewhere",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "marker_inert_elsewhere"
+          ]
+        },
+        "E10": {
+          "kind": "rocq",
+          "name": "schedule_unchanged_marker_free",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "term_schedule_unchanged_for_marker_free_pars"
+          ]
+        },
+        "E11": {
+          "kind": "rocq",
+          "name": "decode_commutes_with_subst",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_decode_commutes_with_substitution"
+          ]
+        },
+        "E12": {
+          "kind": "rocq",
+          "name": "plan_nil_annotation_not_injective",
+          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "tests": [
+            "reified_plan_nil_encoding_counterexample"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "reified_encoding_roundtrip",
+          "covers": [
+            "E1"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "reified_encoding_injective",
+          "covers": [
+            "E2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "reified_decode_accepts_only_canonical_image",
+          "covers": [
+            "E3"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "reified_markers_disjoint",
+          "covers": [
+            "E4",
+            "E5"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "reified_params_canonical_key_order",
+          "covers": [
+            "E6"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "marker_tuple_recognized_only_in_specified_positions",
+          "covers": [
+            "E7"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "marker_forging_grants_no_capability",
+          "covers": [
+            "E8"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "marker_inert_elsewhere",
+          "covers": [
+            "E9"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "term_schedule_unchanged_for_marker_free_pars",
+          "covers": [
+            "E10"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "reified_decode_commutes_with_substitution",
+          "covers": [
+            "E11"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "reified_plan_nil_encoding_counterexample",
+          "covers": [
+            "E12"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# Math fixture
+
+The rate \alpha is fixed.

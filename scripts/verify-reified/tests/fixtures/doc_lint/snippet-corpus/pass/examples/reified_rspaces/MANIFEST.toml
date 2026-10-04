@@ -1,0 +1,4 @@
+# doc_lint fixture manifest: one example with an inline source row.
+[[example]]
+name = "inline-send"
+source = "new y in { y!(2) }"

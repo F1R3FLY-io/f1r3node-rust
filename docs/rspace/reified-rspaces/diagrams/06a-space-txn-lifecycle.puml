@@ -1,0 +1,78 @@
+' 06a Lifecycle of a space transaction, as a state machine.
+'
+' Source of Figure S5.2a in ../design.md (section S5.2). The diagram plan
+' numbers this figure 06a, a sub-figure of figure 06.
+' The figure restates SpaceStoreHandle::begin, TxnRegistration, HostTxn and
+' its commit, and the begin of each host, in rspace++/src/rspace/
+' space_store_handle.rs, rspace/space_play.rs and
+' replay_rspace/space_replay.rs. It adds no new fact.
+'
+' Reading order:
+'   1. begin registers the task, checks the lock keys, and takes the stripes.
+'   2. In the Open state the agent reads and stages. A rejected staging keeps
+'      the transaction open. A failed view change closes it.
+'   3. A drop ends the transaction with no effect. A commit ends it with the
+'      receipts, or with an error that has no effect or leaves a prefix.
+'   4. Every state after the end releases the locks and the registration,
+'      and a later call fails with Finished.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 06a-space-txn-lifecycle.puml   Check: ./render.sh --check
+
+@startuml 06a-space-txn-lifecycle
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam StateBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Lifecycle of a space transaction (figure 06a)
+
+state "Registering" as REG $rrs_substrate : SpaceStoreHandle::begin(lock keys)\nregister the current task or thread\nin the handle (FR-9)
+state "Locking" as LOCK $rrs_host : SpaceTxnHost::begin\nconsume_lock: the phase-A stripes,\nthen the phase-B stripes, ascending
+state "Open" as OPEN $rrs_substrate {
+  state "Reading" as READ $rrs_substrate : data, continuations, joins,\nproduce_counters, recorded_comms, admits\nfirst touch reads through the history trie
+  state "Staging" as STAGE $rrs_substrate : produce or consume with an outcome\nvalidate, compute the COMM\n<latex>\mathit{times}(p) = \kappa_v(p) + [\neg \mathit{persist} \wedge p = \mathit{src}]</latex>\nverify in replay, apply to the view
+  [*] --> READ
+  READ --> STAGE : stage
+  STAGE --> READ : staged, or rejected\nwith no effect
+  READ --> READ : read
+}
+state "Committing" as COMMITTING $rrs_substrate : operation i runs under\n<latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>\nread-only checks, host calls,\nevent correlation
+state "Committed" as DONE $rrs_storage : the receipts are returned\nthe effects are in the hot store
+state "Failed" as FAILED $rrs_reject : no effect: StoreSwapped, ParentOrderReused\nprefix: an error of operation i\nleaves operations 0 to i - 1 applied
+state "Closed" as CLOSED $rrs_reject : a view change failed after validation\n(Inconsistent, a defect)\nno effect on the host
+state "Dropped" as DROPPED $rrs_substrate : the agent dropped the transaction\nno event, no observer call, no write
+
+[*] --> REG : begin(lock keys)
+REG --> [*] : **NestedTransaction**\nthe task already holds a transaction\nor a sweep of this handle, no lock taken
+state KEYS <<choice>>
+REG --> KEYS : registered
+KEYS --> [*] : **InvalidOperation**\nempty lock keys: no lock taken,\nregistration dropped
+KEYS --> LOCK : lock keys present
+LOCK --> OPEN : stripes held, hot store,\ninstalled set and lock coverage captured
+OPEN --> CLOSED : view change fails
+OPEN --> DROPPED : drop
+OPEN --> COMMITTING : commit()
+COMMITTING --> DONE : every operation applied
+COMMITTING --> FAILED : an error
+DONE --> [*] : release the locks,\nthen the registration
+FAILED --> [*] : release the locks,\nthen the registration
+CLOSED --> [*] : locks and registration\nreleased at once
+DROPPED --> [*] : locks and registration\nreleased by drop
+
+note right of DONE
+After the end, every call on the
+transaction fails with **Finished**.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | state of the substrate |
+|<$rrs_host>       | host lock acquisition (consume_lock) |
+|<$rrs_storage>    | the effects reached the hot store |
+|<$rrs_reject>     | failed or closed |
+endlegend
+@enduml

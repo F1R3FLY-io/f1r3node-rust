@@ -1,0 +1,3 @@
+@startuml 01-sample
+rectangle "Sample" as S #BBDEFB
+@enduml

@@ -40,6 +40,7 @@ mod ops_consume;
 mod ops_install;
 mod ops_produce;
 mod setup;
+mod space_play;
 #[cfg(test)]
 mod tests;
 mod trace_log;

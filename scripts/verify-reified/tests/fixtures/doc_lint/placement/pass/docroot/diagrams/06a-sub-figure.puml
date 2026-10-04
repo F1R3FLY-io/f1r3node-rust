@@ -1,0 +1,4 @@
+@startuml 06a-sub-figure
+!include ../../palette.iuml
+rectangle "Sub-figure" as S $ca_supply
+@enduml

@@ -47,6 +47,7 @@ mod native_directive;
 mod native_candidate;
 pub mod native_epoch;
 pub mod native_session;
+mod space_replay;
 
 #[repr(C)]
 #[derive(Clone)]

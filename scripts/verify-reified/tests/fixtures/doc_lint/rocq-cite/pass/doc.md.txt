@@ -1,0 +1,5 @@
+# Rocq citation fixture
+
+The lemma `sample_value_is_three` (`Sample.v:4`) fixes the value.
+The definition `sample_value` in `Sample.v` gives the value.
+The module `Sample.v` holds both declarations.

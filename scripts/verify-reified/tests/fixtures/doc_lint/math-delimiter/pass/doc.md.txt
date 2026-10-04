@@ -1,0 +1,9 @@
+# Math fixture
+
+A space id has $`\vert \mathit{sid} \vert = 32`$ bytes.
+
+```math
+\mathit{sid} = \mathrm{next}(r)
+```
+
+A literal dollar sign is written as inline code: `$`.

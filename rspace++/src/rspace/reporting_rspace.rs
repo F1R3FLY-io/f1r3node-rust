@@ -115,7 +115,7 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
-    replay_rspace: ReplayRSpace<C, P, A, K>,
+    pub(crate) replay_rspace: ReplayRSpace<C, P, A, K>,
     // Global lock order (hold this order in every path, and never acquire
     // an earlier lock while holding a later one): soft_report -> report ->
     // current_phase. `collect_report_locked` holds the `soft_report`

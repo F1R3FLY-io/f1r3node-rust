@@ -1,0 +1,3 @@
+# Glossary fixture
+
+A [space](glossary.md#no-such-term) holds data and continuations.

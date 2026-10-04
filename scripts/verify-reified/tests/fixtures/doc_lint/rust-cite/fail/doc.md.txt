@@ -1,0 +1,5 @@
+# Rust citation fixture
+
+The function `second` (`src/rust_cite_fixture.rs:2-5`) starts on a blank line.
+The function `third` (`src/absent_fixture.rs:1`) has no source.
+The list (`src/rust_cite_fixture.rs:1`, `9`) leaves the file.

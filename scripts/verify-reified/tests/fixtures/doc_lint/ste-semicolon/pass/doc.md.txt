@@ -1,0 +1,4 @@
+# Semicolon fixture
+
+The handle forwards each call. The code `a; b` holds a semicolon.
+The user wrote "one; two" in the request.

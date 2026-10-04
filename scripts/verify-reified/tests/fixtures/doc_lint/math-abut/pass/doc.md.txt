@@ -1,0 +1,3 @@
+# Math fixture
+
+The value $`x`$ is positive.

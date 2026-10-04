@@ -1,0 +1,15 @@
+# Snippet fixture
+
+The first block is a row of the syntax corpus.
+
+```rholang
+new x in { x!(1) }
+```
+
+The second block is a row of the example manifest.
+
+```rholang
+new y in {
+  y!(2)
+}
+```

@@ -1,0 +1,44 @@
+# Reified RSpaces — Formal Verification (P1: the storage substrate; P2: the
+# wire encoding)
+#
+# Mechanizes the P1 headlines of the Reified RSpaces campaign for the
+# SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
+# design is p1-design-report §1-§3 and §5(a) (plan decision 19, D1-D7).
+#
+#   EventCorrelation  H1-H12: commit parity with the host (observer calls,
+#                     events, status and store), counter timing, replay
+#                     pairing, view coherence, joins lockstep, sub-orders,
+#                     abort, event coverage, peek retention, reporting.
+#                     H17, H19-H21 (P1 fix rules): canonical groups fail
+#                     closed, replay directives fail closed, one
+#                     transaction per parent order, store identity. Round 2:
+#                     a canonical group is non-decreasing and can repeat a
+#                     channel (FR-1'), and the parent tracker resets per
+#                     evaluation scope, on a store swap and on a session
+#                     change (FR-5'). Round 3: a produce-side peek fire
+#                     never stores its incoming datum, and the agent
+#                     re-offers it as the next operation (FR-10, H11).
+#   VolatileSweep     H13-H16: exact sweep, absent delete, root neutrality,
+#                     leaf record count. H18, H22 (P1 fix rules): canonical
+#                     reads are root neutral, the checkpoint rejects two
+#                     actions on one key. Round 2: the sorted list is the
+#                     unique canonical member of its permutation class
+#                     (FR-1'), and the sweep through the handle fails closed
+#                     under an open transaction of the same task (FR-9').
+#   Encoding          P2: the 12 headlines of the marker-tuple encoding of
+#                     the Reified RSpaces syntax (p2-design-report §5).
+#
+# Each module is standalone and imports only the Rocq standard library. A
+# verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
+# flags. Zero Admitted. No Axiom, Parameter, Conjecture or Abort. Section
+# variables are parameters of the closed theorems.
+#
+# Build: make (the Makefile regenerates Makefile.conf from this file).
+# Gate: scripts/check-reified-rspaces-proofs.sh (builds in a scratch copy and
+# runs the negative controls of scripts/verify-reified/rocq-negative-controls.py).
+
+-Q theories ReifiedRSpaces
+
+theories/EventCorrelation.v
+theories/VolatileSweep.v
+theories/Encoding.v

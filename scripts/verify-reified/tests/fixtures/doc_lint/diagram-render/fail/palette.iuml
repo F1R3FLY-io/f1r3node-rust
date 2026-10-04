@@ -1,0 +1,3 @@
+' Fixture palette for the doc_lint diagram tests.
+!$ca_supply = "#BBDEFB"
+!$ca_pool = "#C8E6C9"

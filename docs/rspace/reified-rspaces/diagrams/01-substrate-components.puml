@@ -1,0 +1,198 @@
+' 01 Substrate components: the storage substrate of phase P1 and the host
+' that it calls.
+'
+' Source of Figure S1 in ../design.md (section S1). The figure restates the
+' P1 code in rspace++/src/rspace/space_store_handle.rs, rspace/space_play.rs
+' and replay_rspace/space_replay.rs. It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The callers outside P1: the space agent (P4) and the reducer hooks
+'      (P4 and P7).
+'   2. The substrate of P1. The handle opens a HostTxn through the
+'      SpaceTxnHost trait. The HostTxn holds the staging core, and its commit
+'      runs each operation through the backend of its mode.
+'   3. The mode backends, the child modules of P1.
+'   4. The baseline host, which the substrate calls and never changes, with
+'      the hot store and the history trie under it.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 01-substrate-components.puml   Check: ./render.sh --check
+
+@startuml 01-substrate-components
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.3
+skinparam PackageBorderColor $rrs_relation
+skinparam ComponentBorderColor $rrs_relation
+skinparam DatabaseBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 40
+skinparam ranksep 55
+title Reified RSpaces substrate (P1): its components and the host that it calls
+
+package "Callers outside P1" as CALLERS $rrs_agent {
+  component AGENT $rrs_agent [
+  **Space agent** (P4)
+  reads the staged view, decides each outcome,
+  stages whole operations, and commits
+  ]
+  component REDUCER $rrs_host [
+  **Reducer root evaluation** (hooks of P4 and P7)
+  ReducerCore::inj_with_observation and inj
+  at the entry: begin_evaluation_scope()
+  at the end: sweep_volatile(volatile channels)
+  ]
+}
+
+package "Substrate of P1: rspace++/src/rspace/space_store_handle.rs" as SUB $rrs_substrate {
+  component HANDLE $rrs_substrate [
+  **SpaceStoreHandle** (one for each host)
+  shared HandleState: the open contexts of
+  transactions and sweeps (FR-9, FR-9'), and the
+  committed parent orders of the scope (FR-5')
+  ]
+  component HOSTTRAIT $rrs_substrate [
+  **trait SpaceTxnHost<C, P, A, K>**
+  mode, matcher, begin,
+  root_leaf_record_count, sweep_volatile
+  ]
+  component TXN $rrs_substrate [
+  **HostTxn**: the SpaceTxn of every mode
+  reads: data, continuations, joins,
+  produce_counters, recorded_comms, admits
+  staging: produce, consume
+  commit: the single mutation point
+  ]
+  component CORE $rrs_substrate [
+  **TxnCore**
+  staged view TxnView, keyed by the store identity
+  <latex>\mathrm{key}(c) = \mathrm{Blake2b256}(\mathrm{bincode}(c))</latex> (FR-2)
+  counter view <latex>\kappa_v(p) = \kappa_{\mathrm{host}}(p) + \delta(p)</latex>
+  LockCoverage (FR-4) and the installed guard
+  paired COMM events (replay and reporting)
+  staged operations with their staged effects
+  ]
+  component COMMIT $rrs_substrate [
+  **commit_staged**
+  operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>
+  read-only checks, host calls,
+  and the event correlation (FR-7')
+  ]
+  component SWEEP $rrs_substrate [
+  **sweep_volatile_channels**
+  read-only validation, then the removal
+  of continuations, joins, and data,
+  with no event and no observer call
+  ]
+}
+
+package "Mode backends of P1 (child modules of the hosts)" as BACKENDS $rrs_substrate {
+  component PLAY $rrs_substrate [
+  **PlayBackend**: rspace/space_play.rs
+  the play call order of ops_produce.rs
+  and ops_consume.rs
+  ]
+  component REPLAY $rrs_substrate [
+  **ReplayBackend**: replay_rspace/space_replay.rs
+  the replay call order of replay_rspace.rs,
+  and a directive fails closed
+  ]
+}
+
+package "Host at the baseline (unchanged code)" as HOST $rrs_host {
+  component RSPACE $rrs_host [
+  **RSpace** (play)
+  log_*, produce_counters, observe_*,
+  start_accounting_operation, wrap_result
+  ]
+  component REPLAYSPACE $rrs_host [
+  **ReplayRSpace** (replay)
+  counter increment and rollback,
+  store_*, remove_bindings_for, wrap_result
+  ]
+  component REPORTING $rrs_host [
+  **ReportingRspace** (reporting)
+  an inner replay space
+  with the ReportingLogger
+  ]
+  component LOCKS $rrs_host [
+  **Lock stripes**
+  consume_lock: phase A, then phase B,
+  each in ascending index order
+  ]
+  component OBSERVER $rrs_host [
+  **Accounting observer**
+  start, produce or consume,
+  COMM, and finish
+  ]
+  component EVENTS $rrs_host [
+  **Event log** (play)
+  grouped and sorted
+  by operation order
+  ]
+  component REPLAYDATA $rrs_host [
+  **Replay table** (replay)
+  the bindings that rig
+  builds from the play log
+  ]
+}
+
+database "Hot store\n(hot_store.rs)" as HOT $rrs_storage
+database "History trie" as HIST $rrs_storage
+
+note right of HIST
+**Unchanged at the baseline**
+(footprint policy p1)
+ISpace, ispace_impl.rs, hot_store.rs,
+trace, serializers, history, merger,
+casper/src
+end note
+
+' Vertical order of the layers.
+RSPACE -[hidden]down-> LOCKS
+EVENTS -[hidden]down-> HOT
+
+AGENT -[$rrs_flow]-> HANDLE : begin(lock keys)
+REDUCER -[$rrs_flow]-> HANDLE : begin_evaluation_scope()\nsweep_volatile(channels)
+HANDLE -[$rrs_flow]right-> HOSTTRAIT : begin(lock keys, registration)\nsweep_volatile(channels, registration)
+HOSTTRAIT -[$rrs_flow]-> TXN : opens
+HOSTTRAIT -[$rrs_flow]-> SWEEP : sweep
+AGENT -[$rrs_flow]-> TXN : reads, stages, commits
+TXN *-[$rrs_relation]- CORE
+TXN -[$rrs_flow]-> COMMIT : commit()
+COMMIT -[$rrs_flow]-> PLAY : apply_op (play)
+COMMIT -[$rrs_flow]-> REPLAY : apply_op (replay, reporting)
+PLAY -[$rrs_effect]-> RSPACE : host calls
+REPLAY -[$rrs_effect]-> REPLAYSPACE : host calls
+HOSTTRAIT <|.[$rrs_relation]. RSPACE : implements
+HOSTTRAIT <|.[$rrs_relation]. REPLAYSPACE : implements
+HOSTTRAIT <|.[$rrs_relation]. REPORTING : implements
+REPORTING -[$rrs_relation]left-> REPLAYSPACE : delegates
+RSPACE -[$rrs_relation]-> LOCKS : begin takes
+REPLAYSPACE -[$rrs_relation]-> LOCKS : begin takes
+RSPACE -[$rrs_relation]-> OBSERVER
+REPLAYSPACE -[$rrs_relation]-> OBSERVER
+RSPACE -[$rrs_effect]-> EVENTS : logs
+REPLAYSPACE -[$rrs_relation]-> REPLAYDATA : verify reads,\ncommit removes bindings
+RSPACE -[$rrs_effect]-> HOT
+REPLAYSPACE -[$rrs_effect]-> HOT
+CORE -[$rrs_relation]-> HOT : loads lists\n(read-through)
+SWEEP -[$rrs_effect]-> HOT : removes the volatile state
+HOT -[$rrs_relation]-> HIST : reads through,\nthe checkpoint writes
+
+legend bottom
+**Concept colors**
+|<$rrs_substrate>  | substrate of P1 (new code) |
+|<$rrs_host>       | host at the baseline (unchanged code) |
+|<$rrs_agent>      | space agent (P4), and the group of callers outside P1 |
+|<$rrs_storage>    | stored state: hot store and history trie |
+**Arrows**
+|<$rrs_flow>       | call |
+|<$rrs_effect>     | effect on the host state |
+|<$rrs_relation>   | relation |
+endlegend
+@enduml

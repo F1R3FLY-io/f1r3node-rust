@@ -1,0 +1,8 @@
+# Mermaid fixture
+
+PlantUML can express this flowchart.
+
+```mermaid
+flowchart LR
+  A --> B
+```

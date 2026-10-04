@@ -1,0 +1,5 @@
+# Diagram fixture
+
+![Sample diagram: one rectangle.](diagrams/01-sample.svg)
+
+![Second diagram: one rectangle.](diagrams/02-uncolored.svg)

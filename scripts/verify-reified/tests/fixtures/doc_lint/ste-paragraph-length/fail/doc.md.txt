@@ -1,0 +1,5 @@
+# Paragraph fixture
+
+The factory makes a space. The space has a handle. The handle forwards calls.
+The space stores data. The data has an envelope. The envelope holds an order.
+The order comes from a counter.

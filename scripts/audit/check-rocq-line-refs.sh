@@ -35,8 +35,9 @@ declare -a THEORY_DIRS=(
     # this map, so every `CostAccountedSyntax.v:NNN`-style citation in the
     # cost-accounting docs was reported "not found" regardless of accuracy —
     # the exact scope blind spot the note above warns about, one tier deeper.
+    # 2026-10-04: the validator tree no longer exists. Its entry now names the Reified RSpaces theories.
     "${REPO}/formal/rocq/cost_accounted_rho/theories"
-    "${REPO}/formal/rocq/validator/theories"
+    "${REPO}/formal/rocq/reified_rspaces/theories"
 )
 DOCS_DIR="${REPO}/docs/casper/theory"
 QUIET=0

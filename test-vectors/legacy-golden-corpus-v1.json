@@ -1,0 +1,86 @@
+{
+  "name": "legacy_golden_corpus_v1",
+  "sources": {
+    "legacy": {
+      "repository": "../f1r3node",
+      "branch_at_capture": "rust/dev",
+      "revision": "95be4feb6b3594333b1675c6231d7b2bcffd51a6"
+    },
+    "legacy_reified": {
+      "repository": "../f1r3node",
+      "branch_at_capture": "feature/reified-rspaces-11-formal-verification",
+      "revision": "ff479042964a123bf6a084439b3c026881ad19a5"
+    },
+    "current": {
+      "repository": ".",
+      "revision": "e748426830a2da3ce874d94beda986499956f52a"
+    }
+  },
+  "capture_commands": [
+    "python3 scripts/capture-legacy-golden-corpus.py",
+    "python3 scripts/run-legacy-pre-feature-capture.py",
+    "python3 scripts/run-legacy-reified-capture.py",
+    "python3 scripts/run-cost-base-capture.py",
+    "CARGO_TARGET_DIR=$PWD/target/verification/reified-rspaces/legacy-pre-feature-build TMPDIR=$PWD/target/verification/reified-rspaces/legacy-pre-feature-build/tmp CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo +nightly-2026-02-09 test --offline --locked --manifest-path target/verification/reified-rspaces/legacy-pre-feature-checkout/Cargo.toml -p casper --test mod runtime_spec",
+    "cargo +nightly-2025-08-04 test -p casper --offline --locked --test mod runtime_spec -- --nocapture",
+    "cargo test --workspace -- legacy_golden_corpus"
+  ],
+  "par_wire": {
+    "nil": "",
+    "gint_one": "2a021002",
+    "gint_minus_one": "2a021001",
+    "persistent_send_nil": "0a060a0012001801"
+  },
+  "legacy_reified_par_wire": {
+    "nil": "",
+    "gint_one": "2a021002",
+    "use_block_empty": "6200",
+    "e_free_empty": "2a03920200",
+    "e_function_empty": "2a039a0200"
+  },
+  "legacy_reified_record_wire": {
+    "receive_bind_modifier_empty": "2a00",
+    "send_hyperparam_empty": "4200"
+  },
+  "legacy_reified_field_collisions": {
+    "Par_12": ["UseBlock use_blocks", "If conditionals"],
+    "ReceiveBind_5": ["EFunction pattern_modifiers", "CostSignature cost_signature"],
+    "Expr_34": ["EFree e_free_body", "fixed64 g_double"],
+    "Expr_35": ["EFunction e_function_body", "bytes g_big_int"]
+  },
+  "channel_hashes": {
+    "alpha": "e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb62",
+    "beta": "c455a03f3270c3057f2ad2ab65cced8be41b4a48753940933e61cfecf34c47e6",
+    "alpha_beta_multichannel": "71e9c40e731945ccf0ea8c2c8e39c6f7db2314e88285e54addb8833e94a41621"
+  },
+  "state_roots": {
+    "legacy_empty_system": "852cc7a4a4e14a05574b9cd0779dbfb1f85489b606e75677f3ce3239dfec4e36",
+    "legacy_reified_empty_system": "e5ed6104e936efdc33cbca073544a163b052e9100bcae7135abd7d42a35293d4",
+    "current_empty_system": "b38db9a0203b6b9cf5987024f325b83da33be5c1b820b3f86fd979578f2985d5",
+    "legacy_pre_feature_nonempty_rspace": "9bbc6a4c9e5dbfc9ce6ed0d52e8c3e9884c5915248409e67ca5dfc1fbc886882",
+    "legacy_reified_nonempty_rspace": "87e5dfe3efec4c2697cc75d78ae7839b029668c839230d59970f7613d24959b6",
+    "legacy_reified_fixed_contract": "9b587b8158fe616e8f9eb9e84a187d74ac1a90fbafea3c68ae37064cbbd93026",
+    "legacy_pre_feature_fixed_contract": "5a17a1ed5ddcec2394d9d0b47d514eafeaec6fd78c3e38b70fcdfb43c4d96bfa",
+    "current_fixed_contract": "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
+    "current_nonempty_rspace": "9bbc6a4c9e5dbfc9ce6ed0d52e8c3e9884c5915248409e67ca5dfc1fbc886882",
+    "shared_empty_radix": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
+  },
+  "event_log": {
+    "produce_alpha_datum_linear": "3e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c8",
+    "current_produce_alpha_datum_linear_full_io_event_bytes": "000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6220000000000000003e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c80001000000000000000000",
+    "legacy_reified_produce_alpha_datum_linear_full_io_event_bytes": "000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6220000000000000003e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c800010000000000000000",
+    "legacy_pre_feature_produce_alpha_datum_linear_event_proto_bytes": "0a460a20e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6212203e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c82801",
+    "matched_produce_consume_mirror_log_bincode": "03000000000000000000000001000000000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb622000000000000000d354b563edf5ffe0c2f138b4ba63df51f967ab9af37d32f81dc3f572574b18330001000000000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6220000000000000003e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c800010000000000000000000000000000000001000000000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6220000000000000003e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c80001000000000000000001000000010000000100000001000000000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb622000000000000000d354b563edf5ffe0c2f138b4ba63df51f967ab9af37d32f81dc3f572574b18330001000000000000002000000000000000e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6220000000000000003e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c800010000000000000000",
+"consume_alpha_beta_x_body_linear": "41f7448f6994193039ab4e33436e1adb50e8d0cc9428ea7df3d05ab751abb4cc",
+    "legacy_reified_matched_event_proto_bytes": ["1a90010a440a20e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb621220d354b563edf5ffe0c2f138b4ba63df51f967ab9af37d32f81dc3f572574b183312480a20e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6212203e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c820012801","12440a20e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb621220d354b563edf5ffe0c2f138b4ba63df51f967ab9af37d32f81dc3f572574b1833","0a460a20e3ae1fb823cdf15dc44657407e14195eae0dfcba13a0a7078d0b9b1da677eb6212203e22deba2d687c435a37082b2bfbbcf592126f16454be9bffe3645bdf78126c82801"],
+    "consume_alpha_wildcard_body_linear": "be61c5cec0b410b8b24e1d84baef2560e4113f2247437567e58eb058f5b35344",
+    "stored_produce_then_matching_consume_kinds": ["produce", "consume", "comm"]
+  },
+  "sorting_ties": {
+    "equal_score_send_locally_free_order": ["01", "02"],
+    "equal_score_send_locally_free_reverse_order": ["02", "01"]
+  },
+  "missing_coverage": [
+    "Final Reified worktree system roots after all implementation gates"
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "digests": "test-vectors/head-file-digests-6f7a80da3.json",
+  "base_revision": "6f7a80da335569c0c4661b7e64c0103465ea2ae9",
+  "pinned_roots": [
+    "casper/src",
+    "models/build.rs",
+    "models/src",
+    "node/src",
+    "rho-pure-eval/src",
+    "rholang/src",
+    "rspace++/src",
+    "scripts/audit/check-rocq-line-refs.sh"
+  ],
+  "policies": {
+    "campaign": {
+      "description": "Files that no phase of the campaign may change (consensus checklist items 4, 5, 8, 9, 16, 17 and 21, and decision 18).",
+      "unchanged": [
+        "casper/src/**",
+        "models/build.rs",
+        "models/src/main/protobuf/**",
+        "models/src/rust/rholang/sorter/**",
+        "node/src/**",
+        "rho-pure-eval/src/**",
+        "rholang/src/rust/interpreter/accounting/**",
+        "rholang/src/rust/interpreter/contract_call.rs",
+        "rholang/src/rust/interpreter/dispatch.rs",
+        "rholang/src/rust/interpreter/errors.rs",
+        "rholang/src/rust/interpreter/pretty_printer.rs",
+        "rholang/src/rust/interpreter/substitute.rs",
+        "rholang/src/rust/interpreter/matcher/**",
+        "rspace++/src/rspace/rspace_interface.rs",
+        "rspace++/src/rspace/rspace/ispace_impl.rs",
+        "rspace++/src/rspace/internal.rs",
+        "rspace++/src/rspace/hot_store.rs",
+        "rspace++/src/rspace/hot_store/**",
+        "rspace++/src/rspace/trace/**",
+        "rspace++/src/rspace/serializers/**",
+        "rspace++/src/rspace/merger/**",
+        "rspace++/src/rspace/hashing/**",
+        "rspace++/src/rspace/history/**"
+      ],
+      "edits": [],
+      "no_new_files": [
+        "casper/src/**",
+        "models/src/main/protobuf/**",
+        "models/src/rust/rholang/sorter/**",
+        "node/src/**",
+        "rho-pure-eval/src/**",
+        "rholang/src/rust/interpreter/accounting/**",
+        "rholang/src/rust/interpreter/matcher/**",
+        "rspace++/src/rspace/hot_store/**",
+        "rspace++/src/rspace/trace/**",
+        "rspace++/src/rspace/serializers/**",
+        "rspace++/src/rspace/merger/**",
+        "rspace++/src/rspace/hashing/**",
+        "rspace++/src/rspace/history/**"
+      ]
+    },
+    "p1": {
+      "description": "P1 storage substrate: the four one-line rspace++ edits and the decision-14 audit edit. Every other pinned file is unchanged. New files may appear only under rspace++/src (the substrate modules).",
+      "extends": "campaign",
+      "unchanged": [
+        "models/src/**",
+        "rholang/src/**",
+        "rspace++/src/**"
+      ],
+      "edits": [
+        {
+          "path": "rspace++/src/rspace/mod.rs",
+          "added_lines": [
+            "pub mod space_store_handle;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/rspace.rs",
+          "added_lines": [
+            "mod space_play;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/replay_rspace.rs",
+          "added_lines": [
+            "mod space_replay;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/reporting_rspace.rs",
+          "replaced_lines": [
+            [
+              "    replay_rspace: ReplayRSpace<C, P, A, K>,",
+              "    pub(crate) replay_rspace: ReplayRSpace<C, P, A, K>,"
+            ]
+          ]
+        },
+        {
+          "path": "scripts/audit/check-rocq-line-refs.sh",
+          "replaced_lines": [
+            [
+              "    \"${REPO}/formal/rocq/validator/theories\"",
+              "    \"${REPO}/formal/rocq/reified_rspaces/theories\""
+            ]
+          ],
+          "added_lines": [
+            "    # 2026-10-04: the validator tree no longer exists. Its entry now names the Reified RSpaces theories."
+          ]
+        }
+      ],
+      "no_new_files": [
+        "models/src/**",
+        "rholang/src/**"
+      ]
+    }
+  }
+}

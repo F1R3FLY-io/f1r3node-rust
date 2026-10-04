@@ -1,0 +1,4 @@
+@startuml 02-unused
+!include ../palette.iuml
+rectangle "Sample" as S $ca_supply
+@enduml
