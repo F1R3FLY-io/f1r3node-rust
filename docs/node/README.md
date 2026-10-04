@@ -142,7 +142,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 ```
 
 - `lastFinalizedBlockNumber` — block number of the LFB, or -1 if casper not yet initialized
-- `isValidator` — true if the node has a propose function (can create blocks)
+- `isValidator` — true if the node has a configured validator key; this does not confirm current bond status
 - `isReadOnly` — true if the node is running in read-only mode
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
