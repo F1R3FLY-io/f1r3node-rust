@@ -151,7 +151,7 @@ tasks:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
       - "The maintainer chooses the fix before implementation."
       - "The fix passes the replay-throughput profile and a soak run, and the maintainer accepts CLAIM-REPLAY-THROUGHPUT-001."
-      - "The branch PR targets dev with a diff that contains only the claim, the profile, the fix, and the cited evidence."
+      - "A new branch off dev carries the claim, the profile, the fix, and the cited evidence. PR #580 merges first with TASK-021-6 and the EPIC-021 plan only (decision of 2026-10-04)."
   - id: TASK-021-6
     title: "Stop the soak failure-evidence copy from duplicating earlier harness sessions"
     status: done
