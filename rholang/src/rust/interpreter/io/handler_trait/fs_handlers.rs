@@ -163,9 +163,12 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 /// finished), count reaches 27 — fs_remove_dir trait-exempt
 /// (see `handler_trait::fs_handler` module docstring).
 ///
-/// Current: 0 handlers migrated (this slice declares the empty
-/// registry infrastructure only).
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 0;
+/// Current: 1 handler migrated.
+///
+/// Wave 4 slice progression:
+///   - 4.10: 0 (empty registry infrastructure).
+///   - 4.12: +1 (`fs_quarantine`).  Count = 1.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 1;
 
 #[cfg(test)]
 mod tests {
@@ -202,23 +205,46 @@ mod tests {
         );
     }
 
-    /// At Wave 4 slice 4.10, zero handlers are migrated.  Pin the
-    /// starting state explicitly — the first per-family handler
-    /// slice (4.12+) will bump this and the pin above together.
+    /// Progression pin — the count moves monotonically as per-
+    /// family handler slices (4.12+) land.  Each new handler
+    /// registration appends its canonical name to
+    /// `EXPECTED_REGISTERED_HANDLER_NAMES` below AND bumps
+    /// `EXPECTED_MIGRATED_HANDLER_COUNT` to the new length.  The
+    /// test verifies both are in sync + every expected name is
+    /// present in the slice.
+    ///
+    /// Slice-number-stable: future slices extend the array +
+    /// bump the constant without touching the test name.
     #[test]
-    fn no_handlers_migrated_at_slice_4_10() {
+    fn migrated_handlers_match_registration_set() {
+        /// Canonical names registered so far.  Append (don't
+        /// re-order — the array's ordering is informational, not
+        /// consensus-observable) at every per-family handler
+        /// slice.  See `handler_trait::fs_handler` docstring for
+        /// the migration-complete target (27 handlers, fs_remove_dir
+        /// trait-exempt).
+        const EXPECTED_REGISTERED_HANDLER_NAMES: &[&str] = &[
+            "fs_quarantine", // slice 4.12
+        ];
+
         assert_eq!(
-            EXPECTED_MIGRATED_HANDLER_COUNT, 0,
-            "Slice 4.10 declares the registry infrastructure only; \
-             per-family handler slices (4.12+) bump the count as \
-             they land."
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+            EXPECTED_REGISTERED_HANDLER_NAMES.len(),
+            "EXPECTED_MIGRATED_HANDLER_COUNT ({}) must equal the \
+             length of EXPECTED_REGISTERED_HANDLER_NAMES ({}).  A \
+             per-family slice bumped one but not the other.",
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+            EXPECTED_REGISTERED_HANDLER_NAMES.len(),
         );
-        assert!(
-            FS_HANDLERS.is_empty(),
-            "FS_HANDLERS must be empty at slice 4.10 — any entry \
-             here is from a yet-to-land registration that landed \
-             out of order."
-        );
+
+        for name in EXPECTED_REGISTERED_HANDLER_NAMES {
+            assert!(
+                FS_HANDLERS.iter().any(|h| h.name == *name),
+                "FS_HANDLERS entry for `{name}` missing.  A \
+                 regression that unregistered the entry would trip \
+                 here before any dispatcher invocation."
+            );
+        }
     }
 
     /// `FsHandlerEntry` carries primitive-only fields + fn-pointers

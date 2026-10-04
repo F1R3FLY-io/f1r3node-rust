@@ -216,6 +216,32 @@ impl RootIdentityRegistry {
         guard.entries.get(logical).cloned()
     }
 
+    /// Handler-pattern convenience: look up `logical` and return
+    /// `(on_disk_root, expected_root_id)` such that the handler
+    /// can pass `on_disk_root` to [`super::descend::safe_descend_verified`]
+    /// and `expected_root_id` as its identity argument.  Falls
+    /// through to `(logical.to_path_buf(), None)` for unregistered
+    /// logical roots — matches the pre-Shape-A behavior where the
+    /// handler treated the caller-supplied path as the on-disk
+    /// path directly and skipped the H-5 identity check.
+    ///
+    /// # Shape-A gating (yet to land)
+    ///
+    /// This ungated variant is safe for Oracular callers (where
+    /// the test harness or an off-ledger integration constructs a
+    /// cap over an arbitrary host path).  Consensus callers under
+    /// Shape A must reject unregistered logicals — a `None` return
+    /// then means the boot registration failed or the cap is
+    /// misconfigured.  A gated `resolve_or_identity_gated_for_consensus`
+    /// variant will land with the handler slice that first needs
+    /// Consensus-cap gating (observation / mutation families).
+    pub fn resolve_or_identity(&self, logical: &Path) -> (PathBuf, Option<(u64, u64)>) {
+        match self.get(logical) {
+            Some(r) => (r.path().to_path_buf(), Some(r.identity())),
+            None => (logical.to_path_buf(), None),
+        }
+    }
+
     /// Count of registered roots.  Diagnostics only.
     pub fn len(&self) -> usize {
         let backing = self.current_backing();
