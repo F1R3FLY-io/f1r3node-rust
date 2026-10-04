@@ -16,3 +16,4 @@ pub mod web;
 
 // Re-export for convenience
 pub use encode::JsonEncoder;
+pub mod consensus;

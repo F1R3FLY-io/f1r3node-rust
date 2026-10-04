@@ -69,6 +69,7 @@ fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
 pub struct DeployGrpcServiceV1Impl {
+    consensus: Option<consensus_runtime::ConsensusHandle>,
     api_max_blocks_limit: i32,
     trigger_propose_f: Option<Arc<ProposeFunction>>,
     dev_mode: bool,
@@ -91,6 +92,11 @@ pub struct DeployGrpcServiceV1Impl {
 }
 
 impl DeployGrpcServiceV1Impl {
+    pub fn with_consensus(mut self, handle: consensus_runtime::ConsensusHandle) -> Self {
+        self.consensus = Some(handle);
+        self
+    }
+
     pub fn new(
         api_max_blocks_limit: i32,
         trigger_propose_f: Option<Arc<ProposeFunction>>,
@@ -113,6 +119,7 @@ impl DeployGrpcServiceV1Impl {
         is_ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            consensus: None,
             api_max_blocks_limit,
             trigger_propose_f,
             dev_mode,
@@ -267,15 +274,19 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 }
             };
 
-        match BlockAPI::deploy(
-            &self.engine_cell,
-            signed_deploy,
-            &self.trigger_propose_f,
-            self.is_node_read_only,
-            &self.shard_id,
-        )
-        .await
-        {
+        let result = if let Some(handle) = &self.consensus {
+            crate::rust::consensus::casper::api_compat::submit(handle, signed_deploy).await
+        } else {
+            BlockAPI::deploy(
+                &self.engine_cell,
+                signed_deploy,
+                &self.trigger_propose_f,
+                self.is_node_read_only,
+                &self.shard_id,
+            )
+            .await
+        };
+        match result {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
                 let is_duplicate = e.chain().any(|cause| {
@@ -1063,7 +1074,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
         };
 
         let is_validator = self.trigger_propose_f.is_some();
-        let is_ready = self.is_ready.load(Ordering::Relaxed);
+        let is_ready = self.consensus.as_ref().map_or_else(
+            || self.is_ready.load(Ordering::Acquire),
+            |handle| handle.status().phase == consensus_api::Phase::Ready,
+        );
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {

@@ -107,9 +107,25 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     pub fn create(
         self,
     ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (result_rx, task) = self.supervised(shutdown_rx);
+        tokio::spawn(async move {
+            let _shutdown_tx = shutdown_tx;
+            task.await
+        });
+        Ok(result_rx)
+    }
+
+    pub fn supervised(
+        self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> (
+        mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>,
+        impl std::future::Future<Output = Result<(), CasperError>> + Send,
+    ) {
         let (result_tx, result_rx) = mpsc::channel(BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY);
 
-        tokio::spawn(async move {
+        let task = async move {
             let Self {
                 mut blocks_queue_rx,
                 block_queue_tx,
@@ -126,9 +142,27 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
             .set(MAX_PARALLEL_BLOCKS as f64);
+            let mut processing_tasks = tokio::task::JoinSet::new();
             let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_BLOCKS));
 
-            while let Some((casper, block)) = blocks_queue_rx.recv().await {
+            let mut stopping = false;
+            loop {
+                let next = tokio::select! {
+                biased;
+                _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; }, if !stopping => {
+                    stopping = true;
+                    blocks_queue_rx.close();
+                    blocks_queue_rx.recv().await
+                }
+                value = blocks_queue_rx.recv() => value,
+                Some(result) = processing_tasks.join_next(), if !processing_tasks.is_empty() => {
+                    result.map_err(|error| CasperError::Other(error.to_string()))?;
+                    continue;
+                }
+                };
+                let Some((casper, block)) = next else {
+                    break;
+                };
                 let block_processor = block_processor.clone();
                 let blocks_in_processing = blocks_in_processing.clone();
                 let block_queue_tx = block_queue_tx.clone();
@@ -137,8 +171,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
 
-                // Spawn task to process the block
-                tokio::spawn(async move {
+                while let Some(result) = processing_tasks.try_join_next() {
+                    result.map_err(|error| CasperError::Other(error.to_string()))?;
+                }
+                processing_tasks.spawn(async move {
                     let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     if !blocks_in_processing.contains(&block.block_hash) {
@@ -324,12 +360,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 });
             }
 
+            while let Some(result) = processing_tasks.join_next().await {
+                result.map_err(|error| CasperError::Other(error.to_string()))?;
+            }
             tracing::info!("Block processing queue closed, stopping processor");
 
             Result::<(), CasperError>::Ok(())
-        });
-
-        Ok(result_rx)
+        };
+        (result_rx, task)
     }
 }
 

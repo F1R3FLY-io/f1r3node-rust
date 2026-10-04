@@ -22,18 +22,25 @@ pub trait AdminWebApi {
 
 /// Admin Web API implementation
 pub struct AdminWebApiImpl {
+    consensus: Option<consensus_runtime::ConsensusHandle>,
     trigger_propose_f_opt: Option<Arc<ProposeFunction>>,
     proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>>,
     engine_cell: Arc<EngineCell>,
 }
 
 impl AdminWebApiImpl {
+    pub fn with_consensus(mut self, handle: consensus_runtime::ConsensusHandle) -> Self {
+        self.consensus = Some(handle);
+        self
+    }
+
     pub fn new(
         trigger_propose_f_opt: Option<Arc<ProposeFunction>>,
         proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>>,
         engine_cell: Arc<EngineCell>,
     ) -> Self {
         Self {
+            consensus: None,
             trigger_propose_f_opt,
             proposer_state_ref_opt,
             engine_cell,
@@ -44,6 +51,9 @@ impl AdminWebApiImpl {
 #[async_trait::async_trait]
 impl AdminWebApi for AdminWebApiImpl {
     async fn propose(&self) -> Result<String> {
+        if let Some(handle) = &self.consensus {
+            return crate::rust::consensus::casper::api_compat::propose(handle, false).await;
+        }
         match &self.trigger_propose_f_opt {
             Some(trigger_propose_f) => {
                 BlockAPI::create_block(&self.engine_cell, trigger_propose_f, false).await

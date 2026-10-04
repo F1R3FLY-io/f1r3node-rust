@@ -19,18 +19,25 @@ use tokio::sync::RwLock;
 /// Propose gRPC Service V1 implementation
 #[derive(Clone)]
 pub struct ProposeGrpcServiceV1Impl {
+    consensus: Option<consensus_runtime::ConsensusHandle>,
     trigger_propose_f_opt: Option<Arc<ProposeFunction>>,
     proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>>,
     engine_cell: Arc<EngineCell>,
 }
 
 impl ProposeGrpcServiceV1Impl {
+    pub fn with_consensus(mut self, handle: consensus_runtime::ConsensusHandle) -> Self {
+        self.consensus = Some(handle);
+        self
+    }
+
     pub fn new(
         trigger_propose_f_opt: Option<Arc<ProposeFunction>>,
         proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>>,
         engine_cell: Arc<EngineCell>,
     ) -> Self {
         Self {
+            consensus: None,
             trigger_propose_f_opt,
             proposer_state_ref_opt,
             engine_cell,
@@ -83,6 +90,27 @@ impl ProposeService for ProposeGrpcServiceV1Impl {
         &self,
         request: tonic::Request<ProposeQuery>,
     ) -> Result<tonic::Response<ProposeResponse>, tonic::Status> {
+        if let Some(handle) = &self.consensus {
+            let result = handle.propose(request.into_inner().is_async).await;
+            return Ok(match result {
+                Ok(value) => Self::create_success_propose_response(value),
+                Err(consensus_api::ConsensusError::UnsupportedCapability(_)) => {
+                    Self::create_error_propose_response(Self::create_service_error(
+                        "Propose error: read-only node.".into(),
+                    ))
+                }
+                Err(consensus_api::ConsensusError::NotReady) => {
+                    Self::create_error_propose_response(Self::create_service_error(
+                        "Propose service method error: Failure: casper instance is not available."
+                            .into(),
+                    ))
+                }
+                Err(error) => Self::create_error_propose_response(Self::create_service_error(
+                    format!("Propose service method error: {}", error),
+                )),
+            }
+            .into());
+        }
         match &self.trigger_propose_f_opt {
             Some(trigger_propose_f) => {
                 match BlockAPI::create_block(

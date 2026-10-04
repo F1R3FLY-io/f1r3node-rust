@@ -2,11 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use casper::rust::blocks::proposer::proposer::ProposerResult;
-use casper::rust::errors::CasperError;
 use comm::rust::peer_node::NodeIdentifier;
 use tokio::task::JoinSet;
 use tracing::info;
@@ -14,19 +11,6 @@ use tracing::info;
 use crate::rust::configuration::NodeConf;
 use crate::rust::effects::node_discover;
 use crate::rust::node_environment;
-
-type ProposerQueueEntry = (
-    Arc<dyn casper::rust::casper::Casper + Send + Sync>,
-    bool,
-    tokio::sync::oneshot::Sender<ProposerResult>,
-    u8,
-);
-
-// Type aliases for repeatable async operations
-pub type CasperLoop =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync>;
-pub type EngineInit =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync>;
 
 /// Wrapper for task results that includes the task name for identification
 #[derive(Debug)]
@@ -156,28 +140,6 @@ impl NodeRuntime {
         // Wrap RPConf in RPConfCell for shared mutable access (allows dynamic IP updates)
         let rp_conf_cell = comm::rust::rp::rp_conf::RPConfCell::new(rp_conf.clone());
 
-        // Create requested blocks tracking
-        let requested_blocks = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-            models::rust::block_hash::BlockHash,
-            casper::rust::engine::block_retriever::RequestState,
-        >::new()));
-
-        info!("RP connections and configuration initialized");
-
-        // Create BlockRetriever
-        let block_retriever = {
-            use casper::rust::engine::block_retriever::BlockRetriever;
-
-            BlockRetriever::new(
-                requested_blocks.clone(),
-                Arc::new(transport.clone()),
-                rp_connections.clone(), // ConnectionsCell is Clone and already wraps Arc
-                rp_conf.clone(),        // BlockRetriever uses RPConf by value
-            )
-        };
-
-        info!("BlockRetriever initialized");
-
         // Create KademliaRPC
         let kademlia_rpc = {
             use comm::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC;
@@ -235,9 +197,6 @@ impl NodeRuntime {
 
         info!("Event bus (F1r3flyEvents) initialized");
 
-        // Create last approved block storage
-        let last_approved_block = Arc::new(std::sync::Mutex::new(None));
-
         // Call setup_node_program to initialize core components
         info!("Calling setup_node_program...");
 
@@ -245,76 +204,20 @@ impl NodeRuntime {
             rp_connections.clone(),
             rp_conf_cell.clone(),
             Arc::new(transport.clone()),
-            block_retriever,
             self.node_conf.clone(),
             event_bus.clone(),
             node_discovery.clone(),
-            last_approved_block.clone(),
         )
         .await?;
 
-        // Destructure the result
-        let (
+        let crate::rust::runtime::setup::PreparedNode {
+            consensus,
             packet_handler,
-            api_servers,
-            casper_loop,
-            update_fork_choice_loop,
-            engine_init,
-            casper_launch,
-            reporting_http_routes,
-            web_api,
-            admin_web_api,
-            proposer_opt,
-            proposer_queue_rx,
-            proposer_queue_tx,
-            proposer_queue_pending,
-            proposer_queue_max_pending,
-            proposer_state_ref_opt,
-            block_processor,
-            block_processor_state,
-            block_processor_queue_tx,
-            block_processor_queue_rx,
-            trigger_propose_f,
-            block_report_api,
-            _block_store, // Kept in scope to ensure LMDB cleanup happens on drop
-            // Heartbeat dependencies
-            validator_identity_for_heartbeat,
-            engine_cell_for_heartbeat,
-            heartbeat_conf,
-            max_number_of_parents,
-            heartbeat_signal_ref,
-            // Mergeable channels GC loop
-            mergeable_channels_gc_loop,
-        ) = result;
-
-        info!("setup_node_program completed successfully");
-
-        // Launch Casper
-        info!("Launching Casper...");
-        casper_launch.launch().await?;
-        info!("Casper launched successfully");
-
-        // Run the node program - orchestrates all concurrent tasks
-        info!("Starting node program...");
+            application,
+        } = result;
         let program = self.node_program(
-            api_servers,
-            casper_loop,
-            update_fork_choice_loop,
-            engine_init,
-            reporting_http_routes,
-            web_api,
-            admin_web_api,
-            proposer_opt,
-            proposer_queue_rx,
-            proposer_queue_tx,
-            proposer_queue_pending,
-            proposer_queue_max_pending,
-            trigger_propose_f,
-            proposer_state_ref_opt,
-            block_processor,
-            block_processor_state,
-            block_processor_queue_tx,
-            block_processor_queue_rx,
+            application,
+            consensus,
             transport,
             rp_conf_cell,
             rp_connections,
@@ -322,13 +225,6 @@ impl NodeRuntime {
             node_discovery,
             packet_handler,
             event_bus,
-            block_report_api,
-            validator_identity_for_heartbeat,
-            engine_cell_for_heartbeat,
-            heartbeat_conf,
-            max_number_of_parents,
-            heartbeat_signal_ref,
-            mergeable_channels_gc_loop,
         );
 
         // Wrap with error handling
@@ -344,38 +240,10 @@ impl NodeRuntime {
     /// - Proposer (if validator)
     /// - Network discovery and connection management
     #[allow(clippy::too_many_arguments)]
-    async fn node_program<
-        T: comm::rust::transport::transport_layer::TransportLayer + Send + Sync + Clone + 'static,
-    >(
+    async fn node_program(
         &self,
-        api_servers: crate::rust::runtime::api_servers::APIServers,
-        casper_loop: CasperLoop,
-        update_fork_choice_loop: CasperLoop,
-        engine_init: EngineInit,
-        reporting_http_routes: crate::rust::web::reporting_routes::ReportingHttpRoutes,
-        web_api: Arc<dyn crate::rust::api::web_api::WebApi + Send + Sync + 'static>,
-        admin_web_api: Arc<
-            dyn crate::rust::api::admin_web_api::AdminWebApi + Send + Sync + 'static,
-        >,
-        proposer_opt: Option<casper::rust::blocks::proposer::proposer::ProductionProposer<T>>,
-        proposer_queue_rx: tokio::sync::mpsc::Receiver<ProposerQueueEntry>,
-        proposer_queue_tx: tokio::sync::mpsc::Sender<ProposerQueueEntry>,
-        proposer_queue_pending: Arc<AtomicUsize>,
-        proposer_queue_max_pending: usize,
-        trigger_propose_f: Option<Arc<casper::rust::ProposeFunction>>,
-        proposer_state_ref_opt: Option<
-            Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
-        >,
-        block_processor: casper::rust::blocks::block_processor::BlockProcessor<T>,
-        block_processor_state: Arc<dashmap::DashSet<models::rust::block_hash::BlockHash>>,
-        block_processor_queue_tx: tokio::sync::mpsc::Sender<(
-            Arc<dyn casper::rust::casper::MultiParentCasper + Send + Sync>,
-            models::rust::casper::protocol::casper_message::BlockMessage,
-        )>,
-        block_processor_queue_rx: tokio::sync::mpsc::Receiver<(
-            Arc<dyn casper::rust::casper::MultiParentCasper + Send + Sync>,
-            models::rust::casper::protocol::casper_message::BlockMessage,
-        )>,
+        application: crate::rust::runtime::setup::PreparedApplication,
+        consensus: consensus_runtime::PreparedConsensus,
         transport: comm::rust::transport::grpc_transport_client::GrpcTransportClient,
         rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
         rp_connections: comm::rust::rp::connect::ConnectionsCell,
@@ -389,16 +257,6 @@ impl NodeRuntime {
             dyn comm::rust::p2p::packet_handler::PacketHandler + Send + Sync + 'static,
         >,
         event_bus: shared::rust::shared::f1r3fly_events::F1r3flyEvents,
-        block_report_api: Arc<casper::rust::api::block_report_api::BlockReportAPI>,
-        // Heartbeat dependencies
-        validator_identity_for_heartbeat: Option<
-            casper::rust::validator_identity::ValidatorIdentity,
-        >,
-        engine_cell_for_heartbeat: Arc<casper::rust::engine::engine_cell::EngineCell>,
-        heartbeat_conf: casper::rust::casper_conf::HeartbeatConf,
-        max_number_of_parents: i32,
-        heartbeat_signal_ref: casper::rust::heartbeat_signal::HeartbeatSignalRef,
-        mergeable_channels_gc_loop: Option<CasperLoop>,
     ) -> eyre::Result<()> {
         // Display node startup info
         if self.node_conf.standalone {
@@ -473,10 +331,8 @@ impl NodeRuntime {
         };
 
         // Build all server instances
-        let servers = crate::rust::runtime::servers_instances::ServersInstances::build(
-            api_servers,
-            web_api,
-            admin_web_api,
+        let mut servers = crate::rust::runtime::servers_instances::ServersInstances::build(
+            application,
             grpc_packet_handler,
             grpc_blob_handler,
             &host,
@@ -485,7 +341,6 @@ impl NodeRuntime {
             rp_conf_cell.clone(),
             rp_connections.clone(),
             node_discovery.clone(),
-            block_report_api,
             event_stream,
             event_bus.startup_buffer(),
             kademlia_store.clone(),
@@ -502,9 +357,6 @@ impl NodeRuntime {
             .map_err(|e| eyre::eyre!("Failed to publish NodeStarted event: {}", e))?;
 
         info!("NodeStarted event published: {}", address);
-
-        // Keep a reference for sealing the startup buffer after engine_init
-        let event_bus_for_seal = event_bus.clone();
 
         // Start all concurrent tasks with categorized failure handling
         // Critical tasks: Failure triggers immediate shutdown
@@ -568,164 +420,7 @@ impl NodeRuntime {
             .await
         });
 
-        // Wait for first connection (unless standalone)
-        // This runs in parallel with the connectivity tasks above (Transport Server, Kademlia Server,
-        // Node Discovery Loop, Clear Connections Loop), matching Scala's connectivityStream behavior
-        if !self.node_conf.standalone {
-            info!("Waiting for first connection...");
-            wait_for_first_connection(rp_connections.clone()).await?;
-            info!("First connection established, starting engine tasks");
-        } else {
-            info!("Running in standalone mode, starting engine tasks immediately");
-        }
-
-        // Engine initialization (Tier 2: Critical - runs once)
-        // started it as a separate task because it is not a long-running task and we want to keep the critical tasks separate.
-        // Also running it as a separate task avoids warning log that critical task should run forever.
-        let mut engine_init_handler = Some(tokio::spawn(async move {
-            info!("Running engine initialization...");
-            match engine_init().await {
-                Ok(_) => {
-                    info!("Engine initialization completed successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "engine initialization failed");
-                    Err(eyre::eyre!("Engine init failed: {}", e))
-                }
-            }
-        }));
-
-        // === CRITICAL TASKS: Tier 2 - Core Consensus Logic ===
-        // Casper loop (Tier 2: Critical - runs indefinitely)
-        spawn_named_task(&mut critical_tasks, "Casper Loop", async move {
-            run_casper_loop(casper_loop).await
-        });
-
-        // Update fork choice loop (Tier 2: Critical - runs indefinitely)
-        spawn_named_task(&mut critical_tasks, "Update Fork Choice Loop", async move {
-            run_update_fork_choice_loop(update_fork_choice_loop).await
-        });
-
-        // Mergeable channels GC loop (Tier 2: Critical - runs indefinitely when enabled)
-        if let Some(gc_loop) = mergeable_channels_gc_loop {
-            spawn_named_task(
-                &mut critical_tasks,
-                "Mergeable Channels GC Loop",
-                async move { run_mergeable_channels_gc_loop(gc_loop).await },
-            );
-        }
-
-        // Block processor instance (Tier 2: Critical)
-        let trigger_propose_for_heartbeat = trigger_propose_f;
-
-        let bpi_block_queue_tx = block_processor_queue_tx.clone();
-
-        spawn_named_task(
-            &mut critical_tasks,
-            "Block Processor Instance",
-            async move {
-                use crate::rust::instances::block_processor_instance::BlockProcessorInstance;
-
-                info!("Starting block processor instance...");
-
-                let instance = BlockProcessorInstance::new(
-                    (block_processor_queue_rx, bpi_block_queue_tx),
-                    Arc::new(block_processor),
-                    block_processor_state,
-                );
-
-                // BlockProcessorInstance::create spawns the processing task and returns a result receiver
-                match instance.create() {
-                    Ok(mut result_rx) => {
-                        // Drain results (we're just logging for now)
-                        while let Some(_result) = result_rx.recv().await {
-                            // Results are logged inside block_processor_instance
-                        }
-                        info!("Block processor instance completed");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "block processor instance failed");
-                        Err(eyre::eyre!("Block processor failed: {}", e))
-                    }
-                }
-            },
-        );
-
-        // Proposer instance (Tier 2: Critical - if configured as validator)
-        if let (Some(proposer), Some(proposer_state_ref)) = (proposer_opt, proposer_state_ref_opt) {
-            spawn_named_task(&mut critical_tasks, "Proposer Instance", async move {
-                use crate::rust::instances::proposer_instance::ProposerInstance;
-
-                info!("Starting proposer instance...");
-
-                // Wrap proposer in Arc<Mutex> for shared mutable access
-                let proposer_arc = Arc::new(tokio::sync::Mutex::new(proposer));
-
-                // Create proposer instance with state tracking for API observability
-                // The state allows the API to check:
-                // - Is a propose currently in progress? (curr_propose_result.is_some())
-                // - What was the last propose result? (latest_propose_result)
-                // Pass both receiver and sender as tuple
-                let instance = ProposerInstance::new(
-                    (proposer_queue_rx, proposer_queue_tx),
-                    proposer_arc,
-                    proposer_state_ref, // State for API observability
-                    proposer_queue_pending,
-                    proposer_queue_max_pending,
-                );
-
-                // Start the proposer stream - it will process propose requests as they arrive
-                match instance.create() {
-                    Ok(mut result_rx) => {
-                        // Drain results (logged inside proposer_instance)
-                        while let Some(_result) = result_rx.recv().await {
-                            // Results are already logged inside ProposerInstance
-                        }
-                        info!("Proposer instance completed");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "proposer instance failed to start");
-                        Err(eyre::eyre!("Proposer instance failed: {}", e))
-                    }
-                }
-            });
-        } else {
-            info!("Node not configured as validator - proposer instance will not start");
-        }
-
-        // Heartbeat proposer (Tier 2: Critical - if configured as validator)
-        // Heartbeat runs on bonded validators to maintain network liveness
-        if let Some(validator_identity) = validator_identity_for_heartbeat {
-            use crate::rust::instances::heartbeat_proposer::HeartbeatProposer;
-
-            if let Some(heartbeat_handle) = HeartbeatProposer::create(
-                engine_cell_for_heartbeat,
-                trigger_propose_for_heartbeat,
-                validator_identity,
-                heartbeat_conf,
-                max_number_of_parents,
-                heartbeat_signal_ref,
-                self.node_conf.standalone,
-            ) {
-                spawn_named_task(&mut critical_tasks, "Heartbeat Proposer", async move {
-                    match heartbeat_handle.await {
-                        Ok(()) => {
-                            info!("Heartbeat proposer completed");
-                            Ok(())
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "heartbeat proposer task panicked");
-                            Err(eyre::eyre!("Heartbeat proposer failed: {}", e))
-                        }
-                    }
-                });
-            } else {
-                info!("Heartbeat proposer not started (disabled or no propose function)");
-            }
-        }
+        let mut consensus = consensus.start();
 
         // === CRITICAL TASKS: Tier 3 - API Servers ===
         // These are critical for the node to function properly
@@ -762,85 +457,31 @@ impl NodeRuntime {
 
         info!("All server tasks started successfully");
 
-        // Keep variables in scope to avoid unused warnings
-        let _ = reporting_http_routes;
-
         // === Monitor both JoinSets for failures ===
         // Critical tasks: Any failure triggers immediate shutdown
         // Supportive tasks: Failures are logged as warnings, node continues
         info!("All tasks started. Node is now running.");
 
-        loop {
+        let result = loop {
             tokio::select! {
-                // Monitor critical tasks - any failure is fatal
                 Some(result) = critical_tasks.join_next() => {
-                    match result {
-                        Ok(named_result) => {
-                            let task_name = named_result.name;
-                            match named_result.result {
-                                Ok(()) => {
-                                    tracing::warn!(
-                                        "Critical task '{}' completed unexpectedly (they should run forever)",
-                                        task_name
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(task = %task_name, error = %e, "critical task failed");
-                                    // Trigger shutdown
-                                    break;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "critical task panicked");
-                            // Trigger shutdown
-                            break;
-                        }
-                    }
+                    break match result {
+                        Ok(task) => task.result.and_then(|_| Err(eyre::eyre!("Task {} completed unexpectedly", task.name))),
+                        Err(error) => Err(error.into()),
+                    };
                 }
-
-                result = async {
-                    match engine_init_handler.take() {
-                        Some(handle) => Some(handle.await),
-                        None => None,
-                    }
-                }, if engine_init_handler.is_some() => {
-                    match result {
-                        Some(Ok(Ok(_))) => {
-                            event_bus_for_seal.seal_startup();
-                            continue;
-                        }
-                        Some(Ok(Err(e))) => {
-                            event_bus_for_seal.seal_startup();
-                            tracing::error!(error = %e, "engine initialization failed");
-                            // Engine init failure is critical - trigger shutdown
-                            break;
-                        }
-                        Some(Err(e)) => {
-                            tracing::error!(error = %e, "engine initialization task panicked");
-                            // Task panic is critical - trigger shutdown
-                            break;
-                        }
-                        None => {
-                            // This shouldn't happen due to the guard, but handle it anyway
-                            continue;
-                        }
-                    }
+                result = consensus.wait() => {
+                    break result.map_err(eyre::Report::new).and_then(|_| Err(eyre::eyre!("Consensus stopped unexpectedly")));
                 }
-
-                // Graceful shutdown signal (CTRL+C or SIGTERM)
-                _ = shutdown_signal() => {
-                    info!("Received shutdown signal, initiating graceful shutdown");
-                    break;
-                }
-
-                // If all tasks complete (shouldn't happen), exit
-                else => {
-                    tracing::error!("all critical tasks completed unexpectedly — node is shutting down");
-                    break;
-                }
+                _ = shutdown_signal() => break Ok(()),
             }
-        }
+        };
+        let consensus_shutdown = consensus.shutdown().await;
+        servers.shutdown.signal();
+        let _ = servers.kademlia_server.stop().await;
+        let _ = servers.external_api_server.stop().await;
+        let _ = servers.internal_api_server.stop().await;
+        let _ = servers.transport_server.stop().await;
 
         // === SHUTDOWN SEQUENCE ===
         info!("Shutting down all tasks...");
@@ -868,7 +509,8 @@ impl NodeRuntime {
         }
 
         info!("Node shutdown complete");
-        Ok(())
+        result?;
+        consensus_shutdown.map_err(eyre::Report::new)
     }
 
     /// Perform shutdown cleanup
@@ -1134,87 +776,6 @@ async fn clear_connections_loop(
 
         // Sleep for configured cleanup interval before next iteration
         sleep(node_conf.peers_discovery.cleanup_interval).await;
-    }
-}
-
-/// Wait for the first peer connection
-///
-/// Polls the connections cell every second until at least one connection exists.
-/// Only called when not in standalone mode.
-async fn wait_for_first_connection(
-    connections: comm::rust::rp::connect::ConnectionsCell,
-) -> eyre::Result<()> {
-    use tokio::time::{sleep, Duration};
-
-    loop {
-        sleep(Duration::from_secs(1)).await;
-
-        let conns = connections
-            .read()
-            .map_err(|e| eyre::eyre!("Failed to read connections: {}", e))?;
-
-        if !conns.is_empty() {
-            return Ok(());
-        }
-    }
-}
-
-/// Pause after a failed loop iteration to avoid tight error loops.
-const LOOP_ERROR_RETRY_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-
-/// Run the Casper loop indefinitely
-///
-/// Periodically fetches dependencies and maintains requested blocks.
-/// Errors are logged but don't stop the loop.
-async fn run_casper_loop(casper_loop: CasperLoop) -> eyre::Result<()> {
-    loop {
-        match casper_loop().await {
-            Ok(_) => {
-                // Casper loop iteration completed successfully
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "casper loop iteration failed");
-                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
-            }
-        }
-    }
-}
-
-/// Run the update fork choice loop indefinitely
-///
-/// Periodically checks if the fork choice is stale and broadcasts a request
-/// for updated tips if needed. Errors are logged but don't stop the loop.
-async fn run_update_fork_choice_loop(update_fork_choice_loop: CasperLoop) -> eyre::Result<()> {
-    loop {
-        match update_fork_choice_loop().await {
-            Ok(_) => {
-                // Fork choice update iteration completed successfully
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "fork choice update loop iteration failed");
-                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
-            }
-        }
-    }
-}
-
-/// Run the mergeable channels garbage collection loop indefinitely
-///
-/// Periodically garbage collects mergeable channel data for blocks that are
-/// provably unreachable. Required for multi-parent mode to prevent early deletion.
-/// Errors are logged but don't stop the loop.
-async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()> {
-    tracing::info!("Mergeable channels GC loop started");
-    loop {
-        match gc_loop().await {
-            Ok(_) => {
-                // GC iteration completed successfully
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "mergeable channels GC loop iteration failed");
-                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
-            }
-        }
     }
 }
 

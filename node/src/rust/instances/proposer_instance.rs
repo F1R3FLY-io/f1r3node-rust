@@ -104,9 +104,25 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
     pub fn create(
         self,
     ) -> Result<mpsc::Receiver<(ProposeResult, Option<BlockMessage>)>, CasperError> {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (result_rx, task) = self.supervised(shutdown_rx);
+        tokio::spawn(async move {
+            let _shutdown_tx = shutdown_tx;
+            task.await
+        });
+        Ok(result_rx)
+    }
+
+    pub fn supervised(
+        self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> (
+        mpsc::Receiver<(ProposeResult, Option<BlockMessage>)>,
+        impl std::future::Future<Output = Result<(), CasperError>> + Send,
+    ) {
         let (result_tx, result_rx) = mpsc::channel(PROPOSER_RESULT_QUEUE_CAPACITY);
 
-        tokio::spawn(async move {
+        let task = async move {
             let Self {
                 mut propose_requests_queue_rx,
                 propose_requests_queue_tx,
@@ -124,9 +140,16 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
             let mut last_propose_started_at: Option<Instant> = None;
 
             // Process propose requests - each request carries its own Casper instance
-            while let Some((casper, is_async, propose_id_sender, immediate_retry_count)) =
-                propose_requests_queue_rx.recv().await
-            {
+            let mut stopping = false;
+            while let Some((casper, is_async, propose_id_sender, immediate_retry_count)) = tokio::select! {
+                biased;
+                _ = async { let _ = shutdown.wait_for(|stopping| *stopping).await; }, if !stopping => {
+                    stopping = true;
+                    propose_requests_queue_rx.close();
+                    propose_requests_queue_rx.recv().await
+                }
+                value = propose_requests_queue_rx.recv() => value,
+            } {
                 let _ = propose_queue_pending.fetch_update(
                     Ordering::AcqRel,
                     Ordering::Acquire,
@@ -391,9 +414,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
             tracing::info!("Propose requests queue closed, stopping proposer");
 
             Result::<(), CasperError>::Ok(())
-        });
-
-        Ok(result_rx)
+        };
+        (result_rx, task)
     }
 }
 

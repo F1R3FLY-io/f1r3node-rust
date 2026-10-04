@@ -21,6 +21,8 @@ use crate::rust::configuration::commandline::options::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConf {
     #[serde(default)]
+    pub consensus: ConsensusConf,
+    #[serde(default)]
     pub standalone: bool,
     #[serde(default)]
     pub autopropose: bool,
@@ -48,6 +50,20 @@ pub struct NodeConf {
     /// OpenAI configuration - ported from Scala PR #123
     #[serde(default)]
     pub openai: OpenAIConf,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsensusConf {
+    #[serde(default)]
+    pub protocol: ConsensusProtocol,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ConsensusProtocol {
+    #[default]
+    #[serde(rename = "cbc-casper")]
+    CbcCasper,
 }
 
 /// Protocol server configuration

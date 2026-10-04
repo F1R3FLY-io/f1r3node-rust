@@ -215,6 +215,7 @@ fn deploy_state_json_label(
 
 /// Web API implementation
 pub struct WebApiImpl {
+    consensus: Option<consensus_runtime::ConsensusHandle>,
     api_max_blocks_limit: i32,
     dev_mode: bool,
     network_id: String,
@@ -237,6 +238,11 @@ pub struct WebApiImpl {
 }
 
 impl WebApiImpl {
+    pub fn with_consensus(mut self, handle: consensus_runtime::ConsensusHandle) -> Self {
+        self.consensus = Some(handle);
+        self
+    }
+
     pub fn new(
         api_max_blocks_limit: i32,
         dev_mode: bool,
@@ -259,6 +265,7 @@ impl WebApiImpl {
         is_ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            consensus: None,
             api_max_blocks_limit,
             dev_mode,
             network_id,
@@ -425,7 +432,7 @@ impl WebApi for WebApiImpl {
         }
 
         let is_validator = self.trigger_propose_f.is_some();
-        let is_ready = self.is_ready.load(Ordering::Relaxed);
+        let is_ready = self.is_ready();
 
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
@@ -463,7 +470,12 @@ impl WebApi for WebApiImpl {
         })
     }
 
-    fn is_ready(&self) -> bool { self.is_ready.load(Ordering::Acquire) }
+    fn is_ready(&self) -> bool {
+        self.consensus.as_ref().map_or_else(
+            || self.is_ready.load(Ordering::Acquire),
+            |handle| handle.status().phase == consensus_api::Phase::Ready,
+        )
+    }
 
     async fn prepare_deploy(&self, request: Option<PrepareRequest>) -> Result<PrepareResponse> {
         let seq_number = BlockAPI::get_latest_message(&self.engine_cell)
@@ -487,6 +499,10 @@ impl WebApi for WebApiImpl {
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
         // Convert request to signed deploy
         let signed_deploy = to_signed_deploy(&request)?;
+
+        if let Some(handle) = &self.consensus {
+            return crate::rust::consensus::casper::api_compat::submit(handle, signed_deploy).await;
+        }
 
         // Deploy using BlockAPI
         BlockAPI::deploy(

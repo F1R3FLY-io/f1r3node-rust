@@ -717,6 +717,7 @@ mod tests {
 
         // Create a default configuration (similar to loading from defaults.conf)
         let mut default_config = NodeConf {
+            consensus: Default::default(),
             standalone: false,
             autopropose: false,
             protocol_server: crate::rust::configuration::model::ProtocolServer {

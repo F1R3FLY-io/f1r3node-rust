@@ -16,6 +16,10 @@ schnorr_secp256k1_experimental = [
 doctest = false
 
 [dependencies]
+heed = { workspace = true }
+bincode = { workspace = true }
+consensus-api = { path = "../consensus-api" }
+consensus-runtime = { path = "../consensus-runtime" }
 models = { path = "../models" }
 crypto = { path = "../crypto" }
 rholang = { path = "../rholang" }
@@ -76,6 +80,7 @@ sysinfo = "0.28"
 tonic-reflection = "0.14"
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }
 rspace_plus_plus = { path = "../rspace++" }
 casper = { path = "../casper", features = ["test-utils"] }

@@ -33,6 +33,11 @@ pub struct APIServers {
 }
 
 impl APIServers {
+    pub fn with_consensus(mut self, handle: consensus_runtime::ConsensusHandle) -> Self {
+        self.deploy = self.deploy.with_consensus(handle.clone());
+        self.propose = self.propose.with_consensus(handle);
+        self
+    }
     /// Build all API services with their dependencies
     ///
     /// # Parameters

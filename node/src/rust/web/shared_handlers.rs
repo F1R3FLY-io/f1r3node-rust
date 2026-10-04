@@ -236,7 +236,28 @@ where
     }
 }
 
-fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
+pub(crate) fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
+    if let Some(error) = err.downcast_ref::<consensus_api::ConsensusError>() {
+        use consensus_api::ConsensusError;
+        let (status, kind) = match error {
+            ConsensusError::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "consensus_busy"),
+            ConsensusError::DeadlineExceeded => (StatusCode::GATEWAY_TIMEOUT, "consensus_timeout"),
+            ConsensusError::InvalidInput(_) => (StatusCode::BAD_REQUEST, "illegal_argument"),
+            ConsensusError::UnsupportedCapability(_) => {
+                (StatusCode::BAD_REQUEST, "unsupported_capability")
+            }
+            ConsensusError::Stopped | ConsensusError::NotReady => {
+                (StatusCode::SERVICE_UNAVAILABLE, "consensus_unavailable")
+            }
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, "consensus_error"),
+        };
+        return (status, kind, error.to_string());
+    }
+    if let Some(error) =
+        err.downcast_ref::<crate::rust::consensus::casper::api_compat::ApiFailure>()
+    {
+        return (error.status, error.kind, error.message.clone());
+    }
     for cause in err.chain() {
         if let Some(rejection) = ExploratoryDeployRejection::from_cause(cause) {
             let (status, kind) = match rejection {
