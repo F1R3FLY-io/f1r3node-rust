@@ -1,0 +1,1651 @@
+{
+  "schema_version": 1,
+  "status": "four-routes-repaired-independent-claim-pending",
+  "phase": "pre_pr216_merge",
+  "base_commit": "f8623a54ee7edb272b71c7993379b39818412351",
+  "working_tree": true,
+  "recorded_at": "2026-09-19T21:28:08Z",
+  "scope": "Compatibility lookup repair only. No evidence status is promoted.",
+  "routes": [
+    {
+      "compatibility": "docs/cbc-evidence/github-workflows-merge-recovery-soak-yml.md",
+      "history": "docs/cbc-evidence/github-workflows-merge-recovery-soak-yml.historical-f8623a54e.md",
+      "historical_sha256": "411ef87571556f654669be30f5a0ab9af990168d519bb833bdcdb5d117d42a6e",
+      "canonical": "docs/casper/cbc-evidence/github-workflows-merge-recovery-soak-yml.md",
+      "target": "../casper/cbc-evidence/github-workflows-merge-recovery-soak-yml.md",
+      "canonical_sha256": "dc46802cda767c42adab2b4ec12325b2aba55acaf05ae1d88a8cf9458a105569",
+      "scope": "Current Casper harness claims only. Historical statuses remain unchanged."
+    },
+    {
+      "compatibility": "docs/cbc-evidence/scripts-bench-test-run-merge-recovery-soak-sh.md",
+      "history": "docs/cbc-evidence/scripts-bench-test-run-merge-recovery-soak-sh.historical-f8623a54e.md",
+      "historical_sha256": "2ac43fcd09fcf92083f0aa4383e6e079af190b5050a79414c62b032af87d9006",
+      "canonical": "docs/casper/cbc-evidence/scripts-bench-test-run-merge-recovery-soak-sh.md",
+      "target": "../casper/cbc-evidence/scripts-bench-test-run-merge-recovery-soak-sh.md",
+      "canonical_sha256": "0e1cbeb535106962fe68f61eb9a2b7b40779fa6d8665b3bfeff6b34d4961b46f",
+      "scope": "Current Casper harness claims only. Historical statuses remain unchanged."
+    },
+    {
+      "compatibility": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "history": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.historical-f8623a54e.md",
+      "historical_sha256": "e00c92ffddd8918c64198fea321d3b4081d34e8c93e8b04b17fb422685485d0f",
+      "canonical": "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "target": "../casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "canonical_sha256": "53d6a6e981a22618e072840cee7af91a33acb3d872c55ac1d29b3d232f9f29cd",
+      "scope": "Current Casper harness claims only. Historical statuses remain unchanged."
+    },
+    {
+      "compatibility": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "history": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.historical-f8623a54e.md",
+      "historical_sha256": "33a4fee4929a34dbd0b28b06d230a08542030ad24feef8757e659bf836abe75c",
+      "canonical": "docs/casper/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "target": "../casper/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "canonical_sha256": "168a029dd86166e24d1fce93e366a47d3ab9fb7127b23fced7fc6e0652ecf0ff",
+      "scope": "Current Casper harness claims only. Historical statuses remain unchanged."
+    }
+  ],
+  "default_before": {
+    "exit_code": 4,
+    "result": {
+      "total": 123,
+      "gaps": 5,
+      "items": [
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-authority-finality.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-carrier-index.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-merge-accounting.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-publication.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-recovery.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-slashing.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-version-phlo.yml"
+        },
+        {
+          "status": "pending",
+          "path": ".github/workflows/merge-recovery-soak.yml"
+        },
+        {
+          "status": "pending",
+          "path": ".github/workflows/slashing-tests.yml"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/CasperSoakHarness.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_epoch_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_multiplicity_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_settlement_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/Publication.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_authorization_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_epoch_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_order_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/casper-soak.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/fixtures/casper-lifecycle-executor.sh"
+        },
+        {
+          "status": "pending",
+          "path": "scripts/bench/test-run-merge-recovery-soak.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/Cargo.toml"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-authority-finality.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-carrier-index.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-merge-accounting.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-publication.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-recovery.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-slashing.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-version-phlo.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-authority-finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-carrier-index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-merge-accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-version-phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/check-casper-bindings.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/check-casper-claims.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/host_control.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/lib.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/main.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/manifest.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/models.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/authority_finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/carrier_index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/merge_accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/version_phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/runtime.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/task-complete.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/authority_finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/bindings.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/carrier_index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/claims.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/driver.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/interruption.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/manifest.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/merge_accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/models.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/version_phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-casper-soak-bindings.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-casper-soak-models.sh"
+        },
+        {
+          "status": "pending",
+          "path": "scripts/ci/check-tla-invariants.sh"
+        },
+        {
+          "status": "pending",
+          "path": "scripts/run-merge-recovery-soak.sh"
+        }
+      ]
+    }
+  },
+  "default_after": {
+    "exit_code": 4,
+    "result": {
+      "total": 123,
+      "gaps": 1,
+      "items": [
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-authority-finality.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-carrier-index.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-merge-accounting.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-publication.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-recovery.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-slashing.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-version-phlo.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/merge-recovery-soak.yml"
+        },
+        {
+          "status": "pending",
+          "path": ".github/workflows/slashing-tests.yml"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/CasperSoakHarness.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_epoch_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_multiplicity_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_settlement_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/Publication.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_authorization_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_epoch_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_order_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/casper-soak.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/fixtures/casper-lifecycle-executor.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/test-run-merge-recovery-soak.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/Cargo.toml"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-authority-finality.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-carrier-index.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-merge-accounting.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-publication.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-recovery.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-slashing.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-version-phlo.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-authority-finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-carrier-index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-merge-accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-version-phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/check-casper-bindings.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/check-casper-claims.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/host_control.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/lib.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/main.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/manifest.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/models.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/authority_finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/carrier_index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/merge_accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/version_phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/runtime.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/task-complete.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/authority_finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/bindings.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/carrier_index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/claims.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/driver.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/interruption.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/manifest.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/merge_accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/models.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/version_phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-casper-soak-bindings.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-casper-soak-models.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-tla-invariants.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/run-merge-recovery-soak.sh"
+        }
+      ]
+    }
+  },
+  "canonical_after": {
+    "exit_code": 0,
+    "result": {
+      "total": 123,
+      "gaps": 0,
+      "items": [
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-authority-finality.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-carrier-index.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-merge-accounting.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-publication.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-recovery.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-slashing.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/casper-version-phlo.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/merge-recovery-soak.yml"
+        },
+        {
+          "status": "discharged",
+          "path": ".github/workflows/slashing-tests.yml"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/CasperSoakHarness.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_epoch_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_multiplicity_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_settlement_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/Publication.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_authorization_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_epoch_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_order_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/README.md"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "formal/tlaplus/casper_soak/verification-plan.jsonc"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/casper-soak.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/fixtures/casper-lifecycle-executor.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/bench/test-run-merge-recovery-soak.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/Cargo.toml"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-authority-finality.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-carrier-index.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-merge-accounting.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-publication.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-recovery.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-slashing.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/check-version-phlo.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-authority-finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-carrier-index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-merge-accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/casper-version-phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/check-casper-bindings.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/bin/check-casper-claims.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/host_control.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/lib.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/main.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/manifest.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/models.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/authority_finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/carrier_index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/merge_accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/profiles/version_phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/src/runtime.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/task-complete.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/authority_finality.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/bindings.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/carrier_index.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/claims.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/driver.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/interruption.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/manifest.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/merge_accounting.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/models.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/publication.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/recovery.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/slashing.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/casper-soak/tests/version_phlo.rs"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-casper-soak-bindings.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-casper-soak-models.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/ci/check-tla-invariants.sh"
+        },
+        {
+          "status": "discharged",
+          "path": "scripts/run-merge-recovery-soak.sh"
+        }
+      ]
+    }
+  },
+  "executable_claim_audit": {
+    "exit_code": 0,
+    "result": {
+      "claim_discharge": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-001",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-harness.md",
+          "specification_sha256": "61e085da51b1f69759c579d8fea92e192541ec28bf0b8905d6b3054ae26d015b",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-002",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-authority-finality.md",
+          "specification_sha256": "1af422a0628c37ffab2150b98701c954a2875bf77df4eb9f3e69ff56d23feff2",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-003",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-publication.md",
+          "specification_sha256": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-004",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-recovery.md",
+          "specification_sha256": "057e4cfe06c19ac3ae7d61a15568fe6c72a8e0083f4737215fdf749cde4c5afe",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-005",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-merge-accounting.md",
+          "specification_sha256": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-006",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-slashing.md",
+          "specification_sha256": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-007",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-version-phlo.md",
+          "specification_sha256": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-008",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-carrier-index.md",
+          "specification_sha256": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+          "status": "discharged"
+        }
+      ],
+      "phase": "pre_pr216_merge",
+      "proof_execution": false,
+      "schema_version": 1,
+      "scope": "claim-ledger-audit"
+    }
+  },
+  "validation": {
+    "historical_copies_byte_identical": true,
+    "canonical_records_unchanged": true,
+    "source_and_claim_hashes_verified": true,
+    "routing_tests": 16,
+    "current_targets": 4,
+    "pending_targets": 4,
+    "refuted_targets": 4,
+    "missing_targets": 4
+  },
+  "unresolved": {
+    "artifact": ".github/workflows/slashing-tests.yml",
+    "claim": "CLAIM-SOAK-GATE-001",
+    "record": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "record_sha256": "59da572253becdc8277ddf878fa6dc2365fe567cc52fe746ba04a2ba532cf100",
+    "status": "pending",
+    "historical_specification": {
+      "commit": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "path": "docs/claims/soak-formal-gate.md",
+      "sha256": "17dcc39541355ec08c70987675e40c34d8738b256a9c30b7103b4223c1503032"
+    },
+    "prerequisite_record": "docs/cbc-evidence/prerequisites/pr432-formal-gate.md",
+    "reason": "The historical claim includes required-check enforcement and workflow-control identity obligations absent from CLAIM-CASPER-SOAK-001.",
+    "applicability": "The prerequisite record describes retirement with the digest inventory but retains open obligations. No blanket supersession or waiver is inferred.",
+    "needed": "Review current evidence and obtain a maintainer decision on the remaining historical governance obligations."
+  },
+  "limits": [
+    "The default gate remains non-passing. The canonical gate covers bounded Casper claims, not the distinct historical governance claim.",
+    "No required-check, ruleset, workflow, shared tool, claim specification, canonical ledger, or artifact tag changes.",
+    "Historical copies remain in the same directory so relative references retain their original base.",
+    "The unchanged summary-writer compatibility record remains outside this PR diff.",
+    "No dispatch, waiver, task closure, upload, deletion of historical evidence, or release publication occurred."
+  ]
+}
