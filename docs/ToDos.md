@@ -198,6 +198,23 @@ tasks:
       - "The new metrics appear in the ISSUE24_METRICS records, and the metrics extension test covers them."
       - "A soak run or a local throughput run attributes the roots lock wait to the call sites that hold the lock, and the result is recorded on issue #24."
       - "The analysis confirms or rejects the nested-lock hypothesis in reset() before TASK-021-5 proposes a fix."
+  - id: TASK-021-9
+    title: "Gate master on a SHA-bound soak verdict check"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-5]
+    origin: "On 2026-10-04 the masterProtect ruleset required deployments to casper-campaign, ephemeral-launch, and protected-branch-image-publish. A deployment proves that a job started, not that a verdict passed. casper-campaign is created by the campaign launch job and allows only formal/soak-casper-consensus, and ephemeral-launch is created only by the gated fork path, so no promotion PR could satisfy them. The user wants merges to master to accept only soaked and verified artifacts after the issue #24 root-cause fix lands."
+    files:
+      - .github/workflows/merge-recovery-soak.yml
+      - docs/release-process.md
+      - docs/claims/casper-campaign-execution.md
+    acceptance:
+      - "The soak workflow publishes a check run, for example 'Soak verdict (campaign-stability-60h)', on the tested SHA only after the full soak passes, including the issue #24 finalization claims and a clean disk guardian."
+      - "masterProtect requires that check from the GitHub Actions integration, and requires Integration Tests (amd64) and (arm64)."
+      - "The promotion PR runs the heavy pipeline, or the gate reads the dev push run of the same SHA, so a summary check that passed without running does not satisfy the gate."
+      - "masterProtect keeps protected-branch-image-publish and drops casper-campaign and ephemeral-launch from required deployments."
+      - "The release process documents that a promotion PR carries the exact soaked SHA, and that a later dev commit voids the verdict."
+      - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
 ---
 ```
 
