@@ -125,6 +125,33 @@ pub mod builder {
     /// Validate configuration parameters. Returns non-fatal warning
     /// messages; fatal errors are returned via `Err`.
     pub(crate) fn validate_config(node_conf: &NodeConf) -> eyre::Result<Vec<String>> {
+        if node_conf.consensus.protocol == model::ConsensusProtocol::CordialMiners {
+            let config =
+                node_conf.consensus.cordial.as_ref().ok_or_else(|| {
+                    eyre::eyre!("Cordial requires consensus.cordial configuration")
+                })?;
+            eyre::ensure!(
+                !config.chain_file.as_os_str().is_empty(),
+                "Cordial chain-file is required"
+            );
+            eyre::ensure!(
+                (10..=60_000).contains(&config.tick_ms),
+                "Cordial tick-ms must be between 10 and 60000"
+            );
+            eyre::ensure!(
+                !node_conf.openai.enabled,
+                "Cordial does not support external execution services"
+            );
+            eyre::ensure!(
+                !node_conf.dev_mode,
+                "Cordial does not support the Casper development profile"
+            );
+            return Ok(Vec::new());
+        }
+        eyre::ensure!(
+            node_conf.consensus.cordial.is_none(),
+            "Cordial configuration requires the cordial-miners protocol"
+        );
         let mut warnings = Vec::new();
         let pos_multi_sig_quorum = node_conf.casper.genesis_block_data.pos_multi_sig_quorum;
         let pos_multi_sig_public_keys_length = node_conf

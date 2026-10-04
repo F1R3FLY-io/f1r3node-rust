@@ -20,6 +20,10 @@ heed = { workspace = true }
 bincode = { workspace = true }
 consensus-api = { path = "../consensus-api" }
 consensus-runtime = { path = "../consensus-runtime" }
+cordial-consensus = { path = "../cordial/cordial-consensus" }
+cordial-rholang = { path = "../cordial/cordial-rholang" }
+k256 = { workspace = true }
+fs2 = "0.4"
 models = { path = "../models" }
 crypto = { path = "../crypto" }
 rholang = { path = "../rholang" }

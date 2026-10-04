@@ -57,13 +57,29 @@ pub struct NodeConf {
 pub struct ConsensusConf {
     #[serde(default)]
     pub protocol: ConsensusProtocol,
+    #[serde(default)]
+    pub cordial: Option<CordialConf>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CordialConf {
+    pub chain_file: std::path::PathBuf,
+    #[serde(default)]
+    pub validator_key_file: Option<std::path::PathBuf>,
+    #[serde(default = "cordial_tick_ms")]
+    pub tick_ms: u64,
+}
+
+fn cordial_tick_ms() -> u64 { 1000 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConsensusProtocol {
     #[default]
     #[serde(rename = "cbc-casper")]
     CbcCasper,
+    #[serde(rename = "cordial-miners")]
+    CordialMiners,
 }
 
 /// Protocol server configuration

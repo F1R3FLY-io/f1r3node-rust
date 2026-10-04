@@ -12,6 +12,7 @@ use crate::rust::web::shared_handlers::AppState;
 
 pub enum PreparedApplication {
     CbcCasper(Box<crate::rust::consensus::casper::api_compat::PreparedApplication>),
+    Cordial(Box<crate::rust::consensus::cordial::PreparedApplication>),
 }
 
 pub struct ApplicationRoutes {
@@ -32,6 +33,7 @@ impl PreparedApplication {
         startup_events: StartupBuffer,
     ) -> eyre::Result<ApplicationRoutes> {
         match self {
+            Self::Cordial(application) => application.routes(conf),
             Self::CbcCasper(application) => {
                 let crate::rust::consensus::casper::api_compat::PreparedApplication {
                     api_servers,

@@ -36,7 +36,7 @@ fn http2_frame_size(max_message_size: usize) -> u32 {
 }
 
 /// Shared transport configuration for both the internal and external gRPC servers.
-fn configure_server(
+pub(crate) fn configure_server(
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,

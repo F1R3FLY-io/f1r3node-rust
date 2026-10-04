@@ -127,9 +127,12 @@ fn copy_closed_store(source: &std::path::Path, destination: &std::path::Path) {
     }
 }
 
-fn casper_application(application: &node::rust::runtime::setup::PreparedApplication) -> &node::rust::consensus::casper::api_compat::PreparedApplication {
+fn casper_application(
+    application: &node::rust::runtime::setup::PreparedApplication,
+) -> &node::rust::consensus::casper::api_compat::PreparedApplication {
     match application {
         node::rust::runtime::setup::PreparedApplication::CbcCasper(application) => application,
+        _ => panic!("Casper configuration selected another application"),
     }
 }
 

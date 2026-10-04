@@ -18,6 +18,9 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     discovery: Arc<dyn NodeDiscovery + Send + Sync>,
 ) -> eyre::Result<PreparedNode> {
     match conf.consensus.protocol {
+        crate::rust::configuration::model::ConsensusProtocol::CordialMiners => {
+            super::cordial::prepare(connections, peer_conf, transport, conf).await
+        }
         crate::rust::configuration::model::ConsensusProtocol::CbcCasper => {
             super::casper::assembly::prepare(
                 connections,
