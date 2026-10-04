@@ -963,21 +963,34 @@ jobs:
           SWEEP_EXIT: ${{ steps.sweep.outputs.exit_code }}
         shell: bash -euo pipefail {0}
         run: |
-          broken=0
+          broken=null
+          status=no_output
           if [ -s /tmp/link-sweep.json ]; then
-            broken="$(jq -r '[(.error_map // .fail_map // {})[] | length] | add // 0' /tmp/link-sweep.json)"
+            if broken="$(jq -r '[(.error_map // .fail_map // {})[] | length] | add // 0' /tmp/link-sweep.json 2>/tmp/link-sweep-jq.err)"; then
+              status=checked
+            else
+              broken=null
+              status=unreadable
+              echo "::warning::advisory docs link sweep output is not valid JSON: $(head -c 200 /tmp/link-sweep-jq.err); see the docs-link-sweep artifact (does not gate the soak)"
+            fi
           fi
           jq -n \
             --argjson broken "$broken" \
+            --arg status "$status" \
             --arg exit_code "${SWEEP_EXIT:-unknown}" \
-            '{broken: $broken, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
-          if [ "$broken" -gt 0 ]; then
+            '{broken: $broken, status: $status, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
+          if [ "$status" = checked ] && [ "$broken" -gt 0 ]; then
             echo "::warning::advisory docs link sweep found $broken broken external link(s); see the docs-link-sweep artifact (does not gate the soak)"
           fi
+          case "$status" in
+            checked) result="Broken external links: $broken." ;;
+            unreadable) result="Broken external links: unknown. The sweep output was not valid JSON." ;;
+            *) result="Broken external links: unknown. The sweep wrote no output." ;;
+          esac
           {
             echo "### Docs external link sweep (advisory)"
             echo
-            echo "Broken external links: $broken. This sweep never gates the soak."
+            echo "$result This sweep never gates the soak."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sweep artifact
