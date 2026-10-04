@@ -71,6 +71,140 @@ mr_status:
 
 ---
 
+### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
+
+```yaml
+---
+epic_id: EPIC-021
+title: "Issue #24 Replay Throughput Root Cause Under the CbC Harness"
+status: in_progress
+priority: p0
+user_story: null
+issues: [24]
+blocked_by: []
+created_at: 2026-10-03
+updated_at: 2026-10-03
+claimed_by: claude-session-aa467dea
+claimed_at: 2026-10-03T21:10:00Z
+branch: fix/issue-24
+pr_base_branch: dev
+origin: "The weekend-60h soak 37090117438 on master fce422a7d stopped after about 8 hours. Eight passive iterations failed first, then the disk guardian stopped all nodes in iteration 26 at 3,683 MB free against a 4,096 MB floor. The verdict was regress, with finalization p95 50.7 s against a baseline of 40.9 s plus 20 percent. Issue #24 records the same sustained-phase finalization failure since 2026-09."
+execution_contract:
+  base_branch: fix/issue-24
+  base_revision: f93b72699565e45097b37a99b0413cef16bacd00
+  scope: "Find the root cause of the issue #24 sustained-phase finalization failure with the soak harness of EPIC-017, the stage metrics of PR #441, and a new pending CbC claim. Separate the host disk breach, the passive iteration failures, and the finalization lag before any fix."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  cbc_policy: "Register the new claim as pending before any code change. The claims audit of CLAIM-CASPER-SOAK-001 to -008 requires exactly those eight claims, so the new claim uses its own identifier, specification, and verification plan outside formal/tlaplus/casper_soak/verification-plan.jsonc."
+  pr_policy: "The branch starts from master f93b72699. Its PR targets dev after PR #569 brings master into dev, or after the branch merges dev."
+evidence:
+  failed_run: 37090117438
+  new_run: 37153082817
+  new_run_target: f93b72699565e45097b37a99b0413cef16bacd00
+  issue_comments: ["2026-09-16 nightly soak evidence for 2026-09-12 to 2026-09-15", "2026-09-25 submit-to-finalization breakdown on dev 6d6d4fed6"]
+tasks:
+  - id: TASK-021-1
+    title: "Attribute the failure of soak 37090117438 with the existing evidence"
+    status: in_progress
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-03T21:10:00Z
+    blocked_by: []
+    acceptance:
+      - "The analysis separates three causes: the disk guardian breach, the eight passive iteration failures, and the finalization p95 regression."
+      - "Each cause has a first-failure time, the failed assertion or guardian rule, and the artifact path that shows it."
+      - "The analysis compares the failure with the issue #24 evidence of 2026-09-12 to 2026-09-15 and the 2026-09-25 stage breakdown, and states what matches and what is new."
+      - "The analysis states which questions need the stage metrics of run 37153082817, because master fce422a7d did not have them."
+  - id: TASK-021-2
+    title: "Register a pending claim for replay latency and finalization lag under sustained load"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-1]
+    acceptance:
+      - "A new specification, for example docs/claims/casper-replay-throughput.md, registers CLAIM-REPLAY-THROUGHPUT-001 with status pending before any code change."
+      - "The claim names its observables in terms of the stage metrics of PR #441: block replay runtime lock wait, execute, and save-mergeable time, history checkpoint stages, and repeat-deploy stages."
+      - "The claim states a bound on per-block replay latency and on finalization lag in the sustained phase, with the workload, topology, and window of the bound."
+      - "The claims audit of CLAIM-CASPER-SOAK-001 to -008 still passes with exit 0."
+  - id: TASK-021-3
+    title: "Add a replay-throughput soak profile with a bounded model and executable bindings"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-2]
+    acceptance:
+      - "A bounded TLA+ model of the replay pipeline has one clean configuration and negative controls that violate the claim invariants as intended."
+      - "Executable bindings check the claim against the ISSUE24_METRICS records of a soak run, with fixtures for a passing run and for each violation."
+      - "A check script and a hosted workflow follow the pattern of the existing profiles, with the pinned TLA+ tools."
+      - "The profile records refutation bounded-safety-pass and binding passed before maintainer review."
+  - id: TASK-021-4
+    title: "Attribute finalization lag by replay stage with soak 37153082817"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-1]
+    acceptance:
+      - "The analysis gives the per-stage share of block replay time in each phase, from the stage metrics of run 37153082817."
+      - "The analysis states whether the host disk headroom stayed above the guardian floor with the node log caps of PR #451, and reports the lowest free value."
+      - "The profile of TASK-021-3 evaluates the run, and its verdict is recorded on issue #24."
+  - id: TASK-021-5
+    title: "Propose the root-cause fix and verify it with the profile"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
+    acceptance:
+      - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
+      - "The maintainer chooses the fix before implementation."
+      - "The fix passes the replay-throughput profile and a soak run, and the maintainer accepts CLAIM-REPLAY-THROUGHPUT-001."
+      - "A new branch off dev carries the claim, the profile, the fix, and the cited evidence. PR #580 merges first with TASK-021-6 and the EPIC-021 plan only (decision of 2026-10-04)."
+  - id: TASK-021-6
+    title: "Stop the soak failure-evidence copy from duplicating earlier harness sessions"
+    status: done
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T03:20:00Z
+    completed_at: 2026-10-04
+    resolution: "Fix 602d63c7b. Review package casper-soak-driver-evidence-scope-20261004-01 at 384b5fb08. jltatbeach accepted it in PR #580 comment 5979020312. The acceptance package casper-soak-driver-evidence-scope-acceptance-20261004-01 and the two ledger records carry the new digests. The PR #580 review fixes in 345a99a23 have review package -02 at 3d384bc9e, accepted in comment 5980616375, with acceptance package casper-soak-driver-evidence-scope-acceptance-20261004-02."
+    blocked_by: []
+    origin: "Soak 37153082817 on master f93b72699 stopped after about 3 hours at the disk hygiene band with 8,047 MB free. The failure-evidence copy in scripts/run-merge-recovery-soak.sh copied every earlier harness session into each failed iteration, so iteration N archived N sessions. The copies were 13.6 GB of the 15 GB output, and the harness log-archive root grew about 200 MB for each iteration."
+    files:
+      - scripts/run-merge-recovery-soak.sh
+      - scripts/bench/test-run-merge-recovery-soak.sh
+    cbc_policy: "scripts/run-merge-recovery-soak.sh is a cbc=mandatory discharged artifact of CLAIM-CASPER-SOAK-001 and is listed in docs/claims/soak-disk-protection.md. The change needs a new evidence package and a maintainer re-acceptance before check-casper-claims passes again."
+    acceptance:
+      - "The failure-evidence copy takes only files newer than the iteration's .started marker, like every other reader of the harness roots."
+      - "Each completed iteration resets the harness data and log-archive roots after its metrics, evidence, and breach checks."
+      - "A driver test scenario with two failed iterations proves that the second iteration's evidence and the harness root do not keep the first session."
+      - "The driver test suite passes on Linux, and the maintainer accepts the new evidence for CLAIM-CASPER-SOAK-001."
+  - id: TASK-021-7
+    title: "Split scripts/run-merge-recovery-soak.sh into sourced modules with identical behavior"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-6]
+    branch: refactor/soak-driver-modules
+    pr_policy: "A separate branch and PR after TASK-021-6 lands. Do not combine the refactor with a behavior change."
+    origin: "On 2026-10-04 the user asked to make the 2,084-line soak driver smaller and more maintainable, as a change separate from the disk fix."
+    acceptance:
+      - "The driver keeps the iteration loop and the orchestration. Host and disk protection, evidence and archives, metric extraction and summaries, and the benchmark segment move to sourced modules."
+      - "The existing driver test suite passes without changes to its assertions."
+      - "The new module files are registered as artifacts of CLAIM-CASPER-SOAK-001 and of the soak disk protection claim, and the maintainer accepts the new evidence."
+      - "A later epic decides which parts move into the Rust casper-soak runtime."
+  - id: TASK-021-8
+    title: "Measure history repository lock hold times by call site"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    origin: "In soak 37153082817, history_repository_roots_repository_lock_wait_ns reached 2 to 21 seconds for each validator in test_deploy_throughput_and_finalization, and no other test exceeded 1 second. The checkpoint's own roots lock wait stayed near zero. The metrics record wait times only, so they cannot show which call site holds the lock. The candidate cause is reset() in rspace++/src/rspace/history/history_repository_impl.rs, which holds the roots lock while it waits for the current-history lock."
+    files:
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/metrics_constants.rs
+      - scripts/bench/extend-issue24-metrics.py
+    acceptance:
+      - "The roots-repository and current-history locks record hold time and wait time with a call-site label: checkpoint commit, reset, record_root, contains_root, and the history readers."
+      - "The new metrics appear in the ISSUE24_METRICS records, and the metrics extension test covers them."
+      - "A soak run or a local throughput run attributes the roots lock wait to the call sites that hold the lock, and the result is recorded on issue #24."
+      - "The analysis confirms or rejects the nested-lock hypothesis in reset() before TASK-021-5 proposes a fix."
+---
+```
+
+**Current state:** Created on 2026-10-03 after soak 37090117438 failed. Soak 37153082817 runs weekend-60h on master f93b72699 with the stage metrics. TASK-021-1 starts from the failed run, and TASK-021-4 waits for the new run.
+
+---
+
 ### EPIC-020: Node Log and Accept-Path Self-Limits
 
 ```yaml
@@ -3480,6 +3614,7 @@ PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisit
 EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
 EPIC-020 (node log and accept-path limits, fix branch -> dev) ─> merges before PR #447
+EPIC-017 harness + PR #441 stage metrics ─> EPIC-021 (issue #24 root cause, fix/issue-24 -> dev)
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
