@@ -12,6 +12,23 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
 
 pub(super) trait IndexKey: Ord {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError>;
+
+    fn compare_metered(
+        &self,
+        other: &Self,
+        budget: &HostWorkBudget,
+    ) -> Result<Ordering, InterpreterError> {
+        let (operations, bytes) = self.comparison_work()?;
+        work(
+            budget,
+            HostWorkDimension::VerificationOperations,
+            operations
+                .checked_add(2)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+        )?;
+        work(budget, HostWorkDimension::VerificationBytes, bytes)?;
+        Ok(self.cmp(other))
+    }
 }
 
 impl IndexKey for Arc<[u8]> {
@@ -34,6 +51,42 @@ impl IndexKey for NativeBudgetOccurrence {
             operations.ok_or(InterpreterError::HostWorkRejected)?,
             bytes.ok_or(InterpreterError::HostWorkRejected)?,
         ))
+    }
+
+    fn compare_metered(
+        &self,
+        other: &Self,
+        budget: &HostWorkBudget,
+    ) -> Result<Ordering, InterpreterError> {
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        work(budget, HostWorkDimension::VerificationBytes, 32)?;
+        let order = self.session.cmp(&other.session);
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+        let shared = self.path.len().min(other.path.len());
+        let mut start = 0;
+        while start < shared {
+            let end = start.saturating_add(16).min(shared);
+            let count = end - start;
+            work(budget, HostWorkDimension::VerificationOperations, count * 2)?;
+            work(budget, HostWorkDimension::VerificationBytes, count * 16)?;
+            for index in start..end {
+                let order = self.path[index].cmp(&other.path[index]);
+                if order != Ordering::Equal {
+                    return Ok(order);
+                }
+            }
+            start = end;
+        }
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        let order = self.path.len().cmp(&other.path.len());
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        work(budget, HostWorkDimension::VerificationBytes, 1)?;
+        Ok(self.stage.cmp(&other.stage))
     }
 }
 
@@ -198,18 +251,7 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
         key: &K,
         budget: &HostWorkBudget,
     ) -> Result<Location, InterpreterError> {
-        let (operations, bytes) = key.comparison_work()?;
-        self.locate(key, |a, b| {
-            work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                operations
-                    .checked_add(2)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )?;
-            work(budget, HostWorkDimension::VerificationBytes, bytes)?;
-            Ok(a.cmp(b))
-        })
+        self.locate(key, |a, b| a.compare_metered(b, budget))
     }
 
     pub(super) fn get(

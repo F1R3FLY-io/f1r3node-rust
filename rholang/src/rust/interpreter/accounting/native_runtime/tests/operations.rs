@@ -44,6 +44,27 @@ fn introduce(budget: &RuntimeBudget, source: &Produce) {
 }
 
 #[test]
+fn native_operation_start_meters_shallow_index_work() {
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    let config = config(100, [0, 0, 1, 0]);
+    let host = config.host_work();
+    budget.reset_for_native_execution(config).unwrap();
+    let _accounting = budget.enter_comm_accounting_scope();
+    let channel = channel(1);
+    let source = Produce::create(&channel, &7u8, false);
+    scope(&budget, 0, || {
+        budget
+            .start_native_operation(
+                RSpaceOperationSource::Produce(&source),
+                std::slice::from_ref(&channel),
+                &[],
+            )
+            .unwrap();
+    });
+    assert!(host.usage(HostWorkDimension::VerificationBytes).get() < 1_000_000);
+}
+
+#[test]
 fn native_consume_metadata_rejects_invalid_indexes_and_repeated_capture_before_debit() {
     for invalid in [vec![-1], vec![1], vec![0]] {
         let budget = RuntimeBudget::new(Cost::unsafe_max());

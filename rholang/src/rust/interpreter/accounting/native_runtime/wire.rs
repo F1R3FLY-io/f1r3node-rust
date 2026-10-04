@@ -21,6 +21,8 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
 
 const BUDGET_DOMAIN: &[u8] = b"f1r3node:native-budget-recording:v1";
 const JOURNAL_DOMAIN: &[u8] = b"f1r3node:native-operation-journal:v1";
+const BUDGET_DOMAIN_V2: &[u8] = b"f1r3node:native-budget-recording:v2";
+const JOURNAL_DOMAIN_V2: &[u8] = b"f1r3node:native-operation-journal:v2";
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRecordingWireLimits {
@@ -167,6 +169,7 @@ fn kind(value: NativeAttemptStage) -> AuthorityByteEventKind {
     }
 }
 
+#[cfg(test)]
 fn write_path(
     wire: &mut Writer<'_>,
     path: &[(u64, u64)],
@@ -192,6 +195,69 @@ fn read_path(wire: &mut Reader<'_>, maximum: usize) -> Result<Vec<(u64, u64)>, I
     Ok(path)
 }
 
+fn write_path_delta(
+    wire: &mut Writer<'_>,
+    path: &[(u64, u64)],
+    previous: &[(u64, u64)],
+    maximum: usize,
+) -> Result<(), InterpreterError> {
+    if path.len() > maximum {
+        return Err(malformed());
+    }
+    let shared = path.len().min(previous.len());
+    let mut prefix = 0;
+    while prefix < shared {
+        let end = prefix.saturating_add(16).min(shared);
+        let count = end - prefix;
+        work(
+            wire.host,
+            HostWorkDimension::VerificationOperations,
+            count * 2,
+        )?;
+        work(wire.host, HostWorkDimension::VerificationBytes, count * 16)?;
+        while prefix < end && path[prefix] == previous[prefix] {
+            prefix += 1;
+        }
+        if prefix != end {
+            break;
+        }
+    }
+    wire.u64(length(prefix)?)?;
+    wire.u64(length(path.len() - prefix)?)?;
+    for &(left, right) in &path[prefix..] {
+        wire.u64(left)?;
+        wire.u64(right)?;
+    }
+    Ok(())
+}
+
+fn read_path_delta(
+    wire: &mut Reader<'_>,
+    previous: &[(u64, u64)],
+    maximum: usize,
+) -> Result<Vec<(u64, u64)>, InterpreterError> {
+    let prefix = bounded_count(wire.u64()?, previous.len().min(maximum))?;
+    let suffix = bounded_count(wire.u64()?, maximum - prefix)?;
+    let mut path = reserve_vec(prefix + suffix, wire.host)?;
+    work(wire.host, HostWorkDimension::VerificationOperations, prefix)?;
+    work(
+        wire.host,
+        HostWorkDimension::VerificationBytes,
+        prefix
+            .checked_mul(16)
+            .ok_or(InterpreterError::HostWorkRejected)?,
+    )?;
+    path.extend_from_slice(&previous[..prefix]);
+    for _ in 0..suffix {
+        path.push((wire.u64()?, wire.u64()?));
+    }
+    if suffix != 0 && prefix < previous.len() && path[prefix] == previous[prefix] {
+        return Err(malformed());
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
 fn write_occurrence(
     wire: &mut Writer<'_>,
     occurrence: &NativeBudgetOccurrence,
@@ -209,6 +275,29 @@ fn read_occurrence(
     Ok(NativeBudgetOccurrence {
         session: wire.fixed32()?,
         path: read_path(wire, limits.path_segments)?,
+        stage: stage(wire.u8()?)?,
+    })
+}
+
+fn write_occurrence_delta(
+    wire: &mut Writer<'_>,
+    occurrence: &NativeBudgetOccurrence,
+    previous: &[(u64, u64)],
+    limits: NativeBudgetTraceLimits,
+) -> Result<(), InterpreterError> {
+    wire.bytes(&occurrence.session)?;
+    write_path_delta(wire, &occurrence.path, previous, limits.path_segments)?;
+    wire.u8(stage_tag(occurrence.stage))
+}
+
+fn read_occurrence_delta(
+    wire: &mut Reader<'_>,
+    previous: &[(u64, u64)],
+    limits: NativeBudgetTraceLimits,
+) -> Result<NativeBudgetOccurrence, InterpreterError> {
+    Ok(NativeBudgetOccurrence {
+        session: wire.fixed32()?,
+        path: read_path_delta(wire, previous, limits.path_segments)?,
         stage: stage(wire.u8()?)?,
     })
 }
@@ -319,12 +408,14 @@ pub fn encode_native_budget_recording(
         wire: PhloWireEncoder::new(limits.wire),
         host,
     };
-    wire.bytes(BUDGET_DOMAIN)?;
+    wire.bytes(BUDGET_DOMAIN_V2)?;
     wire.bytes(&recording.session)?;
     wire.u64(recording.used)?;
     wire.u64(length(recording.attempts.len())?)?;
+    let mut previous: &[(u64, u64)] = &[];
     for attempt in recording.attempts.iter() {
-        write_occurrence(&mut wire, &attempt.occurrence, limits.budget)?;
+        write_occurrence_delta(&mut wire, &attempt.occurrence, previous, limits.budget)?;
+        previous = &attempt.occurrence.path;
         if attempt.occurrence.session != recording.session
             || NativeAttemptStage::from(attempt.observation.kind) != attempt.occurrence.stage
         {
@@ -335,7 +426,8 @@ pub fn encode_native_budget_recording(
     }
     wire.u64(length(recording.retries.len())?)?;
     for retry in recording.retries.iter() {
-        write_occurrence(&mut wire, &retry.occurrence, limits.budget)?;
+        write_occurrence_delta(&mut wire, &retry.occurrence, previous, limits.budget)?;
+        previous = &retry.occurrence.path;
         if retry.occurrence.session != recording.session
             || NativeAttemptStage::from(retry.observation.kind) != retry.occurrence.stage
         {
@@ -354,15 +446,24 @@ pub fn decode_native_budget_recording(
     host: &HostWorkBudget,
 ) -> Result<NativeBudgetRecording, InterpreterError> {
     let mut wire = Reader::new(input, limits.wire, host)?;
-    if wire.bytes()? != BUDGET_DOMAIN {
-        return Err(malformed());
-    }
+    let delta = match wire.bytes()? {
+        BUDGET_DOMAIN => false,
+        BUDGET_DOMAIN_V2 => true,
+        _ => return Err(malformed()),
+    };
     let session = wire.fixed32()?;
     let used = wire.u64()?;
     let attempts_count = bounded_count(wire.u64()?, limits.budget.attempts)?;
-    let mut attempts = reserve_vec(attempts_count, host)?;
+    let mut attempts = reserve_vec::<NativeBudgetAttempt>(attempts_count, host)?;
     for _ in 0..attempts_count {
-        let occurrence = read_occurrence(&mut wire, limits.budget)?;
+        let previous = attempts
+            .last()
+            .map_or(&[][..], |attempt| attempt.occurrence.path.as_slice());
+        let occurrence = if delta {
+            read_occurrence_delta(&mut wire, previous, limits.budget)?
+        } else {
+            read_occurrence(&mut wire, limits.budget)?
+        };
         let observation = read_observation(&mut wire)?;
         let granted = match wire.u8()? {
             0 => false,
@@ -379,9 +480,22 @@ pub fn decode_native_budget_recording(
         });
     }
     let retries_count = bounded_count(wire.u64()?, limits.budget.attempts - attempts_count)?;
-    let mut retries = reserve_vec(retries_count, host)?;
+    let mut retries = reserve_vec::<NativeBudgetRetry>(retries_count, host)?;
     for _ in 0..retries_count {
-        let occurrence = read_occurrence(&mut wire, limits.budget)?;
+        let previous = retries
+            .last()
+            .map(|retry| retry.occurrence.path.as_slice())
+            .or_else(|| {
+                attempts
+                    .last()
+                    .map(|attempt| attempt.occurrence.path.as_slice())
+            })
+            .unwrap_or(&[]);
+        let occurrence = if delta {
+            read_occurrence_delta(&mut wire, previous, limits.budget)?
+        } else {
+            read_occurrence(&mut wire, limits.budget)?
+        };
         let observation = read_observation(&mut wire)?;
         let accepted_attempt = bounded_count(wire.u64()?, attempts_count.saturating_sub(1))?;
         let fresh_before = bounded_count(wire.u64()?, attempts_count)?;
@@ -615,12 +729,19 @@ pub fn encode_native_operation_journal(
         wire: PhloWireEncoder::new(limits.wire),
         host,
     };
-    wire.bytes(JOURNAL_DOMAIN)?;
+    wire.bytes(JOURNAL_DOMAIN_V2)?;
     wire.u64(length(operations.len())?)?;
     let (mut sources, mut footprints, mut footprint_bytes, mut edges) = (0, 0, 0, 0);
+    let mut previous: &[(u64, u64)] = &[];
     for row in operations {
         wire.bytes(&row.occurrence.session)?;
-        write_path(&mut wire, &row.occurrence.path, limits.budget.path_segments)?;
+        write_path_delta(
+            &mut wire,
+            &row.occurrence.path,
+            previous,
+            limits.budget.path_segments,
+        )?;
+        previous = &row.occurrence.path;
         add_count(&mut sources, 1, limits.source_entries)?;
         match &row.source {
             NativeOperationSource::Produce(source) => {
@@ -679,16 +800,26 @@ pub fn decode_native_operation_journal(
     host: &HostWorkBudget,
 ) -> Result<Arc<[NativeOperationRecord]>, InterpreterError> {
     let mut wire = Reader::new(input, limits.wire, host)?;
-    if wire.bytes()? != JOURNAL_DOMAIN {
-        return Err(malformed());
-    }
+    let delta = match wire.bytes()? {
+        JOURNAL_DOMAIN => false,
+        JOURNAL_DOMAIN_V2 => true,
+        _ => return Err(malformed()),
+    };
     let count = bounded_count(wire.u64()?, limits.operations)?;
-    let mut operations = reserve_vec(count, host)?;
+    let mut operations = reserve_vec::<NativeOperationRecord>(count, host)?;
     let (mut sources, mut footprints, mut footprint_bytes, mut edges) = (0, 0, 0, 0);
     for _ in 0..count {
+        let previous = operations
+            .last()
+            .map_or(&[][..], |row| row.occurrence.path.as_ref());
         let occurrence = NativeOperationOccurrence {
             session: wire.fixed32()?,
-            path: read_path(&mut wire, limits.budget.path_segments)?.into(),
+            path: if delta {
+                read_path_delta(&mut wire, previous, limits.budget.path_segments)?
+            } else {
+                read_path(&mut wire, limits.budget.path_segments)?
+            }
+            .into(),
         };
         add_count(&mut sources, 1, limits.source_entries)?;
         let source = match wire.u8()? {
@@ -914,6 +1045,90 @@ mod tests {
     }
 
     #[test]
+    fn historical_recording_decodes_and_noncanonical_delta_is_rejected() {
+        let budget = host(1_000_000);
+        let original = recording();
+        let mut writer = Writer {
+            wire: PhloWireEncoder::new(limits().wire),
+            host: &budget,
+        };
+        writer.bytes(BUDGET_DOMAIN).unwrap();
+        writer.bytes(&original.session).unwrap();
+        writer.u64(original.used).unwrap();
+        writer.u64(1).unwrap();
+        let attempt = &original.attempts[0];
+        write_occurrence(&mut writer, &attempt.occurrence, limits().budget).unwrap();
+        write_observation(&mut writer, &attempt.observation).unwrap();
+        writer.u8(u8::from(attempt.granted)).unwrap();
+        writer.u64(1).unwrap();
+        let retry = &original.retries[0];
+        write_occurrence(&mut writer, &retry.occurrence, limits().budget).unwrap();
+        write_observation(&mut writer, &retry.observation).unwrap();
+        writer.u64(retry.accepted_attempt as u64).unwrap();
+        writer.u64(retry.fresh_before as u64).unwrap();
+        let decoded = decode_native_budget_recording(&writer.finish(), limits(), &budget).unwrap();
+        assert_eq!(decoded.session, original.session);
+        assert_eq!(decoded.used, original.used);
+        assert_eq!(decoded.attempts.as_ref(), original.attempts.as_ref());
+        assert_eq!(
+            decoded.retries[0].occurrence,
+            original.retries[0].occurrence
+        );
+        assert_eq!(
+            decoded.retries[0].observation,
+            original.retries[0].observation
+        );
+
+        let mut writer = Writer {
+            wire: PhloWireEncoder::new(limits().wire),
+            host: &budget,
+        };
+        writer.u64(0).unwrap();
+        writer.u64(1).unwrap();
+        writer.u64(7).unwrap();
+        writer.u64(8).unwrap();
+        let bytes = writer.finish();
+        let mut reader = Reader::new(&bytes, limits().wire, &budget).unwrap();
+        assert!(read_path_delta(&mut reader, &[(7, 8)], limits().budget.path_segments).is_err());
+    }
+
+    #[test]
+    fn historical_operation_journal_decodes() {
+        let budget = host(1_000_000);
+        let rows = journal();
+        let row = &rows[0];
+        let mut writer = Writer {
+            wire: PhloWireEncoder::new(limits().wire),
+            host: &budget,
+        };
+        writer.bytes(JOURNAL_DOMAIN).unwrap();
+        writer.u64(1).unwrap();
+        writer.bytes(&row.occurrence.session).unwrap();
+        write_path(
+            &mut writer,
+            &row.occurrence.path,
+            limits().budget.path_segments,
+        )
+        .unwrap();
+        writer.u8(0).unwrap();
+        let NativeOperationSource::Produce(source) = &row.source else {
+            unreachable!()
+        };
+        write_produce(&mut writer, source).unwrap();
+        writer.u8(0).unwrap();
+        writer.u64(1).unwrap();
+        writer.bytes(&row.footprint[0]).unwrap();
+        writer.u64(0).unwrap();
+        write_link(&mut writer, row.introduction).unwrap();
+        writer.u8(0).unwrap();
+        writer.u8(completion_tag(row.completion)).unwrap();
+        writer.u64(row.budget_start as u64).unwrap();
+        writer.u64(row.budget_end as u64).unwrap();
+        let decoded = decode_native_operation_journal(&writer.finish(), limits(), &budget).unwrap();
+        assert_eq!(decoded.as_ref(), &rows[..1]);
+    }
+
+    #[test]
     fn malformed_or_over_limit_records_fail_before_publication() {
         let original = recording();
         let bytes = encode_native_budget_recording(&original, limits(), &host(1_000_000)).unwrap();
@@ -933,5 +1148,79 @@ mod tests {
         short.footprint_bytes = 1;
         assert!(decode_native_operation_journal(&bytes, short, &host(1_000_000)).is_err());
         assert!(decode_native_operation_journal(&bytes, limits(), &host(1)).is_err());
+    }
+
+    fn shared_prefix(path: &[(u64, u64)], previous: &[(u64, u64)]) -> usize {
+        path.iter()
+            .zip(previous)
+            .take_while(|(left, right)| left == right)
+            .count()
+    }
+
+    fn path_chain() -> impl proptest::strategy::Strategy<Value = Vec<Vec<(u64, u64)>>> {
+        proptest::collection::vec(proptest::collection::vec((0u64..3, 0u64..3), 0..7), 0..8)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `NativePathDeltaCodec.v`: `delta_codec_round_trip`,
+        /// `delta_codec_canonical`, and `delta_encoding_unique`. A random path chain
+        /// round-trips exactly, consumes all bytes, and every non-maximal prefix
+        /// encoding of every path is rejected.
+        #[test]
+        fn path_delta_chain_round_trips_and_rejects_every_noncanonical_prefix(
+            paths in path_chain(),
+        ) {
+            let budget = host(1_000_000_000);
+            let maximum = 6;
+            let mut writer = Writer {
+                wire: PhloWireEncoder::new(limits().wire),
+                host: &budget,
+            };
+            let mut previous: &[(u64, u64)] = &[];
+            for path in &paths {
+                write_path_delta(&mut writer, path, previous, maximum)
+                    .expect("bounded path encodes");
+                previous = path;
+            }
+            let bytes = writer.finish();
+            let mut reader = Reader::new(&bytes, limits().wire, &budget).expect("reader opens");
+            let mut decoded_previous: Vec<(u64, u64)> = Vec::new();
+            for path in &paths {
+                let decoded = read_path_delta(&mut reader, &decoded_previous, maximum)
+                    .expect("canonical encoding decodes");
+                proptest::prop_assert_eq!(&decoded, path);
+                decoded_previous = decoded;
+            }
+            proptest::prop_assert!(reader.finish().is_ok());
+
+            let mut previous: Vec<(u64, u64)> = Vec::new();
+            for path in &paths {
+                for prefix in 0..shared_prefix(path, &previous) {
+                    let mut writer = Writer {
+                        wire: PhloWireEncoder::new(limits().wire),
+                        host: &budget,
+                    };
+                    writer.u64(prefix as u64).expect("prefix encodes");
+                    writer.u64((path.len() - prefix) as u64).expect("length encodes");
+                    for &(left, right) in &path[prefix..] {
+                        writer.u64(left).expect("segment encodes");
+                        writer.u64(right).expect("segment encodes");
+                    }
+                    let bytes = writer.finish();
+                    let mut reader = Reader::new(&bytes, limits().wire, &budget)
+                        .expect("reader opens");
+                    proptest::prop_assert!(
+                        read_path_delta(&mut reader, &previous, maximum).is_err(),
+                        "non-maximal prefix {} accepted for {:?} after {:?}",
+                        prefix,
+                        path,
+                        previous
+                    );
+                }
+                previous = path.clone();
+            }
+        }
     }
 }

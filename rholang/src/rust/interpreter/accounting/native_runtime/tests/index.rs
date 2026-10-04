@@ -236,6 +236,50 @@ fn native_index_long_prefix_comparisons_reserve_the_complete_key_bound() {
     assert_eq!(index.get_prepaid(&key), Some(&9));
 }
 
+#[test]
+fn native_occurrence_comparison_charges_only_the_inspected_prefix() {
+    let first = NativeBudgetOccurrence {
+        session: [7; 32],
+        path: vec![(1, 2); 512],
+        stage: NativeAttemptStage::ProduceIntroduction,
+    };
+    let mut changed = first.clone();
+    changed.path[0] = (2, 2);
+    let budget = host();
+    assert_eq!(
+        first.compare_metered(&changed, &budget).unwrap(),
+        first.cmp(&changed)
+    );
+    assert_eq!(
+        budget.usage(HostWorkDimension::VerificationBytes).get(),
+        288
+    );
+
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000));
+    limits.set(
+        HostWorkDimension::VerificationBytes,
+        HostWorkLimit::new(32 + 511 * 16),
+    );
+    changed.path = first.path.clone();
+    changed.path[511] = (2, 2);
+    assert!(first
+        .compare_metered(&changed, &HostWorkBudget::new(limits))
+        .is_err());
+    limits.set(
+        HostWorkDimension::VerificationBytes,
+        HostWorkLimit::new(32 + 512 * 16),
+    );
+    let exact = HostWorkBudget::new(limits);
+    assert_eq!(
+        first.compare_metered(&changed, &exact).unwrap(),
+        first.cmp(&changed)
+    );
+    assert_eq!(
+        exact.usage(HostWorkDimension::VerificationBytes).get(),
+        32 + 512 * 16
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -296,5 +340,70 @@ proptest! {
             prop_assert_eq!(index.commit(prepared), expected.insert(key, value));
             verify(&index, &expected);
         }
+    }
+
+    #[test]
+    fn native_occurrence_metered_comparison_matches_derived_order(
+        left_session in any::<[u8; 32]>(),
+        right_session in any::<[u8; 32]>(),
+        left_path in prop::collection::vec((any::<u64>(), any::<u64>()), 0..128),
+        right_path in prop::collection::vec((any::<u64>(), any::<u64>()), 0..128),
+        left_stage in 0usize..3,
+        right_stage in 0usize..3,
+    ) {
+        let stages = [NativeAttemptStage::ProduceIntroduction, NativeAttemptStage::ConsumeIntroduction, NativeAttemptStage::Comm];
+        let left = NativeBudgetOccurrence {
+            session: left_session,
+            path: left_path,
+            stage: stages[left_stage],
+        };
+        let right = NativeBudgetOccurrence {
+            session: right_session,
+            path: right_path,
+            stage: stages[right_stage],
+        };
+        prop_assert_eq!(left.compare_metered(&right, &host()).unwrap(), left.cmp(&right));
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Extracted from `MeteredComparison.v`: `metered_lex_compare_correct` and
+    /// `chunk_scan_charge_bounded`. The sessions are equal, so the comparison
+    /// reaches the chunked path scan; a two-letter alphabet produces long shared
+    /// prefixes across the 16-segment chunk boundary.
+    #[test]
+    fn native_occurrence_metered_order_with_shared_session_and_bounded_charges(
+        left_path in prop::collection::vec((0u64..2, 0u64..2), 0..40),
+        right_path in prop::collection::vec((0u64..2, 0u64..2), 0..40),
+        left_stage in 0usize..3,
+        right_stage in 0usize..3,
+    ) {
+        let stages = [
+            NativeAttemptStage::ProduceIntroduction,
+            NativeAttemptStage::ConsumeIntroduction,
+            NativeAttemptStage::Comm,
+        ];
+        let shared = left_path.len().min(right_path.len()) as u64;
+        let left = NativeBudgetOccurrence {
+            session: [5; 32],
+            path: left_path,
+            stage: stages[left_stage],
+        };
+        let right = NativeBudgetOccurrence {
+            session: [5; 32],
+            path: right_path,
+            stage: stages[right_stage],
+        };
+        let budget = host();
+        prop_assert_eq!(
+            left.compare_metered(&right, &budget).expect("metered comparison fits the budget"),
+            left.cmp(&right)
+        );
+        let charged = budget
+            .usage(models::rust::host_work::HostWorkDimension::VerificationBytes)
+            .get();
+        prop_assert!(charged <= 32 + 16 * shared + 1);
     }
 }

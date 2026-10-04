@@ -620,4 +620,6 @@ theories/NativeReplayAccounting.v
 theories/NativeReplayAuthentication.v
 theories/OfferedOnlyActivation.v
 theories/GenesisVersionAdoption.v
+theories/NativePathDeltaCodec.v
+theories/MeteredComparison.v
 theories/QuoteExactOutput.v

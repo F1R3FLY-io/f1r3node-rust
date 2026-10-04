@@ -4436,3 +4436,121 @@ checks the adopted version against the real `GenesisResourcePolicy::adopt`.
 
 **Cross-refs.** DR-34, DR-47, DR-66. Leaves `ofp-1-baseline-hygiene` and
 `ofp-1-baseline-verify-activation`.
+
+## DR-74 — Native evidence encodes each causal path as a delta from the previous path
+
+**Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
+B0).
+
+**Terms.**
+
+- A causal path is the sequence of segments that identifies where one native
+  operation ran. A segment is a pair of 64-bit integers.
+- $`\mathrm{lcp}(a, b)`$ is the length of the longest common prefix of the
+  paths $`a`$ and $`b`$.
+- An entry is the encoding of one path: the prefix length $`p`$, the suffix
+  length $`s`$, and the $`s`$ suffix segments.
+
+**Context.** The native budget recording and the native operation journal
+carry one causal path for each recorded attempt.
+
+A gateway funding trace had 1,029 attempts with 529,617 path segments. Those
+segments exceeded the 1 MiB recording limit, although execution performed only
+about 1,000 operations.
+
+A measurement showed that 534,964 segments repeated a prefix of the preceding
+path. Only 2,463 segments were new.
+
+Index comparisons also charged the worst-case work of a complete path for
+every comparison. A second reservation before each lookup charged the same
+work again.
+
+![Diagram of the delta encoding. A previous path (0,1) (0,0) (2,2) and a current path (0,1) (0,0) (3,1) (4,4) enter a longest-common-prefix computation, which gives p equal to 2. The encoder emits the canonical v2 entry with p equal to 2, s equal to 2, and the suffix (3,1) (4,4). The decoder rebuilds the first p segments of the previous path followed by the suffix, and it rejects an entry when s is positive, p is less than the previous length, and the suffix head equals the previous path at position p. A non-maximal entry with p equal to 1, s equal to 3, and suffix (0,0) (3,1) (4,4) is rejected, because its suffix head (0,0) equals the previous path at position 1. The accepted entry decodes to the current path. A note states that the first attempt uses the empty previous path, that retries continue the chain from the last attempt, and that v1 records still decode.](diagrams/native-path-delta-encoding.svg)
+
+(*Source: [`diagrams/native-path-delta-encoding.puml`](diagrams/native-path-delta-encoding.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/native-path-delta-encoding.puml`.*)
+
+**Decision.**
+
+1. New recordings use the domains `f1r3node:native-budget-recording:v2` and
+   `f1r3node:native-operation-journal:v2`.
+2. Each path is encoded as an entry relative to the previous path. The first
+   attempt uses the empty path as its previous path. Retries continue the
+   chain from the last attempt.
+3. The encoder always emits the maximal shared prefix,
+   $`p = \mathrm{lcp}(\mathrm{current}, \mathrm{previous})`$. The decoder
+   rejects a non-maximal prefix, so each recording has exactly one encoding.
+4. The decoder still accepts the v1 domains for historical records.
+5. A metered key comparison charges only the inspected prefix, in chunks of
+   16 segments. It returns exactly the order of the key's `Ord`, because
+   `NativeIndex` uses both comparators on one tree.
+6. The duplicate reservation before each operation-index lookup is removed.
+   The charge before each comparison still bounds the work.
+
+**Algorithm (literate form).** The codec has two named chunks, one for each
+direction.
+
+The encoder compares the current path with the previous one in 16-segment
+chunks and charges each chunk before it compares it. It then writes the
+maximal prefix length and the remaining suffix.
+
+```text
+⟨encode one path⟩ ≡
+  p ← lcp(path, previous)                 -- chunked scan, charged per chunk
+  emit(p, length(path) − p, path[p ..])
+```
+
+The decoder bounds both lengths before it allocates. It rejects an entry whose
+suffix could have shared one more segment with the previous path. That check
+is what makes the encoding unique.
+
+```text
+⟨decode one path⟩ ≡
+  require p ≤ min(length(previous), maximum)
+  require s ≤ maximum − p
+  path ← previous[0 .. p] ++ suffix
+  require s = 0 or p = length(previous) or suffix[0] ≠ previous[p]
+  return path
+```
+
+**Scope.** The encoding changes the bytes of native evidence for protocol 6,
+which is not yet released. Producers and validators run the same codec, so
+they agree.
+
+The consensus host-work limits are unchanged. Profiling must find the root
+cause of the remaining replay cost before any limit changes.
+
+**Verification.** `NativePathDeltaCodec.v` proves five theorems without
+axioms, generically over any segment type with decidable equality:
+
+- `encode_one_decodes` and `decode_one_canonical`, for one path.
+- `delta_codec_round_trip` and `delta_codec_canonical`, for a path chain.
+- `delta_encoding_unique`, which states that each chain has exactly one
+  accepted encoding.
+
+`MeteredComparison.v` proves five theorems without axioms. The chunked scan
+finds exactly the first difference (`chunk_scan_result`). It never charges
+beyond the compared range (`chunk_scan_charge_bounded`). An equal prefix is
+charged in full (`chunk_scan_equal_prefix_charges_all`).
+
+For every chunk size of at least 1, the chunked path comparison equals the
+derived lexicographic order (`metered_lex_compare_correct`). The chunked
+operation-key comparison equals `Ord for OperationKey`
+(`metered_operation_compare_correct`).
+
+Property tests extract these theorems into Rust:
+
+- `path_delta_chain_round_trips_and_rejects_every_noncanonical_prefix` checks
+  round trips over random path chains. It also checks that every non-maximal
+  prefix entry of every path is rejected.
+- `operation_key_metered_order_equals_ord_with_bounded_charges` and
+  `native_occurrence_metered_order_with_shared_session_and_bounded_charges`
+  check the order equalities and the charge bounds across the chunk boundary.
+- `operation_index_comparators_agree_for_arbitrary_key_sets` checks that
+  metered and prepaid index lookups give the same answers.
+
+The example tests `canonical_recording_and_journal_round_trip`,
+`historical_recording_decodes_and_noncanonical_delta_is_rejected`, and
+`historical_operation_journal_decodes` cover the v1 compatibility paths.
+
+**Cross-refs.** DR-72. Leaves `ofp-2-path-codec-parity`,
+`ofp-2-limit-envelope`, and `ofp-1-baseline-verify-codec`.
