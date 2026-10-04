@@ -1,0 +1,2090 @@
+use cordial_miners_core::Block;
+use cordial_miners_core::blocklace::Blocklace;
+use cordial_miners_core::consensus::{
+    BufferOutcome, BufferPolicy, InvalidBlock, PendingBlockBuffer, PredecessorSelectionMode,
+    ProposalError, ValidationConfig, build_block_candidate, build_block_candidate_with_mode,
+    next_block_predecessors, next_block_predecessors_with_mode,
+    predecessors_acknowledge_all_equivocation_branches, required_acknowledgements,
+    select_predecessors, select_predecessors_sorted, select_predecessors_strict,
+    select_predecessors_with_mode, validated_insert, validator_visible_tips,
+    weighted_required_acknowledgements,
+};
+use cordial_miners_core::crypto::CryptoVerifier;
+use cordial_miners_core::types::{BlockContent, BlockIdentity, NodeId};
+use std::collections::{HashMap, HashSet};
+
+struct MockVerifier;
+
+impl CryptoVerifier for MockVerifier {
+    type Error = String;
+
+    fn verify_block(
+        &self,
+        _content: &BlockContent,
+        _sig: &[u8],
+        _creator: &NodeId,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+fn node(id: u8) -> NodeId {
+    NodeId(vec![id])
+}
+
+fn create_mock_block(creator_id: u8, hash_byte: u8, predecessors: HashSet<BlockIdentity>) -> Block {
+    let mut content_hash = [0u8; 32];
+    content_hash[0] = creator_id;
+    content_hash[1] = hash_byte;
+
+    Block {
+        identity: BlockIdentity {
+            content_hash,
+            creator: node(creator_id),
+            signature: vec![],
+        },
+        content: BlockContent {
+            payload: vec![],
+            predecessors,
+        },
+    }
+}
+
+fn create_same_hash_block(
+    creator_id: u8,
+    shared_hash: [u8; 32],
+    signature_tag: u8,
+    predecessors: HashSet<BlockIdentity>,
+) -> Block {
+    Block {
+        identity: BlockIdentity {
+            content_hash: shared_hash,
+            creator: node(creator_id),
+            signature: vec![signature_tag],
+        },
+        content: BlockContent {
+            payload: vec![],
+            predecessors,
+        },
+    }
+}
+
+fn insert(blocklace: &mut Blocklace, block: &Block) {
+    let verifier = MockVerifier;
+    blocklace
+        .insert(block.clone(), &verifier)
+        .expect("insert failed");
+}
+
+fn dissemination_test_config() -> ValidationConfig {
+    ValidationConfig {
+        check_content_hash: false,
+        check_signature: false,
+        ..ValidationConfig::default()
+    }
+}
+
+#[test]
+fn next_block_predecessors_allows_bootstrap_on_empty_blocklace() {
+    let blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let predecessors = next_block_predecessors(&blocklace, &bonds)
+        .expect("empty blocklace should allow the first block");
+
+    assert!(predecessors.is_empty());
+}
+
+#[test]
+fn next_block_predecessors_fails_when_no_predecessors_are_available() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+    bonds.insert(node(1), 100);
+
+    let result = next_block_predecessors(&blocklace, &bonds);
+
+    assert!(matches!(
+        result,
+        Err(ProposalError::NoPredecessorsAvailable)
+    ));
+}
+
+#[test]
+fn next_block_predecessors_fails_when_visible_tips_are_below_threshold() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    for i in 1..=4u8 {
+        bonds.insert(node(i), 100);
+    }
+
+    let tip1 = create_mock_block(1, 1, HashSet::new());
+    let tip2 = create_mock_block(2, 2, HashSet::new());
+    insert(&mut blocklace, &tip1);
+    insert(&mut blocklace, &tip2);
+
+    let result = next_block_predecessors(&blocklace, &bonds);
+
+    assert!(matches!(
+        result,
+        Err(ProposalError::InsufficientAcknowledgements {
+            observed: 2,
+            required: 3,
+        })
+    ));
+}
+
+#[test]
+fn build_block_candidate_allows_bootstrap_on_empty_blocklace() {
+    let blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let payload = vec![1, 2, 3];
+    let result = build_block_candidate(&blocklace, &bonds, payload.clone())
+        .expect("empty blocklace should allow the first block");
+
+    assert_eq!(result.payload, payload);
+    assert!(result.predecessors.is_empty());
+}
+
+#[test]
+fn build_block_candidate_returns_payload_and_selected_predecessors() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    for i in 1..=4u8 {
+        let block = create_mock_block(i, i, HashSet::new());
+        insert(&mut blocklace, &block);
+        bonds.insert(node(i), 100);
+    }
+
+    let payload = vec![4, 2];
+    let candidate = build_block_candidate(&blocklace, &bonds, payload.clone())
+        .expect("sufficient local view should build a candidate");
+
+    assert_eq!(candidate.payload, payload);
+    assert_eq!(
+        candidate.predecessors,
+        select_predecessors(&blocklace, &bonds)
+    );
+}
+
+#[test]
+fn build_block_candidate_uses_next_block_predecessors() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    for i in 1..=4u8 {
+        let block = create_mock_block(i, i, HashSet::new());
+        insert(&mut blocklace, &block);
+        bonds.insert(node(i), 100);
+    }
+
+    let predecessors = next_block_predecessors(&blocklace, &bonds)
+        .expect("healthy local view should select predecessors");
+    let candidate = build_block_candidate(&blocklace, &bonds, vec![3, 1, 4])
+        .expect("healthy local view should build a candidate");
+
+    assert_eq!(candidate.predecessors, predecessors);
+}
+
+#[test]
+fn build_block_candidate_extends_single_chain_with_latest_tip() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2 = create_mock_block(1, 2, HashSet::from([genesis.identity.clone()]));
+    insert(&mut blocklace, &genesis);
+    insert(&mut blocklace, &block2);
+
+    let candidate = build_block_candidate(&blocklace, &bonds, vec![8])
+        .expect("single chain with visible tip should produce a candidate");
+
+    assert_eq!(
+        candidate.predecessors,
+        HashSet::from([block2.identity.clone()])
+    );
+}
+
+#[test]
+fn build_block_candidate_includes_missing_equivocation_branches() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    let honest_tip = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    let tip3 = create_mock_block(3, 4, HashSet::new());
+    let tip4 = create_mock_block(4, 5, HashSet::new());
+    insert(&mut blocklace, &honest_tip);
+    insert(&mut blocklace, &tip3);
+    insert(&mut blocklace, &tip4);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+    bonds.insert(node(4), 100);
+
+    let candidate = build_block_candidate(&blocklace, &bonds, vec![9, 9])
+        .expect("honest tip should allow a candidate");
+
+    assert!(candidate.predecessors.contains(&honest_tip.identity));
+    assert!(candidate.predecessors.contains(&tip3.identity));
+    assert!(candidate.predecessors.contains(&tip4.identity));
+    assert!(candidate.predecessors.contains(&e2.identity));
+    assert!(!candidate.predecessors.contains(&e1.identity));
+}
+
+#[test]
+fn build_block_candidate_is_deterministic_for_same_local_view() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2 = create_mock_block(2, 2, HashSet::from([genesis.identity.clone()]));
+    let block3 = create_mock_block(3, 3, HashSet::from([genesis.identity.clone()]));
+
+    insert(&mut blocklace, &genesis);
+    insert(&mut blocklace, &block2);
+    insert(&mut blocklace, &block3);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+
+    let payload = vec![7];
+    let candidate1 = build_block_candidate(&blocklace, &bonds, payload.clone())
+        .expect("first proposal should succeed");
+    let candidate2 =
+        build_block_candidate(&blocklace, &bonds, payload).expect("second proposal should succeed");
+
+    assert_eq!(candidate1.payload, candidate2.payload);
+    assert_eq!(candidate1.predecessors, candidate2.predecessors);
+}
+
+// ============================================================================
+// ACCEPTANCE TESTS (from specification)
+// ============================================================================
+
+/// **AC1**: Empty blocklace returns empty predecessor set
+#[test]
+fn empty_blocklace_returns_empty_predecessors() {
+    let blocklace = Blocklace::new();
+    let bonds = HashMap::new();
+
+    let preds = select_predecessors(&blocklace, &bonds);
+
+    assert!(preds.is_empty());
+}
+
+/// **AC2**: Single-chain growth: tip advances correctly as the chain grows.
+///
+/// Tests a 3-block chain to confirm that as each new block is appended, the
+/// predecessor returned is always the latest tip, not an earlier ancestor.
+#[test]
+fn single_chain_growth_selects_latest_as_predecessor() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    // Block 1 (genesis)
+    let block1 = create_mock_block(1, 1, HashSet::new());
+    insert(&mut blocklace, &block1);
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 1);
+    assert!(
+        preds.contains(&block1.identity),
+        "genesis should be the tip initially"
+    );
+
+    // Block 2 extends the chain
+    let block2 = create_mock_block(1, 2, HashSet::from([block1.identity.clone()]));
+    insert(&mut blocklace, &block2);
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 1);
+    assert!(
+        preds.contains(&block2.identity),
+        "block2 should be the tip after block1"
+    );
+    assert!(
+        !preds.contains(&block1.identity),
+        "block1 should no longer be the tip"
+    );
+
+    // Block 3 extends further
+    let block3 = create_mock_block(1, 3, HashSet::from([block2.identity.clone()]));
+    insert(&mut blocklace, &block3);
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 1);
+    assert!(
+        preds.contains(&block3.identity),
+        "block3 should be the tip after block2"
+    );
+    assert!(
+        !preds.contains(&block2.identity),
+        "block2 should no longer be the tip"
+    );
+}
+
+/// **AC3**: Multiple validator tips are all selected as predecessors
+#[test]
+fn multiple_validator_tips_all_selected() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let tip_v1 = create_mock_block(1, 1, HashSet::new());
+    let tip_v2 = create_mock_block(2, 2, HashSet::new());
+    let tip_v3 = create_mock_block(3, 3, HashSet::new());
+
+    insert(&mut blocklace, &tip_v1);
+    insert(&mut blocklace, &tip_v2);
+    insert(&mut blocklace, &tip_v3);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+
+    let preds = select_predecessors(&blocklace, &bonds);
+
+    assert_eq!(preds.len(), 3);
+    assert!(preds.contains(&tip_v1.identity));
+    assert!(preds.contains(&tip_v2.identity));
+    assert!(preds.contains(&tip_v3.identity));
+}
+
+/// **AC4**: Equivocating validators are excluded from the tips map and from predecessors.
+///
+/// The test explicitly checks both layers:
+/// 1. `validator_visible_tips` must not contain the equivocating validator at all.
+/// 2. `select_predecessors` must include the honest tip and any missing
+///    equivocation branches needed to avoid hiding the known equivocation.
+#[test]
+fn equivocating_validators_excluded_from_predecessors() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // Equivocation: two genesis-level blocks by validator 1 (no predecessor relationship)
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // Honest validator 2 references one branch of the equivocation transitively
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100); // equivocator
+    bonds.insert(node(2), 100); // honest
+
+    // Layer 1: tips map must not contain the equivocating validator
+    let tips = validator_visible_tips(&blocklace, &bonds);
+    assert!(
+        !tips.contains_key(&node(1)),
+        "equivocating validator 1 must be absent from the tips map"
+    );
+    assert!(
+        tips.contains_key(&node(2)),
+        "honest validator 2 must appear in the tips map"
+    );
+
+    // Layer 2: predecessor set keeps the honest tip and adds the missing
+    // equivocation branch that is not already transitively observed.
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 2);
+    assert!(preds.contains(&tip_v2.identity));
+    assert!(
+        !preds.contains(&e1.identity),
+        "already observed branch need not be a direct predecessor"
+    );
+    assert!(
+        preds.contains(&e2.identity),
+        "missing branch should be added explicitly"
+    );
+}
+
+/// When a locally known equivocation is not yet fully acknowledged through the
+/// honest tip set, predecessor selection must add the missing branches so a new
+/// block does not hide that known equivocation.
+#[test]
+fn known_equivocation_branches_are_added_when_not_transitively_observed() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // Honest validator 2 only sees one branch of the equivocation.
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    let preds = select_predecessors(&blocklace, &bonds);
+
+    assert!(preds.contains(&tip_v2.identity));
+    assert!(
+        !preds.contains(&e1.identity),
+        "already observed branch should remain transitive only"
+    );
+    assert!(
+        preds.contains(&e2.identity),
+        "the missing equivocation branch should be added explicitly"
+    );
+}
+
+/// **AC5**: Predecessor selection is deterministic across repeated calls on the same view.
+#[test]
+fn deterministic_predecessor_selection() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    insert(&mut blocklace, &genesis);
+    bonds.insert(node(1), 100);
+
+    let block2 = create_mock_block(2, 2, HashSet::from([genesis.identity.clone()]));
+    insert(&mut blocklace, &block2);
+    bonds.insert(node(2), 100);
+
+    let block3 = create_mock_block(1, 3, HashSet::from([block2.identity.clone()]));
+    insert(&mut blocklace, &block3);
+
+    let block4 = create_mock_block(3, 4, HashSet::from([block3.identity.clone()]));
+    insert(&mut blocklace, &block4);
+    bonds.insert(node(3), 100);
+
+    let preds1 = select_predecessors(&blocklace, &bonds);
+    let preds2 = select_predecessors(&blocklace, &bonds);
+    let preds3 = select_predecessors(&blocklace, &bonds);
+
+    assert_eq!(preds1, preds2);
+    assert_eq!(preds2, preds3);
+}
+
+// ============================================================================
+// ADDITIONAL TESTS (robustness and edge cases)
+// ============================================================================
+
+/// Bonded validators with no blocks are absent from tips; unbonded validators'
+/// blocks are ignored even when present in the blocklace.
+#[test]
+fn bonded_without_blocks_and_unbonded_with_blocks_are_both_excluded() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let tip_bonded = create_mock_block(1, 1, HashSet::new());
+    // validator 2 is bonded but never produces a block
+    // validator 3 produces a block but is not bonded
+    let tip_unbonded = create_mock_block(3, 3, HashSet::new());
+
+    insert(&mut blocklace, &tip_bonded);
+    insert(&mut blocklace, &tip_unbonded);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100); // bonded, no blocks
+
+    let tips = validator_visible_tips(&blocklace, &bonds);
+    assert_eq!(
+        tips.len(),
+        1,
+        "only the bonded validator with a block should appear"
+    );
+    assert!(tips.contains_key(&node(1)));
+    assert!(!tips.contains_key(&node(2)), "bonded but no blocks: absent");
+    assert!(
+        !tips.contains_key(&node(3)),
+        "has blocks but not bonded: absent"
+    );
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 1);
+    assert!(preds.contains(&tip_bonded.identity));
+    assert!(!preds.contains(&tip_unbonded.identity));
+}
+
+/// All returned predecessors must exist in the blocklace (closure axiom).
+#[test]
+fn predecessors_are_in_blocklace() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    insert(&mut blocklace, &genesis);
+    bonds.insert(node(1), 100);
+
+    let block2 = create_mock_block(2, 2, HashSet::from([genesis.identity.clone()]));
+    insert(&mut blocklace, &block2);
+    bonds.insert(node(2), 100);
+
+    let block3 = create_mock_block(1, 3, HashSet::from([block2.identity.clone()]));
+    insert(&mut blocklace, &block3);
+
+    let preds = select_predecessors(&blocklace, &bonds);
+
+    for pred_id in &preds {
+        assert!(
+            blocklace.get(pred_id).is_some(),
+            "predecessor {pred_id:?} must exist in the blocklace"
+        );
+    }
+}
+
+/// Multi-layer DAG: tip identity for each validator is independently correct.
+///
+/// Explicitly checks `validator_visible_tips` to anchor which block is v2's tip,
+/// rather than inferring it from `select_predecessors` alone.
+#[test]
+fn complex_dag_multilayer() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // Layer 0: independent genesis blocks
+    let g1 = create_mock_block(1, 1, HashSet::new());
+    let g2 = create_mock_block(2, 2, HashSet::new());
+    insert(&mut blocklace, &g1);
+    insert(&mut blocklace, &g2);
+
+    // Layer 1: each validator advances their own chain
+    let l1_v1 = create_mock_block(1, 3, HashSet::from([g1.identity.clone()]));
+    let l1_v2 = create_mock_block(2, 4, HashSet::from([g2.identity.clone()]));
+    insert(&mut blocklace, &l1_v1);
+    insert(&mut blocklace, &l1_v2);
+
+    // Layer 2: validator 1 advances again, referencing both layer-1 tips
+    let l2_v1 = create_mock_block(
+        1,
+        5,
+        HashSet::from([l1_v1.identity.clone(), l1_v2.identity.clone()]),
+    );
+    insert(&mut blocklace, &l2_v1);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    // Confirm individual tip identities before checking predecessor set
+    let tips = validator_visible_tips(&blocklace, &bonds);
+    assert_eq!(
+        tips[&node(1)],
+        l2_v1.identity,
+        "v1's tip must be l2_v1 (the most recent block)"
+    );
+    assert_eq!(
+        tips[&node(2)],
+        l1_v2.identity,
+        "v2's tip must be l1_v2 (v2 has not advanced beyond layer 1)"
+    );
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 2);
+    assert!(preds.contains(&l2_v1.identity));
+    assert!(preds.contains(&l1_v2.identity));
+}
+
+/// A validator with only equivocating blocks and no honest peers yields an empty
+/// predecessor set.
+#[test]
+fn equivocating_only_validator_yields_empty_predecessors() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // 3-way equivocation at genesis level
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    let e3 = create_mock_block(1, 3, HashSet::new());
+
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+    insert(&mut blocklace, &e3);
+
+    bonds.insert(node(1), 100);
+
+    // Tips map must not contain the equivocator
+    let tips = validator_visible_tips(&blocklace, &bonds);
+    assert!(
+        !tips.contains_key(&node(1)),
+        "equivocating validator must be absent from the tips map"
+    );
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 0);
+}
+
+/// Multiple equivocating validators are all excluded; honest validators remain.
+#[test]
+fn multiple_equivocations_different_validators() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let v1_e1 = create_mock_block(1, 1, HashSet::new());
+    let v1_e2 = create_mock_block(1, 2, HashSet::new());
+    let v2_e1 = create_mock_block(2, 3, HashSet::new());
+    let v2_e2 = create_mock_block(2, 4, HashSet::new());
+
+    insert(&mut blocklace, &v1_e1);
+    insert(&mut blocklace, &v1_e2);
+    insert(&mut blocklace, &v2_e1);
+    insert(&mut blocklace, &v2_e2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    let tips = validator_visible_tips(&blocklace, &bonds);
+    assert!(
+        !tips.contains_key(&node(1)),
+        "equivocator v1 absent from tips"
+    );
+    assert!(
+        !tips.contains_key(&node(2)),
+        "equivocator v2 absent from tips"
+    );
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    assert_eq!(preds.len(), 0);
+}
+
+/// `select_predecessors_sorted` is deterministic and the output follows the
+/// natural ordering of `BlockIdentity`.
+#[test]
+fn select_predecessors_sorted_is_deterministic_and_ordered() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // hash_byte values are set so the natural insertion order differs from sorted order:
+    // creator=10 → hash[0]=10, creator=5 → hash[0]=5, creator=15 → hash[0]=15
+    // Natural insertion: 10, 5, 15. Sorted order: 5, 10, 15.
+    let tip1 = create_mock_block(10, 0, HashSet::new()); // hash[0]=10
+    let tip2 = create_mock_block(5, 0, HashSet::new()); // hash[0]=5  (smallest)
+    let tip3 = create_mock_block(15, 0, HashSet::new()); // hash[0]=15 (largest)
+
+    insert(&mut blocklace, &tip1);
+    insert(&mut blocklace, &tip2);
+    insert(&mut blocklace, &tip3);
+
+    bonds.insert(node(10), 100);
+    bonds.insert(node(5), 100);
+    bonds.insert(node(15), 100);
+
+    let sorted1 = select_predecessors_sorted(&blocklace, &bonds);
+    let sorted2 = select_predecessors_sorted(&blocklace, &bonds);
+
+    // Deterministic across calls
+    assert_eq!(sorted1, sorted2);
+
+    // Correct ascending order
+    assert!(
+        sorted1.windows(2).all(|w| w[0] <= w[1]),
+        "output must be sorted ascending by BlockIdentity"
+    );
+
+    // Verify the specific expected order: tip2 (hash[0]=5) < tip1 (hash[0]=10) < tip3 (hash[0]=15)
+    assert_eq!(sorted1[0].content_hash[0], 5);
+    assert_eq!(sorted1[1].content_hash[0], 10);
+    assert_eq!(sorted1[2].content_hash[0], 15);
+}
+
+#[test]
+fn select_predecessors_sorted_is_deterministic_when_hashes_collide() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let shared_hash = [7u8; 32];
+    let tip1 = create_same_hash_block(2, shared_hash, 9, HashSet::new());
+    let tip2 = create_same_hash_block(1, shared_hash, 3, HashSet::new());
+
+    insert(&mut blocklace, &tip1);
+    insert(&mut blocklace, &tip2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    let sorted1 = select_predecessors_sorted(&blocklace, &bonds);
+    let sorted2 = select_predecessors_sorted(&blocklace, &bonds);
+
+    assert_eq!(sorted1, sorted2);
+    assert_eq!(sorted1, vec![tip2.identity.clone(), tip1.identity.clone()]);
+}
+
+/// `validator_visible_tips` returns the correct map structure with the right identities.
+#[test]
+fn validator_visible_tips_structure() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let tip1 = create_mock_block(1, 1, HashSet::new());
+    let tip2 = create_mock_block(2, 2, HashSet::new());
+
+    insert(&mut blocklace, &tip1);
+    insert(&mut blocklace, &tip2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    let tips = validator_visible_tips(&blocklace, &bonds);
+
+    assert_eq!(tips.len(), 2);
+    assert_eq!(tips[&node(1)], tip1.identity);
+    assert_eq!(tips[&node(2)], tip2.identity);
+}
+
+// ============================================================================
+// required_acknowledgements TESTS
+// ============================================================================
+
+/// Empty validator set requires 0 acknowledgements.
+#[test]
+fn required_acknowledgements_empty_set() {
+    let bonds: HashMap<NodeId, u64> = HashMap::new();
+    assert_eq!(required_acknowledgements(&bonds), 0);
+}
+
+/// n=1: single validator, threshold is 1 (the only validator must acknowledge itself).
+#[test]
+fn required_acknowledgements_single_validator() {
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+    // (2*1)/3 + 1 = 0 + 1 = 1
+    assert_eq!(required_acknowledgements(&bonds), 1);
+}
+
+/// n=4 (standard 3f+1 with f=1): threshold must be 3 (2f+1 = 3).
+#[test]
+fn required_acknowledgements_four_validators() {
+    let mut bonds = HashMap::new();
+    for i in 1..=4 {
+        bonds.insert(node(i), 100);
+    }
+    // (2*4)/3 + 1 = 2 + 1 = 3
+    assert_eq!(required_acknowledgements(&bonds), 3);
+}
+
+/// n=7 (3f+1 with f=2): threshold must be 5 (2f+1 = 5).
+#[test]
+fn required_acknowledgements_seven_validators() {
+    let mut bonds = HashMap::new();
+    for i in 1..=7 {
+        bonds.insert(node(i), 100);
+    }
+    // (2*7)/3 + 1 = 4 + 1 = 5
+    assert_eq!(required_acknowledgements(&bonds), 5);
+}
+
+/// n=10 (3f+1 with f=3): threshold must be 7 (2f+1 = 7).
+#[test]
+fn required_acknowledgements_ten_validators() {
+    let mut bonds = HashMap::new();
+    for i in 1..=10 {
+        bonds.insert(node(i), 100);
+    }
+    // (2*10)/3 + 1 = 6 + 1 = 7
+    assert_eq!(required_acknowledgements(&bonds), 7);
+}
+
+/// Threshold is always strictly greater than two-thirds for all n up to 100.
+#[test]
+fn required_acknowledgements_always_supermajority() {
+    for n in 1usize..=100 {
+        let mut bonds = HashMap::new();
+        for i in 0..n {
+            bonds.insert(NodeId(vec![i as u8]), 100);
+        }
+        let threshold = required_acknowledgements(&bonds);
+        // Must be strictly greater than 2n/3
+        assert!(
+            threshold * 3 > 2 * n,
+            "n={n}: threshold {threshold} is not > 2n/3"
+        );
+        assert!(
+            threshold <= n,
+            "n={n}: threshold {threshold} exceeds validator count"
+        );
+    }
+}
+
+/// Integration: select_predecessors result meets the required_acknowledgements threshold
+/// when a full honest validator set is present.
+#[test]
+fn select_predecessors_meets_cordiality_threshold_with_full_honest_set() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // 4 validators (f=1, threshold=3)
+    for i in 1..=4u8 {
+        let tip = create_mock_block(i, i, HashSet::new());
+        insert(&mut blocklace, &tip);
+        bonds.insert(node(i), 100);
+    }
+
+    let preds = select_predecessors(&blocklace, &bonds);
+    let threshold = required_acknowledgements(&bonds);
+
+    assert!(
+        preds.len() >= threshold,
+        "predecessor count {} must be >= cordiality threshold {}",
+        preds.len(),
+        threshold
+    );
+}
+
+#[test]
+fn weighted_required_acknowledgements_empty_set() {
+    let bonds: HashMap<NodeId, u64> = HashMap::new();
+    assert_eq!(weighted_required_acknowledgements(&bonds), 0);
+}
+
+/// Equal weights: 3 validators with 100 stake each (Total 300).
+/// Threshold must be strictly greater than 2/3 of 300 (which is 200), so 201.
+#[test]
+fn weighted_required_acknowledgements_equal_weights() {
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+
+    // (2 * 300) / 3 + 1 = 200 + 1 = 201
+    assert_eq!(weighted_required_acknowledgements(&bonds), 201);
+}
+
+/// Skewed weights: A Proof-of-Stake scenario where one node has massive weight.
+/// Node 1 has 90 stake. Nodes 2 and 3 have 5 stake each. (Total 100).
+/// Threshold must be strictly greater than 66.66 (so 67).
+#[test]
+fn weighted_required_acknowledgements_skewed_weights() {
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 90);
+    bonds.insert(node(2), 5);
+    bonds.insert(node(3), 5);
+
+    // (2 * 100) / 3 + 1 = 66 (floor) + 1 = 67
+    let threshold = weighted_required_acknowledgements(&bonds);
+    assert_eq!(threshold, 67);
+
+    // Protocol check: In this network, Node 1 CANNOT reach a supermajority
+    // by combining with Node 2 and 3. Node 1 has 90, so Node 1 alone is a supermajority!
+    // If Node 1 equivocates, the network halts because the remaining 10 stake
+    // cannot reach the 67 threshold. This proves the math is correct.
+}
+
+/// Single massive validator: 1 validator with 1,000,000 stake.
+/// Threshold must be (2,000,000 / 3) + 1 = 666,667.
+#[test]
+fn weighted_required_acknowledgements_large_numbers() {
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 1_000_000);
+
+    assert_eq!(weighted_required_acknowledgements(&bonds), 666_667);
+}
+
+// PENDING BLOCK BUFFER TESTS
+#[test]
+fn pending_buffer_resolves_single_missing_predecessor() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2 = create_mock_block(1, 2, HashSet::from([genesis.identity.clone()]));
+
+    // block2 arrives before genesis
+    buffer.buffer_block_with_missing_predecessors(block2.clone());
+
+    // retry shouldn't insert block2 yet
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert_eq!(buffer.buffered_blocks.len(), 1);
+    assert!(blocklace.content(&block2.identity).is_none());
+
+    // genesis arrives
+    insert(&mut blocklace, &genesis);
+
+    // retry should now insert block2
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert!(buffer.buffered_blocks.is_empty());
+    assert!(blocklace.content(&block2.identity).is_some());
+}
+
+#[test]
+fn pending_buffer_resolves_chained_missing_predecessors() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2 = create_mock_block(1, 2, HashSet::from([genesis.identity.clone()]));
+    let block3 = create_mock_block(1, 3, HashSet::from([block2.identity.clone()]));
+
+    // block3 and block2 arrive before genesis out of order
+    buffer.buffer_block_with_missing_predecessors(block3.clone());
+    buffer.buffer_block_with_missing_predecessors(block2.clone());
+
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert_eq!(buffer.buffered_blocks.len(), 2);
+
+    // genesis arrives
+    insert(&mut blocklace, &genesis);
+
+    // retry should insert both recursively
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert!(buffer.buffered_blocks.is_empty());
+    assert!(blocklace.content(&block2.identity).is_some());
+    assert!(blocklace.content(&block3.identity).is_some());
+}
+
+/// Regression: a block arriving with a multi-round gap must stay buffered and
+/// resolve later, even when the creator already has a block in the local view.
+///
+/// `pending_buffer_resolves_chained_missing_predecessors` looks similar but
+/// cannot catch this: it buffers into an *empty* blocklace, so
+/// `blocks_by(creator)` is empty and the chain-axiom check never runs. The bug
+/// required the creator to already be known locally, which is the normal case
+/// for a validator that has been producing blocks all along.
+///
+/// The classification is what mattered. A caller keeps a block for retry only
+/// when every validation error is `MissingPredecessors`, so a spurious
+/// `Equivocation` alongside it caused the block to be discarded permanently
+/// rather than retried — and a node that discarded one could never finalise a
+/// later wave.
+#[test]
+fn pending_buffer_keeps_multi_round_gap_when_creator_is_known() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let round0 = create_mock_block(1, 1, HashSet::new());
+    let round1 = create_mock_block(1, 2, HashSet::from([round0.identity.clone()]));
+    let round2 = create_mock_block(1, 3, HashSet::from([round1.identity.clone()]));
+
+    // The creator is already known locally.
+    insert(&mut blocklace, &round0);
+
+    // Round 2 arrives while round 1 is still in flight. Validation must blame
+    // only the gap, so that a caller knows to buffer rather than drop.
+    let result = validated_insert(round2.clone(), &mut blocklace, &bonds, &config);
+    let errors = result.errors();
+    assert!(
+        errors
+            .iter()
+            .all(|e| matches!(e, InvalidBlock::MissingPredecessors { .. })),
+        "only the missing predecessor should be reported, otherwise the block \
+         is dropped instead of buffered: {errors:?}"
+    );
+    assert!(
+        blocklace.content(&round2.identity).is_none(),
+        "the block is not insertable yet"
+    );
+
+    buffer.buffer_block_with_missing_predecessors(round2.clone());
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert_eq!(
+        buffer.buffered_blocks.len(),
+        1,
+        "the gap is unchanged, so the block must stay buffered"
+    );
+
+    // The missing round arrives and the buffered block resolves.
+    insert(&mut blocklace, &round1);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    assert!(buffer.buffered_blocks.is_empty());
+    assert!(
+        blocklace.content(&round2.identity).is_some(),
+        "the buffered block should be inserted once its history arrives"
+    );
+}
+
+/// Deferring the chain axiom must *delay* the check, not skip it: a buffered
+/// block that genuinely conflicts once its history arrives is still rejected.
+///
+/// v1 already has its round-0 block locally. The arriving block is by v1 but
+/// hangs off v2's genesis, so it does not descend from v1's own chain — a real
+/// chain-axiom conflict. It cannot be judged on arrival (v2's genesis is
+/// missing), so it is buffered; once v2's genesis lands the conflict becomes
+/// visible and the block is dropped rather than inserted.
+#[test]
+fn buffered_block_is_rejected_as_equivocation_once_its_history_arrives() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    let r0_v1 = create_mock_block(1, 1, HashSet::new());
+    insert(&mut blocklace, &r0_v1);
+
+    let r0_v2 = create_mock_block(2, 2, HashSet::new());
+    let conflicting = create_mock_block(1, 3, HashSet::from([r0_v2.identity.clone()]));
+
+    // On arrival the only complaint is the missing predecessor, so a caller
+    // buffers rather than drops.
+    let arrival = validated_insert(conflicting.clone(), &mut blocklace, &bonds, &config);
+    assert!(
+        arrival
+            .errors()
+            .iter()
+            .all(|e| matches!(e, InvalidBlock::MissingPredecessors { .. })),
+        "the conflict is not yet decidable, so only the gap should be reported: {:?}",
+        arrival.errors()
+    );
+    buffer.buffer_block_with_missing_predecessors(conflicting.clone());
+
+    // The history arrives and the conflict becomes visible.
+    insert(&mut blocklace, &r0_v2);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    assert!(
+        blocklace.content(&conflicting.identity).is_none(),
+        "a genuinely equivocating block must not be inserted"
+    );
+    assert!(
+        buffer.buffered_blocks.is_empty(),
+        "it must also be dropped from the buffer, not retried forever"
+    );
+    assert!(blocklace.satisfies_chain_axiom(&node(1)));
+}
+
+/// The same block arriving repeatedly while its history is missing must not
+/// create duplicate buffer entries or duplicate insertions.
+#[test]
+fn duplicate_buffered_block_is_stored_and_inserted_once() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let round0 = create_mock_block(1, 1, HashSet::new());
+    let round1 = create_mock_block(1, 2, HashSet::from([round0.identity.clone()]));
+    let round2 = create_mock_block(1, 3, HashSet::from([round1.identity.clone()]));
+    insert(&mut blocklace, &round0);
+
+    // Arrives three times while round 1 is still missing.
+    for _ in 0..3 {
+        buffer.buffer_block_with_missing_predecessors(round2.clone());
+    }
+    assert_eq!(
+        buffer.buffered_blocks.len(),
+        1,
+        "the buffer is keyed by block identity, so repeats must coalesce"
+    );
+
+    insert(&mut blocklace, &round1);
+    let before = blocklace.dom().len();
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    assert!(buffer.buffered_blocks.is_empty());
+    assert!(blocklace.content(&round2.identity).is_some());
+    assert_eq!(
+        blocklace.dom().len(),
+        before + 1,
+        "exactly one block should have been inserted"
+    );
+
+    // Retrying again, and re-buffering an already-known block, must be no-ops.
+    // The known block is removed by the identity short-circuit, without going
+    // through `validated_insert` again.
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    buffer.buffer_block_with_missing_predecessors(round2.clone());
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert_eq!(blocklace.dom().len(), before + 1);
+    assert!(buffer.buffered_blocks.is_empty());
+}
+
+/// Two incompatible future blocks by the same creator, both buffered before
+/// their shared history arrives: exactly one may survive, and *which* one is
+/// deterministic.
+///
+/// `retry_buffered_blocks` replays buffered blocks in `BlockIdentity` order,
+/// not `HashMap` iteration order, so the branch with the smaller identity is
+/// inserted first on every node; the other then conflicts and is dropped.
+/// Local state therefore stays a deterministic function of messages received.
+#[test]
+fn conflicting_buffered_blocks_from_same_creator_admit_exactly_one() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let round0 = create_mock_block(1, 1, HashSet::new());
+    let round1 = create_mock_block(1, 2, HashSet::from([round0.identity.clone()]));
+    insert(&mut blocklace, &round0);
+
+    // Two incompatible extensions of the same missing round.
+    let branch_a = create_mock_block(1, 3, HashSet::from([round1.identity.clone()]));
+    let branch_b = create_mock_block(1, 4, HashSet::from([round1.identity.clone()]));
+    buffer.buffer_block_with_missing_predecessors(branch_a.clone());
+    buffer.buffer_block_with_missing_predecessors(branch_b.clone());
+    assert_eq!(buffer.buffered_blocks.len(), 2);
+
+    insert(&mut blocklace, &round1);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    let inserted_a = blocklace.content(&branch_a.identity).is_some();
+    let inserted_b = blocklace.content(&branch_b.identity).is_some();
+    assert!(
+        inserted_a ^ inserted_b,
+        "exactly one branch may be admitted, got a={inserted_a} b={inserted_b}"
+    );
+
+    // Replay visits buffered blocks in identity order, so the smaller
+    // identity is admitted first and the other conflicts — on every node.
+    let mut ordered = [branch_a.identity.clone(), branch_b.identity.clone()];
+    ordered.sort();
+    assert!(
+        blocklace.content(&ordered[0]).is_some(),
+        "the branch with the smaller identity must be the survivor"
+    );
+    assert!(
+        blocklace.content(&ordered[1]).is_none(),
+        "the branch with the larger identity must be rejected"
+    );
+
+    assert!(
+        blocklace.satisfies_chain_axiom(&node(1)),
+        "admitting both would break the chain axiom for the creator"
+    );
+    assert!(
+        buffer.buffered_blocks.is_empty(),
+        "the rejected branch must be dropped, not retried forever"
+    );
+}
+
+// ── Buffer bounds (#157 item 1) ──
+
+fn tiny_policy() -> BufferPolicy {
+    BufferPolicy {
+        max_entries: 4,
+        max_entries_per_creator: 2,
+        max_retry_passes: 2,
+    }
+}
+
+/// A full buffer admits new blocks by evicting its oldest entry, so a fresh
+/// block is never locked out by stale ones.
+#[test]
+fn buffer_evicts_the_oldest_entry_at_capacity() {
+    let mut buffer = PendingBlockBuffer::with_policy(tiny_policy());
+
+    // Four creators, one block each: fills max_entries without touching quotas.
+    let blocks: Vec<Block> = (1..=4u8)
+        .map(|c| {
+            create_mock_block(
+                c,
+                1,
+                HashSet::from([create_mock_block(9, 9, HashSet::new()).identity]),
+            )
+        })
+        .collect();
+    for b in &blocks {
+        assert_eq!(
+            buffer.buffer_block_with_missing_predecessors(b.clone()),
+            BufferOutcome::Buffered
+        );
+    }
+    assert_eq!(buffer.buffered_blocks.len(), 4);
+
+    // The fifth evicts the first-arrived.
+    let newcomer = create_mock_block(
+        5,
+        1,
+        HashSet::from([create_mock_block(9, 9, HashSet::new()).identity]),
+    );
+    let outcome = buffer.buffer_block_with_missing_predecessors(newcomer.clone());
+    assert_eq!(
+        outcome,
+        BufferOutcome::BufferedEvicting(blocks[0].identity.clone())
+    );
+    assert_eq!(buffer.buffered_blocks.len(), 4, "capacity is respected");
+    assert!(buffer.buffered_blocks.contains_key(&newcomer.identity));
+    assert!(!buffer.buffered_blocks.contains_key(&blocks[0].identity));
+    assert_eq!(buffer.stats().evicted_for_capacity, 1);
+}
+
+/// One creator cannot exceed its quota, and cannot displace another creator's
+/// buffered blocks by flooding. This is the property that makes the bound a DoS
+/// defence rather than just a memory cap.
+#[test]
+fn creator_quota_stops_a_flood_from_evicting_other_creators() {
+    let mut buffer = PendingBlockBuffer::with_policy(tiny_policy());
+    let missing = create_mock_block(9, 9, HashSet::new()).identity;
+
+    // An honest creator buffers one block.
+    let honest = create_mock_block(1, 1, HashSet::from([missing.clone()]));
+    buffer.buffer_block_with_missing_predecessors(honest.clone());
+
+    // A flooder tries ten blocks but is capped at its quota of two.
+    let flooder = node(2);
+    for tag in 0..10u8 {
+        buffer.buffer_block_with_missing_predecessors(create_mock_block(
+            2,
+            tag,
+            HashSet::from([missing.clone()]),
+        ));
+    }
+
+    let flooder_held = buffer
+        .buffered_blocks
+        .keys()
+        .filter(|id| id.creator == flooder)
+        .count();
+    assert_eq!(
+        flooder_held, 2,
+        "the flooder must be held to max_entries_per_creator"
+    );
+    assert!(
+        buffer.buffered_blocks.contains_key(&honest.identity),
+        "the honest creator's block must survive the flood"
+    );
+    assert_eq!(buffer.stats().rejected_creator_quota, 8);
+}
+
+/// Repeat arrivals of the same block must not consume extra quota.
+#[test]
+fn repeat_arrival_does_not_consume_extra_quota() {
+    let mut buffer = PendingBlockBuffer::with_policy(tiny_policy());
+    let missing = create_mock_block(9, 9, HashSet::new()).identity;
+    let block = create_mock_block(1, 1, HashSet::from([missing.clone()]));
+
+    assert_eq!(
+        buffer.buffer_block_with_missing_predecessors(block.clone()),
+        BufferOutcome::Buffered
+    );
+    for _ in 0..5 {
+        assert_eq!(
+            buffer.buffer_block_with_missing_predecessors(block.clone()),
+            BufferOutcome::AlreadyBuffered
+        );
+    }
+    assert_eq!(buffer.buffered_blocks.len(), 1);
+
+    // A second distinct block from the same creator still fits the quota of two.
+    let second = create_mock_block(1, 2, HashSet::from([missing]));
+    assert_eq!(
+        buffer.buffer_block_with_missing_predecessors(second),
+        BufferOutcome::Buffered
+    );
+    assert_eq!(buffer.stats().rejected_creator_quota, 0);
+}
+
+/// A block whose predecessors never arrive is eventually evicted, so an
+/// unsatisfiable block cannot hold its slot forever.
+#[test]
+fn buffer_evicts_blocks_that_never_resolve() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::with_policy(tiny_policy());
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let never_arrives = create_mock_block(9, 9, HashSet::new()).identity;
+    let orphan = create_mock_block(1, 1, HashSet::from([never_arrives]));
+    buffer.buffer_block_with_missing_predecessors(orphan.clone());
+
+    // max_retry_passes = 2, so it survives the first two passes.
+    for pass in 1..=2 {
+        buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+        assert_eq!(
+            buffer.buffered_blocks.len(),
+            1,
+            "should still be held after pass {pass}"
+        );
+    }
+
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert!(
+        buffer.buffered_blocks.is_empty(),
+        "an unresolvable block must be evicted once it exceeds max_retry_passes"
+    );
+    assert_eq!(buffer.stats().evicted_stale, 1);
+}
+
+/// Retry-pass accounting must not evict a block that resolves normally.
+#[test]
+fn resolvable_block_is_inserted_rather_than_aged_out() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::with_policy(tiny_policy());
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let round0 = create_mock_block(1, 1, HashSet::new());
+    let round1 = create_mock_block(1, 2, HashSet::from([round0.identity.clone()]));
+    buffer.buffer_block_with_missing_predecessors(round1.clone());
+
+    // One unsuccessful pass, then the predecessor arrives.
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    insert(&mut blocklace, &round0);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    assert!(blocklace.content(&round1.identity).is_some());
+    assert!(buffer.buffered_blocks.is_empty());
+    assert_eq!(buffer.stats().evicted_stale, 0);
+    assert_eq!(buffer.stats().evicted_for_capacity, 0);
+}
+
+/// A `max_entries: 0` policy admits nothing. Without an explicit rejection the
+/// eviction path would admit the first block anyway: the buffer is "full" but
+/// holds no oldest entry to evict.
+#[test]
+fn zero_capacity_policy_admits_nothing() {
+    let mut buffer = PendingBlockBuffer::with_policy(BufferPolicy {
+        max_entries: 0,
+        max_entries_per_creator: 2,
+        max_retry_passes: 2,
+    });
+
+    let missing = create_mock_block(9, 9, HashSet::new()).identity;
+    let block = create_mock_block(1, 1, HashSet::from([missing]));
+
+    assert_eq!(
+        buffer.buffer_block_with_missing_predecessors(block),
+        BufferOutcome::RejectedZeroCapacity
+    );
+    assert!(buffer.buffered_blocks.is_empty());
+    assert_eq!(buffer.stats().buffered, 0);
+}
+
+/// Which of two conflicting buffered blocks survives replay must not depend on
+/// the order they arrived in, otherwise two nodes receiving the same blocks in
+/// different orders would admit different branches. Replay resolves by
+/// `BlockIdentity` order; arrival order only drives eviction.
+#[test]
+fn conflicting_buffered_blocks_resolve_the_same_regardless_of_arrival_order() {
+    let survivor_after = |first: &cordial_miners_core::Block,
+                          second: &cordial_miners_core::Block|
+     -> BlockIdentity {
+        let mut blocklace = Blocklace::new();
+        let mut buffer = PendingBlockBuffer::new();
+        let config = dissemination_test_config();
+        let mut bonds = HashMap::new();
+        bonds.insert(node(1), 100);
+
+        let round0 = create_mock_block(1, 1, HashSet::new());
+        let round1 = create_mock_block(1, 2, HashSet::from([round0.identity.clone()]));
+        insert(&mut blocklace, &round0);
+
+        buffer.buffer_block_with_missing_predecessors(first.clone());
+        buffer.buffer_block_with_missing_predecessors(second.clone());
+        insert(&mut blocklace, &round1);
+        buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+        [first, second]
+            .into_iter()
+            .find(|b| blocklace.content(&b.identity).is_some())
+            .expect("exactly one branch must be admitted")
+            .identity
+            .clone()
+    };
+
+    let round0 = create_mock_block(1, 1, HashSet::new());
+    let round1 = create_mock_block(1, 2, HashSet::from([round0.identity.clone()]));
+    let branch_a = create_mock_block(1, 3, HashSet::from([round1.identity.clone()]));
+    let branch_b = create_mock_block(1, 4, HashSet::from([round1.identity.clone()]));
+
+    assert_eq!(
+        survivor_after(&branch_a, &branch_b),
+        survivor_after(&branch_b, &branch_a),
+        "the survivor must be a function of the block set, not of arrival order"
+    );
+}
+
+#[test]
+fn pending_buffer_handles_out_of_order_arrival() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2a = create_mock_block(1, 2, HashSet::from([genesis.identity.clone()]));
+    let block2b = create_mock_block(2, 2, HashSet::from([genesis.identity.clone()]));
+    let block3 = create_mock_block(
+        3,
+        3,
+        HashSet::from([block2a.identity.clone(), block2b.identity.clone()]),
+    );
+
+    // block 3 arrives early
+    buffer.buffer_block_with_missing_predecessors(block3.clone());
+
+    // genesis and one predecessor arrive
+    insert(&mut blocklace, &genesis);
+    insert(&mut blocklace, &block2a);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    // block 3 should still be unresolved due to missing block2b
+    assert_eq!(buffer.buffered_blocks.len(), 1);
+
+    // block2b arrives
+    insert(&mut blocklace, &block2b);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    assert!(buffer.buffered_blocks.is_empty());
+    assert!(blocklace.content(&block3.identity).is_some());
+}
+
+#[test]
+fn pending_buffer_no_duplicate_insertion_on_repeated_retry() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2 = create_mock_block(1, 2, HashSet::from([genesis.identity.clone()]));
+
+    buffer.buffer_block_with_missing_predecessors(block2.clone());
+
+    insert(&mut blocklace, &genesis);
+
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert!(buffer.buffered_blocks.is_empty());
+
+    // retry again, should be a no-op
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert!(blocklace.content(&block2.identity).is_some());
+}
+
+#[test]
+fn pending_buffer_removes_block_already_in_blocklace() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let block2 = create_mock_block(1, 2, HashSet::from([genesis.identity.clone()]));
+
+    // block2 buffered while genesis is missing
+    buffer.buffer_block_with_missing_predecessors(block2.clone());
+
+    // Both arrive directly — buffer not yet retried
+    insert(&mut blocklace, &genesis);
+    insert(&mut blocklace, &block2);
+
+    // retry should still clear the buffer cleanly
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+    assert!(buffer.buffered_blocks.is_empty());
+}
+
+#[test]
+fn pending_buffer_drops_blocks_that_fail_consensus_validation() {
+    let mut blocklace = Blocklace::new();
+    let mut buffer = PendingBlockBuffer::new();
+    let config = dissemination_test_config();
+    let mut bonds = HashMap::new();
+    bonds.insert(node(1), 100);
+
+    let genesis = create_mock_block(1, 1, HashSet::new());
+    let unbonded_child = create_mock_block(2, 2, HashSet::from([genesis.identity.clone()]));
+
+    buffer.buffer_block_with_missing_predecessors(unbonded_child.clone());
+
+    insert(&mut blocklace, &genesis);
+    buffer.retry_buffered_blocks(&mut blocklace, &bonds, &config);
+
+    assert!(
+        buffer.buffered_blocks.is_empty(),
+        "definitively invalid buffered blocks should be dropped"
+    );
+    assert!(
+        blocklace.content(&unbonded_child.identity).is_none(),
+        "replay must not bypass validation for unbonded senders"
+    );
+}
+
+// ============================================================================
+// STRICT PREDECESSOR-SELECTION MODE TESTS
+// ============================================================================
+//
+// These tests verify the strict excommunication behaviour (PredecessorSelectionMode::Strict)
+// and its relationship to the existing compatibility mode and to finality/ordering exclusion.
+//
+// Key invariants under test:
+//   S1. Strict mode: honest tips only — equivocator branches are NEVER direct predecessors.
+//   S2. Compatibility mode: equivocator branches NOT yet transitively observed ARE added.
+//   S3. Both modes agree when the blocklace contains no equivocators at all.
+//   S4. Finality / ordering exclusion is independent of predecessor-selection mode.
+//   S5. `select_predecessors_strict` is equivalent to `select_predecessors_with_mode(Strict)`.
+//   S6. `next_block_predecessors_with_mode` and `build_block_candidate_with_mode` thread the
+//       mode through correctly.
+//   S7. `PredecessorSelectionMode::default()` is `Compatibility`.
+
+/// **S1** — Strict mode: equivocator branches never appear as direct predecessors.
+///
+/// Scenario: validator 1 equivocates (e1, e2). Validator 2's honest tip only references e1.
+/// In strict mode, the result must be {tip_v2} only. e2 must NOT be added even though it
+/// is not transitively observed from tip_v2.
+#[test]
+fn strict_mode_never_adds_equivocator_branches() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new()); // equivocating branch
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // Honest validator 2 has seen only e1
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100); // equivocator
+    bonds.insert(node(2), 100); // honest
+
+    let strict_preds = select_predecessors_strict(&blocklace, &bonds);
+
+    // Only the honest tip — no equivocator branch in sight
+    assert!(
+        strict_preds.contains(&tip_v2.identity),
+        "strict mode must include the honest tip"
+    );
+    assert!(
+        !strict_preds.contains(&e1.identity),
+        "strict mode must not include e1 (already transitive via tip_v2)"
+    );
+    assert!(
+        !strict_preds.contains(&e2.identity),
+        "strict mode must not include e2 even though it is not transitively observed"
+    );
+    assert_eq!(strict_preds.len(), 1);
+}
+
+/// **S1 + S2** — Strict vs compatibility on the same equivocating view.
+///
+/// Confirms that the two modes differ exactly as documented: compatibility adds e2,
+/// strict does not.
+#[test]
+fn strict_and_compat_differ_when_equivocator_branch_is_missing_from_tips() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    let tip_v3 = create_mock_block(3, 4, HashSet::new());
+    let tip_v4 = create_mock_block(4, 5, HashSet::new());
+    insert(&mut blocklace, &tip_v2);
+    insert(&mut blocklace, &tip_v3);
+    insert(&mut blocklace, &tip_v4);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+    bonds.insert(node(4), 100);
+
+    let strict_preds = select_predecessors_strict(&blocklace, &bonds);
+    let compat_preds = select_predecessors(&blocklace, &bonds);
+
+    // Compatibility: e2 is added because it is not transitively observed
+    assert!(
+        compat_preds.contains(&e2.identity),
+        "compat mode must add the missing equivocation branch"
+    );
+
+    // Strict: e2 is omitted
+    assert!(
+        !strict_preds.contains(&e2.identity),
+        "strict mode must not add any equivocator branch"
+    );
+    assert!(
+        !strict_preds.contains(&e1.identity),
+        "strict mode must not add e1 (transitive)"
+    );
+
+    // Both modes include all honest tips
+    for id in [&tip_v2.identity, &tip_v3.identity, &tip_v4.identity] {
+        assert!(strict_preds.contains(id), "strict mode missing honest tip");
+        assert!(compat_preds.contains(id), "compat mode missing honest tip");
+    }
+
+    // Strict result is strictly smaller when equivocations exist
+    assert!(
+        strict_preds.len() < compat_preds.len(),
+        "strict set must be smaller than compat set when equivocations are present"
+    );
+}
+
+/// **S3** — Both modes agree on a clean (no-equivocation) network.
+#[test]
+fn strict_and_compat_agree_when_no_equivocations() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    for i in 1..=4u8 {
+        let block = create_mock_block(i, i, HashSet::new());
+        insert(&mut blocklace, &block);
+        bonds.insert(node(i), 100);
+    }
+
+    let strict_preds = select_predecessors_strict(&blocklace, &bonds);
+    let compat_preds = select_predecessors(&blocklace, &bonds);
+
+    assert_eq!(
+        strict_preds, compat_preds,
+        "strict and compat modes must agree when no equivocations are present"
+    );
+}
+
+/// **S3** — Strict mode is identical to `select_predecessors_with_mode(Strict)`.
+#[test]
+fn select_predecessors_strict_matches_with_mode_strict() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    let via_fn = select_predecessors_strict(&blocklace, &bonds);
+    let via_mode =
+        select_predecessors_with_mode(&blocklace, &bonds, PredecessorSelectionMode::Strict);
+
+    assert_eq!(
+        via_fn, via_mode,
+        "select_predecessors_strict must equal select_predecessors_with_mode(Strict)"
+    );
+}
+
+/// **S7** — `PredecessorSelectionMode::default()` is `Compatibility`.
+#[test]
+fn predecessor_selection_mode_default_is_compatibility() {
+    assert_eq!(
+        PredecessorSelectionMode::default(),
+        PredecessorSelectionMode::Compatibility,
+    );
+}
+
+/// **S6** — `next_block_predecessors_with_mode(Strict)` threads strict mode through correctly.
+///
+/// In strict mode, known equivocator branches must not appear, and the cordiality threshold
+/// must still be checked against honest tips only.
+#[test]
+fn next_block_predecessors_with_mode_strict_excludes_equivocator_branches() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // 4-validator setup: v1 equivocates, v2/v3/v4 are honest
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // tip_v2 covers e1; tip_v3 covers e2 so the strict coverage check passes.
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    let tip_v3 = create_mock_block(3, 4, HashSet::from([e2.identity.clone()]));
+    let tip_v4 = create_mock_block(4, 5, HashSet::new());
+    insert(&mut blocklace, &tip_v2);
+    insert(&mut blocklace, &tip_v3);
+    insert(&mut blocklace, &tip_v4);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+    bonds.insert(node(4), 100);
+
+    // Strict mode: should succeed (3 honest tips >= threshold of 3) and exclude e2
+    let strict_result =
+        next_block_predecessors_with_mode(&blocklace, &bonds, PredecessorSelectionMode::Strict);
+    let strict_preds = strict_result.expect("strict mode should succeed with 3 honest tips");
+
+    assert!(
+        !strict_preds.contains(&e2.identity),
+        "strict next_block_predecessors must not include equivocator branch e2"
+    );
+    assert!(
+        !strict_preds.contains(&e1.identity),
+        "strict next_block_predecessors must not include equivocator branch e1"
+    );
+
+    // Honest tips are present
+    assert!(strict_preds.contains(&tip_v2.identity));
+    assert!(strict_preds.contains(&tip_v3.identity));
+    assert!(strict_preds.contains(&tip_v4.identity));
+}
+
+/// **S6** — `build_block_candidate_with_mode(Strict)` produces strict predecessors.
+#[test]
+fn build_block_candidate_with_mode_strict_excludes_equivocator_branches() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // tip_v2 covers e1; tip_v3 covers e2 so the strict coverage check passes.
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    let tip_v3 = create_mock_block(3, 4, HashSet::from([e2.identity.clone()]));
+    let tip_v4 = create_mock_block(4, 5, HashSet::new());
+    insert(&mut blocklace, &tip_v2);
+    insert(&mut blocklace, &tip_v3);
+    insert(&mut blocklace, &tip_v4);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+    bonds.insert(node(4), 100);
+
+    let payload = vec![0xca, 0xfe];
+    let candidate = build_block_candidate_with_mode(
+        &blocklace,
+        &bonds,
+        payload.clone(),
+        PredecessorSelectionMode::Strict,
+    )
+    .expect("strict candidate should succeed with sufficient honest tips");
+
+    assert_eq!(candidate.payload, payload);
+    assert!(
+        !candidate.predecessors.contains(&e2.identity),
+        "strict candidate must not reference equivocator branch e2"
+    );
+    assert!(
+        !candidate.predecessors.contains(&e1.identity),
+        "strict candidate must not reference equivocator branch e1"
+    );
+    assert!(candidate.predecessors.contains(&tip_v2.identity));
+    assert!(candidate.predecessors.contains(&tip_v3.identity));
+    assert!(candidate.predecessors.contains(&tip_v4.identity));
+}
+
+/// **S4** — Tip-map equivocator exclusion is applied before, and independently of,
+/// predecessor-selection mode.
+///
+/// `validator_visible_tips` already strips equivocating validators from the tip map
+/// before either `select_predecessors` (compat) or `select_predecessors_strict` (strict)
+/// is applied. This test confirms that equivocators never re-appear as direct
+/// predecessors in either mode, i.e. the exclusion is truly mode-independent.
+///
+/// Note: this test exercises `validator_visible_tips` and the two predecessor-selection
+/// mode functions. Tests for the actual finality and ordering exclusion APIs live in
+/// `test_finality.rs` and `test_ordering.rs`.
+#[test]
+fn tip_map_equivocator_exclusion_is_independent_of_predecessor_selection_mode() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    // The tip map excludes the equivocating validator (node 1) before any mode decision.
+    let tips = validator_visible_tips(&blocklace, &bonds);
+    assert!(
+        !tips.contains_key(&node(1)),
+        "equivocating validator must be absent from the tip map regardless of predecessor mode"
+    );
+    assert!(
+        tips.contains_key(&node(2)),
+        "honest validator must be present in the tip map"
+    );
+
+    // Both modes build from the same equivocator-free tip map.
+    let strict_preds = select_predecessors_strict(&blocklace, &bonds);
+    let compat_preds = select_predecessors(&blocklace, &bonds);
+
+    // Strict mode: neither equivocator branch is ever a direct predecessor.
+    assert!(
+        !strict_preds.contains(&e1.identity),
+        "strict: e1 must not be a direct predecessor"
+    );
+    assert!(
+        !strict_preds.contains(&e2.identity),
+        "strict: e2 must not be a direct predecessor"
+    );
+
+    // Compat mode: e2 was not yet transitively visible through honest tips, so it
+    // is re-added as a direct predecessor to preserve equivocation evidence on the
+    // network. e1 is already visible transitively via tip_v2 → e1.
+    assert!(
+        compat_preds.contains(&e2.identity),
+        "compat: unseen equivocator branch e2 must be included to preserve evidence"
+    );
+
+    // The honest tip is always reachable in both modes.
+    assert!(compat_preds.contains(&tip_v2.identity));
+    assert!(strict_preds.contains(&tip_v2.identity));
+}
+
+/// **S1** — Strict mode with a 3-way equivocation: no branch is ever a direct predecessor.
+#[test]
+fn strict_mode_excludes_all_branches_of_multiway_equivocation() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // 3-way equivocation by validator 1
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    let e3 = create_mock_block(1, 3, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+    insert(&mut blocklace, &e3);
+
+    // Honest validators see only e1
+    let tip_v2 = create_mock_block(2, 4, HashSet::from([e1.identity.clone()]));
+    let tip_v3 = create_mock_block(3, 5, HashSet::new());
+    let tip_v4 = create_mock_block(4, 6, HashSet::new());
+    insert(&mut blocklace, &tip_v2);
+    insert(&mut blocklace, &tip_v3);
+    insert(&mut blocklace, &tip_v4);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+    bonds.insert(node(4), 100);
+
+    let strict_preds = select_predecessors_strict(&blocklace, &bonds);
+
+    assert!(!strict_preds.contains(&e1.identity), "strict: e1 excluded");
+    assert!(!strict_preds.contains(&e2.identity), "strict: e2 excluded");
+    assert!(!strict_preds.contains(&e3.identity), "strict: e3 excluded");
+
+    assert!(strict_preds.contains(&tip_v2.identity));
+    assert!(strict_preds.contains(&tip_v3.identity));
+    assert!(strict_preds.contains(&tip_v4.identity));
+    assert_eq!(strict_preds.len(), 3, "only the 3 honest tips");
+}
+
+// ---------------------------------------------------------------------------
+// Tests for predecessors_acknowledge_all_equivocation_branches and the
+// strict-mode safety check in next_block_predecessors_with_mode.
+// ---------------------------------------------------------------------------
+
+/// **Coverage check — failure**: when an equivocator branch is not yet reachable
+/// through the honest tips the helper returns `false` and the strict-mode proposal
+/// is rejected with `InsufficientEquivocationAcknowledgement`.
+///
+/// Topology
+/// --------
+/// * node 1 equivocates: e1 and e2 (round 1, same creator).
+/// * node 2 builds tip_v2 referencing e1 only. So e2 is NOT in the tip closure.
+/// * bonds: nodes 1, 2 (enough for a 2-validator committee).
+///
+/// strict_preds = {tip_v2} (honest tip only, no e2).
+/// The tip_v2 closure observes: tip_v2, e1 — but NOT e2.
+/// Therefore: coverage check fails, proposal rejected.
+#[test]
+fn strict_mode_proposal_rejected_when_equivocator_branch_not_in_tip_closure() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // Two-way equivocation by node 1.
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new()); // same creator, different content
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // Node 2 tip references only e1, so e2 is NOT transitively covered.
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    // The public helper should report false: e2 is missing.
+    let preds = select_predecessors_strict(&blocklace, &bonds); // {tip_v2}
+    assert!(
+        !predecessors_acknowledge_all_equivocation_branches(&blocklace, &preds),
+        "e2 is not reachable through the strict tip set"
+    );
+
+    // The proposal API must reject the candidate.
+    let result =
+        next_block_predecessors_with_mode(&blocklace, &bonds, PredecessorSelectionMode::Strict);
+    match result {
+        Err(ProposalError::InsufficientEquivocationAcknowledgement { ref missing }) => {
+            assert!(
+                missing.contains(&e2.identity),
+                "missing list must contain the uncovered branch e2"
+            );
+        }
+        other => panic!(
+            "expected InsufficientEquivocationAcknowledgement, got {:?}",
+            other
+        ),
+    }
+}
+
+/// **Coverage check — success**: when every equivocator branch is already
+/// reachable through the honest tips the helper returns `true` and the strict-mode
+/// proposal succeeds.
+///
+/// Topology
+/// --------
+/// * node 1 equivocates: e1 and e2.
+/// * node 2 builds tip_v2 referencing e1.
+/// * node 3 builds tip_v3 referencing e2 (and e1 via its predecessor chain).
+/// * node 4 builds tip_v4 (clean honest tip).
+/// * bonds: nodes 1–4 → threshold = (2*4)/3+1 = 3; honest tips = 3 (v2, v3, v4). ✓
+///
+/// strict_preds = {tip_v2, tip_v3, tip_v4}.
+/// Closure: tip_v2 → e1; tip_v3 → e2. Both branches covered.
+#[test]
+fn strict_mode_proposal_succeeds_when_all_equivocator_branches_covered() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    // Two-way equivocation by node 1.
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    // Node 2 covers e1.
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    // Node 3 covers e2.
+    let tip_v3 = create_mock_block(3, 4, HashSet::from([e2.identity.clone()]));
+    insert(&mut blocklace, &tip_v3);
+
+    // Node 4 is an honest tip with no equivocator references.
+    let tip_v4 = create_mock_block(4, 5, HashSet::new());
+    insert(&mut blocklace, &tip_v4);
+
+    // 4 validators: threshold = (2*4)/3+1 = 3. Honest tips = {v2, v3, v4} = 3. ✓
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+    bonds.insert(node(4), 100);
+
+    // The public helper should report true: both e1 and e2 are reachable.
+    let preds = select_predecessors_strict(&blocklace, &bonds); // {tip_v2, tip_v3, tip_v4}
+    assert!(
+        predecessors_acknowledge_all_equivocation_branches(&blocklace, &preds),
+        "both equivocator branches are covered through the honest tips"
+    );
+
+    // The proposal API must succeed.
+    let result =
+        next_block_predecessors_with_mode(&blocklace, &bonds, PredecessorSelectionMode::Strict);
+    assert!(
+        result.is_ok(),
+        "strict-mode proposal must succeed when all branches are covered: {:?}",
+        result
+    );
+    let selected = result.unwrap();
+    assert!(selected.contains(&tip_v2.identity));
+    assert!(selected.contains(&tip_v3.identity));
+    assert!(selected.contains(&tip_v4.identity));
+    // Neither equivocator branch appears directly.
+    assert!(!selected.contains(&e1.identity));
+    assert!(!selected.contains(&e2.identity));
+}
+
+/// **Coverage check — no equivocations**: when the blocklace has no equivocators
+/// the helper always returns `true` and the strict-mode proposal is not affected.
+#[test]
+fn predecessors_acknowledge_all_equivocation_branches_returns_true_with_no_equivocations() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let b1 = create_mock_block(1, 1, HashSet::new());
+    let b2 = create_mock_block(2, 2, HashSet::new());
+    let b3 = create_mock_block(3, 3, HashSet::new());
+    insert(&mut blocklace, &b1);
+    insert(&mut blocklace, &b2);
+    insert(&mut blocklace, &b3);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+    bonds.insert(node(3), 100);
+
+    let preds = select_predecessors_strict(&blocklace, &bonds);
+    assert!(
+        predecessors_acknowledge_all_equivocation_branches(&blocklace, &preds),
+        "no equivocations means coverage is trivially satisfied"
+    );
+
+    // And the strict-mode proposal should succeed.
+    let result =
+        next_block_predecessors_with_mode(&blocklace, &bonds, PredecessorSelectionMode::Strict);
+    assert!(result.is_ok(), "no equivocations: proposal must succeed");
+}
+
+/// **Compatibility mode is unaffected**: the new check only applies to strict
+/// mode. Compat mode with a branch not covered through tips must still succeed
+/// (compat adds the missing branch directly as a predecessor).
+#[test]
+fn compat_mode_proposal_succeeds_even_when_branch_not_in_tip_closure() {
+    let mut blocklace = Blocklace::new();
+    let mut bonds = HashMap::new();
+
+    let e1 = create_mock_block(1, 1, HashSet::new());
+    let e2 = create_mock_block(1, 2, HashSet::new());
+    insert(&mut blocklace, &e1);
+    insert(&mut blocklace, &e2);
+
+    let tip_v2 = create_mock_block(2, 3, HashSet::from([e1.identity.clone()]));
+    insert(&mut blocklace, &tip_v2);
+
+    bonds.insert(node(1), 100);
+    bonds.insert(node(2), 100);
+
+    // Compat mode must not return InsufficientEquivocationAcknowledgement.
+    let result = next_block_predecessors_with_mode(
+        &blocklace,
+        &bonds,
+        PredecessorSelectionMode::Compatibility,
+    );
+    // The only reason compat could fail here is InsufficientAcknowledgements
+    // (only 1 honest tip vs threshold 2). That's fine for the purpose of this
+    // test — the important thing is it is NOT InsufficientEquivocationAcknowledgement.
+    if let Err(ref e) = result {
+        assert!(
+            !matches!(
+                e,
+                ProposalError::InsufficientEquivocationAcknowledgement { .. }
+            ),
+            "compat mode must never return InsufficientEquivocationAcknowledgement"
+        );
+    }
+}

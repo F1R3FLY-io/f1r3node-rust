@@ -1,0 +1,56 @@
+[package]
+name = "cordial-miners-core"
+description = "Cordial Miners consensus on a blocklace DAG"
+version = "0.1.0"
+edition = "2024"
+
+# Enable consensus event tracing. Zero overhead when absent.
+# Activate with: cargo test --features trace
+[features]
+trace = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(cordial_trace_threshold_mutation)"] }
+
+[dependencies]
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+tokio.workspace = true
+serde = { workspace = true, features = ["derive"] }
+bincode.workspace = true
+blake2.workspace = true
+k256.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "leader_lookup"
+harness = false
+
+[[bench]]
+name = "tau_ordering"
+harness = false
+
+[[bench]]
+name = "height_bootstrap"
+harness = false
+
+[[bench]]
+name = "dag_traversal"
+harness = false
+
+[[bench]]
+name = "pruning_gc"
+harness = false
+
+[[bench]]
+name = "block_validation"
+harness = false
+
+[[bench]]
+name = "proposer_selection"
+harness = false

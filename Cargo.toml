@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+	"cordial/cordial-miners-core",
+	"cordial/cordial-app-runtime",
 	"consensus-api",
 	"consensus-runtime",
 	"casper",

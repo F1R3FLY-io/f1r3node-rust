@@ -1,0 +1,26 @@
+{
+  "cordial-miners-core/src/crypto.rs": {
+    "sha256": "77436eda336695c868d3e88f627e9335ecc2363b9768378275fd5104e46954c2",
+    "reason": "Version 2 content domain and total predecessor identity ordering; incompatible with legacy hashes."
+  },
+  "cordial-miners-core/src/consensus/mod.rs": {
+    "sha256": "5b192d0e3a8120a7d41f2ba8d93b11e5dc2b7f8b56597efc3c21a255978046c4",
+    "reason": "Export mandatory received-block validation and idempotent in-memory admission."
+  },
+  "cordial-miners-core/src/consensus/validation.rs": {
+    "sha256": "c4d804a0a7d51ef8ccb308e28a5839e9abad8672adac74f86238c925a91450ea",
+    "reason": "Reject empty signatures; separate weighted received admission from receiver-local proposal policy."
+  },
+  "cordial-miners-core/tests/test_dissemination.rs": {
+    "sha256": "05b2bced7b6b521fe0b856007a2e47708129682725fa010a973c0893e210134a",
+    "reason": "Explicitly disable signature checking only in synthetic structural fixtures that already disable hashing; real-signed admission regressions retain mandatory checks."
+  },
+  "cordial-miners-core/src/consensus/dissemination.rs": {
+    "sha256": "ceb09a1c07fa6f9749039cfe87733885a9ac024bc23a7302267bb8fc00bf5d3f",
+    "reason": "Make the two previously ignored public-interface examples executable with complete fixtures and assertions; no algorithm changes."
+  },
+  "cordial-miners-core/src/consensus/evidence.rs": {
+    "sha256": "d74065d49c5c72f9aa5f58fb1fe0fcfd46d63eb620396cef529590a1a6a74007",
+    "reason": "Make the previously ignored evidence example executable with real signatures and assertions; no algorithm changes."
+  }
+}
