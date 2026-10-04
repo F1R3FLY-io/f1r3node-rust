@@ -4753,3 +4753,108 @@ guard-approved candidate first.
 
 **Cross-refs.** DR-72, DR-74. Leaves `ofp-2-perf-ordering` and
 `ofp-2-cap-root-causes`.
+
+## DR-76 — The metered COMM observation charges only what it reads
+
+**Status.** Implemented 2026-10-04 for cap root cause C12 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- A metered run is a sequence of reservations and reads. A reservation adds
+  units to the host-work budget. A read is work that no other step meters.
+- A self-metered step reserves its own work before it performs it, for
+  example the COMM identity hash and the authority merge.
+- Prefix coverage is the metering rule: every prefix of a run reads at most
+  the units that the same prefix has reserved.
+- $`\lvert v \rvert`$ is the inspection charge of a value $`v`$: the units
+  that a walk over its in-memory structure reserves.
+
+**Context.** The native observer constructs one observation for every COMM.
+It runs in the producer's execution and again in typed native replay.
+
+The charged-unit probe measured the gateway funding block under the original
+caps. The producer's VerificationBytes budget tripped at 268,435,431 of
+268,435,456 units. The COMM observer used 35% of that budget at the trip
+point. With the cap raised, the observer's inspection of the fired
+continuation used 175 MB of the producer's 655 MB demand (26.7%).
+
+The construction (`comm_metered`) inspected three inputs before its work:
+the COMM, the fired continuation, and each matched datum. It then reads
+these inputs as follows:
+
+| Input | What the construction reads | Prepayment needed |
+|---|---|---|
+| COMM | only inside `cost_identity_metered`, which is self-metered, and the channel count | no |
+| Fired continuation | only `cost_authority`, inside the self-metered authority functions | no |
+| Each datum | the unmetered `message_bytes` walk | yes |
+
+The continuation body of a system-contract method is large, and every COMM
+that fires it inspected the whole body again.
+
+**Decision.**
+
+1. `comm_metered` no longer inspects the COMM or the fired continuation.
+   Both inspections stay in the source, commented out with their reason.
+2. The datum inspections stay, because they prepay the unmetered
+   `message_bytes` walk.
+3. The observation values (identity, authority, measurement) are unchanged.
+   The play observer and typed native replay call the same function, so
+   their charges stay equal.
+
+**Algorithm (literate form).**
+
+```text
+⟨metered COMM observation⟩ ≡
+  for each matched datum d: reserve |d|            -- prepays message_bytes
+  identity ← cost_identity_metered(comm)          -- self-metered
+  authority ← merge(continuation.cost_authority,  -- self-metered
+                    datum authorities)
+  measurement ← comm_charge(comm, data)           -- reads each datum once
+  return (identity, authority, measurement)
+```
+
+**Charge.** Let $`c`$ be the COMM, $`k`$ the fired continuation with body
+$`b`$, guard $`g`$ and authority $`a`$, and $`d_1, \ldots, d_m`$ the matched
+data. The legacy and the C12 charges differ by exactly the two removed
+inspections:
+
+```math
+R_{\mathrm{legacy}} = R_{\mathrm{C12}} + \lvert c \rvert + \lvert k \rvert,
+\qquad
+\lvert k \rvert = \lvert b \rvert + \lvert g \rvert + \lvert a \rvert .
+```
+
+The C12 charge $`R_{\mathrm{C12}}`$ does not depend on $`b`$ or $`g`$.
+
+**Scope.** This change is cost-accounting work. `observation_construction.rs`
+exists only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. It changes no evidence encoding and no
+observation value.
+
+**Verification.** `ObservationReadCoverage.v` proves six theorems without
+axioms:
+
+- `trace_covered` and `legacy_trace_covered`: both runs satisfy prefix
+  coverage.
+- `trace_reads_equal_legacy_reads`: both runs perform the same reads.
+- `legacy_excess`: the legacy run reserves exactly
+  $`\lvert c \rvert + \lvert k \rvert`$ more.
+- `charge_independent_of_body_and_guard`: the C12 run does not depend on the
+  body or the guard.
+- `legacy_charge_depends_on_unread_body`: a proved counterexample.
+
+Property tests in `native_runtime/tests/observation_construction.rs` extract
+these results:
+
+- `comm_observation_charge_is_independent_of_continuation_body`;
+- `comm_observation_values_are_unchanged_for_every_body`;
+- `comm_observation_accepts_exact_credit_and_rejects_each_smaller_dimension`;
+- `legacy_comm_charge_grew_with_the_unread_body`.
+
+The `rholang` suite passes 2,830 of 2,830 tests in release. With the original
+caps, the four offered-funding API suites pass. The gateway API test still
+fails at the gateway call, as before. That failure is register item G3.
+
+**Cross-refs.** DR-72, DR-75. Leaves `ofp-2-cap-c12-comm-observer-reads` and
+`ofp-2-cap-root-causes`.

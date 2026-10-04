@@ -260,8 +260,16 @@ pub(crate) fn comm_metered(
     data: &[(&ListParWithRandom, bool)],
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
-    inspect_value(comm, meter)?;
-    inspect_value(continuation, meter)?;
+    // Disabled by C12 (DR-76): cost_identity_metered inspects the consume,
+    // peeks and repetition counts and reserves its produce work itself, and
+    // comm_charge reads only the channel count. This inspection charged the
+    // COMM a second time.
+    // inspect_value(comm, meter)?;
+    // Disabled by C12 (DR-76): the construction reads only
+    // continuation.cost_authority, and merge_authorities_metered and
+    // authority_regions_metered meter that read. The continuation body is
+    // never read, so walking it charged work that no step performs.
+    // inspect_value(continuation, meter)?;
     for (datum, _) in data {
         inspect_value(*datum, meter)?;
     }
