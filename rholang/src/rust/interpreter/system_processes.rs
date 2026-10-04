@@ -299,6 +299,11 @@ impl FixedChannels {
     /// `rho:io:fs:native:1.0.0/flush` — fsync (data + metadata) on
     /// an open fd.  Non-verifying observation (slice 4.14).
     pub fn fs_flush() -> Par { byte_name(50) }
+
+    /// `rho:io:fs:native:1.0.0/tell` — current fd position
+    /// (`lseek(SEEK_CUR, 0)`).  Non-verifying observation
+    /// (slice 4.15).
+    pub fn fs_tell() -> Par { byte_name(47) }
 }
 
 pub struct BodyRefs;
@@ -351,6 +356,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/flush` body-ref (slice 4.14).
     pub const FS_FLUSH: i64 = 50;
+
+    /// `rho:io:fs:native:1.0.0/tell` body-ref (slice 4.15).
+    pub const FS_TELL: i64 = 47;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
