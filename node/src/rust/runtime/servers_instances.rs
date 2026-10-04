@@ -135,7 +135,16 @@ impl ServersInstances {
             internal: internal_api_router,
             public_http: http_router,
             admin_http: admin_http_router,
-        } = application.routes(&node_conf, rp_conf_cell.clone(), rp_connections, node_discovery, event_stream, startup_events).await?;
+        } = application
+            .routes(
+                &node_conf,
+                rp_conf_cell.clone(),
+                rp_connections,
+                node_discovery,
+                event_stream,
+                startup_events,
+            )
+            .await?;
         // Read current RPConf
         let rp_conf = rp_conf_cell
             .read()

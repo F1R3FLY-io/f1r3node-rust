@@ -47,14 +47,22 @@ async fn proposals_pack_deploys_within_batch_phlo_and_execute_together() {
         }],
         ..GenesisSettings::default()
     };
-    let (mut manager, vm, root) = initialize_runtime(&directory.path().join("vm"), &spec, &settings)
-        .await
-        .unwrap();
+    let (mut manager, vm, root) =
+        initialize_runtime(&directory.path().join("vm"), &spec, &settings)
+            .await
+            .unwrap();
     spec.execution_genesis = root;
     let chain = Chain::new(spec).unwrap();
     let executor = CommittedRholang::new(vm, chain.clone()).unwrap();
     let submissions: Vec<_> = (0..3)
-        .map(|value| submission(&executor, &seed, &format!("@\"batch\"!({value})"), 4_000_000))
+        .map(|value| {
+            submission(
+                &executor,
+                &seed,
+                &format!("@\"batch\"!({value})"),
+                4_000_000,
+            )
+        })
         .collect();
     assert_eq!(executor.proposal_payload(&[]).unwrap(), (vec![], 0));
     let (payload, included) = executor.proposal_payload(&submissions).unwrap();
@@ -62,9 +70,12 @@ async fn proposals_pack_deploys_within_batch_phlo_and_execute_together() {
     let oversized = vec![0; MAX_DEPLOY_BYTES + 1];
     assert!(executor.validate_submission(&oversized).is_err());
 
-    let mut store =
-        DurableBlocklace::open(&directory.path().join("consensus"), chain, StoreConfig::default())
-            .unwrap();
+    let mut store = DurableBlocklace::open(
+        &directory.path().join("consensus"),
+        chain,
+        StoreConfig::default(),
+    )
+    .unwrap();
     store.propose(&key, vec![]).unwrap().unwrap();
     store.propose(&key, payload).unwrap().unwrap();
     let mut executed = vec![];
@@ -84,11 +95,17 @@ async fn proposals_pack_deploys_within_batch_phlo_and_execute_together() {
     let (receipt, summary) = executed.pop().expect("batch was not executed");
     assert_eq!(
         receipt.deploy_ids,
-        submissions[..2].iter().map(|submission| submission.id).collect::<Vec<_>>()
+        submissions[..2]
+            .iter()
+            .map(|submission| submission.id)
+            .collect::<Vec<_>>()
     );
-    assert!(summary.deploys.iter().all(|deploy| {
-        deploy.outcome == DeployOutcome::Succeeded && deploy.cost > 0
-    }));
+    assert!(
+        summary
+            .deploys
+            .iter()
+            .all(|deploy| { deploy.outcome == DeployOutcome::Succeeded && deploy.cost > 0 })
+    );
     assert_ne!(receipt.pre_state, receipt.post_state);
     assert!(store.has_executed_deploy(&submissions[0].id).unwrap());
     assert!(!store.has_executed_deploy(&submissions[2].id).unwrap());

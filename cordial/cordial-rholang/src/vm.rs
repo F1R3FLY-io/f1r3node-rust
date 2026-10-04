@@ -22,7 +22,8 @@ impl DeterministicVm {
             .name("cordial-vm".into())
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
-                rspace_plus_plus::rspace::deterministic::enable_stable_matching_for_current_thread();
+                rspace_plus_plus::rspace::deterministic::enable_stable_matching_for_current_thread(
+                );
                 while let Ok(job) = queue.recv() {
                     job(&runtime);
                 }

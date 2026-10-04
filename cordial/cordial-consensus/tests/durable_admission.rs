@@ -293,7 +293,10 @@ fn equivocation_evidence_is_durable_and_both_branches_remain() {
         let records = state.equivocations(64).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].objects, expected);
-        assert_eq!(records[0].creator, key.verifying_key().to_sec1_bytes().to_vec());
+        assert_eq!(
+            records[0].creator,
+            key.verifying_key().to_sec1_bytes().to_vec()
+        );
     }
     let recovered =
         DurableBlocklace::open(directory.path(), chain, StoreConfig::default()).unwrap();
@@ -322,11 +325,14 @@ fn reverse_order_chain_is_released_through_dependency_index() {
         ));
     }
     assert_eq!(state.pending_count().unwrap(), 40);
-    state.admit(&chain.encode_block(&blocks[0]).unwrap()).unwrap();
+    state
+        .admit(&chain.encode_block(&blocks[0]).unwrap())
+        .unwrap();
     assert_eq!(state.pending_count().unwrap(), 0);
     assert_eq!(state.admitted_count(), 41);
     drop(state);
-    let recovered = DurableBlocklace::open(directory.path(), chain, StoreConfig::default()).unwrap();
+    let recovered =
+        DurableBlocklace::open(directory.path(), chain, StoreConfig::default()).unwrap();
     assert_eq!(recovered.admitted_count(), 41);
     assert_eq!(recovered.pending_count().unwrap(), 0);
 }

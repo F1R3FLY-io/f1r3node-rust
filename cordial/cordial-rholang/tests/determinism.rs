@@ -9,11 +9,21 @@ fn race(round: usize) -> String {
     let out = format!("@\"race-{round}\"");
     match round % 6 {
         0 => format!("new x in {{ x!(1) | x!(2) | x!(3) | for (@v <- x) {{ {out}!(v) }} }}"),
-        1 => format!("new x, y in {{ x!(1) | x!(2) | y!(3) | y!(4) | for (@a <- x & @b <- y) {{ {out}!([a, b]) }} | for (@c <- x) {{ {out}!(c) }} }}"),
-        2 => format!("new x in {{ for (@v <= x) {{ {out}!(v) }} | x!(1) | x!(2) | x!(3) | for (@w <- x) {{ {out}!(-w) }} }}"),
-        3 => format!("new x in {{ x!(1) | x!(2) | for (@v <<- x) {{ {out}!(v) }} | for (@w <- x) {{ {out}!(w * 10) }} }}"),
-        4 => format!("new x, done in {{ contract x(@n) = {{ if (n > 0) {{ x!(n - 1) | {out}!(n) }} else {{ done!(n) }} }} | x!(12) | x!(7) | for (@a <- done) {{ for (@b <- done) {{ {out}!([a, b]) }} }} }}"),
-        _ => format!("new x, y in {{ x!(1) | x!(2) | y!(1) | for (@v <- x) {{ y!(v) }} | for (@v <- y) {{ x!(v) }} | for (@a <- x & @b <- y) {{ {out}!(a + b) }} }}"),
+        1 => format!(
+            "new x, y in {{ x!(1) | x!(2) | y!(3) | y!(4) | for (@a <- x & @b <- y) {{ {out}!([a, b]) }} | for (@c <- x) {{ {out}!(c) }} }}"
+        ),
+        2 => format!(
+            "new x in {{ for (@v <= x) {{ {out}!(v) }} | x!(1) | x!(2) | x!(3) | for (@w <- x) {{ {out}!(-w) }} }}"
+        ),
+        3 => format!(
+            "new x in {{ x!(1) | x!(2) | for (@v <<- x) {{ {out}!(v) }} | for (@w <- x) {{ {out}!(w * 10) }} }}"
+        ),
+        4 => format!(
+            "new x, done in {{ contract x(@n) = {{ if (n > 0) {{ x!(n - 1) | {out}!(n) }} else {{ done!(n) }} }} | x!(12) | x!(7) | for (@a <- done) {{ for (@b <- done) {{ {out}!([a, b]) }} }} }}"
+        ),
+        _ => format!(
+            "new x, y in {{ x!(1) | x!(2) | y!(1) | for (@v <- x) {{ y!(v) }} | for (@v <- y) {{ x!(v) }} | for (@a <- x & @b <- y) {{ {out}!(a + b) }} }}"
+        ),
     }
 }
 
@@ -70,8 +80,11 @@ async fn independently_executed_competing_receives_produce_identical_receipts() 
         let payload = if (1..25).contains(&round) {
             let deploy = casper::rust::util::construct_deploy::source_deploy_now(
                 race(round),
-                Some(crypto::rust::private_key::PrivateKey::from_bytes(&seed)), Some(0), Some("root".into()),
-            ).unwrap();
+                Some(crypto::rust::private_key::PrivateKey::from_bytes(&seed)),
+                Some(0),
+                Some("root".into()),
+            )
+            .unwrap();
             encode_batch(deploy.data.time_stamp, vec![deploy]).unwrap()
         } else {
             vec![]
@@ -90,7 +103,13 @@ async fn independently_executed_competing_receives_produce_identical_receipts() 
             let summary: cordial_rholang::ExecutionSummary =
                 serde_json::from_slice(&receipt.result).unwrap();
             assert!(summary.rejection.is_none(), "round {round}: {summary:?}");
-            assert!(summary.deploys.iter().all(|deploy| deploy.outcome == cordial_rholang::DeployOutcome::Succeeded), "round {round}: {summary:?}");
+            assert!(
+                summary
+                    .deploys
+                    .iter()
+                    .all(|deploy| deploy.outcome == cordial_rholang::DeployOutcome::Succeeded),
+                "round {round}: {summary:?}"
+            );
             count += summary
                 .deploys
                 .iter()
@@ -104,4 +123,3 @@ async fn independently_executed_competing_receives_produce_identical_receipts() 
     first_manager.shutdown().await.unwrap();
     second_manager.shutdown().await.unwrap();
 }
-

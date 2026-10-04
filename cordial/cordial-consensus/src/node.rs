@@ -11,8 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     Application, BLOCK_PACKET_KIND, Chain, DurableBlocklace, EquivocationRecord, Error,
-    ExecutionReceipt, HistoryPage,
-    MAX_PACKET_BYTES, StoreConfig, decode, encode,
+    ExecutionReceipt, HistoryPage, MAX_PACKET_BYTES, StoreConfig, decode, encode,
 };
 
 pub const SYNC_PACKET_KIND: &str = "cordial/sync/v1";

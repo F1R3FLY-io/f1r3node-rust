@@ -561,7 +561,11 @@ impl DurableBlocklace {
             })
             .collect();
         records.sort_by(|left, right| {
-            (left.round, &left.creator, &left.objects).cmp(&(right.round, &right.creator, &right.objects))
+            (left.round, &left.creator, &left.objects).cmp(&(
+                right.round,
+                &right.creator,
+                &right.objects,
+            ))
         });
         records.truncate(limit);
         Ok(records)

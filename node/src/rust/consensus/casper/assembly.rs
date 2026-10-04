@@ -1070,13 +1070,15 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     Ok(PreparedNode {
         consensus: builder.build(Box::new(adapter)),
         packet_handler: Arc::new(super::ingress::ConsensusPacketHandler(handle)),
-        application: crate::rust::runtime::setup::PreparedApplication::CbcCasper(Box::new(PreparedApplication {
-            api_servers,
-            reporting_routes,
-            web_api: Arc::new(web_api),
-            admin_web_api: Arc::new(admin_web_api),
-            block_report_api: Arc::new(block_report_api_for_return),
-        })),
+        application: crate::rust::runtime::setup::PreparedApplication::CbcCasper(Box::new(
+            PreparedApplication {
+                api_servers,
+                reporting_routes,
+                web_api: Arc::new(web_api),
+                admin_web_api: Arc::new(admin_web_api),
+                block_report_api: Arc::new(block_report_api_for_return),
+            },
+        )),
     })
 }
 

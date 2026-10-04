@@ -274,7 +274,14 @@ fn invalid_receipts_cannot_skip_output_or_reexecute_a_deploy() {
     assert!(recovered.has_executed_deploy(&[10; 32]).unwrap());
 }
 
-fn tamper(source: &std::path::Path, change: impl FnOnce(&heed::Env, &mut heed::RwTxn, heed::Database<heed::types::Bytes, heed::types::Bytes>)) -> tempfile::TempDir {
+fn tamper(
+    source: &std::path::Path,
+    change: impl FnOnce(
+        &heed::Env,
+        &mut heed::RwTxn,
+        heed::Database<heed::types::Bytes, heed::types::Bytes>,
+    ),
+) -> tempfile::TempDir {
     let copy = tempfile::tempdir().unwrap();
     std::fs::copy(source.join("data.mdb"), copy.path().join("data.mdb")).unwrap();
     let env = unsafe {
@@ -332,25 +339,59 @@ fn tampered_execution_journals_are_rejected_on_recovery() {
                 .unwrap();
         }
     }
-    assert!(DurableBlocklace::open(directory.path(), chain.clone(), StoreConfig::default()).is_ok());
+    assert!(
+        DurableBlocklace::open(directory.path(), chain.clone(), StoreConfig::default()).is_ok()
+    );
     let mut deploy_key = b"deploy/".to_vec();
     deploy_key.extend([0u8; 32]);
     let mut receipt_one = b"execution/".to_vec();
     receipt_one.extend(1u64.to_be_bytes());
     let mut orphan = b"execution/".to_vec();
     orphan.extend(9u64.to_be_bytes());
-    let cases: Vec<(&str, Box<dyn FnOnce(&heed::Env, &mut heed::RwTxn, heed::Database<heed::types::Bytes, heed::types::Bytes>)>)> = vec![
-        ("missing deploy index", Box::new(move |_, txn, meta| { meta.delete(txn, &deploy_key).unwrap(); })),
-        ("orphan receipt", Box::new(move |_, txn, meta| { meta.put(txn, &orphan, b"x").unwrap(); })),
-        ("cursor beyond output", Box::new(|_, txn, meta| { meta.put(txn, b"execution-count", &u64::MAX.to_be_bytes()).unwrap(); })),
-        ("broken state chain", Box::new(move |_, txn, meta| {
-            use bincode::Options;
-            let codec = bincode::DefaultOptions::new().with_fixint_encoding().reject_trailing_bytes();
-            let mut receipt: ExecutionReceipt = codec.deserialize(meta.get(txn, &receipt_one).unwrap().unwrap()).unwrap();
-            receipt.pre_state = [42; 32];
-            let bytes = codec.serialize(&receipt).unwrap();
-            meta.put(txn, &receipt_one, &bytes).unwrap();
-        })),
+    let cases: Vec<(
+        &str,
+        Box<
+            dyn FnOnce(
+                &heed::Env,
+                &mut heed::RwTxn,
+                heed::Database<heed::types::Bytes, heed::types::Bytes>,
+            ),
+        >,
+    )> = vec![
+        (
+            "missing deploy index",
+            Box::new(move |_, txn, meta| {
+                meta.delete(txn, &deploy_key).unwrap();
+            }),
+        ),
+        (
+            "orphan receipt",
+            Box::new(move |_, txn, meta| {
+                meta.put(txn, &orphan, b"x").unwrap();
+            }),
+        ),
+        (
+            "cursor beyond output",
+            Box::new(|_, txn, meta| {
+                meta.put(txn, b"execution-count", &u64::MAX.to_be_bytes())
+                    .unwrap();
+            }),
+        ),
+        (
+            "broken state chain",
+            Box::new(move |_, txn, meta| {
+                use bincode::Options;
+                let codec = bincode::DefaultOptions::new()
+                    .with_fixint_encoding()
+                    .reject_trailing_bytes();
+                let mut receipt: ExecutionReceipt = codec
+                    .deserialize(meta.get(txn, &receipt_one).unwrap().unwrap())
+                    .unwrap();
+                receipt.pre_state = [42; 32];
+                let bytes = codec.serialize(&receipt).unwrap();
+                meta.put(txn, &receipt_one, &bytes).unwrap();
+            }),
+        ),
     ];
     for (name, change) in cases {
         let copy = tamper(directory.path(), change);
