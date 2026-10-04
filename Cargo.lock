@@ -1181,6 +1181,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordial-consensus"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "consensus-api",
+ "consensus-runtime",
+ "cordial-miners-core",
+ "fs2",
+ "heed",
+ "hex",
+ "k256",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "cordial-miners-core"
 version = "0.1.0"
 dependencies = [
