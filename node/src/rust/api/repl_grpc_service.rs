@@ -699,13 +699,20 @@ mod prepared_route_tests {
             "proof-distinct traces need distinct keys"
         );
         assert!(choices.next_value_key(&second_choice).is_none());
+        let mut guest_trace_lengths = Vec::new();
         for key in [&first_choice, &second_choice] {
             let trace = choices
                 .leaf_at_encoded_key(key)
                 .expect("choice trace member");
             let trace = list(&trace);
-            assert!(trace.len() >= 2, "each choice must include a guest rewrite");
+            assert!(trace.len() >= 4, "each choice must include a guest rewrite");
+            assert_eq!(
+                trace.len() % 2,
+                0,
+                "guest-only path starts with input and saturation, then alternates proof and configuration"
+            );
             assert_eq!(trace.last(), Some(&expected_terminal));
+            guest_trace_lengths.push(trace.len());
         }
         let choice_failure = observation(&runtime, "regex.lookahead.choices.failure").await;
         let choice_failure = trace_pathmap(&choice_failure);
@@ -739,6 +746,32 @@ mod prepared_route_tests {
         assert_eq!(second_twin.last(), Some(&expected_terminal));
         let twin_failure = observation(&runtime, "regex.lookahead.twins.failure").await;
         assert_eq!(trace_pathmap(&twin_failure).len(), 0);
+        let mixed = observation(&runtime, "regex.lookahead.mixed.success").await;
+        let mixed = trace_pathmap(&mixed);
+        assert_eq!(mixed.mode(), EPathMapMode::Set);
+        let expected_interleavings: usize =
+            guest_trace_lengths.iter().map(|length| *length / 2).sum();
+        assert_eq!(
+            mixed.len(),
+            expected_interleavings,
+            "one host COMM must be schedulable at every boundary of each proof-distinct guest trace"
+        );
+        let mut key = Vec::new();
+        for _ in 0..expected_interleavings {
+            key = mixed.next_value_key(&key).expect("next mixed trace key");
+            let trace = mixed.leaf_at_encoded_key(&key).expect("mixed trace member");
+            let trace = list(&trace);
+            assert!(
+                guest_trace_lengths
+                    .iter()
+                    .any(|length| trace.len() == *length + 1),
+                "mixed trace adds exactly one host COMM to a guest proof"
+            );
+            assert_eq!(trace.last(), Some(&expected_terminal));
+        }
+        assert!(mixed.next_value_key(&key).is_none());
+        let mixed_failure = observation(&runtime, "regex.lookahead.mixed.failure").await;
+        assert_eq!(trace_pathmap(&mixed_failure).len(), 0);
         let hole_success = observation(&runtime, "regex.lookahead.hole.success").await;
         let hole_success = trace_pathmap(&hole_success);
         assert_eq!(hole_success.mode(), EPathMapMode::Set);
@@ -805,6 +838,16 @@ mod prepared_route_tests {
             pending_requests.is_empty(),
             "unserved v2 requests: {pending_requests:?}"
         );
+        let composite_request_channel = scalar(ExprInstance::GString(
+            mettail_rholang_runtime::lookahead::SPEC_ALL_V3_CHANNEL.into(),
+        ));
+        assert!(
+            runtime
+                .get_data(&composite_request_channel)
+                .await
+                .is_empty(),
+            "unserved v3 mixed request"
+        );
         let native_success = observation(&runtime, "regex.lookahead.native.success").await;
         let native_success = trace_pathmap(&native_success);
         assert_eq!(native_success.mode(), EPathMapMode::Set);
@@ -849,8 +892,8 @@ mod prepared_route_tests {
         let reports = runtime.get_data(&truncated_channel).await;
         assert_eq!(
             reports.len(),
-            8,
-            "each v2 lookahead request has a typed report"
+            9,
+            "each versioned lookahead request has a typed report"
         );
         let mut truncated_lengths = Vec::with_capacity(reports.len());
         for report in reports {
@@ -861,7 +904,7 @@ mod prepared_route_tests {
             truncated_lengths.push(trace_pathmap(&fields[1]).len());
         }
         truncated_lengths.sort_unstable();
-        assert_eq!(truncated_lengths, [0, 0, 0, 0, 0, 0, 1, 1]);
+        assert_eq!(truncated_lengths, [0, 0, 0, 0, 0, 0, 0, 1, 1]);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
