@@ -65,6 +65,11 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
+    if this.offered_funded_active {
+        return Err(CasperError::RuntimeError(
+            "new deploys require offered-funded cost accounting".to_string(),
+        ));
+    }
     let deploy_id = deploy.sig.to_vec();
     // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
     if deploy_is_known(this, &deploy_id)? {

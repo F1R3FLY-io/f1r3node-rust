@@ -356,13 +356,24 @@ impl RuntimeManager {
                 return Err(error);
             }
         };
-        if !evaluation.byte_observations.has_complete_measurements()
-            || evaluation.native_phlo_usage.is_none()
-            || runtime.runtime.get_root().await.bytes() != prepared.execution_root
-        {
+        if !evaluation.byte_observations.has_complete_measurements() {
+            runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
+            return Err(CasperError::RuntimeError(format!(
+                "native offered execution has incomplete byte measurements: errors={:?}, host_rejection={:?}",
+                evaluation.errors,
+                host_work.rejection(),
+            )));
+        }
+        if evaluation.native_phlo_usage.is_none() {
             runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
             return Err(CasperError::RuntimeError(
-                "native offered execution has incomplete evidence or changed its base root".into(),
+                "native offered execution has no phlo usage".into(),
+            ));
+        }
+        if runtime.runtime.get_root().await.bytes() != prepared.execution_root {
+            runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
+            return Err(CasperError::RuntimeError(
+                "native offered execution changed its base root".into(),
             ));
         }
         let execution_log = runtime.runtime.take_event_log().await;

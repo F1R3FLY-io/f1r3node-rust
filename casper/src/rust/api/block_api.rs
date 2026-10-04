@@ -820,6 +820,11 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
+            if casper.offered_funded_active() {
+                return Err(offered_validation_error(
+                    "new deploys require offered-funded cost accounting",
+                ));
+            }
             // The floor check reads the SAME value the validity rule reads
             // (the shard conf), never a second node-conf copy.
             let min_phlo_price = casper.casper_shard_conf().min_phlo_price;

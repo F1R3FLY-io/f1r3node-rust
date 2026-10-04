@@ -338,6 +338,12 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // retry; the 500 class would say the node is broken.
         BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
+        OfferedCandidateRejected(_) => (
+            S::UNPROCESSABLE_ENTITY,
+            "offered_candidate_rejected",
+            err.to_string(),
+        ),
+
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
         HistoryError(_) => internal("history_error"),

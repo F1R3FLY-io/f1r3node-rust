@@ -1,10 +1,11 @@
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::util::construct_deploy;
+use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::util::rholang::costacc::vault_payer::{balance_query_source, vault_payer};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Cosigned;
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostSignature, Par};
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::cost_deploy_data::DeployData;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::phlo_controls::PhloControlsV1;
@@ -28,7 +29,7 @@ use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::genesis_builder::{GenesisBuilder, EXTRA_GENESIS_VAULT_KEY_PAIRS};
 
 fn schedule() -> PhloScheduleV1<'static> {
     let identities: [&[u8]; 4] = [b"compute", b"introduction", b"transfer", b"trace"];
@@ -47,6 +48,110 @@ fn schedule() -> PhloScheduleV1<'static> {
         actual_price: 2,
         compatibility_rule: native_resource_compatibility_rule(),
     }
+}
+
+fn signed_direct_offer(
+    term: String,
+    timestamp: i64,
+    valid_after: i64,
+    owner_secret: crypto::rust::private_key::PrivateKey,
+    owner_public: &crypto::rust::public_key::PublicKey,
+) -> models::casper::DeployDataProto {
+    let limits = offered_funded_v6_limits().envelope.payload;
+    let signature = CostSignature {
+        value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
+    };
+    let payer = vault_payer(&signature).unwrap();
+    let selected = schedule();
+    let terms = selected.encode(PhloGenesisPolicy::LIMITS).unwrap();
+    let authority = cost_signature_to_sig(&signature).unwrap();
+    let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
+    let permissions = (0..selected.classes.len())
+        .map(|class| {
+            PhloResource {
+                location: &location,
+                class,
+                acquisition_terms: &terms,
+                authority: &authority,
+            }
+            .wire_key(PhloExecutionLimits {
+                resource_entries: 1,
+                authority_nodes: limits.funding.authority_nodes,
+                key_bytes: limits.funding.wire.field_bytes,
+            })
+            .unwrap()
+        })
+        .collect();
+    let source = PhloSourcePolicyV1::new(
+        &payer.custody_key,
+        5_000_000,
+        5_000_000,
+        true,
+        permissions,
+        PhloSourceLimits {
+            wire: limits.funding.wire,
+            resource_permissions: selected.classes.len(),
+            authority_nodes: limits.funding.authority_nodes,
+        },
+    )
+    .unwrap();
+    let funding = PhloFundingIntentV2 {
+        base: PhloFundingIntentV1 {
+            controls: PhloControlsV1 {
+                limit: 2_000_000,
+                price_ceiling: 2,
+                required_owner_ceilings: vec![2],
+                permitted_schedules: vec![selected.clone()],
+            },
+            schedule_commitment: selected.digest(PhloGenesisPolicy::LIMITS).unwrap(),
+            total_exposure: 5_000_000,
+            sources: vec![source],
+        },
+        grant_uses: Vec::new(),
+        conversion: PhloConversionCompositionV2::NoConversion,
+    }
+    .encode(PhloFundingIntentV2Limits {
+        wire: limits.funding.wire,
+        base: limits.funding,
+        grant_uses: limits.funding.wire.total_bytes / 8,
+        grant_id_bytes: limits.funding.wire.field_bytes,
+        quote_evidence_bytes: limits.funding.wire.field_bytes,
+    })
+    .unwrap();
+    let body = DeployData {
+        term,
+        language: "rholang".to_owned(),
+        time_stamp: timestamp,
+        valid_after_block_number: valid_after,
+        shard_id: "root".to_owned(),
+        expiration_timestamp: None,
+        authority_presentations: Vec::new(),
+    };
+    let payload = OfferedFundedDeploy::new(body, funding, 2_000_000, 2, limits).unwrap();
+    let signed =
+        Cosigned::create_single_envelope(payload, Box::new(Secp256k1), owner_secret).unwrap();
+    OfferedFundedDeploy::to_proto(&signed).unwrap()
+}
+
+async fn propagate_offer(
+    nodes: &mut [TestNode],
+    offer: models::casper::DeployDataProto,
+    stage: &str,
+) -> BlockMessage {
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer, &None, false, "root")
+        .await
+        .unwrap_or_else(|error| panic!("{stage} admission: {error}"));
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .unwrap_or_else(|error| panic!("{stage} proposal: {error}"));
+    for node in nodes {
+        assert!(matches!(
+            node.process_block(block.clone()).await.unwrap(),
+            Either::Right(_)
+        ));
+    }
+    block
 }
 
 fn collect_private_signature(signature: &CostSignature, output: &mut Vec<CostSignature>) {
@@ -192,8 +297,8 @@ fn offered_gateway_call(
                 .collect();
             PhloSourcePolicyV1::new(
                 &payer.custody_key,
-                300_000,
-                300_000,
+                if index == 0 { 300_000 } else { 100_000 },
+                if index == 0 { 300_000 } else { 100_000 },
                 index == 0,
                 permissions,
                 PhloSourceLimits {
@@ -249,6 +354,12 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
     parameters.2.version = 6;
     parameters.2.proof_of_stake.min_phlo_price = 1;
+    let extra_gateway = EXTRA_GENESIS_VAULT_KEY_PAIRS[1].clone();
+    parameters.2.vaults.push(Vault {
+        vault_address: VaultAddress::from_public_key(&extra_gateway.1).unwrap(),
+        initial_balance: 9_000_000,
+    });
+    parameters.1.push(extra_gateway);
     let policy = PhloGenesisPolicy::from_schedule(&schedule())
         .unwrap()
         .with_offered_funded_v6_active();
@@ -261,10 +372,10 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
         .await
         .unwrap();
     let installer_secret = genesis.genesis_vaults[0].0.clone();
-    let sponsor_secret = genesis.genesis_vaults[1].0.clone();
-    let sponsor_address = VaultAddress::from_public_key(&genesis.genesis_vaults[1].1).unwrap();
-    let gateway_secret = genesis.genesis_vaults[2].0.clone();
-    let gateway_public = &genesis.genesis_vaults[2].1;
+    let sponsor_secret = genesis.genesis_vaults[2].0.clone();
+    let sponsor_address = VaultAddress::from_public_key(&genesis.genesis_vaults[2].1).unwrap();
+    let gateway_secret = genesis.genesis_vaults[3].0.clone();
+    let gateway_public = &genesis.genesis_vaults[3].1;
     let installer_source = r#"new entry, slot, entryAddressCh, slotAddressCh,
       VaultAddress(`rho:vault:address`), DeployerIdOps(`rho:system:deployerId:ops`) in {
       for (@request, deployerId <= @"agent-trigger") {
@@ -286,19 +397,14 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
       for (@slotAddress <- slotAddressCh) { @"agent-slot-address"!!(slotAddress) }
     }"#
     .replace("GATEWAY_PUBLIC_KEY", &hex::encode(&gateway_public.bytes));
-    let installer = construct_deploy::source_deploy(
+    let installer = signed_direct_offer(
         installer_source,
         1,
-        Some(1_000_000),
-        None,
-        Some(installer_secret.clone()),
-        None,
-        Some("root".to_owned()),
-    )
-    .unwrap();
-    let installed = TestNode::propagate_block_at_index(&mut nodes, 0, &[installer])
-        .await
-        .unwrap();
+        0,
+        installer_secret.clone(),
+        &genesis.genesis_vaults[0].1,
+    );
+    let installed = propagate_offer(&mut nodes, installer, "installer").await;
     let installed_root = &installed.body.state.post_state_hash;
     let entry_address = VaultAddress::parse(
         &RhoString::unapply(&data(&nodes, installed_root, "agent-entry-address").await[0]).unwrap(),
@@ -348,36 +454,26 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
         entry_address.to_base58(),
         slot_address.to_base58(),
     );
-    let funding = construct_deploy::source_deploy(
+    let funding = signed_direct_offer(
         funding_source,
         2,
-        Some(1_000_000),
-        None,
-        Some(sponsor_secret),
-        None,
-        Some("root".to_owned()),
-    )
-    .unwrap();
-    let funded = TestNode::propagate_block_at_index(&mut nodes, 0, &[funding])
-        .await
-        .unwrap();
+        1,
+        sponsor_secret,
+        &genesis.genesis_vaults[2].1,
+    );
+    let funded = propagate_offer(&mut nodes, funding, "funding").await;
     let funded_root = &funded.body.state.post_state_hash;
     assert_eq!(balance(&nodes, funded_root, &entry_address).await, 100_000);
     assert_eq!(balance(&nodes, funded_root, &slot_address).await, 100_000);
-    let unauthorized = construct_deploy::source_deploy(
+    let unauthorized = signed_direct_offer(
         "new deployerId(`rho:system:deployerId`) in { @\"agent-trigger\"!(0, *deployerId) }"
             .to_owned(),
         3,
-        Some(1_000_000),
-        None,
-        Some(installer_secret),
-        None,
-        Some("root".to_owned()),
-    )
-    .unwrap();
-    let rejected = TestNode::propagate_block_at_index(&mut nodes, 0, &[unauthorized])
-        .await
-        .unwrap();
+        2,
+        installer_secret,
+        &genesis.genesis_vaults[0].1,
+    );
+    let rejected = propagate_offer(&mut nodes, unauthorized, "unauthorized").await;
     let rejected_root = &rejected.body.state.post_state_hash;
     assert!(data(&nodes, rejected_root, "agent-ran").await.is_empty());
     assert_eq!(

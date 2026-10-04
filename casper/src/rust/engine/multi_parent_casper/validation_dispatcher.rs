@@ -72,6 +72,14 @@ where
 ///
 /// Returns the outcome of `check_equivocations`. A `Left` from any
 /// intermediate validator short-circuits and is returned directly.
+fn violates_offered_only_activation<D>(
+    active: bool,
+    deploys: &[D],
+    is_offered: impl Fn(&D) -> bool,
+) -> bool {
+    active && deploys.iter().any(|deploy| !is_offered(deploy))
+}
+
 async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
@@ -110,6 +118,14 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     tracing::debug!(target: "f1r3fly.casper", "post-validation-block-summary");
     if let Either::Left(block_error) = block_summary_result {
         return Ok(Either::Left(block_error));
+    }
+
+    if violates_offered_only_activation(this.offered_funded_active, &block.body.deploys, |deploy| {
+        matches!(deploy, ProcessedUserDeploy::Offered(_))
+    }) {
+        return Ok(Either::Left(BlockError::Invalid(
+            InvalidBlock::InvalidTransaction,
+        )));
     }
 
     let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
@@ -619,6 +635,38 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                 status
             );
             Ok(dag.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod offered_only_activation_tests {
+    use super::violates_offered_only_activation;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `OfferedOnlyActivation.v`: `active_validation_rejects_body_only`
+        /// (an active block with any body-only deploy is invalid), and the `validate`
+        /// definition (inactive validation imposes no format rule; an active block of
+        /// offered deploys only is valid).
+        #[test]
+        fn active_validation_rejects_exactly_blocks_with_a_body_only_deploy(
+            before in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            after in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
+            offered_only in proptest::collection::vec(proptest::strategy::Just(true), 0..8),
+        ) {
+            let mut with_body_only = before.clone();
+            with_body_only.push(false);
+            with_body_only.extend(after.iter().copied());
+            let is_offered = |offered: &bool| *offered;
+            proptest::prop_assert!(violates_offered_only_activation(true, &with_body_only, is_offered));
+            proptest::prop_assert!(!violates_offered_only_activation(false, &with_body_only, is_offered));
+            proptest::prop_assert!(!violates_offered_only_activation(true, &offered_only, is_offered));
+            proptest::prop_assert_eq!(
+                violates_offered_only_activation(true, &before, is_offered),
+                before.iter().any(|offered| !offered)
+            );
         }
     }
 }

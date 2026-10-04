@@ -18,7 +18,7 @@ use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::rp_conf::RPConfCell;
 use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signed::Cosigned;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::casper::v1::deploy_response::Message as DeployResponseMessage;
 use models::casper::v1::deploy_service_server::DeployService;
 use models::rhoapi::cost_signature::Value;
@@ -156,6 +156,14 @@ fn signed_offer(
     owner_secret: crypto::rust::private_key::PrivateKey,
     owner_public: &crypto::rust::public_key::PublicKey,
 ) -> models::casper::DeployDataProto {
+    signed_offer_at(owner_secret, owner_public, 1)
+}
+
+fn signed_offer_at(
+    owner_secret: crypto::rust::private_key::PrivateKey,
+    owner_public: &crypto::rust::public_key::PublicKey,
+    time_stamp: i64,
+) -> models::casper::DeployDataProto {
     let limits = offered_funded_v6_limits().envelope.payload;
     let signature = CostSignature {
         value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
@@ -220,7 +228,7 @@ fn signed_offer(
     let body = DeployData {
         term: "new x in { x!(0) }".to_string(),
         language: "rholang".to_string(),
-        time_stamp: 1,
+        time_stamp,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
@@ -232,19 +240,123 @@ fn signed_offer(
     OfferedFundedDeploy::to_proto(&signed).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
-    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+async fn offered_v6_genesis(validators: usize) -> crate::util::genesis_builder::GenesisContext {
+    let mut parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
     parameters.2.version = 6;
     parameters.2.proof_of_stake.min_phlo_price = 1;
     let policy = PhloGenesisPolicy::from_schedule(&selected_schedule())
-        .unwrap()
+        .expect("selected schedule forms a genesis policy")
         .with_offered_funded_v6_active();
-    let genesis = GenesisBuilder::new()
+    GenesisBuilder::new()
         .with_resource_policy(policy)
         .build_genesis_with_parameters(Some(parameters))
         .await
-        .unwrap();
+        .expect("offered v6 genesis builds")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_included() {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    let genesis = offered_v6_genesis(1).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, None)
+        .await
+        .expect("single-node network starts");
+    let unfunded_secret = crypto::rust::private_key::PrivateKey::from_bytes(&[0x5a; 32]);
+    let unfunded_public = Secp256k1.to_public(&unfunded_secret);
+    assert!(genesis
+        .genesis_vaults
+        .iter()
+        .all(|(_, public)| public.bytes != unfunded_public.bytes));
+    let unfundable = signed_offer_at(unfunded_secret, &unfunded_public, 1);
+    let fundable = signed_offer_at(
+        genesis.genesis_vaults[0].0.clone(),
+        &genesis.genesis_vaults[0].1,
+        2,
+    );
+    for offer in [&unfundable, &fundable] {
+        BlockAPI::deploy_offered(&nodes[0].engine_cell, offer.clone(), &None, false, "root")
+            .await
+            .expect("well-formed offer is admitted");
+    }
+    let unfundable_id =
+        models::rust::deploy_id::DeployIdV6::try_from(unfundable.deploy_id.to_vec())
+            .expect("offered deploy id has 32 bytes");
+
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("the proposer skips the unfundable head offer");
+    assert_eq!(block.body.deploys.len(), 1);
+    assert_eq!(
+        block.body.deploys[0].identity_bytes(),
+        fundable.deploy_id.as_ref()
+    );
+    let storage = nodes[0].deploy_storage.lock();
+    assert!(!storage
+        .contains_envelope_id(&unfundable_id)
+        .expect("pending envelope lookup succeeds"));
+    let rejection = storage
+        .envelope_rejection(&unfundable_id)
+        .expect("the rejected offer has a status entry");
+    assert_eq!(rejection.block_number, block.body.state.block_number);
+    assert_eq!(
+        rejection.pre_state_root.as_deref(),
+        Some(block.body.state.pre_state_hash.as_ref())
+    );
+    assert!(!rejection.reason.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn active_validator_rejects_a_block_with_a_body_only_deploy() {
+    let genesis = offered_v6_genesis(2).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .expect("two-node network starts");
+    let offer = signed_offer(
+        genesis.genesis_vaults[0].0.clone(),
+        &genesis.genesis_vaults[0].1,
+    );
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer, &None, false, "root")
+        .await
+        .expect("well-formed offer is admitted");
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("the offered block is created");
+    let mut forged = block.clone();
+    forged.body.deploys.push(ProcessedUserDeploy::Legacy(
+        casper::rust::util::construct_deploy::basic_processed_deploy(0, Some("root".to_string()))
+            .expect("body-only deploy builds"),
+    ));
+    let forged = resign_block(
+        &forged,
+        &nodes[0]
+            .validator_id_opt
+            .as_ref()
+            .expect("node 0 is a validator")
+            .private_key,
+    );
+    let status = nodes[1]
+        .process_block(forged.clone())
+        .await
+        .expect("validation completes");
+    assert!(
+        matches!(
+            status,
+            Either::Left(BlockError::Invalid(
+                casper::rust::block_status::InvalidBlock::InvalidTransaction
+            ))
+        ),
+        "unexpected status {status:?}"
+    );
+    assert!(!nodes[1].casper.dag_contains(&forged.block_hash));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
+    let genesis = offered_v6_genesis(3).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
@@ -268,6 +380,30 @@ async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
     let checked = OfferedFundedDeploy::from_proto(offer.clone(), limits.payload).unwrap();
     assert_eq!(checked.data.phlo_limit(), 2_000_000);
     assert_eq!(checked.data.phlo_price(), 2);
+    let body_only = Signed::create(
+        models::rust::casper::protocol::casper_message::DeployData {
+            term: checked.data.body().term.clone(),
+            time_stamp: checked.data.body().time_stamp,
+            phlo_price: 2,
+            phlo_limit: 2_000_000,
+            valid_after_block_number: checked.data.body().valid_after_block_number,
+            shard_id: checked.data.body().shard_id.clone(),
+            expiration_timestamp: checked.data.body().expiration_timestamp,
+        },
+        Box::new(Secp256k1),
+        genesis.genesis_vaults[0].0.clone(),
+    )
+    .unwrap();
+    assert!(BlockAPI::deploy(
+        &nodes[0].engine_cell,
+        body_only.clone(),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .is_err());
+    assert!(nodes[0].casper.deploy(body_only).is_err());
     let wallet = authorize_offered_direct_wallet_funding(&checked, DirectWalletFundingLimits {
         members: limits.members,
         funding: limits.payload.funding,
@@ -346,14 +482,18 @@ async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
     )
     .await
     .is_err());
-    nodes[0].allow_empty_blocks = true;
-    let legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
-        .await
-        .unwrap();
-    assert_eq!(legacy_turn.body.state.block_number, 1);
-    assert!(legacy_turn.body.deploys.is_empty());
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Offered deploys no
+    // longer alternate block turns with legacy deploys, so block 1 carries the offer.
+    // nodes[0].allow_empty_blocks = true;
+    // let legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
+    //     .await
+    //     .unwrap();
+    // assert_eq!(legacy_turn.body.state.block_number, 1);
+    // assert!(legacy_turn.body.deploys.is_empty());
     let block = nodes[0].create_block_unsafe(&[]).await.unwrap();
-    assert_eq!(block.body.state.block_number, 2);
+    // Disabled: see the legacy-turn note above (epic 8946, D3).
+    // assert_eq!(block.body.state.block_number, 2);
+    assert_eq!(block.body.state.block_number, 1);
     assert_eq!(block.body.deploys.len(), 1);
     assert_eq!(block.body.deploys[0].identity_bytes(), deploy_id.as_slice());
     let protocol = offered_funded_v6_limits();

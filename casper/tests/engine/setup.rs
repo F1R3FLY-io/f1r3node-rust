@@ -298,6 +298,9 @@ impl TestFixture {
         let deploy_storage = KeyValueDeployStorage {
             store: deploy_storage_typed_store,
             envelope_store: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
+            envelope_rejections:
+                block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejectionLog::default(
+                ),
         };
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.

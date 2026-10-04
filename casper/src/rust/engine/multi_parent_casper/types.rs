@@ -89,6 +89,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,
+    pub offered_funded_active: bool,
     /// Flag to track finalization status - block proposals fail fast if finalization is running.
     /// This prevents validators from creating blocks with stale snapshots during finalization.
     pub finalization_in_progress: Arc<AtomicBool>,

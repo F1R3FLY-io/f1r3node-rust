@@ -164,3 +164,29 @@ fn token_metadata_policy_getter_is_opt_in() {
         .term
         .contains(&format!("\"{encoded}\".hexToBytes()")));
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+    /// Extracted from `GenesisVersionAdoption.v`: `adopted_policy_passes_adopt_check`
+    /// and `unadopted_mismatch_fails_adopt_check`. The approved header version equals
+    /// the schedule version (`context_valid`), so the adopted running version always
+    /// passes `adopt`, and an unadopted mismatched local version always fails it.
+    #[test]
+    fn adopted_version_passes_adopt_and_unadopted_mismatch_fails(
+        schedule_version in 1u64..64,
+        local in -8i64..72,
+    ) {
+        let header = i64::try_from(schedule_version).expect("small schedule version");
+        let genesis = policy(10, schedule_version, "root");
+        let running = crate::rust::casper::adopted_casper_version(Some(&genesis), header, local);
+        proptest::prop_assert!(policy(10, schedule_version, "root")
+            .adopt(&shard_conf(10, running, "root"))
+            .is_ok());
+        if local != header {
+            proptest::prop_assert!(policy(10, schedule_version, "root")
+                .adopt(&shard_conf(10, local, "root"))
+                .is_err());
+        }
+    }
+}

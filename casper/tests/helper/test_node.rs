@@ -117,6 +117,7 @@ impl TestNode {
         // Create block using block_creator
         block_creator::create_with_approved_genesis(
             self.casper.get_approved_block()?,
+            self.casper.offered_funded_active,
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
@@ -1173,6 +1174,11 @@ impl TestNode {
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
+            offered_funded_active: runtime_manager
+                .find_genesis_resource_policy(&genesis.body.state.post_state_hash)
+                .await
+                .expect("test genesis resource policy query must succeed")
+                .is_some_and(|policy| policy.offered_funded_v6_active()),
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),

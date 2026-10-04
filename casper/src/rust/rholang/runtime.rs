@@ -27,6 +27,7 @@ use models::rust::casper::protocol::casper_message::{
     SystemDeployData,
 };
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -52,13 +53,14 @@ use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, Rh
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
-use crate::rust::errors::CasperError;
+use crate::rust::errors::{CasperError, OfferedCandidateRejection};
 use crate::rust::metrics_constants::{
     BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC,
     BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
@@ -100,6 +102,35 @@ static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new()
 
 fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
+}
+
+fn offered_candidate_rejection(
+    envelope: &DeployEnvelope,
+    pre_state_root: &StateHash,
+    error: CasperError,
+) -> CasperError {
+    let DeployLookupId::V6(deploy_id) = envelope.identity() else {
+        return error;
+    };
+    match error {
+        CasperError::KvStoreError(_)
+        | CasperError::HistoryError(_)
+        | CasperError::LockError(_)
+        | CasperError::StreamError(_)
+        | CasperError::CommError(_)
+        | CasperError::BlockNotHeld(..)
+        | CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(_)
+            | RSpaceError::RadixTreeError(_)
+            | RSpaceError::KvStoreError(_),
+        ))
+        | CasperError::OfferedCandidateRejected(_) => error,
+        error => CasperError::OfferedCandidateRejected(OfferedCandidateRejection {
+            deploy_id: *deploy_id,
+            pre_state_root: pre_state_root.clone(),
+            reason: error.to_string(),
+        }),
+    }
 }
 
 pub struct RuntimeOps {
@@ -332,195 +363,206 @@ impl RuntimeOps {
                     "offered proposal has no consensus host-work budget".to_string(),
                 )
             })?;
-            let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
-                return Err(CasperError::RuntimeError(
-                    "offered proposal has an unexpected envelope format".to_string(),
-                ));
-            };
             let root: [u8; 32] = start_hash.as_ref().try_into().map_err(|_| {
                 CasperError::RuntimeError(
                     "offered proposal requires a 32-byte original root".to_string(),
                 )
             })?;
-            let base = models::rust::cost_protocol_limits::offered_funded_v6_limits()
-                .envelope
-                .payload
-                .funding;
-            budget
-                .reserve(
-                    HostWorkDimension::VerificationBytes,
-                    HostWorkUnits::new(u64::try_from(base.wire.total_bytes).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered funding byte bound overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            let limits = OfferedCandidateLimits {
-                funding: PhloFundingIntentV2Limits {
-                    wire: base.wire,
-                    base,
-                    grant_uses: base.wire.total_bytes / 8,
-                    grant_id_bytes: base.wire.field_bytes,
-                    quote_evidence_bytes: base.wire.field_bytes,
-                },
-                max_phlo_limit: i64::MAX as u64,
-            };
-            let prepared = prepare_offered_candidate(signed, adopted, root, root, limits)?;
-            if !matches!(
-                prepared.intent.conversion,
-                PhloConversionCompositionV2::NoConversion
-            ) {
-                return Err(CasperError::RuntimeError(
-                    "offered conversion requires authenticated production composition".to_string(),
-                ));
-            }
-            let grant_limits = offered_grant_transition_limits();
-            let grant_context = if prepared.intent.grant_uses.is_empty() {
-                None
-            } else {
-                let authenticated_time = u64::try_from(block_data.time_stamp).map_err(|_| {
-                    CasperError::RuntimeError(
-                        "offered grant use requires nonnegative block time".to_string(),
+            let candidate = async {
+                let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
+                    return Err(CasperError::RuntimeError(
+                        "offered proposal has an unexpected envelope format".to_string(),
+                    ));
+                };
+                let base = models::rust::cost_protocol_limits::offered_funded_v6_limits()
+                    .envelope
+                    .payload
+                    .funding;
+                budget
+                    .reserve(
+                        HostWorkDimension::VerificationBytes,
+                        HostWorkUnits::new(u64::try_from(base.wire.total_bytes).map_err(|_| {
+                            CasperError::RuntimeError(
+                                "offered funding byte bound overflows".to_string(),
+                            )
+                        })?),
                     )
-                })?;
-                let grant_snapshot = manager.capture_offered_grants_from_signed(
-                    root,
-                    signed,
-                    grant_limits,
-                    budget,
-                )?;
-                let verified = grant_snapshot.verified_source_payers(
-                    root,
-                    signed,
-                    authenticated_time,
-                    grant_limits,
-                    budget,
-                )?;
-                Some((grant_snapshot, verified, authenticated_time))
-            };
-            let snapshot = manager
-                .read_direct_offered_wallet_snapshot(
-                    envelope,
-                    start_hash,
-                    grant_context.as_ref().map(|(_, verified, _)| verified),
-                    budget,
-                )
-                .await?;
-            if snapshot.wallets().pre_state_root() != root {
-                return Err(CasperError::RuntimeError(
-                    "offered wallet snapshot belongs to another original root".to_string(),
-                ));
-            }
-            let selected = prepared.selected_terms(adopted)?;
-            let context_copy_bytes = invalid_blocks
-                .iter()
-                .try_fold(block_data.sender.bytes.len(), |bytes, (hash, sender)| {
-                    bytes
-                        .checked_add(mem::size_of::<(BlockHash, Validator)>())
-                        .and_then(|bytes| bytes.checked_add(hash.len()))
-                        .and_then(|bytes| bytes.checked_add(sender.len()))
-                })
-                .ok_or_else(|| {
-                    CasperError::RuntimeError("offered block context copy overflows".to_string())
-                })?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                let limits = OfferedCandidateLimits {
+                    funding: PhloFundingIntentV2Limits {
+                        wire: base.wire,
+                        base,
+                        grant_uses: base.wire.total_bytes / 8,
+                        grant_id_bytes: base.wire.field_bytes,
+                        quote_evidence_bytes: base.wire.field_bytes,
+                    },
+                    max_phlo_limit: i64::MAX as u64,
+                };
+                let prepared = prepare_offered_candidate(signed, adopted, root, root, limits)?;
+                if !matches!(
+                    prepared.intent.conversion,
+                    PhloConversionCompositionV2::NoConversion
+                ) {
+                    return Err(CasperError::RuntimeError(
+                        "offered conversion requires authenticated production composition"
+                            .to_string(),
+                    ));
+                }
+                let grant_limits = offered_grant_transition_limits();
+                let grant_context = if prepared.intent.grant_uses.is_empty() {
+                    None
+                } else {
+                    let authenticated_time =
+                        u64::try_from(block_data.time_stamp).map_err(|_| {
+                            CasperError::RuntimeError(
+                                "offered grant use requires nonnegative block time".to_string(),
+                            )
+                        })?;
+                    let grant_snapshot = manager.capture_offered_grants_from_signed(
+                        root,
+                        signed,
+                        grant_limits,
+                        budget,
+                    )?;
+                    let verified = grant_snapshot.verified_source_payers(
+                        root,
+                        signed,
+                        authenticated_time,
+                        grant_limits,
+                        budget,
+                    )?;
+                    Some((grant_snapshot, verified, authenticated_time))
+                };
+                let snapshot = manager
+                    .read_direct_offered_wallet_snapshot(
+                        envelope,
+                        start_hash,
+                        grant_context.as_ref().map(|(_, verified, _)| verified),
+                        budget,
+                    )
+                    .await?;
+                if snapshot.wallets().pre_state_root() != root {
+                    return Err(CasperError::RuntimeError(
+                        "offered wallet snapshot belongs to another original root".to_string(),
+                    ));
+                }
+                let selected = prepared.selected_terms(adopted)?;
+                let context_copy_bytes = invalid_blocks
+                    .iter()
+                    .try_fold(block_data.sender.bytes.len(), |bytes, (hash, sender)| {
+                        bytes
+                            .checked_add(mem::size_of::<(BlockHash, Validator)>())
+                            .and_then(|bytes| bytes.checked_add(hash.len()))
+                            .and_then(|bytes| bytes.checked_add(sender.len()))
+                    })
+                    .ok_or_else(|| {
                         CasperError::RuntimeError(
                             "offered block context copy overflows".to_string(),
                         )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            let attempt = manager
-                .evaluate_native_offered(
-                    &prepared,
-                    envelope,
-                    &selected,
-                    limits,
-                    NativeFundedExecutionContext {
-                        block_data: block_data.clone(),
-                        invalid_blocks: invalid_blocks.clone(),
-                        trace: offered_funded_v6_trace_limits(),
-                        host_work: budget.clone(),
-                    },
-                )
-                .await?;
-            let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
-            let envelope_copy_bound = protocol
-                .envelope
-                .payload
-                .deploy_bytes
-                .checked_add(protocol.envelope.payload.signing.total_bytes)
-                .and_then(|bytes| {
-                    bytes.checked_add(protocol.envelope.payload.funding.wire.total_bytes)
-                })
-                .ok_or_else(|| {
-                    CasperError::RuntimeError("offered envelope copy bound overflows".to_string())
-                })?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(u64::try_from(envelope_copy_bound).map_err(|_| {
+                    })?;
+                budget
+                    .reserve(
+                        HostWorkDimension::SearchStateBytes,
+                        HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
+                            CasperError::RuntimeError(
+                                "offered block context copy overflows".to_string(),
+                            )
+                        })?),
+                    )
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                let attempt = manager
+                    .evaluate_native_offered(
+                        &prepared,
+                        envelope,
+                        &selected,
+                        limits,
+                        NativeFundedExecutionContext {
+                            block_data: block_data.clone(),
+                            invalid_blocks: invalid_blocks.clone(),
+                            trace: offered_funded_v6_trace_limits(),
+                            host_work: budget.clone(),
+                        },
+                    )
+                    .await?;
+                let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+                let envelope_copy_bound = protocol
+                    .envelope
+                    .payload
+                    .deploy_bytes
+                    .checked_add(protocol.envelope.payload.signing.total_bytes)
+                    .and_then(|bytes| {
+                        bytes.checked_add(protocol.envelope.payload.funding.wire.total_bytes)
+                    })
+                    .ok_or_else(|| {
                         CasperError::RuntimeError(
                             "offered envelope copy bound overflows".to_string(),
                         )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            let production = offered_funded_v6_production_limits();
-            let candidate = attempt
-                .produce_native_offered_candidate_with_rooted_prepaid(
-                    manager,
-                    envelope.clone(),
-                    &snapshot,
-                    grant_context
-                        .as_ref()
-                        .map(|(snapshot, verified, authenticated_time)| {
-                            NativeGrantSettlementInput {
-                                snapshot,
-                                verified,
-                                authenticated_time: *authenticated_time,
-                                limits: grant_limits,
-                            }
-                        }),
-                    production,
-                    offered_funded_v6_prepaid_inventory_limits(),
-                    offered_funded_v6_prepaid_receipt_limits(),
-                    budget,
-                )
-                .await?;
-            let replay_budget = HostWorkBudget::new(
-                models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
-            );
-            replay_budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered replay context copy overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            let certificate = manager
-                .certify_offered_draft(
+                    })?;
+                budget
+                    .reserve(
+                        HostWorkDimension::SearchStateBytes,
+                        HostWorkUnits::new(u64::try_from(envelope_copy_bound).map_err(|_| {
+                            CasperError::RuntimeError(
+                                "offered envelope copy bound overflows".to_string(),
+                            )
+                        })?),
+                    )
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                let production = offered_funded_v6_production_limits();
+                let candidate = attempt
+                    .produce_native_offered_candidate_with_rooted_prepaid(
+                        manager,
+                        envelope.clone(),
+                        &snapshot,
+                        grant_context
+                            .as_ref()
+                            .map(|(snapshot, verified, authenticated_time)| {
+                                NativeGrantSettlementInput {
+                                    snapshot,
+                                    verified,
+                                    authenticated_time: *authenticated_time,
+                                    limits: grant_limits,
+                                }
+                            }),
+                        production,
+                        offered_funded_v6_prepaid_inventory_limits(),
+                        offered_funded_v6_prepaid_receipt_limits(),
+                        budget,
+                    )
+                    .await?;
+                let replay_budget = HostWorkBudget::new(
+                    models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
+                );
+                replay_budget
+                    .reserve(
+                        HostWorkDimension::SearchStateBytes,
+                        HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
+                            CasperError::RuntimeError(
+                                "offered replay context copy overflows".to_string(),
+                            )
+                        })?),
+                    )
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                let certificate = manager
+                    .certify_offered_draft(
+                        &candidate.processed,
+                        start_hash,
+                        &block_data,
+                        invalid_blocks.clone(),
+                        adopted,
+                        &replay_budget,
+                    )
+                    .await?;
+                let _publication = prepared.authorize_publication_after_replay(
                     &candidate.processed,
-                    start_hash,
-                    &block_data,
-                    invalid_blocks.clone(),
-                    adopted,
+                    candidate.final_root,
+                    &certificate,
                     &replay_budget,
-                )
-                .await?;
-            let _publication = prepared.authorize_publication_after_replay(
-                &candidate.processed,
-                candidate.final_root,
-                &certificate,
-                &replay_budget,
-            )?;
+                )?;
+                Ok(candidate)
+            }
+            .await
+            .map_err(|error| offered_candidate_rejection(envelope, start_hash, error))?;
             let candidate_root: StateHash = candidate.final_root.to_vec().into();
             self.runtime
                 .reset(&Blake2b256Hash::from_bytes(candidate.final_root.to_vec()))
@@ -1880,6 +1922,19 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
     ) -> Result<models::rust::phlo_schedule::PhloGenesisPolicy, CasperError> {
+        self.find_genesis_resource_policy(start_hash)
+            .await?
+            .ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "genesis must return exactly one resource policy".to_string(),
+                )
+            })
+    }
+
+    pub async fn find_genesis_resource_policy(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<models::rust::phlo_schedule::PhloGenesisPolicy>, CasperError> {
         static QUERY: OnceLock<Par> = OnceLock::new();
         let query = QUERY.get_or_init(|| {
             Compiler::source_to_adt(
@@ -1893,6 +1948,9 @@ impl RuntimeOps {
         let pars = self
             .play_exploratory_par_strict(query.clone(), start_hash)
             .await?;
+        if pars.is_empty() {
+            return Ok(None);
+        }
         let [par] = pars.as_slice() else {
             return Err(CasperError::RuntimeError(
                 "genesis must return exactly one resource policy".to_string(),
@@ -1912,6 +1970,7 @@ impl RuntimeOps {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GByteArray(bytes)) => {
                 models::rust::phlo_schedule::PhloGenesisPolicy::decode(bytes)
+                    .map(Some)
                     .map_err(|error| CasperError::RuntimeError(error.to_string()))
             }
             _ => Err(CasperError::RuntimeError(
@@ -2152,5 +2211,131 @@ mod tests {
         let folded = RuntimeOps::fold_bitmask_or(&[neg, pos]).unwrap();
         assert_eq!(folded as u64, (neg as u64) | (pos as u64));
         assert_ne!(folded & i64::MIN, 0, "sign bit must remain set");
+    }
+
+    fn rejection_envelope() -> DeployEnvelope {
+        use crypto::rust::signatures::signed::Cosigned;
+        use models::rust::cost_deploy_data::DeployData as CostDeployData;
+
+        DeployEnvelope::from_body_envelope(
+            Cosigned::create_single_envelope(
+                CostDeployData {
+                    term: "Nil".to_string(),
+                    language: "rholang".to_string(),
+                    time_stamp: 1,
+                    valid_after_block_number: 0,
+                    shard_id: "root".to_string(),
+                    expiration_timestamp: None,
+                    authority_presentations: Vec::new(),
+                },
+                Box::new(Secp256k1),
+                PrivateKey::from_bytes(&[2; 32]),
+            )
+            .expect("body envelope signs"),
+        )
+        .expect("body envelope builds")
+    }
+
+    /// Returns one error of the selected class and whether the class is an
+    /// infrastructure failure that must keep its own type.
+    fn classified_error(kind: usize, message: &str) -> (CasperError, bool) {
+        use rspace_plus_plus::rspace::errors::HistoryError;
+        use shared::rust::store::key_value_store::KvStoreError;
+
+        let text = message.to_string();
+        match kind {
+            0 => (CasperError::RuntimeError(text), false),
+            1 => (CasperError::SigningError(text), false),
+            2 => (CasperError::Other(text), false),
+            3 => (
+                CasperError::InterpreterError(InterpreterError::ReduceError(text)),
+                false,
+            ),
+            4 => (
+                CasperError::InterpreterError(InterpreterError::HostWorkRejected),
+                false,
+            ),
+            5 => (
+                CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::HostWorkRejected,
+                )),
+                false,
+            ),
+            6 => (
+                CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::OutOfPhlogistons,
+                )),
+                false,
+            ),
+            7 => (
+                CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::BugFoundError(text),
+                )),
+                false,
+            ),
+            8 => (CasperError::KvStoreError(KvStoreError::IoError(text)), true),
+            9 => (
+                CasperError::HistoryError(HistoryError::MergeError(text)),
+                true,
+            ),
+            10 => (CasperError::LockError(text), true),
+            11 => (CasperError::StreamError(text), true),
+            12 => (
+                CasperError::CommError(comm::rust::errors::CommError::UnknownCommError(text)),
+                true,
+            ),
+            13 => (
+                CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::HistoryError(HistoryError::ActionError(text)),
+                )),
+                true,
+            ),
+            _ => (
+                CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::KvStoreError(KvStoreError::IoError(text)),
+                )),
+                true,
+            ),
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Extracted from `OfferedCandidateQuarantine.tla`: an infrastructure failure
+        /// (`InfraError`) keeps its own type and quarantines nothing. Every other
+        /// candidate-pipeline failure becomes a typed rejection that names exactly the
+        /// attempted identity and its original root, so the proposer can quarantine it
+        /// (`NoCandidateErrorEscapes`). The mapping is idempotent.
+        #[test]
+        fn candidate_failures_become_typed_rejections_and_infrastructure_passes_through(
+            kind in 0usize..15,
+            message in "[a-z ]{0,40}",
+            root in proptest::collection::vec(proptest::prelude::any::<u8>(), 32),
+        ) {
+            let envelope = rejection_envelope();
+            let models::rust::deploy_id::DeployLookupId::V6(deploy_id) = envelope.identity() else {
+                panic!("expected a v6 identity")
+            };
+            let root: StateHash = root.into();
+            let (error, infrastructure) = classified_error(kind, &message);
+            let mapped = offered_candidate_rejection(&envelope, &root, error.clone());
+            if infrastructure {
+                proptest::prop_assert_eq!(&mapped, &error);
+            } else {
+                match &mapped {
+                    CasperError::OfferedCandidateRejected(rejection) => {
+                        proptest::prop_assert_eq!(&rejection.deploy_id, deploy_id);
+                        proptest::prop_assert_eq!(&rejection.pre_state_root, &root);
+                        proptest::prop_assert_eq!(&rejection.reason, &error.to_string());
+                    }
+                    other => proptest::prop_assert!(false, "unexpected mapping {other:?}"),
+                }
+            }
+            proptest::prop_assert_eq!(
+                offered_candidate_rejection(&envelope, &root, mapped.clone()),
+                mapped
+            );
+        }
     }
 }

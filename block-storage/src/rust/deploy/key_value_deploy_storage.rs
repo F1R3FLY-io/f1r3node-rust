@@ -1,6 +1,7 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -12,16 +13,97 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
+pub const MAX_ENVELOPE_REJECTIONS: usize = 4096;
+pub const MAX_ENVELOPE_REJECTION_REASON_BYTES: usize = 1024;
+
 #[derive(Clone)]
 pub struct KeyValueDeployStorage {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
     pub envelope_store: KeyValueTypedStoreImpl<ByteString, StoredDeployEnvelope>,
+    pub envelope_rejections: EnvelopeRejectionLog,
 }
 
 #[derive(Clone, Debug)]
 pub enum PendingDeployCandidate {
     Legacy(Signed<DeployData>),
     Envelope(DeployEnvelope),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvelopeRejection {
+    pub deploy_id: DeployIdV6,
+    pub pre_state_root: Option<ByteString>,
+    pub block_number: i64,
+    pub reason: String,
+}
+
+struct EnvelopeRejectionEntries {
+    capacity: usize,
+    order: VecDeque<DeployIdV6>,
+    entries: HashMap<DeployIdV6, EnvelopeRejection>,
+}
+
+impl EnvelopeRejectionEntries {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::new(),
+            entries: HashMap::new(),
+        }
+    }
+}
+
+impl Default for EnvelopeRejectionEntries {
+    fn default() -> Self { Self::with_capacity(MAX_ENVELOPE_REJECTIONS) }
+}
+
+#[derive(Clone, Default)]
+pub struct EnvelopeRejectionLog(Arc<parking_lot::Mutex<EnvelopeRejectionEntries>>);
+
+impl EnvelopeRejectionLog {
+    #[cfg(test)]
+    fn with_capacity(capacity: usize) -> Self {
+        Self(Arc::new(parking_lot::Mutex::new(
+            EnvelopeRejectionEntries::with_capacity(capacity),
+        )))
+    }
+
+    fn record(&self, mut rejection: EnvelopeRejection) {
+        if rejection.reason.len() > MAX_ENVELOPE_REJECTION_REASON_BYTES {
+            let mut end = MAX_ENVELOPE_REJECTION_REASON_BYTES;
+            while !rejection.reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            rejection.reason.truncate(end);
+        }
+        let deploy_id = rejection.deploy_id;
+        let mut log = self.0.lock();
+        if log.entries.insert(deploy_id, rejection).is_none() {
+            log.order.push_back(deploy_id);
+        }
+        while log.order.len() > log.capacity {
+            if let Some(oldest) = log.order.pop_front() {
+                log.entries.remove(&oldest);
+            }
+        }
+    }
+
+    fn get(&self, deploy_id: &DeployIdV6) -> Option<EnvelopeRejection> {
+        self.0.lock().entries.get(deploy_id).cloned()
+    }
+
+    fn clear(&self, deploy_id: &DeployIdV6) {
+        let mut log = self.0.lock();
+        if log.entries.remove(deploy_id).is_some() {
+            log.order.retain(|recorded| recorded != deploy_id);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize { self.0.lock().entries.len() }
+
+    #[cfg(test)]
+    fn ordered_ids(&self) -> Vec<DeployIdV6> { self.0.lock().order.iter().copied().collect() }
 }
 
 impl KeyValueDeployStorage {
@@ -33,6 +115,7 @@ impl KeyValueDeployStorage {
         Ok(Self {
             store: deploy_storage_db,
             envelope_store: KeyValueTypedStoreImpl::new(envelope_storage_kv_store),
+            envelope_rejections: EnvelopeRejectionLog::default(),
         })
     }
 
@@ -81,8 +164,26 @@ impl KeyValueDeployStorage {
         };
         let stored =
             StoredDeployEnvelope::new(envelope).map_err(KvStoreError::SerializationError)?;
-        self.envelope_store
-            .put_one_if_absent(deploy_id.as_ref().to_vec(), stored)
+        let inserted = self
+            .envelope_store
+            .put_one_if_absent(deploy_id.as_ref().to_vec(), stored)?;
+        if inserted {
+            self.envelope_rejections.clear(deploy_id);
+        }
+        Ok(inserted)
+    }
+
+    pub fn quarantine_envelope(
+        &mut self,
+        rejection: EnvelopeRejection,
+    ) -> Result<bool, KvStoreError> {
+        let removed = self.remove_envelope_by_id(&rejection.deploy_id)?;
+        self.envelope_rejections.record(rejection);
+        Ok(removed)
+    }
+
+    pub fn envelope_rejection(&self, deploy_id: &DeployIdV6) -> Option<EnvelopeRejection> {
+        self.envelope_rejections.get(deploy_id)
     }
 
     pub fn read_all_envelopes(
@@ -272,6 +373,163 @@ mod tests {
         );
     }
 
+    fn rejection(deploy_id: DeployIdV6, reason: &str) -> EnvelopeRejection {
+        EnvelopeRejection {
+            deploy_id,
+            pre_state_root: Some(vec![9; 32]),
+            block_number: 7,
+            reason: reason.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn quarantine_removes_envelope_records_status_and_readmission_clears_it() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm)
+            .await
+            .expect("in-memory deploy storage opens");
+        let envelope = body_envelope();
+        let DeployLookupId::V6(id) = envelope.identity() else {
+            panic!("expected v6 identity")
+        };
+        let id = *id;
+        assert!(storage
+            .add_envelope_if_absent(&envelope)
+            .expect("envelope insert succeeds"));
+        assert!(storage
+            .quarantine_envelope(rejection(id, "no feasible signed assignment"))
+            .expect("quarantine succeeds"));
+        assert!(!storage
+            .contains_envelope_id(&id)
+            .expect("envelope lookup succeeds"));
+        assert_eq!(
+            storage.envelope_rejection(&id),
+            Some(rejection(id, "no feasible signed assignment"))
+        );
+        assert!(!storage
+            .quarantine_envelope(rejection(id, "second decision"))
+            .expect("repeated quarantine succeeds"));
+        assert_eq!(
+            storage
+                .envelope_rejection(&id)
+                .map(|recorded| recorded.reason),
+            Some("second decision".to_string())
+        );
+        assert_eq!(storage.envelope_rejections.len(), 1);
+        assert!(storage
+            .add_envelope_if_absent(&envelope)
+            .expect("readmission succeeds"));
+        assert_eq!(storage.envelope_rejection(&id), None);
+        assert_eq!(storage.envelope_rejections.len(), 0);
+    }
+
+    fn deploy_id_at(index: u64) -> DeployIdV6 {
+        let mut bytes = [0u8; DeployIdV6::LENGTH];
+        bytes[..8].copy_from_slice(&index.to_be_bytes());
+        DeployIdV6::try_from(bytes.as_slice()).expect("32-byte deploy id")
+    }
+
+    #[test]
+    fn envelope_rejection_log_is_bounded_fifo_with_bounded_reasons() {
+        let log = EnvelopeRejectionLog::default();
+        let total = MAX_ENVELOPE_REJECTIONS as u64 + 10;
+        for index in 0..total {
+            log.record(rejection(deploy_id_at(index), "x"));
+        }
+        assert_eq!(log.len(), MAX_ENVELOPE_REJECTIONS);
+        assert_eq!(log.get(&deploy_id_at(9)), None);
+        assert!(log.get(&deploy_id_at(10)).is_some());
+        assert!(log.get(&deploy_id_at(total - 1)).is_some());
+
+        let long = "é".repeat(MAX_ENVELOPE_REJECTION_REASON_BYTES);
+        log.record(rejection(deploy_id_at(u64::MAX), &long));
+        let recorded = log
+            .get(&deploy_id_at(u64::MAX))
+            .expect("long reason recorded")
+            .reason;
+        assert!(recorded.len() <= MAX_ENVELOPE_REJECTION_REASON_BYTES);
+        assert!(long.starts_with(&recorded));
+        assert_eq!(log.len(), MAX_ENVELOPE_REJECTIONS);
+    }
+
+    #[derive(Clone, Debug)]
+    enum LogOperation {
+        Record(u64, String),
+        Clear(u64),
+    }
+
+    fn log_operation() -> impl proptest::strategy::Strategy<Value = LogOperation> {
+        use proptest::prelude::*;
+        prop_oneof![
+            3 => (0u64..6, "[a-zé]{0,600}")
+                .prop_map(|(id, reason)| LogOperation::Record(id, reason)),
+            1 => (0u64..6).prop_map(LogOperation::Clear),
+        ]
+    }
+
+    fn bounded_reason(reason: &str) -> String {
+        let mut end = reason.len().min(MAX_ENVELOPE_REJECTION_REASON_BYTES);
+        while !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        reason[..end].to_string()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Extracted from `OfferedCandidateQuarantine.tla`: `LogBounded`,
+        /// `LogDistinct`, `PendingNotLogged` (clear on readmission), and
+        /// `QuarantineAppendsAndEvictsOldest`, checked against a reference
+        /// bounded FIFO.
+        #[test]
+        fn envelope_rejection_log_matches_bounded_fifo_reference(
+            capacity in 1usize..5,
+            operations in proptest::collection::vec(log_operation(), 0..48),
+        ) {
+            let log = EnvelopeRejectionLog::with_capacity(capacity);
+            let mut reference: Vec<(DeployIdV6, String)> = Vec::with_capacity(capacity + 1);
+            for operation in operations {
+                match operation {
+                    LogOperation::Record(index, reason) => {
+                        let deploy_id = deploy_id_at(index);
+                        log.record(rejection(deploy_id, &reason));
+                        let reason = bounded_reason(&reason);
+                        match reference.iter_mut().find(|(id, _)| *id == deploy_id) {
+                            Some(entry) => entry.1 = reason,
+                            None => {
+                                reference.push((deploy_id, reason));
+                                if reference.len() > capacity {
+                                    reference.remove(0);
+                                }
+                            }
+                        }
+                    }
+                    LogOperation::Clear(index) => {
+                        let deploy_id = deploy_id_at(index);
+                        log.clear(&deploy_id);
+                        reference.retain(|(id, _)| *id != deploy_id);
+                        proptest::prop_assert_eq!(log.get(&deploy_id), None);
+                    }
+                }
+                let ordered = log.ordered_ids();
+                proptest::prop_assert!(ordered.len() <= capacity);
+                proptest::prop_assert_eq!(ordered.len(), log.len());
+                let distinct: HashSet<DeployIdV6> = ordered.iter().copied().collect();
+                proptest::prop_assert_eq!(distinct.len(), ordered.len());
+                proptest::prop_assert_eq!(
+                    ordered,
+                    reference.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+                );
+                for (deploy_id, reason) in &reference {
+                    let recorded = log.get(deploy_id).expect("reference entry is recorded");
+                    proptest::prop_assert!(recorded.reason.len() <= MAX_ENVELOPE_REJECTION_REASON_BYTES);
+                    proptest::prop_assert_eq!(&recorded.reason, reason);
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn storage_round_trips_add_contains_read_and_remove() {
         let mut kvm = InMemoryStoreManager::new();
@@ -316,6 +574,7 @@ mod tests {
         let storage = KeyValueDeployStorage {
             store: KeyValueTypedStoreImpl::new(store),
             envelope_store: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            envelope_rejections: EnvelopeRejectionLog::default(),
         };
         let deploy = Signed::create(
             DeployData {

@@ -618,4 +618,6 @@ theories/CheckpointLocalHandoff.v
 theories/NativeBorrowedHistory.v
 theories/NativeReplayAccounting.v
 theories/NativeReplayAuthentication.v
+theories/OfferedOnlyActivation.v
+theories/GenesisVersionAdoption.v
 theories/QuoteExactOutput.v

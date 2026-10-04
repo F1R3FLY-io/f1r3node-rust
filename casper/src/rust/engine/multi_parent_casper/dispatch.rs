@@ -64,6 +64,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_get_approved_block(self)
     }
 
+    fn offered_funded_active(&self) -> bool { self.offered_funded_active }
+
     fn deploy(
         &self,
         deploy: Signed<DeployData>,

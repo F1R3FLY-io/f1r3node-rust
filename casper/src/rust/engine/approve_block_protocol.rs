@@ -174,6 +174,18 @@ impl ApproveBlockProtocolFactory {
             })
             .collect();
 
+        let genesis_version = if let Some(policy) = resource_policy.as_ref() {
+            let version = policy
+                .schedule()
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+                .protocol_version;
+            i64::try_from(version).map_err(|_| {
+                CasperError::RuntimeError("genesis protocol version exceeds i64".to_string())
+            })?
+        } else {
+            1
+        };
+
         let genesis = Genesis {
             shard_id,
             timestamp,
@@ -198,7 +210,7 @@ impl ApproveBlockProtocolFactory {
             },
             vaults,
             supply: i64::MAX,
-            version: 1,
+            version: genesis_version,
             native_token_name,
             native_token_symbol,
             native_token_decimals,

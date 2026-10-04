@@ -1831,6 +1831,14 @@ impl RuntimeManager {
         runtime_ops.get_genesis_resource_policy(start_hash).await
     }
 
+    pub async fn find_genesis_resource_policy(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<models::rust::phlo_schedule::PhloGenesisPolicy>, CasperError> {
+        let mut runtime_ops = RuntimeOps::new(self.spawn_runtime().await?);
+        runtime_ops.find_genesis_resource_policy(start_hash).await
+    }
+
     pub async fn get_consensus_parameters(
         &self,
         start_hash: &StateHash,

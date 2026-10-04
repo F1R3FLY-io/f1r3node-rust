@@ -434,6 +434,8 @@ pub async fn key_value_deploy_storage_from_dyn(
         envelope_store: KeyValueTypedStoreImpl::new(
             kvm.store("deploy_envelope_storage".to_string()).await?,
         ),
+        envelope_rejections:
+            block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejectionLog::default(),
     })
 }
 

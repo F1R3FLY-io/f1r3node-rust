@@ -254,11 +254,13 @@ async fn offered_funding_uses_all_64_sources_with_one_fee_across_validators() {
     BlockAPI::deploy_offered(&nodes[0].engine_cell, valid, &None, false, "root")
         .await
         .unwrap();
-    nodes[0].allow_empty_blocks = true;
-    let first = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
-        .await
-        .unwrap();
-    assert!(first.body.deploys.is_empty());
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Offered deploys no
+    // longer alternate block turns with legacy deploys.
+    // nodes[0].allow_empty_blocks = true;
+    // let first = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
+    //     .await
+    //     .unwrap();
+    // assert!(first.body.deploys.is_empty());
     let block = nodes[0].create_block_unsafe(&[]).await.unwrap();
     assert_eq!(block.body.deploys.len(), 1);
     assert_eq!(block.body.deploys[0].identity_bytes(), deploy_id.as_slice());
@@ -325,10 +327,12 @@ async fn offered_funding_uses_all_64_sources_with_one_fee_across_validators() {
     BlockAPI::deploy_offered(&nodes[0].engine_cell, dense, &None, false, "root")
         .await
         .unwrap();
-    let barrier = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
-        .await
-        .unwrap();
-    assert!(barrier.body.deploys.is_empty());
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+    // let barrier = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
+    //     .await
+    //     .unwrap();
+    // assert!(barrier.body.deploys.is_empty());
+    nodes[0].allow_empty_blocks = true;
     let next = nodes[0].create_block_unsafe(&[]).await.unwrap();
     assert!(next
         .body

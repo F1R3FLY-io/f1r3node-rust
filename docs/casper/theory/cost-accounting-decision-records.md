@@ -3817,3 +3817,622 @@ replay.
 
 **Cross-refs.** DR-11, DR-31, DR-38, CA-P-209, TM-CA-199, UC-CA-188,
 and E2E-056.
+
+## DR-64 — Funding is checked before execution, and the unprovable remainder is held to the signed limit
+
+**Status.** Adopted 2026-10-03 as decision D1 of epic 8946. Batch B2 (gap G1)
+implements it.
+
+**Terms.** Records DR-64 to DR-74 use these names.
+
+- P1 is the Cost-Accounted Rho Calculus paper,
+  `publications/cost-accounting/cost-accounted-rho.tex`, at publications
+  revision `0bf78174`.
+- $`R_0`$ is the original root. It is the authenticated state root that a
+  candidate funds from.
+- A source is one signed funding entry of an offered envelope
+  (`PhloSourcePolicyV1`). Its `hold_cap` and `debit_cap` bound what the source
+  can hold and debit. The total exposure bounds all sources together.
+- A hold reserves part of a source balance for one candidate until
+  settlement.
+- $`\Delta^{\mathrm{known}}_s`$ is the demand that static analysis proves for
+  the signature lane $`s`$.
+- `phloLimit` and `phloPrice` are the signed limit and the signed price of the
+  envelope.
+
+**Context.** P1 §`sec:acceptance-protocol` requires the validator to compute
+the demand by static analysis before any part of a deployment executes.
+
+The offered path executed the candidate first (`evaluate_native_offered`) and
+measured its obligations afterward. The static analysis (`delta_sigma`,
+`static_authority_plan`) and the hold arithmetic (`FundingBranchReservation`)
+existed, but no production path called them.
+
+P1 gives a margin rule for demand that static analysis cannot resolve. An
+unresolvable dereference contributes an "unknown" demand. The validator then
+rejects unless the supply exceeds the known lower bound plus a configurable
+safety margin (proof sketch of `thm:decidability`).
+
+![Activity diagram of the pre-execution acceptance check. A signed offered envelope and the original root R0 enter. The check resolves lexical names from the envelope seed and runs static_authority_plan for each signature lane. A provable lane contributes its exact demand and syntactic byte charges, and an unprovable lane contributes zero. The remainder R equals the signed phloLimit minus the known demand, times phloPrice. The check fits the known holds plus the complete remainder on eligible signed sources at R0, within hold_cap, debit_cap, and total exposure. If the holds do not fit, the candidate is rejected before any runtime entry, with no effect and no charge. Otherwise it executes in a fresh offered runtime. Within bounds, settlement charges measured use and refunds the unused hold. Exhaustion of the signed limit in a capped part is a classified user failure. An overrun of an exact lane is a correctness failure with no charge.](diagrams/offered-preexecution-acceptance.svg)
+
+(*Source: [`diagrams/offered-preexecution-acceptance.puml`](diagrams/offered-preexecution-acceptance.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-preexecution-acceptance.puml`.*)
+
+**Decision.** The signed `phloLimit` is the P1 safety margin.
+
+1. Before execution, the producer and every validator compute the known demand
+   $`\Delta^{\mathrm{known}}_s`$ for each signature lane $`s`$. They use the
+   envelope and $`R_0`$ only.
+2. The computation reuses `static_authority_plan`, the lexical name resolver,
+   and the pure byte charge functions. A construct that the analysis cannot
+   prove contributes 0 to the known demand.
+3. The unprovable remainder $`R`$ is the unused part of the signed limit at the
+   signed price:
+
+   ```math
+   R \;=\; \left(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\right) \cdot \mathrm{phloPrice}.
+   ```
+
+4. The producer holds the known demand and the complete remainder on the
+   eligible signed sources. A partial remainder hold is not allowed.
+5. If the holds do not fit the supply at $`R_0`$, the candidate is rejected
+   before any runtime entry. The rejection has no effect and no charge.
+6. Settlement charges the measured use. It refunds the unused hold to the
+   original sources.
+
+Unprovable constructs include data-dependent recursion, unresolved
+dereference, persistent input, dynamic authority, and payload sizes that come
+from stored state.
+
+**Algorithm (literate form).** The check is one top-level chunk built from four
+named chunks. The text before each chunk explains it.
+
+```text
+⟨pre-execution acceptance⟩ ≡
+  ⟨compute the known demand⟩
+  ⟨compute the remainder⟩
+  ⟨fit the holds or reject⟩
+  ⟨execute, settle, and refund⟩
+```
+
+The known demand comes only from analyzers that already exist. A lane that the
+analysis cannot prove contributes nothing here, because the remainder covers
+it.
+
+```text
+⟨compute the known demand⟩ ≡
+  names ← resolve_lexical_names(envelope, envelope_seed)
+  for each signature lane s of the envelope
+    known[s] ← static_authority_plan(s, names), or 0 on UnprovableDemand
+  known[s] ← known[s] + byte_charges(syntactic sends and receives of lane s)
+```
+
+The remainder is the P1 safety margin. The signer chose it when the signer
+chose the limit.
+
+```text
+⟨compute the remainder⟩ ≡
+  margin ← (phlo_limit − Σ known[s]) × phlo_price
+```
+
+The holds are checked against the authenticated supply before any runtime
+work. This is the gate of P1 acceptance step 5.
+
+```text
+⟨fit the holds or reject⟩ ≡
+  holds ← fit(known + margin, eligible_sources, hold_cap, debit_cap, total_exposure, R0)
+  if holds = none
+    reject(envelope, "insufficient certified funding")    -- no runtime entry
+```
+
+Execution runs with the computed bound. Settlement returns what the run did not
+use.
+
+```text
+⟨execute, settle, and refund⟩ ≡
+  result ← execute(envelope, resource_bound(known, margin))
+  settle(result.measured_use)
+  refund(holds − result.measured_use)
+```
+
+**Failure classification.** This decision adds one outcome to the failure
+matrix in `cost-accounting-impl/economic-failure-policy-decisions.md`.
+
+| Outcome | Application effect | User economic effect |
+| --- | --- | --- |
+| Exhaustion of the signed limit inside a limit-capped (unprovable) demand part | Roll back the failed user operation. | Retain the authorized billable prefix and the fee. Refund the unused hold. |
+
+The existing outcome "exhaustion that contradicts a certified sufficient
+bound" keeps its meaning for exact lanes. It is a correctness failure, and it
+has no charge.
+
+**Rejected alternatives.** A rule that requires a finite proof for every
+recursion rejects deployments that P1 accepts with a margin. A partial
+remainder hold contradicts the margin rule.
+
+**Verification obligations.** The `EndToEndAuthority.v` branch lemmas
+(`left_branch_fits_pointwise_max`, `right_branch_fits_pointwise_max`,
+`pointwise_refund_is_unused_reservation`) extend to the capped remainder.
+
+Tests show four facts. An underfunded offer never enters the runtime. A static
+offer holds its exact demand. A dynamic offer holds up to the limit and gets
+the rest back. Validators recompute the same decision. DR-67 covers the stack
+safety of the newly reachable analyzer.
+
+**Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
+`def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
+Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
+`ofp-1-proof-bound-kind`.
+
+## DR-65 — Same-block offers that share a purse form one funding decision
+
+**Status.** Adopted 2026-10-03 as decision D2 of epic 8946. Batch B3 (gap G2)
+implements it.
+
+**Terms.** These names extend the terms of DR-64.
+
+- A purse $`p`$ is one physical custody key that sources draw on.
+- A group $`G`$ is a set of same-block candidates that share at least one
+  purse, directly or through other members.
+- $`\mathrm{hold}_m(p)`$ is the DR-64 hold of member $`m`$ on purse $`p`$.
+- $`\mathrm{supply}_{R_0}(p)`$ is the balance of purse $`p`$ at $`R_0`$.
+- $`R_{i-1}`$ is the root after member $`i - 1`$ executes. $`R_{0}`$ precedes
+  the first member.
+- $`\mathrm{debit}_i(p)`$ is the settlement debit of member $`i`$ on purse
+  $`p`$, and $`\mathrm{balance}_{\mathrm{after}}(p)`$ is the purse balance just
+  before that debit.
+
+**Context.** The proposer selected at most one offered deploy for each block.
+Replay required one isolated candidate.
+
+P1 §`sec:deploy-boundaries` (paragraph "Simultaneous arrival") treats
+deployments that arrive together as one parallel composition. If their
+combined demand exceeds the supply, neither deployment executes.
+
+P1 also states that accepted resources are committed and unavailable to other
+deployments.
+
+![Activity diagram of the same-block funding decision. In the first partition, the proposer and every validator take the pending offered candidates in canonical order and run the DR-64 check of each candidate on its own signed sources at R0. A candidate that is not fundable alone is rejected alone and cannot sink others. Union-find over canonical physical custody keys groups the remaining candidates that share a purse. If any purse p has a group hold sum greater than its supply at R0, every member of the group is rejected with no effect. In the second partition, each accepted member i funds from R0 and executes from R(i-1) in a fresh offered runtime. At settlement, the held-capacity guard requires balance_after(p) minus debit_i(p) to be at least the holds of all later members. If the guard holds, the member settles. If it fails, the member is a classified user failure that rolls back and pays its billable work and fee. The block is then published, and validators recompute groups, holds, and guards.](diagrams/offered-same-block-funding-groups.svg)
+
+(*Source: [`diagrams/offered-same-block-funding-groups.puml`](diagrams/offered-same-block-funding-groups.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-same-block-funding-groups.puml`.*)
+
+**Decision.**
+
+1. A block can contain more than one offered deploy. The members execute in
+   canonical order. Member $`i`$ funds from $`R_0`$ and executes from
+   $`R_{i-1}`$.
+2. The proposer first rejects each candidate that is invalid or unfundable on
+   its own sources. Such a candidate cannot sink other candidates.
+3. The remaining candidates form groups by union-find over canonical physical
+   custody keys.
+4. If one purse $`p`$ has
+   $`\sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)`$, every
+   member of $`G`$ is rejected with no effect.
+5. A held-capacity guard protects later members. At the settlement of member
+   $`i`$, every purse $`p`$ must satisfy:
+
+   ```math
+   \mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \;\geq\; \sum_{j > i} \mathrm{hold}_j(p).
+   ```
+
+   If the guard fails, member $`i`$ is a classified user failure. It rolls back
+   and pays its billable work and fee from the restored balance.
+6. Validators recompute the groups, holds, and guard outcomes for every
+   included member. Rejections stay in the local pending lifecycle and never
+   enter a block.
+7. Each member runs in a fresh offered runtime, in proposal and in replay.
+
+**Algorithm (literate form).** The decision has three named chunks.
+
+```text
+⟨same-block funding decision⟩ ≡
+  ⟨reject candidates that fail alone⟩
+  ⟨reject groups whose holds exceed a purse⟩
+  ⟨execute accepted members with the held-capacity guard⟩
+```
+
+A candidate that fails on its own sources is removed first. That order keeps
+one invalid candidate from sinking a valid group.
+
+```text
+⟨reject candidates that fail alone⟩ ≡
+  for each candidate c in canonical order
+    if dr64_check(c, own_sources(c), R0) = none
+      reject(c)
+```
+
+Grouping follows P1's simultaneous-arrival rule. The members of a group share
+at least one purse, so their holds add up on that purse.
+
+```text
+⟨reject groups whose holds exceed a purse⟩ ≡
+  groups ← union_find(remaining candidates, canonical custody keys)
+  for each group G
+    if ∃ p : Σ_{m ∈ G} hold[m][p] > supply(R0, p)
+      reject every member of G
+```
+
+The guard keeps resources that later members hold out of reach of earlier
+members. This is P1's statement that accepted resources are committed.
+
+```text
+⟨execute accepted members with the held-capacity guard⟩ ≡
+  root ← R0
+  for each accepted member i in canonical order
+    result ← execute(i, funding_root = R0, execution_root = root)
+    if ∀ p : balance_after(p) − debit[i][p] ≥ Σ_{j > i} hold[j][p]
+      settle(i, result)
+    else
+      classified_user_failure(i)        -- roll back, pay billable work and fee
+    root ← root after member i
+```
+
+**Rejected alternatives.** A joint funding search over the group is not used,
+because P1 sums the demands. Prefix admission, which accepts members until the
+supply runs out, contradicts the simultaneous-arrival rule.
+
+**Verification obligations.** `SameBlockFundingGroups.tla` checks
+GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard, and
+DecisionPermutationInvariant under TLC and Apalache.
+
+Negative controls for prefix admission, independent full capacity, and a
+missing held guard must fail their named invariants. Rocq proves
+`group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds`,
+and `group_decision_permutation_invariant`. Each invariant becomes a Rust
+property test.
+
+**Cross-refs.** P1 `sec:deploy-boundaries`. DR-64, DR-72. Leaves
+`ofp-3-funding-groups`, `ofp-4-held-capacity-guard`, and
+`ofp-5-replay-groups`.
+
+## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
+
+**Status.** Adopted 2026-10-03 as decision D3 of epic 8946, by the user
+directive "Activate tests; offered-only". Batch B5 (gap G4) implements the
+test activation in stages. The offered-only production rule is implemented.
+
+**Context.** Under offered activation, user deployments use only the offered
+native path. Most Casper tests still built legacy genesis and body-only
+deploys. The legacy phlo meter therefore stayed reachable only through tests.
+
+The section "Historical replay contract" in
+`cost-accounting-impl/activation-migration-policy-decisions.md` keeps the
+legacy-replay requirement open. It closes only when the user approves narrower
+historical support.
+
+![Diagram that maps each kind of evaluation request to one accounting scope. User deploys use the native offered meter, which is funded, settled, and produces receipts. Genesis uses the trusted install scope, which is unmetered, carries the Unit signature, and records cost zero. System deploys keep their unchanged system scope. The exploratory estimate is a native dry run that is unfunded, host-work bounded, resets to the start root, and returns measured phlo. Internal reads of policy and token metadata use the unmetered internal read path. The RhoSpec harness uses the named inj path. Genesis replay is symmetric with genesis play. Historical body-only execution returns a compatibility error before any state reset, because the legacy meter adapter is commented out and a fresh protocol-6 genesis is required.](diagrams/offered-evaluation-scopes.svg)
+
+(*Source: [`diagrams/offered-evaluation-scopes.puml`](diagrams/offered-evaluation-scopes.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-evaluation-scopes.puml`.*)
+
+**Decision.**
+
+1. Test genesis uses protocol 6 with the offered-funded resource policy. Every
+   test user deploy is an offered-funded envelope.
+2. Under offered activation, admission rejects body-only deploys, selection
+   takes offered envelopes only, and validation rejects a block that contains
+   any body-only deploy.
+3. The legacy meter adapter is commented out with the reason "D3: legacy phlo
+   meter retired". Code is never deleted to disable it.
+4. Each kind of evaluation maps to one scope, as the diagram shows. The
+   user-facing exploratory estimate follows DR-71.
+5. The plan approved on 2026-10-03 narrows historical support. Body-only
+   historical execution returns an explicit compatibility error before any
+   state reset. A fresh protocol-6 genesis is required.
+6. The two legacy-charge tests follow the adopted failure policy. A classified
+   user failure charges the billable prefix and the fee. A parse error is
+   rejected before execution with no charge.
+
+**Verification.** `OfferedOnlyActivation.v` proves the offered-only rule
+without axioms. Active admission rejects body-only deploys, active selection
+is height-independent and offered-only, active validation rejects any
+body-only deploy, and every reachable active state is offered-only.
+
+Two property tests extract these invariants.
+`offered_selection_window_is_canonical_bounded_and_height_independent` checks
+selection over random pending mixes and heights.
+`active_validation_rejects_exactly_blocks_with_a_body_only_deploy` checks the
+validation predicate.
+
+The integration test `active_validator_rejects_a_block_with_a_body_only_deploy`
+re-signs an offered block with an appended body-only deploy. The peer rejects
+it as an invalid transaction and does not add it to its DAG.
+
+**Verification obligations for the staged test activation.** The trusted
+install scope leaves genesis post-state roots unchanged, and genesis costs are
+0. `OfferedOnlyActivation.v` gains an evaluation-scope type with no legacy
+case. `EndToEndCostConsensus.tla` gains a negative control. The full Casper
+suite passes on the activated harness.
+
+**Cross-refs.** DR-6, DR-34, DR-47, DR-71, DR-73. Leaves under
+`ofp-3-test-activation`.
+
+## DR-67 — Stack safety covers the recursion that cost accounting adds
+
+**Status.** Adopted 2026-10-03 as decision D4 of epic 8946 ("cost-accounting
+only"). Batch B2 implements it.
+
+**Context.** Commit `c3aacd649` made cost-accounted reduction stack-safe.
+DR-64 makes the static analyzer and the lexical resolver reachable in
+production. Their recursion can exhaust the stack on deep terms.
+
+**Decision.** Only the recursion that cost accounting added becomes an
+explicit work stack and value stack, with a push/pop scope stack. The ports
+follow the `feature/f1r3lang-mettail-only` and mettail-rust templates
+(`WorklistFoldEquivalence.v`, `StackSafePDA.v`). General interpreter recursion
+is reported, not changed.
+
+**Verification obligations.** Each port has a Rocq refinement lemma: the
+worklist fold equals the recursive fold. Differential property tests compare
+each port with the recursive reference, which stays as a `#[cfg(test)]`
+oracle.
+
+**Cross-refs.** DR-64. Leaves `ofp-1-stack-safe-analyzer`,
+`ofp-1-stack-safe-lexical`, and `ofp-1-stack-safe-signatures`.
+
+## DR-68 — An installer-signed continuation draws on the installer's located purse
+
+**Status.** Adopted 2026-10-03 as decision D5 of epic 8946 ("P1 Rule 4, wallet
+stack"). Batch B4 (gap G3) implements it.
+
+**Context.** The gateway flow failed with "measured funding case has no
+feasible signed assignment". Three positive obligations carried the
+installer's authority: one COMM, 733 introduction bytes, and 128 trace bytes.
+
+The installer's trigger `for (@request, deployerId <= @"agent-trigger")` is
+unsigned. Under P1 uniform signing (`def:sugar-uniform`), it therefore carries
+the installer's region. The runtime attribution is correct.
+
+Funding eligibility admitted only the sources of the triggering envelope
+(`family_selection.rs`). The installer's purse was not a candidate source.
+
+![Sequence diagram with the actors Installer, Gateway client, Proposer and validators, Reducer and native meter, Funding family selection, Installer located purse, and Gateway signed sources. In an earlier block, the installer's offered deploy stores a trigger continuation with the installer's region as a stored signed term. In a later block, the gateway's offered deploy sends a message that matches the stored trigger. The reducer reports the obligations of the candidate: the COMM in the installer region and the body work in the gateway region. Funding selection makes the installer's located purse eligible for installer-region obligations, authorized by the stored signed term, and the gateway's sources eligible for gateway-region obligations. If the installer lane budget, which is the balance at R0 minus earlier group holds, covers the COMM, settlement debits both purses and the gateway receives a receipt with one row per debited purse. If the budget is exhausted, the interaction does not fire and has no charge, which is the P1 Rule 4 token gating. A note states that genesis continuations carry the Unit signature, which maps to no purse.](diagrams/installer-funded-continuation-sequence.svg)
+
+(*Source: [`diagrams/installer-funded-continuation-sequence.puml`](diagrams/installer-funded-continuation-sequence.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/installer-funded-continuation-sequence.puml`.*)
+
+**Decision.**
+
+1. The installer's located purse is an eligible source for obligations in the
+   installer's stored signed region. The purse is the installer's wallet under
+   the D2.9 wallet keying (DR-28). The stored term
+   (`extend_persistent_regions`) is the authorization.
+2. The installer lane's budget is the purse balance at $`R_0`$ minus the
+   earlier group holds of DR-65.
+3. When that budget is exhausted, the failure-matrix outcome "missing local
+   capability" applies. The interaction does not fire and has no charge. This
+   is the token gating of P1 Rule 4.
+4. Genesis continuations carry the `Unit` signature, which maps to no purse.
+   Blessed system signers are never charged.
+5. The gateway test uses its intended P1 funding-slot form
+   `[gateway ⊸ slot]`. Clients read installed names through the public
+   `listenForContinuationAtName`.
+
+**Verification obligations.** The three-node gateway flow passes. A TLA+
+control shows that a trigger with no stored signature cannot draw an installer
+purse. `FundingSlotBootstrap.v` covers the third-party stack. Each invariant
+becomes a Rust property test.
+
+**Cross-refs.** P1 `sec:rewrites` (Rules 1–5), `def:sugar-uniform`,
+`def:funding-proof`. DR-28, DR-64, DR-65. Leaves
+`ofp-2-rooted-region-sources` and `ofp-2-gateway-attribution`.
+
+## DR-69 — Recovery carries offered envelopes by format plumbing only
+
+**Status.** Adopted 2026-10-03 as decision D6 of epic 8946. Batch B5 (gap G6)
+implements it.
+
+**Context.** The offered path bypassed the rejected-deploy buffer. It also
+cleared retry and in-scope recovery selection. About 35 recovery-family tests
+depend on that machinery.
+
+**Decision.** The rejected-deploy buffer, retry, and in-scope recovery carry
+the offered envelope as one more deploy format. Recovery algorithms and
+decisions do not change, because they are general Casper behavior.
+
+**Verification obligations.** The recovery-family tests pass on the activated
+harness. Recovery outcomes match the current outcomes for the same scenarios.
+
+**Cross-refs.** DR-55, DR-56, DR-66. Leaf `ofp-3-recovery-offered-format`.
+
+## DR-70 — Block reporting replays offered blocks through the offered replay path
+
+**Status.** Adopted 2026-10-03 as decision D7 of epic 8946. Batch B5 (gap G7)
+implements it.
+
+**Context.** `reporting_casper.rs` rejected offered blocks.
+
+**Decision.** Reporting replays an offered block through the existing offered
+replay path (`certify_offered_draft`,
+`replay_compute_state_envelopes_with_policy`). It reports the native evidence
+and the receipts. The historical `precharge_report_shape_spec` is commented
+out with a reason.
+
+**Verification obligations.** `block_report_api_test` and
+`multi_parent_casper_reporting_spec` pass on offered blocks.
+
+**Cross-refs.** DR-66. Leaf `ofp-5-offered-reporting`.
+
+## DR-71 — The exploratory cost estimate is a native unfunded dry run
+
+**Status.** Adopted 2026-10-03 as decision D8 of epic 8946. Batch B5
+implements it.
+
+**Context.** DR-64 makes the signed `phloLimit` the P1 safety margin. Clients
+need a measured estimate to choose that limit. The legacy exploratory estimate
+used the retired meter.
+
+**Decision.** The user-facing exploratory estimate runs the native meter
+without funding, bounded by host-work limits. It resets to the starting root
+and publishes nothing. It returns the measured phlo (issue #53). Internal
+exploratory reads of policy and token metadata keep the unmetered read path.
+
+**Verification obligations.** The estimate equals the measured phlo of the
+same term executed as a funded offer at the same root. The dry run leaves the
+root unchanged.
+
+**Cross-refs.** DR-64, DR-66. Leaf `ofp-5-exploratory-dry-run`.
+
+## DR-72 — A failing offered candidate is quarantined, and the proposer tries the next one
+
+**Status.** Implemented 2026-10-04 for register item I4 of epic 8946 (batch
+B0).
+
+**Context.** Three defects let one failing offer stop offered block
+production:
+
+1. The proposer took only the first offer. A non-retryable failure returned an
+   error from `create_inner`.
+2. One pending envelope in an inactive format returned an error from
+   selection.
+3. A deploy that drained its own funding wallet failed settlement. The
+   proposer error then repeated on every attempt.
+
+P1 §`sec:deploy-boundaries` states that a rejected deployment has no effect.
+It must not block other deployments.
+
+![Activity diagram of the quarantine-and-retry loop. The proposer reads pending envelopes in canonical order. An envelope in an inactive format is quarantined at selection with a status entry that has no root. The proposer selects the first eligible offer and keeps at most ordinary_cap minus 1 alternates. It checkpoints the attempt in a fresh offered runtime. If the block is created, it is published. If the result is OfferedCandidateRejected with the attempted identity, the proposer removes that envelope from pending storage and records a bounded status entry with the identity, the root R0, the block, and the reason, at most 4096 entries and 1024 reason bytes. It then tries the next alternate. With no alternate left, it continues with no user deploys when empty-block, slashing, or recovered-slash work exists, and otherwise returns NoNewDeploys. An infrastructure error, such as storage, history, RSpace storage, lock, stream, communication, or availability, keeps its own type and propagates.](diagrams/offered-candidate-quarantine-loop.svg)
+
+(*Source: [`diagrams/offered-candidate-quarantine-loop.puml`](diagrams/offered-candidate-quarantine-loop.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-candidate-quarantine-loop.puml`.*)
+
+**Decision.**
+
+1. `CasperError::OfferedCandidateRejected` is a typed error. It carries the
+   deploy identity, the original root, and the reason.
+2. The runtime maps a failure in the candidate pipeline to this error. The
+   pipeline covers the envelope, funding, metering, settlement, producer
+   self-replay, and publication authorization.
+3. Infrastructure failures keep their own types and still propagate. They are
+   key-value store, history, lock, stream, communication, and availability
+   failures, plus the history, radix-tree, and key-value classes of RSpace
+   errors.
+4. Budget exhaustion inside RSpace (`HostWorkRejected`, `OutOfPhlogistons`) and
+   every other RSpace error belong to the candidate. Otherwise a candidate
+   that exhausts its budget inside an RSpace operation stalls the proposer.
+5. The proposer quarantines the envelope. It removes the envelope from pending
+   storage and records a bounded status entry bound to the root.
+6. The status log holds at most 4096 entries and at most 1024 reason bytes for
+   each entry. It evicts the oldest entry first. A new admission of the same
+   identity clears its entry.
+7. The proposer then tries the next canonical offered candidate. Selection
+   keeps at most `ordinary_cap − 1` alternates. One proposal therefore executes
+   at most `ordinary_cap` candidates, plus one attempt without user deploys.
+8. When no alternate remains, the proposal continues exactly as with no user
+   deploys. It returns `NoNewDeploys` unless empty blocks, slashing deploys, or
+   recovered slashes require a block.
+9. An envelope in an inactive format is quarantined at selection with no root,
+   because the format decision does not depend on state.
+
+**Algorithm (literate form).** The loop has two named chunks. The function
+`next_offered_attempt` implements the second chunk, and both the checkpoint
+loop and its property test call it.
+
+```text
+⟨offered proposal⟩ ≡
+  attempt ← next_offered_attempt(window, other_work)
+  loop
+    result ← checkpoint(attempt)
+    if result = OfferedCandidateRejected(attempt.id, R0, reason)
+      quarantine(attempt.id, R0, reason)
+      attempt ← next_offered_attempt(alternates, other_work)
+      continue
+    return result
+```
+
+The next attempt is the next canonical alternate. With none left, the proposal
+falls back to the behavior for an empty user-deploy set.
+
+```text
+⟨next offered attempt⟩ ≡
+  match alternates.next()
+    candidate          → Candidate(candidate)
+    none, other_work   → NoUserDeploys
+    none               → NoNewDeploys
+```
+
+**Scope.** The change is local to the proposer and adds no consensus-visible
+state. It does not change validation, voting, finality, fork choice, or
+recovery. DR-65's held-capacity guard later turns the self-drain case into a
+classified user failure.
+
+**Verification.** The TLA+ model
+`formal/tlaplus/cost_accounted_rho/OfferedCandidateQuarantine.tla` covers
+several proposals. It models admission and readmission, the canonical window,
+checkpoints, the bounded status log, and infrastructure errors. Each behavior
+chooses its fundable set, cap, and log capacity in the initial state.
+
+TLC checks ten invariants: `TypeOK`, `NoCandidateErrorEscapes`,
+`RemovedOnlyByInclusionOrQuarantine`, `QuarantinedNeverIncluded`,
+`AttemptsBounded`, `LogBounded`, `LogDistinct`, `PendingNotLogged`,
+`LogOrderFollowsHistory`, and `FirstFundableIncluded`.
+
+TLC also checks the action property `QuarantineAppendsAndEvictsOldest` and the
+liveness property `ProposalsTerminate`. The base configuration has 9,288
+distinct states. The large configuration has 1,563,676.
+
+Five negative controls each fail their named invariant: escape, overremove,
+unbounded, noevict, and skiphead. The local gate
+`scripts/check-cost-accounted-rho-tla-invariants.sh` registers all seven
+configurations.
+
+Four property tests extract the invariants into Rust:
+
+- `envelope_rejection_log_matches_bounded_fifo_reference` compares the log
+  with a reference bounded FIFO (`LogBounded`, `LogDistinct`,
+  `PendingNotLogged`, `QuarantineAppendsAndEvictsOldest`).
+- `offered_attempt_loop_matches_quarantine_model` drives
+  `next_offered_attempt` as the checkpoint loop does (`FirstFundableIncluded`,
+  `RemovedOnlyByInclusionOrQuarantine`, `QuarantinedNeverIncluded`,
+  `AttemptsBounded`).
+- `offered_selection_window_is_canonical_bounded_and_height_independent`
+  checks the window, the alternates bound, and inactive-format quarantine.
+- `candidate_failures_become_typed_rejections_and_infrastructure_passes_through`
+  checks the classification over fifteen error classes
+  (`NoCandidateErrorEscapes`).
+
+The integration test
+`unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_included`
+shows that an unfundable head offer does not stop the next offer. It also
+checks the root-bound status entry.
+
+**Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
+`ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
+`ofp-3-rejection-status` exposes the status entry through the API.
+
+## DR-73 — Approved-genesis version adoption applies only to policy-carrying genesis
+
+**Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
+B0).
+
+**Context.** `GenesisResourcePolicy::adopt` requires the running
+`casper_version` to equal the protocol version of the approved genesis policy.
+
+The uncommitted integration diff adopted the approved header version for every
+approved genesis. That change also altered the general Casper path for legacy
+genesis, which carries no resource policy.
+
+**Decision.** `hash_set_casper` computes the running version with
+`adopted_casper_version` before it loads the policy. The helper matches on the
+policy. A genesis with a policy adopts the approved header version. A legacy
+genesis keeps the local version, exactly as on `dev`. Cost-accounted chains
+keep the DR-34 authority chain.
+
+```text
+⟨adopted casper version⟩ ≡
+  match genesis_policy
+    some(_) → approved_header_version
+    none    → local_version
+```
+
+**Verification.** `GenesisVersionAdoption.v` proves five theorems without
+axioms:
+
+- `legacy_genesis_keeps_local_version`
+- `policy_genesis_adopts_header_version`
+- `adopted_policy_passes_adopt_check`
+- `unadopted_mismatch_fails_adopt_check`
+- `policy_genesis_version_is_node_independent`
+
+Two property tests extract them. `version_adoption_follows_the_genesis_policy`
+checks the helper. `adopted_version_passes_adopt_and_unadopted_mismatch_fails`
+checks the adopted version against the real `GenesisResourcePolicy::adopt`.
+
+**Cross-refs.** DR-34, DR-47, DR-66. Leaves `ofp-1-baseline-hygiene` and
+`ofp-1-baseline-verify-activation`.

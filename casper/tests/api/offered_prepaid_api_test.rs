@@ -204,13 +204,17 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
     BlockAPI::deploy_offered(&nodes[0].engine_cell, first, &None, false, "root")
         .await
         .unwrap();
-    nodes[0].allow_empty_blocks = true;
-    let first_legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
-        .await
-        .unwrap();
-    assert_eq!(first_legacy_turn.body.state.block_number, 1);
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3). Offered deploys no
+    // longer alternate block turns with legacy deploys.
+    // nodes[0].allow_empty_blocks = true;
+    // let first_legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
+    //     .await
+    //     .unwrap();
+    // assert_eq!(first_legacy_turn.body.state.block_number, 1);
     let first_block = nodes[0].create_block_unsafe(&[]).await.unwrap();
-    assert_eq!(first_block.body.state.block_number, 2);
+    // Disabled: see the legacy-turn note above (epic 8946, D3).
+    // assert_eq!(first_block.body.state.block_number, 2);
+    assert_eq!(first_block.body.state.block_number, 1);
     assert_eq!(first_block.body.deploys.len(), 1);
     assert_eq!(
         first_block.body.deploys[0].identity_bytes(),
@@ -256,7 +260,7 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
     let second = signed_offer(
         "{% @\"prepaid-draw\"!(true) %}[a]",
         2,
-        2,
+        1,
         false,
         owner_secret,
         owner_public,
@@ -266,12 +270,15 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
     BlockAPI::deploy_offered(&nodes[0].engine_cell, second, &None, false, "root")
         .await
         .unwrap();
-    let second_legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
-        .await
-        .unwrap();
-    assert_eq!(second_legacy_turn.body.state.block_number, 3);
+    // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
+    // let second_legacy_turn = TestNode::propagate_block_at_index(&mut nodes, 0, &[])
+    //     .await
+    //     .unwrap();
+    // assert_eq!(second_legacy_turn.body.state.block_number, 3);
     let second_block = nodes[0].create_block_unsafe(&[]).await.unwrap();
-    assert_eq!(second_block.body.state.block_number, 4);
+    // Disabled: see the legacy-turn note above (epic 8946, D3).
+    // assert_eq!(second_block.body.state.block_number, 4);
+    assert_eq!(second_block.body.state.block_number, 2);
     assert_eq!(second_block.body.deploys.len(), 1);
     assert_eq!(
         second_block.body.deploys[0].identity_bytes(),
