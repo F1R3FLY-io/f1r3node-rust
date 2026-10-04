@@ -726,6 +726,31 @@ mod prepared_route_tests {
         assert_eq!(hole_trace.last(), Some(&expected_terminal));
         let hole_failure = observation(&runtime, "regex.lookahead.hole.failure").await;
         assert_eq!(trace_pathmap(&hole_failure).len(), 0);
+        let received_success = observation(&runtime, "regex.lookahead.received.success").await;
+        let received_success = trace_pathmap(&received_success);
+        assert_eq!(received_success.mode(), EPathMapMode::Set);
+        assert_eq!(
+            received_success.len(),
+            1,
+            "received FLT retains its checked owner"
+        );
+        let received_key = received_success
+            .next_value_key(&[])
+            .expect("received FLT trace key");
+        let received_trace = received_success
+            .leaf_at_encoded_key(&received_key)
+            .expect("received FLT trace");
+        let received_trace = list(&received_trace);
+        let expected_pattern =
+            reflected_constructor(&expected_owner, "POptional", vec![reflected_constructor(
+                &expected_owner,
+                "PLiteral",
+                vec![reflected_text(&expected_owner, "a")],
+            )]);
+        assert_eq!(received_trace.first(), Some(&expected_pattern));
+        assert_eq!(received_trace.last(), Some(&expected_pattern));
+        let received_failure = observation(&runtime, "regex.lookahead.received.failure").await;
+        assert_eq!(trace_pathmap(&received_failure).len(), 0);
         let speculation_error_channel = scalar(ExprInstance::GString(
             mettail_rholang_runtime::lookahead::SPEC_ERR_CHANNEL.into(),
         ));
@@ -796,7 +821,7 @@ mod prepared_route_tests {
         let reports = runtime.get_data(&truncated_channel).await;
         assert_eq!(
             reports.len(),
-            7,
+            8,
             "each v2 lookahead request has a typed report"
         );
         let mut truncated_lengths = Vec::with_capacity(reports.len());
@@ -808,7 +833,7 @@ mod prepared_route_tests {
             truncated_lengths.push(trace_pathmap(&fields[1]).len());
         }
         truncated_lengths.sort_unstable();
-        assert_eq!(truncated_lengths, [0, 0, 0, 0, 0, 1, 1]);
+        assert_eq!(truncated_lengths, [0, 0, 0, 0, 0, 0, 1, 1]);
         let derivative = observation(&runtime, "regex.derivative").await;
         let derivative_fields = list(&derivative);
         assert_eq!(derivative_fields.len(), 3);
