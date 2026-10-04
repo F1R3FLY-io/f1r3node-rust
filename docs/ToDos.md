@@ -146,7 +146,7 @@ tasks:
     title: "Propose the root-cause fix and verify it with the profile"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-021-3, TASK-021-4]
+    blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
     acceptance:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
       - "The maintainer chooses the fix before implementation."
@@ -181,6 +181,21 @@ tasks:
       - "The existing driver test suite passes without changes to its assertions."
       - "The new module files are registered as artifacts of CLAIM-CASPER-SOAK-001 and of the soak disk protection claim, and the maintainer accepts the new evidence."
       - "A later epic decides which parts move into the Rust casper-soak runtime."
+  - id: TASK-021-8
+    title: "Measure history repository lock hold times by call site"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    origin: "In soak 37153082817, history_repository_roots_repository_lock_wait_ns reached 2 to 21 seconds for each validator in test_deploy_throughput_and_finalization, and no other test exceeded 1 second. The checkpoint's own roots lock wait stayed near zero. The metrics record wait times only, so they cannot show which call site holds the lock. The candidate cause is reset() in rspace++/src/rspace/history/history_repository_impl.rs, which holds the roots lock while it waits for the current-history lock."
+    files:
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/metrics_constants.rs
+      - scripts/bench/extend-issue24-metrics.py
+    acceptance:
+      - "The roots-repository and current-history locks record hold time and wait time with a call-site label: checkpoint commit, reset, record_root, contains_root, and the history readers."
+      - "The new metrics appear in the ISSUE24_METRICS records, and the metrics extension test covers them."
+      - "A soak run or a local throughput run attributes the roots lock wait to the call sites that hold the lock, and the result is recorded on issue #24."
+      - "The analysis confirms or rejects the nested-lock hypothesis in reset() before TASK-021-5 proposes a fix."
 ---
 ```
 
