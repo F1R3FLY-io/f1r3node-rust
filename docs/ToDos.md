@@ -158,7 +158,7 @@ tasks:
     claimed_by: claude-session-aa467dea
     claimed_at: 2026-10-04T03:20:00Z
     completed_at: 2026-10-04
-    resolution: "Fix 602d63c7b. Review package casper-soak-driver-evidence-scope-20261004-01 at 384b5fb08. jltatbeach accepted it in PR #580 comment 5979020312. The acceptance package casper-soak-driver-evidence-scope-acceptance-20261004-01 and the two ledger records carry the new digests."
+    resolution: "Fix 602d63c7b. Review package casper-soak-driver-evidence-scope-20261004-01 at 384b5fb08. jltatbeach accepted it in PR #580 comment 5979020312. The acceptance package casper-soak-driver-evidence-scope-acceptance-20261004-01 and the two ledger records carry the new digests. The PR #580 review fixes in 345a99a23 have review package -02 at 3d384bc9e, accepted in comment 5980616375, with acceptance package casper-soak-driver-evidence-scope-acceptance-20261004-02."
     blocked_by: []
     origin: "Soak 37153082817 on master f93b72699 stopped after about 3 hours at the disk hygiene band with 8,047 MB free. The failure-evidence copy in scripts/run-merge-recovery-soak.sh copied every earlier harness session into each failed iteration, so iteration N archived N sessions. The copies were 13.6 GB of the 15 GB output, and the harness log-archive root grew about 200 MB for each iteration."
     files:
