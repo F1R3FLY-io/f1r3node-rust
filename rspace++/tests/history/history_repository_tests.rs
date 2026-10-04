@@ -474,6 +474,52 @@ async fn record_root_makes_root_visible_to_contains_root() {
     );
 }
 
+#[test]
+fn lock_site_metrics_count_each_call_site_separately() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let repo = create_empty_repository();
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || {
+        let (insert, _) = insert_datum(1);
+        let next = repo.checkpoint(vec![insert]);
+        let root = next.root();
+        repo.record_root(&root).unwrap();
+        assert!(repo.contains_root(&root).unwrap());
+        repo.reset(&root).unwrap();
+        repo.get_history_reader(&root).unwrap();
+        repo.get_history_reader_struct(&root).unwrap();
+    });
+    let snapshot = snapshotter.snapshot().into_vec();
+    let counter = |name: &str| -> Option<u64> {
+        snapshot
+            .iter()
+            .find(|(key, _, _, _)| key.key().name() == name)
+            .and_then(|(_, _, _, value)| match value {
+                DebugValue::Counter(value) => Some(*value),
+                _ => None,
+            })
+    };
+    for (lock, site, calls) in [
+        ("roots_repository", "checkpoint", 1),
+        ("roots_repository", "record_root", 1),
+        ("roots_repository", "contains_root", 1),
+        ("roots_repository", "reset", 1),
+        ("current_history", "checkpoint", 1),
+        ("current_history", "reset", 1),
+        ("current_history", "history_reader", 2),
+        ("current_history", "root", 1),
+    ] {
+        let prefix = format!("history.repository.{lock}.{site}");
+        assert_eq!(counter(&format!("{prefix}.calls")), Some(calls), "{prefix}");
+        assert!(counter(&format!("{prefix}.wait_ns")).is_some(), "{prefix}");
+        assert!(counter(&format!("{prefix}.hold_ns")).is_some(), "{prefix}");
+    }
+    assert_eq!(counter("history.repository.roots_repository.lock_calls"), Some(4));
+    assert_eq!(counter("history.repository.current_history.lock_calls"), Some(5));
+}
+
 #[tokio::test]
 async fn history_reader_generic_getters_return_inserted_values() {
     let repo = create_empty_repository();

@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -32,9 +33,13 @@ use crate::rspace::metrics_constants::{
     HISTORY_CHECKPOINT_PARTITION_TIME_METRIC, HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC,
     HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC, HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC,
     HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC, HISTORY_CHECKPOINT_STORAGE_ACTIONS_TIME_METRIC,
-    HISTORY_CHECKPOINT_TIME_METRIC, HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
+    HISTORY_CHECKPOINT_TIME_METRIC, HISTORY_LOCK_CHECKPOINT_SITE, HISTORY_LOCK_READER_SITE,
+    HISTORY_LOCK_RESET_SITE, HISTORY_LOCK_ROOT_SITE,
+    HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
     HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
-    HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, HISTORY_RSPACE_METRICS_SOURCE,
+    HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, HISTORY_RSPACE_METRICS_SOURCE, LockSiteMetrics,
+    ROOTS_LOCK_CHECKPOINT_SITE, ROOTS_LOCK_CONTAINS_ROOT_SITE, ROOTS_LOCK_RECORD_ROOT_SITE,
+    ROOTS_LOCK_RESET_SITE,
 };
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
@@ -58,30 +63,71 @@ const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 // `std::sync::Mutex`es serialize concurrent PRECHARGE/REFUND system-deploy
 // execution the way the now-removed LmdbKeyValueStore mutex used to
 // serialize history reads).
-fn lock_current_history(
-    m: &Mutex<Box<dyn History>>,
-) -> std::sync::MutexGuard<'_, Box<dyn History>> {
-    let start = Instant::now();
-    let guard = m
-        .lock()
-        .expect("History Repository Impl: Unable to acquire history lock");
-    metrics::counter!(HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(start.elapsed().as_nanos() as u64);
-    metrics::counter!(HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(1);
-    guard
+struct TimedGuard<'a, T: ?Sized> {
+    guard: MutexGuard<'a, T>,
+    acquired: Instant,
+    site: &'static LockSiteMetrics,
 }
 
-fn lock_roots_repository(m: &Mutex<RootRepository>) -> std::sync::MutexGuard<'_, RootRepository> {
+impl<T: ?Sized> Deref for TimedGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T { &self.guard }
+}
+
+impl<T: ?Sized> Drop for TimedGuard<'_, T> {
+    fn drop(&mut self) {
+        metrics::counter!(self.site.hold_ns, "source" => HISTORY_RSPACE_METRICS_SOURCE)
+            .increment(self.acquired.elapsed().as_nanos() as u64);
+    }
+}
+
+fn timed_lock<'a, T: ?Sized>(
+    m: &'a Mutex<T>,
+    wait_metric: &'static str,
+    calls_metric: &'static str,
+    site: &'static LockSiteMetrics,
+    message: &str,
+) -> TimedGuard<'a, T> {
     let start = Instant::now();
-    let guard = m
-        .lock()
-        .expect("History Repository Impl: Unable to acquire roots repository lock");
-    metrics::counter!(HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(start.elapsed().as_nanos() as u64);
-    metrics::counter!(HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-        .increment(1);
-    guard
+    let guard = m.lock().expect(message);
+    let acquired = Instant::now();
+    let wait_ns = acquired.duration_since(start).as_nanos() as u64;
+    metrics::counter!(wait_metric, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(wait_ns);
+    metrics::counter!(calls_metric, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(1);
+    metrics::counter!(site.wait_ns, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(wait_ns);
+    metrics::counter!(site.calls, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(1);
+    TimedGuard {
+        guard,
+        acquired,
+        site,
+    }
+}
+
+fn lock_current_history<'a>(
+    m: &'a Mutex<Box<dyn History>>,
+    site: &'static LockSiteMetrics,
+) -> TimedGuard<'a, Box<dyn History>> {
+    timed_lock(
+        m,
+        HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC,
+        HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
+        site,
+        "History Repository Impl: Unable to acquire history lock",
+    )
+}
+
+fn lock_roots_repository<'a>(
+    m: &'a Mutex<RootRepository>,
+    site: &'static LockSiteMetrics,
+) -> TimedGuard<'a, RootRepository> {
+    timed_lock(
+        m,
+        HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC,
+        HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
+        site,
+        "History Repository Impl: Unable to acquire roots repository lock",
+    )
 }
 
 impl<C, P, A, K> HistoryRepositoryImpl<C, P, A, K>
@@ -425,7 +471,8 @@ where
         let store_root = |root| {
             let (result, lock_wait, commit_time) = {
                 let lock_start = Instant::now();
-                let roots_repo_lock = lock_roots_repository(&self.roots_repository);
+                let roots_repo_lock =
+                    lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_CHECKPOINT_SITE);
                 let lock_wait = lock_start.elapsed();
                 let commit_start = Instant::now();
                 let result = roots_repo_lock.commit(root);
@@ -472,7 +519,8 @@ where
         // cache for new root)
         let (new_history, lock_wait, process_time) = {
             let lock_start = Instant::now();
-            let history_lock = lock_current_history(&self.current_history);
+            let history_lock =
+                lock_current_history(&self.current_history, &HISTORY_LOCK_CHECKPOINT_SITE);
             let lock_wait = lock_start.elapsed();
             let process_start = Instant::now();
             let new_history = history_lock.process(history_actions).unwrap();
@@ -507,10 +555,10 @@ where
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         debug!("[HistoryRepositoryImpl] reset to {}", root);
 
-        let roots_lock = lock_roots_repository(&self.roots_repository);
+        let roots_lock = lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RESET_SITE);
         roots_lock.validate_and_set_current_root(root.clone())?;
 
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_RESET_SITE);
         let next = history_lock.reset(root)?;
 
         Ok(Box::new(HistoryRepositoryImpl {
@@ -533,7 +581,7 @@ where
         &self,
         state_hash: &Blake2b256Hash,
     ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, HistoryError> {
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_READER_SITE);
         let history_repo = history_lock.reset(state_hash)?;
         Ok(Box::new(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone())))
     }
@@ -542,23 +590,25 @@ where
         &self,
         state_hash: &Blake2b256Hash,
     ) -> Result<RSpaceHistoryReaderImpl<C, P, A, K>, HistoryError> {
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_READER_SITE);
         let history_repo = history_lock.reset(state_hash)?;
         Ok(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone()))
     }
 
     fn root(&self) -> Blake2b256Hash {
-        let history_lock = lock_current_history(&self.current_history);
+        let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_ROOT_SITE);
         history_lock.root()
     }
 
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError> {
-        let roots_repo = lock_roots_repository(&self.roots_repository);
+        let roots_repo =
+            lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RECORD_ROOT_SITE);
         roots_repo.commit(root).map_err(HistoryError::from)
     }
 
     fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError> {
-        let roots_repo = lock_roots_repository(&self.roots_repository);
+        let roots_repo =
+            lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_CONTAINS_ROOT_SITE);
         roots_repo.contains_root(root).map_err(HistoryError::from)
     }
 }

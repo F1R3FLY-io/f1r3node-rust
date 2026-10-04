@@ -57,6 +57,11 @@ for metric in \
     history_checkpoint_serialized_bytes \
     history_repository_current_history_lock_wait_ns \
     history_repository_roots_repository_lock_wait_ns \
+    history_repository_roots_repository_reset_hold_ns \
+    history_repository_roots_repository_checkpoint_wait_ns \
+    history_repository_current_history_history_reader_calls \
+    history_roots_store_write_ns \
+    history_roots_store_writes \
     block_replay_runtime_lock_wait_time \
     block_replay_runtime_execute_time \
     block_replay_runtime_save_mergeable_time \
