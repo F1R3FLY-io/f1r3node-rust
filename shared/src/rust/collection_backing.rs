@@ -23,6 +23,22 @@ pub fn tree_backing<K, V>(entries: usize) -> Option<(usize, usize)> {
     Some((operations, bytes))
 }
 
+/// Backing growth of a B-tree that grows from `entries` to
+/// `entries + additional` entries: the increment of [`tree_backing`].
+/// Host-work usage only accumulates, so the charge for an insert into an
+/// existing tree is this increment, not the new total; the increments of any
+/// sequence of batches add up to the backing of the final tree (C13, DR-77,
+/// `IncrementalTreeBacking.incremental_charges_telescope`).
+pub fn tree_growth<K, V>(entries: usize, additional: usize) -> Option<(usize, usize)> {
+    let total = entries.checked_add(additional)?;
+    let (next_operations, next_bytes) = tree_backing::<K, V>(total)?;
+    let (prior_operations, prior_bytes) = tree_backing::<K, V>(entries)?;
+    Some((
+        next_operations.checked_sub(prior_operations)?,
+        next_bytes.checked_sub(prior_bytes)?,
+    ))
+}
+
 pub fn hash_backing<K, V>(capacity: usize) -> Option<(usize, usize)> {
     if capacity == 0 {
         return Some((0, 0));

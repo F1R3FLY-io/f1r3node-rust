@@ -66,6 +66,20 @@ impl Drop for Measurement {
     fn drop(&mut self) { ALLOCATED.with(|total| total.set(None)); }
 }
 
+/// Bytes allocated on this thread while `action` runs, measured by the
+/// test binary's global allocator.
+pub(crate) fn measured<T>(action: impl FnOnce() -> T) -> (T, usize) {
+    ALLOCATED.with(|total| {
+        assert!(total.get().is_none(), "measurements do not nest");
+        total.set(Some(0));
+    });
+    let measurement = Measurement;
+    let value = action();
+    let bytes = ALLOCATED.with(|total| total.get().expect("active measurement"));
+    drop(measurement);
+    (value, bytes)
+}
+
 fn clone_fits<T: CloneBacking + Clone>(value: &T) {
     let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
     reserve(value, &host).unwrap();

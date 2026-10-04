@@ -4858,3 +4858,119 @@ fails at the gateway call, as before. That failure is register item G3.
 
 **Cross-refs.** DR-72, DR-75. Leaves `ofp-2-cap-c12-comm-observer-reads` and
 `ofp-2-cap-root-causes`.
+
+## DR-77 — Tree growth charges the increment of the tree backing
+
+**Status.** Implemented 2026-10-04 for cap root cause C13 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- $`B(n)`$ is the backing bound of a B-tree with $`n`$ entries:
+  $`B(n) = N(n) \cdot s`$, where $`N(n) = 1 + \lfloor (n-1)/5 \rfloor`$ for
+  $`n \geq 1`$ and $`N(0) = 0`$ bounds the node count, and $`s`$ is the
+  byte size of one node (`tree_backing` in `collection_backing.rs`).
+- The growth charge of a batch of $`a`$ entries added to a tree of $`n`$
+  entries is $`B(n + a) - B(n)`$.
+- Host-work usage accumulates: the budget never releases a reservation.
+
+**Context.** The native runtime budget keeps several B-trees that grow
+during execution:
+- the introduction-authority registry;
+- the introductions registry;
+- the authority frontier and events;
+- the pending stack transfers.
+
+Metered native replay keeps one more: the produce-counter map, which lives
+for the whole replay.
+
+Before each insert, the budget reserved backing for the tree.
+
+The probe of the gateway funding block showed these owned-backing
+reservations as 51% of the producer's SearchStateBytes (68 MB of 133.5 MB).
+That budget stood at 99.5% of its 128 MiB cap.
+
+The helpers `reserve_registry_insert`, `reserve_tree_birth` and
+`reserve_tree_batch` reserved $`B(n + 1)`$ or $`B(n + a)`$. That is the
+backing of the whole tree at its new size, on every insert. Because usage
+accumulates, $`n`$ single inserts reserved:
+
+```math
+R_{\mathrm{legacy}}(n) = \sum_{k=1}^{n} B(k) \;\geq\; \frac{n (n + 1)}{10}\, s ,
+```
+
+while the tree never holds more than $`B(n) \leq (1 + n/5)\, s`$. For 1,000
+inserts the legacy charge reserved 100,500 nodes for a tree that needs 200.
+
+The same file already charged the increment for persistent regions
+(`extend_persistent_regions`).
+
+**Decision.**
+
+1. A new helper `tree_growth` in `shared::rust::collection_backing` returns
+   the increment $`B(n + a) - B(n)`$ for bytes and for operations.
+2. `reserve_registry_insert`, `reserve_tree_birth` and `reserve_tree_batch`
+   (runtime budget) and `prepare_metered_produce_counter` (metered native
+   replay) reserve that increment. The legacy lines stay in the source,
+   commented out with their reason.
+3. Every call site passes the current tree size before the insert, so a batch
+   that builds a fresh tree ($`n = 0`$) keeps its charge $`B(a)`$.
+
+**Algorithm (literate form).**
+
+```text
+⟨tree growth⟩ ≡
+  require n + a does not overflow
+  (operations', bytes') ← tree_backing(n + a)
+  (operations, bytes)  ← tree_backing(n)
+  return (operations' − operations, bytes' − bytes)   -- B is monotone
+```
+
+**Soundness.** `SearchStateBytes` counts canonical logical bytes retained for
+a search state, and it does not use allocator metadata
+([host-work budget](host-work-budget.md)). Two cases cover all trees:
+
+- An insert-only tree (the two registries and the produce-counter map): the
+  cumulative charge after $`k`$ single inserts telescopes to $`B(k)`$. By
+  `checkpoint_node_count`, $`N(k)`$ bounds every node of a B-tree with $`k`$
+  entries whose non-root nodes hold at least five entries, which is the
+  occupancy invariant of the standard library's `BTreeMap`. Inserts never free
+  nodes, so every node that the inserts allocated is covered at every prefix.
+- A tree that also removes entries (the events, the pending stack transfers
+  and their event identities) or clears itself (the frontier and the stack
+  births): an insert charges the growth from the current size, and a removal
+  refunds nothing. At every prefix the cumulative charge is at least
+  $`B`$ of the largest size reached, so it covers the retained tree.
+
+**Scope.** This change is cost-accounting work. The helpers exist only on this
+branch. The change alters host-work charges of protocol 6, which is not yet
+released. It changes no evidence encoding and no observable value.
+
+**Verification.** `IncrementalTreeBacking.v` proves eight results without
+axioms:
+
+- `incremental_charges_telescope`: for every monotone projection, the charges
+  of any batch sequence add up to the final value minus the initial value.
+- `incremental_bytes_from_empty` and `incremental_operations_from_empty`.
+- `incremental_prefix_covers_nodes`: the prefix coverage stated above.
+- `legacy_cumulative_quadratic`: $`n (n + 1) \leq 10 \sum_{k \leq n} N(k)`$.
+- `incremental_nodes_linear`: $`N(n) \leq 1 + n/5`$.
+- `charges_cover_retained_with_removals`: for any sequence of inserts and
+  removals, every prefix has charged at least $`B`$ of the current size.
+- `legacy_example`: 1,050 legacy nodes against 20 for 100 inserts.
+
+Property tests in the `tree_growth_tests` module of `accounting/mod.rs`
+extract these results:
+
+- `tree_growth_charges_telescope_to_the_final_backing` (256 random batch
+  sequences);
+- `incremental_reservation_covers_std_btree_allocations`. It inserts up to
+  600 random keys into a standard `BTreeMap`. With the test binary's measuring
+  allocator, it checks that the allocated bytes never exceed the cumulative
+  reservation;
+- `growth_charges_cover_retained_backing_with_removals` (256 random insert
+  and removal sequences on a standard `BTreeMap`);
+- `legacy_whole_tree_charge_per_insert_is_quadratic` (1,000 inserts).
+
+**Cross-refs.** DR-76. Leaves `ofp-2-cap-c13-incremental-tree-backing` and
+`ofp-2-cap-root-causes`.

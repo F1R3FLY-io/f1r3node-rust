@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::mem::size_of;
 
 use shared::rust::clone_backing::CloneBacking;
-use shared::rust::collection_backing::tree_backing;
+use shared::rust::collection_backing::{tree_backing, tree_growth};
 
 use super::*;
 use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
@@ -231,8 +231,13 @@ where
             .checked_add(1)
             .ok_or(RSpaceError::HostWorkRejected)?;
         native_backing::reserve_copy_and_cleanup(source, meter)?;
+        // Disabled by C13 (DR-77): the produce-counter map lives for the whole
+        // replay, so charging its whole backing on every produce charged a
+        // quadratic total.
+        // let (operations, bytes) = tree_backing::<Produce, i32>(entries)
+        //     .ok_or(RSpaceError::HostWorkRejected)?;
         let (operations, bytes) =
-            tree_backing::<Produce, i32>(entries).ok_or(RSpaceError::HostWorkRejected)?;
+            tree_growth::<Produce, i32>(counters.len(), 1).ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(operations, bytes, bytes)?;
         Ok(PreparedProduceCounter {
             counters: Some(counters),

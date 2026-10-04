@@ -621,6 +621,7 @@ theories/NativeReplayAuthentication.v
 theories/NativeCandidateDigestCache.v
 theories/CandidateSourceOrder.v
 theories/ObservationReadCoverage.v
+theories/IncrementalTreeBacking.v
 theories/OfferedOnlyActivation.v
 theories/GenesisVersionAdoption.v
 theories/NativePathDeltaCodec.v
