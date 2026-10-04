@@ -370,10 +370,12 @@ tasks:
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
     status: in_progress
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-10-02T15:30:00Z
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
     mirrored_as: TASK-017-17
     design: docs/casper/design/soak-log-budget-guardian.md
+    implementation_status: "Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The driver samples the container json-file log and the node log directory of each owned container, refuses admission on an unreadable probe, and breaches on 3 strikes or one sample at two times the budget. Ten log scenarios in scripts/bench/test-soak-disk-admission.sh pass in the disposable container, and the breach and refusal scenarios fail against the previous driver. CLAIM-SOAK-001 records the log caps as enforced. Pending: the review package and maintainer acceptance for the driver and the fixture."
     owner_branch: formal/soak-casper-consensus
     blocked_by: []
     blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
@@ -1913,10 +1915,12 @@ tasks:
   - id: TASK-017-17
     title: "Enforce the node log budgets in the soak guardian"
     status: in_progress
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-10-02T15:30:00Z
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
     created_at: 2026-10-02
     mirror_of: TASK-020-4
+    implementation_status: "See TASK-020-4. Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The review package and maintainer acceptance are pending."
     branch: formal/soak-casper-consensus
     design: docs/casper/design/soak-log-budget-guardian.md
     placement_note: "Recorded before TASK-017-15 so that the TASK-017-16 record of branch 4 merges without a conflict."

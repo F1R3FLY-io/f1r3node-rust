@@ -2,7 +2,7 @@
 
 <!-- claude-session-f3cbc961 -->
 
-Status: design, 2026-10-02. Task: TASK-017-17, the EPIC-017 mirror of TASK-020-4. Branch: `formal/soak-casper-consensus`.
+Status: design, 2026-10-02. Implemented on 2026-10-04 on `chore/finish-TASK-020-4-log-growth`. See [Implementation notes](#implementation-notes-2026-10-04). Task: TASK-017-17, the EPIC-017 mirror of TASK-020-4.
 
 ## Problem
 
@@ -77,3 +77,20 @@ CLAIM-SOAK-001 (`docs/claims/soak-disk-protection.md`) gets a row for the log ca
 | `scripts/ci/check-casper-soak-bindings.sh` | The new fixture in the file list |
 | `docs/claims/soak-disk-protection.md` | The log cap row |
 | `docs/ToDos.md` | TASK-017-17 and the TASK-020-4 mirror pointer |
+
+## Implementation notes (2026-10-04)
+
+<!-- claude-session-aa467dea -->
+
+The implementation follows the design with these changes:
+
+| Topic | Design | Implementation and reason |
+|-------|--------|---------------------------|
+| Admission refusal | Exit 2 | A protection breach with exit 1, a summary, and `early_exit_reason=host_protection_breach`. This is the rule of the disk probe at the boundary. Exit 2 stays reserved for configuration errors, such as `log-budget-range`. |
+| Node log probe | `docker exec <id> du -sb /var/lib/rnode/logs` | `docker exec <id> sh -c` tests the directory first. A missing directory counts as 0 bytes, because a node on the stdout sink writes no file log. |
+| Fixture file | New `scripts/bench/test-soak-disk-admission.sh` sibling | The ten scenarios are in `scripts/bench/test-soak-disk-admission.sh` with a `log-` prefix. They reuse its disposable container, fake commands, and harness build. `.github/workflows/ci.yml` and `scripts/ci/check-casper-soak-bindings.sh` need no change. |
+| Probe cadence | Every third guardian sample | `SOAK_LOG_PROBE_EVERY` (1 to 3, default 3). The fixture uses 1, so a soft breach takes about 15 seconds instead of 45. |
+| Probe deadline | Bounded | `SOAK_LOG_PROBE_SECONDS` (1 to 4, default 4) bounds one sample of all containers. The guardian records progress before and after the sample, so the sample stays inside `SOAK_GUARDIAN_MAX_SILENCE_SECONDS`. |
+| Strike count | For each probe | For each probe, on the largest value over the owned containers. |
+
+The breach and refusal scenarios fail against the driver without the log guardian. The disk scenarios run with both budgets at 0, so their behavior is unchanged.
