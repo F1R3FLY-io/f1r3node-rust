@@ -32,7 +32,7 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use shared::rust::clone_backing::{
     self as shared_clone_backing, arc_allocation_bytes, BackingError, CloneBacking, Walker,
 };
-use shared::rust::collection_backing::{tree_backing, tree_growth};
+use shared::rust::collection_backing::{tree_backing, tree_growth, tree_search_bound};
 
 use super::errors::InterpreterError;
 use super::host_work::HostWorkBudget;
@@ -546,9 +546,12 @@ fn reserve_registry_lookup<K>(
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
     if let Some(host) = host {
-        let comparisons = entries
-            .checked_add(1)
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-80): one comparison per entry is a linear
+        // charge for one B-tree search.
+        // let comparisons = entries
+        //     .checked_add(1)
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        let comparisons = tree_search_bound(entries);
         let bytes = comparisons
             .checked_mul(std::mem::size_of::<K>())
             .ok_or(InterpreterError::HostWorkRejected)?;
@@ -1045,6 +1048,11 @@ impl RuntimeBudget {
                 }
             }
             None => {
+                // C13 (DR-80): the insert searches the registry again.
+                reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+                    authorities.len(),
+                    host.as_ref(),
+                )?;
                 reserve_registry_insert(authorities.len(), host.as_ref())?;
                 authorities.insert((identity, kind), canonical);
                 Ok(())
@@ -1085,6 +1093,11 @@ impl RuntimeBudget {
             return Ok(authority.clone());
         }
         reserve_authority_clone(&fallback, host.as_ref())?;
+        // C13 (DR-80): the insert searches the registry again.
+        reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+            authorities.len(),
+            host.as_ref(),
+        )?;
         reserve_registry_insert(authorities.len(), host.as_ref())?;
         let result = fallback.clone();
         authorities.insert((identity, kind), fallback);
@@ -1230,6 +1243,8 @@ impl RuntimeBudget {
             }
             return Ok(());
         }
+        // C13 (DR-80): the final insert searches the set again.
+        reserve_registry_lookup::<([u8; 32], BillableKind)>(introductions.len(), host.as_ref())?;
         reserve_tree_birth::<([u8; 32], BillableKind), Arc<byte_receipts::ByteObservation>>(
             introductions.len(),
             host.as_ref(),
@@ -1352,24 +1367,38 @@ impl RuntimeBudget {
             cells,
         };
         let mut state = self.authority_state.lock().expect("authority state");
-        reserve_registry_lookup::<[u8; 32]>(
-            state
-                .stack_births
-                .len()
-                .checked_add(state.pending_stack_transfers.len())
-                .and_then(|count| count.checked_add(1))
-                .ok_or(InterpreterError::HostWorkRejected)?,
-            host.as_ref(),
-        )?;
-        let event_lookup_entries = state
-            .events
-            .len()
-            .checked_add(state.pending_stack_event_ids.len())
-            .and_then(|count| count.checked_add(state.pending_replay_events.len()))
-            .and_then(|count| count.checked_add(2))
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-80): one charge on the summed size covered two
+        // linear searches. A B-tree bound is charged for each searched map.
+        // reserve_registry_lookup::<[u8; 32]>(
+        //     state
+        //         .stack_births
+        //         .len()
+        //         .checked_add(state.pending_stack_transfers.len())
+        //         .and_then(|count| count.checked_add(1))
+        //         .ok_or(InterpreterError::HostWorkRejected)?,
+        //     host.as_ref(),
+        // )?;
+        reserve_registry_lookup::<[u8; 32]>(state.stack_births.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_stack_transfers.len(), host.as_ref())?;
+        // Disabled by C13 (DR-80): one charge on the summed size covered three
+        // linear searches. A B-tree bound is charged for each searched map.
+        // let event_lookup_entries = state
+        //     .events
+        //     .len()
+        //     .checked_add(state.pending_stack_event_ids.len())
+        //     .and_then(|count| count.checked_add(state.pending_replay_events.len()))
+        //     .and_then(|count| count.checked_add(2))
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // for _ in events.keys() {
+        //     reserve_registry_lookup::<[u8; 32]>(event_lookup_entries, host.as_ref())?;
+        // }
         for _ in events.keys() {
-            reserve_registry_lookup::<[u8; 32]>(event_lookup_entries, host.as_ref())?;
+            reserve_registry_lookup::<[u8; 32]>(state.events.len(), host.as_ref())?;
+            reserve_registry_lookup::<[u8; 32]>(
+                state.pending_stack_event_ids.len(),
+                host.as_ref(),
+            )?;
+            reserve_registry_lookup::<[u8; 32]>(state.pending_replay_events.len(), host.as_ref())?;
         }
         if state.stack_births.contains_key(&produce_hash)
             || state.pending_stack_transfers.contains_key(&produce_hash)
@@ -1505,6 +1534,16 @@ impl RuntimeBudget {
             host.as_ref(),
         )?;
         reserve_registry_lookup::<[u8; 32]>(state.pending_stack_transfers.len(), host.as_ref())?;
+        // C13 (DR-80): the commit or the abort removes this transfer from the
+        // pending map, which then also holds this transfer.
+        reserve_registry_lookup::<[u8; 32]>(
+            state
+                .pending_stack_transfers
+                .len()
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            host.as_ref(),
+        )?;
         reserve_registry_lookup::<[u8; 32]>(
             state
                 .stack_births
@@ -1679,16 +1718,22 @@ impl RuntimeBudget {
         });
         let prepared = self.prepare_native_observation(&observation)?;
         let mut state = self.authority_state.lock().expect("authority state");
-        reserve_registry_lookup::<[u8; 32]>(
-            state
-                .pending_stack_event_ids
-                .len()
-                .checked_add(state.pending_replay_events.len())
-                .and_then(|count| count.checked_add(state.events.len()))
-                .and_then(|count| count.checked_add(2))
-                .ok_or(InterpreterError::HostWorkRejected)?,
-            host.as_ref(),
-        )?;
+        // Disabled by C13 (DR-80): one charge on the summed size covered three
+        // linear searches and the inserts. A B-tree bound is charged for each
+        // searched map.
+        // reserve_registry_lookup::<[u8; 32]>(
+        //     state
+        //         .pending_stack_event_ids
+        //         .len()
+        //         .checked_add(state.pending_replay_events.len())
+        //         .and_then(|count| count.checked_add(state.events.len()))
+        //         .and_then(|count| count.checked_add(2))
+        //         .ok_or(InterpreterError::HostWorkRejected)?,
+        //     host.as_ref(),
+        // )?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_stack_event_ids.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_replay_events.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(state.events.len(), host.as_ref())?;
         if state.pending_stack_event_ids.contains(&identity)
             || state.pending_replay_events.contains_key(&identity)
         {
@@ -1724,6 +1769,8 @@ impl RuntimeBudget {
             .reserved
             .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        // C13 (DR-80): a denied COMM inserts its identity into the frontier.
+        reserve_registry_lookup::<[u8; 32]>(state.frontier.len(), host.as_ref())?;
         reserve_tree_birth::<[u8; 32], CostAuthority>(state.frontier.len(), host.as_ref())?;
         if state.enforce_allocation {
             reserve_multiset_dominates(&state.allocation, &next_reserved, host.as_ref())?;
@@ -1737,6 +1784,8 @@ impl RuntimeBudget {
             .realized
             .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        // C13 (DR-80): the event insert searches the event map again.
+        reserve_registry_lookup::<[u8; 32]>(state.events.len(), host.as_ref())?;
         reserve_tree_birth::<[u8; 32], AuthorityRuntimeEvent>(state.events.len(), host.as_ref())?;
         reserve_byte_row(&mut state.byte_observations, host.as_ref())?;
         if state.native.is_some() || !demand.0.is_empty() {
@@ -3619,6 +3668,35 @@ mod tree_growth_tests {
         assert!(10 * legacy >= node * inserts * (inserts + 1));
         assert!(incremental <= node * (1 + inserts / 5));
         assert!(legacy >= 500 * incremental);
+    }
+
+    /// C13 (DR-80; `OrderedLookupBound.search_within_bound`): a registry
+    /// lookup charges the B-tree search bound of the registry size and the
+    /// key bytes of each comparison. The shared property test
+    /// `std_btree_get_comparisons_within_bound` checks the bound against the
+    /// real `BTreeMap`.
+    #[test]
+    fn registry_lookup_charges_the_search_bound() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+        use shared::rust::collection_backing::tree_search_bound;
+
+        for entries in [0_usize, 1, 10, 11, 70, 71, 430, 431, 2_000] {
+            let host =
+                super::HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+            super::reserve_registry_lookup::<[u8; 32]>(entries, Some(&host))
+                .expect("lookup charge");
+            let comparisons = tree_search_bound(entries) as u64;
+            assert_eq!(
+                host.usage(HostWorkDimension::VerificationOperations).get(),
+                comparisons,
+                "{entries} entries"
+            );
+            assert_eq!(
+                host.usage(HostWorkDimension::VerificationBytes).get(),
+                32 * comparisons,
+                "{entries} entries"
+            );
+        }
     }
 }
 

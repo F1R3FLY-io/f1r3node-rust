@@ -5123,7 +5123,8 @@ but $`c(2001) = 44`$. A sound logarithmic charge for those sites needs one
 charge for each searched map and a size bound that holds at the commit. The
 approved C3 item does not include that change. In the gateway-block probe,
 `reserve_registry_lookup` was about 2% of the proposer's
-`VerificationBytes`.
+`VerificationBytes`. Update: the approved C13 item includes that change, and DR-80
+implements it with one charge for each searched map.
 
 **Scope.** This change is cost-accounting work. The metered native replay and
 its produce-counter charges exist only on this branch. The change alters
@@ -5344,3 +5345,56 @@ Tests:
 
 **Cross-refs.** DR-78. Leaves `ofp-2-cap-c14-authority-tree-bound` and
 `ofp-2-cap-root-causes`.
+
+## DR-80 — Registry lookups charge the B-tree search bound of each searched map
+
+**Status.** Implemented 2026-10-04. It completes cap root cause C13 of epic
+8946 (batch B1, phase A). DR-77 implemented the growth part.
+
+**Context.** The approved C13 item also requires that the runtime budget's
+registry lookups use the B-tree search bound of DR-78.
+`reserve_registry_lookup` charged one comparison for each entry. Some call
+sites charged one summed size for searches in two or three maps. After
+DR-77, an insert charges only the growth of its tree, not its own search.
+
+**Decision.**
+
+1. `reserve_registry_lookup` charges $`c(n) = 11 \cdot h(n)`$ comparisons for
+   a registry with $`n`$ entries, and the key bytes of each comparison. The
+   linear lines stay in the source, commented out with their reason.
+2. Each charge pays for one search in one map, at a size that holds when the
+   search runs:
+   - The stack-birth conflict check charges `stack_births` and
+     `pending_stack_transfers` separately.
+   - The event-identity check charges `events`, `pending_stack_event_ids` and
+     `pending_replay_events` separately for each event.
+   - `reserve_authority_identity` charges its three identity maps
+     separately. It also charges the search of the event insert and of the
+     frontier insert.
+   - The inserts into the introduction registry and into the persistent
+     introductions charge their own search.
+   - The commit or the abort of a stack transfer charges the removal from
+     the pending map, at its size with this transfer included.
+3. The charges for searches at commit keep the existing sizes: the size now
+   plus the entries that the pending transfers can add.
+
+**Soundness.** By `OrderedLookupBound.search_within_bound`, a search in a map
+with at most $`n`$ entries makes at most $`c(n)`$ comparisons. Each charge
+now uses the size of the one map that it searches.
+`OrderedLookupBound.summed_size_undercharges` shows why one logarithmic bound
+on a summed size is not sound.
+
+**Limits.** The searches at commit run after `produce(...).await`, and
+parallel participants can commit other transfers before them. The legacy
+linear charge had the same dependence on the size at commit. This dependence
+stays recorded in pgmcp, and this change does not alter it.
+
+**Verification.**
+
+- `registry_lookup_charges_the_search_bound`: the exact charge, at sizes on
+  both sides of the height steps.
+- `std_btree_get_comparisons_within_bound` (DR-78): the bound holds for the
+  real `BTreeMap`.
+
+**Cross-refs.** DR-77, DR-78, DR-79. Leaf
+`ofp-2-cap-c13-incremental-tree-backing`.
