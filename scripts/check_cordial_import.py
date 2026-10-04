@@ -6,7 +6,7 @@ import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CORDIAL = ROOT / "cordial"
+CORDIAL = ROOT / "consensus" / "cordial"
 FORBIDDEN = {
     "casper", "models", "node", "comm", "block-storage", "rholang",
     "rho-pure-eval", "rspace_rust", "rspace_plus_plus", "rspace++",
@@ -47,13 +47,13 @@ def main():
 
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
     members = set(workspace["workspace"]["members"])
-    if "cordial/cordial-por" in members or (CORDIAL / "cordial-por" / "Cargo.toml").exists():
+    if "consensus/cordial/cordial-por" in members or (CORDIAL / "cordial-por" / "Cargo.toml").exists():
         errors.append("PoR integration is deferred and must not be included")
     lockfile = tomllib.loads((ROOT / "Cargo.lock").read_text())
     if any(package["name"] == "cordial-por" for package in lockfile["package"]):
         errors.append("PoR must not remain in the resolved dependency graph")
     for crate in ("cordial-miners-core", "cordial-app-runtime"):
-        if f"cordial/{crate}" not in members:
+        if f"consensus/cordial/{crate}" not in members:
             errors.append(f"Missing workspace member: {crate}")
         manifest = tomllib.loads((CORDIAL / crate / "Cargo.toml").read_text())
         for section in ("dependencies", "dev-dependencies", "build-dependencies"):

@@ -10,8 +10,8 @@ Source revision: `45de8b8ac85238f9b26563ed525c301c6e03a36d`
 
 | Upstream path | Local path |
 | --- | --- |
-| `crates/cordial-miners-core` | `cordial/cordial-miners-core` |
-| `crates/cordial-app-runtime` | `cordial/cordial-app-runtime` |
+| `crates/cordial-miners-core` | `consensus/cordial/cordial-miners-core` |
+| `crates/cordial-app-runtime` | `consensus/cordial/cordial-app-runtime` |
 
 The import retains native source, tests, benchmarks, documentation, and agent instructions.
 The import excludes the prototype node factory and its stub adapters.
@@ -30,7 +30,7 @@ Maintainers must confirm redistribution terms before publishing the imported cod
 - Set the upstream `sha2` and `ed25519-dalek` requirements explicitly.
 - Enable Serde derive explicitly instead of relying on the source workspace.
 - Use the target workspace's pinned Rust toolchain and lockfile.
-- Use default Rust 2024 formatting under `cordial/` to retain upstream source formatting.
+- Use default Rust 2024 formatting under `consensus/cordial/` to retain upstream source formatting.
 
 `upstream-files.json` records original Git blob IDs for all imported files.
 The initial import changed manifests only. The subsequent approved native corrections are
@@ -123,14 +123,14 @@ above. The next full run passed those tests but could not bind sockets in 20 pee
 The final full run passed with local-network permission. No failing run was erased.
 
 Evidence is retained in
-[`cordial-v2-20261002`](../../consensus-network-test.dzTsey/evidence/cordial-v2-20261002/):
+[`cordial-v2-20261002`](../../../consensus-network-test.dzTsey/evidence/cordial-v2-20261002/):
 `results.json` records the initial run; `core-retry.json` records the sandbox-limited retry;
 `core-network-approved.json` and `core-network-approved.log` record the complete green core run.
 PoR, application, readiness, and trace logs are alongside them.
 
 The Part A release-node binary is unchanged. Its latest official network run remains
 122 passed and two resource-guard errors, not full network acceptance. See
-[the Part A report](../docs/plans/consensus-runtime-part-a.md).
+[the Part A report](../../docs/plans/consensus-runtime-part-a.md).
 
 These results complete this native regression check, not Part B or production qualification.
 
@@ -155,7 +155,7 @@ The consensus API crate compiles but contains no independent tests.
 
 The first combined run stopped when the sandbox denied socket creation in 13 native node tests.
 The full rerun passed after local-network permission was granted.
-All logs remain in [`cordial-profile-20261002`](../../consensus-network-test.dzTsey/evidence/cordial-profile-20261002/).
+All logs remain in [`cordial-profile-20261002`](../../../consensus-network-test.dzTsey/evidence/cordial-profile-20261002/).
 `suites-final.log` records another complete passing run after the pre-queue packet-limit correction.
 `results.json` records the command, counts, revisions, binary hash, and remaining gates.
 The CI matrix now includes all four Cordial crates and checks imported source provenance.
@@ -189,7 +189,7 @@ It verifies rollback of the receipt, deploy index, and execution cursor, includi
 The Casper regression includes real deploy, proposal, finalization, and recovery.
 
 The first native run encountered 13 sandbox socket denials. The complete rerun passed with local-network permission.
-Logs remain in [`cordial-no-por-execution-20261002`](../../consensus-network-test.dzTsey/evidence/cordial-no-por-execution-20261002/).
+Logs remain in [`cordial-no-por-execution-20261002`](../../../consensus-network-test.dzTsey/evidence/cordial-no-por-execution-20261002/).
 `native-suites.log` preserves the denied run. `native-suites-network-approved.log` and `rholang.log` record the passing suites.
 `execution-journal-final.log` records the additional map-exhaustion test and repeats the two earlier journal tests.
 `casper-regression.log` records all six passing Casper tests. `results.json` lists commands and counts without counting repeated tests twice.

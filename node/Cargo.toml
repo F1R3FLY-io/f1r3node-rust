@@ -18,10 +18,10 @@ doctest = false
 [dependencies]
 heed = { workspace = true }
 bincode = { workspace = true }
-consensus-api = { path = "../consensus-api" }
-consensus-runtime = { path = "../consensus-runtime" }
-cordial-consensus = { path = "../cordial/cordial-consensus" }
-cordial-rholang = { path = "../cordial/cordial-rholang" }
+consensus-api = { path = "../consensus/api" }
+consensus-runtime = { path = "../consensus/runtime" }
+cordial-consensus = { path = "../consensus/cordial/cordial-consensus" }
+cordial-rholang = { path = "../consensus/cordial/cordial-rholang" }
 k256 = { workspace = true }
 fs2 = "0.4"
 models = { path = "../models" }

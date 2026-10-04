@@ -2,12 +2,12 @@
 
 Status: Part A is implemented and committed locally. Part B includes native v2 admission, durable blocklace storage, tau output, proposal, synchronization, and committed Rholang execution.
 The node has a separate Cordial consensus adapter. Full network acceptance and the remaining production gates are not complete.
-See [Part A changes and verification](consensus-runtime-part-a.md) and [the Cordial integration profile](../../cordial/INTEGRATION-PROFILE.md).
+See [Part A changes and verification](consensus-runtime-part-a.md) and [the Cordial integration profile](../../consensus/cordial/INTEGRATION-PROFILE.md).
 
 The user approved fixed membership and Rholang execution after native tau commitment for the first integration.
 PoR is removed from this integration at the user's request. Upstream work and a separate approval are required before it returns.
 Speculative multi-parent execution remains disabled.
-The initial durable adapter lives in `cordial/cordial-consensus` because it has no node or VM dependency.
+The initial durable adapter lives in `consensus/cordial/cordial-consensus` because it has no node or VM dependency.
 The node adapter connects the execution bridge, transport, proposal, and application APIs. Its presence does not establish production readiness.
 
 Prepared: 2026-09-29.
@@ -191,7 +191,7 @@ Exercise validator and read-only configurations. Test failed initialization, ful
 
 **Change:** Add `consensus-api` with lifecycle states, capabilities, neutral packet metadata, request/reply types, and library errors.
 
-**Files:** Root `Cargo.toml`, `Cargo.lock`, `consensus-api/Cargo.toml`, and `consensus-api/src/{lib,error,input,status}.rs`.
+**Files:** Root `Cargo.toml`, `Cargo.lock`, `consensus/api/Cargo.toml`, and `consensus/api/src/{lib,error,input,status}.rs`.
 
 Define size limits, queue-full behavior, request cancellation, and error meaning. Separate unsupported operations from temporary unavailability.
 
@@ -209,7 +209,7 @@ feat(consensus-api): define protocol-neutral lifecycle and command types
 
 **Change:** Add the runtime, handle, task registry, and deterministic test adapter. Supervise task errors, initialization, readiness, and shutdown.
 
-**Files:** `consensus-runtime/`, root manifests, and `consensus-runtime/tests/lifecycle.rs`.
+**Files:** `consensus/runtime/`, root manifests, and `consensus/runtime/tests/lifecycle.rs`.
 
 Register every child task, including tasks created inside helper constructors. Dropping a `JoinHandle` must not leave untracked work running.
 
@@ -350,7 +350,7 @@ The source import and the implemented integration layers are now grouped into lo
 The approved v2 corrections add a content-hash domain, total predecessor ordering, mandatory received-block admission, and nine signed regressions.
 Native approval, finality, and tau implementations remain unchanged.
 The earlier verification run passed 452 core tests and nine application runtime tests, with no ignored doctests.
-See [the source report](../../cordial/SOURCE.md) for historical runs and current verification evidence.
+See [the source report](../../consensus/cordial/SOURCE.md) for historical runs and current verification evidence.
 
 `cordial-consensus` now owns chain-bound packets, durable native admission, pending dependency recovery, persisted tau output, and ingress lifecycle integration.
 The execution journal now stores receipts, state roots, deploy identities, and the next execution index.
@@ -362,7 +362,7 @@ The official Casper result remains 122 passed out of 124, with two resource-guar
 
 **Change:** Bring the reviewed Cordial implementation into the target build with explicit source provenance and one dependency set.
 
-Recommended approach: import the required crates under `cordial/` as maintained workspace members. Record the source revision and retain licenses, native tests, and required assets.
+Recommended approach: import the required crates under `consensus/cordial/` as maintained workspace members. Record the source revision and retain licenses, native tests, and required assets.
 
 Import the core, application runtime, execution/storage bridge, and reusable integration modules. Keep PoR, observer tools, and Casper-compatibility demos outside this integration.
 
@@ -370,7 +370,7 @@ Register the standalone core and application crates first. Register each bridge 
 
 This source import is a proposal for review. A pinned external dependency is an alternative if maintainers retain ownership in the separate repository.
 
-**Files:** Root manifests, `cordial/*/Cargo.toml`, `cordial/SOURCE.md`, imported source/tests, and the core dependency-check script.
+**Files:** Root manifests, `consensus/cordial/*/Cargo.toml`, `consensus/cordial/SOURCE.md`, imported source/tests, and the core dependency-check script.
 
 C9 uses sibling `f1r3node` paths. Adapt them to this workspace. Check `heed` 0.20 versus 0.22, `rand` 0.8 versus 0.9, and the pinned compiler.
 

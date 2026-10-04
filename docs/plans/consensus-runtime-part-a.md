@@ -14,8 +14,8 @@ The codebase-design skill guided this boundary. The shared interface manages lif
 
 | Component | Responsibility | Code |
 | --- | --- | --- |
-| Shared contract | Commands, capabilities, status, opaque identifiers, packet metadata, typed failures | [consensus-api](../../consensus-api/src/lib.rs) |
-| Shared runtime | Bounded queues, request deadlines, readiness, supervision, shutdown | [consensus-runtime](../../consensus-runtime/src/lib.rs) |
+| Shared contract | Commands, capabilities, status, opaque identifiers, packet metadata, typed failures | [consensus-api](../../consensus/api/src/lib.rs) |
+| Shared runtime | Bounded queues, request deadlines, readiness, supervision, shutdown | [consensus-runtime](../../consensus/runtime/src/lib.rs) |
 | Node host | Servers, discovery, transport, process signals | [NodeRuntime](../../node/src/rust/runtime/node_runtime.rs) |
 | Factory | Select the configured consensus adapter | [factory](../../node/src/rust/consensus/factory.rs) |
 | Casper assembly | Construct native stores, execution facilities, engine, queues, and existing API services | [assembly](../../node/src/rust/consensus/casper/assembly.rs) |
@@ -47,7 +47,7 @@ The shared crates have no dependency on Casper, models, Rholang, RSpace, or conc
 
 ## Suggested review order
 
-1. Read `consensus-api/src/lib.rs` and `consensus-runtime/src/lib.rs` for the new boundary.
+1. Read `consensus/api/src/lib.rs` and `consensus/runtime/src/lib.rs` for the new boundary.
 2. Compare the old `runtime/setup.rs` with `consensus/casper/assembly.rs`. Most construction code moved here.
 3. Review `consensus/casper/mod.rs` and the block/proposal worker changes. These contain the task-ownership and shutdown changes.
 4. Review the API compatibility module and the manifest checks.
@@ -225,7 +225,7 @@ not production or WAN deployment evidence.
 ## Review boundaries
 
 Part B now contains the pinned native crates and versioned admission corrections. No Cordial
-production adapter or protocol stub is registered. See [Native admission v2](../../cordial/ADMISSION-V2.md).
+production adapter or protocol stub is registered. See [Native admission v2](../../consensus/cordial/ADMISSION-V2.md).
 
 The local acceptance harness uses controlled transport and invokes HTTP/gRPC service implementations directly. The separate official harness tested real multi-node network paths.
 

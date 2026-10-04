@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-	"cordial/cordial-rholang",
-	"cordial/cordial-consensus",
-	"cordial/cordial-miners-core",
-	"cordial/cordial-app-runtime",
-	"consensus-api",
-	"consensus-runtime",
+	"consensus/cordial/cordial-rholang",
+	"consensus/cordial/cordial-consensus",
+	"consensus/cordial/cordial-miners-core",
+	"consensus/cordial/cordial-app-runtime",
+	"consensus/api",
+	"consensus/runtime",
 	"casper",
 	"rspace++",
 	"rholang",
