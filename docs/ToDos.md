@@ -152,6 +152,35 @@ tasks:
       - "The maintainer chooses the fix before implementation."
       - "The fix passes the replay-throughput profile and a soak run, and the maintainer accepts CLAIM-REPLAY-THROUGHPUT-001."
       - "The branch PR targets dev with a diff that contains only the claim, the profile, the fix, and the cited evidence."
+  - id: TASK-021-6
+    title: "Stop the soak failure-evidence copy from duplicating earlier harness sessions"
+    status: in_progress
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T03:20:00Z
+    blocked_by: []
+    origin: "Soak 37153082817 on master f93b72699 stopped after about 3 hours at the disk hygiene band with 8,047 MB free. The failure-evidence copy in scripts/run-merge-recovery-soak.sh copied every earlier harness session into each failed iteration, so iteration N archived N sessions. The copies were 13.6 GB of the 15 GB output, and the harness log-archive root grew about 200 MB for each iteration."
+    files:
+      - scripts/run-merge-recovery-soak.sh
+      - scripts/bench/test-run-merge-recovery-soak.sh
+    cbc_policy: "scripts/run-merge-recovery-soak.sh is a cbc=mandatory discharged artifact of CLAIM-CASPER-SOAK-001 and is listed in docs/claims/soak-disk-protection.md. The change needs a new evidence package and a maintainer re-acceptance before check-casper-claims passes again."
+    acceptance:
+      - "The failure-evidence copy takes only files newer than the iteration's .started marker, like every other reader of the harness roots."
+      - "Each completed iteration resets the harness data and log-archive roots after its metrics, evidence, and breach checks."
+      - "A driver test scenario with two failed iterations proves that the second iteration's evidence and the harness root do not keep the first session."
+      - "The driver test suite passes on Linux, and the maintainer accepts the new evidence for CLAIM-CASPER-SOAK-001."
+  - id: TASK-021-7
+    title: "Split scripts/run-merge-recovery-soak.sh into sourced modules with identical behavior"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-021-6]
+    branch: refactor/soak-driver-modules
+    pr_policy: "A separate branch and PR after TASK-021-6 lands. Do not combine the refactor with a behavior change."
+    origin: "On 2026-10-04 the user asked to make the 2,084-line soak driver smaller and more maintainable, as a change separate from the disk fix."
+    acceptance:
+      - "The driver keeps the iteration loop and the orchestration. Host and disk protection, evidence and archives, metric extraction and summaries, and the benchmark segment move to sourced modules."
+      - "The existing driver test suite passes without changes to its assertions."
+      - "The new module files are registered as artifacts of CLAIM-CASPER-SOAK-001 and of the soak disk protection claim, and the maintainer accepts the new evidence."
+      - "A later epic decides which parts move into the Rust casper-soak runtime."
 ---
 ```
 

@@ -184,6 +184,20 @@ HARNESS_TELEMETRY_DIRS=(
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
 )
 mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
+
+# The harness keeps one directory per session under data/ and log-archive/ and
+# never removes them. Every reader of these roots filters by the iteration's
+# .started marker, so a completed iteration's sessions are dead weight. Left in
+# place they grew the root by about 200MB per iteration, and the unfiltered
+# failure-evidence copy duplicated all of them into each failed iteration:
+# run 37153082817 reached the disk floor after 15 iterations with 13.6GB of
+# copies. The workflow resets the same two roots after the preflight.
+reset_harness_archives() {
+	local root
+	for root in "${HARNESS_TELEMETRY_DIRS[0]}" "${HARNESS_TELEMETRY_DIRS[1]}"; do
+		[ ! -d "$root" ] || find "$root" -mindepth 1 -delete 2>/dev/null || true
+	done
+}
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
 BENCH_EVERY="${SOAK_BENCH_EVERY:-4}"
 BENCH_DURATION="${SOAK_BENCH_DURATION:-300}"
@@ -1889,10 +1903,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			fi
 			session_bounded "$copy_budget" bash -c '
 				cd "$1" &&
-					find . -type f \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+					find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
 						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
 					tar --null -T - -cf - |
-					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" ||
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -1945,6 +1959,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		sleep 30
 	fi
 	persist_soak_state || exit 2
+	reset_harness_archives
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
