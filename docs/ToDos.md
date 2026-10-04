@@ -369,7 +369,9 @@ tasks:
       - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
-    status: in_progress
+    status: done
+    completed_at: 2026-10-04
+    resolution: "Implemented in 83a41b564 (PR #622). Review package casper-soak-log-budget-guardian-20261004-01 at 6ea45dc8f, accepted by jltatbeach in PR #622 comment 5983133741. The acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 and the ledger records of the driver and the disk fixture carry the new digests."
     claimed_by: claude-session-aa467dea
     claimed_at: 2026-10-04T14:36:28Z
     claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
@@ -1914,7 +1916,9 @@ tasks:
 
   - id: TASK-017-17
     title: "Enforce the node log budgets in the soak guardian"
-    status: in_progress
+    status: done
+    completed_at: 2026-10-04
+    resolution: "See TASK-020-4. Accepted in PR #622 comment 5983133741."
     claimed_by: claude-session-aa467dea
     claimed_at: 2026-10-04T14:36:28Z
     claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
