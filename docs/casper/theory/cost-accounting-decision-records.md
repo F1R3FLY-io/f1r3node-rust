@@ -4554,3 +4554,202 @@ The example tests `canonical_recording_and_journal_round_trip`,
 
 **Cross-refs.** DR-72. Leaves `ofp-2-path-codec-parity`,
 `ofp-2-limit-envelope`, and `ofp-1-baseline-verify-codec`.
+
+## DR-75 — RSpace candidates are ordered by source hash, and only ties are digested
+
+**Status.** Implemented 2026-10-04 for register item I1 of epic 8946 (batch
+B1).
+
+**Terms.**
+
+- A candidate is a stored datum or a stored waiting continuation that an
+  RSpace operation can match.
+- $`h(c)`$ is the source hash of candidate $`c`$: the precomputed
+  `Produce.hash` of a datum or `Consume.hash` of a continuation. It has
+  32 bytes.
+- $`d(c)`$ is the digest of $`c`$: the Blake2b-256 hash of the bincode
+  encoding of the complete candidate.
+- $`i(c)`$ is the index of $`c`$: its position in the store read.
+- A tie run is a maximal run of two or more candidates with equal source hash
+  after the candidates are sorted by $`(h(c), i(c))`$.
+- $`\lvert c \rvert`$ is the encoded size of $`c`$ in bytes.
+
+**Context.** The `dev` branch shuffles the candidates of a channel at random
+(`shuffle_with_index`). Cost accounting needs play and native replay to choose
+the same candidate, so this branch replaced the shuffle with a deterministic
+order.
+
+That order sorted by $`(d(c), i(c))`$. Every produce and every consume
+therefore serialized and hashed every candidate on the channel, including
+complete continuation bodies. System contracts register 8 to 26 methods on one
+channel (ListOps 26, PoS 21, SystemVault 8), so each method call hashed every
+method body again.
+
+The metered native replay used the same order. It inspected and hashed every
+candidate for each operation and charged host work for all of it.
+
+The order changes only which candidate an operation chooses among two or more
+that satisfy the same pattern. It does not need a full digest unless two
+candidates have the same source hash.
+
+![Activity diagram of the canonical candidate order. The candidates of one channel are read and indexed by store position. A list with at most one candidate is returned as read, with no sort and no digest. Otherwise phase one sorts by the pair of source hash and index, and serializes no candidate. A scan over adjacent source hashes splits the sequence into maximal runs of equal source hash. For each run of length at least two, every member is digested with Blake2b-256 over its bincode encoding, and phase two sorts the run by the pair of digest and index. A single candidate stays in place with no digest. The result is the canonical order by source hash, digest, and index, which play, directive replay, and metered native replay all compute. A note explains that Consume.hash omits peeks and the original pattern order, that Produce.hash omits the non-determinism metadata, that an index-only or source-only key would depend on the insertion order, and that metered native replay reserves host work before each allocation, comparison, scan, and digest.](diagrams/canonical-candidate-order.svg)
+
+(*Source: [`diagrams/canonical-candidate-order.puml`](diagrams/canonical-candidate-order.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/canonical-candidate-order.puml`.*)
+
+**Decision.**
+
+1. The canonical candidate order is lexicographic in
+   $`(h(c), d(c), i(c))`$.
+2. Phase one sorts by $`(h(c), i(c))`$. It reads only the precomputed source
+   hashes.
+3. Phase two sorts each tie run by $`(d(c), i(c))`$. A digest is computed only
+   for a member of a tie run.
+4. Play, directive replay, and metered native replay call one function,
+   `candidate_order::canonical_order`. Play and directive replay use the
+   unmetered work implementation. Metered native replay uses
+   `MeteredOrder`, which reserves host work before each allocation,
+   comparison, adjacent-hash scan, and digest.
+5. The legacy $`(d(c), i(c))`$ function stays only as a test oracle. The
+   legacy metered body is commented out with its reason.
+
+The digest tie-break is necessary. `Consume.hash` omits the peeks and the
+original pattern order of a continuation. `Produce.hash` omits
+`is_deterministic`, `output_value`, and `failed`. Two candidates with equal
+source hash can therefore differ. A key of the index alone, or of the source
+hash and index alone, makes the choice depend on the store's insertion order.
+The verification section cites proved counterexamples for both.
+
+**Algorithm (literate form).** The order has three named chunks.
+
+The first chunk indexes the store read and returns short lists at once. A
+list of zero or one candidate needs no work.
+
+```text
+⟨canonical order⟩ ≡
+  entries ← [(c_k, k) | k ∈ 0 .. n − 1]        -- preallocated; k = store index
+  if n ≤ 1: return entries
+  ⟨phase one⟩
+  ⟨phase two⟩
+  return entries
+```
+
+Phase one compares only 32-byte source hashes. It never serializes a
+candidate.
+
+```text
+⟨phase one⟩ ≡
+  sort entries by (h(c), i(c))
+```
+
+Phase two finds the runs with one adjacent comparison per pair. It digests
+and sorts a run only when the run has at least two members.
+
+```text
+⟨phase two⟩ ≡
+  for each maximal run r of entries with equal h:
+    if |r| ≥ 2:
+      for c ∈ r: d(c) ← Blake2b-256(bincode(c))
+      sort r by (d(c), i(c))
+```
+
+**Work.** Let $`n`$ be the number of candidates and let $`\mathcal{T}`$ be
+the set of tie runs. The legacy order and the canonical order perform this
+work:
+
+```math
+W_{\mathrm{legacy}} = \sum_{k=1}^{n} \lvert c_k \rvert + O(n \log n),
+\qquad
+W_{\mathrm{canonical}} = O(n \log n) + \sum_{r \in \mathcal{T}} \Bigl( \sum_{c \in r} \lvert c \rvert + O(\lvert r \rvert \log \lvert r \rvert) \Bigr)
+```
+
+The comparisons in $`O(n \log n)`$ read 32-byte keys. With pairwise distinct
+source hashes, $`\mathcal{T}`$ is empty and no candidate is serialized. When
+every candidate shares one source hash, the canonical order costs what the
+legacy order costs.
+
+**Scope.** This change is cost-accounting work. The deterministic order exists
+only on this branch, for native replay, and `dev` keeps its random shuffle.
+The change touches only that order and its callers.
+
+The choice changes only when two or more candidates satisfy the same pattern.
+It applies to every play execution on this branch, including genesis and
+system deploys, and to native replay for protocol 6, which is not yet
+released. Ordinary replay follows the recorded log and does not sort, so
+historical blocks replay unchanged. Event-identity hashes are unchanged.
+
+A golden value that the order change moves is re-derived from evidence. The
+procedure dumps the COMM events of the old and the new order and finds the
+first difference. It accepts the new value only when that difference is a
+choice among two or more matching candidates whose canonical order differs
+from the legacy digest order. Any other difference is a defect.
+
+**Verification.** `CandidateSourceOrder.v` proves 14 theorems without axioms:
+
+- `canonical_sort_permutation` and `canonical_sort_sorted`: the canonical
+  order is a sorted permutation of its input.
+- `sorted_permutation_unique`: with distinct indices, at most one sorted
+  arrangement exists.
+- `two_phase_is_canonical` and `lazy_two_phase_is_canonical`: the two phases,
+  with or without the tie-run shortcut, give exactly the canonical order.
+- `phase_one_ignores_digests`: phase one reads no digest.
+- `digests_only_for_ties` and `two_phase_digests_only_for_ties`: a candidate
+  is digested only if its source hash occurs at least twice.
+- `distinct_sources_need_no_digest` and
+  `two_phase_distinct_sources_need_no_digest`: with pairwise distinct source
+  hashes, no candidate is digested.
+- `candidate_order_insertion_independent`: the payload order does not depend
+  on the insertion order.
+- `filter_commutes_with_canonical_sort`: a filter before or after the sort
+  selects the same candidates in the same order.
+- `index_only_key_is_insertion_dependent` and
+  `source_only_key_is_insertion_dependent`: the proved counterexamples.
+
+The payload $`(h(c), d(c))`$ stands for the candidate value. The claim that
+the order is a function of the candidate multiset therefore relies on the
+collision resistance of the digest, which the model does not verify.
+
+`NativeCandidateOrder.tla` builds two stores that hold one multiset in
+different insertion orders and consumes from both with arbitrary patterns. TLC
+checks `TypeOK`, `TwoPhaseIsCanonical`, `InsertionIndependent`,
+`PlayReplayAgree`, `DigestsOnlyForTies`, and `FilterCommutes`. The safe
+configuration has 1,343 distinct states and the large configuration has
+13,011. The three negative controls fail as expected:
+
+| Control | Mutation | Violated invariant |
+|---|---|---|
+| `NativeCandidateOrderIndexOnlyUnsafe` | both nodes order by index only | `InsertionIndependent` |
+| `NativeCandidateOrderSourceOnlyUnsafe` | both nodes order by source hash and index | `InsertionIndependent` |
+| `NativeCandidateOrderReplayNoTieBreakUnsafe` | replay omits the digest tie-break | `PlayReplayAgree` |
+
+Property tests extract these results into Rust:
+
+- `canonical_order_equals_reference_with_generated_collisions` compares the
+  order with a reference sort that digests every candidate. Its generator uses
+  a three-value source domain, so tie runs are frequent.
+- `canonical_order_is_insertion_independent`,
+  `filter_then_sort_equals_sort_then_filter`, and
+  `ties_digest_only_run_members` check insertion independence, filter
+  commutation, and the exact digest count.
+- `paid_order_matches_unmetered_canonical_order` checks that metered native
+  replay gives the play order and reserves every allocation first.
+- `twenty_six_distinct_continuations_compute_zero_digests` is the sentinel
+  for a system-contract channel.
+- `shared_order_inspects_only_tie_members_and_preserves_shared_ownership`
+  checks that distinct-source candidates are never inspected.
+- The cut tests `every_order_reservation_cut_rejects_without_unpaid_allocation`
+  and `ordering_accepts_exact_credit_and_rejects_each_smaller_dimension` use a
+  fixture with a tie run, so they also cover digest reservations.
+
+Three directive-replay tests in `rspace++/tests/comm_observer_tests/native_directive.rs`
+predicted the play order with the legacy digest:
+`repeated_channel_bindings_follow_play_order_not_insertion_order`,
+`store_consumes_greedy_guard_veto_without_exhaustive_search`, and
+`store_produce_uses_the_same_guard_veto_loop_as_play`. Their fixtures now sort
+by the canonical key, the source hash and then the digest. The tests keep
+their purpose: replay follows the play order, and a guard veto of the first
+greedy candidate stores the operation without an exhaustive search. Before
+the change, the second test failed, because the canonical order put the
+guard-approved candidate first.
+
+**Cross-refs.** DR-72, DR-74. Leaves `ofp-2-perf-ordering` and
+`ofp-2-cap-root-causes`.

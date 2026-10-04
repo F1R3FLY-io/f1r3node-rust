@@ -497,10 +497,17 @@ async fn repeated_channel_bindings_follow_play_order_not_insertion_order() {
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["first".to_string(), "second".to_string()];
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // values.sort_by_key(|value| {
+    //     Blake2b256Hash::new(
+    //         &bincode::serialize(&Datum::create(&channel, value.clone(),
+    // false)).unwrap(),     )
+    // });
     values.sort_by_key(|value| {
-        Blake2b256Hash::new(
-            &bincode::serialize(&Datum::create(&channel, value.clone(), false)).unwrap(),
-        )
+        let datum = Datum::create(&channel, value.clone(), false);
+        let digest = Blake2b256Hash::new(&bincode::serialize(&datum).expect("datum serializes"));
+        (datum.source.hash, digest)
     });
     for produce in [false, true] {
         let mut expected_order = values.clone();
@@ -718,10 +725,17 @@ async fn store_consumes_greedy_guard_veto_without_exhaustive_search() {
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["one".to_string(), "two".to_string()];
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // values.sort_by_key(|value| {
+    //     Blake2b256Hash::new(
+    //         &bincode::serialize(&Datum::create(&channel, value.clone(),
+    // false)).unwrap(),     )
+    // });
     values.sort_by_key(|value| {
-        Blake2b256Hash::new(
-            &bincode::serialize(&Datum::create(&channel, value.clone(), false)).unwrap(),
-        )
+        let datum = Datum::create(&channel, value.clone(), false);
+        let digest = Blake2b256Hash::new(&bincode::serialize(&datum).expect("datum serializes"));
+        (datum.source.hash, digest)
     });
     let mut stores = InMemoryStoreManager::new();
     let (play, replay) = TestSpace::create_with_replay(
@@ -798,17 +812,31 @@ async fn store_produce_uses_the_same_guard_veto_loop_as_play() {
     use rspace_plus_plus::rspace::internal::WaitingContinuation;
     let channels = vec!["channel".to_string()];
     let mut continuations = vec!["first".to_string(), "second".to_string()];
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // continuations.sort_by_key(|continuation| {
+    //     Blake2b256Hash::new(
+    //         &bincode::serialize(&WaitingContinuation::create(
+    //             &channels,
+    //             &vec![Any],
+    //             continuation,
+    //             false,
+    //             BTreeSet::new(),
+    //         ))
+    //         .unwrap(),
+    //     )
+    // });
     continuations.sort_by_key(|continuation| {
-        Blake2b256Hash::new(
-            &bincode::serialize(&WaitingContinuation::create(
-                &channels,
-                &vec![Any],
-                continuation,
-                false,
-                BTreeSet::new(),
-            ))
-            .unwrap(),
-        )
+        let waiting = WaitingContinuation::create(
+            &channels,
+            &vec![Any],
+            continuation,
+            false,
+            BTreeSet::new(),
+        );
+        let digest =
+            Blake2b256Hash::new(&bincode::serialize(&waiting).expect("continuation serializes"));
+        (waiting.source.hash, digest)
     });
     for reject_all in [false, true] {
         let mut stores = InMemoryStoreManager::new();

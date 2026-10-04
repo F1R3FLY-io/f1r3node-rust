@@ -5,6 +5,8 @@ use shared::rust::clone_backing::CloneBacking;
 use shared::rust::collection_backing::tree_backing;
 
 use super::*;
+use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::native_backing;
 
@@ -30,30 +32,79 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>> {
     Ok(values)
 }
 
-fn sorted<D: Serialize + CloneBacking>(
+// Legacy metered (digest, index) order: it inspected and hashed every candidate
+// on every operation. Disabled by I1 (DR-75); the canonical order below
+// digests only tie runs and matches play's
+// `candidate_order::canonical_candidates`. fn sorted<D: Serialize +
+// CloneBacking>(     values: Vec<D>,
+//     meter: &dyn SourceMeter,
+// ) -> Result<Vec<(D, i32)>> {
+//     if values.len() > i32::MAX as usize {
+//         return Err(RSpaceError::HostWorkRejected);
+//     }
+//     let mut indexed = buffer(values.len(), meter)?;
+//     for (index, value) in values.into_iter().enumerate() {
+//         native_backing::inspect(&value, meter)?;
+//         let digest = native_source::hash(&value, &|operations, scanned,
+// backing| {             meter.reserve(operations, scanned, backing)
+//         })?;
+//         indexed.push((value, index as i32, digest));
+//     }
+//     sort(
+//         &mut indexed,
+//         meter,
+//         |a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)),
+//         |value| Ok(value.2.0.len()),
+//     )?;
+//     let mut result = buffer(indexed.len(), meter)?;
+//     result.extend(indexed.into_iter().map(|(value, index, _)| (value,
+// index)));     Ok(result)
+// }
+
+struct MeteredOrder<'a>(&'a dyn SourceMeter);
+
+impl<D: Serialize + CloneBacking> OrderWork<D> for MeteredOrder<'_> {
+    type Error = RSpaceError;
+
+    fn index_bound(&self, length: usize) -> Result<i32> {
+        i32::try_from(length).map_err(|_| RSpaceError::HostWorkRejected)
+    }
+
+    fn buffer<T>(&self, length: usize) -> Result<Vec<T>> { buffer(length, self.0) }
+
+    fn sort<T>(
+        &self,
+        values: &mut [T],
+        compare: impl Fn(&T, &T) -> Ordering,
+        scanned: impl Fn(&T) -> usize,
+    ) -> Result<()> {
+        sort(values, self.0, compare, |value| Ok(scanned(value)))
+    }
+
+    fn scan(&self, left: &Blake2b256Hash, right: &Blake2b256Hash) -> Result<()> {
+        self.0.reserve(
+            1,
+            left.0
+                .len()
+                .checked_add(right.0.len())
+                .ok_or(RSpaceError::HostWorkRejected)?,
+            0,
+        )
+    }
+
+    fn digest(&self, value: &D) -> Result<Blake2b256Hash> {
+        native_backing::inspect(value, self.0)?;
+        native_source::hash(value, &|operations, scanned, backing| {
+            self.0.reserve(operations, scanned, backing)
+        })
+    }
+}
+
+fn sorted<D: CandidateSource + Serialize + CloneBacking>(
     values: Vec<D>,
     meter: &dyn SourceMeter,
 ) -> Result<Vec<(D, i32)>> {
-    if values.len() > i32::MAX as usize {
-        return Err(RSpaceError::HostWorkRejected);
-    }
-    let mut indexed = buffer(values.len(), meter)?;
-    for (index, value) in values.into_iter().enumerate() {
-        native_backing::inspect(&value, meter)?;
-        let digest = native_source::hash(&value, &|operations, scanned, backing| {
-            meter.reserve(operations, scanned, backing)
-        })?;
-        indexed.push((value, index as i32, digest));
-    }
-    sort(
-        &mut indexed,
-        meter,
-        |a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)),
-        |value| Ok(value.2.0.len()),
-    )?;
-    let mut result = buffer(indexed.len(), meter)?;
-    result.extend(indexed.into_iter().map(|(value, index, _)| (value, index)));
-    Ok(result)
+    canonical_order(values, &MeteredOrder(meter))
 }
 
 fn sort<T>(

@@ -14,6 +14,12 @@ use crate::rspace::metrics_constants::{
 
 type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
 
+// Legacy (digest, index) candidate order. Production now uses the canonical
+// (source hash, digest, index) order in `candidate_order::canonical_candidates`
+// (I1, DR-75), which digests only tie runs. This body stays as the test oracle
+// that `NativeCandidateDigestCache.v` and
+// `hash_once_order_equals_per_comparison_hash_order` cover.
+#[cfg(test)]
 pub(crate) fn deterministic_candidates<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
     if data.len() <= 1 {
         return data.into_iter().map(|datum| (datum, 0)).collect();

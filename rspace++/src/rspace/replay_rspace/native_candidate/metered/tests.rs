@@ -4,6 +4,9 @@ use proptest::prelude::*;
 
 use super::super::tests::Logical;
 use super::*;
+use crate::rspace::candidate_order::{
+    candidate_strategy, canonical_candidates, datum_with_source, encoded_order,
+};
 use crate::rspace::history::native_reader::measure_allocations;
 use crate::rspace::rspace::RSpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -258,14 +261,29 @@ async fn counter_preparation_prepays_nested_source_cleanup() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
+    // Disabled by I1 (DR-75): the metered order no longer equals the legacy
+    // (digest, index) order, and `Vec<u8>` has no source hash. Replaced by
+    // `paid_order_matches_unmetered_canonical_order`.
+    // #[test]
+    // fn paid_order_matches_legacy_hash_and_original_index(
+    //     values in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..256), 0..64),
+    // ) {
+    //     let expected = deterministic_candidates(values.clone());
+    //     let meter = Meter::default();
+    //     let (actual, bytes) = measure_allocations(|| sorted(values, &meter));
+    //     prop_assert_eq!(actual.unwrap(), expected);
+    //     prop_assert!(bytes <= meter.used.get()[2], "requested {}, reserved {}", bytes, meter.used.get()[2]);
+    // }
+
+    /// Metered native replay and play produce the same canonical order
+    /// (`CandidateSourceOrder.lazy_two_phase_is_canonical`), and every metered
+    /// allocation was reserved first.
     #[test]
-    fn paid_order_matches_legacy_hash_and_original_index(
-        values in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..256), 0..64),
-    ) {
-        let expected = deterministic_candidates(values.clone());
+    fn paid_order_matches_unmetered_canonical_order(values in candidate_strategy()) {
+        let expected = canonical_candidates(values.clone());
         let meter = Meter::default();
         let (actual, bytes) = measure_allocations(|| sorted(values, &meter));
-        prop_assert_eq!(actual.unwrap(), expected);
+        prop_assert_eq!(encoded_order(&actual.unwrap()), encoded_order(&expected));
         prop_assert!(bytes <= meter.used.get()[2], "requested {}, reserved {}", bytes, meter.used.get()[2]);
     }
 
@@ -323,7 +341,15 @@ proptest! {
 
 #[test]
 fn every_order_reservation_cut_rejects_without_unpaid_allocation() {
-    let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    // I1 (DR-75): the metered order needs source hashes; the fixture keeps a
+    // tie run (source 1) so the cut also covers digest reservations.
+    // let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    let values = vec![
+        datum_with_source(vec![7u8; 2048], 1, false),
+        datum_with_source(vec![3u8; 512], 2, false),
+        datum_with_source(vec![7u8; 2048], 1, true),
+        datum_with_source(Vec::new(), 0, false),
+    ];
     let baseline = Meter::default();
     sorted(values.clone(), &baseline).unwrap();
     for reject in 0..baseline.calls.get() {
@@ -345,7 +371,15 @@ fn every_order_reservation_cut_rejects_without_unpaid_allocation() {
 
 #[test]
 fn ordering_accepts_exact_credit_and_rejects_each_smaller_dimension() {
-    let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    // I1 (DR-75): the metered order needs source hashes; the fixture keeps a
+    // tie run (source 1) so the cut also covers digest reservations.
+    // let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    let values = vec![
+        datum_with_source(vec![7u8; 2048], 1, false),
+        datum_with_source(vec![3u8; 512], 2, false),
+        datum_with_source(vec![7u8; 2048], 1, true),
+        datum_with_source(Vec::new(), 0, false),
+    ];
     let baseline = Meter::default();
     let expected = sorted(values.clone(), &baseline).unwrap();
     let exact = Meter {
@@ -368,17 +402,47 @@ fn ordering_accepts_exact_credit_and_rejects_each_smaller_dimension() {
     }
 }
 
+// Disabled by I1 (DR-75): the legacy order inspected every payload, and
+// `Arc<String>` has no source hash. Replaced by
+// `shared_order_inspects_only_tie_members_and_preserves_shared_ownership`.
+// #[test]
+// fn shared_payload_order_inspects_the_payload_and_preserves_shared_ownership()
+// {     let values: Vec<Arc<String>> =
+//         vec![Arc::new("large".repeat(4096)), Arc::new("other".repeat(1024))];
+//     let expected = deterministic_candidates(values.clone());
+//     let meter = Meter::default();
+//     let input = values.clone();
+//     let (actual, bytes) = measure_allocations(|| sorted(input, &meter));
+//     let actual = actual.unwrap();
+//     assert_eq!(actual, expected);
+//     assert!(meter.used.get()[1] > values.iter().map(|value|
+// value.len()).sum());     assert!(bytes <= meter.used.get()[2]);
+//     for (value, index) in actual {
+//         assert!(Arc::ptr_eq(&value, &values[index as usize]));
+//     }
+// }
+
+/// `CandidateSourceOrder.digests_only_for_ties`: candidates with distinct
+/// source hashes are never inspected or digested; tie-run members are.
 #[test]
-fn shared_payload_order_inspects_the_payload_and_preserves_shared_ownership() {
-    let values: Vec<Arc<String>> =
-        vec![Arc::new("large".repeat(4096)), Arc::new("other".repeat(1024))];
-    let expected = deterministic_candidates(values.clone());
+fn shared_order_inspects_only_tie_members_and_preserves_shared_ownership() {
+    let distinct = "large".repeat(1 << 18);
+    let tie = "tie".repeat(1024);
+    let values: Vec<Arc<Datum<String>>> = vec![
+        Arc::new(datum_with_source(distinct.clone(), 9, false)),
+        Arc::new(datum_with_source(tie.clone(), 4, false)),
+        Arc::new(datum_with_source(distinct.clone(), 8, false)),
+        Arc::new(datum_with_source(tie.clone(), 4, true)),
+    ];
+    let expected = canonical_candidates(values.clone());
     let meter = Meter::default();
     let input = values.clone();
     let (actual, bytes) = measure_allocations(|| sorted(input, &meter));
     let actual = actual.unwrap();
-    assert_eq!(actual, expected);
-    assert!(meter.used.get()[1] > values.iter().map(|value| value.len()).sum());
+    assert_eq!(encoded_order(&actual), encoded_order(&expected));
+    let scanned = meter.used.get()[1];
+    assert!(scanned >= 2 * tie.len(), "tie members are digested: scanned {scanned}");
+    assert!(scanned < distinct.len(), "distinct sources are not inspected: scanned {scanned}");
     assert!(bytes <= meter.used.get()[2]);
     for (value, index) in actual {
         assert!(Arc::ptr_eq(&value, &values[index as usize]));
