@@ -952,9 +952,10 @@ jobs:
             --retry-wait-time 5
             --timeout 45
             --accept 200..=299,403,429,503,504
-            --format json
             './**/*.md'
+          format: json
           output: /tmp/link-sweep.json
+          jobSummary: false
           fail: false
 
       - name: Summarize sweep result
@@ -964,7 +965,7 @@ jobs:
         run: |
           broken=0
           if [ -s /tmp/link-sweep.json ]; then
-            broken="$(jq -r '[.fail_map[]? | length] | add // 0' /tmp/link-sweep.json)"
+            broken="$(jq -r '[(.error_map // .fail_map // {})[] | length] | add // 0' /tmp/link-sweep.json)"
           fi
           jq -n \
             --argjson broken "$broken" \
