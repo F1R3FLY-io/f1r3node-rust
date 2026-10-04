@@ -386,7 +386,7 @@ tasks:
 ---
 ```
 
-**Current state:** Created on 2026-09-23 after the disk incident. No branch exists yet. The fix branch is created from dev in the single checkout when the observation branch has no uncommitted work.
+**Current state:** TASK-020-1, TASK-020-2, and TASK-020-3 merged to dev through PR #451 on 2026-10-03 and reached master with the soak stack. The epic stays open for TASK-020-4: its mirror TASK-017-17 has the design (`docs/casper/design/soak-log-budget-guardian.md`), but the soak guardian does not yet sample the node log directory or the container json-file size, and CLAIM-SOAK-001 does not yet record the log cap as enforced. Also open: the TASK-020-1 verification status and the system-integration main promotion revision of TASK-020-3.
 
 ---
 
