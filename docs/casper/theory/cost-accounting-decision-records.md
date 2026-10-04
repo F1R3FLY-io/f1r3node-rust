@@ -4974,3 +4974,200 @@ extract these results:
 
 **Cross-refs.** DR-76. Leaves `ofp-2-cap-c13-incremental-tree-backing` and
 `ofp-2-cap-root-causes`.
+
+## DR-78 — Produce-counter lookups charge the B-tree search bound
+
+**Status.** Implemented 2026-10-04 for cap root cause C3 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- A *B-tree with the node bounds of the standard `BTreeMap`* has these
+  properties:
+  - every node holds at most 11 keys.
+  - every node except the root holds at least 5 keys.
+  - a nonempty root holds at least 1 key.
+  - an internal node with $`k`$ keys has $`k + 1`$ children.
+  - all leaves have the same depth.
+- The *height* of a tree is its number of levels. A single leaf has
+  height 1.
+- $`h(n)`$ is the *height bound* of a map with $`n`$ entries:
+  $`h(0) = 0`$, and for $`n \geq 1`$, $`h(n)`$ is the largest $`h`$ with
+  $`2 \cdot 6^{h-1} - 1 \leq n`$. Equivalently,
+  $`h(n) = \lfloor \log_6 \frac{n+1}{2} \rfloor + 1`$
+  (`tree_height_bound`).
+- $`c(n) = 11 \cdot h(n)`$ is the *search bound* (`tree_search_bound`).
+- A *lookup* is one search of the map for one key. `get`, `contains_key` and
+  the position search of `insert` are lookups.
+- A comparison of two `Produce` keys reads only their 32-byte `hash` fields
+  (`impl Ord for Produce` in `rspace++/src/rspace/trace/event.rs`).
+
+**Context.** Metered native replay keeps the produce-counter map
+(`ReplayRSpace::produce_counter`, a `BTreeMap<Produce, i32>`) for the whole
+replay. Each COMM also builds a local `times_repeated` map. The legacy charge
+of one lookup walked every key of the map only to charge it:
+
+| Site | Legacy charge for a map with $`n`$ entries |
+| --- | --- |
+| `prepare_metered_produce_counter` (read and insert) | $`64 (n + 1) + 2n`$ operations and $`64 (n + 1) + 64n`$ bytes |
+| `metered_produce_count` (read) | $`32 (n + 1) + n`$ operations and $`32 (n + 1) + 32n`$ bytes |
+| `metered_comm` (`times_repeated` lookup, then insert) | the `metered_produce_count` charge for each lookup |
+
+One lookup thus charged $`\Theta(n)`$ work. A replay that produces on $`n`$
+distinct sources charged $`\Theta(n^2)`$ work in total. A `BTreeMap` search
+makes $`O(\log n)`$ comparisons.
+
+**Decision.**
+
+1. `shared::rust::collection_backing` gets two functions:
+   `tree_height_bound(n)` returns $`h(n)`$, and `tree_search_bound(n)`
+   returns $`c(n)`$ (saturating).
+2. A new helper `reserve_ordered_lookup(entries, hash_bytes, meter)` in
+   `metered.rs` reserves $`c(n)`$ operations,
+   $`2 \cdot \mathit{hash\_bytes} \cdot c(n)`$ scanned bytes, and no
+   backing. That is one operation and two hash reads for each comparison.
+   The metered comparator (`MeteredOrder::scan` and `sort`) uses the same
+   convention.
+3. Five lookups in three functions call the helper with the current map
+   size:
+   - two in `prepare_metered_produce_counter`: the read, and the insert that
+     `publish` performs.
+   - one in `metered_produce_count`.
+   - two in `metered_comm`: the `times_repeated` lookup, and the insert of a
+     new source.
+4. The legacy lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).** $`p`$ holds $`6^h`$, so $`2p - 1`$ is the
+smallest size of a tree of height $`h + 1`$.
+
+```text
+⟨height bound⟩(n) ≡
+  if n = 0 then return 0
+  h ← 1; p ← 6                         -- invariant: p = 6^h
+  loop
+    m ← 2·p − 1                        -- least size of a tree of height h + 1
+    if m overflows or m > n then return h
+    h ← h + 1
+    if 6·p overflows then return h     -- then 2·6·p − 1 > n as well
+    p ← 6·p
+
+⟨ordered lookup charge⟩(n, hash_bytes) ≡
+  c ← 11 · ⟨height bound⟩(n)           -- saturating
+  reserve(operations = c, scanned = 2 · hash_bytes · c, backing = 0)
+```
+
+![Diagram of the smallest standard BTreeMap of height 3. The root holds 1 key and 2 children. Each of the two internal nodes holds 5 keys and 6 children. Each of the 12 leaves holds 5 keys, so the tree holds 71 entries, which is 2 times 6 squared minus 1. A highlighted search path goes from the root through one internal node to one leaf, with at most 11 comparisons in each node. A first panel states the least size of a tree of height h and the height bound h of n. A second panel states the charge of one lookup: c of n equals 11 times h of n comparisons, reserved as c of n operations and 64 times c of n scanned bytes with no backing, so 2,000 entries give height 4 and 44 comparisons. A third panel states the legacy charge: one step for each entry, 66,032 operations for one lookup at 2,000 entries, and a quadratic total for a replay.](diagrams/btree-search-bound.svg)
+
+(*Source: [`diagrams/btree-search-bound.puml`](diagrams/btree-search-bound.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/btree-search-bound.puml`.*)
+
+**Soundness.** The argument has four steps.
+
+1. *Size lower bound.* By induction on the height, a non-root subtree of
+   height $`h \geq 1`$ holds at least $`6^h - 1`$ entries:
+   - a leaf holds at least $`5 = 6 - 1`$.
+   - an internal node holds at least 5 keys and 6 subtrees, so it holds at
+     least $`5 + 6 (6^{h-1} - 1) = 6^h - 1`$.
+
+   A root of height $`h + 1 \geq 2`$ holds at least 1 key and 2 subtrees, so
+   it holds at least $`1 + 2 (6^h - 1) = 2 \cdot 6^h - 1`$ entries. A root of
+   height 1 holds at least $`1 = 2 \cdot 6^0 - 1`$ entry.
+2. *Height bound.* By step 1, a map with $`n`$ entries has height at most
+   $`h(n)`$.
+3. *Search bound.* A search compares the target with the keys of one node
+   from the left. It stops at the first key that is not smaller than the
+   target, and then it stops or descends into one child. So each level costs
+   at most 11 comparisons, and one search costs at most
+   $`11 \cdot \mathrm{height} \leq c(n)`$.
+4. *Charged size.* The charge of each lookup uses the map size at the time
+   of the search:
+   - `prepare_metered_produce_counter` holds the produce-counter lock from
+     the charge until `publish` inserts.
+   - `metered_produce_count` holds the lock for its read.
+   - `times_repeated` is local to one COMM.
+
+An insert performs one search and then splits nodes without key
+comparisons. DR-77 charges the backing of the insert.
+
+**Determinism.** The charge uses the live map size, as the legacy charge
+did. The [host-work budget](host-work-budget.md) requires that local
+scheduling cannot change the cumulative use. Under native execution,
+`insert_authority` adds the common footprint key `[2, 0]` to every intent
+(`deterministic_reduction.rs`). Each frontier is thus one conflict
+component, and its operations run one at a time in canonical causal order.
+The produce-counter size at each lookup is therefore a function of the
+canonical execution. The `times_repeated` map is local to one COMM.
+
+**Limits.**
+
+- For a map with at most 21 entries, the scanned-byte charge can be larger
+  than the legacy charge: by at most 672 bytes for one lookup, and by at most
+  1,344 bytes for one preparation. The cause is that the bound charges 11
+  comparisons for each level, also when a node holds fewer keys. The
+  operation charge is always smaller than the legacy charge.
+- The model does not verify the Rust `BTreeMap` implementation. The property
+  tests count the comparisons of the real `BTreeMap`.
+
+**Out of scope.** The runtime budget's `reserve_registry_lookup` in
+`accounting/mod.rs` keeps its linear charge.
+
+- Several of its call sites pass the sum of the sizes of two or three maps
+  and pay for one search in each map. One example is the stack-birth conflict
+  check.
+- Some call sites pay in advance for the searches of the stack-transfer
+  commit. The commit runs after an `await` and can interleave with other
+  commits.
+
+A linear charge on the sum covers those searches. One B-tree bound on the sum
+does not: two searches in two maps of 1,000 entries can make 88 comparisons,
+but $`c(2001) = 44`$. A sound logarithmic charge for those sites needs one
+charge for each searched map and a size bound that holds at the commit. The
+approved C3 item does not include that change. In the gateway-block probe,
+`reserve_registry_lookup` was about 2% of the proposer's
+`VerificationBytes`.
+
+**Scope.** This change is cost-accounting work. The metered native replay and
+its produce-counter charges exist only on this branch. The change alters
+host-work charges of protocol 6, which is not yet released. It changes no
+evidence encoding and no observable value. The produce counts, the COMM
+events, and the candidate order are unchanged.
+
+**Verification.** `OrderedLookupBound.v` proves five results without axioms:
+
+- `btree_size_lower_bound`: step 1 above, for subtrees and for roots.
+- `btree_search_comparisons`: a left-to-right scan search in a well-formed
+  tree of height $`h`$ makes at most $`11h`$ comparisons.
+- `btree_height_bound`: a well-formed root of height $`h`$ with $`n`$ entries
+  has $`h \leq h(n)`$, where the model's `height_bound` computes $`h(n)`$ as
+  the Rust loop does.
+- `search_within_size_bound`: one search makes at most $`11 \cdot h(n)`$
+  comparisons.
+- `linear_charge_example`: $`h(2000) = 4`$.
+
+Property tests extract these results:
+
+- `std_btree_get_comparisons_within_bound` in
+  `shared::rust::collection_backing` (256 cases). Each case builds a map of
+  up to $`2^{16}`$ entries. It uses one of five construction paths:
+  - single inserts in random order.
+  - single inserts in ascending order.
+  - single inserts in descending order.
+  - the bulk build of `collect`.
+  - random inserts followed by removals.
+
+  Each case probes present and absent keys. A counting key type counts the
+  comparisons of the real `BTreeMap`.
+- `std_btree_get_comparisons_within_bound_at_the_largest_size`: $`2^{16}`$
+  ascending inserts, with every key probed.
+- `tree_height_bound_changes_at_the_minimum_root_sizes` and
+  `linear_lookup_charge_exceeds_the_bound` ($`h(2000) = 4`$,
+  $`c(2000) = 44`$).
+- `counter_charge_is_logarithmic` in `metered/tests.rs`. It checks map sizes
+  from 0 to 2,000, on both sides of each height step. At each size, the count
+  charge equals the bound. The preparation charge equals two bounds plus the
+  copy and the tree growth.
+
+The existing reservation-cut tests of the produce counter still pass. They
+show that every reservation comes before the state changes.
+
+**Cross-refs.** DR-77. Leaves `ofp-2-cap-c3-logarithmic-lookup-charge` and
+`ofp-2-cap-root-causes`.

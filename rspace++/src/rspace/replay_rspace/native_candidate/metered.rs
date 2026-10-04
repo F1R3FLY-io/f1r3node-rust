@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::mem::size_of;
 
 use shared::rust::clone_backing::CloneBacking;
-use shared::rust::collection_backing::{tree_backing, tree_growth};
+use shared::rust::collection_backing::{tree_backing, tree_growth, tree_search_bound};
 
 use super::*;
 use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
@@ -60,6 +60,26 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>> {
 //     result.extend(indexed.into_iter().map(|(value, index, _)| (value,
 // index)));     Ok(result)
 // }
+
+/// One `BTreeMap` lookup among `entries` produce keys: at most
+/// `tree_search_bound(entries)` comparisons, each reading two hashes of
+/// `hash_bytes` bytes (C3, DR-78;
+/// `OrderedLookupBound.search_within_size_bound`).
+fn reserve_ordered_lookup(
+    entries: usize,
+    hash_bytes: usize,
+    meter: &dyn SourceMeter,
+) -> Result<()> {
+    let comparisons = tree_search_bound(entries);
+    meter.reserve(
+        comparisons,
+        hash_bytes
+            .checked_mul(2)
+            .and_then(|pair| pair.checked_mul(comparisons))
+            .ok_or(RSpaceError::HostWorkRejected)?,
+        0,
+    )
+}
 
 struct MeteredOrder<'a>(&'a dyn SourceMeter);
 
@@ -193,37 +213,42 @@ where
             });
         }
         let counters = self.produce_counter.lock().expect("produce counter lock");
-        let entries = counters
-            .len()
-            .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let comparisons = entries
-            .checked_mul(2)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(
-            comparisons
-                .checked_mul(32)
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            source
-                .hash
-                .0
-                .len()
-                .checked_mul(comparisons)
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-        )?;
-        for existing in counters.keys() {
-            meter.reserve(
-                2,
-                existing
-                    .hash
-                    .0
-                    .len()
-                    .checked_mul(2)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
-        }
+        // Disabled by C3 (DR-78): this charged two comparisons per entry and
+        // walked every key only to charge it, while the lookup and the insert
+        // below are two B-tree searches.
+        // let entries = counters
+        //     .len()
+        //     .checked_add(1)
+        //     .ok_or(RSpaceError::HostWorkRejected)?;
+        // let comparisons = entries
+        //     .checked_mul(2)
+        //     .ok_or(RSpaceError::HostWorkRejected)?;
+        // meter.reserve(
+        //     comparisons
+        //         .checked_mul(32)
+        //         .ok_or(RSpaceError::HostWorkRejected)?,
+        //     source
+        //         .hash
+        //         .0
+        //         .len()
+        //         .checked_mul(comparisons)
+        //         .ok_or(RSpaceError::HostWorkRejected)?,
+        //     0,
+        // )?;
+        // for existing in counters.keys() {
+        //     meter.reserve(
+        //         2,
+        //         existing
+        //             .hash
+        //             .0
+        //             .len()
+        //             .checked_mul(2)
+        //             .ok_or(RSpaceError::HostWorkRejected)?,
+        //         0,
+        //     )?;
+        // }
+        reserve_ordered_lookup(counters.len(), source.hash.0.len(), meter)?;
+        reserve_ordered_lookup(counters.len(), source.hash.0.len(), meter)?;
         let next = counters
             .get(source)
             .copied()
@@ -247,23 +272,27 @@ where
 
     fn metered_produce_count(&self, source: &Produce, meter: &dyn SourceMeter) -> Result<i32> {
         let counters = self.produce_counter.lock().expect("produce counter lock");
-        let steps = counters
-            .len()
-            .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(
-            steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
-            source
-                .hash
-                .0
-                .len()
-                .checked_mul(steps)
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-        )?;
-        for key in counters.keys() {
-            meter.reserve(1, key.hash.0.len(), 0)?;
-        }
+        // Disabled by C3 (DR-78): this charged one comparison per entry and
+        // walked every key only to charge it, while the lookup below is one
+        // B-tree search.
+        // let steps = counters
+        //     .len()
+        //     .checked_add(1)
+        //     .ok_or(RSpaceError::HostWorkRejected)?;
+        // meter.reserve(
+        //     steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
+        //     source
+        //         .hash
+        //         .0
+        //         .len()
+        //         .checked_mul(steps)
+        //         .ok_or(RSpaceError::HostWorkRejected)?,
+        //     0,
+        // )?;
+        // for key in counters.keys() {
+        //     meter.reserve(1, key.hash.0.len(), 0)?;
+        // }
+        reserve_ordered_lookup(counters.len(), source.hash.0.len(), meter)?;
         Ok(*counters.get(source).unwrap_or(&0))
     }
 
@@ -514,39 +543,43 @@ where
             } else {
                 count
             };
-            let steps = times_repeated
-                .len()
-                .checked_add(1)
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            meter.reserve(
-                steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
-                source
-                    .hash
-                    .0
-                    .len()
-                    .checked_mul(steps)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
-            for key in times_repeated.keys() {
-                meter.reserve(1, key.hash.0.len(), 0)?;
-            }
+            // Disabled by C3 (DR-78): these charges walked every key of the
+            // map twice only to charge it, for one lookup and one insert.
+            // let steps = times_repeated
+            //     .len()
+            //     .checked_add(1)
+            //     .ok_or(RSpaceError::HostWorkRejected)?;
+            // meter.reserve(
+            //     steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
+            //     source
+            //         .hash
+            //         .0
+            //         .len()
+            //         .checked_mul(steps)
+            //         .ok_or(RSpaceError::HostWorkRejected)?,
+            //     0,
+            // )?;
+            // for key in times_repeated.keys() {
+            //     meter.reserve(1, key.hash.0.len(), 0)?;
+            // }
+            reserve_ordered_lookup(times_repeated.len(), source.hash.0.len(), meter)?;
             if times_repeated.contains_key(source) {
                 continue;
             }
-            meter.reserve(
-                steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
-                source
-                    .hash
-                    .0
-                    .len()
-                    .checked_mul(steps)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
-            for key in times_repeated.keys() {
-                meter.reserve(1, key.hash.0.len(), 0)?;
-            }
+            // meter.reserve(
+            //     steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
+            //     source
+            //         .hash
+            //         .0
+            //         .len()
+            //         .checked_mul(steps)
+            //         .ok_or(RSpaceError::HostWorkRejected)?,
+            //     0,
+            // )?;
+            // for key in times_repeated.keys() {
+            //     meter.reserve(1, key.hash.0.len(), 0)?;
+            // }
+            reserve_ordered_lookup(times_repeated.len(), source.hash.0.len(), meter)?;
             native_backing::reserve_copy_and_cleanup(source, meter)?;
             times_repeated.insert(source.clone(), count);
         }

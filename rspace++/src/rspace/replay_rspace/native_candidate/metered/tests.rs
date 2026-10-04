@@ -258,6 +258,69 @@ async fn counter_preparation_prepays_nested_source_cleanup() {
     assert!(space.produce_counter.lock().unwrap().is_empty());
 }
 
+/// C3 (DR-78; `OrderedLookupBound.search_within_size_bound`): a
+/// produce-counter lookup charges `tree_search_bound(len)` comparisons, and
+/// each comparison reads two hashes. The charge grows with the height of the
+/// map, not with its size. Preparation charges two lookups (the read and the
+/// insert of `publish`), the source copy and cleanup, and the tree growth.
+#[tokio::test]
+async fn counter_charge_is_logarithmic() {
+    let space = space().await;
+    let probe = Produce::create(&0u8, &0u8, false);
+    let hash_bytes = probe.hash.0.len();
+    let lookup = |entries: usize| {
+        let bound = tree_search_bound(entries);
+        [bound, bound * 2 * hash_bytes, 0]
+    };
+    let copy = Meter::default();
+    native_backing::reserve_copy_and_cleanup(&probe, &copy).expect("copy charge");
+    let copy = copy.used.get();
+    for size in [0_usize, 1, 10, 11, 70, 71, 430, 431, 2_000] {
+        {
+            let mut counters = space.produce_counter.lock().expect("produce counter lock");
+            counters.clear();
+            for index in 0..size {
+                let channel = u8::try_from(index / 256 + 1).expect("channel fits in u8");
+                let value = u8::try_from(index % 256).expect("value fits in u8");
+                counters.insert(Produce::create(&channel, &value, false), 1);
+            }
+            assert_eq!(counters.len(), size);
+        }
+        let count = Meter::default();
+        assert_eq!(space.metered_produce_count(&probe, &count).expect("count"), 0);
+        assert_eq!(count.used.get(), lookup(size), "count charge at {size} entries");
+
+        let prepare = Meter::default();
+        drop(
+            space
+                .prepare_metered_produce_counter(&probe, false, &prepare)
+                .expect("prepare"),
+        );
+        let (growth_operations, growth_bytes) =
+            tree_growth::<Produce, i32>(size, 1).expect("tree growth");
+        assert_eq!(
+            prepare.used.get(),
+            [
+                2 * lookup(size)[0] + copy[0] + growth_operations,
+                2 * lookup(size)[1] + copy[1] + growth_bytes,
+                copy[2] + growth_bytes,
+            ],
+            "preparation charge at {size} entries"
+        );
+        assert_eq!(
+            space
+                .produce_counter
+                .lock()
+                .expect("produce counter lock")
+                .len(),
+            size
+        );
+    }
+    // The legacy count charge at 2,000 entries was 2,001 * 32 + 2,000
+    // operations and 4,001 hash reads.
+    assert_eq!(lookup(2_000), [44, 44 * 2 * hash_bytes, 0]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
