@@ -499,12 +499,22 @@ jobs:
           - block-storage
           - comm
           - graphz
+          - consensus-api
+          - consensus-runtime
+          - cordial-miners-core
+          - cordial-app-runtime
+          - cordial-consensus
+          - cordial-rholang
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
           persist-credentials: false
+
+      - name: Verify Cordial source provenance
+        if: matrix.crate == 'cordial-miners-core'
+        run: python3 scripts/check_cordial_import.py
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
