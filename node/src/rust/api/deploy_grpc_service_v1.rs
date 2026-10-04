@@ -1062,7 +1062,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
             Err(_) => -1,
         };
 
-        let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
@@ -1093,7 +1092,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             native_token_symbol: self.native_token_symbol.clone(),
             native_token_decimals: self.native_token_decimals,
             last_finalized_block_number: lfb_number,
-            is_validator,
+            is_validator: !self.is_node_read_only,
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
