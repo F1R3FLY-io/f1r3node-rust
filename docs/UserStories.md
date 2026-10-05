@@ -64,9 +64,9 @@ This document captures user stories that drive feature development. User stories
 
 > As a **platform architect**, I want **each shard to select its state machine replication mechanism (CBC Casper, Cordial Miners, Casanova, or the RGB peer-clique sidecar with Bitcoin anchoring) behind one replication boundary** so that **a new mechanism plugs in without changes to node wiring, APIs, transport, or Rholang execution**.
 
-**Implemented in:** Planned
+**Implemented in:** EPIC-022
 
-**Status:** Planned
+**Status:** In Progress
 
 **Acceptance Criteria:**
 - [ ] A design document extends docs/artifacts/f1r3fly-consensus-neutral-sm.md. It defines the boundary, maps the needs of all four mechanisms, and resolves the OrderingMedium question (section 12). Maintainers approve it before code.
