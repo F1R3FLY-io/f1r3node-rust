@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "status": "bounded-checks-passed-awaiting-binding-review",
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-008"
+  ],
+  "phase": "pre_pr216_merge",
+  "base_commit": "5cf96a74076e940474f143c21a4ca727dac76101",
+  "working_tree": true,
+  "source_digests": {
+    ".github/workflows/casper-carrier-index.yml": "fbf03950c448d1872ac2cdc59772aadf1c9b96f657cda736dd1e9d4a9d2da97d",
+    "scripts/casper-soak/check-carrier-index.sh": "7312a341117291d6affe23c42239a4f3968d38524c2c340c9ef8d768b5914e00",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs": "012a3c217cbc39ddf2d31d4236e46f85272af2d352ece9d52e96b831e131617c",
+    "scripts/casper-soak/src/profiles/carrier_index.rs": "997181af0574612162ad8167f1989c86d49d005e54a77a1da9f0a1bdb0409d57",
+    "scripts/casper-soak/tests/carrier_index.rs": "e2dcbd5c5cd457b01234586b2b5e806a4fc73727aaba8c94d5b5f63d39c9cdc9",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-carrier-index.md": "bad35868513365e7702f57899a67ef40fcec5e8471c1cfe4ec2265291897aec3",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/README.md": "9756c9b74fd54c73f7cf5e0487efe4cd67efe6fea96ce93a47364e2bdef6df77",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla": "db2e55be76a8ba4221282a47695b3b50a8d536b912e4b7cd10650ede9521fd59",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg": "43ad380e7ef3076738a658d806df672708c4608afe60b40cb8d2c01984709e0e",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg": "f6ab729f2187bae1a3e8d1ee4ae2acbe77a5e2e45e985ca244fa364c049ced13",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg": "17e96482cca383b76c726942de71369f2bf24134b8772b25b964a1bd4fac6588",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg": "35a20940754963616db711c38bb8da6e4a250ea33a9454273fd6bdae5c8ef4fb",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc": "e914f6852dd5b01746215996df69bd000a6f8a074c1341cacb766e58382c3322",
+    ".gitattributes": "013547d65230f2bc462b794fb0ac25527f37bf41c229a90a052389a0a4fff3da"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-carrier-index.md": "bad35868513365e7702f57899a67ef40fcec5e8471c1cfe4ec2265291897aec3"
+  },
+  "artifact_inventory": [
+    "scripts/casper-soak/src/profiles/carrier_index.rs",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs",
+    "scripts/casper-soak/tests/carrier_index.rs",
+    "scripts/casper-soak/check-carrier-index.sh",
+    ".github/workflows/casper-carrier-index.yml",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/README.md"
+  ],
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "pending"
+  },
+  "soak": "pending",
+  "node_execution": false,
+  "waiver": null,
+  "native": {
+    "rust_tests": 23,
+    "cases": 88,
+    "invocations": 91,
+    "exit": 0
+  },
+  "isolated_linux": {
+    "rust_tests": 23,
+    "cases": 88,
+    "invocations": 91,
+    "exit": 0,
+    "network": "none",
+    "read_only_root": true,
+    "unprivileged": true,
+    "identity": "image=sha256:9b515734d83b6a1166cfe14b87766f85cd212dc6b2883fb333de0db4c8904e93\nprofile=[WORKSPACE_ROOT]/target/release/casper-carrier-index\ntest=[WORKSPACE_ROOT]/target/release/deps/carrier_index-2cd52d997aedcc00\nf365f833946af49fafcf14bc27f32cca96eab1aedc713c12d504bc27dbe21cb4  [WORKSPACE_ROOT]/target/release/casper-carrier-index\n40219f3f076b4c7c522b9f19b6c6bd41cafa55aa5e03b260852521b34bf20dcf  [WORKSPACE_ROOT]/target/release/deps/carrier_index-2cd52d997aedcc00\n"
+  },
+  "shared_rust_tests": 11,
+  "model": {
+    "scenarios": 2,
+    "observation_steps": 3,
+    "clean_generated_states": 1201,
+    "clean_distinct_states": 625,
+    "controls": [
+      {
+        "configuration": "MC_CarrierIndex.cfg",
+        "exit": 0,
+        "property": null,
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CarrierIndex_path_unsafe.cfg",
+        "exit": 12,
+        "property": "PathEngagementObserved",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CarrierIndex_window_unsafe.cfg",
+        "exit": 12,
+        "property": "CarrierInputsMatched",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CarrierIndex_counter_unsafe.cfg",
+        "exit": 12,
+        "property": "MissingCountersUnknown",
+        "outcome": "passed"
+      }
+    ]
+  },
+  "tlc": {
+    "version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
+  },
+  "runner_negative_controls": {
+    "renamed_required_case": 1,
+    "interruption": 143,
+    "passing_summaries": false
+  },
+  "claim_audits": {
+    "001": 0,
+    "002": 0,
+    "003": 0,
+    "004": 0,
+    "008": 4
+  },
+  "retained_failures": [
+    {
+      "path": "checks/initial.log",
+      "kind": "initial-compile-error",
+      "source_snapshot": "not-retained"
+    },
+    {
+      "path": "checks/first-fixtures.log",
+      "kind": "outer-tool-timeout",
+      "passing_result": false
+    },
+    {
+      "path": "checks/models-01/report.json",
+      "kind": "TLC-1.8.0-Java-8-incompatibility",
+      "passing_result": false
+    },
+    {
+      "path": "checks/review-red.log",
+      "kind": "four-regression-failures",
+      "source_snapshot": "not-retained"
+    }
+  ],
+  "limitations": [
+    "Binding acceptance remains pending. Local checks are not node evidence.",
+    "The workflow has not run on hosted CI. Its cbc tag needs human ratification.",
+    "The evidence bundle is local and unpublished. The draft release does not yet contain this asset.",
+    "Earlier failed attempts retain logs but not every source snapshot.",
+    "The finite model abstracts valid auxiliary records and excludes independent product failures."
+  ],
+  "external_evidence": {
+    "status": "local-unpublished",
+    "location": "file:///tmp/carrier-index-checks/casper-carrier-index-20260919-01.external.tar.gz",
+    "sha256": "51e7b6baae754ca393abe4f042dafefb86228a4c2d9a7b34a85ddcbbf43c1543",
+    "bytes": 3829933,
+    "members": 10964,
+    "proposed_store": {
+      "repository": "F1R3FLY-io/f1r3node-rust",
+      "tag": "cbc-evidence-epic-017",
+      "asset": "casper-carrier-index-20260919-01.external.tar.gz"
+    }
+  }
+}

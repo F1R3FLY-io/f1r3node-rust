@@ -12,8 +12,11 @@
 # `pull_request` trigger, unprivileged. This workflow only adds the heavy path.
 name: CI (fork PRs)
 
+# `labeled` is required for the ci-heavy opt-in below: without it, adding the
+# label to an existing fork pull request starts nothing.
 on:
   pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
     branches:
       - dev
       - master
@@ -66,9 +69,14 @@ jobs:
   # approve their own PRs. Only fires for genuine fork PRs — internal PRs also
   # trigger pull_request_target but are handled by ci.yml's pull_request path, so
   # this job (and the aggregators below) skip for them.
+  # Fork pull requests get heavy coverage from the merge queue, which runs in
+  # base-repo context. Per-push here spent six VMs a push; the ci-heavy label is
+  # the opt-in, and applying it needs write access.
   pipeline:
     name: Heavy Pipeline
-    if: github.event.pull_request.head.repo.fork == true
+    if: >-
+      github.event.pull_request.head.repo.fork == true
+      && contains(github.event.pull_request.labels.*.name, 'ci-heavy')
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       checkout_repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -104,6 +112,11 @@ jobs:
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
+          if [ "${{ needs.pipeline.result }}" = "skipped" ]; then
+            echo "Heavy integration coverage is deferred to the merge queue."
+            echo "Add the ci-heavy label to run it on this pull request now."
+            exit 0
+          fi
           failures=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
@@ -132,6 +145,11 @@ jobs:
           if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
+          fi
+          if [ "${{ needs.pipeline.result }}" = "skipped" ]; then
+            echo "Heavy integration coverage is deferred to the merge queue."
+            echo "Add the ci-heavy label to run it on this pull request now."
+            exit 0
           fi
           failures=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \

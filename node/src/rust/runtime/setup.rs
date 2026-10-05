@@ -68,6 +68,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
     last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
+    observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
 ) -> Result<
     (
         Arc<dyn PacketHandler>,
@@ -233,13 +234,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         rho_runtime::create_runtime_from_kv_store(
             eval_stores,
-            Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
+            casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
             false,
             &mut Vec::new(),
             Arc::new(Box::new(Matcher)),
             external_services.clone(),
         )
-        .await
+        .await?
     };
 
     // Runtime manager (play and replay runtimes)
@@ -260,7 +261,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
-            Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             external_services.clone(),
             {
                 let exploratory = ExploratoryDeployConfig::resolve(
@@ -316,7 +317,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let engine_cell = {
         use casper::rust::engine::engine_cell::EngineCell;
 
-        EngineCell::init()
+        match observer {
+            Some(observer) => EngineCell::observed(observer),
+            None => EngineCell::init(),
+        }
     };
 
     // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)

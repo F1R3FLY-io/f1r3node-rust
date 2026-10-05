@@ -520,8 +520,7 @@ pub async fn mk_runtime_manager_at(
         >,
     >,
 ) -> RuntimeManager {
-    let mergeable_tags =
-        mergeable_tags.unwrap_or_else(|| std::sync::Arc::new(Genesis::default_mergeable_tags()));
+    let mergeable_tags = mergeable_tags.unwrap_or_else(Genesis::default_mergeable_tags_arc);
 
     let r_store = kvm.r_space_stores().await.unwrap();
     let m_store = mergeable_store_from_dyn(kvm).await.unwrap();
@@ -541,7 +540,7 @@ pub async fn mk_runtime_manager_with_history_at(
     let (rt_manager, history_repo) = RuntimeManager::create_with_history(
         r_store,
         m_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     );
     (rt_manager, history_repo)
