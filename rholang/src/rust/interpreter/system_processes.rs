@@ -336,6 +336,11 @@ impl FixedChannels {
     /// length-parameterized cost; does NOT advance shadow
     /// position per POSIX pread semantics (slice 4.21).
     pub fn fs_read_at() -> Par { byte_name(43) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` — release a
+    /// directory-entries stream fd + Phase-2 shadow-remove on
+    /// replay.  Non-verifying stream lifecycle (slice 4.22).
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
 }
 
 pub struct BodyRefs;
@@ -409,6 +414,10 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
     pub const FS_READ_AT: i64 = 43;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` body-ref
+    /// (slice 4.22).
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
