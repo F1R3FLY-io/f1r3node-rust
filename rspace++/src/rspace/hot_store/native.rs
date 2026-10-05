@@ -681,7 +681,10 @@ where
         native_backing::reserve_cleanup(&waiting, meter)?;
         native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
-        let identity = continuation_identity_metered(&waiting, meter)?;
+        // Changed by D-S4 (DR-90): the new identity is built only when a stored
+        // continuation has the same source hash (see the loop below).
+        // let identity = continuation_identity_metered(&waiting, meter)?;
+        let mut identity: Option<String> = None;
         let installed = self
             .installed_continuations
             .native_with(&key, meter, |value| Ok(usize::from(value.is_some())))?;
@@ -695,7 +698,41 @@ where
             )
         })?;
         let mut duplicate = false;
+        // Changed by D-S4 (DR-90): equal identities imply equal source hashes
+        // (the hash covers the sorted pattern encodings, the body and the
+        // flag), so a stored continuation whose source hash differs is not a
+        // duplicate. Identities are built and compared only on equal hashes.
+        // for value in existing {
+        //     let prior = continuation_identity_metered(value, meter)?;
+        //     meter.reserve(
+        //         1,
+        //         identity
+        //             .len()
+        //             .checked_add(prior.len())
+        //             .ok_or(RSpaceError::HostWorkRejected)?,
+        //         0,
+        //     )?;
+        //     if prior == identity {
+        //         duplicate = true;
+        //         break;
+        //     }
+        // }
+        let hash_bytes = waiting
+            .source
+            .hash
+            .0
+            .len()
+            .checked_mul(2)
+            .ok_or(RSpaceError::HostWorkRejected)?;
         for value in existing {
+            meter.reserve(1, hash_bytes, 0)?;
+            if value.source.hash != waiting.source.hash {
+                continue;
+            }
+            if identity.is_none() {
+                identity = Some(continuation_identity_metered(&waiting, meter)?);
+            }
+            let identity = identity.as_ref().expect("identity built above");
             let prior = continuation_identity_metered(value, meter)?;
             meter.reserve(
                 1,
@@ -705,7 +742,7 @@ where
                     .ok_or(RSpaceError::HostWorkRejected)?,
                 0,
             )?;
-            if prior == identity {
+            if prior == *identity {
                 duplicate = true;
                 break;
             }

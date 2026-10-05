@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::hash::Hasher;
 use std::sync::Arc;
 
@@ -1164,4 +1165,172 @@ fn shared_cleanup_charges_the_pointer_only() {
     let large_walked = charge(|meter| native_backing::reserve_cleanup(&large, meter));
     assert_eq!(small_shared, large_shared);
     assert!(large_shared.1 < large_walked.1);
+}
+
+/// D-S4 (DR-90) oracle: the identity the legacy duplicate check compared.
+fn legacy_identity(waiting: &WaitingContinuation<String, String>) -> String {
+    format!(
+        "{:?}|{:?}|{}|{:?}",
+        waiting.patterns, waiting.continuation, waiting.persist, waiting.peeks
+    )
+}
+
+fn sourced(
+    channels: &[String],
+    patterns: Vec<String>,
+    body: String,
+    persist: bool,
+    peeks: BTreeSet<i32>,
+) -> WaitingContinuation<String, String> {
+    let source = Consume::create(&channels.to_vec(), &patterns, &body, persist);
+    WaitingContinuation {
+        patterns,
+        continuation: body,
+        persist,
+        peeks,
+        source,
+    }
+}
+
+/// A stored consume publishes join updates, so the join cache of each channel
+/// must be filled first (as a native session does).
+fn prime_joins(store: &Store, channels: &[String]) {
+    let setup = Meter::new(usize::MAX);
+    for channel in channels {
+        store
+            .get_joins_with_reader(channel, &|| Ok(Vec::new()), &setup)
+            .expect("join cache fill");
+    }
+}
+
+fn continuation_strategy() -> impl Strategy<Value = (Vec<String>, String, bool, BTreeSet<i32>)> {
+    (
+        prop::collection::vec("[ab]{1,3}", 1..4),
+        "[xy]{1,3}",
+        any::<bool>(),
+        prop::collection::btree_set(0_i32..3, 0..3),
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S4 (DR-90): the source-hash prefilter decides duplicates exactly as
+    /// the identity scan, for copies, permuted patterns, other peeks and new
+    /// continuations.
+    #[test]
+    fn prefiltered_duplicate_decision_matches_identity_scan(
+        stored in prop::collection::vec(continuation_strategy(), 1..5),
+        choice in 0_usize..4,
+        pick in any::<prop::sample::Index>(),
+        fresh in continuation_strategy(),
+    ) {
+        let channels = vec!["channel".to_owned()];
+        let stored: Vec<_> = stored
+            .into_iter()
+            .map(|(patterns, body, persist, peeks)| sourced(&channels, patterns, body, persist, peeks))
+            .collect();
+        let base = &stored[pick.index(stored.len())];
+        let waiting = match choice {
+            0 => base.clone(),
+            1 => {
+                let mut patterns = base.patterns.clone();
+                patterns.reverse();
+                sourced(&channels, patterns, base.continuation.clone(), base.persist, base.peeks.clone())
+            }
+            2 => {
+                let mut peeks = base.peeks.clone();
+                if !peeks.remove(&0) {
+                    peeks.insert(0);
+                }
+                sourced(&channels, base.patterns.clone(), base.continuation.clone(), base.persist, peeks)
+            }
+            _ => sourced(&channels, fresh.0, fresh.1, fresh.2, fresh.3),
+        };
+        let store = store();
+        for continuation in stored.iter().rev() {
+            store.put_continuation(&channels, continuation.clone());
+        }
+        prime_joins(&store, &channels);
+        let expected_duplicate = stored
+            .iter()
+            .any(|prior| legacy_identity(prior) == legacy_identity(&waiting));
+        let (inserted, _) = store
+            .store_consume_metered(&channels, waiting, &Meter::new(usize::MAX))
+            .expect("stored consume");
+        prop_assert_eq!(inserted, !expected_duplicate);
+    }
+
+    /// D-S4 (DR-90): equal identities imply equal source hashes.
+    #[test]
+    fn identity_equality_implies_source_hash_equality(
+        left in continuation_strategy(),
+        right in continuation_strategy(),
+        copy in any::<bool>(),
+    ) {
+        let channels = vec!["left".to_owned(), "right".to_owned()];
+        let left = sourced(&channels, left.0, left.1, left.2, left.3);
+        let right = if copy {
+            sourced(&channels, left.patterns.clone(), left.continuation.clone(), left.persist, left.peeks.clone())
+        } else {
+            sourced(&channels, right.0, right.1, right.2, right.3)
+        };
+        if legacy_identity(&left) == legacy_identity(&right) {
+            prop_assert_eq!(left.source.hash, right.source.hash);
+        }
+    }
+}
+
+/// D-S4 (DR-90): stored continuations whose source hash differs from the new
+/// one are not formatted, so their bodies do not change the charge.
+#[test]
+fn distinct_source_hashes_format_no_identity() {
+    let channels = vec!["channel".to_owned()];
+    let charge = |body_size: usize| {
+        let store = store();
+        for index in 0..4 {
+            store.put_continuation(
+                &channels,
+                sourced(
+                    &channels,
+                    vec![format!("pattern{index}")],
+                    "b".repeat(body_size),
+                    false,
+                    BTreeSet::new(),
+                ),
+            );
+        }
+        prime_joins(&store, &channels);
+        let waiting =
+            sourced(&channels, vec!["new".to_owned()], "k".to_owned(), false, BTreeSet::new());
+        let meter = Meter::new(usize::MAX);
+        let (inserted, _) = store
+            .store_consume_metered(&channels, waiting, &meter)
+            .expect("stored consume");
+        assert!(inserted);
+        (meter.operations.get(), meter.scanned.get(), meter.backing.get())
+    };
+    assert_eq!(charge(1), charge(4_096));
+}
+
+/// Negative control for D-S4 (DR-90): the legacy check formatted every stored
+/// continuation, so its charge grew with bodies it never needed to compare.
+#[test]
+fn legacy_duplicate_check_formatted_every_stored_continuation() {
+    let channels = vec!["channel".to_owned()];
+    let formatted = |body_size: usize| {
+        let meter = Meter::new(usize::MAX);
+        for index in 0..4 {
+            let prior = sourced(
+                &channels,
+                vec![format!("pattern{index}")],
+                "b".repeat(body_size),
+                false,
+                BTreeSet::new(),
+            );
+            continuation_identity_metered(&prior, &meter).expect("identity");
+        }
+        meter.scanned.get()
+    };
+    assert!(formatted(4_096) > formatted(1) + 4 * 4_000);
 }

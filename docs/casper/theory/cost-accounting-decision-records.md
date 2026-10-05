@@ -6105,3 +6105,63 @@ checkpoint and result rejection tests, pass unchanged.
 
 **Cross-refs.** DR-79 (C14), DR-83 (C5), DR-88. Leaf
 `ofp-2-cap-d-a2-replay-authority-backing`.
+
+## DR-90 — The stored consume's duplicate check compares source hashes first
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A4 of epic 8946
+(D-S4 of the Phase D plan; the conditional fix C11 of phase B, whose gate is
+now met).
+
+**Context.** `native_store_consume` (`hot_store/native.rs`) decides whether
+a new waiting continuation duplicates a stored one by comparing their
+identities: the Debug text of the patterns, the body, the persistence flag
+and the peeks. It formatted the new continuation and every stored
+continuation of the channel group on every store. In the gateway funding
+block the formatting charged about 151 MB of VerificationBytes and 22 MB of
+SearchStateBytes per validator replay (4.6% of VerificationBytes).
+
+**Decision.**
+
+1. For each stored continuation the check first compares its source hash
+   with the new continuation's source hash (one operation and 64 bytes).
+   A stored continuation with a different hash is not a duplicate.
+2. Only on equal hashes does the check format and compare the identities.
+   The new continuation's identity is formatted at most once, the first time
+   it is needed.
+3. The replaced code stays in the source, commented out with its reason.
+
+**Soundness.** The source hash of a consume is the hash of the sorted channel
+hashes, the sorted pattern encodings, the body encoding and the flag
+(`native_source::consume`, equal to the legacy `Consume::create`). Every
+continuation of one cache entry has the same channels. Equal identities
+therefore give equal patterns, body and flag, hence equal sorted encodings
+and an equal hash, whatever the hash function. So a different hash rules out
+a duplicate, and the decision is the decision of the identity scan. Equal
+hashes do not imply equal identities (patterns in another order, other
+peeks), so the identity comparison stays for hash ties. Floats are stored as
+raw bits, so Debug equality and encoding equality agree.
+
+**Scope.** Cost-accounting work: the native stored consume exists only on
+this branch. No encoding, root or event changes; the decision does not
+change.
+
+**Verification.** `NativeDuplicatePrefilter.v` proves without axioms, for an
+arbitrary hash function: `identity_eq_implies_source_hash_eq`,
+`prefiltered_duplicate_equals_scan`,
+`prefilter_builds_identities_only_on_hash_ties`, and the negative control
+`permuted_patterns_share_hash` (a hash-only check would be wrong).
+
+Tests in `hot_store/native/tests.rs`:
+
+- `prefiltered_duplicate_decision_matches_identity_scan` (256 cases): the
+  stored-consume decision equals the identity scan for exact copies,
+  permuted patterns, changed peeks and new continuations, with real sources.
+- `identity_equality_implies_source_hash_equality` (256 cases).
+- `distinct_source_hashes_format_no_identity`: with four stored
+  continuations of other hashes, 4 KiB bodies leave the charge unchanged.
+- Negative control `legacy_duplicate_check_formatted_every_stored_continuation`.
+
+The existing stored-consume test, which stores continuations with equal
+(default) sources, passes unchanged.
+
+**Cross-refs.** DR-83 (C5). Leaf `ofp-2-cap-d-a4-duplicate-prefilter`.
