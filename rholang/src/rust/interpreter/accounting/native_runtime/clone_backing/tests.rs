@@ -591,3 +591,223 @@ fn exhausted_walk_preserves_source_and_does_not_clone_payload() {
     assert_eq!(host.usage(HostWorkDimension::SearchStateBytes).get(), 0);
     assert_eq!(source, expected);
 }
+
+/// D-O1 (DR-92): the usage (operations, scanned bytes, backing bytes) that a
+/// block-mode charge reserves.
+fn block_usage(
+    charge: impl FnOnce(&dyn backing::BackingMeter) -> Result<(), BackingError>,
+) -> [usize; 3] {
+    let used = Cell::new([0usize; 3]);
+    let meter = |operations: usize, scanned: usize, bytes: usize| {
+        let mut totals = used.get();
+        for (total, amount) in totals.iter_mut().zip([operations, scanned, bytes]) {
+            *total = total.checked_add(amount).ok_or(BackingError::Overflow)?;
+        }
+        used.set(totals);
+        Ok(())
+    };
+    charge(&meter).expect("charge");
+    used.get()
+}
+
+/// D-O1 (DR-92): an independent statement of the block rules for the shapes
+/// that `term()` generates: sends with data, news with injections,
+/// byte-array expressions and locally free bytes.
+struct ParBlockOracle {
+    copy: bool,
+    totals: [usize; 3],
+}
+
+impl ParBlockOracle {
+    fn add(&mut self, charge: [usize; 3]) {
+        for (total, amount) in self.totals.iter_mut().zip(charge) {
+            *total += amount;
+        }
+    }
+
+    /// A pushed value: one worklist entry.
+    fn entry(&mut self) {
+        self.add([
+            3,
+            backing::BLOCK_ENTRY_SCANNED,
+            backing::BLOCK_ENTRY_BACKING,
+        ]);
+    }
+
+    /// An inline scalar: its bytes lie in the enclosing block.
+    fn field(&mut self) { self.add([3, backing::BLOCK_FIELD_SCANNED, 0]); }
+
+    /// A memory block: read once, again if the walker visits its elements,
+    /// written by a copy, and allocated by a copy unless it is the root.
+    fn block(&mut self, bytes: usize, visited: bool, allocated: bool) {
+        let reads = usize::from(visited) + 1 + usize::from(self.copy);
+        self.add([
+            0,
+            bytes * reads,
+            if self.copy && allocated { bytes } else { 0 },
+        ]);
+    }
+
+    /// A vector: its header is an entry and its buffer a block; the walker
+    /// visits the elements of a buffer of non-inline values.
+    fn vector<T>(&mut self, values: &[T], visited: bool, mut element: impl FnMut(&mut Self, &T)) {
+        self.entry();
+        self.add([2 * values.len(), 0, 0]);
+        self.block(std::mem::size_of_val(values), visited, true);
+        if visited {
+            for value in values {
+                self.entry();
+                element(self, value);
+            }
+        }
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) { self.vector(bytes, false, |_, _| {}); }
+
+    fn optional_par(&mut self, value: &Option<Par>) {
+        self.entry();
+        if let Some(par) = value {
+            self.entry();
+            self.par(par);
+        }
+    }
+
+    fn par(&mut self, par: &Par) {
+        let Par {
+            sends,
+            receives,
+            news,
+            exprs,
+            matches,
+            unforgeables,
+            bundles,
+            connectives,
+            conditionals,
+            locally_free,
+            connective_used: _,
+            cost_signed_terms,
+            cost_stacks,
+        } = par;
+        self.vector(sends, true, Self::send);
+        self.vector(receives, true, |_, _| {
+            unreachable!("term() has no receives")
+        });
+        self.vector(news, true, Self::new_name);
+        self.vector(exprs, true, Self::expr);
+        self.vector(matches, true, |_, _| unreachable!("term() has no matches"));
+        self.vector(unforgeables, true, |_, _| {
+            unreachable!("term() has no unforgeables")
+        });
+        self.vector(bundles, true, |_, _| unreachable!("term() has no bundles"));
+        self.vector(connectives, true, |_, _| {
+            unreachable!("term() has no connectives")
+        });
+        self.vector(conditionals, true, |_, _| {
+            unreachable!("term() has no conditionals")
+        });
+        self.bytes(locally_free);
+        self.field();
+        self.vector(cost_signed_terms, true, |_, _| {
+            unreachable!("term() has no signed terms")
+        });
+        self.vector(cost_stacks, true, |_, _| {
+            unreachable!("term() has no stacks")
+        });
+    }
+
+    fn send(&mut self, send: &Send) {
+        let Send {
+            chan,
+            data,
+            persistent: _,
+            locally_free,
+            connective_used: _,
+        } = send;
+        self.optional_par(chan);
+        self.vector(data, true, Self::par);
+        self.field();
+        self.bytes(locally_free);
+        self.field();
+    }
+
+    fn new_name(&mut self, new: &New) {
+        let New {
+            bind_count: _,
+            p,
+            uri,
+            injections,
+            locally_free,
+        } = new;
+        self.field();
+        self.optional_par(p);
+        self.vector(uri, true, |oracle, text| {
+            oracle.block(text.len(), false, true)
+        });
+        self.entry();
+        let (operations, bytes) =
+            shared::rust::collection_backing::tree_backing::<String, Par>(injections.len())
+                .expect("tree backing");
+        self.add([operations, 0, 0]);
+        self.block(bytes, true, true);
+        for (key, value) in injections {
+            self.entry();
+            self.block(key.len(), false, true);
+            self.entry();
+            self.par(value);
+        }
+        self.bytes(locally_free);
+    }
+
+    fn expr(&mut self, expr: &Expr) {
+        let Expr { expr_instance } = expr;
+        self.entry();
+        if let Some(instance) = expr_instance {
+            self.entry();
+            match instance {
+                expr::ExprInstance::GByteArray(bytes) => self.bytes(bytes),
+                _ => unreachable!("term() has only byte-array expressions"),
+            }
+        }
+    }
+}
+
+/// The block charge of `par` as the walk's root: the root's inline bytes are
+/// a visited block that the walk does not allocate.
+fn par_block_oracle(par: &Par, copy: bool) -> [usize; 3] {
+    let mut oracle = ParBlockOracle {
+        copy,
+        totals: [0; 3],
+    };
+    oracle.block(size_of::<Par>(), true, false);
+    oracle.entry();
+    oracle.par(par);
+    oracle.totals
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// D-O1 (DR-92): on generated terms the walker's block charges equal an
+    /// independent statement of the block rules, for inspections and copies.
+    #[test]
+    fn block_charges_of_generated_terms_match_independent_block_oracle(par in term()) {
+        prop_assert_eq!(block_usage(|meter| backing::inspect_blocks(&par, meter)), par_block_oracle(&par, false));
+        prop_assert_eq!(block_usage(|meter| backing::reserve_blocks(&par, meter)), par_block_oracle(&par, true));
+    }
+
+    /// D-O1 (DR-92): the block backing of a copy (the copy's backing minus
+    /// the entry backing that an inspection also charges) covers the bytes
+    /// the clone allocates, and the inspection fits the copy.
+    #[test]
+    fn block_copy_backing_covers_generated_term_clones(par in term()) {
+        let copy = block_usage(|meter| backing::reserve_blocks(&par, meter));
+        let inspection = block_usage(|meter| backing::inspect_blocks(&par, meter));
+        let (clone, allocated) = measured(|| std::hint::black_box(par.clone()));
+        drop(clone);
+        let block_backing = copy[2] - inspection[2];
+        prop_assert!(allocated <= block_backing, "clone allocated {} block backing {}", allocated, block_backing);
+        for (inspected, copied) in inspection.iter().zip(copy) {
+            prop_assert!(*inspected <= copied);
+        }
+    }
+}

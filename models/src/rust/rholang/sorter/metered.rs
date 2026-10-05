@@ -61,6 +61,17 @@ impl<'a> SorterMeter<'a> {
         clone_backing::inspect(value, self.backing)
     }
 
+    /// D-O1 (DR-92): `clone` with the walker's block accounting.
+    pub fn clone_blocks<T: Clone + CloneBacking>(&self, value: &T) -> Result<T, BackingError> {
+        clone_backing::reserve_blocks_copy_and_cleanup(value, self.backing)?;
+        Ok(value.clone())
+    }
+
+    /// D-O1 (DR-92): `inspect` with the walker's block accounting.
+    pub fn inspect_blocks<T: CloneBacking>(&self, value: &T) -> Result<(), BackingError> {
+        clone_backing::inspect_blocks(value, self.backing)
+    }
+
     pub fn clone_slice<T: Clone + CloneBacking>(
         &self,
         values: &[T],
@@ -144,6 +155,54 @@ mod tests {
         used.set(0);
         assert_eq!(
             SorterMeter::new(&reserve).clone_slice(&source),
+            Err(BackingError::Rejected)
+        );
+    }
+
+    fn charged(action: impl FnOnce(&dyn BackingMeter) -> Result<(), BackingError>) -> [usize; 3] {
+        let used = Cell::new([0usize; 3]);
+        let reserve = |operations: usize, scanned: usize, backing: usize| {
+            let [total_operations, total_scanned, total_backing] = used.get();
+            used.set([
+                total_operations + operations,
+                total_scanned + scanned,
+                total_backing + backing,
+            ]);
+            Ok(())
+        };
+        action(&reserve).expect("charge");
+        used.get()
+    }
+
+    /// D-O1 (DR-92): the block-mode sorter methods charge the walker's block
+    /// charges, and a block clone is rejected before the copy when its charge
+    /// does not fit.
+    #[test]
+    fn block_clones_and_inspections_charge_the_walker_block_charges() {
+        let source = vec![Arc::<str>::from("payload".repeat(1024)), Arc::from("x")];
+        assert_eq!(
+            charged(|meter| SorterMeter::new(meter).inspect_blocks(&source)),
+            charged(|meter| clone_backing::inspect_blocks(&source, meter))
+        );
+        assert_eq!(
+            charged(|meter| SorterMeter::new(meter).clone_blocks(&source).map(drop)),
+            charged(|meter| clone_backing::reserve_blocks_copy_and_cleanup(&source, meter))
+        );
+        assert_eq!(
+            SorterMeter::new(&|_: usize, _: usize, _: usize| Ok(()))
+                .clone_blocks(&source)
+                .expect("clone"),
+            source
+        );
+        let reject = |_: usize, scanned: usize, _: usize| {
+            if scanned > 0 {
+                Err(BackingError::Rejected)
+            } else {
+                Ok(())
+            }
+        };
+        assert_eq!(
+            SorterMeter::new(&reject).clone_blocks(&source),
             Err(BackingError::Rejected)
         );
     }

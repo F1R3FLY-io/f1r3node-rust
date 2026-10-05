@@ -6222,3 +6222,157 @@ Tests in `matcher/match.rs`:
   result vector (counting allocator).
 
 **Cross-refs.** DR-88. Leaf `ofp-2-cap-d-a3-bound-values-by-move`.
+
+## DR-92 — Walker block accounting and the chunked worklist
+
+**Status.** Implemented 2026-10-05 for Phase D items D-B1 and D-B3 of epic
+8946 (D-O1 parts 1 and 3 of the Phase D plan). No call site uses the block
+mode yet. D-B4 (Stage A) and D-E (Stage B) switch the call sites.
+
+**Context.** The clone-backing walker (`shared/src/rust/clone_backing.rs`)
+charged each push `(3, 3 * size_of::<T>(), 0)`. The `fields!` and
+`variants!` macros push every field, so the walker charged the inline bytes
+of a nested value once per nesting level. For example, an `Expr` of about
+600 bytes was charged at `Expr`, at `Option<ExprInstance>` and at
+`ExprInstance`. A slice element was charged in the slice allocation and
+again in its push. The worklist growth charge followed the capacity doubling
+of the pending vector, so it depended on the depth-first peak of the
+traversal. In the Phase C exact probe of the gateway funding block, the
+walker charges were about 68% of the validator replay VerificationBytes:
+
+| Walker charge | VerificationBytes | SearchStateBytes |
+|---------------|------------------:|-----------------:|
+| Pushes (7.53 M) | 2,062.5 MB | — |
+| Slice allocations | 484.4 MB | — |
+| B-tree maps | 80.7 MB | — |
+| Worklist growth | 52.4 MB | 49.3 MB |
+
+**Decision.**
+
+1. A block mode charges each memory block once. A `blocks` flag on the
+   walker selects it, through the entry points `inspect_blocks`,
+   `inspect_blocks_slice`, `reserve_blocks`,
+   `reserve_blocks_copy_and_cleanup`, `reserve_blocks_slice`,
+   `reserve_blocks_slice_copy_and_cleanup`, `inspect_shared_pointers_blocks`
+   and `inspect_shared_pointer_slice_blocks`.
+   - A block is a contiguous region that a traversal reads as a unit. The
+     root's inline bytes, a heap allocation (a vector or slice buffer, a box,
+     string bytes, B-tree or hash-table nodes), a shared payload and a
+     borrowed referent are blocks.
+   - A visited block, whose elements the walker visits, costs `2b` scanned
+     bytes for an inspection (the walker and one consumer traversal). It
+     costs `3b` for a copy (the walker, the read and the write).
+   - An opaque block costs `b` for an inspection and `2b` for a copy. String
+     bytes, a buffer of inline scalars and a boxed or shared inline payload
+     are opaque blocks.
+   - A copy also reserves `b` SearchStateBytes for each block that it
+     allocates. The root's inline bytes, a shared payload and a borrowed
+     referent are blocks that the walk does not allocate.
+2. A push costs 3 operations and a constant number of bytes. It never
+   charges the size of the pushed value, because the value's inline bytes
+   lie in the enclosing block, which is charged once.
+   - A worklist entry costs `BLOCK_ENTRY_SCANNED` = 2 × 16 + 3 × 8 = 56
+     scanned bytes and `BLOCK_ENTRY_BACKING` = 4 × 16 = 64 bytes of backing.
+     The 56 bytes pay the write at the push, the read at the pop, one niche
+     word that the walker reads again, one word that the consumer reads
+     again, and one word for the header moves of the worklist.
+   - An inline field costs `BLOCK_FIELD_SCANNED` = 8 bytes: one word that a
+     consumer reads again, such as a discriminant or a scalar that hashing or
+     encoding reads twice.
+   - A copy of a shared pointer also costs `BLOCK_SHARED_HEADER_SCANNED` =
+     16 bytes: the read and the write of the strong count.
+3. The block mode uses a chunked worklist (D-B3) instead of the doubling
+   vector. Chunk 0 holds 4 entries and chunk j holds 4 × 2^j entries. A chunk
+   gets its exact capacity when the stack first grows into it and stays until
+   the walk ends. Thus each chunk is allocated at most once, and no entry
+   moves. Only the vector that holds the headers of chunks 1..k grows by
+   doubling, from 4 headers. The worklist charge is a constant per entry.
+   It depends only on the shape of the value, not on sibling order or on the
+   traversal peak.
+4. The legacy per-level mode is unchanged. Every production call site still
+   uses it. The Rholang and RSpace++ wrappers of the block entry points come
+   with their first call sites in D-B4, because unused crate-private
+   wrappers are dead code. The public `SorterMeter::clone_blocks` and
+   `SorterMeter::inspect_blocks` land here.
+
+**Soundness.**
+
+- *Partition.* The inline fields of a value lie inside the enclosing entry,
+  and the elements of a block lie inside the block. Thus the walker's reads
+  of the entries inside one block total at most the block's bytes, plus one
+  niche word per entry. These reads are the entries' own bytes, such as
+  discriminants, pointers and lengths.
+- *Traversal.* One linear consumer traversal reads every block once, plus
+  one word per node.
+- *Prefix coverage.* The walk charges each block when the parent's
+  `children()` meets it, and it charges the root block before the root push.
+  It charges each entry or field at its push. Thus every charge comes before
+  the reads of the walker and of the consumer.
+- *Worklist.* The chunked worklist writes each entry once and reads it once.
+  For a peak of P entries, the chunks and the chunk headers allocate at most
+  four slots per entry. The header moves take at most 8 bytes per entry. The
+  peak never exceeds the number of entries that the walk pushes.
+- *Determinism.* The charge depends only on the shape of the value and on
+  compile-time sizes. It does not depend on sibling order, on the traversal
+  peak, on thread interleaving or on hash seeds.
+- *Call-site precondition.* A call site in block mode must prepay exactly one
+  linear traversal of the value. Clone, one side of `PartialEq`, Drop, Debug
+  or serde and bincode with metered output, and prost `encoded_len` of a flat
+  message are such traversals. A nested prost encode uses the D-B2 depth
+  charge. The D-B4 and D-E audits check each site.
+
+**Scope.** Cost-accounting work: the walker exists for host-work metering.
+This item changes no call site, encoding, root or event.
+
+**Verification.** `WalkerBlockCharge.v` proves the following results without
+axioms. They hold for every entry charge `E` and field charge `F` with
+`E >= 2p + 2w` and `F >= w`, where `p` is the entry size and `w` is a word.
+
+- `visit_reads_le_block_bytes` (the partition) and
+  `fields_have_no_visit_reads`.
+- `block_inspection_covers_walk_and_traversal` and
+  `block_copy_covers_walk_and_clone`.
+- `block_trace_covered`: prefix coverage, with the `covered` notion of
+  `ObservationReadCoverage`.
+- `block_copy_backing_covers_allocation`: the backing equals the clone's
+  allocation trace.
+- `block_inspection_fits_block_copy` and
+  `block_charge_independent_of_sibling_order`.
+- For the worklist: `worklist_charge_independent_of_traversal_order`,
+  `worklist_charge_covers_peak`, `worklist_charge_covers_entries` and
+  `rust_entry_constant_covers_header_moves`.
+- The negative control `level_charge_counts_inline_bytes_per_level` and
+  `level_charge_example`. For depth 3 and size 600, the legacy charge is
+  7,200 bytes and the block inspection charge is 1,376 bytes.
+
+Static assertions in the Rust module tie the proof's 16-byte entries and
+24-byte chunk headers to the Rust sizes.
+
+Tests in `shared/src/rust/clone_backing/tests.rs`:
+
+- `block_inspection_charge_matches_independent_block_oracle` (256 cases of
+  nested vectors, boxes, strings and scalars), for inspections and copies.
+- `block_copy_backing_covers_counted_allocations` (counting allocator) and
+  `block_inspection_fits_every_block_copy_budget`.
+- `block_charge_is_independent_of_inline_nesting_depth`, with the negative
+  control `legacy_level_charge_grew_with_inline_nesting_depth`.
+- `shared_pointer_blocks_charge_header_and_payload`.
+- `worklist_charge_independent_of_child_order` and
+  `worklist_allocations_within_charge` (256 cases each).
+- `worklist_chunks_follow_the_chunk_model`: the worklist allocates exactly
+  the bytes of the chunk model for flat values of 0 to 600 entries.
+- `chunked_worklist_reuses_chunks_and_pops_in_order`: no allocation when the
+  stack grows again, and LIFO order.
+
+Tests elsewhere:
+
+- `block_charges_of_generated_terms_match_independent_block_oracle` and
+  `block_copy_backing_covers_generated_term_clones` in
+  `rholang/src/rust/interpreter/accounting/native_runtime/clone_backing/tests.rs`
+  (128 random `Par` terms each).
+- `block_clones_and_inspections_charge_the_walker_block_charges` in
+  `models/src/rust/rholang/sorter/metered.rs`.
+
+**Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
+releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
+`ofp-2-cap-d-b3-worklist-charge`.

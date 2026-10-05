@@ -55,6 +55,112 @@ pub trait CloneBacking {
     where Self: Sized {
         Self::inline()
     }
+
+    /// D-O1 (DR-92): true for shared pointers, whose copy also touches the
+    /// strong count in the shared allocation's header.
+    fn shared_header() -> bool
+    where Self: Sized {
+        false
+    }
+}
+
+/// D-O1 (DR-92): block-accounting constants. A worklist entry is one fat
+/// pointer: the chunked worklist writes it once at the push and reads it once
+/// at the pop (it never moves an entry). The walker may re-read one word of
+/// the entry that an enclosing enum shares with it as a niche, a consumer
+/// traversal may re-read one word of it, and one more word pays the header
+/// moves of the vector of chunks (at most 8 bytes per entry,
+/// `WalkerBlockCharge.worklist_charge_covers_peak`).
+pub const BLOCK_ENTRY_SCANNED: usize = 2 * size_of::<&dyn CloneBacking>() + 3 * size_of::<u64>();
+/// D-B3 (DR-92): the chunks of the worklist and the vector of chunk headers
+/// allocate at most four slots per entry of the peak, so at most four slots
+/// per entry the walk pushes.
+pub const BLOCK_ENTRY_BACKING: usize = 4 * size_of::<&dyn CloneBacking>();
+/// D-O1 (DR-92): an inline field lies in its enclosing block, which is
+/// charged once; a consumer may re-read one machine word of the field (a
+/// discriminant or a scalar while hashing or encoding it).
+pub const BLOCK_FIELD_SCANNED: usize = size_of::<u64>();
+/// D-O1 (DR-92): a shared-pointer copy also reads and writes the strong
+/// count in the shared allocation's header.
+pub const BLOCK_SHARED_HEADER_SCANNED: usize = 2 * size_of::<usize>();
+
+// D-B3 (DR-92): `WalkerBlockCharge.v` proves the worklist bounds for 16-byte
+// entries and 24-byte chunk headers.
+const _: () = assert!(size_of::<&dyn CloneBacking>() == 16);
+const _: () = assert!(size_of::<Vec<&dyn CloneBacking>>() == 24);
+
+const FIRST_CHUNK_SLOTS: usize = 4;
+
+/// D-B3 (DR-92): the block-mode worklist, a stack of chunks. Chunk 0 holds
+/// `FIRST_CHUNK_SLOTS` entries and chunk j holds `FIRST_CHUNK_SLOTS << j`. A
+/// chunk is reserved with its exact capacity when the stack first grows into
+/// it and is kept until the walk ends, so it is allocated at most once and a
+/// full chunk is never reallocated: a push writes one entry and a pop reads
+/// one entry. The chunks below the active one are full and the chunks above
+/// it are empty.
+struct ChunkedWorklist<'a> {
+    first: Vec<&'a dyn CloneBacking>,
+    rest: Vec<Vec<&'a dyn CloneBacking>>,
+    /// The chunk that holds the top entry: 0 for `first`, j for `rest[j - 1]`.
+    active: usize,
+}
+
+impl<'a> ChunkedWorklist<'a> {
+    const fn new() -> Self {
+        Self {
+            first: Vec::new(),
+            rest: Vec::new(),
+            active: 0,
+        }
+    }
+
+    fn slots(chunk: usize) -> Result<usize, BackingError> {
+        u32::try_from(chunk)
+            .ok()
+            .and_then(|exponent| 2_usize.checked_pow(exponent))
+            .and_then(|scale| scale.checked_mul(FIRST_CHUNK_SLOTS))
+            .ok_or(BackingError::Overflow)
+    }
+
+    fn chunk(&mut self, chunk: usize) -> &mut Vec<&'a dyn CloneBacking> {
+        match chunk {
+            0 => &mut self.first,
+            index => &mut self.rest[index - 1],
+        }
+    }
+
+    fn push(&mut self, value: &'a dyn CloneBacking) -> Result<(), BackingError> {
+        loop {
+            let slots = Self::slots(self.active)?;
+            let chunk = self.chunk(self.active);
+            if chunk.len() < slots {
+                if chunk.capacity() < slots {
+                    chunk
+                        .try_reserve_exact(slots)
+                        .map_err(|_| BackingError::Allocation)?;
+                }
+                chunk.push(value);
+                return Ok(());
+            }
+            let next = self.active.checked_add(1).ok_or(BackingError::Overflow)?;
+            if next > self.rest.len() {
+                self.rest
+                    .try_reserve(1)
+                    .map_err(|_| BackingError::Allocation)?;
+                self.rest.push(Vec::new());
+            }
+            self.active = next;
+        }
+    }
+
+    fn pop(&mut self) -> Option<&'a dyn CloneBacking> {
+        loop {
+            if let Some(value) = self.chunk(self.active).pop() {
+                return Some(value);
+            }
+            self.active = self.active.checked_sub(1)?;
+        }
+    }
 }
 
 pub struct Walker<'a> {
@@ -65,10 +171,18 @@ pub struct Walker<'a> {
     /// C5 (DR-83): a cleanup walk that visits each shared pointer but not its
     /// payload, for store-owned pointers whose payload release was prepaid.
     shared_pointers: bool,
+    /// D-O1 (DR-92): block accounting. Each memory block is charged once;
+    /// a push charges only the worklist or field constants.
+    blocks: bool,
+    /// D-B3 (DR-92): the worklist of block mode.
+    chunked: ChunkedWorklist<'a>,
 }
 
 impl<'a> Walker<'a> {
     pub fn push<T: CloneBacking>(&mut self, value: &'a T) -> Result<(), BackingError> {
+        if self.blocks {
+            return self.push_block_entry(value);
+        }
         self.meter.reserve(
             3,
             size_of::<T>()
@@ -117,11 +231,80 @@ impl<'a> Walker<'a> {
     }
 
     pub fn allocation(&self, bytes: usize) -> Result<(), BackingError> {
+        if self.blocks {
+            return self.block(bytes, true, true);
+        }
         self.meter.reserve(
             0,
             bytes.checked_mul(2).ok_or(BackingError::Overflow)?,
             if self.copy_payload { bytes } else { 0 },
         )
+    }
+
+    /// D-O1 (DR-92): an allocation whose elements the walk does not visit
+    /// (string bytes, slices of inline scalars). The legacy charge is the
+    /// same as `allocation`.
+    pub fn opaque_allocation(&self, bytes: usize) -> Result<(), BackingError> {
+        if self.blocks {
+            return self.block(bytes, false, true);
+        }
+        self.allocation(bytes)
+    }
+
+    /// D-O1 (DR-92): one memory block of `bytes`. An inspection reads it once
+    /// for the consumer's traversal and once more when the walker visits its
+    /// elements; a copy also writes it and, for a heap block, allocates it.
+    fn block(&self, bytes: usize, visited: bool, allocated: bool) -> Result<(), BackingError> {
+        let reads = usize::from(visited) + 1 + usize::from(self.copy_payload);
+        self.meter.reserve(
+            0,
+            bytes.checked_mul(reads).ok_or(BackingError::Overflow)?,
+            if self.copy_payload && allocated {
+                bytes
+            } else {
+                0
+            },
+        )
+    }
+
+    /// D-O1 (DR-92): the inline bytes of a value read through a reference
+    /// (the walk's root, a shared payload or a borrowed referent): a block
+    /// that this walk does not allocate.
+    fn referent_block<T: CloneBacking>(&self) -> Result<(), BackingError> {
+        let visited = !self.is_inline::<T>();
+        self.block(size_of::<T>(), visited, false)
+    }
+
+    fn is_inline<T: CloneBacking>(&self) -> bool {
+        if self.copy_payload {
+            T::inline()
+        } else {
+            T::inline_inspection()
+        }
+    }
+
+    /// D-O1 (DR-92): a push in block mode. An inline field costs a constant
+    /// (its bytes lie in the enclosing block); a worklist entry costs the
+    /// entry constants, which also pay the worklist's chunks and the moves of
+    /// its chunk headers (D-B3).
+    fn push_block_entry<T: CloneBacking>(&mut self, value: &'a T) -> Result<(), BackingError> {
+        if self.is_inline::<T>() {
+            let header = if self.copy_payload && T::shared_header() {
+                BLOCK_SHARED_HEADER_SCANNED
+            } else {
+                0
+            };
+            return self.meter.reserve(
+                3,
+                BLOCK_FIELD_SCANNED
+                    .checked_add(header)
+                    .ok_or(BackingError::Overflow)?,
+                0,
+            );
+        }
+        self.meter
+            .reserve(3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING)?;
+        self.chunked.push(value)
     }
 
     pub fn collection(&self, operations: usize, bytes: usize) -> Result<(), BackingError> {
@@ -135,17 +318,15 @@ impl<'a> Walker<'a> {
             0,
             0,
         )?;
-        self.allocation(
-            values
-                .len()
-                .checked_mul(size_of::<T>())
-                .ok_or(BackingError::Overflow)?,
-        )?;
-        if !(if self.copy_payload {
-            T::inline()
+        let bytes = values
+            .len()
+            .checked_mul(size_of::<T>())
+            .ok_or(BackingError::Overflow)?;
+        if self.is_inline::<T>() {
+            // D-O1 (DR-92): the elements are not visited (legacy: same charge).
+            self.opaque_allocation(bytes)?;
         } else {
-            T::inline_inspection()
-        }) {
+            self.allocation(bytes)?;
             for value in values {
                 self.push(value)?;
             }
@@ -154,6 +335,12 @@ impl<'a> Walker<'a> {
     }
 
     fn drain(&mut self) -> Result<(), BackingError> {
+        if self.blocks {
+            while let Some(value) = self.chunked.pop() {
+                value.children(self)?;
+            }
+            return Ok(());
+        }
         while let Some(value) = self.pending.pop() {
             value.children(self)?;
         }
@@ -172,6 +359,8 @@ fn walk<T: CloneBacking>(
         meter,
         copy_payload,
         shared_pointers: false,
+        blocks: false,
+        chunked: ChunkedWorklist::new(),
     };
     walker.push(value)?;
     walker.drain()
@@ -188,9 +377,110 @@ fn walk_slice<T: CloneBacking>(
         meter,
         copy_payload,
         shared_pointers: false,
+        blocks: false,
+        chunked: ChunkedWorklist::new(),
     };
     walker.slice(values)?;
     walker.drain()
+}
+
+/// D-O1 (DR-92): a block-accounting walk. The root's inline bytes are one
+/// block (read through a reference, so not allocated by the walk); every
+/// other block is charged where the walk meets it.
+fn walk_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+    copy_payload: bool,
+    shared_pointers: bool,
+) -> Result<(), BackingError> {
+    let mut walker = Walker {
+        pending: Vec::new(),
+        capacity: 0,
+        meter,
+        copy_payload,
+        shared_pointers,
+        blocks: true,
+        chunked: ChunkedWorklist::new(),
+    };
+    walker.referent_block::<T>()?;
+    walker.push(value)?;
+    walker.drain()
+}
+
+fn walk_slice_blocks<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+    copy_payload: bool,
+    shared_pointers: bool,
+) -> Result<(), BackingError> {
+    let mut walker = Walker {
+        pending: Vec::new(),
+        capacity: 0,
+        meter,
+        copy_payload,
+        shared_pointers,
+        blocks: true,
+        chunked: ChunkedWorklist::new(),
+    };
+    walker.slice(values)?;
+    walker.drain()
+}
+
+/// D-O1 (DR-92): block-accounting inspection: prepays one linear traversal
+/// of `value` (and the walk itself).
+pub fn inspect_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    walk_blocks(value, meter, false, false)
+}
+/// D-O1 (DR-92): block-accounting copy: prepays a clone of `value`.
+pub fn reserve_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    walk_blocks(value, meter, true, false)
+}
+/// D-O1 (DR-92): block-accounting copy and the release of the copy.
+pub fn reserve_blocks_copy_and_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    reserve_blocks(value, meter)?;
+    inspect_blocks(value, meter)
+}
+pub fn inspect_blocks_slice<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    walk_slice_blocks(values, meter, false, false)
+}
+pub fn reserve_blocks_slice<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    walk_slice_blocks(values, meter, true, false)
+}
+pub fn reserve_blocks_slice_copy_and_cleanup<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    reserve_blocks_slice(values, meter)?;
+    inspect_blocks_slice(values, meter)
+}
+/// D-O1 (DR-92): block-accounting form of `inspect_shared_pointers`.
+pub fn inspect_shared_pointers_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    walk_blocks(value, meter, false, true)
+}
+/// D-O1 (DR-92): block-accounting form of `inspect_shared_pointer_slice`.
+pub fn inspect_shared_pointer_slice_blocks<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    walk_slice_blocks(values, meter, false, true)
 }
 
 pub fn reserve<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
@@ -233,6 +523,8 @@ pub fn inspect_shared_pointers<T: CloneBacking>(
         meter,
         copy_payload: false,
         shared_pointers: true,
+        blocks: false,
+        chunked: ChunkedWorklist::new(),
     };
     walker.push(value)?;
     walker.drain()
@@ -251,6 +543,8 @@ pub fn inspect_shared_pointer_slice<T: CloneBacking>(
         meter,
         copy_payload: false,
         shared_pointers: true,
+        blocks: false,
+        chunked: ChunkedWorklist::new(),
     };
     walker.slice(values)?;
     walker.drain()
@@ -277,13 +571,19 @@ impl<T: CloneBacking> CloneBacking for Option<T> {
 }
 impl<T: CloneBacking> CloneBacking for Box<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
-        walker.allocation(size_of::<T>())?;
+        if walker.is_inline::<T>() {
+            // D-O1 (DR-92): an inline payload is not visited (legacy: same charge).
+            walker.opaque_allocation(size_of::<T>())?;
+        } else {
+            walker.allocation(size_of::<T>())?;
+        }
         walker.push(self.as_ref())
     }
 }
 impl CloneBacking for String {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
-        walker.allocation(self.len())
+        // D-O1 (DR-92): string bytes are not visited (legacy: same charge).
+        walker.opaque_allocation(self.len())
     }
 }
 impl<K: CloneBacking, V: CloneBacking> CloneBacking for BTreeMap<K, V> {
@@ -341,7 +641,13 @@ impl<T: CloneBacking + Clone> CloneBacking for std::borrow::Cow<'_, T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         match self {
             std::borrow::Cow::Borrowed(_) if walker.copy_payload => Ok(()),
-            std::borrow::Cow::Borrowed(value) => walker.push(*value),
+            std::borrow::Cow::Borrowed(value) => {
+                // D-O1 (DR-92): the referent is a block of its own.
+                if walker.blocks {
+                    walker.referent_block::<T>()?;
+                }
+                walker.push(*value)
+            }
             std::borrow::Cow::Owned(value) => walker.push(value),
         }
     }
@@ -351,11 +657,16 @@ impl<T: CloneBacking> CloneBacking for Arc<T> {
         if walker.copy_payload || walker.shared_pointers {
             Ok(())
         } else {
+            // D-O1 (DR-92): the shared payload is a block of its own.
+            if walker.blocks {
+                walker.referent_block::<T>()?;
+            }
             walker.push(self.as_ref())
         }
     }
     fn inline() -> bool { true }
     fn inline_inspection() -> bool { false }
+    fn shared_header() -> bool { true }
 }
 impl<T: CloneBacking> CloneBacking for Arc<[T]> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
@@ -367,17 +678,20 @@ impl<T: CloneBacking> CloneBacking for Arc<[T]> {
     }
     fn inline() -> bool { true }
     fn inline_inspection() -> bool { false }
+    fn shared_header() -> bool { true }
 }
 impl CloneBacking for Arc<str> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         if walker.copy_payload {
             Ok(())
         } else {
-            walker.allocation(self.len())
+            // D-O1 (DR-92): string bytes are not visited (legacy: same charge).
+            walker.opaque_allocation(self.len())
         }
     }
     fn inline() -> bool { true }
     fn inline_inspection() -> bool { false }
+    fn shared_header() -> bool { true }
 }
 impl CloneBacking for RandomState {
     fn children<'a>(&'a self, _: &mut Walker<'a>) -> Result<(), BackingError> { Ok(()) }
@@ -428,3 +742,6 @@ inline!(
     f32,
     f64
 );
+
+#[cfg(test)]
+mod tests;
