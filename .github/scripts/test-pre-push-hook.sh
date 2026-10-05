@@ -57,6 +57,7 @@ COMMON_ENV=(
   SKIP_DENY=1
   SKIP_CI_TESTS=1
   TEST_CRATES=casper
+  TEST_RUNNER=nextest
 )
 
 printf '%s\n' "$PUSH_INPUT" |
