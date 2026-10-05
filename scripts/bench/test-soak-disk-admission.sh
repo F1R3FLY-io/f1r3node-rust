@@ -56,6 +56,8 @@
 #   log-budget-disabled   both budgets 0, logs over any budget                -> one iteration, no probe
 #   log-budget-range      SOAK_CONTAINER_LOG_BUDGET_MB above the 64-bit maximum -> configuration rejected, exit 2
 #   log-descriptor-exhaustion a writer at its descriptor limit keeps appending -> the probes sample, breach
+#   log-probe-vanished    the container stops between docker ps and docker inspect -> skipped, one iteration
+#   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -80,7 +82,8 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     cleanup-active-session cleanup-error-list cleanup-error-remove cleanup-error-network
     cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
     log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
-    log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion)
+    log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
+    log-probe-vanished log-rotated-unreadable)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -232,6 +235,18 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
 owned_id=0000000000000000000000000000000000000000000000000000000000000001
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-vanished && -s /case/evidence/workload-started.txt ]]; then
+    if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]] &&
+        mkdir /case/evidence/vanish-window 2>/dev/null; then
+        printf 'inspect-vanished\n' >>/case/evidence/log-probe-faults.txt
+        exit 1
+    fi
+    if [[ "${1:-}" == ps && "$*" == *"--filter id=$owned_id"* && -d /case/evidence/vanish-window ]] &&
+        mkdir /case/evidence/vanish-closed 2>/dev/null; then
+        printf 'recheck-empty\n' >>/case/evidence/log-probe-faults.txt
+        exit 0
+    fi
+fi
 if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]]; then
     if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-missing-boundary ||
         ( "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-missing-active && -s /case/evidence/workload-started.txt ) ]]; then
@@ -402,6 +417,8 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     log-container-hard) truncate -s 900M /case/clog/json.log && sleep 25 ;;
     log-node-soft) printf '%s\n' 3145728000 >/case/node-log-bytes && sleep 25 ;;
     log-probe-missing-active) sleep 25 ;;
+    log-probe-vanished) sleep 25 ;;
+    log-rotated-unreadable) truncate -s 1M /case/clog/json.log.1 && sleep 25 ;;
     log-descriptor-exhaustion)
         (
             exec 9>>/case/clog/json.log
@@ -474,6 +491,28 @@ SH
         log-descriptor-exhaustion)
             container_budget=1
             : >/case/clog/json.log
+            ;;
+        log-rotated-unreadable)
+            cat >bin/stat <<'SH'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    if [[ "$argument" == /case/clog/json.log.1 ]]; then
+        printf 'rotated-refused\n' >>/case/evidence/log-probe-faults.txt
+        exit 1
+    fi
+done
+exec /usr/bin/stat "$@"
+SH
+            cat >bin/sudo <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" != -n ]] || shift
+printf '%s\n' "$*" >>/case/evidence/sudo-commands.txt
+case "${1:-}" in
+test) shift; exec /usr/bin/env test "$@" ;;
+stat) shift; exec /case/bin/stat "$@" ;;
+esac
+exit 1
+SH
             ;;
         log-sudo-fallback)
             cat >bin/stat <<'SH'
@@ -751,7 +790,7 @@ SH
         log_inspects="${log_inspects:-0}"
         log_execs="${log_execs:-0}"
         case "$SCENARIO" in
-        log-within-budget | log-sudo-fallback | log-budget-disabled)
+        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished)
             if [[ "$SCENARIO" == log-budget-disabled ]]; then
                 if [[ "$log_inspects" != 0 || "$log_execs" != 0 ]]; then
                     printf 'FAIL: A disabled log budget still ran its probes.\n' >&2
@@ -759,6 +798,10 @@ SH
                 fi
             elif [[ "$log_inspects" -lt 1 || "$log_execs" -lt 1 ]]; then
                 printf 'ERROR: The fixture did not exercise both log probes (%s).\n' "$SCENARIO" >&2
+                exit 2
+            fi
+            if [[ "$SCENARIO" == log-probe-vanished ]] && ! grep -Fxq inspect-vanished evidence/log-probe-faults.txt; then
+                printf 'ERROR: The fixture did not remove the container between the listing and its probe.\n' >&2
                 exit 2
             fi
             if [[ "$SCENARIO" == log-sudo-fallback ]] &&
@@ -794,6 +837,10 @@ SH
         log-probe-missing-active)
             [[ -s evidence/log-probe-faults.txt ]] || exit 2
             expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect'
+            ;;
+        log-rotated-unreadable)
+            grep -Fxq rotated-refused evidence/log-probe-faults.txt || exit 2
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: container log of 000000000000'
             ;;
         log-node-soft) expected='The log guardian detected the node log directory of container 000000000000 at 3000 MiB over budget 2560 MiB (consecutive samples 3).' ;;
         log-container-soft) expected='The log guardian detected the container log of container 000000000000 at 450 MiB over budget 400 MiB (consecutive samples 3).' ;;

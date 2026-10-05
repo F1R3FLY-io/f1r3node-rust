@@ -493,10 +493,28 @@ log_file_bytes() {
 	printf '%s\n' "$bytes"
 }
 
+# Whether a file exists, checked directly or through passwordless sudo, for the
+# same reason as log_file_bytes. A rotated file that exists but cannot be read
+# fails the sample. A rotated file that does not exist is skipped.
+log_file_present() {
+	[ -e "$1" ] || sudo -n test -e "$1" 2>/dev/null
+}
+
+# Whether an owned container still runs. A container that left the running
+# owned set between the listing and its probes stopped writing, so the sample
+# skips it. When docker ps fails, the container counts as running and the
+# probe failure stands.
+log_container_running() {
+	local listed
+	listed="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" --filter "id=$1" 2>/dev/null)" || return 0
+	[ "$listed" = "$1" ]
+}
+
 # One line for each owned node container: "<id> <container MiB> <node MiB>",
 # with "-" for a disabled probe. A probe that cannot be read fails the sample
-# and names itself on stderr. A missing node log directory counts as 0: a
-# node on the stdout sink writes no file log. Call it through log_budget_probe.
+# and names itself on stderr. A container that stopped during the sample
+# is skipped. A missing node log directory counts as 0: a node on the stdout
+# sink writes no file log. Call it through log_budget_probe.
 log_budget_sample() {
 	local ids cid inspected owner path suffix bytes total container_mb node_mb
 	ids="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || {
@@ -510,6 +528,7 @@ log_budget_sample() {
 			return 1
 		fi
 		inspected="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}} {{.LogPath}}' "$cid" 2>/dev/null)" || {
+			log_container_running "$cid" || continue
 			printf 'log probe unavailable: docker inspect %s\n' "${cid:0:12}" >&2
 			return 1
 		}
@@ -520,13 +539,19 @@ log_budget_sample() {
 		node_mb=-
 		if [ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ]; then
 			if [[ "$path" != /* ]] || ! total="$(log_file_bytes "$path")"; then
+				log_container_running "$cid" || continue
 				printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
 				return 1
 			fi
 			for suffix in 1 2 3 4 5 6 7 8 9; do
-				if bytes="$(log_file_bytes "$path.$suffix")"; then
-					total="$((total + bytes))"
+				log_file_present "$path.$suffix" || continue
+				if ! bytes="$(log_file_bytes "$path.$suffix")"; then
+					log_file_present "$path.$suffix" || continue
+					log_container_running "$cid" || continue 2
+					printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
+					return 1
 				fi
+				total="$((total + bytes))"
 			done
 			container_mb="$(((total + 1048575) / 1048576))"
 		fi
@@ -534,6 +559,7 @@ log_budget_sample() {
 			bytes="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>/dev/null |
 				awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')"
 			if ! [[ "$bytes" =~ ^[0-9]{1,18}$ ]]; then
+				log_container_running "$cid" || continue
 				printf 'log probe unavailable: node log directory of %s\n' "${cid:0:12}" >&2
 				return 1
 			fi
@@ -555,7 +581,7 @@ log_budget_refusal() {
 
 log_budget_probe() (
 	export SOAK_WRITER_OWNER CONTAINER_LOG_BUDGET_MB NODE_LOG_BUDGET_MB NODE_LOG_DIR
-	export -f log_file_bytes log_budget_sample
+	export -f log_file_bytes log_file_present log_container_running log_budget_sample
 	timeout --signal=TERM --kill-after=1 "$LOG_PROBE_SECONDS" bash -c 'log_budget_sample' ||
 		{
 			status=$?

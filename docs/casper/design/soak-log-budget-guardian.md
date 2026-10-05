@@ -16,7 +16,7 @@ The guardian samples two byte counts for each owned node container and stops the
 
 | Probe | Source | Command |
 |-------|--------|---------|
-| Container log | The `json-file` log of the container and its rotated files | `docker inspect --format '{{.LogPath}}'`, then `stat -c %s` on the path and on `<path>.1` to `<path>.9`. The guardian uses `sudo -n stat` when the direct read is refused. |
+| Container log | The `json-file` log of the container and its rotated files | `docker inspect --format '{{.LogPath}}'`, then `stat -c %s` on the path and on `<path>.1` to `<path>.9`. The guardian uses `sudo -n stat` when the direct read is refused. A rotated file that does not exist is skipped. A rotated file that exists but cannot be read makes the probe unavailable. |
 | Node log directory | `<data-dir>/logs` inside the container, the directory of the node file sink | `docker exec <id> du -sb /var/lib/rnode/logs` |
 
 Owned containers are the containers with the label `io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER`, the same selection that `stop_node_writers` uses.
@@ -39,6 +39,8 @@ The log probes run on every third guardian sample (15 s), the cadence of the OOM
 ### Probe availability
 
 When a budget is above 0, the driver checks the probes against the running owned containers. The check runs before the opening benchmark and before each iteration. An unreadable probe refuses admission with a message that names the probe and the variable that disables it. This is the disk probe rule. When no owned container runs at the check, the check passes and the first guardian sample with containers performs it. An unreadable probe during execution is a breach with the reason `log probe unavailable`.
+
+A container that leaves the running owned set between the listing and one of its probes is skipped. It no longer writes, and the next listing does not include it. The probe asks `docker ps` again with the owner label and the container ID. When that call fails, the probe failure stands.
 
 ### What stays unchanged
 
@@ -92,5 +94,7 @@ The implementation follows the design with these changes:
 | Probe cadence | Every third guardian sample | `SOAK_LOG_PROBE_EVERY` (1 to 3, default 3). The fixture uses 1, so a soft breach takes about 15 seconds instead of 45. |
 | Probe deadline | Bounded | `SOAK_LOG_PROBE_SECONDS` (1 to 4, default 4) bounds one sample of all containers. The guardian records progress before and after the sample, so the sample stays inside `SOAK_GUARDIAN_MAX_SILENCE_SECONDS`. |
 | Strike count | For each probe | For each probe, on the largest value over the owned containers. |
+| Stopped container | Not specified | Added on 2026-10-05 after the PR #622 review. The probe skips a container that stopped during the sample. Before, the failure was a breach, and a normal shard stop in an iteration could end the soak. Scenario `log-probe-vanished`. |
+| Unreadable rotated file | Not specified | Added on 2026-10-05 after the PR #622 review. Before, the probe skipped an unreadable rotated file and reported a total that was too small. Scenario `log-rotated-unreadable`. |
 
-The breach and refusal scenarios fail against the driver without the log guardian. The disk scenarios run with both budgets at 0, so their behavior is unchanged.
+The breach and refusal scenarios fail against the driver without the log guardian. The two scenarios of 2026-10-05 fail against the driver at 514eb3026. The disk scenarios run with both budgets at 0, so their behavior is unchanged.
