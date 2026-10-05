@@ -429,7 +429,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMa
     fn check_commit_metered(
         &self,
         continuation: &TaggedContinuation,
-        matched: &[ListParWithRandom],
+        matched: &[&ListParWithRandom],
         meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         Matcher.check_commit_metered(continuation, matched, meter)
@@ -690,7 +690,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for SharedMatcher
     fn check_commit_metered(
         &self,
         continuation: &TaggedContinuation,
-        matched: &[ListParWithRandom],
+        matched: &[&ListParWithRandom],
         meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         self.0.check_commit_metered(continuation, matched, meter)

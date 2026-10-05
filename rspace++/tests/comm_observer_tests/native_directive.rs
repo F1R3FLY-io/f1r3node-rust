@@ -472,7 +472,7 @@ impl Match<Any, String, String> for OrderedMatch {
     fn check_commit_metered(
         &self,
         continuation: &String,
-        data: &[String],
+        data: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         let steps = data
@@ -483,11 +483,13 @@ impl Match<Any, String, String> for OrderedMatch {
         meter.reserve(steps, 0, 0)?;
         let scanned = data
             .iter()
-            .chain(self.0.iter())
-            .try_fold(0usize, |total, value| total.checked_add(value.len()))
+            .map(|value| value.len())
+            .chain(self.0.iter().map(String::len))
+            .try_fold(0usize, |total, length| total.checked_add(length))
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(1, scanned, 0)?;
-        Ok(self.check_commit(continuation, data))
+        let owned: Vec<String> = data.iter().map(|value| (*value).clone()).collect();
+        Ok(self.check_commit(continuation, &owned))
     }
 }
 
@@ -634,7 +636,7 @@ impl Match<Any, String, String> for GuardRejects {
     fn check_commit_metered(
         &self,
         _: &String,
-        _: &[String],
+        _: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         meter.reserve(1, 0, 0)?;
@@ -794,7 +796,7 @@ impl Match<Any, String, String> for NamedGuard {
     fn check_commit_metered(
         &self,
         continuation: &String,
-        matched: &[String],
+        matched: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         let scanned = continuation
@@ -802,7 +804,8 @@ impl Match<Any, String, String> for NamedGuard {
             .checked_add(self.rejected.len())
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(2, scanned, 0)?;
-        Ok(self.check_commit(continuation, matched))
+        let owned: Vec<String> = matched.iter().map(|value| (*value).clone()).collect();
+        Ok(self.check_commit(continuation, &owned))
     }
 }
 

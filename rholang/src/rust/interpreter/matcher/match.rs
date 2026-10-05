@@ -127,10 +127,12 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         guard_passes(guard, &combined)
     }
 
+    // Changed by D-M6 (DR-88): the matched data are borrowed.
+    // matched: &[ListParWithRandom],
     fn check_commit_metered(
         &self,
         k: &TaggedContinuation,
-        matched: &[ListParWithRandom],
+        matched: &[&ListParWithRandom],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         meter.reserve(1, 0, 0)?;
@@ -178,9 +180,11 @@ fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {
     }
 }
 
+// Changed by D-M6 (DR-88): the matched data are borrowed.
+// matched: &[ListParWithRandom],
 fn guard_passes_metered(
     condition: &Par,
-    matched: &[ListParWithRandom],
+    matched: &[&ListParWithRandom],
     meter: &dyn BackingMeter,
 ) -> Result<bool, BackingError> {
     let mut env: PureEnv<Par> = PureEnv::new();
@@ -226,7 +230,9 @@ fn extract_bool(par: &Par) -> Option<bool> {
 mod metered_tests {
     use std::sync::Mutex;
 
+    use models::rhoapi::tagged_continuation::TaggedCont;
     use models::rhoapi::var::VarInstance::FreeVar;
+    use models::rhoapi::ParWithRandom;
 
     use super::*;
 
@@ -293,6 +299,170 @@ mod metered_tests {
         assert_eq!(
             matcher.check_commit_metered(&false_guard, &[], &full),
             Ok(false)
+        );
+    }
+
+    fn bool_par(value: bool) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(value)),
+            }],
+            ..Par::default()
+        }
+    }
+
+    fn bound_var_par(index: i32) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(BoundVar(index)),
+                    }),
+                })),
+            }],
+            ..Par::default()
+        }
+    }
+
+    fn body_par(size: usize) -> Par {
+        Par {
+            exprs: (0..size)
+                .map(|index| Expr {
+                    expr_instance: Some(ExprInstance::GInt(
+                        i64::try_from(index).expect("index fits in i64"),
+                    )),
+                })
+                .collect(),
+            ..Par::default()
+        }
+    }
+
+    fn continuation_with(guard: Option<Par>, body_size: usize) -> TaggedContinuation {
+        TaggedContinuation {
+            guard,
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(body_par(body_size)),
+                random_state: vec![7; 32],
+            })),
+            ..TaggedContinuation::default()
+        }
+    }
+
+    fn binding(pars: Vec<Par>) -> ListParWithRandom {
+        ListParWithRandom {
+            pars,
+            ..ListParWithRandom::default()
+        }
+    }
+
+    fn commit_charge(
+        continuation: &TaggedContinuation,
+        matched: &[&ListParWithRandom],
+    ) -> (Result<bool, RSpaceError>, [usize; 3]) {
+        let used = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut totals = used.lock().expect("usage lock");
+            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let result = Matcher.check_commit_metered(continuation, matched, &meter);
+        let totals = *used.lock().expect("usage lock");
+        (result, totals)
+    }
+
+    /// D-M6 (DR-88): the metered commit check over borrowed matched data
+    /// decides exactly like the unmetered check over owned data.
+    #[test]
+    fn commit_guard_by_reference_matches_owned_guard() {
+        let cases = vec![
+            (None, Vec::new()),
+            (Some(Par::default()), vec![binding(vec![bool_par(false)])]),
+            (Some(bool_par(true)), vec![binding(vec![bool_par(false)])]),
+            (Some(bool_par(false)), vec![binding(vec![bool_par(true)])]),
+            (Some(bound_var_par(0)), vec![binding(vec![bool_par(true)])]),
+            (Some(bound_var_par(0)), vec![binding(vec![bool_par(false)])]),
+            (Some(bound_var_par(0)), vec![
+                binding(vec![bool_par(true)]),
+                binding(vec![bool_par(false)]),
+            ]),
+            (Some(bound_var_par(1)), vec![
+                binding(vec![bool_par(true)]),
+                binding(vec![bool_par(false)]),
+            ]),
+            (Some(bound_var_par(1)), vec![binding(vec![
+                bool_par(false),
+                bool_par(true),
+            ])]),
+            (Some(bound_var_par(3)), vec![binding(vec![bool_par(true)])]),
+            (Some(body_par(2)), vec![binding(vec![bool_par(true)])]),
+        ];
+        for (guard, owned) in cases {
+            let continuation = continuation_with(guard.clone(), 3);
+            let borrowed: Vec<&ListParWithRandom> = owned.iter().collect();
+            let (metered, _) = commit_charge(&continuation, &borrowed);
+            assert_eq!(
+                metered,
+                Ok(Matcher.check_commit(&continuation, &owned)),
+                "guard {guard:?}, matched {owned:?}"
+            );
+        }
+    }
+
+    /// D-M1 (DR-88): the metered commit check reads only the guard, so its
+    /// charge does not depend on the continuation body; without a guard it
+    /// reads none of the matched data either.
+    #[test]
+    fn commit_check_charge_is_independent_of_continuation_body() {
+        let small = binding(vec![bool_par(true)]);
+        let large = binding((0..512).map(|_| body_par(16)).collect());
+        for guard in [None, Some(bool_par(true)), Some(bound_var_par(0))] {
+            let (short_result, short) =
+                commit_charge(&continuation_with(guard.clone(), 1), &[&small]);
+            let (long_result, long) =
+                commit_charge(&continuation_with(guard.clone(), 4_096), &[&small]);
+            assert_eq!(short_result, long_result, "guard {guard:?}");
+            assert_eq!(short, long, "guard {guard:?}");
+        }
+        assert_eq!(
+            commit_charge(&continuation_with(None, 4_096), &[&large]),
+            (Ok(true), [1, 0, 0])
+        );
+        assert_eq!(
+            commit_charge(&continuation_with(None, 1), &[&small]),
+            (Ok(true), [1, 0, 0])
+        );
+    }
+
+    /// Negative control for D-M1 (DR-88): the legacy caller walked the whole
+    /// continuation before the commit check, so its charge grew with the
+    /// unread body although the check read only the guard.
+    #[test]
+    fn legacy_commit_charge_grew_with_unread_body() {
+        let legacy = |continuation: &TaggedContinuation| {
+            let used = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut totals = used.lock().expect("usage lock");
+                for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
+                    *total += amount;
+                }
+                Ok(())
+            };
+            clone_backing::inspect(continuation, &meter).expect("legacy inspection");
+            let (_, check) = commit_charge(continuation, &[]);
+            let walk = *used.lock().expect("usage lock");
+            [walk[0] + check[0], walk[1] + check[1], walk[2] + check[2]]
+        };
+        let guard = Some(bool_par(true));
+        let (_, short_check) = commit_charge(&continuation_with(guard.clone(), 1), &[]);
+        let (_, long_check) = commit_charge(&continuation_with(guard.clone(), 4_096), &[]);
+        assert_eq!(short_check, long_check);
+        let short = legacy(&continuation_with(guard.clone(), 1));
+        let long = legacy(&continuation_with(guard, 4_096));
+        assert!(
+            long[0] > short[0] && long[1] > short[1] * 100,
+            "{short:?} vs {long:?}"
         );
     }
 

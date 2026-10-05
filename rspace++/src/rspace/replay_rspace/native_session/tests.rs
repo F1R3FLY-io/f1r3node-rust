@@ -257,7 +257,7 @@ impl Match<String, String, String> for Matcher {
     fn check_commit_metered(
         &self,
         _: &String,
-        _: &[String],
+        _: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         meter.reserve(1, 0, 0)?;

@@ -5932,3 +5932,88 @@ The existing acquisition tests now assert the aggregated entry counts. The
 gateway funding flow itself is measured in the phase C probe.
 
 **Cross-refs.** DR-77, DR-85, DR-86. Leaf `ofp-2-cap-c8-aggregated-demand`.
+
+## DR-88 — Candidate selection charges only what the matcher reads
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A1 of epic 8946
+(D-M1 and D-M6 of the Phase D plan).
+
+**Context.** Native replay selects candidates in
+`metered_match_data` (`native_candidate/metered.rs`) and checks
+installations in `install` (`native_session/installation.rs`). Before each
+match attempt the caller inspected the whole pattern and the whole datum.
+Before the commit check it inspected the whole continuation, and it copied
+every matched datum into an owned vector only to pass a slice to
+`check_commit_metered`. In the gateway funding block the continuation
+inspection alone charged 177.2 MB of VerificationBytes per validator
+replay (157.3 MB on the produce path, 19.9 MB on the consume path), the
+pattern and datum inspections 14.7 MB, and the copies 27.3 MB.
+
+**Decision.**
+
+1. `Match::get_metered` and `Match::check_commit_metered` carry a written
+   contract: an implementation reserves every read of the pattern, the
+   datum, the continuation and the matched data before it performs the read.
+   The rholang `Matcher` complies: `fold_match` reserves a copy of every
+   pair it touches, `free_check` reserves every surplus target, and the
+   commit check reserves one operation and then walks only the guard. Every
+   test matcher complies.
+2. The caller no longer inspects the pattern, the datum or the continuation
+   before these calls. The inspections are commented out with their reason.
+3. `check_commit_metered` takes the matched data by reference
+   (`&[&A]`). The caller builds a vector of references, charged as a buffer
+   of `n` pointers, instead of copying every matched datum. The owned-copy
+   code is commented out with its reason. The unmetered `check_commit` keeps
+   its owned signature.
+
+**Soundness.** The removed inspections prepaid no read: every read of the
+pattern, the datum and the guard is reserved by the self-metered callee
+before it happens, so prefix coverage holds for the new runs as for the
+legacy runs. The reference vector is the only remaining work of the old
+copy step, and it is reserved before it is built. The decisions do not
+change: the commit check over borrowed data evaluates the same guard on the
+same bindings. Every charge depends only on value sizes and `size_of`, so
+producer self-replay and validator replays compute it identically.
+
+**Scope.** This change is cost-accounting work: native replay and its
+metered matcher interface exist only on this branch. The play path
+(`Match::get`, `Match::check_commit`) does not change. No encoding, root or
+event changes.
+
+**Verification.** `CandidateReadCoverage.v` proves without axioms, over the
+event model of `ObservationReadCoverage`:
+
+- `attempt_trace_covered`, `legacy_attempt_trace_covered`,
+  `commit_trace_covered` and `legacy_commit_trace_covered`;
+- `attempt_reads_equal_legacy_reads` and `legacy_attempt_excess`: the
+  attempt reads the same and reserves one pattern and one datum inspection
+  less;
+- `legacy_commit_excess` and `legacy_commit_reads`: the commit check
+  reserves the continuation inspection, the owned vector and the copies less
+  and the reference vector more, and the copies were real work;
+- `attempt_charge_independent_of_unread_tails`,
+  `commit_charge_independent_of_body` and
+  `commit_refs_charge_independent_of_matched_sizes`;
+- negative controls `legacy_commit_charge_depends_on_unread_body`,
+  `legacy_attempt_charge_depends_on_unread_tails` and
+  `legacy_commit_copy_excess`.
+
+Tests:
+
+- rspace++ `native_candidate/metered/tests.rs`:
+  `match_attempt_charge_excludes_unread_pattern_and_datum` (4 KiB unread
+  tails on the pattern and the datum leave a failed attempt's charge
+  unchanged), `commit_check_charge_is_independent_of_continuation_body` (a
+  4 KiB continuation leaves a successful match's charge unchanged), and the
+  negative control `legacy_selection_charge_grew_with_unread_values`.
+- rholang `matcher/match.rs`: `commit_guard_by_reference_matches_owned_guard`
+  (borrowed and owned checks decide alike for empty, constant, bound-variable,
+  cross-binding, out-of-range and non-boolean guards),
+  `commit_check_charge_is_independent_of_continuation_body` (also: without a
+  guard the check charges exactly one operation, whatever the matched data),
+  and the negative control `legacy_commit_charge_grew_with_unread_body`.
+- The existing every-cut and differential tests of candidate selection and
+  installation pass unchanged.
+
+**Cross-refs.** DR-76 (C12, the same read-coverage rule for the COMM
+observation), DR-81, DR-82. Leaf `ofp-2-cap-d-a1-commit-check-reads`.

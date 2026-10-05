@@ -27,11 +27,12 @@ impl Match<u8, u8, u8> for Matcher {
     fn check_commit_metered(
         &self,
         continuation: &u8,
-        matched: &[u8],
+        matched: &[&u8],
         meter: &(dyn crate::rspace::hashing::native_source::SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         meter.reserve(1, 1, 0)?;
-        Ok(self.check_commit(continuation, matched))
+        let owned: Vec<u8> = matched.iter().map(|value| **value).collect();
+        Ok(self.check_commit(continuation, &owned))
     }
 }
 

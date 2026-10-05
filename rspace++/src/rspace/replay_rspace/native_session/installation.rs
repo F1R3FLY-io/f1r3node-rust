@@ -92,8 +92,10 @@ where
                 if consumed {
                     continue;
                 }
-                native_backing::inspect(pattern, &meter)?;
-                native_backing::inspect(&datum.a, &meter)?;
+                // Disabled by D-M1 (DR-88): get_metered reserves every read of
+                // the pattern and the datum; this walk read nothing.
+                // native_backing::inspect(pattern, &meter)?;
+                // native_backing::inspect(&datum.a, &meter)?;
                 let Some(value) = self.space.matcher.get_metered(pattern, &datum.a, &meter)? else {
                     continue;
                 };
@@ -110,12 +112,22 @@ where
             }
         }
         if complete {
-            native_backing::inspect(&install.continuation, &meter)?;
-            if self
-                .space
-                .matcher
-                .check_commit_metered(&install.continuation, &matched, &meter)?
-            {
+            // Disabled by D-M1 (DR-88): check_commit_metered reserves every
+            // read of the continuation (its guard); this walk read nothing.
+            // native_backing::inspect(&install.continuation, &meter)?;
+            // Changed by D-M6 (DR-88): the commit check reads the matched data
+            // by reference.
+            meter.reserve(1, 0, backing::<&A>(count)?)?;
+            let mut matched_refs = Vec::new();
+            matched_refs
+                .try_reserve_exact(count)
+                .map_err(|_| RSpaceError::HostWorkRejected)?;
+            matched_refs.extend(matched.iter());
+            if self.space.matcher.check_commit_metered(
+                &install.continuation,
+                &matched_refs,
+                &meter,
+            )? {
                 return Err(RSpaceError::BugFoundError(
                     "native replay installation cannot execute a COMM".to_owned(),
                 ));

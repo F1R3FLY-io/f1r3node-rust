@@ -477,8 +477,10 @@ where
                 if !datum.persist && chosen.contains(&(channel_index, position)) {
                     continue;
                 }
-                native_backing::inspect(pattern, meter)?;
-                native_backing::inspect(&datum.a, meter)?;
+                // Disabled by D-M1 (DR-88): get_metered reserves every read of
+                // the pattern and the datum; this walk read nothing.
+                // native_backing::inspect(pattern, meter)?;
+                // native_backing::inspect(&datum.a, meter)?;
                 let Some(matched) = self.matcher.get_metered(pattern, &datum.a, meter)? else {
                     continue;
                 };
@@ -508,12 +510,20 @@ where
         if !complete {
             return Ok(None);
         }
-        let mut matched = buffer(candidates.len(), meter)?;
+        // Changed by D-M6 (DR-88): the commit check reads the matched data by
+        // reference, so they are not copied.
+        // let mut matched = buffer(candidates.len(), meter)?;
+        // for candidate in &candidates {
+        //     native_backing::reserve_copy_and_cleanup(&candidate.datum.a, meter)?;
+        //     matched.push(candidate.datum.a.clone());
+        // }
+        let mut matched = buffer::<&A>(candidates.len(), meter)?;
         for candidate in &candidates {
-            native_backing::reserve_copy_and_cleanup(&candidate.datum.a, meter)?;
-            matched.push(candidate.datum.a.clone());
+            matched.push(&candidate.datum.a);
         }
-        native_backing::inspect(continuation, meter)?;
+        // Disabled by D-M1 (DR-88): check_commit_metered reserves every read
+        // of the continuation (its guard); this walk read nothing.
+        // native_backing::inspect(continuation, meter)?;
         if !self
             .matcher
             .check_commit_metered(continuation, &matched, meter)?
