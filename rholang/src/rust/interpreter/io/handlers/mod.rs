@@ -35,6 +35,7 @@
 
 pub mod helpers;
 pub mod lifecycle;
+pub mod lock;
 pub mod mutation;
 pub mod observation;
 pub mod stream;

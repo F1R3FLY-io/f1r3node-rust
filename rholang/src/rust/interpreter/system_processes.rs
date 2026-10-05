@@ -402,6 +402,12 @@ impl FixedChannels {
     /// mutation; reply carries bytes-copied via `ok_u64`.  Added
     /// by slice 4.33.
     pub fn fs_copy_file() -> Par { byte_name(56) }
+
+    /// `rho:io:fs:native:1.0.0/lockRange` — range-based advisory
+    /// lock acquire via `LockRegistry::try_acquire_range_wait`.
+    /// Non-verifying lock lifecycle; minted LockId is consensus-
+    /// observable.  First Lock-family handler on dev (slice 4.34).
+    pub fn fs_lock_range() -> Par { byte_name(62) }
 }
 
 pub struct BodyRefs;
@@ -511,6 +517,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/copyFile` body-ref (slice 4.33).
     pub const FS_COPY_FILE: i64 = 56;
+
+    /// `rho:io:fs:native:1.0.0/lockRange` body-ref (slice 4.34).
+    pub const FS_LOCK_RANGE: i64 = 62;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

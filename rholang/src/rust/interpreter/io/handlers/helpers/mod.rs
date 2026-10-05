@@ -41,6 +41,7 @@
 
 pub mod ack_hash;
 pub mod journal;
+pub mod lock_helpers;
 pub mod open_impl;
 pub mod read_impl;
 pub mod readdir;
@@ -50,6 +51,9 @@ pub use ack_hash::ack_channel_hash;
 pub use journal::{
     finalize_failure_journal_via_table, journal_path_mutation_single_via_table,
     journal_path_mutation_two_via_table, journal_state_read_via_table, journal_truncate_via_table,
+};
+pub use lock_helpers::{
+    dev_inode_from_fd_via_table, holder_id_of, lock_err_reply, resolve_lock_mode,
 };
 pub use open_impl::open_impl_via_table;
 pub use read_impl::read_impl_via_table;
