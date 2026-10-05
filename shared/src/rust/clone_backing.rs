@@ -237,6 +237,24 @@ pub fn inspect_shared_pointers<T: CloneBacking>(
     walker.push(value)?;
     walker.drain()
 }
+/// D-O4 (DR-89): `inspect_shared_pointers` for a slice: the cleanup walk of a
+/// copied slice of shared pointers whose payload releases were prepaid when
+/// the payloads were born. It charges the slice allocation and each pointer,
+/// and skips every payload.
+pub fn inspect_shared_pointer_slice<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    let mut walker = Walker {
+        pending: Vec::new(),
+        capacity: 0,
+        meter,
+        copy_payload: false,
+        shared_pointers: true,
+    };
+    walker.slice(values)?;
+    walker.drain()
+}
 pub fn inspect_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,

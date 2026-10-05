@@ -6017,3 +6017,91 @@ Tests:
 
 **Cross-refs.** DR-76 (C12, the same read-coverage rule for the COMM
 observation), DR-81, DR-82. Leaf `ofp-2-cap-d-a1-commit-check-reads`.
+
+## DR-89 — Replay authority charges only the reads and copies it makes
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A2 of epic 8946
+(D-O4 and D-O5 of the Phase D plan).
+
+**Context.** Two replay-authority charges did not follow the work.
+
+1. `ReplayAuthorityBinding::prepare` walked the whole recorded observation
+   of every COMM row and reserved a copy of its authority, whatever the
+   branch. Only the retry branch compares the recorded observation, and only
+   a new row copies the authority: into the event when it is granted, into
+   the frontier at publication when it is not.
+2. `reserve_native_result_backing` reserved a copy and cleanup of the whole
+   events map (its tree backing and every event's shared byte-observation
+   payload) and of every byte-observation row payload. `capture_result`
+   copies only each event's id, authority and debit
+   (`authority_events`). In replay the rows come from the evidence and are
+   not copied. In play the rows are copied as shared pointers whose payload
+   releases were prepaid when the rows were born.
+
+In the gateway funding block these charges were 39.8 MB of VerificationBytes
+per validator replay and 24.1 MB in producer execution.
+
+**Decision.**
+
+1. `prepare` no longer walks the observation or reserves the authority copy
+   up front; both lines are commented out with their reason. The retry
+   branch inspects the saved and the recorded observation before it compares
+   them. The `(None, false)` branch reserves the authority copy and the copy
+   of the shared observation pointer that the event or the frontier keeps.
+2. `reserve_native_result_backing(copies_rows)` reserves, for each event,
+   the copy and cleanup of its id, its authority and its debit
+   (`backing::reserve_event_copies`), and keeps the realized ledger, the stack
+   births and the result vectors. When rows are copied (play, no evidence), it
+   reserves the pointer-slice copy and the shared-pointer cleanup
+   (`inspect_shared_pointer_slice`, the C5 rule of DR-83). `capture_result`
+   passes `evidence.is_none()`.
+3. The shared walker gains `inspect_shared_pointer_slice`, the slice form of
+   `inspect_shared_pointers`. The rholang wrappers `reserve` and
+   `reserve_slice` are enabled outside tests.
+
+**Soundness.** Each branch of `prepare` reserves every read and copy it
+performs before it performs it: the comparison reads both observations, the
+event or the frontier copies the authority and the shared pointer. The
+result backing covers every copy `capture_result` makes: event ids,
+authorities and debits with their releases, the realized ledger and the
+births, and in play the row pointers. Row payload releases were prepaid at
+birth (`reserve_observation_birth` reserves the shared allocation as owned
+backing, and the canonical authority is built under owned backing). The
+charges depend only on value sizes and on whether evidence is present, which
+every replay of a block agrees on.
+
+**Scope.** Cost-accounting work: the native replay authority and its result
+backing exist only on this branch. The error order changes only on replays
+that are already invalid (a row that fails an identity check is now rejected
+before the observation walk is reserved). No encoding, root or event changes.
+
+**Verification.** `ReplayAuthorityPrepareCoverage.v` proves without axioms:
+`prepare_trace_covered`, `legacy_prepare_trace_covered`,
+`prepare_reads_equal_legacy_reads`, `legacy_prepare_excess`,
+`prepare_charge_independent_of_unread_values` and the negative control
+`legacy_prepare_inspects_unread_observation`. `ResultBackingCoverage.v`
+proves `result_charge_covers_play_copies`,
+`result_charge_covers_replay_copies`, `legacy_result_trace_covered`,
+`result_reads_equal_legacy_reads`, `legacy_result_excess`,
+`shared_row_cleanup_releases_no_payload` and the negative control
+`legacy_result_charge_counts_unreturned_payloads`.
+
+Tests in `replay_authority/tests/backing.rs`:
+
+- `prepare_rejects_each_smaller_dimension_without_publication`: for a
+  granted, a frontier and a retry row, a budget one unit short in any
+  dimension rejects the prepare and publishes nothing.
+- `result_backing_charges_row_pointers_not_payloads`: the replay result
+  backing does not depend on the rows; the play charge for a row does not
+  depend on its payload.
+- `event_result_backing_covers_counted_allocations`: the bytes the result
+  copies allocate (counted by a measuring allocator) stay within the reserved
+  SearchStateBytes.
+- Negative controls `legacy_prepare_charge_walked_the_recorded_observation`
+  and `legacy_result_backing_walked_unreturned_payloads`.
+
+The existing replay-authority tests, including the retry exhaustion and the
+checkpoint and result rejection tests, pass unchanged.
+
+**Cross-refs.** DR-79 (C14), DR-83 (C5), DR-88. Leaf
+`ofp-2-cap-d-a2-replay-authority-backing`.

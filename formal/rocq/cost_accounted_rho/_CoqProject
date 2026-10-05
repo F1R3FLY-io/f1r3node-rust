@@ -623,6 +623,8 @@ theories/NativeCandidateDigestCache.v
 theories/CandidateSourceOrder.v
 theories/ObservationReadCoverage.v
 theories/CandidateReadCoverage.v
+theories/ReplayAuthorityPrepareCoverage.v
+theories/ResultBackingCoverage.v
 theories/IncrementalTreeBacking.v
 theories/OrderedLookupBound.v
 theories/NativeSharedReads.v

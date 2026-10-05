@@ -141,8 +141,11 @@ impl ReplayAuthorityBinding {
                 // of the three identity maps.
                 // backing::reserve_event_lookup(&host)?;
                 backing::reserve_event_lookup(&state, &host)?;
-                clone_backing::inspect(row.observation.as_ref(), &host)?;
-                clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
+                // Disabled by D-O5 (DR-89): only the retry branch compares the
+                // recorded observation, and only the (None, false) branch copies
+                // the authority; each branch reserves its own reads and copies.
+                // clone_backing::inspect(row.observation.as_ref(), &host)?;
+                // clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
                 let id = row.observation.event_id;
                 if state.pending_stack_event_ids.contains(&id)
                     || state.pending_replay_events.contains_key(&id)
@@ -153,11 +156,18 @@ impl ReplayAuthorityBinding {
                     (Some(existing), true) if row.granted => {
                         let saved = existing.byte_observation.as_deref().ok_or_else(invalid)?;
                         clone_backing::inspect(saved, &host)?;
+                        // D-O5 (DR-89): the comparison reads the recorded observation.
+                        clone_backing::inspect(row.observation.as_ref(), &host)?;
                         if saved != row.observation.as_ref() {
                             return Err(invalid());
                         }
                     }
                     (None, false) => {
+                        // D-O5 (DR-89): the granted event copies the authority now;
+                        // a frontier row copies it at publication. Both keep a
+                        // shared pointer to the recorded observation.
+                        clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
+                        clone_backing::reserve(&row.observation, &host)?;
                         if row.granted {
                             let demand = metered_demand(&row.observation.authority, &host)?;
                             event = Some((id, AuthorityRuntimeEvent {
@@ -327,16 +337,34 @@ impl RuntimeBudget {
         })
     }
 
-    pub(crate) fn reserve_native_result_backing(&self) -> Result<(), InterpreterError> {
+    // Changed by D-O4 (DR-89): the backing charges only the copies that
+    // capture_result makes; a replay with evidence copies no rows.
+    // pub(crate) fn reserve_native_result_backing(&self) -> Result<(), InterpreterError> {
+    pub(crate) fn reserve_native_result_backing(
+        &self,
+        copies_rows: bool,
+    ) -> Result<(), InterpreterError> {
         let state = self.authority_state.lock().expect("authority state");
         let Some(native) = &state.native else {
             return Ok(());
         };
         let host = native.host_work();
-        clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
+        // Disabled by D-O4 (DR-89): authority_events copies the id, the
+        // authority and the debit of each event, not the map, its tree backing
+        // or the shared byte-observation payloads.
+        // clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
+        backing::reserve_event_copies(&state, &host)?;
         clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
         clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
-        clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
+        // Disabled by D-O4 (DR-89): a replay with evidence copies no rows, and
+        // play copies shared pointers whose payload releases were prepaid when
+        // the rows were born (the C5 rule, DR-83).
+        // clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
+        if copies_rows {
+            let rows = state.byte_observations.rows();
+            clone_backing::reserve_slice(rows, &host)?;
+            clone_backing::inspect_shared_pointer_slice(rows, &host)?;
+        }
         backing::reserve_result_vectors(&state, &host)
     }
 

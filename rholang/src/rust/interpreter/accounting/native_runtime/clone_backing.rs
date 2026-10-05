@@ -20,7 +20,9 @@ fn meter(host: &HostWorkBudget) -> impl Fn(usize, usize, usize) -> Result<(), Ba
     }
 }
 
-#[cfg(test)]
+// Enabled outside tests by D-O5 (DR-89): replay authority prepare charges
+// the copy of a shared observation pointer.
+// #[cfg(test)]
 pub(crate) fn reserve<T: CloneBacking>(
     value: &T,
     host: &HostWorkBudget,
@@ -34,7 +36,9 @@ pub(crate) fn reserve_copy_and_cleanup<T: CloneBacking>(
     backing::reserve_copy_and_cleanup(value, &meter(host))
         .map_err(|_| InterpreterError::HostWorkRejected)
 }
-#[cfg(test)]
+// Enabled outside tests by D-O4 (DR-89): the result backing charges the
+// copy of the byte-observation pointer slice.
+// #[cfg(test)]
 pub(crate) fn reserve_slice<T: CloneBacking>(
     values: &[T],
     host: &HostWorkBudget,
@@ -53,6 +57,15 @@ pub(crate) fn inspect<T: CloneBacking>(
     host: &HostWorkBudget,
 ) -> Result<(), InterpreterError> {
     backing::inspect(value, &meter(host)).map_err(|_| InterpreterError::HostWorkRejected)
+}
+/// D-O4 (DR-89): the cleanup of a copied slice of shared pointers whose
+/// payload releases were prepaid at birth (the C5 rule, DR-83).
+pub(crate) fn inspect_shared_pointer_slice<T: CloneBacking>(
+    values: &[T],
+    host: &HostWorkBudget,
+) -> Result<(), InterpreterError> {
+    backing::inspect_shared_pointer_slice(values, &meter(host))
+        .map_err(|_| InterpreterError::HostWorkRejected)
 }
 pub(crate) fn inspect_slice<T: CloneBacking>(
     values: &[T],

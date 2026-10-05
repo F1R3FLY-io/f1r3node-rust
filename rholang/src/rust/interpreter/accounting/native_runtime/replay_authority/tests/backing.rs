@@ -146,7 +146,7 @@ fn checkpoint_and_result_reject_before_unpaid_copies_and_preserve_live_state() {
         let result = if checkpoint {
             budget.native_authority_checkpoint().map(|_| ())
         } else {
-            budget.reserve_native_result_backing()
+            budget.reserve_native_result_backing(true)
         };
         assert!(matches!(result, Err(InterpreterError::HostWorkRejected)));
         assert!(host.is_rejected());
@@ -495,4 +495,205 @@ fn deferred_searches_are_charged_after_the_operation() {
             "lanes {lanes}, events {events}"
         );
     }
+}
+
+fn usages_of(host: &HostWorkBudget) -> [u64; 3] {
+    [
+        host.usage(HostWorkDimension::VerificationOperations).get(),
+        host.usage(HostWorkDimension::VerificationBytes).get(),
+        host.usage(HostWorkDimension::SearchStateBytes).get(),
+    ]
+}
+
+fn spent(before: [u64; 3], after: [u64; 3]) -> [u64; 3] {
+    [
+        after[0] - before[0],
+        after[1] - before[1],
+        after[2] - before[2],
+    ]
+}
+
+/// The usage of one prepare of `observed` on a fresh budget that already
+/// published one granted event with id 0 (so a retry of id 0 finds it).
+fn prepare_usage(observed: ReplayAuthorityObservation) -> [u64; 3] {
+    let (budget, host) = configured(100_000_000);
+    let binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id()).unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    binding
+        .prepare([None, Some(row(0, 3, true, false))])
+        .unwrap()
+        .publish();
+    let before = usages_of(&host);
+    binding
+        .prepare([None, Some(observed)])
+        .expect("prepare")
+        .publish();
+    spent(before, usages_of(&host))
+}
+
+/// D-O5 (DR-89): each prepare branch reserves its reads and copies before it
+/// performs them: a budget smaller than the measured use in any dimension
+/// rejects the prepare and publishes nothing, in every branch.
+#[test]
+fn prepare_rejects_each_smaller_dimension_without_publication() {
+    let rows = [
+        ("granted", (7, 4, true, false)),
+        ("frontier", (7, 4, false, false)),
+        ("retry", (0, 3, true, true)),
+    ];
+    for (branch, (id, owners, granted, retry)) in rows {
+        let required = prepare_usage(row(id, owners, granted, retry));
+        assert!(
+            required.iter().all(|value| *value > 0),
+            "{branch}: {required:?}"
+        );
+        for dimension in 0..3 {
+            let (budget, host) = configured(100_000_000);
+            let binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id()).unwrap();
+            let _scope = budget.enter_comm_accounting_scope();
+            binding
+                .prepare([None, Some(row(0, 3, true, false))])
+                .unwrap()
+                .publish();
+            let base = usages_of(&host);
+            let dimensions = [
+                HostWorkDimension::VerificationOperations,
+                HostWorkDimension::VerificationBytes,
+                HostWorkDimension::SearchStateBytes,
+            ];
+            let limit = HostWorkUnits::new(100_000_000 - base[dimension] - required[dimension] + 1);
+            assert!(
+                host.reserve(dimensions[dimension], limit).is_ok(),
+                "{branch}: fill {dimension}"
+            );
+            let events = budget.authority_events();
+            let realized = budget.authority_realized();
+            let rows_before = budget.byte_observations().rows.len();
+            assert!(
+                matches!(
+                    binding.prepare([None, Some(row(id, owners, granted, retry))]),
+                    Err(InterpreterError::HostWorkRejected)
+                ),
+                "{branch}: dimension {dimension}"
+            );
+            assert_eq!(budget.authority_events(), events, "{branch}: {dimension}");
+            assert_eq!(
+                budget.authority_realized(),
+                realized,
+                "{branch}: {dimension}"
+            );
+            assert_eq!(budget.byte_observations().rows.len(), rows_before);
+            let state = budget.authority_state.lock().unwrap();
+            assert!(state.pending_replay_events.is_empty());
+            assert_eq!(state.pending_replay_rows, 0);
+        }
+    }
+}
+
+/// Negative control for D-O5 (DR-89): the legacy prepare also walked the
+/// whole recorded observation of every new row, so its charge grew with the
+/// observation although the granted branch only copies the authority.
+#[test]
+fn legacy_prepare_charge_walked_the_recorded_observation() {
+    let walk = |observed: &ReplayAuthorityObservation| {
+        let (_, host) = configured(100_000_000);
+        clone_backing::inspect(observed.observation.as_ref(), &host).unwrap();
+        usages_of(&host)
+    };
+    let small = row(7, 1, true, false);
+    let large = row(7, 32, true, false);
+    let small_walk = walk(&small);
+    let large_walk = walk(&large);
+    let small_now = prepare_usage(small);
+    let large_now = prepare_usage(large);
+    let legacy_growth = (large_now[1] + large_walk[1]) - (small_now[1] + small_walk[1]);
+    let growth = large_now[1] - small_now[1];
+    assert!(legacy_growth > growth, "{legacy_growth} vs {growth}");
+}
+
+fn result_usage(budget: &RuntimeBudget, host: &HostWorkBudget, copies_rows: bool) -> [u64; 3] {
+    let before = usages_of(host);
+    budget
+        .reserve_native_result_backing(copies_rows)
+        .expect("result backing");
+    spent(before, usages_of(host))
+}
+
+fn with_extra_row(owners: usize) -> (RuntimeBudget, HostWorkBudget) {
+    let (budget, host) = populated(100_000_000);
+    budget
+        .authority_state
+        .lock()
+        .unwrap()
+        .byte_observations
+        .push(row(9, owners, true, false).observation);
+    (budget, host)
+}
+
+/// D-O4 (DR-89): a replay with evidence copies no rows, so its result
+/// backing does not depend on the rows; play copies one shared pointer per
+/// row, so its charge does not depend on the row payloads.
+#[test]
+fn result_backing_charges_row_pointers_not_payloads() {
+    let (budget, host) = populated(100_000_000);
+    let replay = result_usage(&budget, &host, false);
+    let (small_budget, small_host) = with_extra_row(1);
+    let (large_budget, large_host) = with_extra_row(32);
+    assert_eq!(result_usage(&small_budget, &small_host, false), replay);
+    assert_eq!(result_usage(&large_budget, &large_host, false), replay);
+    let small_play = result_usage(&small_budget, &small_host, true);
+    let large_play = result_usage(&large_budget, &large_host, true);
+    assert_eq!(small_play, large_play);
+    assert!(small_play[0] > replay[0]);
+}
+
+/// D-O4 (DR-89): the result backing reserves at least the bytes that the
+/// result copies allocate in play (events, realized ledger, stack births,
+/// row pointers and the result vectors).
+#[test]
+fn event_result_backing_covers_counted_allocations() {
+    use crate::rust::interpreter::accounting::native_runtime::clone_backing::tests::measured;
+    let (budget, host) = with_extra_row(32);
+    let reserved = result_usage(&budget, &host, true)[2];
+    let ((events, realized, births, rows), allocated) = measured(|| {
+        (
+            budget.authority_events(),
+            budget.authority_realized(),
+            budget.authority_stack_births(),
+            budget.byte_observations(),
+        )
+    });
+    assert_eq!(events.len(), 1);
+    assert_eq!(rows.rows.len(), 2);
+    drop((realized, births));
+    assert!(
+        u64::try_from(allocated).expect("allocated fits in u64") <= reserved,
+        "allocated {allocated}, reserved {reserved}"
+    );
+}
+
+/// Negative control for D-O4 (DR-89): the legacy result backing walked the
+/// events map and every row payload, also in replay, so it grew with
+/// payloads that the result never copies.
+#[test]
+fn legacy_result_backing_walked_unreturned_payloads() {
+    let legacy = |budget: &RuntimeBudget, host: &HostWorkBudget| {
+        let now = result_usage(budget, host, false);
+        let (_, oracle) = configured(100_000_000);
+        let state = budget.authority_state.lock().unwrap();
+        clone_backing::reserve_copy_and_cleanup(&state.events, &oracle).unwrap();
+        clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &oracle)
+            .unwrap();
+        let walks = usages_of(&oracle);
+        [now[0] + walks[0], now[1] + walks[1], now[2] + walks[2]]
+    };
+    let (small_budget, small_host) = with_extra_row(1);
+    let (large_budget, large_host) = with_extra_row(32);
+    let small = legacy(&small_budget, &small_host);
+    let large = legacy(&large_budget, &large_host);
+    assert!(large[1] > small[1], "{small:?} vs {large:?}");
+    assert_eq!(
+        result_usage(&small_budget, &small_host, false),
+        result_usage(&large_budget, &large_host, false)
+    );
 }

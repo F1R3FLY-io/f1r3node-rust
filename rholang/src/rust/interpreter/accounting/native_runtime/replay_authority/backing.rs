@@ -119,6 +119,22 @@ pub(super) fn reserve_changes(
     Ok(())
 }
 
+/// D-O4 (DR-89): the copies that `authority_events` makes for the result:
+/// for each event its 32-byte id, its authority and its debit, each with the
+/// release of the copy. The events map, its tree backing and the shared
+/// byte-observation payloads of the events are not copied.
+pub(super) fn reserve_event_copies(
+    state: &AuthorityRuntimeState,
+    host: &HostWorkBudget,
+) -> Result<(), InterpreterError> {
+    for (event_id, event) in &state.events {
+        clone_backing::reserve_copy_and_cleanup(event_id, host)?;
+        clone_backing::reserve_copy_and_cleanup(&event.authority, host)?;
+        clone_backing::reserve_copy_and_cleanup(&event.debit, host)?;
+    }
+    Ok(())
+}
+
 pub(super) fn reserve_result_vectors(
     state: &AuthorityRuntimeState,
     host: &HostWorkBudget,
