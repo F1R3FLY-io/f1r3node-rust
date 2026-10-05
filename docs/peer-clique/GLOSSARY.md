@@ -187,3 +187,18 @@ previous seal and defines the next one.
 **Preferred usage.** Use for anchoring through a Lightning state channel.
 *Distinguish from* a layer 1 anchor, which needs a confirmed witness
 transaction.
+
+## Coalition Structure Mapping
+
+The [semitopology glossary](../semitopology/GLOSSARY.md) states the
+coalition vocabulary of the boundary. Section 16 of the
+[replication boundary design](../designs/replication-boundary.md) proposes
+the `CoalitionStructure` type.
+
+| Semitopology term | Peer-clique term |
+|---|---|
+| Point | Member of the epoch committee ([committee root](#committee-root)) |
+| [Actionable coalition](../Glossary.md#actionable-coalition) | The signer set of a [quorum certificate](#quorum-certificate) inside the [engaged root](#engaged-root) of one transaction |
+| [Witness set](../semitopology/GLOSSARY.md#witness-function) | One signer set that the threshold of an engaged subset accepts |
+| [Intertwined](../semitopology/GLOSSARY.md#intertwined) | Not yet shown. Question 5 in section 17 of the design asks for the threshold and the engaged-subset rule |
+| `CoalitionStructure` form | `Witness`, because the engaged subset changes for each transaction |

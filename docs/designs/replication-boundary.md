@@ -4,7 +4,7 @@
 - **Story:** [US-010](../UserStories.md) Pluggable state machine replication per shard
 - **Branch:** `feature/consensus-neutral-boundary`
 - **Extends:** [F1r3fly: Parallel State Machines and Consensus-Neutral Execution](../artifacts/f1r3fly-consensus-neutral-sm.md)
-- **Vocabulary:** [docs/Glossary.md](../Glossary.md) for the boundary terms, and one glossary for each mechanism: [CBC Casper](../casper/GLOSSARY.md), [RGB peer clique](../peer-clique/GLOSSARY.md), [Casanova](../casanova/GLOSSARY.md), and [Cordial Miners](../cordial-miners/GLOSSARY.md)
+- **Vocabulary:** [docs/Glossary.md](../Glossary.md) for the boundary terms, and one glossary for each mechanism: [CBC Casper](../casper/GLOSSARY.md), [RGB peer clique](../peer-clique/GLOSSARY.md), [Casanova](../casanova/GLOSSARY.md), and [Cordial Miners](../cordial-miners/GLOSSARY.md). The coalition vocabulary is in the [semitopology glossary](../semitopology/GLOSSARY.md).
 
 ---
 
@@ -24,7 +24,7 @@ The architecture note states the claim that this design depends on. Rholang redu
 
 ## 2. Decisions
 
-The user and the maintainers made these decisions on 2026-10-05.
+The user made these decisions on 2026-10-05. Maintainer approval is pending.
 
 | ID | Decision |
 | --- | --- |
@@ -127,6 +127,7 @@ pub struct MembershipView {
     pub members: Vec<MemberId>,
     pub weights: Option<Vec<u64>>,             // stake for CBC, none for equal-weight media
     pub fault_bound: u32,                      // f
+    pub coalition: Option<CoalitionStructure>, // proposed, section 16
 }
 ```
 
@@ -332,9 +333,54 @@ Step 6 also starts the move of the three Rholang runtime files out of the casper
 
 ---
 
-## 16. Open questions
+## 16. Coalition structure of a medium
+
+This section is a proposal for maintainer review. Each medium decides with its own coalition rule. A single fault bound `f` cannot state all four rules. Semitopology, the framework of Murdoch J. (Jamie) Gabbay, gives one vocabulary for them. The [semitopology glossary](../semitopology/GLOSSARY.md) records its terms.
+
+### 16.1 The four rules as actionable coalitions
+
+The members of a shard are the points. An [actionable coalition](../Glossary.md#actionable-coalition) is a set of members that can decide together. The open sets are the unions of these coalitions.
+
+| Medium | Members | Actionable coalition | Intertwined | Source |
+| --- | --- | --- | --- | --- |
+| CBC Casper | Bonded validators with stake `S` in total | A clique of agreeing validators with stake `w > S(1 + t) / 2`, where `t` is the fault tolerance threshold | Yes. Two such cliques share more than `tS` stake | `clique_oracle.rs`, fault tolerance `(2w - S) / S` |
+| RGB peer clique | Epoch committee | The signer set of a quorum certificate inside the engaged subset of one transaction | Not yet shown. See question 5 in section 17 | Rholang-RGB WS5 |
+| Casanova | Validators, `N >= 3f + 1` | A validator set with weight of at least `FTM = ceil((N + f + 1) / 2)` | Yes. Two such sets share at least `f + 1` validators | arXiv:1812.02232, section 2.6 |
+| Cordial Miners | Miners, `f < n/3` | A supermajority, more than `(n + f) / 2` miners | Yes. Two supermajorities share more than `f` miners | arXiv:2205.09174, Definition 21 |
+
+An [intertwined coalition structure](../Glossary.md#intertwined-coalition-structure) makes the whole member set a topen. Theorem 3.2.2 of the source then gives agreement for every continuous value assignment. The three threshold media are intertwined by their arithmetic. The peer clique must show the property for its engaged subsets.
+
+### 16.2 The proposed type
+
+```rust
+pub enum CoalitionStructure {
+    Threshold { weights: Vec<u64>, quorum_weight: u64 },
+    Witness { witness_sets: Vec<(MemberId, Vec<Vec<MemberId>>)> },
+}
+
+impl CoalitionStructure {
+    pub fn is_actionable(&self, members: &[MemberId]) -> bool;
+}
+```
+
+- `Witness` is the general form, the witness function of Definition 8.2.2. The peer clique can state its engaged subsets in this form.
+- `Threshold` is a compact form for CBC Casper, Casanova, and Cordial Miners. A list of witness sets for a weighted threshold can grow exponentially with the member count.
+- `MembershipView.coalition` is optional. A medium that does not report it keeps today's behavior.
+
+### 16.3 Rules
+
+- The node reads the coalition structure. The node never computes finality from it. Finality stays in the mechanism evidence.
+- Each shard has its own coalition structure. Two shards are not intertwined, and anchoring does not join them. Decision D2 keeps this separation.
+- The interface crate can state "the coalition structure is intertwined" as a claim for each medium. The test-only stub mechanism can check the claim.
+- Semitopology does not model Byzantine faults (Remark 23.3.1 of the source). An intertwined structure is necessary for safety, not sufficient. Each medium keeps its own Byzantine proof, for example the dissemination quorum condition.
+
+---
+
+## 17. Open questions
 
 1. **State identifiers for the peer clique.** The commit product uses the RSpace post-state hash. The peer clique also names `rgb_state_root`. The design must state how the two identifiers relate.
 2. **Anchoring cadence for CBC Casper.** The design allows anchoring. It does not yet define which finalized commits to anchor or how often.
 3. **Membership changes.** CBC changes membership through bonds and epochs. The peer clique changes it through `EPOCH_START` commits. `MembershipView` covers both, but the change protocol stays inside each mechanism. A maintainer must confirm this split.
 4. **Neutral wire protocol.** The neutral endpoints need new protobuf messages. The service names and versions need a maintainer decision.
+5. **Peer-clique coalition intersection.** Each transaction has its own engaged subset. Two quorum certificates at one height must have a correct signer in common. The WS5 source must state the threshold and the engaged-subset rule that give this property.
+6. **Coalition structure field.** A maintainer must approve the optional `coalition` field of `MembershipView` and the two forms in section 16.2.

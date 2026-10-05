@@ -551,7 +551,7 @@ legality rule; this packaging policy is node-local discretion on top of it.
 
 A replication medium is the state machine replication (SMR) mechanism of a
 shard. It orders commits, decides conflicts, finalizes commits, and keeps the
-membership view. The `ReplicationMedium` trait in the
+[membership view](#membership-view). The `ReplicationMedium` trait in the
 [replication boundary design](designs/replication-boundary.md) is its
 interface.
 
@@ -633,6 +633,54 @@ use it. The RGB peer clique requires it.
 
 **Preferred usage.** Use for the anchoring interface.
 *Distinguish from* [Anchor](#anchor), which is a test-net node role.
+
+### Membership view
+
+The membership view is the set of members of a shard that a replication
+medium reports at one epoch. It has the members, optional weights, a fault
+bound, and an optional [coalition structure](#coalition-structure).
+
+**Preferred usage.** Use for the `MembershipView` type and its contents.
+*Avoid*: direct references to bonds or active validators in node code. Those
+are CBC Casper terms.
+
+### Coalition structure
+
+A coalition structure states which sets of members of a shard can act
+together. Formally, it is a
+[semitopology](semitopology/GLOSSARY.md#semitopology) on the members of the
+[membership view](#membership-view). Each medium derives it from its own rule.
+
+**Preferred usage.** Use for the `CoalitionStructure` type that section 16
+of the [replication boundary design](designs/replication-boundary.md)
+proposes. The type uses the
+[witness function](semitopology/GLOSSARY.md#witness-function) form.
+*Distinguish from* the fault bound `f`, which is one number and cannot state
+an engaged subset or stake weights.
+
+### Actionable coalition
+
+An actionable coalition is a set of members that can decide together under
+the rule of its medium. It is an open set of the
+[coalition structure](#coalition-structure).
+
+**Preferred usage.** Use at the boundary for the medium-neutral concept.
+Inside one medium, use the medium term: a CBC clique above the threshold, a
+quorum certificate signer set, an FTM-observed set, or a supermajority.
+*Avoid*: "quorum" at the boundary. See the
+[semitopology glossary](semitopology/GLOSSARY.md#actionable-coalition).
+
+### Intertwined coalition structure
+
+A coalition structure is intertwined when any two of its nonempty actionable
+coalitions intersect. Then the whole member set is a
+[topen](semitopology/GLOSSARY.md#topen), and continuous decisions agree.
+
+**Preferred usage.** Use for the agreement condition that a medium must keep
+inside one shard.
+*Distinguish from* Byzantine fault tolerance. Intersection is necessary for
+safety, but a medium must also show that intersections contain a correct
+member. Semitopology does not model Byzantine faults.
 
 ## Architecture Stack Mapping
 

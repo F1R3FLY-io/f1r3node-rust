@@ -142,3 +142,17 @@ finite bound that nobody needs to know. Safety holds in a fully asynchronous
 network (section 2.1).
 
 **Preferred usage.** Use when you state the Casanova network model.
+
+## Coalition Structure Mapping
+
+The [semitopology glossary](../semitopology/GLOSSARY.md) states the
+coalition vocabulary of the boundary. Section 16 of the
+[replication boundary design](../designs/replication-boundary.md) proposes
+the `CoalitionStructure` type.
+
+| Semitopology term | Casanova term |
+|---|---|
+| Point | [Validator](#validator) |
+| [Actionable coalition](../Glossary.md#actionable-coalition) | A validator set with weight of at least the [Fault Tolerant Majority](#fault-tolerant-majority) |
+| [Intertwined](../semitopology/GLOSSARY.md#intertwined) | Two FTM sets share at least `f + 1` validators when `N >= 3f + 1` |
+| `CoalitionStructure` form | `Threshold`, with `quorum_weight` equal to FTM |

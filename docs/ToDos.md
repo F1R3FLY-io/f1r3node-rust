@@ -126,6 +126,7 @@ tasks:
       - "D3: the deploy pool and the rejected-deploy buffer are generic node services. A medium has no deploy submission method."
       - "D4: anchoring is available to every mechanism. RGB anchors to Bitcoin layer 1 and to Lightning state channels."
       - "D5: each mechanism has its own glossary."
+      - "D6: the boundary states the coalition rule of each medium in the vocabulary of semitopology (Gabbay, arXiv:2402.03253). MembershipView gets an optional CoalitionStructure field, a proposal for maintainer review."
     deliverables:
       - docs/designs/replication-boundary.md
       - docs/peer-clique/GLOSSARY.md
@@ -134,6 +135,10 @@ tasks:
       - "docs/Glossary.md (nine boundary terms)"
       - "docs/casper/GLOSSARY.md (boundary mapping)"
       - "docs/artifacts/f1r3fly-consensus-neutral-sm.md (RGB and Casanova corrections, section 12 resolved)"
+      - "docs/semitopology/GLOSSARY.md and README.md (D6)"
+      - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
+      - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 and 6"
+      - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
     work_log: docs/work-logs/task-022-1-2026-10-05.md
     review_status: "Draft complete. Maintainer approval pending."
   - id: TASK-022-2

@@ -171,3 +171,17 @@ GST, messages between correct miners arrive within a known bound (section 2).
 
 **Preferred usage.** Write "eventual synchrony (ES)" and "Global
 Stabilization Time (GST)" at first use.
+
+## Coalition Structure Mapping
+
+The [semitopology glossary](../semitopology/GLOSSARY.md) states the
+coalition vocabulary of the boundary. Section 16 of the
+[replication boundary design](../designs/replication-boundary.md) proposes
+the `CoalitionStructure` type.
+
+| Semitopology term | Cordial Miners term |
+|---|---|
+| Point | [Miner](#miner) |
+| [Actionable coalition](../Glossary.md#actionable-coalition) | The miners of a [supermajority](#supermajority), more than `(n + f) / 2` miners |
+| [Intertwined](../semitopology/GLOSSARY.md#intertwined) | Two supermajorities share more than `f` miners |
+| `CoalitionStructure` form | `Threshold`, with equal weights |
