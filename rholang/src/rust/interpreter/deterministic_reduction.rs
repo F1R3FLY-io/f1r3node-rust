@@ -93,6 +93,52 @@ impl ReductionContext {
         if count == 0 {
             return Vec::new();
         }
+        #[cfg(test)]
+        if self.session.legacy_split {
+            return self.split_legacy(count);
+        }
+        let step = self.next_step.fetch_add(1, Ordering::Relaxed);
+        // Changed by C9 (DR-84): each child gets the one segment
+        // (step, index + 1) instead of the pair (step, 1)·(index, 0).
+        // Operations keep (step, 0), so the forward lexicographic order of
+        // every generated path is unchanged and a split adds one segment.
+        // let mut split_prefix = self.participant.clone();
+        // split_prefix.push_back((step, 1));
+        let children = (0..count)
+            .map(|index| {
+                // let mut participant = split_prefix.clone();
+                // participant.push_back((index as u64, 0));
+                let mut participant = self.participant.clone();
+                let child = u64::try_from(index)
+                    .ok()
+                    .and_then(|index| index.checked_add(1))
+                    .expect("split child index fits in u64");
+                participant.push_back((step, child));
+                Self {
+                    session: self.session.clone(),
+                    session_id: self.session_id,
+                    participant,
+                    next_step: Arc::new(AtomicU64::new(0)),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.session.split(
+            &self.participant,
+            children
+                .iter()
+                .map(|child| child.participant.clone())
+                .collect(),
+        );
+        children
+    }
+
+    /// The legacy splitter, kept as the test oracle of C9 (DR-84): each child
+    /// gets the pair (step, 1)·(index, 0).
+    #[cfg(test)]
+    fn split_legacy(&self, count: usize) -> Vec<Self> {
+        if count == 0 {
+            return Vec::new();
+        }
         let step = self.next_step.fetch_add(1, Ordering::Relaxed);
         let mut split_prefix = self.participant.clone();
         split_prefix.push_back((step, 1));
@@ -456,7 +502,16 @@ struct SessionState {
     driving: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// C9 (DR-84): sessions built on this thread while the flag is set split
+    /// with the legacy two-segment scheme, for the schedule-equality test.
+    pub(crate) static LEGACY_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 struct ReductionSession {
+    #[cfg(test)]
+    legacy_split: bool,
     space: ExecutionSpace,
     budget: RuntimeBudget,
     host_work: Option<HostWorkBudget>,
@@ -598,6 +653,8 @@ impl ReductionSession {
         evaluation_guard: OwnedRwLockReadGuard<()>,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            legacy_split: LEGACY_SPLIT.with(std::cell::Cell::get),
             space,
             budget,
             failure_work: host_work
@@ -2074,5 +2131,164 @@ mod tests {
                 live == 1,
             );
         }
+    }
+
+    /// One step of a participant plan in the C9 path tests (DR-84): an
+    /// operation, or a split whose children run their own plans.
+    #[derive(Clone, Debug)]
+    enum PathAction {
+        Operation,
+        Split(Vec<Vec<PathAction>>),
+    }
+
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = *state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn path_plan(state: &mut u64, depth: usize) -> Vec<PathAction> {
+        let length = usize::try_from(splitmix(state) % 5).expect("plan length fits in usize");
+        let mut plan = Vec::with_capacity(length);
+        for _ in 0..length {
+            let split = depth > 0 && splitmix(state).is_multiple_of(3);
+            plan.push(match split {
+                false => PathAction::Operation,
+                true => {
+                    let count = usize::try_from(splitmix(state) % 3)
+                        .expect("child count fits in usize")
+                        + 1;
+                    let mut children = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        children.push(path_plan(state, depth - 1));
+                    }
+                    PathAction::Split(children)
+                }
+            });
+        }
+        plan
+    }
+
+    /// Runs `plan` from `context` and appends the participant path and every
+    /// operation and descendant path that the plan generates.
+    fn generated_paths(
+        context: &ReductionContext,
+        plan: &[PathAction],
+        legacy: bool,
+        paths: &mut Vec<CausalPath>,
+    ) {
+        paths.push(context.participant.clone());
+        for action in plan {
+            match action {
+                PathAction::Operation => paths.push(context.next_operation().path),
+                PathAction::Split(children) => {
+                    let contexts = match legacy {
+                        true => context.split_legacy(children.len()),
+                        false => context.split(children.len()),
+                    };
+                    for (child, child_plan) in contexts.iter().zip(children) {
+                        generated_paths(child, child_plan, legacy, paths);
+                    }
+                }
+            }
+        }
+    }
+
+    /// C9 (DR-84): on random operation and split plans, the compacted
+    /// splitter and the legacy splitter generate paths in the same forward
+    /// lexicographic order. Distinct steps of a plan get distinct paths, so
+    /// the compaction is injective on generated paths. The shared-root
+    /// comparison of `CausalPath` agrees with the vector order.
+    #[tokio::test]
+    async fn compacted_paths_preserve_vec_order() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (mut total, mut deepest) = (0, 0);
+        for seed in 0..64_u64 {
+            let mut state = seed;
+            let plan = path_plan(&mut state, 4);
+            let ((compacted, legacy), _, _) = root_with_observation(
+                reducer.space.clone(),
+                native_budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async {
+                    let root = current().expect("root reduction context");
+                    let compacted_root =
+                        ReductionContext::root(root.session.clone(), root.session_id);
+                    let legacy_root = ReductionContext::root(root.session.clone(), root.session_id);
+                    let mut compacted = Vec::new();
+                    let mut legacy = Vec::new();
+                    generated_paths(&compacted_root, &plan, false, &mut compacted);
+                    generated_paths(&legacy_root, &plan, true, &mut legacy);
+                    (compacted, legacy)
+                },
+            )
+            .await;
+            assert_eq!(compacted.len(), legacy.len(), "seed {seed}");
+            total += compacted.len();
+            deepest = legacy.iter().map(CausalPath::len).fold(deepest, usize::max);
+            let compacted_vectors = compacted.iter().map(CausalPath::to_vec).collect::<Vec<_>>();
+            let legacy_vectors = legacy.iter().map(CausalPath::to_vec).collect::<Vec<_>>();
+            for left in 0..compacted.len() {
+                for right in 0..compacted.len() {
+                    let expected = legacy_vectors[left].cmp(&legacy_vectors[right]);
+                    assert_eq!(
+                        expected == std::cmp::Ordering::Equal,
+                        left == right,
+                        "seed {seed}"
+                    );
+                    assert_eq!(
+                        compacted_vectors[left].cmp(&compacted_vectors[right]),
+                        expected,
+                        "seed {seed}: {:?} {:?}",
+                        compacted_vectors[left],
+                        compacted_vectors[right],
+                    );
+                    assert_eq!(
+                        compacted[left].cmp(&compacted[right]),
+                        expected,
+                        "seed {seed}"
+                    );
+                    assert_eq!(legacy[left].cmp(&legacy[right]), expected, "seed {seed}");
+                }
+            }
+        }
+        assert_eq!((total, deepest), (1_227, 9));
+    }
+
+    /// C9 (DR-84): `spawn_detached` splits one child for each detached
+    /// reduction. A chain of 512 nested detached reductions gives an
+    /// operation path of 513 segments, within the protocol-6 limit of 1,024
+    /// path segments. The legacy splitter gave 1,025 segments.
+    #[tokio::test]
+    async fn funding_flow_depth_at_most_513() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (depths, _, _) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                let root = current().expect("root reduction context");
+                let mut compacted = ReductionContext::root(root.session.clone(), root.session_id);
+                let mut legacy = ReductionContext::root(root.session.clone(), root.session_id);
+                for _ in 0..512 {
+                    compacted = compacted.split(1).pop().expect("one compacted child");
+                    legacy = legacy.split_legacy(1).pop().expect("one legacy child");
+                }
+                (
+                    compacted.next_operation().path.len(),
+                    legacy.next_operation().path.len(),
+                )
+            },
+        )
+        .await;
+        assert_eq!(depths, (513, 1025));
     }
 }

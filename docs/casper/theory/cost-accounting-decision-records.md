@@ -5581,3 +5581,98 @@ which is not yet released. It changes no observable value.
 - `shared_cleanup_charges_the_pointer_only`.
 
 **Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.
+
+## DR-84 — A split adds one causal-path segment
+
+**Status.** Implemented 2026-10-05 for cap root cause C9 of epic 8946
+(batch B1, phase C).
+
+**Context.** The deterministic scheduler orders RSpace operations by their
+causal paths, in the forward lexicographic order of `Vec<(u64, u64)>`. An
+operation of participant `P` at step `s` has the path `P·(s, 0)`.
+`ReductionContext::split` gave child `i` of a split at step `s` the
+participant path `P·(s, 1)·(i, 0)`. The detached driver of commit
+`c3aacd649` evaluates every continuation body in a child of `split(1)`. A
+chain of `L` nested continuations therefore reached an operation path of
+`2L + 1` segments. The gateway funding flow reached 1,025 segments, above the
+protocol-6 limit `V6_NATIVE_PATH_SEGMENTS` of 1,024. The provisional limit
+4,096 hid that excess.
+
+**Decision.**
+
+1. `split` gives child `i` of a split at step `s` the one segment
+   `(s, i + 1)`. Operations keep `(s, 0)`. The replaced lines stay in the
+   source, commented out with their reason.
+2. The legacy splitter stays as the test oracle `split_legacy` under
+   `#[cfg(test)]`. A thread-local test flag selects it when a session is
+   built.
+3. The committed limit `V6_NATIVE_PATH_SEGMENTS` stays 1,024.
+
+![Diagram of one participant plan and its causal paths under the two splitters. The plan has an operation at step 0, a split into two children at step 1, an operation of child 0, a split of child 1 into one grandchild, an operation of the grandchild, and an operation at step 2 after the children rejoin. The legacy splitter gives child i the segments (s,1) (i,0), and its sorted operation paths are (0,0), then (1,1) (0,0) (0,0), then (1,1) (1,0) (0,1) (0,0) (0,0), then (2,0). Its longest path has 5 segments. The compacted splitter gives child i the segment (s, i + 1), and its sorted operation paths are (0,0), then (1,1) (0,0), then (1,2) (0,1) (0,0), then (2,0). Its longest path has 3 segments. Both columns lead to a note that every operation has the same rank, by render_order_isomorphism, and that k nested splits give k + 1 segments instead of 2k + 1. A red box shows the rejected naive fusion (s, i): Op 1 and Child 1 0 both give (1,0), by naive_fusion_collides. A note explains that the step counter prevents that pair in the program, but that the chosen fusion keeps the order without that invariant, because (s, i + 1) is greater than (s, 0). A legend names the five colours.](diagrams/detached-path-compaction.svg)
+
+(*Source: [`diagrams/detached-path-compaction.puml`](diagrams/detached-path-compaction.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/detached-path-compaction.puml`.*)
+
+**Soundness.** Describe each generated path by its units: an operation at
+step `s`, or child `i` of a split at step `s`. Let `legacy(u)` and
+`compact(u)` be the paths of the two splitters for the unit list `u`. For all
+unit lists `u` and `v`:
+
+```math
+\mathrm{cmp}\bigl(\mathrm{compact}(u), \mathrm{compact}(v)\bigr)
+  = \mathrm{cmp}\bigl(\mathrm{legacy}(u), \mathrm{legacy}(v)\bigr)
+```
+
+At the first unit where `u` and `v` differ, both renderings decide the
+comparison in the same way:
+
+| Units | Legacy segments | Compacted segments | Result in both |
+| --- | --- | --- | --- |
+| two operations | `(s, 0)` and `(t, 0)` | `(s, 0)` and `(t, 0)` | `s` against `t` |
+| operation and child | `(s, 0)` and `(t, 1)` | `(s, 0)` and `(t, j + 1)` | `s` against `t`, and the operation first when `s = t` |
+| two children | `(s, 1)·(i, 0)` and `(t, 1)·(j, 0)` | `(s, i + 1)` and `(t, j + 1)` | `s` against `t`, then `i` against `j` |
+
+Equal units give equal segments in both renderings. The proof therefore
+needs no premise on the plan. The scheduler orders every frontier in the
+same way, so the schedule, the event log and the post-state root do not
+change. The naive fusion `(s, i)` would give the operation `(s, 0)` and the
+first child of a split at step `s` the same path. A participant uses one step
+counter for its operations and its splits, so the program never makes that
+pair. The chosen fusion does not depend on that invariant.
+
+Two orders keyed by paths change. `OperationKey` compares the path length
+first, so the shape of its lookup index changes. `NativeIndex::keys`
+iterates in insertion order, so only the lookup charges change, and they
+shrink with the shorter paths. `JournalKey` compares the segments
+lexicographically, so its order does not change.
+
+**Scope.** This change is cost-accounting work. The detached driver and the
+native evidence exist only on this branch. Native evidence records shorter
+paths in the same format, which is a protocol-6 encoding change. Protocol 6
+is not yet released. The change alters no schedule, event log or root.
+
+**Verification.** `DetachedPathCompaction.v` proves without axioms:
+
+- `fuse_render`: `fuse` maps every legacy path to the compacted path of the
+  same units;
+- `render_order_isomorphism` and `fuse_order_isomorphism`;
+- `fuse_injective`;
+- `fuse_halves_participant_depth` and `funding_flow_depth`: 513 segments
+  instead of 1,025 for 512 nested splits;
+- `naive_fusion_collides`: a negative control for the fusion `(s, i)`.
+
+Tests:
+
+- `compacted_paths_preserve_vec_order` (`deterministic_reduction.rs`): 64
+  seeded random plans generate 1,227 paths, nested up to four splits. Every
+  pair of compacted paths compares like the legacy pair, by vector order and
+  by the shared-root comparison of `CausalPath`. Distinct steps have distinct
+  paths.
+- `funding_flow_depth_at_most_513` (`deterministic_reduction.rs`): 512
+  nested splits give 513 segments, and the legacy splitter gives 1,025.
+- `compacted_schedule_equals_legacy_schedule` (native execution tests):
+  native play of four corpus terms with recursion, a fork tree, joins, peeks
+  and a persistent send gives the same event log and the same root with both
+  splitters. Each term records a shorter longest path with the compacted
+  splitter, so the legacy flag took effect.
+
+**Cross-refs.** DR-74. Leaf `ofp-2-cap-c9-path-compaction`.

@@ -624,6 +624,7 @@ theories/ObservationReadCoverage.v
 theories/IncrementalTreeBacking.v
 theories/OrderedLookupBound.v
 theories/NativeSharedReads.v
+theories/DetachedPathCompaction.v
 theories/OfferedOnlyActivation.v
 theories/GenesisVersionAdoption.v
 theories/NativePathDeltaCodec.v
