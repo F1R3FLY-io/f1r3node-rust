@@ -98,7 +98,7 @@ fn with_reader<T>(
     let data = |channel: &u8| {
         space
             .get_store()
-            .get_data_with_reader(channel, &|| Ok(Vec::new()), meter)
+            .get_data_view_with_reader(channel, &|| Ok(Vec::new()), meter)
     };
     let continuations = |channels: &[u8]| {
         space

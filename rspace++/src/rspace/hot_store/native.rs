@@ -158,6 +158,21 @@ where
         action(guard.get(key))
     }
 
+    /// An O(1) snapshot of the persistent shard that holds `key`
+    /// (C2, DR-82).
+    fn native_snapshot(
+        &self,
+        key: &K,
+        meter: &dyn SourceMeter,
+    ) -> Result<imbl::HashMap<K, V>, RSpaceError> {
+        native_backing::inspect(key, meter)?;
+        let guard = self.shards[shard_of(key)].read().expect("shard read lock");
+        lookup(&guard, key, meter)?;
+        let bytes = size_of::<imbl::HashMap<K, V>>();
+        meter.reserve(1, bytes, bytes)?;
+        Ok(guard.clone())
+    }
+
     fn native_get(&self, key: &K, meter: &dyn SourceMeter) -> Result<Option<V>, RSpaceError> {
         self.native_with(key, meter, |value| {
             value
@@ -175,6 +190,30 @@ where
         value: V,
         meter: &dyn SourceMeter,
     ) -> Result<(), RSpaceError> {
+        self.native_insert_new_with(key, value, false, meter)
+            .map(drop)
+    }
+
+    /// C2 (DR-82): inserts a new entry and returns an O(1) snapshot of its
+    /// shard, taken under the same write lock. Every charge, including the
+    /// snapshot, is reserved before the insert.
+    fn native_insert_new_snapshot(
+        &self,
+        key: &K,
+        value: V,
+        meter: &dyn SourceMeter,
+    ) -> Result<imbl::HashMap<K, V>, RSpaceError> {
+        self.native_insert_new_with(key, value, true, meter)?
+            .ok_or(RSpaceError::HostWorkRejected)
+    }
+
+    fn native_insert_new_with(
+        &self,
+        key: &K,
+        value: V,
+        snapshot: bool,
+        meter: &dyn SourceMeter,
+    ) -> Result<Option<imbl::HashMap<K, V>>, RSpaceError> {
         native_backing::inspect(key, meter)?;
         let mut guard = self.shards[shard_of(key)]
             .write()
@@ -201,8 +240,12 @@ where
             native_backing::reserve_copy_and_cleanup(existing, meter)?;
             native_backing::reserve_copy_and_cleanup(value, meter)?;
         }
+        if snapshot {
+            let bytes = size_of::<imbl::HashMap<K, V>>();
+            meter.reserve(1, bytes, bytes)?;
+        }
         guard.insert(key.clone(), value);
-        Ok(())
+        Ok(snapshot.then(|| guard.clone()))
     }
 
     fn native_insert_replace(
@@ -999,6 +1042,37 @@ where
         let cached = values.clone();
         self.data.native_insert_new(channel, cached, meter)?;
         Ok(values)
+    }
+
+    /// C2 (DR-82): a copy-free view of the cached data of `channel`. A warm
+    /// read takes an O(1) snapshot of the shard. A cold read prepays the
+    /// release of the decoded data, moves them into the cache, and takes the
+    /// snapshot under the insert's write lock, after every reservation.
+    pub(super) fn native_data_view(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<super::NativeDataView<C, A>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking,
+    {
+        let shard = self.data.native_snapshot(channel, meter)?;
+        let shard = if shard.contains_key(channel) {
+            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            shard
+        } else {
+            let values = read()?;
+            native_backing::reserve_cleanup(&values, meter)?;
+            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            self.data
+                .native_insert_new_snapshot(channel, values, meter)?
+        };
+        Ok(super::NativeDataView {
+            shard,
+            channel: channel.clone(),
+        })
     }
 
     pub(super) fn native_continuations(

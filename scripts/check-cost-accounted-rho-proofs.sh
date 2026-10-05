@@ -3040,6 +3040,9 @@ Print Assumptions NativeSharedReads.cleanup_prepaid_preserved.
 Print Assumptions NativeSharedReads.every_release_was_prepaid.
 Print Assumptions NativeSharedReads.fill_without_prepay_releases_unpaid.
 Print Assumptions NativeSharedReads.prepaid_fill_releases_paid.
+Print Assumptions NativeSharedReads.rejected_cold_read_leaves_cache.
+Print Assumptions NativeSharedReads.accepted_cold_read_equals_read.
+Print Assumptions NativeSharedReads.insert_first_fills_cache_on_rejection.
 Quit.
 EOF
 then

@@ -7,6 +7,7 @@ use crate::rspace::history::native_reader::{
     NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
     decode_record,
 };
+use crate::rspace::hot_store::NativeDataView;
 
 struct Meter<F>(F);
 
@@ -198,10 +199,34 @@ where
         self.read_continuation_views(channels).map(drop)
     }
 
-    pub(super) fn prepare_data(&self, channel: &C) -> Result<(), RSpaceError> {
-        self.read_data_with(channel, &|operations, scanned, backing| {
+    // Disabled by C2 (DR-82): the produce path prefetches with prefetch_data,
+    // which copies no datum.
+    // pub(super) fn prepare_data(&self, channel: &C) -> Result<(), RSpaceError> {
+    //     self.read_data_with(channel, &|operations, scanned, backing| {
+    //         self.history_reserve(operations, scanned, backing)
+    //     })
+    //     .map(|_| ())
+    // }
+
+    /// A copy-free view of the cached data of `channel` (C2, DR-82).
+    pub(super) fn read_data_view_with(
+        &self,
+        channel: &C,
+        reserve: &impl SourceMeter,
+    ) -> Result<NativeDataView<C, A>, RSpaceError> {
+        self.space.get_store().get_data_view_with_reader(
+            channel,
+            &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            reserve,
+        )
+    }
+
+    /// Fills the data cache of `channel` without copying a datum
+    /// (C2, DR-82).
+    pub(super) fn prefetch_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        self.read_data_view_with(channel, &|operations, scanned, backing| {
             self.history_reserve(operations, scanned, backing)
         })
-        .map(|_| ())
+        .map(drop)
     }
 }

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::mem::size_of;
 
@@ -8,10 +9,13 @@ use super::*;
 use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::{self, SourceMeter};
+use crate::rspace::hot_store::NativeDataView;
 use crate::rspace::native_backing;
 
 type Result<T> = std::result::Result<T, RSpaceError>;
-type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<Vec<Datum<A>>>;
+// Changed by C2 (DR-82): the reader returns a copy-free view.
+// type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<Vec<Datum<A>>>;
+type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<NativeDataView<C, A>>;
 // Changed by C1 (DR-81): the reader returns shared views.
 // type ContinuationReader<'a, C, P, K> = &'a dyn Fn(&[C]) ->
 // Result<Vec<WaitingContinuation<P, K>>>;
@@ -163,9 +167,15 @@ fn sort<T>(
     })
 }
 
-struct ChannelData<C, A: Clone> {
+// Changed by C2 (DR-82): the values borrow the cached data; only the
+// incoming datum is owned.
+// struct ChannelData<C, A: Clone> {
+//     channel: C,
+//     values: Vec<(Datum<A>, i32)>,
+// }
+struct ChannelData<'v, C, A: Clone> {
     channel: C,
-    values: Vec<(Datum<A>, i32)>,
+    values: Vec<(Cow<'v, Datum<A>>, i32)>,
 }
 
 pub(in crate::rspace::replay_rspace) struct PreparedProduceCounter<'a> {
@@ -182,7 +192,7 @@ impl PreparedProduceCounter<'_> {
 }
 
 fn channel_position<C: Eq + CloneBacking, A: Clone>(
-    channels: &[ChannelData<C, A>],
+    channels: &[ChannelData<'_, C, A>],
     channel: &C,
     meter: &dyn SourceMeter,
 ) -> Result<Option<usize>> {
@@ -344,16 +354,37 @@ where
         })
     }
 
-    fn metered_channel_data(
+    /// One copy-free view of the cached data of each channel (C2, DR-82).
+    fn metered_data_views(
         &self,
         channels: &[C],
+        reader: &CandidateReader<'_, C, P, A, K>,
+    ) -> Result<Vec<NativeDataView<C, A>>> {
+        let mut views = buffer(channels.len(), reader.meter)?;
+        for channel in channels {
+            views.push((reader.data)(channel)?);
+        }
+        Ok(views)
+    }
+
+    fn metered_channel_data<'v>(
+        &self,
+        channels: &[C],
+        views: &'v [NativeDataView<C, A>],
         incoming: Option<(&C, &A, bool, &Produce)>,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<Vec<ChannelData<C, A>>> {
+    ) -> Result<Vec<ChannelData<'v, C, A>>> {
         let mut result = buffer(channels.len(), reader.meter)?;
-        for channel in channels {
-            let mut values = sorted((reader.data)(channel)?, reader.meter)?;
+        for (channel, view) in channels.iter().zip(views) {
+            // Changed by C2 (DR-82): the candidates borrow the cached data.
+            // let mut values = sorted((reader.data)(channel)?, reader.meter)?;
+            let mut borrowed = buffer(view.values().len(), reader.meter)?;
+            for datum in view.values() {
+                reader.meter.reserve(1, size_of::<Cow<'v, Datum<A>>>(), 0)?;
+                borrowed.push(Cow::Borrowed(datum));
+            }
+            let mut values = sorted(borrowed, reader.meter)?;
             if let Some((trigger, data, persist, source)) = incoming {
                 native_backing::inspect(channel, reader.meter)?;
                 native_backing::inspect(trigger, reader.meter)?;
@@ -366,11 +397,11 @@ where
                     native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
                     native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
                     all.push((
-                        Datum {
+                        Cow::Owned(Datum {
                             a: data.clone(),
                             persist,
                             source: source.clone(),
-                        },
+                        }),
                         -1,
                     ));
                     all.extend(values);
@@ -393,7 +424,7 @@ where
                         values.len(),
                         values
                             .len()
-                            .checked_mul(size_of::<(Datum<A>, i32)>())
+                            .checked_mul(size_of::<(Cow<'v, Datum<A>>, i32)>())
                             .ok_or(RSpaceError::HostWorkRejected)?,
                         0,
                     )?;
@@ -418,7 +449,7 @@ where
         channels: &[C],
         patterns: &[P],
         continuation: &K,
-        data: &[ChannelData<C, A>],
+        data: &[ChannelData<'_, C, A>],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<Option<Vec<ConsumeCandidate<C, A>>>> {
         let count = channels.len().min(patterns.len());
@@ -613,7 +644,10 @@ where
                 return Ok(None);
             }
         }
-        let data = self.metered_channel_data(channels, None, expected, reader)?;
+        // Changed by C2 (DR-82): the channel data borrow copy-free views.
+        // let data = self.metered_channel_data(channels, None, expected, reader)?;
+        let views = self.metered_data_views(channels, reader)?;
+        let data = self.metered_channel_data(channels, &views, None, expected, reader)?;
         let Some(data) =
             self.metered_match_data(channels, patterns, continuation, &data, reader.meter)?
         else {
@@ -651,8 +685,11 @@ where
         };
         for channels in grouped_channels {
             let continuations = sorted((reader.continuations)(&channels)?, reader.meter)?;
+            // Changed by C2 (DR-82): the channel data borrow copy-free views.
+            let views = self.metered_data_views(&channels, reader)?;
             let data = self.metered_channel_data(
                 &channels,
+                &views,
                 Some((channel, value, persist, source)),
                 expected,
                 reader,

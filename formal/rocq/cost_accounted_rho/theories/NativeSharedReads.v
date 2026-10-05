@@ -21,11 +21,21 @@
    - fill_without_prepay_releases_unpaid: a negative control. A cold fill
      that skips the prepayment leads to an unpaid release.
 
+   C2 (decision record DR-82) gives the data reads the same treatment: a
+   data view is an O(1) snapshot of the persistent shard, so the views
+   above also stand for borrowed datums. It adds:
+   - rejected_cold_read_leaves_cache and accepted_cold_read_equals_read: a
+     cold read that reserves before it inserts leaves the cache unchanged
+     when a reservation is rejected, and otherwise equals the read.
+   - insert_first_fills_cache_on_rejection: a negative control. A read that
+     inserts before it reserves leaves the cache filled after a rejection.
+
    Rust correspondence: rspace++/src/rspace/hot_store/native.rs
    (native_continuation_views); rspace++/src/rspace/replay_rspace/
    native_session/history.rs (read_continuation_views,
    prefetch_continuations); native_candidate/metered.rs (the selected
-   continuation is copied). TLA+: NativeSharedReadCleanup.tla. *)
+   continuation is copied); hot_store/native.rs (native_data_view,
+   native_insert_new_snapshot) for C2. TLA+: NativeSharedReadCleanup.tla. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.
 Import ListNotations.
@@ -100,7 +110,52 @@ Section Cache.
     - rewrite cached. reflexivity.
     - unfold update at 1. rewrite Nat.eqb_refl. reflexivity.
   Qed.
+
+  (* C2 (DR-82): a metered cold read reserves its [cost] against [budget]
+     before it inserts. A rejected reservation returns no view and leaves
+     the cache unchanged. *)
+  Definition read_metered (store : cache) (key : nat) (cost budget : nat)
+    : option (list nat) * cache :=
+    match store key with
+    | Some views => (Some views, store)
+    | None =>
+        if Nat.leb cost budget then (Some (decode key), update store key (decode key))
+        else (None, store)
+    end.
+
+  Theorem rejected_cold_read_leaves_cache : forall store key cost budget,
+    store key = None -> budget < cost ->
+    read_metered store key cost budget = (None, store).
+  Proof.
+    intros store key cost budget empty short. unfold read_metered. rewrite empty.
+    destruct (Nat.leb cost budget) eqn:fits; [| reflexivity].
+    apply Nat.leb_le in fits. lia.
+  Qed.
+
+  Theorem accepted_cold_read_equals_read : forall store key cost budget,
+    cost <= budget -> read_metered store key cost budget =
+      (Some (fst (read store key)), snd (read store key)).
+  Proof.
+    intros store key cost budget fits. unfold read_metered, read.
+    destruct (store key); [reflexivity |].
+    apply Nat.leb_le in fits. rewrite fits. reflexivity.
+  Qed.
+
+  (* Negative control: a read that inserts before it reserves leaves the
+     cache filled after a rejected reservation. *)
+  Definition read_insert_first (store : cache) (key : nat) (cost budget : nat)
+    : option (list nat) * cache :=
+    match store key with
+    | Some views => (Some views, store)
+    | None =>
+        let filled := update store key (decode key) in
+        if Nat.leb cost budget then (Some (decode key), filled) else (None, filled)
+    end.
 End Cache.
+
+Example insert_first_fills_cache_on_rejection :
+  snd (read_insert_first (fun _ => [1]) (fun _ => None) 0 2 1) 0 = Some [1].
+Proof. vm_compute. reflexivity. Qed.
 
 Section Release.
   (* Pointer counts and prepayment flags of the payloads. *)
@@ -213,3 +268,6 @@ Print Assumptions cleanup_prepaid_preserved.
 Print Assumptions every_release_was_prepaid.
 Print Assumptions fill_without_prepay_releases_unpaid.
 Print Assumptions prepaid_fill_releases_paid.
+Print Assumptions rejected_cold_read_leaves_cache.
+Print Assumptions accepted_cold_read_equals_read.
+Print Assumptions insert_first_fills_cache_on_rejection.

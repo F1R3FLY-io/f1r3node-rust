@@ -294,6 +294,17 @@ impl<T: CloneBacking, S: BuildHasher + CloneBacking> CloneBacking for HashSet<T,
         Ok(())
     }
 }
+/// A borrowed value copies only its reference and inspects its referent. An
+/// owned value copies and inspects its payload (C2, DR-82).
+impl<T: CloneBacking + Clone> CloneBacking for std::borrow::Cow<'_, T> {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        match self {
+            std::borrow::Cow::Borrowed(_) if walker.copy_payload => Ok(()),
+            std::borrow::Cow::Borrowed(value) => walker.push(*value),
+            std::borrow::Cow::Owned(value) => walker.push(value),
+        }
+    }
+}
 impl<T: CloneBacking> CloneBacking for Arc<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         if walker.copy_payload {

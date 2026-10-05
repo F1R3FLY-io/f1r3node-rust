@@ -187,6 +187,17 @@ where
     }
 }
 
+/// A copy-free view of the cached data of one channel: an O(1) snapshot of
+/// its persistent shard and the channel key. It holds no lock (C2, DR-82).
+pub struct NativeDataView<C, A: Clone> {
+    shard: imbl::HashMap<C, Vec<Datum<A>>>,
+    channel: C,
+}
+
+impl<C: Clone + Hash + Eq, A: Clone> NativeDataView<C, A> {
+    pub fn values(&self) -> &[Datum<A>] { self.shard.get(&self.channel).map_or(&[], Vec::as_slice) }
+}
+
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {
     fn get_data_with_reader(
@@ -195,6 +206,16 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
         meter: &dyn SourceMeter,
     ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking;
+    /// A copy-free view of the cached data of `channel` (C2, DR-82).
+    fn get_data_view_with_reader(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeDataView<C, A>, RSpaceError>
     where
         C: CloneBacking,
         A: CloneBacking;
@@ -569,6 +590,19 @@ where
         A: CloneBacking,
     {
         self.native_data(channel, read, meter)
+    }
+
+    fn get_data_view_with_reader(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeDataView<C, A>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking,
+    {
+        self.native_data_view(channel, read, meter)
     }
 
     fn get_continuations_with_reader(

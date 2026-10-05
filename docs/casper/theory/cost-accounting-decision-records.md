@@ -5466,3 +5466,65 @@ Tests in `hot_store/native/tests.rs`:
 - `every_view_read_cut_rejects_without_filling_the_cache`.
 
 **Cross-refs.** DR-75, DR-79. Leaf `ofp-2-cap-c1-shared-continuation-reads`.
+
+## DR-82 — Native data reads use copy-free shard snapshots
+
+**Status.** Implemented 2026-10-05 for cap root cause C2 of epic 8946
+(batch B1, phase B).
+
+**Context.** The native hot store caches the data of each channel in a
+persistent shard (`imbl::HashMap`). The native data read copied every
+cached datum of the channel on every read, and charged each copy. The
+produce path also read the data once only to fill the cache, and then
+dropped the copies. Together with the continuation reads of DR-81, these
+reads made up most of each validator replay's `VerificationBytes`.
+
+**Decision.**
+
+1. A new reader `native_data_view` returns a `NativeDataView`: an O(1)
+   snapshot of the persistent shard and the channel key. A view holds no
+   lock and copies no datum.
+   - A warm read takes the snapshot.
+   - A cold read prepays the release of the decoded data, moves them into
+     the cache, and takes the snapshot under the insert's write lock
+     (`native_insert_new_snapshot`). Every charge is reserved before the
+     insert.
+2. The candidate preparation of metered native replay borrows the datums
+   of the views (`Cow::Borrowed`). Only the incoming datum of a produce is
+   owned. The selected datum's fields are copied as before. The views
+   drop before publication.
+3. The produce path prefetches with `prefetch_data`, which fills the cache
+   and copies no datum.
+4. The owned reader stays for the public `get_data` API and for
+   installation. The replaced lines stay in the source, commented out with
+   their reason.
+
+**Soundness.** A borrowed datum is the cached datum, so the canonical order
+and the selection are unchanged. A snapshot of a persistent map is not
+changed by later writes. Every reservation of a cold read comes before the
+insert, so a rejected reservation leaves the cache unchanged.
+
+**Scope.** This change is cost-accounting work. Native replay and its hot
+store paths exist only on this branch. The change alters host-work charges of
+protocol 6, which is not yet released. It changes no observable value.
+
+**Verification.** `NativeSharedReads.v` adds, without axioms:
+
+- `rejected_cold_read_leaves_cache` and `accepted_cold_read_equals_read`;
+- `insert_first_fills_cache_on_rejection`: a negative control. A read that
+  inserts before it reserves leaves the cache filled after a rejection.
+
+`NativeSharedReadCleanup.tla` (DR-81) also stands for the data views: a
+snapshot is a shared pointer to the shard version.
+
+Tests in `hot_store/native/tests.rs`:
+
+- `data_view_selection_matches_owned`: views equal owned reads on a cold
+  and on a warm cache.
+- `data_view_allocates_no_payload`: the warm view allocates the same bytes
+  when the payload grows 16 times.
+- `data_view_is_a_stable_snapshot`: a later write does not change a view.
+- `every_data_view_cut_rejects_without_filling_the_cache`. This test found
+  a first draft that reserved the snapshot after the insert.
+
+**Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.

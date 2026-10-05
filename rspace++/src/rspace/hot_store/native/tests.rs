@@ -991,3 +991,119 @@ fn every_view_read_cut_rejects_without_filling_the_cache() {
         assert_eq!(reads.get(), 1, "cut {cut} left the cache empty");
     }
 }
+
+fn owned_data(store: &Store, data: &[Datum<String>], meter: &Meter) -> Vec<Datum<String>> {
+    store
+        .get_data_with_reader(&String::new(), &|| Ok(data.to_vec()), meter)
+        .expect("owned data read")
+}
+
+fn data_view(
+    store: &Store,
+    data: &[Datum<String>],
+    meter: &Meter,
+) -> Result<NativeDataView<String, String>, RSpaceError> {
+    store.get_data_view_with_reader(&String::new(), &|| Ok(data.to_vec()), meter)
+}
+
+/// C2 (DR-82; `NativeSharedReads.shared_selection_equals_deep_selection`): a
+/// data view holds the same datums, in the same order, as an owned read, on a
+/// cold and on a warm cache.
+#[test]
+fn data_view_selection_matches_owned() {
+    let rows = Rows::new();
+    for view_first in [true, false] {
+        let store = store();
+        let unlimited = Meter::new(usize::MAX);
+        let (view, owned) = if view_first {
+            let view = data_view(&store, &rows.data, &unlimited).expect("cold data view");
+            (view, owned_data(&store, &rows.data, &unlimited))
+        } else {
+            let owned = owned_data(&store, &rows.data, &unlimited);
+            (data_view(&store, &rows.data, &unlimited).expect("warm data view"), owned)
+        };
+        assert_eq!(view.values(), owned.as_slice(), "view first: {view_first}");
+        assert_eq!(owned, rows.data);
+    }
+}
+
+/// C2 (DR-82): a warm data view allocates no datum payload. Its allocation
+/// does not change when the payload grows 16 times, while a warm owned read
+/// copies every datum.
+#[test]
+fn data_view_allocates_no_payload() {
+    let measure = |scale: usize| {
+        let data = vec![
+            Datum {
+                a: "datum".repeat(500 * scale),
+                persist: false,
+                source: Produce::default(),
+            };
+            2
+        ];
+        let store = store();
+        let unlimited = Meter::new(usize::MAX);
+        data_view(&store, &data, &unlimited).expect("cache fill");
+        let (view, view_bytes) = measure_allocations(|| data_view(&store, &data, &unlimited));
+        assert_eq!(view.expect("warm data view").values(), data.as_slice());
+        let (owned, owned_bytes) = measure_allocations(|| owned_data(&store, &data, &unlimited));
+        assert_eq!(owned, data);
+        (view_bytes, owned_bytes)
+    };
+    let (small_view, small_owned) = measure(1);
+    let (large_view, large_owned) = measure(16);
+    assert_eq!(small_view, large_view, "view bytes depend on the payload");
+    assert!(large_owned > 8 * small_owned, "{large_owned} vs {small_owned} owned bytes");
+    assert!(small_owned > small_view, "{small_owned} owned vs {small_view} view bytes");
+}
+
+/// C2 (DR-82): a data view is a snapshot. A later write to the channel does
+/// not change the view, and a new read sees the write.
+#[test]
+fn data_view_is_a_stable_snapshot() {
+    let rows = Rows::new();
+    let store = store();
+    let unlimited = Meter::new(usize::MAX);
+    let view = data_view(&store, &rows.data, &unlimited).expect("data view");
+    let added = Datum {
+        a: "later".to_owned(),
+        persist: false,
+        source: Produce::default(),
+    };
+    store.put_datum(&String::new(), added.clone());
+    assert_eq!(view.values(), rows.data.as_slice());
+    let fresh = data_view(&store, &rows.data, &unlimited).expect("fresh data view");
+    assert_eq!(fresh.values().len(), rows.data.len() + 1);
+    assert!(fresh.values().contains(&added));
+}
+
+/// C2 (DR-82; `NativeSharedReads.every_release_was_prepaid`): every
+/// reservation cut of a cold data view rejects and leaves the cache empty, so
+/// a later read decodes the history again.
+#[test]
+fn every_data_view_cut_rejects_without_filling_the_cache() {
+    let rows = Rows::new();
+    let full = Meter::new(usize::MAX);
+    data_view(&store(), &rows.data, &full).expect("full read");
+    for cut in 0..full.calls.get() {
+        let store = store();
+        let limited = Meter::new(cut);
+        assert_eq!(
+            data_view(&store, &rows.data, &limited).map(|view| view.values().len()),
+            Err(RSpaceError::HostWorkRejected),
+            "cut {cut}"
+        );
+        let reads = Cell::new(0);
+        store
+            .get_data_with_reader(
+                &String::new(),
+                &|| {
+                    reads.set(reads.get() + 1);
+                    Ok(rows.data.clone())
+                },
+                &Meter::new(usize::MAX),
+            )
+            .expect("read after cut");
+        assert_eq!(reads.get(), 1, "cut {cut} left the cache empty");
+    }
+}

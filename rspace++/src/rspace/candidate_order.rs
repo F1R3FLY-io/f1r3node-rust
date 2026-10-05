@@ -35,6 +35,10 @@ impl<P: Clone, K: Clone> CandidateSource for WaitingContinuation<P, K> {
     fn source_hash(&self) -> &Blake2b256Hash { &self.source.hash }
 }
 
+impl<T: CandidateSource + Clone> CandidateSource for std::borrow::Cow<'_, T> {
+    fn source_hash(&self) -> &Blake2b256Hash { self.as_ref().source_hash() }
+}
+
 impl<T: CandidateSource + ?Sized> CandidateSource for Arc<T> {
     fn source_hash(&self) -> &Blake2b256Hash { (**self).source_hash() }
 }
