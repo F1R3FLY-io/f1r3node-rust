@@ -1,6 +1,6 @@
 // Reified RSpaces storage substrate (`SpaceStoreHandle` / `SpaceTxn`):
 //   A — host parity of every operation shape (22 tests)
-//   B — checkpoints and history read-through (4 tests)
+//   B — checkpoints, history read-through, and an LMDB round trip (5 tests)
 //   C — replay lookup parity (10 tests)
 //   D — volatile sweep (7 tests)
 //   E — reporting delegation (3 tests)
@@ -46,6 +46,8 @@ use rspace_plus_plus::rspace::rspace_interface::{
 };
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
+use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
 use rspace_plus_plus::rspace::space_store_handle::{
     BeforeObserve, ConsumeOutcome, OpSource, ProduceOutcome, SpaceConsume, SpaceMode,
     SpaceOpReceipt, SpaceProduce, SpaceStoreHandle, SpaceTxnError, SweepReport, bind_candidate,
@@ -1195,6 +1197,146 @@ async fn space_store_handle_root_leaf_record_count_reads_root() {
     checkpoint(&space).await;
     assert_eq!(handle.root_leaf_record_count(&s("a")), Ok(4));
     assert_eq!(handle.root_leaf_record_count(&s("b")), Ok(0));
+}
+
+/// Map size of each LMDB environment of the round-trip test.
+const LMDB_MAP_SIZE: usize = 64 * MB;
+
+/// What a checkpoint persists, read through the substrate: the history root,
+/// the universe through the `ISpace` getters and through a transaction view,
+/// and the record count of each channel's leaf at the root.
+#[derive(Debug, PartialEq, Eq)]
+struct PersistedState {
+    root: Blake2b256Hash,
+    getters: ChannelView,
+    txn_view: ChannelView,
+    root_leaf_counts: Vec<u64>,
+}
+
+async fn persisted_state(space: &Space, handle: &Handle) -> PersistedState {
+    let channels = universe();
+    let groups = groups_of(&[space]).await;
+    let getters = channel_view(space, &channels, &groups).await;
+    let mut txn = handle
+        .begin(&channels)
+        .await
+        .expect("begin a read transaction");
+    let mut data = Vec::with_capacity(channels.len());
+    let mut joins = Vec::with_capacity(channels.len());
+    for channel in &channels {
+        data.push(
+            txn.data(channel)
+                .expect("read data in the transaction view")
+                .iter()
+                .map(|record| bincode::serialize(record).expect("serialize a datum"))
+                .collect(),
+        );
+        joins.push(
+            txn.joins(channel)
+                .expect("read joins in the transaction view")
+                .to_vec(),
+        );
+    }
+    let mut continuations = Vec::with_capacity(groups.len());
+    for group in &groups {
+        continuations.push(
+            txn.continuations(group)
+                .expect("read continuations in the transaction view")
+                .iter()
+                .map(|wk| bincode::serialize(wk).expect("serialize a continuation"))
+                .collect(),
+        );
+    }
+    drop(txn);
+    let root_leaf_counts = channels
+        .iter()
+        .map(|channel| {
+            handle
+                .root_leaf_record_count(channel)
+                .expect("count the root leaf")
+        })
+        .collect();
+    PersistedState {
+        root: space.get_history_repository().root(),
+        getters,
+        txn_view: (data, continuations, joins),
+        root_leaf_counts,
+    }
+}
+
+// A checkpoint of an LMDB-backed space survives the close of its directory:
+// after every space, store and environment handle is dropped, a new store
+// manager and a new space over the same directory, reset to the checkpoint
+// root, read the same data, continuations, joins, root and root leaf record
+// counts. The directory honors TMPDIR.
+#[tokio::test]
+async fn space_store_handle_lmdb_checkpoint_round_trip() {
+    let directory = tempfile::Builder::new()
+        .prefix("rrs-lmdb-checkpoint-")
+        .tempdir()
+        .expect("create the LMDB directory");
+    let join = names(&["d", "c"]);
+
+    let mut stores = mk_rspace_store_manager(directory.path().to_path_buf(), LMDB_MAP_SIZE);
+    let space: Space = RSpace::create(
+        stores
+            .r_space_stores()
+            .await
+            .expect("open the LMDB RSpace stores"),
+        Arc::new(Box::new(PatMatch)),
+    )
+    .expect("create the LMDB RSpace");
+    let empty_root = space.get_history_repository().root();
+    let handle = SpaceStoreHandle::new(space.clone());
+    let mut txn = handle.begin(&universe()).await.expect("begin");
+    txn.produce(store_op("a", "x", false))
+        .expect("stage the datum");
+    txn.consume(park_op(&["d", "c"], vec![Pat::Any, Pat::Any], "k", false, BTreeSet::new()))
+        .expect("stage the join");
+    txn.commit().await.expect("commit");
+    let persisted = checkpoint(&space).await;
+    assert_ne!(persisted.root, empty_root, "the checkpoint persists the commit");
+    assert_eq!(space.get_data(&s("a")).await, vec![datum("a", "x", false)]);
+    assert_eq!(space.get_waiting_continuations(join.clone()).await.len(), 1);
+    for channel in ["c", "d"] {
+        assert_eq!(space.get_joins(s(channel)).await, vec![join.clone()]);
+    }
+    assert_eq!(handle.root_leaf_record_count(&s("a")), Ok(1));
+    let before = persisted_state(&space, &handle).await;
+    let released = Arc::downgrade(&space.get_history_repository());
+    drop(txn);
+    drop(handle);
+    drop(space);
+    drop(stores);
+    assert!(
+        released.upgrade().is_none(),
+        "dropping the space and its handle releases the history repository"
+    );
+
+    let mut stores = mk_rspace_store_manager(directory.path().to_path_buf(), LMDB_MAP_SIZE);
+    let reopened: Space = RSpace::create(
+        stores
+            .r_space_stores()
+            .await
+            .expect("reopen the LMDB RSpace stores"),
+        Arc::new(Box::new(PatMatch)),
+    )
+    .expect("create the reopened RSpace");
+    assert_eq!(
+        reopened.get_history_repository().root(),
+        persisted.root,
+        "the roots store keeps the checkpoint root"
+    );
+    reopened
+        .reset(&persisted.root)
+        .await
+        .expect("reset to the checkpoint root");
+    let handle = SpaceStoreHandle::new(reopened.clone());
+    assert_eq!(persisted_state(&reopened, &handle).await, before);
+    drop(handle);
+    drop(reopened);
+    drop(stores);
+    directory.close().expect("remove the LMDB directory");
 }
 
 // ---------------------------------------------------------------- Group C

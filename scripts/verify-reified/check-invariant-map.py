@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Check formal/reified-rspaces-invariant-map.json (Reified RSpaces).
 
-The invariant map connects each formal headline (a Rocq theorem or a TLA+
-invariant) with its property-based tests. The map has one section for each
-phase: P1 (the storage substrate: H1-H22 and T1-T5) and P2 (the wire
-encoding: E1-E12, the 12 headlines of Encoding.v). The checker fails when:
+The invariant map connects each formal headline (a Rocq theorem, a TLA+
+invariant or a consensus-checklist item) with its property-based tests. The
+map has one section for each phase: P1 (the storage substrate: H1-H22 and
+T1-T5), P2 (the wire encoding: E1-E12, the 12 headlines of Encoding.v) and
+ORD (ordinary execution: O1, item 10 of the consensus checklist). The checker
+fails when:
 
   * a required id of a phase is missing, or an entry names no test (an
     unmapped entry).
@@ -12,6 +14,10 @@ encoding: E1-E12, the 12 headlines of Encoding.v). The checker fails when:
     check with "Print Assumptions" (an unknown theorem).
   * a T# names an operator that the .tla file does not define (an unknown
     invariant).
+  * a "checklist" entry names an unknown item of the consensus-checklist
+    map, or a name that is not the id of the item.
+  * a "checklist" entry names a test that no rust_test check of the item
+    names.
   * a .cfg file checks an invariant that is neither a mapped T# nor a listed
     auxiliary invariant, or a T# is in no safe .cfg file.
   * the property table of a phase is not numbered 1..N, has the wrong size,
@@ -49,12 +55,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MAP = REPO_ROOT / "formal" / "reified-rspaces-invariant-map.json"
-SCHEMA = "reified-rspaces-invariant-map/2"
+SCHEMA = "reified-rspaces-invariant-map/3"
+CHECKLIST_SCHEMA = "reified-rspaces-consensus-checklist/1"
 # The ids that each known phase must map. Another phase takes its ids from
 # the map.
 REQUIRED_IDS = {
     "P1": tuple(f"H{i}" for i in range(1, 23)) + tuple(f"T{i}" for i in range(1, 6)),
     "P2": tuple(f"E{i}" for i in range(1, 13)),
+    "ORD": ("O1",),
 }
 TEST_STATUSES = ("required", "planned")
 EXIT_MISSING_TESTS = 3
@@ -142,6 +150,25 @@ def tla_operators(path: Path) -> set[str]:
     return set(TLA_OPERATOR.findall(text))
 
 
+def checklist_items(path: Path) -> dict[int, tuple[str, set[str]]] | str:
+    """Map each item number of a consensus-checklist map to (id, the tests of its rust_test checks).
+
+    The result is an error message when the file is not a consensus-checklist map.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        return f"{path.name} is not valid JSON: {error}"
+    if not isinstance(data, dict) or data.get("schema") != CHECKLIST_SCHEMA:
+        schema = data.get("schema") if isinstance(data, dict) else None
+        return f"{path.name} has schema {schema!r}, expected {CHECKLIST_SCHEMA}"
+    items: dict[int, tuple[str, set[str]]] = {}
+    for item in data.get("items") or []:
+        tests = {check.get("test") for check in item.get("checks") or [] if check.get("kind") == "rust_test"}
+        items[item.get("number")] = (item.get("id"), tests)
+    return items
+
+
 def cfg_invariants(path: Path) -> list[str]:
     """The names in the INVARIANT and INVARIANTS sections of a TLC config."""
     text = strip_line_comments(strip_block_comments(path.read_text(encoding="utf-8")), "\\*")
@@ -188,11 +215,12 @@ def load_map(path: Path) -> dict:
 
 
 class Formal:
-    """Caches of the Rocq theorems and the TLA+ operators."""
+    """Caches of the Rocq theorems, the TLA+ operators and the consensus-checklist items."""
 
     def __init__(self) -> None:
         self.rocq: dict[Path, tuple[set[str], set[str]]] = {}
         self.tla: dict[Path, set[str]] = {}
+        self.checklists: dict[Path, dict[int, tuple[str, set[str]]] | str] = {}
 
     def check_entry(self, fid: str, entry: dict, report: Report) -> bool:
         kind, name, rel = entry.get("kind"), entry.get("name"), entry.get("file", "")
@@ -216,6 +244,27 @@ class Formal:
                 self.tla[path] = tla_operators(path)
             if name not in self.tla[path]:
                 report.fail(f"{fid}: unknown invariant {name} (not defined in {rel})")
+                return False
+            return True
+        if kind == "checklist":
+            if path not in self.checklists:
+                self.checklists[path] = checklist_items(path)
+            items = self.checklists[path]
+            if isinstance(items, str):
+                report.fail(f"{fid}: {items}")
+                return False
+            number = entry.get("item")
+            if isinstance(number, bool) or not isinstance(number, int) or number not in items:
+                report.fail(f"{fid}: unknown checklist item {number!r} (not in {rel})")
+                return False
+            item_id, item_tests = items[number]
+            if item_id != name:
+                report.fail(f"{fid}: checklist item {number} has the id {item_id!r}, not {name!r}")
+                return False
+            unnamed = sorted(set(entry.get("tests") or []) - item_tests)
+            if unnamed:
+                report.fail(f"{fid}: checklist item {number} ({name}) names no rust_test check for "
+                            f"{', '.join(unnamed)}")
                 return False
             return True
         report.fail(f"{fid}: unknown kind {kind!r}")
@@ -308,12 +357,20 @@ def check_phase(name: str, phase: dict, expected: int, formal_cache: Formal, rep
 
 
 def check_configs(data: dict, formal_cache: Formal, report: Report) -> None:
-    """Every invariant that a .cfg checks is a mapped T# or an auxiliary one."""
+    """Every invariant that a .cfg checks is a mapped T# or an auxiliary one.
+
+    The operators of every mapped TLA+ module load here, for all phases. Thus a
+    phase selection without TLA+ entries (for example --phase ORD) still finds
+    the auxiliary invariants.
+    """
     tla_names: dict[str, str] = {}
     for name, phase in data["phases"].items():
         for fid, entry in phase["formal"].items():
             if entry.get("kind") == "tla":
                 tla_names[entry["name"]] = f"{name} {fid}"
+                path = REPO_ROOT / entry.get("file", "")
+                if path.is_file() and path not in formal_cache.tla:
+                    formal_cache.tla[path] = tla_operators(path)
     auxiliary: dict = data["auxiliary_tla_invariants"]
     all_operators = set().union(*formal_cache.tla.values()) if formal_cache.tla else set()
     for name in auxiliary:

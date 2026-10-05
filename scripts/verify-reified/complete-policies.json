@@ -21,10 +21,43 @@
     {"pattern": "event_coverage", "reason": "consensus checklist: no production EventCoverage"},
     {"pattern": "write_exclusive", "reason": "M-1 replaced write_exclusive"},
     {"pattern": "writeExclusive", "reason": "M-1 replaced write_exclusive"},
-    {"pattern": "suffix_key", "reason": "I-1 dropped suffix_key"}
+    {"pattern": "suffix_key", "reason": "I-1 dropped suffix_key"},
+    {"pattern": "0xF3", "reason": "decision 7: the Reified namespace tag is 0xE0"},
+    {"pattern": "0xf3", "reason": "decision 7: the Reified namespace tag is 0xE0"}
   ],
   "allowed_expect": "\\.expect\\(\"[^\"]* lock\"\\)",
   "test_region_start": "^#\\[cfg\\(test\\)\\]\\s*$",
+  "production_scan": {
+    "description": "Plan grep gate: no production source holds a consensus token.",
+    "roots": ["casper/src", "comm/src", "models/build.rs", "models/src", "node/src", "rho-pure-eval/src", "rholang/src", "rspace++/src"],
+    "suffixes": [".rs", ".proto"],
+    "patterns": [
+      {"pattern": "datum_index_key", "reason": "item 3: no arity index"},
+      {"pattern": "pattern_index_prefix", "reason": "item 3: no arity index"},
+      {"pattern": "select_indexed_candidates", "reason": "item 3: no indexed candidate selection"},
+      {"pattern": "search_data_candidates", "reason": "item 3: no backtracking search"},
+      {"pattern": "changed_history_keys", "reason": "item 4: no production trie diff for event coverage"},
+      {"pattern": "changed_leaf_keys", "reason": "item 4: no production trie diff for event coverage"},
+      {"pattern": "checkpoint_unpublished", "reason": "item 13: checkpoint publication is unchanged"},
+      {"pattern": "decode_checked", "reason": "items 5 and 13: history trie decoding is unchanged"},
+      {"pattern": "UnsupportedPriorityMetadata", "reason": "item 8 and I-5: no event message gets a priority field"},
+      {"pattern": "write_exclusive", "reason": "item 8 and M-1"},
+      {"pattern": "writeExclusive", "reason": "item 8 and M-1"},
+      {"pattern": "query_specs", "reason": "item 5 and M-2: host structs get no query field"},
+      {"pattern": "querySpecs", "reason": "item 8 and I-5: no event message gets a query field"},
+      {"pattern": "TypedQuerySpec", "reason": "item 17 and I-1: the host gets no typed query"},
+      {"pattern": "consume_with_query_specs", "reason": "item 17 and I-1: ISpace gets no query consume"},
+      {"pattern": "suffix_key", "reason": "item 17 and I-1"},
+      {"pattern": "SpacePathKey", "reason": "decision 7: Reified channels use the 0xE0 namespace tag, not a path key"},
+      {"pattern": "space_channel_codec", "reason": "decision 7: no path-key channel codec"},
+      {"pattern": "par_wire_", "reason": "decision 1: stack-safe Par codecs belong to the Bag campaign"},
+      {"pattern": "ParBag", "reason": "decision 1: ParBag belongs to the Bag campaign"},
+      {"pattern": "BagReservation", "reason": "decision 1: Bag work belongs to the Bag campaign"},
+      {"pattern": "use_blocks", "reason": "item 16 and decision 18: no K15 protobuf field"},
+      {"pattern": "e_free_body", "reason": "item 16 and decision 18: no K15 protobuf field"},
+      {"pattern": "event_coverage", "reason": "item 4: no production EventCoverage"}
+    ]
+  },
   "phases": {
     "p1": {
       "description": "P1 storage substrate (decision 19 and the fix rules FR-1 to FR-10).",

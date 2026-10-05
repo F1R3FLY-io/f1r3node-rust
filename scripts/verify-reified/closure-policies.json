@@ -1,0 +1,766 @@
+{
+  "schema": "reified-rspaces-closure-policies/1",
+  "description": "This file holds the closure policy of the Reified RSpaces realignment leaves (realignment closure design, sections 4 to 6). The checker scripts/verify-reified/check-closure.py reads it. Each entry of leaves binds a pgmcp leaf to its model items, headlines, entry points, document headings, references and anchors. The key optional_model_items lists the model items that the model map marks with required false. The key audits gives the result of each audit script in the hermetic harness, as measured on the host. The key ledger_copy describes the redacted copy of the design ledger and the README strings that record its provenance.",
+  "model_map": "formal/reified-rspaces-model-map.json",
+  "invariant_map": "formal/reified-rspaces-invariant-map.json",
+  "invariant_phase": "P1",
+  "leaves": {
+    "rrs-ra-01-06": {
+      "note": "The realignment design, section 4, gives this binding for the documented category. Decisions 1, 2, 3 and 17 hold the boundaries of the held work.",
+      "doc_anchors": [
+        {
+          "file": "docs/rspace/reified-rspaces/decision-register.md",
+          "anchor": "decision-1",
+          "keywords": [
+            "Bag",
+            "ParBag",
+            "PathMap"
+          ]
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/decision-register.md",
+          "anchor": "decision-2",
+          "keywords": [
+            "MeTTa"
+          ]
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/decision-register.md",
+          "anchor": "decision-3",
+          "keywords": [
+            "F1r3lang"
+          ]
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/decision-register.md",
+          "anchor": "decision-17",
+          "keywords": [
+            "F1r3lang"
+          ]
+        }
+      ]
+    },
+    "rrs-ra-01-07": {
+      "note": "The realignment design, section 4, gives this binding for the documented category. Decision 5 records the backup, the drill and the restore.",
+      "doc_anchors": [
+        {
+          "file": "docs/rspace/reified-rspaces/decision-register.md",
+          "anchor": "decision-5",
+          "keywords": [
+            "backup",
+            "drill",
+            "restore"
+          ]
+        }
+      ]
+    },
+    "rrs-ra-01-08": {
+      "note": "The realignment design, section 4, gives this binding for the documented category. The README holds the provenance table with both digests, the redaction rule, the line count and the supersession map.",
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "heading": "## Provenance"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "heading": "## Supersession map"
+        }
+      ],
+      "doc_references": [
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "text": "| SHA-256 of the original | `ca3d290986ec599805fb8bb14fe51b89619fd126f431abb09d33be7744f6ba6d` |"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "text": "| Redaction rule | Replace every `/home/<user>` prefix with `[HOME]`. The rule changes one line (line 1462). |"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "text": "| Length | 1,585 lines |"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "text": "| SHA-256 of this copy | `5f42c87067eddf859bd6aff837f2b67127061d621e5266330e96a979cae0e8ed` |"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design-record/README.md",
+          "text": "| Ledger topic | Current decision (2026-10-04) |"
+        }
+      ]
+    },
+    "rrs-ra-02-04": {
+      "note": "The realignment design, section 4, gives this binding for the documented category. Decision 14 supersedes the literal text of the leaf.",
+      "doc_anchors": [
+        {
+          "file": "docs/rspace/reified-rspaces/decision-register.md",
+          "anchor": "decision-14",
+          "keywords": [
+            "validator"
+          ]
+        }
+      ]
+    },
+    "rrs-ra-03-04": {
+      "note": "The realignment design, section 4, gives this binding. The model map marks all four items with required false. The functions check_event_correlation and check_removed_records are visible only in the crate.",
+      "model_items": [
+        "check_event_correlation",
+        "commit_operation",
+        "check_removed_records",
+        "removed_records"
+      ],
+      "optional_model_items": [
+        "check_event_correlation",
+        "commit_operation",
+        "check_removed_records",
+        "removed_records"
+      ],
+      "headlines": [
+        "H6",
+        "H10"
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub\\(crate\\) fn check_event_correlation\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub\\(crate\\) fn check_removed_records<C, A: Clone>\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    EventCoverage \\{ op: usize, rule: &'static str \\},$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    Inconsistent\\(&'static str\\),$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    async fn commit\\(&mut self\\) -> Result<SpaceTxnReceipt<C, P, A, K>, SpaceTxnError>;$"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.2. Commit"
+        }
+      ]
+    },
+    "rrs-ra-05-01": {
+      "note": "The realignment design, section 5.2, gives this binding in its row for ra-05-01 (data).",
+      "model_items": [
+        "TxnCore::stage_produce",
+        "PlayBackend::apply_op",
+        "ReplayBackend::apply_op",
+        "TxnView",
+        "check_removed_records",
+        "removed_records",
+        "channel_key",
+        "group_identity"
+      ],
+      "optional_model_items": [
+        "TxnView",
+        "check_removed_records",
+        "removed_records",
+        "group_identity"
+      ],
+      "headlines": [
+        "H1",
+        "H2",
+        "H6",
+        "H21"
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub trait SpaceTxn<C, P, A, K>: Send$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn data\\(&mut self, channel: &C\\) -> Result<&\\[Datum<A>\\], SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn produce\\(&mut self, op: SpaceProduce<C, P, A, K>\\) -> Result<StagedOp, SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct SpaceProduce<C, P: Clone, A: Clone, K: Clone> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub enum ProduceOutcome<C, P: Clone, A: Clone, K: Clone> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub fn bind_candidate<C, A: Clone>\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub fn incoming_candidate<C, A: Clone>\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/rspace/space_play.rs",
+          "pattern": "^impl<C, P, A, K> SpaceTxnHost<C, P, A, K> for RSpace<C, P, A, K>$"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/space_replay.rs",
+          "pattern": "^impl<C, P, A, K> SpaceTxnHost<C, P, A, K> for ReplayRSpace<C, P, A, K>$"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S3. Host equivalence"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.1. Staging"
+        }
+      ]
+    },
+    "rrs-ra-05-02": {
+      "note": "The realignment design, section 5.2, gives this binding in its row for ra-05-02 (continuations).",
+      "model_items": [
+        "TxnCore::stage_consume",
+        "TxnCore::read_continuations",
+        "require_canonical",
+        "canonical_group_key",
+        "SpaceTxnError::NonCanonicalChannelOrder",
+        "peek_retention",
+        "retained_results",
+        "fired_receipt",
+        "TxnCore::apply_fire_to_view"
+      ],
+      "optional_model_items": [
+        "TxnCore::read_continuations",
+        "peek_retention",
+        "TxnCore::apply_fire_to_view"
+      ],
+      "headlines": [
+        "H1",
+        "H2",
+        "H11",
+        "H17",
+        "H21"
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub trait SpaceTxn<C, P, A, K>: Send$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn continuations\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn consume\\(&mut self, op: SpaceConsume<C, P, A, K>\\) -> Result<StagedOp, SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct SpaceConsume<C, P: Clone, A: Clone, K: Clone> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub enum ConsumeOutcome<C, A: Clone> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    NonCanonicalChannelOrder,$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    MixedArrowJoin \\{ binds: usize, peeks: BTreeSet<i32> \\},$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub enum SpaceOpReceipt<C, P, A, K> \\{$"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.1. Staging"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.5. Canonical order (FR-1')"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.8. Peek re-offer (FR-10)"
+        }
+      ]
+    },
+    "rrs-ra-05-03": {
+      "note": "The realignment design, section 5.2, gives this binding in its row for ra-05-03 (joins). The checker adds H9 to the table headlines H7, H13 and H18. TxnCore::read_joins covers H9 and H17, and HostTxn::commit covers H1, H2, H9 and T5. Without H9, neither item overlaps the leaf headlines.",
+      "model_items": [
+        "TxnCore::read_joins",
+        "TxnView::load_joins",
+        "HostTxn::commit",
+        "sweep_volatile_channels"
+      ],
+      "optional_model_items": [
+        "TxnCore::read_joins",
+        "TxnView::load_joins",
+        "HostTxn::commit"
+      ],
+      "headlines": [
+        "H7",
+        "H9",
+        "H13",
+        "H18"
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn joins\\(&mut self, channel: &C\\) -> Result<&\\[Vec<C>\\], SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    async fn commit\\(&mut self\\) -> Result<SpaceTxnReceipt<C, P, A, K>, SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    async fn sweep_volatile\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    SweepCrossesDurable,$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    NonCanonicalChannelOrder,$"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.2. Commit"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.4. Sweep"
+        }
+      ]
+    },
+    "rrs-ra-05-04": {
+      "note": "The realignment design, section 5.2, gives this binding in its row for ra-05-04 (locks and counters). TxnRegistration::register is unmodeled under FR-9.",
+      "model_items": [
+        "LockCoverage",
+        "LockCoverage::new",
+        "LockCoverage::require",
+        "HeldStripes::holds",
+        "LockUse",
+        "SpaceTxnError::UnlockedChannel",
+        "counter_room",
+        "TxnView::staged_count",
+        "TxnCore::next_delta",
+        "SpaceTxnError::CounterOverflow"
+      ],
+      "optional_model_items": [
+        "LockCoverage",
+        "LockCoverage::new",
+        "HeldStripes::holds",
+        "LockUse",
+        "TxnView::staged_count",
+        "TxnCore::next_delta"
+      ],
+      "headlines": [
+        "T5",
+        "H3",
+        "H9"
+      ],
+      "unmodeled_items": [
+        {
+          "item": "TxnRegistration::register",
+          "rule": "FR-9"
+        }
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub trait SpaceTxnHost<C, P, A, K>: Send \\+ Sync$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    async fn begin\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    pub async fn begin\\(&self, lock_keys: &\\[C\\]\\) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct TxnRegistration \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn produce_counters\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    UnlockedChannel,$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    CounterOverflow,$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    NestedTransaction,$"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S4. Counter timing"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.6. Lock coverage (FR-4)"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S7. Locking and ordering"
+        }
+      ]
+    },
+    "rrs-ra-05-05": {
+      "note": "The realignment design, section 5.2, gives this binding in its row for ra-05-05 (events and observer).",
+      "model_items": [
+        "commit_operation",
+        "check_event_correlation",
+        "HostTxn::commit",
+        "commit_staged",
+        "sub_order",
+        "SUB_OPERATION_TAG",
+        "CommittedParents::admit",
+        "SpaceStoreHandle::begin_evaluation_scope",
+        "TxnRegistration::admit_parent",
+        "SpaceTxnError::ParentOrderReused",
+        "reject_directive",
+        "SpaceTxnError::NativeReplayDirectiveUnsupported",
+        "TxnCore::verify",
+        "binding_multiplicity",
+        "HostTxn::recorded_comms",
+        "SpaceTxnError::ReplayDivergence",
+        "ReportingRspace::begin",
+        "begin_replay"
+      ],
+      "optional_model_items": [
+        "commit_operation",
+        "check_event_correlation",
+        "HostTxn::commit",
+        "commit_staged",
+        "SUB_OPERATION_TAG",
+        "TxnRegistration::admit_parent",
+        "reject_directive",
+        "SpaceTxnError::NativeReplayDirectiveUnsupported",
+        "binding_multiplicity",
+        "HostTxn::recorded_comms",
+        "SpaceTxnError::ReplayDivergence",
+        "begin_replay"
+      ],
+      "headlines": [
+        "H1",
+        "H4",
+        "H5",
+        "H8",
+        "H9",
+        "H10",
+        "H12",
+        "H19",
+        "H20"
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    async fn commit\\(&mut self\\) -> Result<SpaceTxnReceipt<C, P, A, K>, SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn recorded_comms\\(&mut self, source: RSpaceOperationSource<'_>\\) -> Option<Vec<COMM>>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn admits\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub fn sub_order\\(parent: &OperationOrder, index: usize\\) -> OperationOrder \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub const SUB_OPERATION_TAG: u64 = 2;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    pub fn begin_evaluation_scope\\(&self\\) \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub type BeforeObserve =$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct SpaceTxnReceipt<C, P, A, K> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub enum OpSource \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct StagedOp \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub enum SpaceMode \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    ParentOrderReused,$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    ReplayDivergence\\(Box<COMM>\\),$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    NativeReplayDirectiveUnsupported,$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    EventCoverage \\{ op: usize, rule: &'static str \\},$"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/space_replay.rs",
+          "pattern": "^impl<C, P, A, K> SpaceTxnHost<C, P, A, K> for ReportingRspace<C, P, A, K>$"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S3. Host equivalence"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.2. Commit"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.3. Verify (FR-3)"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.7. Parent tracking (FR-5')"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S6. Errors"
+        }
+      ]
+    },
+    "rrs-ra-05-06": {
+      "note": "The realignment design, section 5.2, gives this binding in its row for ra-05-06 (checkpoint). SweepReport is unmodeled under FR-8.",
+      "model_items": [
+        "RSpace::root_leaf_record_count",
+        "ReplayRSpace::root_leaf_record_count",
+        "ReportingRspace::root_leaf_record_count",
+        "SpaceStoreHandle::root_leaf_record_count",
+        "root_leaf_records",
+        "RSpace::sweep_volatile",
+        "ReplayRSpace::sweep_volatile",
+        "ReportingRspace::sweep_volatile",
+        "SpaceStoreHandle::sweep_volatile",
+        "sweep_volatile_channels"
+      ],
+      "optional_model_items": [
+        "root_leaf_records"
+      ],
+      "headlines": [
+        "H13",
+        "H14",
+        "H15",
+        "H16",
+        "H22",
+        "T1",
+        "T2",
+        "T3",
+        "T4"
+      ],
+      "unmodeled_items": [
+        {
+          "item": "SweepReport",
+          "rule": "FR-8"
+        }
+      ],
+      "entry_points": [
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct SpaceStoreHandle<C, P, A, K>$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    fn root_leaf_record_count\\(&self, channel: &C\\) -> Result<u64, SpaceTxnError>;$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    pub fn root_leaf_record_count\\(&self, channel: &C\\) -> Result<u64, SpaceTxnError> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    async fn sweep_volatile\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    pub async fn sweep_volatile\\(&self, channels: &\\[C\\]\\) -> Result<SweepReport, SpaceTxnError> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^pub struct SweepReport \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/space_store_handle.rs",
+          "pattern": "^    SweepTouchesPersisted,$"
+        },
+        {
+          "file": "rspace++/src/rspace/rspace/space_play.rs",
+          "pattern": "^    fn root_leaf_record_count\\(&self, channel: &C\\) -> Result<u64, SpaceTxnError> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/rspace/space_play.rs",
+          "pattern": "^    async fn sweep_volatile\\($"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/space_replay.rs",
+          "pattern": "^    fn root_leaf_record_count\\(&self, channel: &C\\) -> Result<u64, SpaceTxnError> \\{$"
+        },
+        {
+          "file": "rspace++/src/rspace/replay_rspace/space_replay.rs",
+          "pattern": "^    async fn sweep_volatile\\($"
+        }
+      ],
+      "doc_headings": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "#### S5.4. Sweep"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S8. What is unchanged"
+        },
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "heading": "### S9. Verification"
+        }
+      ],
+      "doc_references": [
+        {
+          "file": "docs/rspace/reified-rspaces/design.md",
+          "text": "![Checkpoint, replay and sweep as a sequence. Play on the proposer: the reducer starts the evaluation scope, the space agent opens a transaction through the handle, reads the staged view, stages operations and commits; the commit makes the observer calls and logs the events under sub_order(parent, i) and writes the hot store. At the end of the deploy the reducer sweeps the volatile channels, which removes their data, continuations and joins with no event. The checkpoint turns the hot store changes into history actions; the deletes of the swept keys are absent from the trie and change nothing, so the root covers the durable state only. Replay on the validator: rig binds each recorded COMM under its logged IO events, the scope starts, the agent stages the same operations, verify pairs each fire under its trigger key with the binding multiplicity, the commit removes the bindings, the sweep runs at the same point, check_replay_data finds no unused binding, and the checkpoint gives the same root. A divergent fire fails at staging with ReplayDivergence and no effect.](diagrams/07-checkpoint-replay-sweep.svg)"
+        }
+      ]
+    }
+  },
+  "audits": {
+    "scripts/audit/check-rocq-line-refs.sh": {
+      "args": [
+        "--quiet"
+      ],
+      "expected_exit": 1,
+      "cited_total": 125,
+      "mismatches": [
+        "✗ docs/casper/theory/cost-accounting-decision-records.md:575  `core_demand_invariant_under_extension` cited at LinearLogicResources.v:492 but actually at line 636",
+        "✗ docs/casper/theory/cost-accounting-linear-logic.md:406  `ll_sig_algebra_required_complete` cited at LinearLogicResources.v:212 but actually at line 356",
+        "✗ docs/casper/theory/slashing/design/06-proposing-and-effect.md:130  `main_TSlash_deploy_seed_uses_invalid_block_hash` cited at MainTheorem.v:393 but actually at line 459",
+        "✗ docs/casper/theory/slashing/slashing-verification.md:1315  `main_bisimilarity_theorem` cited at MainTheorem.v:598 but actually at line 671",
+        "✗ docs/casper/theory/slashing/slashing-verification.md:2119  `main_T9_13_unknown_slash_evidence_noop` cited at MainTheorem.v:280 but actually at line 292",
+        "✗ docs/casper/theory/slashing/slashing-verification.md:2360  `main_TAuth_invalid_token_noop` cited at MainTheorem.v:375 but actually at line 441",
+        "✗ docs/casper/theory/slashing/slashing-verification.md:2380  `main_TAuth_valid_token_equiv` cited at MainTheorem.v:380 but actually at line 446"
+      ],
+      "links": [
+        "docs",
+        "formal"
+      ],
+      "finding": "rrs-finding-preexisting-rocq-citation-drift",
+      "note": "The values come from a host run through the harness. The 7 mismatches are pre-existing drift. The audited documents and theories are unchanged since the base revision 6f7a80da3, and no audited document cites the new reified_rspaces theories."
+    },
+    "scripts/audit/check-source-line-refs.sh": {
+      "args": [
+        "--quiet"
+      ],
+      "expected_exit": 1,
+      "cited_total": 132,
+      "mismatches": [
+        "✗ docs/casper/theory/cost-accounting-decision-records.md:662  PoS.rhox:460-464 — none of the identifiers named on this line (active) occur in the cited range",
+        "✗ docs/casper/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md:62  validate.rs:1530-1535 — none of the identifiers named on this line (DeployData::validate_phlo Validate::phlo_price min_phlo_price) occur in the cited range",
+        "✗ docs/casper/theory/cost-accounting-impl/offered-funded-production-integration-proposal.md:33  block_creator.rs:3645-3649 — none of the identifiers named on this line (BodyV61 to_cosigned) occur in the cited range",
+        "✗ docs/casper/theory/cost-accounting-linear-logic.md:507  runtime.rs:1442-1482 — none of the identifiers named on this line (N Sig::And phlo_share set_deploy_signatures_funded) occur in the cited range",
+        "✗ docs/casper/theory/cost-accounting-linear-logic.md:752  runtime.rs:1340-1414 — none of the identifiers named on this line (process_deploy_cosigned_with_budget token_monotone_step) occur in the cited range",
+        "✗ docs/casper/theory/cost-accounting-threat-model.md:311  runtime.rs:1340-1414 — none of the identifiers named on this line (process_deploy_cosigned_with_budget token_monotone_step) occur in the cited range",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:103  casper.rs:56-56 — none of the identifiers named on this line (i32::MAX) occur in the cited range",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:104  estimator.rs:267-268 — none of the identifiers named on this line (checked_add i64::MAX) occur in the cited range",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:149  initializing.rs:441-441 — none of the identifiers named on this line (InvalidParents Validate::approved_block justification_follows single_root) occur in the cited range",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:149  validate.rs:1159-1162 — none of the identifiers named on this line (InvalidParents Validate::approved_block justification_follows single_root) occur in the cited range",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:54  estimator.rs:349-402 — past EOF (file has 397 lines)",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:56  snapshot.rs:182-213 — none of the identifiers named on this line (prune_dag_covered_parents) occur in the cited range",
+        "✗ docs/casper/theory/fork-choice/fork-choice-verification.md:56  validate.rs:922-922 — none of the identifiers named on this line (prune_dag_covered_parents) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-glossary.md:48  dag_merger.rs:1065-1065 — none of the identifiers named on this line (TreeHashMap check_single_value_cell_not_overfilled) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-glossary.md:48  rholang_merging_logic.rs:194-194 — none of the identifiers named on this line (TreeHashMap check_single_value_cell_not_overfilled) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-glossary.md:50  event_log_index.rs:343-343 — none of the identifiers named on this line (EventLogIndex EventLogIndex::combine combine) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-specification.md:71  rholang_merging_logic.rs:194-194 — none of the identifiers named on this line (check_single_value_cell_not_overfilled) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-verification.md:131  rholang_merging_logic.rs:194-194 — none of the identifiers named on this line (check_single_value_cell_not_overfilled) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-verification.md:150  event_log_index.rs:343-343 — none of the identifiers named on this line (combine) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-verification.md:215  interpreter_util.rs:268-268 — none of the identifiers named on this line (InvalidRejectedDeploy compute_parents_post_state invalid_rejected_deploy rejected_deploys validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-verification.md:68  deploy_chain_index.rs:42-42 — none of the identifiers named on this line (EventLogIndex::combine is_system_deploy_id new) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-verification.md:72  conflict_set_merger.rs:360-360 — none of the identifiers named on this line (compare_branches compute_merged_state) occur in the cited range",
+        "✗ docs/casper/theory/merge-algebra/merge-algebra-verification.md:75  interpreter_util.rs:268-268 — none of the identifiers named on this line (compute_parents_post_state) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/02-glossary-and-notation.md:146  block_status.rs:206-206 — none of the identifiers named on this line (UnauthorizedSlashDeploy) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:386  validate.rs:1346-1346 — none of the identifiers named on this line (neglected_invalid_block) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:400  validate.rs:1412-1412 — none of the identifiers named on this line (slash_target_key) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:402  validate.rs:1448-1449 — none of the identifiers named on this line (slash_targets) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:404  validate.rs:962-962 — none of the identifiers named on this line (has_slash_system_deploys) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:406  validate.rs:1099-1099 — none of the identifiers named on this line (has_slash_system_deploys) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:62  block_status.rs:216-216 — none of the identifiers named on this line (IgnorableEquivocation) occur in the cited range",
+        "✗ docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md:70  validate.rs:1448-1449 — none of the identifiers named on this line (slash_targets) occur in the cited range",
+        "✗ docs/casper/theory/slashing/methodology/case-studies/09-bug-09-scala-self-correcting.md:14  validate.rs:1346-1346 — none of the identifiers named on this line (neglected_invalid_block) occur in the cited range",
+        "✗ docs/casper/theory/slashing/methodology/case-studies/09-bug-09-scala-self-correcting.md:16  validate.rs:1448-1449 — none of the identifiers named on this line (slash_targets) occur in the cited range",
+        "✗ docs/casper/theory/slashing/slashing-specification.md:1611  validate.rs:1346-1346 — none of the identifiers named on this line (neglected_invalid_block) occur in the cited range",
+        "✗ docs/casper/theory/slashing/slashing-specification.md:1619  validate.rs:1448-1449 — none of the identifiers named on this line (slash_targets) occur in the cited range"
+      ],
+      "links": [
+        "block-storage",
+        "casper",
+        "docs",
+        "rholang",
+        "rspace++"
+      ],
+      "note": "The values come from a host run through the harness. The 35 mismatches are pre-existing drift, because the audited documents and sources are unchanged since the base revision 6f7a80da3. The script sorts the identifiers of a line with sort -u, so LC_ALL=C.UTF-8 fixes their order."
+    }
+  },
+  "ledger_copy": {
+    "path": "docs/rspace/reified-rspaces/design-record/2026-08-15-design-ledger.md",
+    "sha256": "5f42c87067eddf859bd6aff837f2b67127061d621e5266330e96a979cae0e8ed",
+    "lines": 1585,
+    "original_sha256": "ca3d290986ec599805fb8bb14fe51b89619fd126f431abb09d33be7744f6ba6d",
+    "token": "[HOME]",
+    "token_count": 1,
+    "env": "RRS_REDACTION_HOME",
+    "readme": {
+      "path": "docs/rspace/reified-rspaces/design-record/README.md",
+      "must_hold": [
+        "ca3d290986ec599805fb8bb14fe51b89619fd126f431abb09d33be7744f6ba6d",
+        "5f42c87067eddf859bd6aff837f2b67127061d621e5266330e96a979cae0e8ed",
+        "Replace every `/home/<user>` prefix with `[HOME]`.",
+        "1,585",
+        "## Supersession map",
+        "| Ledger topic | Current decision (2026-10-04) |"
+      ]
+    }
+  }
+}

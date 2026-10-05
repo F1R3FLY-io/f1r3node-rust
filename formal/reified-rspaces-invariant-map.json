@@ -1,6 +1,6 @@
 {
-  "schema": "reified-rspaces-invariant-map/2",
-  "title": "Reified RSpaces: formal headlines and TLA+ invariants with their property-based tests",
+  "schema": "reified-rspaces-invariant-map/3",
+  "title": "Reified RSpaces: formal headlines, TLA+ invariants and consensus-checklist invariants with their property-based tests",
   "checker": "scripts/verify-reified/check-invariant-map.py",
   "tla_config_dir": "formal/tlaplus/reified_rspaces",
   "auxiliary_tla_invariants": {
@@ -785,6 +785,53 @@
           "covers": [
             "E12"
           ]
+        }
+      ]
+    },
+    "ORD": {
+      "title": "Ordinary execution: play and replay equality of generated ordinary programs (consensus checklist item 10)",
+      "design": "p1-closeout regression design, section 3",
+      "test_status": "required",
+      "test_files": [
+        "rholang/tests/reified_ordinary_regression.rs"
+      ],
+      "expected_properties": 1,
+      "formal": {
+        "O1": {
+          "kind": "checklist",
+          "name": "host-replay-acceptance",
+          "item": 10,
+          "file": "scripts/verify-reified/consensus-checklist.json",
+          "tests": [
+            "prop_ordinary_play_replay_equal"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_ordinary_play_replay_equal",
+          "file": "rholang/tests/reified_ordinary_regression.rs",
+          "covers": [
+            "O1"
+          ]
+        }
+      ],
+      "witness_tests": [
+        {
+          "test": "reified_ordinary_regression_r9_play_replay_equality",
+          "file": "rholang/tests/reified_ordinary_regression.rs",
+          "rule": "R9",
+          "covers": [
+            "O1"
+          ]
+        },
+        {
+          "test": "ordinary_play_replay_negative_control_detects_mutants",
+          "file": "rholang/tests/reified_ordinary_regression.rs",
+          "rule": "negative control",
+          "covers": [],
+          "unmodeled": "A negative control: the property function rejects a replay with another seed and a replay with an extra send."
         }
       ]
     }

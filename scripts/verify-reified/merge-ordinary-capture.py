@@ -16,6 +16,7 @@ SECTIONS = (
     ("r7", "r7_term_prost_and_bincode_bytes"),
     ("r8", "r8_state_dump"),
     ("r9", "r9_play_replay_equality"),
+    ("dc", "deterministic_candidates"),
 )
 METADATA_KEYS = (
     "name",

@@ -1,0 +1,114 @@
+{
+  "capture_command": "export TMPDIR=$PWD/target/tmp RRS_CAPTURE_FLOATS_OUT=$PWD/target/verification/reified-rspaces/p1-closeout/capture-floats RRS_CAPTURE_REVISION=$(git rev-parse HEAD) && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test -p rholang --test reified_source_normalization -- --exact ordinary_float_forms_unchanged > target/verification/reified-rspaces/p1-closeout/capture-floats.log 2>&1",
+  "captured_at_revision": "11c39d77d79d4b1a2b3753599115a8b458125923",
+  "forms": [
+    {
+      "name": "trailing_dot",
+      "outcome": "ok",
+      "prost_blake2b256": "fc4dbf1489055bae84de001b1eef27e580756195bbc0cbcf7dedde10b39e9132",
+      "source": "@\"rrs-float\"!(5.)",
+      "stable_hash": "8d5441b1688ba1543ff916ff23acf3be130136f3feea4350b1c845c9787903a4"
+    },
+    {
+      "name": "dot_exponent",
+      "outcome": "ok",
+      "prost_blake2b256": "5eee65b841aee8913b19f79e42e417bea6e5b74a1a13509e0b790f1a92a917d3",
+      "source": "@\"rrs-float\"!(5.e3)",
+      "stable_hash": "1e24eb0dadec7705f5ad38b8141dfa872825f34f42a97e8fd76f64e1ee7c60b4"
+    },
+    {
+      "name": "decimal",
+      "outcome": "ok",
+      "prost_blake2b256": "71b9003c41cac30952c59811d887d1efd2eaa6377db40d900ba9ad6dd8bf826d",
+      "source": "@\"rrs-float\"!(5.25)",
+      "stable_hash": "0ec30f4ab54e8650526ff70e7def99e3df8b7ede98f9d6d7229debe070938d44"
+    },
+    {
+      "name": "exponent",
+      "outcome": "ok",
+      "prost_blake2b256": "5eee65b841aee8913b19f79e42e417bea6e5b74a1a13509e0b790f1a92a917d3",
+      "source": "@\"rrs-float\"!(5e3)",
+      "stable_hash": "1e24eb0dadec7705f5ad38b8141dfa872825f34f42a97e8fd76f64e1ee7c60b4"
+    },
+    {
+      "name": "neg_exponent",
+      "outcome": "ok",
+      "prost_blake2b256": "6a795680e7e7877facfdd728244dc75166554db02a9cafe18c391b8eef61c8f0",
+      "source": "@\"rrs-float\"!(5E-3)",
+      "stable_hash": "74dbc46c389e6080434262e8450106acf3f2fd07c7ef4d762e8315666401bc2c"
+    },
+    {
+      "name": "leading_dot",
+      "outcome": "ok",
+      "prost_blake2b256": "bb540a499f3515a3c5c4fc8f7489ac3e47c61dbc21a0fed7e91e062484ebbec4",
+      "source": "@\"rrs-float\"!(.5)",
+      "stable_hash": "7da46c4373f0c960c5bd3db27328a50dfa8437dfd40f32a4ff942b8998bbfac9"
+    },
+    {
+      "name": "negative",
+      "outcome": "ok",
+      "prost_blake2b256": "5fdcb739851877afe70612534e77d82d9809e193904ccd848b2047e6d4abf5db",
+      "source": "@\"rrs-float\"!(-2.5)",
+      "stable_hash": "befe7a0586c3fc36ccd2b6b3202fe0fd3f53af8d9a9c2f5885681f894c64ce97"
+    },
+    {
+      "name": "suffixed",
+      "outcome": "ok",
+      "prost_blake2b256": "ac4bcee63d165da94ed33e25ff1640c312a485a5eb829ac2a3f0dc28d49a5c11",
+      "source": "@\"rrs-float\"!(1.5f32)",
+      "stable_hash": "d833fe853d4525e2a0a669e7479ef4e264a0a34cd2c091ffdcd756958ad20849"
+    },
+    {
+      "name": "list",
+      "outcome": "ok",
+      "prost_blake2b256": "2b60e61bfd827a4976d71409634cfb71405ece48e77d870fd0274ae2c2d58294",
+      "source": "@\"rrs-float\"!([1., .25, 3.e-1])",
+      "stable_hash": "88da3408159a0418624c709840fd9834547392c8f945f741d90064a4389398eb"
+    },
+    {
+      "name": "arithmetic",
+      "outcome": "ok",
+      "prost_blake2b256": "7d25c8c9895dec85c497b3e6af24a1e3024b5079f1975b2b76be8acc28b8533a",
+      "source": "@\"rrs-float\"!(1.5 + 2.)",
+      "stable_hash": "15a349e63acf98be0fece6ddfaae3c1cb1fc4079d343a667dcb1d9e94a8dc103"
+    },
+    {
+      "error_variant": "ParserError",
+      "name": "sync_dot",
+      "outcome": "error",
+      "source": "@\"rrs-float-x\"!?(1).5"
+    },
+    {
+      "error_variant": "ParserError",
+      "name": "sync_dot_new",
+      "outcome": "error",
+      "source": "new x in { x!?(1).5 }"
+    },
+    {
+      "name": "string",
+      "outcome": "ok",
+      "prost_blake2b256": "e28e6b409501001acabad81016c125e9a64a74a31eae53e42c00ece6d70e2875",
+      "source": "@\"rrs-float\"!(\"5.5\")",
+      "stable_hash": "39104f7cdc3b2137903f2e3f89cfe8e18e241365ac73653a408f6f5bb1ab4e29"
+    },
+    {
+      "name": "comment",
+      "outcome": "ok",
+      "prost_blake2b256": "bcce9f281e3e700cfa3427dde118add55340dfe83d404b1dcf6b0d51e2b7933b",
+      "source": "@\"rrs-float\"!(1) // 5.5",
+      "stable_hash": "ddc98f4bff84ddd603edb85149bd5dd3cafdf1602e6c91b02ad2bb67b460a818"
+    },
+    {
+      "name": "backtick",
+      "outcome": "ok",
+      "prost_blake2b256": "d0cc9f20537bf6617d4accaa456e5b893d3998e8e5dcb7794ffaabea3ce17c41",
+      "source": "new r(`rho:registry:ops:1.0.0`) in { Nil }",
+      "stable_hash": "1c0854acc38ca075e78c586e133f053a5712b1129a5e4015e8990723b9cfd31b"
+    }
+  ],
+  "name": "ordinary_float_forms_v1",
+  "parser_revision": "02cef80d32214ecdac3ee7d3b91c3786a34174d5",
+  "parser_source": "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5",
+  "rule": "Each form with outcome ok must normalize to the same prost and stable hashes. A rejected form can become accepted, which is a conservative extension. An accepted form must never become rejected.",
+  "rustc_version": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)"
+}

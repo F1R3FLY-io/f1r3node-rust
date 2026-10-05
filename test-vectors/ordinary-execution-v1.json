@@ -1,7 +1,120 @@
 {
-  "capture_command": "export TMPDIR=$PWD/target/tmp CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 RRS_CAPTURE_ORDINARY_OUT=$PWD/target/verification/reified-rspaces/p1-capture/fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- cargo test -p rholang --test reified_ordinary_regression > target/verification/reified-rspaces/p1-capture/capture.log 2>&1",
-  "captured_at_revision": "6f7a80da335569c0c4661b7e64c0103465ea2ae9",
-  "code_identical_to": "e748426",
+  "capture_command": "export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/verification/reified-rspaces/p1-closeout/capture-ordinary/fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test -p rholang --test reified_ordinary_regression > target/verification/reified-rspaces/p1-closeout/capture-ordinary/capture.log 2>&1",
+  "captured_at_revision": "11c39d77d79d4b1a2b3753599115a8b458125923",
+  "code_identical_to": "e748426 except the P1 substrate modules, which ordinary execution never calls (footprint policy p1)",
+  "deterministic_candidates": {
+    "continuations": {
+      "bodies": [
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(1, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(3, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(0, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(2, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(4, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(5, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        }
+      ],
+      "fired": [
+        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
+        "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
+        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5",
+        "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
+        "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
+        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded"
+      ],
+      "ranked_hashes": [
+        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
+        "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
+        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5",
+        "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
+        "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
+        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded"
+      ],
+      "sends": [
+        "@\"rrs-dc-cont\"!(0)",
+        "@\"rrs-dc-cont\"!(1)",
+        "@\"rrs-dc-cont\"!(2)",
+        "@\"rrs-dc-cont\"!(3)",
+        "@\"rrs-dc-cont\"!(4)",
+        "@\"rrs-dc-cont\"!(5)"
+      ],
+      "source": "for (@x <- @\"rrs-dc-cont\") { @\"rrs-dc-fired\"!(0, x) } | for (@x <- @\"rrs-dc-cont\") { @\"rrs-dc-fired\"!(1, x) } | for (@x <- @\"rrs-dc-cont\") { @\"rrs-dc-fired\"!(2, x) } | for (@x <- @\"rrs-dc-cont\") { @\"rrs-dc-fired\"!(3, x) } | for (@x <- @\"rrs-dc-cont\") { @\"rrs-dc-fired\"!(4, x) } | for (@x <- @\"rrs-dc-cont\") { @\"rrs-dc-fired\"!(5, x) }"
+    },
+    "data": {
+      "ranked_hashes": [
+        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096",
+        "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
+        "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
+        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
+        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
+        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4"
+      ],
+      "source": "@\"rrs-dc-data\"!(0) | @\"rrs-dc-data\"!(1) | @\"rrs-dc-data\"!(2) | @\"rrs-dc-data\"!(3) | @\"rrs-dc-data\"!(4) | @\"rrs-dc-data\"!(5)",
+      "take_source": "for (@x <- @\"rrs-dc-data\") { Nil }",
+      "taken": [
+        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096",
+        "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
+        "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
+        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
+        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
+        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4"
+      ],
+      "values": [
+        [
+          "1"
+        ],
+        [
+          "0"
+        ],
+        [
+          "4"
+        ],
+        [
+          "2"
+        ],
+        [
+          "5"
+        ],
+        [
+          "3"
+        ]
+      ]
+    }
+  },
   "name": "ordinary_execution_v1",
   "r1_comm_produce_sort": {
     "consume_triggered": {

@@ -1,8 +1,14 @@
-"""Unit tests for check-complete.py, check-footprint.py and the citation rule
-of check-model-map.py.
+"""Unit tests for the Reified RSpaces checkers.
+
+They cover check-complete.py with its production scan, check-footprint.py with
+the pin and the allowed new files, and the ORD phase of check-invariant-map.py.
+They also cover check-consensus-checklist.py and the citation rule of
+check-model-map.py.
 
 Each checker gets passing fixtures and failing fixtures (negative controls).
 Fixtures are built in a temporary directory, so the source tree is never written.
+Git fixtures use a hermetic git configuration. They read no system or global file,
+and they use a synthetic identity and fixed dates.
 """
 
 import contextlib
@@ -10,10 +16,14 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -33,6 +43,55 @@ COMPLETE = load("check_complete", "check-complete.py")
 FOOTPRINT = load("check_footprint", "check-footprint.py")
 MODEL_MAP = load("check_model_map", "check-model-map.py")
 CITATIONS = load("rust_citations", "rust_citations.py")
+INVARIANT_MAP = load("check_invariant_map", "check-invariant-map.py")
+CHECKLIST = load("check_consensus_checklist", "check-consensus-checklist.py")
+
+GIT_FIXTURE_ENVIRONMENT = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_AUTHOR_NAME": "Fixture",
+    "GIT_AUTHOR_EMAIL": "fixture@example.com",
+    "GIT_COMMITTER_NAME": "Fixture",
+    "GIT_COMMITTER_EMAIL": "fixture@example.com",
+    "GIT_AUTHOR_DATE": "2026-01-01T00:00:00+0000",
+    "GIT_COMMITTER_DATE": "2026-01-01T00:00:00+0000",
+}
+
+
+def write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def write_json(path, data):
+    write(path, json.dumps(data, indent=2) + "\n")
+
+
+def run_git(root, *arguments):
+    """Run git in ROOT with the hermetic fixture configuration and return its output."""
+    environment = {name: value for name, value in os.environ.items() if name not in FOOTPRINT.GIT_LOCATION_VARIABLES}
+    environment.update(GIT_FIXTURE_ENVIRONMENT)
+    result = subprocess.run(
+        ["git", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", "-C", str(root), *arguments],
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"git {' '.join(arguments)} failed: {result.stderr.decode('utf-8', 'replace')}")
+    return result.stdout.decode("utf-8").strip()
+
+
+def commit_all(root, message="fixture"):
+    """Commit every file of the fixture repository ROOT and return the commit id."""
+    run_git(root, "add", "--all")
+    run_git(root, "commit", "--quiet", "--message", message)
+    return run_git(root, "rev-parse", "HEAD")
+
+
+def init_repository(root):
+    run_git(root, "init", "--quiet")
+
 
 CLEAN_SOURCE = """pub trait Host {}
 fn work() -> Result<(), Error> {
@@ -129,9 +188,74 @@ class CompleteChecker(unittest.TestCase):
         self.assertEqual(1, self.run_case(mutate=drop_source))
 
 
+PRODUCTION_ROOTS = ["models/build.rs", "models/src", "rholang/src"]
+PRODUCTION_FILES = {
+    "models/build.rs": "fn main() {}\n",
+    "models/src/lib.rs": "pub fn clean() {}\n",
+    "rholang/src/lib.rs": "pub fn clean() {}\n",
+    "rholang/tests/a.rs": "fn test() {}\n",
+}
+
+
+class ProductionScan(unittest.TestCase):
+    """check-complete.py --production-scan: the plan's grep gate over production roots."""
+
+    def run_case(self, files=None, roots=PRODUCTION_ROOTS):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative, text in {**PRODUCTION_FILES, **(files or {})}.items():
+                write(root / relative, text)
+            policies = {
+                "production_scan": {
+                    "description": "fixture",
+                    "roots": list(roots),
+                    "suffixes": [".rs", ".proto"],
+                    "patterns": [{"pattern": "write_exclusive", "reason": "item 8 and M-1"}],
+                }
+            }
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = COMPLETE.production_scan(root, policies)
+            return code, output.getvalue()
+
+    def test_clean_roots_pass(self):
+        code, output = self.run_case()
+        self.assertEqual(0, code, output)
+        self.assertIn("complete production scan: 3 files, 0 findings", output)
+
+    def test_token_in_production_source_fails(self):
+        code, output = self.run_case({"rholang/src/a.rs": "fn a() {}\nlet write_exclusive = 1;\n"})
+        self.assertEqual(1, code, output)
+        self.assertIn("complete: rholang/src/a.rs:2: consensus token 'write_exclusive' (item 8 and M-1)", output)
+
+    def test_token_in_test_file_passes(self):
+        code, output = self.run_case({"rholang/tests/a.rs": "let write_exclusive = 1;\n"})
+        self.assertEqual(0, code, output)
+
+    def test_token_in_proto_file_fails(self):
+        proto = "message P {\n  bool write_exclusive = 8;\n}\n"
+        code, output = self.run_case({"models/src/main/protobuf/a.proto": proto})
+        self.assertEqual(1, code, output)
+        self.assertIn("complete: models/src/main/protobuf/a.proto:2: consensus token 'write_exclusive'", output)
+
+    def test_token_in_markdown_file_passes(self):
+        code, output = self.run_case({"rholang/src/notes.md": "write_exclusive\n"})
+        self.assertEqual(0, code, output)
+
+    def test_token_in_file_root_fails(self):
+        code, output = self.run_case({"models/build.rs": "// write_exclusive\nfn main() {}\n"})
+        self.assertEqual(1, code, output)
+        self.assertIn("complete: models/build.rs:1: consensus token 'write_exclusive'", output)
+
+    def test_missing_root_fails(self):
+        code, output = self.run_case(roots=PRODUCTION_ROOTS + ["node/src"])
+        self.assertEqual(1, code, output)
+        self.assertIn("complete: node/src: production root is missing", output)
+
+
 BASE_MOD = "pub mod a;\npub mod b;\n"
 BASE_FIELD = "struct S {\n    field: u8,\n}\n"
 PROTECTED = "fn protected() {}\n"
+REALIGN_BASE = "fn base() {}\n"
 
 
 def digest(text):
@@ -201,6 +325,148 @@ class FootprintChecker(unittest.TestCase):
                 extra_file="src/protected/new.rs",
             ),
         )
+
+    def test_star_proto_glob_covers_nested_proto_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "a/b/c.proto", "message Base {}\n")
+            write_json(root / "digests.json", {"files": {"a/b/c.proto": digest("message Base {}\n")}})
+            policies = {"digests": "digests.json", "policies": {"campaign": {"unchanged": ["*.proto"]}}}
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, FOOTPRINT.check(root, policies, "campaign"))
+                write(root / "a/b/c.proto", "message Changed {}\n")
+                self.assertEqual(1, FOOTPRINT.check(root, policies, "campaign"))
+
+    def realign_case(self, extra_files=(), allowed=("digests.json", "src/new.rs"), name="realign"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "src/base.rs", REALIGN_BASE)
+            write(root / "src/new.rs", "fn new() {}\n")
+            for relative in extra_files:
+                write(root / relative, "fn stray() {}\n")
+            write_json(root / "digests.json", {"files": {"src/base.rs": digest(REALIGN_BASE)}})
+            policies = {
+                "digests": "digests.json",
+                "policies": {
+                    "base": {"unchanged": ["src/**"]},
+                    "realign": {"extends": "base", "unchanged": ["**"], "allowed_new_files": list(allowed)},
+                    "child": {"extends": "realign"},
+                },
+            }
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = FOOTPRINT.check(root, policies, name)
+            return code, output.getvalue()
+
+    def test_allowed_new_files_pass(self):
+        code, output = self.realign_case()
+        self.assertEqual(0, code, output)
+        self.assertIn("footprint policy realign: checked 3 files, 0 violations", output)
+
+    def test_unlisted_new_file_fails(self):
+        code, output = self.realign_case(extra_files=("src/stray.rs",))
+        self.assertEqual(1, code, output)
+        self.assertIn("footprint: src/stray.rs: new file outside the allowed list", output)
+
+    def test_allowed_new_files_are_inherited(self):
+        code, output = self.realign_case(extra_files=("src/stray.rs",), name="child")
+        self.assertEqual(1, code, output)
+        self.assertIn("footprint: src/stray.rs: new file outside the allowed list", output)
+
+    def test_missing_allowed_file_fails(self):
+        code, output = self.realign_case(allowed=("digests.json", "src/new.rs", "src/absent.rs"))
+        self.assertEqual(1, code, output)
+        self.assertIn("footprint: src/absent.rs: allowed new file is missing", output)
+
+    def test_git_listing_and_tree_walk_agree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repository"
+            snapshot = Path(directory) / "snapshot"
+            committed = {
+                ".gitignore": "ignored.log\nbuild/\n",
+                "exec.sh": "#!/bin/sh\n",
+                "src/a.rs": "fn a() {}\n",
+                "src/deleted.rs": "fn deleted() {}\n",
+            }
+            for relative, text in committed.items():
+                write(repository / relative, text)
+            (repository / "exec.sh").chmod(0o755)
+            os.symlink("src/a.rs", repository / "link.rs")
+            init_repository(repository)
+            commit_all(repository)
+            (repository / "src/deleted.rs").unlink()
+            write(repository / "notes/untracked.txt", "untracked\n")
+            write(repository / "ignored.log", "ignored\n")
+            write(repository / "build/out.bin", "ignored\n")
+            write(repository / "deep/.git/config", "not a repository\n")
+            write(repository / "src/.git", "gitdir: elsewhere\n")
+            with mock.patch.dict(os.environ, GIT_FIXTURE_ENVIRONMENT):
+                from_git = FOOTPRINT.list_tree_files(repository)
+
+            def snapshot_ignore(current, names):
+                if Path(current) == repository:
+                    return [name for name in names if name in (".git", "ignored.log", "build")]
+                return []
+
+            shutil.copytree(repository, snapshot, symlinks=True, ignore=snapshot_ignore)
+            from_walk = FOOTPRINT.list_tree_files(snapshot)
+            self.assertTrue((snapshot / "deep/.git/config").is_file())
+            self.assertTrue((snapshot / "link.rs").is_symlink())
+        self.assertEqual([".gitignore", "exec.sh", "notes/untracked.txt", "src/a.rs"], from_git)
+        self.assertEqual(from_git, from_walk)
+
+    def test_pin_writes_the_base_digests(self):
+        committed = {"a.txt": "alpha\n", "dir/b.rs": "fn b() {}\n", "exec.sh": "#!/bin/sh\n"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative, text in committed.items():
+                write(root / relative, text)
+            (root / "exec.sh").chmod(0o755)
+            init_repository(root)
+            base = commit_all(root)
+            write(root / "a.txt", "changed after the base commit\n")
+            write(root / "uncommitted.txt", "new\n")
+            policies = {"digests": "out/digests.json", "base_revision": base, "pinned_roots": ["."]}
+            with mock.patch.dict(os.environ, GIT_FIXTURE_ENVIRONMENT), contextlib.redirect_stdout(io.StringIO()):
+                FOOTPRINT.pin(root, policies)
+                full = (root / "out/digests.json").read_text(encoding="utf-8")
+                policies["pinned_roots"] = ["dir", "exec.sh"]
+                FOOTPRINT.pin(root, policies)
+                partial = json.loads((root / "out/digests.json").read_text(encoding="utf-8"))
+        expected = {
+            "base_revision": base,
+            "roots": ["."],
+            "files": {relative: digest(text) for relative, text in committed.items()},
+        }
+        self.assertEqual(json.dumps(expected, indent=2, sort_keys=True) + "\n", full)
+        self.assertEqual({"dir/b.rs": digest("fn b() {}\n"), "exec.sh": digest("#!/bin/sh\n")}, partial["files"])
+
+    def test_pin_fails_closed_on_a_symbolic_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "a.txt", "alpha\n")
+            os.symlink("a.txt", root / "link.txt")
+            init_repository(root)
+            base = commit_all(root)
+            policies = {"digests": "digests.json", "base_revision": base, "pinned_roots": ["."]}
+            with mock.patch.dict(os.environ, GIT_FIXTURE_ENVIRONMENT), self.assertRaises(SystemExit) as raised:
+                FOOTPRINT.pin(root, policies)
+            self.assertFalse((root / "digests.json").exists())
+        self.assertIn(f"link.txt at {base} is a blob with mode 120000, not a regular file", str(raised.exception))
+
+    def test_pin_fails_closed_on_a_submodule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "a.txt", "alpha\n")
+            init_repository(root)
+            first = commit_all(root)
+            run_git(root, "update-index", "--add", "--cacheinfo", f"160000,{first},sub")
+            run_git(root, "commit", "--quiet", "--message", "gitlink")
+            base = run_git(root, "rev-parse", "HEAD")
+            policies = {"digests": "digests.json", "base_revision": base, "pinned_roots": ["."]}
+            with mock.patch.dict(os.environ, GIT_FIXTURE_ENVIRONMENT), self.assertRaises(SystemExit) as raised:
+                FOOTPRINT.pin(root, policies)
+            self.assertFalse((root / "digests.json").exists())
+        self.assertIn(f"sub at {base} is a commit with mode 160000, not a regular file", str(raised.exception))
 
 
 CITED_SOURCE = "fn first() {}\n\nfn second() {\n    work();\n}\n"
@@ -289,6 +555,434 @@ class CitationModule(unittest.TestCase):
     def test_problem_lines_count_from_the_start_of_the_text(self):
         count, problems = self.check("first\nsecond `src/host.rs:9`\n")
         self.assertEqual((1, [(2, "src/host.rs:9 is outside the file (5 lines)")]), (count, problems))
+
+
+CHECKLIST_TEST_FILE = "rholang/tests/reified_fixture.rs"
+CHECKLIST_NESTED_FILE = "casper/tests/util/rholang/fixture_spec.rs"
+CHECKLIST_TEST_SOURCE = """use proptest::prelude::*;
+
+#[test]
+fn passes() {}
+
+#[tokio::test(
+    flavor = "multi_thread",
+    worker_threads = 2
+)]
+async fn async_passes() {}
+
+fn helper() {}
+
+/* An outer comment /* with a nested comment */ still hides this function:
+#[test]
+fn hidden_in_comment() {}
+*/
+
+#[test]
+#[ignore]
+fn ignored() {}
+
+proptest! {
+    #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::default() })]
+    #[test]
+    fn prop_in_macro(value in 0u8..4) {
+        prop_assert!(value < 4);
+    }
+}
+"""
+CHECKLIST_NESTED_SOURCE = """#[tokio::test]
+async fn nested_passes() {}
+"""
+
+
+def checklist_test(test, **extra):
+    return {"kind": "rust_test", "file": CHECKLIST_TEST_FILE, "test": test, "step": "fixture-tests",
+            "proves": "fixture", **extra}
+
+
+def checklist_map():
+    return {
+        "schema": "reified-rspaces-consensus-checklist/1",
+        "title": "fixture",
+        "expected_items": 2,
+        "milestones": ["p1", "p2"],
+        "footprint_policies": "policies/footprint.json",
+        "complete_policies": "policies/complete.json",
+        "steps": {
+            "fixture-tests": {"recipe": "regression", "family": "RF1", "package": "rholang",
+                              "target": "reified_fixture"},
+            "casper-fixture": {"recipe": "regression", "family": "RF1", "package": "casper", "target": "mod",
+                               "filter": "util::rholang::fixture_spec::"},
+            "footprint": {"recipe": "checks", "family": "RF11", "script": "checks/footprint.py",
+                          "args": ["--policy", "@milestone"]},
+            "complete": {"recipe": "checks", "family": "RF11", "script": "checks/complete.py",
+                         "args": ["--phase", "@milestone"]},
+            "production-scan": {"recipe": "checks", "family": "RF11", "script": "checks/complete.py",
+                                "args": ["--production-scan"]},
+        },
+        "items": [
+            {"number": 1, "id": "first-item", "text": "The first fixture item.", "checks": [
+                checklist_test("passes"),
+                checklist_test("async_passes"),
+                checklist_test("prop_in_macro"),
+                {"kind": "rust_test", "file": CHECKLIST_NESTED_FILE, "module": "util::rholang::fixture_spec",
+                 "test": "nested_passes", "step": "casper-fixture", "proves": "fixture"},
+            ]},
+            {"number": 2, "id": "second-item", "text": "The second fixture item.", "checks": [
+                {"kind": "footprint", "policy": "@milestone", "mode": "byte_identical",
+                 "paths": ["casper/src/protected.rs"], "no_new_files": ["casper/src/**"], "step": "footprint"},
+                {"kind": "footprint", "policy": "@milestone", "mode": "approved_edits",
+                 "paths": ["casper/src/edited.rs"], "step": "footprint"},
+                {"kind": "complete", "scope": "production_scan", "patterns": ["write_exclusive"],
+                 "step": "production-scan"},
+                {"kind": "complete", "scope": "@milestone", "patterns": ["write_exclusive"], "step": "complete"},
+            ]},
+        ],
+    }
+
+
+def build_checklist_fixture(root):
+    write(root / CHECKLIST_TEST_FILE, CHECKLIST_TEST_SOURCE)
+    write(root / CHECKLIST_NESTED_FILE, CHECKLIST_NESTED_SOURCE)
+    write(root / "casper/src/protected.rs", "fn protected() {}\n")
+    write(root / "casper/src/edited.rs", "fn edited() {}\n// approved\n")
+    write_json(root / "policies/digests.json",
+               {"files": {"casper/src/edited.rs": digest("fn edited() {}\n"),
+                          "casper/src/protected.rs": digest("fn protected() {}\n")}})
+    write_json(root / "policies/footprint.json", {
+        "digests": "policies/digests.json",
+        "policies": {
+            "p1": {"unchanged": ["casper/src/**"], "no_new_files": ["casper/src/**"],
+                   "edits": [{"path": "casper/src/edited.rs", "added_lines": ["// approved"]}]},
+            "p2": {"extends": "p1"},
+        },
+    })
+    write_json(root / "policies/complete.json", {
+        "forbidden_anywhere": [{"pattern": "write_exclusive", "reason": "M-1"}],
+        "phases": {"p1": {}, "p2": {}},
+        "production_scan": {"roots": ["casper/src"], "suffixes": [".rs"],
+                            "patterns": [{"pattern": "write_exclusive", "reason": "M-1"}]},
+    })
+    write(root / "checks/footprint.py", "")
+    write(root / "checks/complete.py", "")
+
+
+class ConsensusChecklistChecker(unittest.TestCase):
+    """check-consensus-checklist.py: the map of the 22 consensus-checklist items."""
+
+    def run_map(self, mutate=None, milestone="p1", source=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_checklist_fixture(root)
+            if source is not None:
+                write(root / CHECKLIST_TEST_FILE, source)
+            data = checklist_map()
+            if mutate is not None:
+                mutate(data)
+            return CHECKLIST.check_map(root, data, milestone)
+
+    def failures(self, report):
+        return [line for line in report.lines if line.startswith("FAIL: ")]
+
+    def assert_only_failure(self, report, phrase):
+        failures = self.failures(report)
+        self.assertEqual(1, len(failures), "\n".join(report.lines))
+        self.assertIn(phrase, failures[0])
+
+    def only_checks(self, *checks):
+        def mutate(data):
+            data["items"][0]["checks"] = list(checks)
+        return mutate
+
+    def test_complete_map_passes(self):
+        report = self.run_map()
+        self.assertEqual(0, report.failed, "\n".join(report.lines))
+        self.assertEqual((2, 0, 0), (report.items, report.scheduled, report.retired))
+        self.assertEqual(report.checks, report.passed)
+        self.assertIn("PASS: step production-scan runs checks/complete.py --production-scan", report.lines)
+
+    def test_item_without_check_fails(self):
+        def mutate(data):
+            data["items"][1]["checks"] = []
+        self.assert_only_failure(self.run_map(mutate), "FAIL: item 2 has no active check at p1")
+
+    def test_missing_test_function_fails(self):
+        report = self.run_map(self.only_checks(checklist_test("absent_function"), checklist_test("hidden_in_comment")))
+        failures = self.failures(report)
+        self.assertEqual(2, len(failures), "\n".join(report.lines))
+        self.assertTrue(all(line.endswith("missing test function") for line in failures), failures)
+
+    def test_function_without_test_attribute_fails(self):
+        self.assert_only_failure(self.run_map(self.only_checks(checklist_test("helper"))),
+                                 "function without a test attribute")
+
+    def test_ignored_test_fails(self):
+        self.assert_only_failure(self.run_map(self.only_checks(checklist_test("ignored"))), "ignored test")
+
+    def test_test_inside_proptest_macro_passes(self):
+        report = self.run_map(self.only_checks(checklist_test("prop_in_macro")))
+        self.assertEqual(0, report.failed, "\n".join(report.lines))
+        self.assertIn(f"PASS: item 1 rust_test prop_in_macro ({CHECKLIST_TEST_FILE}, step fixture-tests)",
+                      report.lines)
+
+    def test_multiline_tokio_attribute_passes(self):
+        report = self.run_map(self.only_checks(checklist_test("async_passes")))
+        self.assertEqual(0, report.failed, "\n".join(report.lines))
+        self.assertIn(f"PASS: item 1 rust_test async_passes ({CHECKLIST_TEST_FILE}, step fixture-tests)",
+                      report.lines)
+
+    def test_nested_module_test_passes(self):
+        nested = {"kind": "rust_test", "file": CHECKLIST_NESTED_FILE, "module": "util::rholang::fixture_spec",
+                  "test": "nested_passes", "step": "casper-fixture"}
+        report = self.run_map(self.only_checks(nested))
+        self.assertEqual(0, report.failed, "\n".join(report.lines))
+        self.assertIn(f"PASS: item 1 rust_test nested_passes ({CHECKLIST_NESTED_FILE}, step casper-fixture)",
+                      report.lines)
+
+    def test_unknown_policy_fails(self):
+        def mutate(data):
+            data["items"][1]["checks"][0]["policy"] = "absent"
+        self.assert_only_failure(self.run_map(mutate), "unknown footprint policy absent")
+
+    def test_edited_path_is_not_byte_identical(self):
+        def mutate(data):
+            data["items"][1]["checks"][1]["mode"] = "byte_identical"
+        self.assert_only_failure(self.run_map(mutate),
+                                 "casper/src/edited.rs: 1 of 1 pinned files are not byte-identical under policy p1")
+
+    def test_unpinned_glob_fails(self):
+        def mutate(data):
+            data["items"][1]["checks"][0]["paths"] = ["casper/src/absent/**"]
+        self.assert_only_failure(self.run_map(mutate), "casper/src/absent/** names no pinned file (re-pin)")
+
+    def test_missing_no_new_files_glob_fails(self):
+        def mutate(data):
+            data["items"][1]["checks"][0]["no_new_files"] = ["casper/src/**", "rholang/src/**"]
+        self.assert_only_failure(self.run_map(mutate), "policy p1 has no no_new_files glob rholang/src/**")
+
+    def test_missing_forbidden_pattern_fails(self):
+        def mutate(data):
+            data["items"][1]["checks"][2]["patterns"] = ["write_exclusive", "suffix_key"]
+            data["items"][1]["checks"][3]["patterns"] = ["write_exclusive", "suffix_key"]
+        report = self.run_map(mutate)
+        failures = self.failures(report)
+        self.assertEqual(2, len(failures), "\n".join(report.lines))
+        self.assertIn("the production scan does not forbid suffix_key", failures[0])
+        self.assertIn("forbidden_anywhere (phase p1) does not forbid suffix_key", failures[1])
+
+    def test_step_target_mismatch_fails(self):
+        def mutate(data):
+            data["steps"]["fixture-tests"]["target"] = "other_target"
+        failures = self.failures(self.run_map(mutate))
+        self.assertEqual(3, len(failures), failures)
+        self.assertTrue(all("step target mismatch: step fixture-tests runs target other_target" in line
+                            for line in failures), failures)
+
+        def mutate_filter(data):
+            data["steps"]["casper-fixture"]["filter"] = "util::rholang::other_spec::"
+        self.assert_only_failure(self.run_map(mutate_filter),
+                                 "the filter util::rholang::other_spec:: of step casper-fixture does not select "
+                                 "util::rholang::fixture_spec::nested_passes")
+
+    def test_scheduled_check_skipped_before_from(self):
+        def mutate(data):
+            data["items"][0]["checks"].append(checklist_test("written_in_p2", **{"from": "p2", "owner": "P2"}))
+            data["items"][0]["checks"].append(checklist_test("passes", until="p1"))
+        at_p1 = self.run_map(mutate, milestone="p1")
+        self.assertEqual((0, 1, 0), (at_p1.failed, at_p1.scheduled, at_p1.retired), "\n".join(at_p1.lines))
+        self.assertIn("active from p2 (owner P2)", next(line for line in at_p1.lines if line.startswith("SCHEDULED")))
+        at_p2 = self.run_map(mutate, milestone="p2")
+        self.assertEqual((1, 0, 1), (at_p2.failed, at_p2.scheduled, at_p2.retired), "\n".join(at_p2.lines))
+        self.assert_only_failure(at_p2, "rust_test written_in_p2")
+
+    def test_item_with_only_scheduled_checks_fails(self):
+        def mutate(data):
+            for check in data["items"][1]["checks"]:
+                check["from"] = "p2"
+        report = self.run_map(mutate)
+        self.assertEqual(4, report.scheduled, "\n".join(report.lines))
+        self.assert_only_failure(report, "FAIL: item 2 has no active check at p1")
+
+    def test_wrong_numbering_fails(self):
+        def renumber(data):
+            data["items"][1]["number"] = 3
+        self.assert_only_failure(self.run_map(renumber), "the items are numbered [1, 3], expected 1..2")
+
+        def repeat_id(data):
+            data["items"][1]["id"] = "first-item"
+        self.assert_only_failure(self.run_map(repeat_id), "the item ids first-item occur more than once")
+
+    def test_unknown_schema_exits_2(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_checklist_fixture(root)
+            data = checklist_map()
+            data["schema"] = "reified-rspaces-consensus-checklist/0"
+            write_json(root / "map.json", data)
+            arguments = ["check-consensus-checklist.py", "--root", str(root), "--map", str(root / "map.json")]
+            with mock.patch.object(sys, "argv", arguments), contextlib.redirect_stderr(io.StringIO()) as errors, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                code = CHECKLIST.main()
+        self.assertEqual(2, code)
+        self.assertIn("unknown schema 'reified-rspaces-consensus-checklist/0'", errors.getvalue())
+
+    def test_missing_checker_script_fails(self):
+        def mutate(data):
+            data["steps"]["footprint"]["script"] = "checks/absent.py"
+        self.assert_only_failure(self.run_map(mutate), "FAIL: step footprint: unknown checker checks/absent.py")
+
+    def test_unterminated_block_comment_fails(self):
+        report = self.run_map(source=CHECKLIST_TEST_SOURCE + "/* a comment without an end\n")
+        failures = self.failures(report)
+        self.assertEqual(3, len(failures), "\n".join(report.lines))
+        self.assertTrue(all(f"{CHECKLIST_TEST_FILE}: a block comment has no end" in line for line in failures))
+
+
+ORDINARY_TEST_FILE = "rholang/tests/reified_ordinary_regression.rs"
+ORDINARY_CHECKLIST_FILE = "scripts/verify-reified/consensus-checklist.json"
+ORDINARY_SOURCE = """#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reified_ordinary_regression_r9_play_replay_equality() {}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
+    fn prop_ordinary_play_replay_equal(case in ordinary_case()) {}
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_play_replay_negative_control_detects_mutants() {}
+"""
+
+
+def ordinary_phase():
+    return {
+        "title": "Ordinary execution (fixture)",
+        "design": "fixture",
+        "test_status": "required",
+        "test_files": [ORDINARY_TEST_FILE],
+        "expected_properties": 1,
+        "formal": {
+            "O1": {
+                "kind": "checklist",
+                "name": "host-replay-acceptance",
+                "item": 10,
+                "file": ORDINARY_CHECKLIST_FILE,
+                "tests": ["prop_ordinary_play_replay_equal"],
+            }
+        },
+        "properties": [
+            {"number": 1, "test": "prop_ordinary_play_replay_equal", "file": ORDINARY_TEST_FILE, "covers": ["O1"]}
+        ],
+        "witness_tests": [
+            {"test": "reified_ordinary_regression_r9_play_replay_equality", "file": ORDINARY_TEST_FILE,
+             "rule": "R9", "covers": ["O1"]},
+            {"test": "ordinary_play_replay_negative_control_detects_mutants", "file": ORDINARY_TEST_FILE,
+             "rule": "negative control", "covers": [], "unmodeled": "A negative control."},
+        ],
+    }
+
+
+def ordinary_checklist(item_id="host-replay-acceptance", tests=("reified_ordinary_regression_r9_play_replay_equality",
+                                                                 "prop_ordinary_play_replay_equal")):
+    checks = [{"kind": "rust_test", "file": ORDINARY_TEST_FILE, "test": test, "step": "regression-ordinary"}
+              for test in tests]
+    checks.append({"kind": "footprint", "policy": "@milestone", "mode": "byte_identical",
+                   "paths": ["rspace++/src/rspace/replay_rspace/**"], "step": "footprint"})
+    return {
+        "schema": "reified-rspaces-consensus-checklist/1",
+        "items": [{"number": 10, "id": item_id, "text": "Host replay acceptance is unchanged.", "checks": checks}],
+    }
+
+
+class InvariantMapOrdinaryPhase(unittest.TestCase):
+    """check-invariant-map.py: the ORD phase and the checklist kind."""
+
+    def run_case(self, phase=None, checklist=None, source=ORDINARY_SOURCE):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / ORDINARY_TEST_FILE, source)
+            write_json(root / ORDINARY_CHECKLIST_FILE, checklist or ordinary_checklist())
+            report = INVARIANT_MAP.Report()
+            selected = phase or ordinary_phase()
+            with mock.patch.object(INVARIANT_MAP, "REPO_ROOT", root), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                INVARIANT_MAP.check_phase("ORD", selected, 1, INVARIANT_MAP.Formal(), report)
+                INVARIANT_MAP.check_tests("ORD", selected, report)
+            return report, output.getvalue()
+
+    def test_ordinary_phase_passes(self):
+        report, output = self.run_case()
+        self.assertEqual(0, report.failed, output)
+        self.assertIn("PASS: ORD O1 host-replay-acceptance -> prop_ordinary_play_replay_equal", output)
+        self.assertIn("PASS: ORD: test function prop_ordinary_play_replay_equal exists", output)
+
+    def test_unknown_checklist_item_fails(self):
+        phase = ordinary_phase()
+        phase["formal"]["O1"]["item"] = 23
+        report, output = self.run_case(phase=phase)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("FAIL: ORD O1: unknown checklist item 23", output)
+
+    def test_checklist_id_mismatch_fails(self):
+        report, output = self.run_case(checklist=ordinary_checklist(item_id="host-replay"))
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("FAIL: ORD O1: checklist item 10 has the id 'host-replay', not 'host-replay-acceptance'", output)
+
+    def test_checklist_item_must_name_the_test(self):
+        checklist = ordinary_checklist(tests=("reified_ordinary_regression_r9_play_replay_equality",))
+        report, output = self.run_case(checklist=checklist)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("names no rust_test check for prop_ordinary_play_replay_equal", output)
+
+    def test_missing_property_test_fails(self):
+        source = ORDINARY_SOURCE.replace("fn prop_ordinary_play_replay_equal", "fn renamed_property")
+        report, output = self.run_case(source=source)
+        self.assertEqual(1, report.failed, output)
+        self.assertIn("FAIL: ORD: missing test function prop_ordinary_play_replay_equal", output)
+
+    def test_unmapped_prop_function_fails(self):
+        report, output = self.run_case(source=ORDINARY_SOURCE + "\nfn prop_generator_helper() {}\n")
+        self.assertEqual(1, report.failed, output)
+        self.assertIn(f"FAIL: ORD: unmapped property test prop_generator_helper in {ORDINARY_TEST_FILE}", output)
+
+    def test_missing_required_id_fails(self):
+        phase = ordinary_phase()
+        phase["formal"]["O2"] = phase["formal"].pop("O1")
+        report, output = self.run_case(phase=phase)
+        self.assertLessEqual(1, report.failed, output)
+        self.assertIn("FAIL: ORD: unmapped: O1 is not in the invariant map", output)
+
+    def test_phase_without_tla_entries_keeps_auxiliary_invariants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / ORDINARY_TEST_FILE, ORDINARY_SOURCE)
+            write_json(root / ORDINARY_CHECKLIST_FILE, ordinary_checklist())
+            write(root / "tla/M.tla", "---- MODULE M ----\nVARIABLE x\nTypeOK == x \\in {0, 1}\nInv == x = 0\n====\n")
+            write(root / "tla/M.cfg", "INVARIANTS TypeOK Inv\n")
+            write(root / "tests/model.rs", "#[test]\nfn prop_model_inv() {}\n")
+            invariant_map = {
+                "schema": INVARIANT_MAP.SCHEMA,
+                "tla_config_dir": "tla",
+                "auxiliary_tla_invariants": {"TypeOK": "The type invariant of the fixture module."},
+                "phases": {
+                    "PT": {
+                        "test_status": "required",
+                        "test_files": ["tests/model.rs"],
+                        "expected_properties": 1,
+                        "formal": {"T1": {"kind": "tla", "name": "Inv", "file": "tla/M.tla",
+                                          "tests": ["prop_model_inv"]}},
+                        "properties": [{"number": 1, "test": "prop_model_inv", "file": "tests/model.rs",
+                                        "covers": ["T1"]}],
+                    },
+                    "ORD": ordinary_phase(),
+                },
+            }
+            write_json(root / "map.json", invariant_map)
+            arguments = ["check-invariant-map.py", "--map", str(root / "map.json"), "--phase", "ORD"]
+            with mock.patch.object(INVARIANT_MAP, "REPO_ROOT", root), mock.patch.object(sys, "argv", arguments), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = INVARIANT_MAP.main()
+        self.assertEqual(0, code, output.getvalue())
+        self.assertIn("FAIL=0", output.getvalue())
 
 
 if __name__ == "__main__":

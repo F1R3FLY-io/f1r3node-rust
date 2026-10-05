@@ -13,6 +13,10 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsages};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::utils::{new_freevar_par, new_gint_par, new_gstring_par};
+use proptest::prelude::*;
+use proptest::sample::{select, subsequence};
+use proptest::strategy::{Union, ValueTree};
+use proptest::test_runner::{RngSeed, TestRunner};
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
@@ -188,6 +192,13 @@ new loop, result, stdout(`rho:io:stdout`) in {
   for (@p <- @"rrs-r9-persistent") { @"rrs-r9-persistent-seen"!(p) }
 }
 "#;
+
+const DC_CANDIDATES: usize = 6;
+const DC_DATA_CHANNEL: &str = "rrs-dc-data";
+const DC_DATA_SOURCE: &str = r#"@"rrs-dc-data"!(0) | @"rrs-dc-data"!(1) | @"rrs-dc-data"!(2) | @"rrs-dc-data"!(3) | @"rrs-dc-data"!(4) | @"rrs-dc-data"!(5)"#;
+const DC_TAKE_SOURCE: &str = r#"for (@x <- @"rrs-dc-data") { Nil }"#;
+const DC_CONTINUATION_CHANNEL: &str = "rrs-dc-cont";
+const DC_CONTINUATION_SOURCE: &str = r#"for (@x <- @"rrs-dc-cont") { @"rrs-dc-fired"!(0, x) } | for (@x <- @"rrs-dc-cont") { @"rrs-dc-fired"!(1, x) } | for (@x <- @"rrs-dc-cont") { @"rrs-dc-fired"!(2, x) } | for (@x <- @"rrs-dc-cont") { @"rrs-dc-fired"!(3, x) } | for (@x <- @"rrs-dc-cont") { @"rrs-dc-fired"!(4, x) } | for (@x <- @"rrs-dc-cont") { @"rrs-dc-fired"!(5, x) }"#;
 
 struct CostProgram {
     name: &'static str,
@@ -1220,17 +1231,27 @@ async fn reified_ordinary_regression_r2_peek_removes_and_reproduces() {
     );
 }
 
-fn deterministic_order(data: &[Datum<ListParWithRandom>]) -> Vec<usize> {
-    let mut keyed: Vec<(Blake2b256Hash, usize)> = data
+fn bincode_hash<T: serde::Serialize>(record: &T) -> Blake2b256Hash {
+    Blake2b256Hash::new(&bincode::serialize(record).expect("bincode-serialize a candidate"))
+}
+
+// The host's candidate ranking, computed in the test: ascending
+// (Blake2b256(bincode(record)), index).
+fn bincode_rank<T: serde::Serialize>(records: &[T]) -> Vec<(Blake2b256Hash, usize)> {
+    let mut keyed: Vec<(Blake2b256Hash, usize)> = records
         .iter()
         .enumerate()
-        .map(|(index, datum)| {
-            let bytes = bincode::serialize(datum).expect("bincode-serialize the datum");
-            (Blake2b256Hash::new(&bytes), index)
-        })
+        .map(|(index, record)| (bincode_hash(record), index))
         .collect();
     keyed.sort();
-    keyed.into_iter().map(|(_, index)| index).collect()
+    keyed
+}
+
+fn deterministic_order(data: &[Datum<ListParWithRandom>]) -> Vec<usize> {
+    bincode_rank(data)
+        .into_iter()
+        .map(|(_, index)| index)
+        .collect()
 }
 
 fn greedy_assignment(matches: &[Vec<bool>]) -> Option<Vec<usize>> {
@@ -2075,5 +2096,1345 @@ async fn reified_ordinary_regression_r9_play_replay_equality() {
             "event_log_length": play_checkpoint.log.len(),
             "event_kinds": kinds_json(&play_checkpoint.log),
         }),
+    );
+}
+
+fn departed<T: serde::Serialize + Clone>(before: &[T], after: &[T]) -> T {
+    assert_eq!(
+        after.len() + 1,
+        before.len(),
+        "exactly one candidate leaves per step"
+    );
+    let stayed: BTreeSet<Blake2b256Hash> = after.iter().map(bincode_hash).collect();
+    let gone: Vec<&T> = before
+        .iter()
+        .filter(|record| !stayed.contains(&bincode_hash(*record)))
+        .collect();
+    match gone.as_slice() {
+        [record] => (*record).clone(),
+        other => panic!("expected one departed candidate, found {}", other.len()),
+    }
+}
+
+fn hash_hex_list(hashes: &[Blake2b256Hash]) -> Value {
+    Value::Array(
+        hashes
+            .iter()
+            .map(|hash| Value::String(hex::encode(&hash.0)))
+            .collect(),
+    )
+}
+
+fn identity_order(ranked: &[(Blake2b256Hash, usize)]) -> bool {
+    ranked
+        .iter()
+        .enumerate()
+        .all(|(position, (_, index))| position == *index)
+}
+
+async fn deterministic_data_candidates() -> Value {
+    let Runtimes { mut play, .. } = fresh_runtimes().await;
+    let channel = string_par(DC_DATA_CHANNEL);
+    evaluate(&mut play, DC_DATA_SOURCE, "rrs-dc-data").await;
+    let stored = play.get_data(&channel).await;
+    assert_eq!(stored.len(), DC_CANDIDATES, "the data step stores six data");
+    let ranked = bincode_rank(&stored);
+    assert!(
+        !identity_order(&ranked),
+        "the ranking must differ from the store order"
+    );
+    let mut remaining = stored.clone();
+    let mut taken = Vec::with_capacity(DC_CANDIDATES);
+    for take in 0..DC_CANDIDATES {
+        let log = evaluate(&mut play, DC_TAKE_SOURCE, &format!("rrs-dc-take-{take}")).await;
+        let after = play.get_data(&channel).await;
+        let datum = departed(&remaining, &after);
+        let consumed: Vec<&Blake2b256Hash> = single_comm(&log)
+            .produces
+            .iter()
+            .map(|produce| &produce.hash)
+            .collect();
+        assert_eq!(
+            consumed,
+            vec![&datum.source.hash],
+            "the COMM consumes the departed datum"
+        );
+        taken.push(bincode_hash(&datum));
+        remaining = after;
+    }
+    let ranked_hashes: Vec<Blake2b256Hash> = ranked.iter().map(|(hash, _)| hash.clone()).collect();
+    assert_eq!(
+        taken, ranked_hashes,
+        "consumes take data in ascending bincode-hash order"
+    );
+    json!({
+        "source": DC_DATA_SOURCE,
+        "take_source": DC_TAKE_SOURCE,
+        "ranked_hashes": hash_hex_list(&ranked_hashes),
+        "values": ranked
+            .iter()
+            .map(|(_, index)| stored[*index].a.pars.iter().map(pretty).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        "taken": hash_hex_list(&taken),
+    })
+}
+
+async fn deterministic_continuation_candidates() -> Value {
+    let Runtimes { mut play, .. } = fresh_runtimes().await;
+    let channel = string_par(DC_CONTINUATION_CHANNEL);
+    evaluate(&mut play, DC_CONTINUATION_SOURCE, "rrs-dc-cont").await;
+    let waiting = play.get_continuations(vec![channel.clone()]).await;
+    assert_eq!(waiting.len(), DC_CANDIDATES, "six receives wait");
+    let ranked = bincode_rank(&waiting);
+    assert!(
+        !identity_order(&ranked),
+        "the ranking must differ from the store order"
+    );
+    let mut remaining = waiting.clone();
+    let mut sends = Vec::with_capacity(DC_CANDIDATES);
+    let mut fired = Vec::with_capacity(DC_CANDIDATES);
+    for value in 0..DC_CANDIDATES {
+        let send = format!(r#"@"{DC_CONTINUATION_CHANNEL}"!({value})"#);
+        let log = evaluate(&mut play, &send, &format!("rrs-dc-send-{value}")).await;
+        let after = play.get_continuations(vec![channel.clone()]).await;
+        let continuation = departed(&remaining, &after);
+        assert_eq!(
+            single_comm(&log).consume,
+            continuation.source,
+            "the COMM fires the departed continuation"
+        );
+        fired.push(bincode_hash(&continuation));
+        sends.push(send);
+        remaining = after;
+    }
+    let ranked_hashes: Vec<Blake2b256Hash> = ranked.iter().map(|(hash, _)| hash.clone()).collect();
+    assert_eq!(
+        fired, ranked_hashes,
+        "produces fire continuations in ascending bincode-hash order"
+    );
+    json!({
+        "source": DC_CONTINUATION_SOURCE,
+        "sends": sends,
+        "ranked_hashes": hash_hex_list(&ranked_hashes),
+        "bodies": ranked
+            .iter()
+            .map(|(_, index)| continuation_state_json(&waiting[*index].continuation))
+            .collect::<Vec<_>>(),
+        "fired": hash_hex_list(&fired),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deterministic_candidates_hash_unchanged() {
+    assert!(
+        std::env::var_os("PRETTY_PRINTER_OUTPUT_TRIM_AFTER").is_none(),
+        "the candidate dump requires untrimmed pretty printing"
+    );
+    let data = deterministic_data_candidates().await;
+    let continuations = deterministic_continuation_candidates().await;
+    observe(
+        "dc",
+        "deterministic_candidates",
+        json!({
+            "data": data,
+            "continuations": continuations,
+        }),
+    );
+}
+
+// The ordinary play/replay property (regression design, section 3). Every
+// generated case terminates by construction: a receive body uses only
+// channels above the levels of the receive's channels (S1), no channel
+// carries both `!!` and `<=` (S2), and no received variable is a channel
+// (S3). Each deploy must replay with no errors, pass `check_replay_data`,
+// reach the play root, and charge the play cost.
+
+const PROPERTY_SEED: u64 = 0x0E0_5EED_2026_1004; // house seed
+const PROPERTY_CASES: u32 = 64;
+const PROPERTY_PHLO: i64 = 10_000_000;
+const PUBLIC_LEVELS: u8 = 3;
+const PUBLIC_PER_LEVEL: u8 = 2;
+const SINK_COUNT: u8 = 2;
+const SINK_LEVEL: u8 = 3;
+const MAX_DEPTH: u8 = 3;
+const MAX_JOIN_WIDTH: usize = 3;
+const MUTANT_SEND: &str = r#" | @"rrs-prop-mutant"!(0)"#;
+
+fn property_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: PROPERTY_CASES,
+        rng_seed: RngSeed::Fixed(PROPERTY_SEED),
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    }
+}
+
+fn property_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("build the property runtime")
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum GenChan {
+    Public { level: u8, index: u8 },
+    Sink(u8),
+    Fresh,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenArrow {
+    Linear,
+    Peek,
+    Persistent,
+}
+
+#[derive(Clone, Debug)]
+enum GenArg {
+    Int(u8),
+    Str(bool),
+    Pair(Box<GenArg>, Box<GenArg>),
+    Var(u8),
+    Name,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GenPat {
+    Bind,
+    Wildcard,
+    Int(u8),
+    Str,
+    HeadZero,
+    Both,
+}
+
+#[derive(Clone, Debug)]
+struct GenBind {
+    pats: Vec<GenPat>,
+    chan: GenChan,
+}
+
+#[derive(Clone, Debug)]
+enum GenTerm {
+    Send {
+        chan: GenChan,
+        persistent: bool,
+        args: Vec<GenArg>,
+    },
+    Receive {
+        arrow: GenArrow,
+        binds: Vec<GenBind>,
+        body: Vec<GenTerm>,
+    },
+    New {
+        inner: Vec<GenTerm>,
+    },
+    Aliased {
+        level: u8,
+        index: u8,
+        arrow: GenArrow,
+        left: Vec<GenPat>,
+        right: Vec<GenPat>,
+        body: Vec<GenTerm>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct OrdinaryCase {
+    seed: u32,
+    seed_arrow: GenArrow,
+    seed_persistent: bool,
+    deploys: Vec<Vec<GenTerm>>,
+}
+
+fn gen_arrow() -> impl Strategy<Value = GenArrow> {
+    prop_oneof![
+        3 => Just(GenArrow::Linear),
+        2 => Just(GenArrow::Peek),
+        1 => Just(GenArrow::Persistent),
+    ]
+}
+
+fn gen_arity() -> impl Strategy<Value = usize> {
+    prop_oneof![4 => Just(1_usize), 1 => Just(2_usize)]
+}
+
+fn gen_leaf_arg() -> impl Strategy<Value = GenArg> {
+    prop_oneof![
+        3 => (0_u8..=2).prop_map(GenArg::Int),
+        1 => any::<bool>().prop_map(GenArg::Str),
+        2 => any::<u8>().prop_map(GenArg::Var),
+        1 => Just(GenArg::Name),
+    ]
+}
+
+fn gen_arg() -> impl Strategy<Value = GenArg> {
+    prop_oneof![
+        3 => (0_u8..=2).prop_map(GenArg::Int),
+        1 => any::<bool>().prop_map(GenArg::Str),
+        2 => any::<u8>().prop_map(GenArg::Var),
+        1 => Just(GenArg::Name),
+        1 => (gen_leaf_arg(), gen_leaf_arg())
+            .prop_map(|(left, right)| GenArg::Pair(Box::new(left), Box::new(right))),
+    ]
+}
+
+fn gen_pat() -> impl Strategy<Value = GenPat> {
+    prop_oneof![
+        4 => Just(GenPat::Bind),
+        2 => Just(GenPat::Wildcard),
+        1 => (0_u8..=1).prop_map(GenPat::Int),
+        1 => Just(GenPat::Str),
+        1 => Just(GenPat::HeadZero),
+        1 => Just(GenPat::Both),
+    ]
+}
+
+fn gen_pats() -> impl Strategy<Value = Vec<GenPat>> {
+    gen_arity().prop_flat_map(|arity| prop::collection::vec(gen_pat(), arity))
+}
+
+fn gen_args() -> impl Strategy<Value = Vec<GenArg>> {
+    gen_arity().prop_flat_map(|arity| prop::collection::vec(gen_arg(), arity))
+}
+
+// The public channels at levels `lo..=2`, with room for `extra` more.
+fn public_channels(lo: u8, extra: usize) -> Vec<GenChan> {
+    let levels = usize::from(PUBLIC_LEVELS.saturating_sub(lo));
+    let mut channels = Vec::with_capacity(levels * usize::from(PUBLIC_PER_LEVEL) + extra);
+    for level in lo..PUBLIC_LEVELS {
+        for index in 0..PUBLIC_PER_LEVEL {
+            channels.push(GenChan::Public { level, index });
+        }
+    }
+    channels
+}
+
+fn sink_channels() -> Vec<GenChan> { (0..SINK_COUNT).map(GenChan::Sink).collect() }
+
+fn chan_level(chan: GenChan, lo: u8) -> u8 {
+    match chan {
+        GenChan::Public { level, .. } => level,
+        GenChan::Sink(_) => SINK_LEVEL,
+        GenChan::Fresh => lo,
+    }
+}
+
+fn gen_send_over(channels: Vec<GenChan>) -> BoxedStrategy<GenTerm> {
+    (select(channels), prop::bool::weighted(0.2), gen_args())
+        .prop_map(|(chan, persistent, args)| GenTerm::Send {
+            chan,
+            persistent,
+            args,
+        })
+        .boxed()
+}
+
+fn gen_send(lo: u8, fresh: bool) -> BoxedStrategy<GenTerm> {
+    let mut channels = public_channels(lo, usize::from(SINK_COUNT) + 1);
+    channels.extend(sink_channels());
+    if fresh {
+        channels.push(GenChan::Fresh);
+    }
+    gen_send_over(channels)
+}
+
+fn gen_receive(lo: u8, depth: u8, fresh: bool) -> BoxedStrategy<GenTerm> {
+    let mut channels = public_channels(lo, 1);
+    if fresh {
+        channels.push(GenChan::Fresh);
+    }
+    let width = channels.len().min(MAX_JOIN_WIDTH);
+    (gen_arrow(), subsequence(channels, 1..=width))
+        .prop_flat_map(move |(arrow, chans)| {
+            let top = chans
+                .iter()
+                .map(|chan| chan_level(*chan, lo))
+                .max()
+                .expect("a receive binds at least one channel");
+            let binds: Vec<_> = chans
+                .into_iter()
+                .map(|chan| gen_pats().prop_map(move |pats| GenBind { pats, chan }))
+                .collect();
+            (Just(arrow), binds, gen_body(top + 1, depth + 1))
+        })
+        .prop_map(|(arrow, binds, body)| GenTerm::Receive { arrow, binds, body })
+        .boxed()
+}
+
+fn gen_body(lo: u8, depth: u8) -> BoxedStrategy<Vec<GenTerm>> {
+    match lo >= SINK_LEVEL || depth >= MAX_DEPTH {
+        true => prop::collection::vec(gen_send_over(sink_channels()), 1..=2).boxed(),
+        false => prop::collection::vec(gen_term(lo, depth, false), 1..=2).boxed(),
+    }
+}
+
+fn gen_new(lo: u8, depth: u8) -> BoxedStrategy<GenTerm> {
+    prop::collection::vec(gen_term(lo, depth + 1, true), 1..=2)
+        .prop_map(|inner| GenTerm::New { inner })
+        .boxed()
+}
+
+fn gen_term(lo: u8, depth: u8, fresh: bool) -> BoxedStrategy<GenTerm> {
+    let mut options = Vec::with_capacity(3);
+    options.push((4, gen_send(lo, fresh)));
+    options.push((3, gen_receive(lo, depth, fresh)));
+    if depth < MAX_DEPTH {
+        options.push((1, gen_new(lo, depth)));
+    }
+    Union::new_weighted(options).boxed()
+}
+
+fn gen_aliased() -> BoxedStrategy<GenTerm> {
+    (
+        0..PUBLIC_LEVELS,
+        0..PUBLIC_PER_LEVEL,
+        gen_arrow(),
+        gen_pats(),
+        gen_pats(),
+    )
+        .prop_flat_map(|(level, index, arrow, left, right)| {
+            (
+                Just((level, index, arrow, left, right)),
+                gen_body(level + 1, 1),
+            )
+        })
+        .prop_map(
+            |((level, index, arrow, left, right), body)| GenTerm::Aliased {
+                level,
+                index,
+                arrow,
+                left,
+                right,
+                body,
+            },
+        )
+        .boxed()
+}
+
+fn gen_top_term() -> BoxedStrategy<GenTerm> {
+    Union::new_weighted(vec![(8, gen_term(0, 0, false)), (1, gen_aliased())]).boxed()
+}
+
+fn ordinary_case() -> impl Strategy<Value = OrdinaryCase> {
+    (
+        0_u32..1_000_000,
+        gen_arrow(),
+        any::<bool>(),
+        prop::collection::vec(prop::collection::vec(gen_top_term(), 1..=4), 1..=2),
+    )
+        .prop_map(
+            |(seed, seed_arrow, seed_persistent, deploys)| OrdinaryCase {
+                seed,
+                seed_arrow,
+                seed_persistent,
+                deploys,
+            },
+        )
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ResolvedChan {
+    Public { level: u8, index: u8 },
+    Sink(u8),
+    Fresh(usize),
+}
+
+#[derive(Debug)]
+enum ResolvedArg {
+    Int(u8),
+    Str(bool),
+    Pair(Box<ResolvedArg>, Box<ResolvedArg>),
+    Var(usize),
+    Name(usize),
+    Zero,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResolvedPat {
+    Bind(usize),
+    Wildcard,
+    Int(u8),
+    Str,
+    HeadZero(usize),
+    Both(usize, usize),
+}
+
+#[derive(Debug)]
+struct ResolvedBind {
+    pats: Vec<ResolvedPat>,
+    chan: ResolvedChan,
+}
+
+#[derive(Debug)]
+enum ResolvedTerm {
+    Send {
+        chan: ResolvedChan,
+        persistent: bool,
+        args: Vec<ResolvedArg>,
+    },
+    Receive {
+        arrow: GenArrow,
+        binds: Vec<ResolvedBind>,
+        body: Vec<ResolvedTerm>,
+    },
+    New {
+        binder: usize,
+        inner: Vec<ResolvedTerm>,
+    },
+    Aliased {
+        alias: usize,
+        level: u8,
+        index: u8,
+        arrow: GenArrow,
+        left: Vec<ResolvedPat>,
+        right: Vec<ResolvedPat>,
+        body: Vec<ResolvedTerm>,
+    },
+}
+
+// Pass 1 of the renderer: ids in pre-order across deploys for variables
+// `x{n}`, `new` binders `n{n}` and aliases.
+#[derive(Default)]
+struct Resolver {
+    variables: usize,
+    binders: usize,
+    aliases: usize,
+}
+
+impl Resolver {
+    fn variable(&mut self) -> usize {
+        self.variables += 1;
+        self.variables - 1
+    }
+
+    fn binder(&mut self) -> usize {
+        self.binders += 1;
+        self.binders - 1
+    }
+
+    fn alias(&mut self) -> usize {
+        self.aliases += 1;
+        self.aliases - 1
+    }
+
+    fn pats(&mut self, pats: &[GenPat], scope: &mut Vec<usize>) -> Vec<ResolvedPat> {
+        let mut resolved = Vec::with_capacity(pats.len());
+        for pat in pats {
+            resolved.push(match pat {
+                GenPat::Bind => {
+                    let variable = self.variable();
+                    scope.push(variable);
+                    ResolvedPat::Bind(variable)
+                }
+                GenPat::Wildcard => ResolvedPat::Wildcard,
+                GenPat::Int(value) => ResolvedPat::Int(*value),
+                GenPat::Str => ResolvedPat::Str,
+                GenPat::HeadZero => {
+                    let variable = self.variable();
+                    scope.push(variable);
+                    ResolvedPat::HeadZero(variable)
+                }
+                GenPat::Both => {
+                    let first = self.variable();
+                    let second = self.variable();
+                    scope.extend([first, second]);
+                    ResolvedPat::Both(first, second)
+                }
+            });
+        }
+        resolved
+    }
+
+    fn arg(arg: &GenArg, scope: &[usize], binders: &[usize]) -> ResolvedArg {
+        match arg {
+            GenArg::Int(value) => ResolvedArg::Int(*value),
+            GenArg::Str(first) => ResolvedArg::Str(*first),
+            GenArg::Pair(left, right) => ResolvedArg::Pair(
+                Box::new(Self::arg(left, scope, binders)),
+                Box::new(Self::arg(right, scope, binders)),
+            ),
+            GenArg::Var(choice) => match scope.len() {
+                0 => ResolvedArg::Zero,
+                len => ResolvedArg::Var(scope[usize::from(*choice) % len]),
+            },
+            GenArg::Name => match binders.last() {
+                Some(binder) => ResolvedArg::Name(*binder),
+                None => ResolvedArg::Zero,
+            },
+        }
+    }
+
+    fn chan(chan: GenChan, binders: &[usize]) -> ResolvedChan {
+        match chan {
+            GenChan::Public { level, index } => ResolvedChan::Public { level, index },
+            GenChan::Sink(index) => ResolvedChan::Sink(index),
+            GenChan::Fresh => {
+                ResolvedChan::Fresh(*binders.last().expect("a fresh channel lies inside a new"))
+            }
+        }
+    }
+
+    fn terms(
+        &mut self,
+        terms: &[GenTerm],
+        scope: &mut Vec<usize>,
+        binders: &mut Vec<usize>,
+    ) -> Vec<ResolvedTerm> {
+        let mut resolved = Vec::with_capacity(terms.len());
+        for term in terms {
+            resolved.push(self.term(term, scope, binders));
+        }
+        resolved
+    }
+
+    fn term(
+        &mut self,
+        term: &GenTerm,
+        scope: &mut Vec<usize>,
+        binders: &mut Vec<usize>,
+    ) -> ResolvedTerm {
+        match term {
+            GenTerm::Send {
+                chan,
+                persistent,
+                args,
+            } => ResolvedTerm::Send {
+                chan: Self::chan(*chan, binders),
+                persistent: *persistent,
+                args: args
+                    .iter()
+                    .map(|arg| Self::arg(arg, scope, binders))
+                    .collect(),
+            },
+            GenTerm::Receive { arrow, binds, body } => {
+                let outer = scope.len();
+                let mut resolved = Vec::with_capacity(binds.len());
+                for bind in binds {
+                    let pats = self.pats(&bind.pats, scope);
+                    resolved.push(ResolvedBind {
+                        pats,
+                        chan: Self::chan(bind.chan, binders),
+                    });
+                }
+                let body = self.terms(body, scope, binders);
+                scope.truncate(outer);
+                ResolvedTerm::Receive {
+                    arrow: *arrow,
+                    binds: resolved,
+                    body,
+                }
+            }
+            GenTerm::New { inner } => {
+                let binder = self.binder();
+                binders.push(binder);
+                let inner = self.terms(inner, scope, binders);
+                binders.pop();
+                ResolvedTerm::New { binder, inner }
+            }
+            GenTerm::Aliased {
+                level,
+                index,
+                arrow,
+                left,
+                right,
+                body,
+            } => {
+                let alias = self.alias();
+                let mut aliased_scope = Vec::with_capacity(left.len() + right.len());
+                let left = self.pats(left, &mut aliased_scope);
+                let right = self.pats(right, &mut aliased_scope);
+                let body = self.terms(body, &mut aliased_scope, binders);
+                ResolvedTerm::Aliased {
+                    alias,
+                    level: *level,
+                    index: *index,
+                    arrow: *arrow,
+                    left,
+                    right,
+                    body,
+                }
+            }
+        }
+    }
+}
+
+// Pass 1 for a whole case. Deploy 0 starts with the seed pair, which takes
+// `x0`.
+fn resolve_case(case: &OrdinaryCase) -> Vec<Vec<ResolvedTerm>> {
+    let mut resolver = Resolver::default();
+    let seed_channel = ResolvedChan::Public { level: 0, index: 0 };
+    let seed_variable = resolver.variable();
+    let mut deploys = Vec::with_capacity(case.deploys.len());
+    for (position, terms) in case.deploys.iter().enumerate() {
+        let mut resolved = Vec::with_capacity(terms.len() + 2);
+        if position == 0 {
+            resolved.push(ResolvedTerm::Send {
+                chan: seed_channel,
+                persistent: case.seed_persistent,
+                args: vec![ResolvedArg::Int(0)],
+            });
+            resolved.push(ResolvedTerm::Receive {
+                arrow: case.seed_arrow,
+                binds: vec![ResolvedBind {
+                    pats: vec![ResolvedPat::Bind(seed_variable)],
+                    chan: seed_channel,
+                }],
+                body: vec![ResolvedTerm::Send {
+                    chan: ResolvedChan::Sink(0),
+                    persistent: false,
+                    args: vec![ResolvedArg::Var(seed_variable)],
+                }],
+            });
+        }
+        let mut scope = Vec::new();
+        let mut binders = Vec::new();
+        resolved.extend(resolver.terms(terms, &mut scope, &mut binders));
+        deploys.push(resolved);
+    }
+    deploys
+}
+
+// Pass 2 (S2): every channel that carries a persistent receive, across all
+// deploys of the case.
+fn collect_persistent_receives(terms: &[ResolvedTerm], keys: &mut BTreeSet<ResolvedChan>) {
+    for term in terms {
+        match term {
+            ResolvedTerm::Send { .. } => {}
+            ResolvedTerm::Receive { arrow, binds, body } => {
+                match arrow {
+                    GenArrow::Persistent => keys.extend(binds.iter().map(|bind| bind.chan)),
+                    GenArrow::Linear | GenArrow::Peek => {}
+                }
+                collect_persistent_receives(body, keys);
+            }
+            ResolvedTerm::New { inner, .. } => collect_persistent_receives(inner, keys),
+            ResolvedTerm::Aliased {
+                level,
+                index,
+                arrow,
+                body,
+                ..
+            } => {
+                match arrow {
+                    GenArrow::Persistent => {
+                        keys.insert(ResolvedChan::Public {
+                            level: *level,
+                            index: *index,
+                        });
+                    }
+                    GenArrow::Linear | GenArrow::Peek => {}
+                }
+                collect_persistent_receives(body, keys);
+            }
+        }
+    }
+}
+
+fn persistent_receive_channels(deploys: &[Vec<ResolvedTerm>]) -> BTreeSet<ResolvedChan> {
+    let mut keys = BTreeSet::new();
+    for terms in deploys {
+        collect_persistent_receives(terms, &mut keys);
+    }
+    keys
+}
+
+// Pass 3: printing. A persistent send prints `!!` only when no persistent
+// receive shares its channel (S2).
+fn send_is_persistent(
+    chan: &ResolvedChan,
+    persistent: bool,
+    keys: &BTreeSet<ResolvedChan>,
+) -> bool {
+    persistent && !keys.contains(chan)
+}
+
+fn chan_text(chan: ResolvedChan) -> String {
+    match chan {
+        ResolvedChan::Public { level, index } => format!(r#"@"rrs-prop-c{level}{index}""#),
+        ResolvedChan::Sink(index) => format!(r#"@"rrs-prop-out{index}""#),
+        ResolvedChan::Fresh(binder) => format!("n{binder}"),
+    }
+}
+
+fn arg_text(arg: &ResolvedArg) -> String {
+    match arg {
+        ResolvedArg::Int(value) => value.to_string(),
+        ResolvedArg::Str(true) => r#""a""#.to_owned(),
+        ResolvedArg::Str(false) => r#""b""#.to_owned(),
+        ResolvedArg::Pair(left, right) => format!("[{}, {}]", arg_text(left), arg_text(right)),
+        ResolvedArg::Var(variable) => format!("x{variable}"),
+        ResolvedArg::Name(binder) => format!("*n{binder}"),
+        ResolvedArg::Zero => "0".to_owned(),
+    }
+}
+
+fn pat_text(pat: ResolvedPat) -> String {
+    match pat {
+        ResolvedPat::Bind(variable) => format!("@x{variable}"),
+        ResolvedPat::Wildcard => "_".to_owned(),
+        ResolvedPat::Int(value) => format!("@{value}"),
+        ResolvedPat::Str => r#"@"a""#.to_owned(),
+        ResolvedPat::HeadZero(variable) => format!("@[0, x{variable}]"),
+        ResolvedPat::Both(first, second) => format!("@[x{first}, x{second}]"),
+    }
+}
+
+fn pats_text(pats: &[ResolvedPat]) -> String {
+    pats.iter()
+        .copied()
+        .map(pat_text)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn arrow_text(arrow: GenArrow) -> &'static str {
+    match arrow {
+        GenArrow::Linear => "<-",
+        GenArrow::Peek => "<<-",
+        GenArrow::Persistent => "<=",
+    }
+}
+
+fn terms_text(terms: &[ResolvedTerm], keys: &BTreeSet<ResolvedChan>) -> String {
+    terms
+        .iter()
+        .map(|term| term_text(term, keys))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn term_text(term: &ResolvedTerm, keys: &BTreeSet<ResolvedChan>) -> String {
+    match term {
+        ResolvedTerm::Send {
+            chan,
+            persistent,
+            args,
+        } => {
+            let bang = match send_is_persistent(chan, *persistent, keys) {
+                true => "!!",
+                false => "!",
+            };
+            let args = args.iter().map(arg_text).collect::<Vec<_>>().join(", ");
+            format!("{}{bang}({args})", chan_text(*chan))
+        }
+        ResolvedTerm::Receive { arrow, binds, body } => {
+            let binds = binds
+                .iter()
+                .map(|bind| {
+                    format!(
+                        "{} {} {}",
+                        pats_text(&bind.pats),
+                        arrow_text(*arrow),
+                        chan_text(bind.chan)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" & ");
+            format!("for ({binds}) {{ {} }}", terms_text(body, keys))
+        }
+        ResolvedTerm::New { binder, inner } => {
+            format!("new n{binder} in {{ {} }}", terms_text(inner, keys))
+        }
+        ResolvedTerm::Aliased {
+            alias,
+            level,
+            index,
+            arrow,
+            left,
+            right,
+            body,
+        } => {
+            let arrow = arrow_text(*arrow);
+            format!(
+                r#"for (@l{alias}, @r{alias} <- @"rrs-prop-alias{alias}") {{ for ({} {arrow} @l{alias} & {} {arrow} @r{alias}) {{ {} }} }} | @"rrs-prop-alias{alias}"!("rrs-prop-c{level}{index}", "rrs-prop-c{level}{index}")"#,
+                pats_text(left),
+                pats_text(right),
+                terms_text(body, keys)
+            )
+        }
+    }
+}
+
+fn render_case(case: &OrdinaryCase) -> Vec<String> {
+    let deploys = resolve_case(case);
+    let keys = persistent_receive_channels(&deploys);
+    deploys
+        .iter()
+        .map(|terms| terms_text(terms, &keys))
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplayMutation {
+    None,
+    ReplaySeed,
+    ExtraSend,
+}
+
+struct PlayReplaySummary {
+    comms: usize,
+}
+
+struct PlayedDeploy {
+    root: Blake2b256Hash,
+    log: Vec<Event>,
+    cost: i64,
+    errors: Value,
+}
+
+struct BlockDeploy {
+    log: Vec<Event>,
+    cost: i64,
+    errors: Value,
+}
+
+// The replay source and seed of one deploy under `mutation`.
+fn replay_input(
+    source: &str,
+    deploy_label: &str,
+    mutation: ReplayMutation,
+) -> (String, Blake2b512Random) {
+    match mutation {
+        ReplayMutation::None => (source.to_owned(), seed(deploy_label)),
+        ReplayMutation::ReplaySeed => (source.to_owned(), seed(&format!("{deploy_label}-mutant"))),
+        ReplayMutation::ExtraSend => (format!("{source}{MUTANT_SEND}"), seed(deploy_label)),
+    }
+}
+
+async fn play_deploy(
+    play: &RhoRuntimeImpl,
+    source: &str,
+    deploy_label: &str,
+    context: &str,
+) -> Result<EvaluateResult, String> {
+    let result = play
+        .evaluate(
+            source,
+            Cost::create(PROPERTY_PHLO, deploy_label.to_owned()),
+            HashMap::new(),
+            seed(deploy_label),
+        )
+        .await
+        .map_err(|error| format!("{context}: play evaluation failed: {error:?}"))?;
+    match result.errors.as_slice() {
+        [] => Ok(result),
+        errors => Err(format!("{context}: play reported errors: {errors:?}")),
+    }
+}
+
+async fn replay_deploy(
+    replay: &RhoRuntimeImpl,
+    source: &str,
+    deploy_label: &str,
+    mutation: ReplayMutation,
+    log: &[Event],
+    play_errors: &Value,
+    context: &str,
+) -> Result<EvaluateResult, String> {
+    replay
+        .rig(log.to_vec())
+        .await
+        .map_err(|error| format!("{context}: rig failed: {error:?}"))?;
+    let (replay_source, replay_seed) = replay_input(source, deploy_label, mutation);
+    let result = replay
+        .evaluate(
+            &replay_source,
+            Cost::create(PROPERTY_PHLO, deploy_label.to_owned()),
+            HashMap::new(),
+            replay_seed,
+        )
+        .await
+        .map_err(|error| format!("{context}: replay evaluation failed: {error:?}"))?;
+    let errors = errors_json(&result.errors);
+    match errors == *play_errors {
+        true => Ok(result),
+        false => Err(format!(
+            "{context}: replay errors {errors} differ from play errors {play_errors}"
+        )),
+    }
+}
+
+// Protocol D: play and replay each create a checkpoint after every deploy.
+async fn replay_with_deploy_checkpoints(
+    sources: &[String],
+    label: &str,
+    mutation: ReplayMutation,
+) -> Result<PlayReplaySummary, String> {
+    let Runtimes {
+        mut play,
+        mut replay,
+        ..
+    } = fresh_runtimes().await;
+    let start_root = play.get_root().await;
+    let mut played = Vec::with_capacity(sources.len());
+    let mut comms = 0;
+    for (index, source) in sources.iter().enumerate() {
+        let context = format!("protocol D, deploy {index}");
+        let deploy_label = format!("{label}-{index}");
+        let result = play_deploy(&play, source, &deploy_label, &context).await?;
+        let checkpoint = play.create_checkpoint().await;
+        comms += comms_in(&checkpoint.log).len();
+        played.push(PlayedDeploy {
+            root: checkpoint.root,
+            log: checkpoint.log,
+            cost: result.cost.value,
+            errors: errors_json(&result.errors),
+        });
+    }
+    replay
+        .reset(&start_root)
+        .await
+        .map_err(|error| format!("protocol D: reset the replay runtime: {error:?}"))?;
+    for (index, (source, deploy)) in sources.iter().zip(&played).enumerate() {
+        let context = format!("protocol D, deploy {index}");
+        let deploy_label = format!("{label}-{index}");
+        let result = replay_deploy(
+            &replay,
+            source,
+            &deploy_label,
+            mutation,
+            &deploy.log,
+            &deploy.errors,
+            &context,
+        )
+        .await?;
+        replay
+            .check_replay_data()
+            .await
+            .map_err(|error| format!("{context}: check_replay_data failed: {error:?}"))?;
+        let root = replay.create_checkpoint().await.root;
+        // rrs-finding-head-replay-checkpoint-produce-counter: RSpace::create_checkpoint resets the produce counter (ispace_impl.rs:75-76), ReplayRSpace::create_checkpoint keeps it (replay_rspace.rs:159-174).
+        replay.take_event_log().await;
+        if root != deploy.root {
+            return Err(format!(
+                "{context}: replay root {} differs from play root {}",
+                hex::encode(&root.0),
+                hex::encode(&deploy.root.0)
+            ));
+        }
+        if result.cost.value != deploy.cost {
+            return Err(format!(
+                "{context}: replay cost {} differs from play cost {}",
+                result.cost.value, deploy.cost
+            ));
+        }
+    }
+    Ok(PlayReplaySummary { comms })
+}
+
+// Protocol B: Casper's block protocol, the rule that validators run. Play
+// takes the event log of each deploy (casper runtime.rs:565) and creates one
+// checkpoint for the block. Replay resets once, discards its event log after
+// each deploy (replay_runtime.rs:63-64, 417), and creates one checkpoint.
+async fn replay_with_block_checkpoint(
+    sources: &[String],
+    label: &str,
+    mutation: ReplayMutation,
+) -> Result<(), String> {
+    let Runtimes {
+        mut play,
+        mut replay,
+        ..
+    } = fresh_runtimes().await;
+    let start_root = play.get_root().await;
+    let mut played = Vec::with_capacity(sources.len());
+    for (index, source) in sources.iter().enumerate() {
+        let context = format!("protocol B, deploy {index}");
+        let deploy_label = format!("{label}-{index}");
+        let result = play_deploy(&play, source, &deploy_label, &context).await?;
+        let log = play.take_event_log().await;
+        played.push(BlockDeploy {
+            log,
+            cost: result.cost.value,
+            errors: errors_json(&result.errors),
+        });
+    }
+    let block_context = format!("protocol B, block of {} deploys", sources.len());
+    let block = play.create_checkpoint().await;
+    match block.log.as_slice() {
+        [] => {}
+        events => {
+            return Err(format!(
+                "{block_context}: the play checkpoint log holds {} events",
+                events.len()
+            ))
+        }
+    }
+    replay
+        .reset(&start_root)
+        .await
+        .map_err(|error| format!("protocol B: reset the replay runtime: {error:?}"))?;
+    for (index, (source, deploy)) in sources.iter().zip(&played).enumerate() {
+        let context = format!("protocol B, deploy {index}");
+        let deploy_label = format!("{label}-{index}");
+        let result = replay_deploy(
+            &replay,
+            source,
+            &deploy_label,
+            mutation,
+            &deploy.log,
+            &deploy.errors,
+            &context,
+        )
+        .await?;
+        replay.take_event_log().await;
+        replay
+            .check_replay_data()
+            .await
+            .map_err(|error| format!("{context}: check_replay_data failed: {error:?}"))?;
+        if result.cost.value != deploy.cost {
+            return Err(format!(
+                "{context}: replay cost {} differs from play cost {}",
+                result.cost.value, deploy.cost
+            ));
+        }
+    }
+    let root = replay.create_checkpoint().await.root;
+    match root == block.root {
+        true => Ok(()),
+        false => Err(format!(
+            "{block_context}: replay root {} differs from play block root {}",
+            hex::encode(&root.0),
+            hex::encode(&block.root.0)
+        )),
+    }
+}
+
+// Both protocols must pass. The summary is the COMM count of protocol D.
+async fn play_replay_equal(
+    sources: &[String],
+    label: &str,
+    mutation: ReplayMutation,
+) -> Result<PlayReplaySummary, String> {
+    let summary = replay_with_deploy_checkpoints(sources, label, mutation).await?;
+    replay_with_block_checkpoint(sources, label, mutation).await?;
+    Ok(summary)
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+
+    #[test]
+    fn prop_ordinary_play_replay_equal(case in ordinary_case()) {
+        let sources = render_case(&case);
+        let label = format!("rrs-prop-ordinary-{}", case.seed);
+        let summary = property_runtime()
+            .block_on(play_replay_equal(&sources, &label, ReplayMutation::None))
+            .map_err(|failure| TestCaseError::fail(format!("{failure}\nprogram: {sources:#?}")))?;
+        prop_assert!(summary.comms >= 1, "the case fired no COMM: {:#?}", sources);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_play_replay_negative_control_detects_mutants() {
+    let sources = [R9_PROGRAM.to_owned(), R8_PROGRAM.to_owned()];
+    let label = "rrs-prop-negative-control";
+    let summary = play_replay_equal(&sources, label, ReplayMutation::None)
+        .await
+        .unwrap_or_else(|failure| panic!("the unmutated replay must pass: {failure}"));
+    assert!(summary.comms >= 1, "the control programs fire COMMs");
+    for mutation in [ReplayMutation::ReplaySeed, ReplayMutation::ExtraSend] {
+        match play_replay_equal(&sources, label, mutation).await {
+            Err(failure) => println!("{mutation:?} detected: {failure}"),
+            Ok(_) => panic!("the property accepts the {mutation:?} mutant"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Construct {
+    LinearSend,
+    PersistentSend,
+    LinearReceive,
+    PeekReceive,
+    PersistentReceive,
+    Join2,
+    Join3,
+    AliasedJoin,
+    New,
+    FreshChannel,
+    NameArg,
+    VarArg,
+    PairArg,
+    ListPattern,
+    LiteralPattern,
+    WildcardPattern,
+    Depth3,
+    TwoDeploys,
+}
+
+const CONSTRUCTS: [Construct; 18] = [
+    Construct::LinearSend,
+    Construct::PersistentSend,
+    Construct::LinearReceive,
+    Construct::PeekReceive,
+    Construct::PersistentReceive,
+    Construct::Join2,
+    Construct::Join3,
+    Construct::AliasedJoin,
+    Construct::New,
+    Construct::FreshChannel,
+    Construct::NameArg,
+    Construct::VarArg,
+    Construct::PairArg,
+    Construct::ListPattern,
+    Construct::LiteralPattern,
+    Construct::WildcardPattern,
+    Construct::Depth3,
+    Construct::TwoDeploys,
+];
+
+fn receive_construct(arrow: GenArrow) -> Construct {
+    match arrow {
+        GenArrow::Linear => Construct::LinearReceive,
+        GenArrow::Peek => Construct::PeekReceive,
+        GenArrow::Persistent => Construct::PersistentReceive,
+    }
+}
+
+fn chan_constructs(chan: ResolvedChan, found: &mut BTreeSet<Construct>) {
+    match chan {
+        ResolvedChan::Fresh(_) => {
+            found.insert(Construct::FreshChannel);
+        }
+        ResolvedChan::Public { .. } | ResolvedChan::Sink(_) => {}
+    }
+}
+
+fn arg_constructs(arg: &ResolvedArg, found: &mut BTreeSet<Construct>) {
+    match arg {
+        ResolvedArg::Pair(left, right) => {
+            found.insert(Construct::PairArg);
+            arg_constructs(left, found);
+            arg_constructs(right, found);
+        }
+        ResolvedArg::Var(_) => {
+            found.insert(Construct::VarArg);
+        }
+        ResolvedArg::Name(_) => {
+            found.insert(Construct::NameArg);
+        }
+        ResolvedArg::Int(_) | ResolvedArg::Str(_) | ResolvedArg::Zero => {}
+    }
+}
+
+fn pat_constructs(pats: &[ResolvedPat], found: &mut BTreeSet<Construct>) {
+    for pat in pats {
+        match pat {
+            ResolvedPat::HeadZero(_) | ResolvedPat::Both(..) => {
+                found.insert(Construct::ListPattern);
+            }
+            ResolvedPat::Int(_) | ResolvedPat::Str => {
+                found.insert(Construct::LiteralPattern);
+            }
+            ResolvedPat::Wildcard => {
+                found.insert(Construct::WildcardPattern);
+            }
+            ResolvedPat::Bind(_) => {}
+        }
+    }
+}
+
+// Depth counts as in the generator: a receive body and the terms inside a
+// `new` lie one level deeper, and an aliased join's body lies at depth 1.
+fn term_constructs(
+    terms: &[ResolvedTerm],
+    depth: u8,
+    keys: &BTreeSet<ResolvedChan>,
+    found: &mut BTreeSet<Construct>,
+) {
+    for term in terms {
+        if depth >= MAX_DEPTH {
+            found.insert(Construct::Depth3);
+        }
+        match term {
+            ResolvedTerm::Send {
+                chan,
+                persistent,
+                args,
+            } => {
+                found.insert(match send_is_persistent(chan, *persistent, keys) {
+                    true => Construct::PersistentSend,
+                    false => Construct::LinearSend,
+                });
+                chan_constructs(*chan, found);
+                for arg in args {
+                    arg_constructs(arg, found);
+                }
+            }
+            ResolvedTerm::Receive { arrow, binds, body } => {
+                found.insert(receive_construct(*arrow));
+                match binds.len() {
+                    2 => {
+                        found.insert(Construct::Join2);
+                    }
+                    3 => {
+                        found.insert(Construct::Join3);
+                    }
+                    _ => {}
+                }
+                for bind in binds {
+                    chan_constructs(bind.chan, found);
+                    pat_constructs(&bind.pats, found);
+                }
+                term_constructs(body, depth + 1, keys, found);
+            }
+            ResolvedTerm::New { inner, .. } => {
+                found.insert(Construct::New);
+                term_constructs(inner, depth + 1, keys, found);
+            }
+            ResolvedTerm::Aliased {
+                arrow,
+                left,
+                right,
+                body,
+                ..
+            } => {
+                found.insert(Construct::AliasedJoin);
+                found.insert(receive_construct(*arrow));
+                pat_constructs(left, found);
+                pat_constructs(right, found);
+                term_constructs(body, 1, keys, found);
+            }
+        }
+    }
+}
+
+fn case_constructs(case: &OrdinaryCase) -> BTreeSet<Construct> {
+    let deploys = resolve_case(case);
+    let keys = persistent_receive_channels(&deploys);
+    let mut found = BTreeSet::new();
+    if deploys.len() == 2 {
+        found.insert(Construct::TwoDeploys);
+    }
+    for terms in &deploys {
+        term_constructs(terms, 0, &keys, &mut found);
+    }
+    found
+}
+
+#[test]
+fn ordinary_program_generator_covers_every_construct() {
+    let mut runner = TestRunner::new(property_config());
+    let strategy = ordinary_case();
+    let mut seen = BTreeSet::new();
+    for _ in 0..PROPERTY_CASES {
+        let case = strategy
+            .new_tree(&mut runner)
+            .expect("generate an ordinary case")
+            .current();
+        seen.extend(case_constructs(&case));
+    }
+    let missing: Vec<Construct> = CONSTRUCTS
+        .iter()
+        .copied()
+        .filter(|construct| !seen.contains(construct))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the generator misses {missing:?} in {PROPERTY_CASES} cases"
     );
 }
