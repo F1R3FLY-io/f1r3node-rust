@@ -79,6 +79,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force |
 | [Decision 33](#decision-33) | assertEqual has arity 3 | 2026-10-04 | In force |
 | [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force |
+| [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -759,7 +760,7 @@ The plan also records two items under this decision:
 
 **Reason.** The user classifies the rollout as an operations problem that is not part of this campaign.
 
-## User decisions 28 to 34
+## User decisions 28 to 35
 
 The P4 design pass and its arbitration found more places where the plan did not fit the code.
 The user approved each recommended option on 2026-10-04.
@@ -956,6 +957,26 @@ The P4 design also applies four compliance fixes without a new decision, because
 
 **Reason.** The P4 design pass found these details while it designed the vertical slice of a queue space.
 They follow the recorded decisions, or they fill details that the plan left open.
+
+### <a id="decision-35"></a>Decision 35: P1 close-out scope
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-04 |
+| Status | In force |
+| Supersedes | The A5 realignment ledgers of the P1 close-out design |
+| Related | [Decision 5](#decision-5), [decision 16](#decision-16), [verification.md](verification.md) |
+
+**Statement.** The P1 close-out stays lean, and the pgmcp verification of P1 runs together with P4.
+
+- The close-out finishes only the work that was in flight: the regression tests, the regression-side checkers, the closure checker and [verification.md](verification.md). P2 starts after the P1 commit.
+- No realignment ledger is built. The seven ledger leaves close with existing evidence: the P0 backup manifest, the footprint pin of policy `p1-realign`, and the TRI-1 ledger in pgmcp.
+- The six realignment leaves of the `SpaceStoreHandle` group are duplicates of the substrate leaf, which carries the same tests.
+- The pgmcp verification runs of the P1 leaves happen in the same freeze as those of P4.
+
+**User's words.** "Lean, verify at P4 (Recommended)", after "just make sure you remain focused and don't get lost in the woods" and "don't get stuck in perpetual support changes and never get around to the reified rspaces!"
+
+**Reason.** The remaining P1 work was bookkeeping, not spaces. One shared freeze also saves a second freeze of the worktree.
 
 ## Minimal-footprint revision: M-1 to M-5
 

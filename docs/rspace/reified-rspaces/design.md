@@ -1173,14 +1173,14 @@ Each one closes under the global context, with no axiom, no parameter, and no ad
 | H2 | `commit_state_eq_host` | `EventCorrelation.v:4633` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
 | H3 | `counter_timing_play_replay` | `EventCorrelation.v:5091` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
 | H4 | `verify_sound_complete` | `EventCorrelation.v:5154` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. | `prop_space_txn_replay_divergence_typed_and_inert`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:5358` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:5358` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_retention` |
 | H6 | `view_commit_coherent` | `EventCorrelation.v:4664` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
 | H7 | `joins_lockstep_preserved` | `EventCorrelation.v:4687` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
 | H8 | `sub_order_between` | `EventCorrelation.v:6301` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
 | H9 | `abort_inert` | `EventCorrelation.v:6023` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
 | H10 | `coverage_total` | `EventCorrelation.v:4974` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
 | H11 | `peek_retention_trace_eq_host` | `EventCorrelation.v:4732` | With the re-offer as the next operation, a commit makes the calls, events, status, and bindings of the host run. The stores differ only by the kept stored records. | `prop_space_txn_peek_retention` |
-| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:6097` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay` |
+| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:6097` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_retention` |
 | H13 | `sweep_exact` | `VolatileSweep.v:876` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H14 | `delete_absent_identity` | `VolatileSweep.v:953` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H15 | `sweep_root_neutral` | `VolatileSweep.v:1248` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
@@ -1221,16 +1221,16 @@ They also make sorted groups that repeat a channel, which the substrate must acc
 | Suite | Tests | Subject |
 |---|---|---|
 | [reified_space_store_handle.rs](../../../rspace++/tests/reified_space_store_handle.rs), group A | 22 | Host parity of every operation shape, checked against a twin host. |
-| Group B | 4 | Checkpoints and history read-through. |
+| Group B | 5 | Checkpoints, history read-through, and a round trip through an LMDB directory that is closed and opened again. |
 | Group C | 10 | Replay lookup parity with host replay. |
 | Group D | 7 | The volatile sweep. |
 | Group E | 3 | Reporting delegation. |
 | Group F | 15 | The review regressions: canonical order, store identity, trigger-key pairing, lock coverage, one commit per parent order, nested begin, sweep bookkeeping, and peeks in replay. |
-| Group G | 9 | The round-2 rules: repeated channels, parent tracking per scope, the cost of the commit checks, and the nested guard of the sweep. |
+| Group G | 10 | The round-2 rules: repeated channels, parent tracking per scope, the cost of the commit checks, and the nested guard of the sweep. |
 | Group H | 7 | The round-3 rule: the peek re-offer, the queue scenario, host parity of the re-offer, replay, reporting, and the receipt flags. |
 | Unit tests in `space_store_handle.rs`, `space_play.rs`, and `space_replay.rs` | 18 | The order of sub-orders, the list rules of the view, the event correlation, the peeks rule, the store identity, canonical groups, lock stripes, the parent tracker, the registration, claimed positions, receipt flags, counter overflow, and the replay estimate of the sweep. |
 | `rholang/tests/reified_space_txn_host_bounds.rs` | 1 | The `Par` instance of `SpaceTxnHost` for the three hosts. |
-| `rholang/tests/reified_space_store_handle_par.rs` | 2 | The dedup of `TaggedContinuation` and the store identity of `Par` channels that differ only in `locally_free`. |
+| `rholang/tests/reified_space_store_handle_par.rs` | 3 | The dedup of `TaggedContinuation`, the store identity of `Par` channels that differ only in `locally_free`, and the property `prop_space_txn_par_identity_ignores_locally_free`. |
 
 **Negative controls.** Each control shows that a check or a proof depends on the rule that it covers:
 

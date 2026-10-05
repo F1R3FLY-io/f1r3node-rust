@@ -37,8 +37,8 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 | Document | Content | Status |
 |---|---|---|
 | [README.md](README.md) | This index: scope, reading order, documents, diagrams, phases, and the checking procedure. | Written |
-| [glossary.md](glossary.md) | Every campaign term with a stable anchor, in dependency order, with the background terms of Rholang and RSpace. | Written |
-| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 34, M-1 to M-5, and I-1 to I-19, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
+| [glossary.md](glossary.md) | Every campaign term with a stable anchor, in dependency order, with the background terms of Rholang, RSpace, and the verification tools. | Written |
+| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 35, M-1 to M-5, and I-1 to I-19, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
 | `specification.md` | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | Planned in P4 to P7, which add sections. P10 completes it (`rrs-perf-docs-final-spec-design-security`). |
 | `fips-conformance-matrix.md` and `.json` | One row for each normative clause of the FIPS and of the agent section of the Agents FIPS, with code, proof, test, and document evidence. | Planned in P10 (`rrs-fips-clause-matrix`). P11 runs it on the frozen candidate. |
 | [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | The substrate section of P1 is written. The port leaves add sections from P4, and P10 completes the document. |
@@ -46,7 +46,7 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 | `theory-seam.md` | Admission verdicts, builtin theories, theory identity, charging, guard composition, and the path after the F1r3lang merge. | Planned in P7 (`rrs-theory-seam`, `rrs-reducer-theory-admission`). P10 completes it (`rrs-doc-theory-seam`). |
 | `pathmap-prefix-delivery.md` | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | Planned in P5 (`rrs-pathmap-prefix-delivery`). |
 | `syntax-contract.md` | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | Planned in P2 (encoding table and builders), with sections from P3 and P4. P12 adds the Rholang 1.4 productions. |
-| `verification.md` | The verification dossier: Rocq headlines, TLA invariants, property tests, regression suites, and the example gate. | Planned from P1, as each phase adds its suites. Until then, [design.md](design.md#s9-verification) holds the evidence of P1. P10 completes it (`rrs-doc-verification-dossier`). |
+| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections are written. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
 | `security.md` | Capability checks, private channels, input validation, query limits, failure atomicity, and a threat model. | Planned in P10 (`rrs-perf-docs-final-spec-design-security`). |
 | `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 (`rrs-perf-docs-final-benchmarks`). |
 | `f1r3lang-integration.md` | The F1r3lang merge: conflict resolutions, guard composition, and the Rholang 1.4 productions. | Planned in P10 (`rrs-doc-theory-seam`). P12 extends it after the readiness signal. |
@@ -80,7 +80,7 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 10 | Theory admission | Planned in P7 (`rrs-theory-seam`) |
 | 11 | Layout of the record envelope | Planned in P10 (`rrs-doc-diagrams`) |
 | 12 | Routing decision | Planned in P10 (`rrs-doc-diagrams`) |
-| 13 | Verification pipeline | Planned in P10 (`rrs-doc-diagrams`) |
+| 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 extends it to all phases (`rrs-doc-diagrams`). |
 | 14 | Phase Gantt chart | Planned in P10 (`rrs-doc-diagrams`) |
 
 ## Campaign phases

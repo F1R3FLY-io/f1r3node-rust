@@ -6,7 +6,7 @@ The anchor is the GitHub slug of the term heading: the heading in lowercase, wit
 
 The entries appear in dependency order.
 Each definition uses only common words and the terms of earlier entries.
-[Part 1](#part-1-background-terms) defines the background terms of Rholang and RSpace.
+[Part 1](#part-1-background-terms) defines the background terms of Rholang, RSpace, and the verification tools.
 [Part 2](#part-2-campaign-terms) defines the terms that the campaign introduces.
 The repository glossary, [docs/Glossary.md](../../Glossary.md), defines the general project terms.
 The [decision register](decision-register.md) records the decisions that fix the meaning of the campaign terms.
@@ -15,6 +15,7 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
+| [Acceptance category](#acceptance-category) | 2 | [Outer store](#outer-store) | 2 |
 | [Accounting observer](#accounting-observer) | 1 | [Pairing](#pairing) | 2 |
 | [Admission verdict](#admission-verdict) | 2 | [Par](#par) | 1 |
 | [Agent](#agent) | 1 | [Path](#path) | 2 |
@@ -22,46 +23,53 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Block](#block) | 1 | [Pattern](#pattern) | 1 |
 | [Body channel](#body-channel) | 2 | [Peek](#peek) | 1 |
 | [Bundle](#bundle) | 1 | [Persistent](#persistent) | 1 |
-| [Canonical form](#canonical-form) | 2 | [Phlo](#phlo) | 1 |
-| [Canonical group](#canonical-group) | 2 | [Play](#play) | 1 |
-| [Channel](#channel) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Checkpoint](#checkpoint) | 1 | [Process](#process) | 1 |
-| [COMM event](#comm-event) | 1 | [Produce counter](#produce-counter) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Qualifier](#qualifier) | 2 |
-| [Continuation](#continuation) | 1 | [Random state](#random-state) | 1 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-offer](#re-offer) | 2 |
-| [Datum](#datum) | 1 | [Re-rooting](#re-rooting) | 2 |
-| [Deploy](#deploy) | 1 | [Receive](#receive) | 1 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Recognized position](#recognized-position) | 2 |
-| [Event log](#event-log) | 1 | [Record envelope](#record-envelope) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [Factory](#factory) | 2 | [Replay](#replay) | 1 |
-| [FIPS](#fips) | 1 | [Reporting](#reporting) | 1 |
-| [Frontend](#frontend) | 1 | [Retention](#retention) | 2 |
+| [Canonical form](#canonical-form) | 2 | [pgmcp](#pgmcp) | 1 |
+| [Canonical group](#canonical-group) | 2 | [Phlo](#phlo) | 1 |
+| [Channel](#channel) | 1 | [Play](#play) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [COMM event](#comm-event) | 1 | [Process](#process) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Property-based test](#property-based-test) | 1 |
+| [Continuation](#continuation) | 1 | [Qualifier](#qualifier) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Random state](#random-state) | 1 |
+| [Datum](#datum) | 1 | [Re-offer](#re-offer) | 2 |
+| [Deploy](#deploy) | 1 | [Re-rooting](#re-rooting) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Receive](#receive) | 1 |
+| [Event log](#event-log) | 1 | [Recognized position](#recognized-position) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Record envelope](#record-envelope) | 2 |
+| [Factory](#factory) | 2 | [Regression corpus](#regression-corpus) | 2 |
+| [FIPS](#fips) | 1 | [Reified RSpace](#reified-rspace) | 2 |
+| [Footprint policy](#footprint-policy) | 2 | [Replay](#replay) | 1 |
+| [Frontend](#frontend) | 1 | [Reporting](#reporting) | 1 |
+| [Gate](#gate) | 2 | [Retention](#retention) | 2 |
 | [getSpaceAgent](#getspaceagent) | 2 | [Rholang](#rholang) | 1 |
-| [Handle](#handle) | 2 | [RSpace](#rspace) | 1 |
-| [Head-only matching](#head-only-matching) | 2 | [Send](#send) | 1 |
+| [Handle](#handle) | 2 | [Rocq](#rocq) | 1 |
+| [Head-only matching](#head-only-matching) | 2 | [RSpace](#rspace) | 1 |
+| [Headline](#headline) | 2 | [Send](#send) | 1 |
 | [History trie](#history-trie) | 1 | [Space](#space) | 2 |
 | [Host operation](#host-operation) | 2 | [Space agent](#space-agent) | 2 |
 | [Host work](#host-work) | 1 | [Space id](#space-id) | 2 |
 | [Hot store](#hot-store) | 1 | [Space transaction](#space-transaction) | 2 |
-| [Inert](#inert) | 2 | [Staged view](#staged-view) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Storage channel](#storage-channel) | 2 |
-| [Internal operation](#internal-operation) | 2 | [Store identity](#store-identity) | 2 |
-| [Join](#join) | 1 | [Sub-order](#sub-order) | 2 |
-| [KIND](#kind) | 2 | [Sweep](#sweep) | 2 |
-| [LFS](#lfs) | 2 | [System process](#system-process) | 1 |
-| [Lock coverage](#lock-coverage) | 2 | [Theory](#theory) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [Theory identity](#theory-identity) | 2 |
-| [Marker](#marker) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Matcher](#matcher) | 2 | [Tuple space](#tuple-space) | 1 |
-| [Merge](#merge) | 1 | [Unforgeable name](#unforgeable-name) | 1 |
-| [Name](#name) | 1 | [URN](#urn) | 1 |
-| [Namespace tag](#namespace-tag) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Operation order](#operation-order) | 2 | [Volatile channel](#volatile-channel) | 2 |
-| [Outcome](#outcome) | 2 | [Waiter](#waiter) | 2 |
-| [Outer store](#outer-store) | 2 |  |  |
+| [Inductive invariant](#inductive-invariant) | 1 | [Staged view](#staged-view) | 2 |
+| [Inert](#inert) | 2 | [Storage channel](#storage-channel) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Store identity](#store-identity) | 2 |
+| [Internal operation](#internal-operation) | 2 | [Sub-order](#sub-order) | 2 |
+| [Invariant map](#invariant-map) | 2 | [Sweep](#sweep) | 2 |
+| [Join](#join) | 1 | [System process](#system-process) | 1 |
+| [KIND](#kind) | 2 | [Theory](#theory) | 2 |
+| [LFS](#lfs) | 2 | [Theory identity](#theory-identity) | 2 |
+| [Lock coverage](#lock-coverage) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [Lock stripe](#lock-stripe) | 1 | [TLA+](#tla) | 1 |
+| [Marker](#marker) | 2 | [Trigger event](#trigger-event) | 2 |
+| [Marker tuple](#marker-tuple) | 2 | [Tuple space](#tuple-space) | 1 |
+| [Matcher](#matcher) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Merge](#merge) | 1 | [URN](#urn) | 1 |
+| [Model map](#model-map) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Name](#name) | 1 | [Verification recipe](#verification-recipe) | 2 |
+| [Namespace tag](#namespace-tag) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Negative control](#negative-control) | 2 | [Waiter](#waiter) | 2 |
+| [Operation order](#operation-order) | 2 | [Witness test](#witness-test) | 2 |
+| [Outcome](#outcome) | 2 |  |  |
 
 ## Part 1: background terms
 
@@ -306,6 +314,42 @@ F1r3lang is Rholang 1.4 as MeTTaIL defines it.
 MeTTaIL is a framework for language definitions.
 Another agent owns F1r3lang ([decision 3](decision-register.md#decision-3)).
 After the F1r3lang merge, the F1r3lang frontend replaces the current frontend ([decision 9](decision-register.md#decision-9)).
+
+### Rocq
+
+Rocq is a proof assistant: a program that checks mathematical proofs [[Roc25](#ref-roc25)].
+Its former name is Coq, and its logic extends the calculus of constructions [[CH88](#ref-ch88)].
+A Rocq model is a file of definitions and theorems.
+The Rocq kernel checks each proof, and the separate checker `rocqchk` checks the compiled file again.
+The command `Print Assumptions` lists the axioms that a theorem depends on.
+
+### TLA+
+
+TLA+ is a language that specifies a system as a state machine [[Lam94](#ref-lam94)].
+An invariant of a TLA+ model is a state property that must hold in every reachable state.
+The model checker TLC visits every reachable state of a finite configuration [[YML99](#ref-yml99)].
+The model checker Apalache checks a formula symbolically, with a constraint solver [[KKT19](#ref-kkt19)].
+
+### Inductive invariant
+
+An inductive invariant is a state property that holds in every initial state and that every step keeps.
+The BASE check shows the first part, and the STEP check shows the second part.
+Together they show that the property holds in every reachable state.
+A TLA+ model often strengthens an invariant until it is inductive, so that Apalache can check it at every depth.
+
+### Property-based test
+
+A property-based test states a property of the code and checks it on many generated inputs [[CH00](#ref-ch00)].
+The node uses the Rust library proptest.
+When an input breaks the property, proptest shrinks the input and prints a small failing case.
+The campaign fixes the number of cases and the seed, so each run checks the same inputs.
+
+### pgmcp
+
+The tool pgmcp tracks the work items of the campaign and runs their local verification.
+A leaf is a work item without children.
+The verifier of pgmcp runs the checks of a leaf in a sandbox, on a read-only snapshot of the worktrees.
+A leaf is complete only when the verifier confirms each of its criteria.
 
 ## Part 2: campaign terms
 
@@ -783,9 +827,79 @@ A conservative extension adds new programs and keeps the meaning of every old pr
 The Reified parser is a conservative extension of the baseline parser ([decision 23](decision-register.md#decision-23), [decision 24](decision-register.md#decision-24)).
 Every program that parses at the baseline parses and normalizes to identical bytes with the new parser.
 
+### Headline
+
+A headline is a main result that a phase names and that a formal model proves or checks.
+A Rocq headline is a theorem with an id such as H1, and its `Print Assumptions` line must report no axiom.
+A TLA+ headline is an invariant with an id such as T1, and TLC checks it on every reachable state of a configuration.
+The [verification dossier](verification.md) lists the headlines of each phase.
+
+### Negative control
+
+A negative control is a check that must fail.
+It changes one rule of a model, a test, or an input, and it requires the expected failure.
+So it shows that a passing check depends on that rule.
+Examples are a mutant of a Rocq module, an Unsafe configuration of a TLA+ model, and a replay with another seed.
+
+### Model map
+
+The model map is the file `formal/reified-rspaces-model-map.json`.
+It links each new Rust item of a phase to the Rocq definitions and the TLA+ operators that model it.
+It also links each item to the headlines that it covers.
+The checker `check-model-map.py` fails on an item that no model covers and that names no reason.
+
+### Invariant map
+
+The invariant map is the file `formal/reified-rspaces-invariant-map.json`.
+It links each headline and each invariant to the property-based tests that check it, in one section for each phase.
+The checker `check-invariant-map.py` fails on an invariant without a test, and on a property test that the map does not name.
+
+### Witness test
+
+A witness test is a deterministic test that shows one case of a headline or of a fix rule.
+The invariant map lists the witness tests of a phase beside its property-based tests.
+
+### Consensus-preservation checklist
+
+The consensus-preservation checklist is the list of 22 properties of ordinary execution that each phase of the campaign must keep.
+Examples are an unchanged COMM produce sort and an unchanged replay acceptance.
+The file `scripts/verify-reified/consensus-checklist.json` binds each item to the checks that prove it.
+
+### Footprint policy
+
+A footprint policy lists the files that a phase must not change and the exact edits that it may make.
+The checker `check-footprint.py` compares each file with its SHA-256 digest at the base revision `6f7a80da3`, the commit that the campaign starts from.
+So the check needs no git history, and it also runs in the sandbox of pgmcp.
+
+### Regression corpus
+
+A regression corpus is a file of expected outputs that a capture run recorded from the code of HEAD.
+A regression test runs the same programs and compares its outputs with the corpus, byte for byte.
+
+### Gate
+
+A gate is a script that runs a group of checks and fails when one check fails.
+A missing tool counts as a failure, never as a skip.
+
+### Verification recipe
+
+A verification recipe is a pgmcp record of the commands of a check, with their pinned inputs and limits.
+Each command is a step with a key, such as `p1-props`.
+A criterion of a leaf binds to one step of a recipe.
+
+### Acceptance category
+
+An acceptance category is one of the six kinds of evidence that each leaf needs.
+They are: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented.
+A category that does not apply to a leaf has no criterion, and the leaf states the reason.
+
 ## References
 
 <a id="ref-anww13"></a>[ANWW13] J.-P. Aumasson, S. Neves, Z. Wilcox-O'Hearn, and C. Winnerlein, "BLAKE2: simpler, smaller, fast as MD5," in *Applied Cryptography and Network Security (ACNS 2013)*, Lecture Notes in Computer Science, Springer, 2013, pp. 119–135. [doi:10.1007/978-3-642-38980-1_8](https://doi.org/10.1007/978-3-642-38980-1_8)
+
+<a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
+
+<a id="ref-ch88"></a>[CH88] T. Coquand and G. Huet, "The calculus of constructions," *Information and Computation*, vol. 76, no. 2–3, pp. 95–120, 1988. [doi:10.1016/0890-5401(88)90005-3](https://doi.org/10.1016/0890-5401(88)90005-3)
 
 <a id="ref-fips-agents"></a>[FIPS-AGENTS] M. Stay, "Agents," F1r3fly Improvement Proposal, 2025-08-20. [FIPS repository, approved/2025-08-20-Agents/Agents.md](https://github.com/F1R3FLY-io/FIPS/blob/main/approved/2025-08-20-Agents/Agents.md)
 
@@ -793,8 +907,16 @@ Every program that parses at the baseline parses and normalizes to identical byt
 
 <a id="ref-gel85"></a>[Gel85] D. Gelernter, "Generative communication in Linda," *ACM Transactions on Programming Languages and Systems*, vol. 7, no. 1, pp. 80–112, 1985. [doi:10.1145/2363.2433](https://doi.org/10.1145/2363.2433)
 
+<a id="ref-kkt19"></a>[KKT19] I. Konnov, J. Kukovec, and T.-H. Tran, "TLA+ model checking made symbolic," *Proceedings of the ACM on Programming Languages*, vol. 3, no. OOPSLA, pp. 1–30, 2019. [doi:10.1145/3360549](https://doi.org/10.1145/3360549)
+
+<a id="ref-lam94"></a>[Lam94] L. Lamport, "The temporal logic of actions," *ACM Transactions on Programming Languages and Systems*, vol. 16, no. 3, pp. 872–923, 1994. [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726)
+
 <a id="ref-mer88"></a>[Mer88] R. C. Merkle, "A digital signature based on a conventional encryption function," in *Advances in Cryptology — CRYPTO '87*, Lecture Notes in Computer Science, Springer, 1988, pp. 369–378. [doi:10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32)
 
 <a id="ref-mr05"></a>[MR05] L. G. Meredith and M. Radestock, "A reflective higher-order calculus," *Electronic Notes in Theoretical Computer Science*, vol. 141, no. 5, pp. 49–67, 2005. [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)
 
 <a id="ref-pb"></a>[PB] Google, "Protocol Buffers documentation." [protobuf.dev](https://protobuf.dev/)
+
+<a id="ref-roc25"></a>[Roc25] The Rocq Development Team, "The Rocq Prover," Zenodo, 2025. The DOI names every archived release, and the newest archived release is 9.1.0. [doi:10.5281/zenodo.15149628](https://doi.org/10.5281/zenodo.15149628)
+
+<a id="ref-yml99"></a>[YML99] Y. Yu, P. Manolios, and L. Lamport, "Model checking TLA+ specifications," in *Correct Hardware Design and Verification Methods (CHARME 1999)*, Lecture Notes in Computer Science, vol. 1703, Springer, 1999, pp. 54–66. [doi:10.1007/3-540-48153-2_6](https://doi.org/10.1007/3-540-48153-2_6)
