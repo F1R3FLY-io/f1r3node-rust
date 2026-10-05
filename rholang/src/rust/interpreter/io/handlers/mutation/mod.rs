@@ -12,10 +12,11 @@
 //
 //   - `fs_truncate` — fd + n; libc::ftruncate.  Constant cost.
 //     Added by slice 4.24.
+//   - `fs_chmod` — path + bits + cmode; safe_descend_verified +
+//     fchmodat.  First path-mutation.  Added by slice 4.25.
 //
 // Yet to land (listed roughly in handler-migration order):
 //
-//   - `fs_chmod` — mode-bits mutation; safe_descend_verified + chmod.
 //   - `fs_chown` — owner/group mutation.  Consensus caps rejected
 //     (host uid/gid state is not deterministic across validators).
 //   - `fs_write` / `fs_write_at` — byte-payload mutation; length-
@@ -27,4 +28,5 @@
 //
 // Family: [`HandlerFamily::Mutation`](super::super::handler_trait::family::HandlerFamily::Mutation).
 
+pub mod fs_chmod;
 pub mod fs_truncate;
