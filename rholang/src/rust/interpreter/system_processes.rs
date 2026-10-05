@@ -358,6 +358,12 @@ impl FixedChannels {
     /// mutation; cross-device moves surface as FSERR_CROSS_DEVICE.
     /// First two-endpoint mutation handler on dev (slice 4.26).
     pub fn fs_rename() -> Par { byte_name(55) }
+
+    /// `rho:io:fs:native:1.0.0/chown` — path-based chown via
+    /// `safe_descend_verified` + `fchownat` (AT_SYMLINK_NOFOLLOW).
+    /// NON-verifying mutation; Consensus caps rejected at
+    /// parse_content (NSS mapping host-local).  Added by slice 4.27.
+    pub fn fs_chown() -> Par { byte_name(60) }
 }
 
 pub struct BodyRefs;
@@ -444,6 +450,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/rename` body-ref (slice 4.26).
     pub const FS_RENAME: i64 = 55;
+
+    /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
+    pub const FS_CHOWN: i64 = 60;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
