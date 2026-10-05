@@ -414,6 +414,11 @@ impl FixedChannels {
     /// `LockRegistry::try_acquire_sequential_wait`.  Non-verifying;
     /// LockId consensus-observable.  Added by slice 4.35.
     pub fn fs_lock_sequential() -> Par { byte_name(63) }
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` — release a held
+    /// lock by `LockId` with holder-identity check.  Non-
+    /// verifying; pure LockRegistry op.  Added by slice 4.36.
+    pub fn fs_release_lock() -> Par { byte_name(64) }
 }
 
 pub struct BodyRefs;
@@ -530,6 +535,10 @@ impl BodyRefs {
     /// `rho:io:fs:native:1.0.0/lockSequential` body-ref
     /// (slice 4.35).
     pub const FS_LOCK_SEQUENTIAL: i64 = 63;
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` body-ref
+    /// (slice 4.36).
+    pub const FS_RELEASE_LOCK: i64 = 64;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

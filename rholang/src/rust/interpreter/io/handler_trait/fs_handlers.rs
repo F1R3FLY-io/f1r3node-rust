@@ -190,7 +190,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.33: +1 (`fs_copy_file`).  Count = 21.
 ///   - 4.34: +1 (`fs_lock_range`, FIRST LOCK).  Count = 22.
 ///   - 4.35: +1 (`fs_lock_sequential`).  Count = 23.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 23;
+///   - 4.36: +1 (`fs_release_lock`).  Count = 24.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 24;
 
 #[cfg(test)]
 mod tests {
@@ -269,6 +270,7 @@ mod tests {
             "fs_copy_file",            // slice 4.33
             "fs_lock_range",           // slice 4.34 (first lock)
             "fs_lock_sequential",      // slice 4.35
+            "fs_release_lock",         // slice 4.36
         ];
 
         assert_eq!(

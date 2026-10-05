@@ -12,10 +12,12 @@
 //     on success.  Added by slice 4.34.
 //   - `fs_lock_sequential` — whole-file sequential acquire (no
 //     offset / length / mode slots).  Added by slice 4.35.
+//   - `fs_release_lock` — release by `LockId`.  S4.7 hardening
+//     adds a holder-identity check (arity 3 incl. ack).  Added
+//     by slice 4.36.
 //
 // Yet to land:
 //
-//   - `fs_release_lock` — release by `LockId`.
 //   - `fs_unlock_range` — release by (fd, offset, length)
 //     without needing the LockId handle.
 //
@@ -41,3 +43,4 @@
 
 pub mod fs_lock_range;
 pub mod fs_lock_sequential;
+pub mod fs_release_lock;
