@@ -14,16 +14,34 @@ use serde::Serialize;
 
 use super::index::{reserve_vector, IndexKey, NativeIndex};
 use super::operation_sources::{allocate, channel_bytes, NativeCommSource, NativeOperationSource};
-use super::recording::{recording_error, work};
+use super::path_trie::{NativePathTrie, PathId};
+use super::recording::{recording_error, work, RecordedOccurrence};
 use super::{InterpreterError, NativeRuntimeConfig, RuntimeBudget};
-use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetOccurrence,
-};
+use crate::rust::interpreter::accounting::native_phlo_rules::NativeAttemptStage;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeOperationOccurrence {
     pub session: [u8; 32],
-    pub path: Arc<[(u64, u64)]>,
+    // Changed by C7b (DR-86): a journal row names the node of its path in the
+    // recording's path trie instead of holding a copy of the path.
+    // pub path: Arc<[(u64, u64)]>,
+    pub path: PathId,
+}
+
+/// The occurrence of an operation that the producer is recording: the
+/// session and a copy of the causal path (C7b, DR-86).
+struct PendingOccurrence {
+    session: [u8; 32],
+    path: Arc<[(u64, u64)]>,
+}
+
+/// The path trie of captured evidence and the node of each recorded path, in
+/// the wire order of the evidence (C7b, DR-86).
+pub(super) struct CapturedPaths {
+    pub(super) trie: NativePathTrie,
+    pub(super) attempts: Vec<PathId>,
+    pub(super) retries: Vec<PathId>,
+    pub(super) rows: Vec<PathId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,7 +160,7 @@ struct PublishedObservation {
 }
 
 struct PendingOperation {
-    occurrence: NativeOperationOccurrence,
+    occurrence: PendingOccurrence,
     source: NativeOperationSource,
     consume_peeks: Option<Arc<[i32]>>,
     footprint: Arc<[Arc<[u8]>]>,
@@ -284,7 +302,7 @@ impl NativeRuntimeConfig {
         path.reverse();
         let index = self.operations.rows.len();
         let row = PendingOperation {
-            occurrence: NativeOperationOccurrence {
+            occurrence: PendingOccurrence {
                 session: key.0.session,
                 path: path.into(),
             },
@@ -379,7 +397,7 @@ impl NativeRuntimeConfig {
 
     pub(super) fn operation_stage_slot(
         &self,
-        occurrence: &NativeBudgetOccurrence,
+        occurrence: &RecordedOccurrence,
     ) -> Result<Option<usize>, InterpreterError> {
         if self.operations.rows.is_empty() {
             return Ok(None);
@@ -394,7 +412,7 @@ impl NativeRuntimeConfig {
         let row = &self.operations.rows[index];
         if row.completion.is_some()
             || row.occurrence.session != occurrence.session
-            || row.occurrence.path.as_ref() != occurrence.path
+            || row.occurrence.path.as_ref() != occurrence.path.as_slice()
         {
             return Err(recording_error(
                 "native charge differs from its active operation",
@@ -504,11 +522,47 @@ impl NativeRuntimeConfig {
         true
     }
 
+    /// Builds the path trie of the captured evidence in its wire order: the
+    /// attempts, then the retries from the last attempt, then the journal
+    /// rows from the empty path. The decoder interns the same paths in the
+    /// same order, so it builds the same nodes with the same ids.
+    pub(super) fn capture_paths(&self) -> Result<CapturedPaths, InterpreterError> {
+        let host = &self.host_work;
+        let mut trie = NativePathTrie::new(self.limits.path_segments, host)?;
+        let mut previous: (&[(u64, u64)], PathId) = (&[], PathId::ROOT);
+        let mut attempts = allocate(self.recording.attempts.len(), host)?;
+        for row in &self.recording.attempts {
+            let id = trie.intern_delta(&row.occurrence.path, previous.0, previous.1, host)?;
+            attempts.push(id);
+            previous = (&row.occurrence.path, id);
+        }
+        let mut retries = allocate(self.recording.retries.len(), host)?;
+        for row in &self.recording.retries {
+            let id = trie.intern_delta(&row.occurrence.path, previous.0, previous.1, host)?;
+            retries.push(id);
+            previous = (&row.occurrence.path, id);
+        }
+        previous = (&[], PathId::ROOT);
+        let mut rows = allocate(self.operations.rows.len(), host)?;
+        for row in &self.operations.rows {
+            let id = trie.intern_delta(&row.occurrence.path, previous.0, previous.1, host)?;
+            rows.push(id);
+            previous = (&row.occurrence.path, id);
+        }
+        Ok(CapturedPaths {
+            trie,
+            attempts,
+            retries,
+            rows,
+        })
+    }
+
     fn capture_operations(&self) -> Result<Arc<[NativeOperationRecord]>, InterpreterError> {
         self.ensure_recording_complete()?;
+        let paths = self.capture_paths()?;
         let mut result = allocate(self.operations.rows.len(), &self.host_work)?;
         let mut linked = 0usize;
-        for row in &self.operations.rows {
+        for (row, path) in self.operations.rows.iter().zip(&paths.rows) {
             let introduction = row
                 .introduction
                 .ok_or_else(|| recording_error("native operation lacks introduction evidence"))?;
@@ -527,7 +581,10 @@ impl NativeRuntimeConfig {
                 _ => return Err(recording_error("native COMM source and observation differ")),
             };
             result.push(NativeOperationRecord {
-                occurrence: row.occurrence.clone(),
+                occurrence: NativeOperationOccurrence {
+                    session: row.occurrence.session,
+                    path: *path,
+                },
                 source: row.source.clone(),
                 consume_peeks: row.consume_peeks.clone(),
                 footprint: Arc::clone(&row.footprint),

@@ -56,6 +56,7 @@ pub fn offered_funded_v6_recording_limits() -> NativeRecordingWireLimits {
         footprint_entries: protocol.deploy_log_items,
         footprint_bytes: protocol.evidence.field_bytes,
         predecessor_edges: protocol.deploy_log_items,
+        total_path_segments: protocol.deploy_log_items,
     }
 }
 

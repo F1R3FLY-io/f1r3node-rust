@@ -101,7 +101,7 @@ pub fn encode_measured_runtime_recording(
     Ok(EncodedNativeRuntimeRecording {
         budget: encode_native_budget_recording(recording, limits, budget)
             .map_err(|error| invalid(&error.to_string()))?,
-        journal: encode_native_operation_journal(journal, limits, budget)
+        journal: encode_native_operation_journal(journal, &recording.paths, limits, budget)
             .map_err(|error| invalid(&error.to_string()))?,
     })
 }
@@ -117,15 +117,16 @@ pub fn decode_committed_runtime_recording(
     ),
     CasperError,
 > {
-    let recording = decode_native_budget_recording(evidence.budget_recording, limits, budget)
+    let mut recording = decode_native_budget_recording(evidence.budget_recording, limits, budget)
         .map_err(|error| invalid(&error.to_string()))?;
     if recording.used != evidence.phlo_used || recording.session != evidence.envelope_commitment {
         return Err(invalid(
             "native budget recording differs from committed offer or usage",
         ));
     }
-    let journal = decode_native_operation_journal(evidence.operation_journal, limits, budget)
-        .map_err(|error| invalid(&error.to_string()))?;
+    let journal =
+        decode_native_operation_journal(evidence.operation_journal, &mut recording, limits, budget)
+            .map_err(|error| invalid(&error.to_string()))?;
     if journal
         .iter()
         .any(|row| row.occurrence.session != evidence.envelope_commitment)

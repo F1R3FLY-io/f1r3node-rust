@@ -1,4 +1,25 @@
 use super::*;
+use crate::rust::interpreter::accounting::native_runtime::{NativePathTrie, PathId};
+
+/// The node of the one-segment path [(id, 0)] in a fixture trie (C7b,
+/// DR-86).
+fn fixture_path(id: u64) -> PathId {
+    static PATHS: std::sync::LazyLock<NativePathTrie> = std::sync::LazyLock::new(|| {
+        let host = HostWorkBudget::new(models::rust::host_work::HostWorkLimits::uniform(
+            models::rust::host_work::HostWorkLimit::new(1 << 40),
+        ));
+        let mut paths = NativePathTrie::new(128, &host).expect("fixture trie fits");
+        for id in 0..64 {
+            paths
+                .intern(PathId::ROOT, &[(id, 0)], &host)
+                .expect("fixture path fits");
+        }
+        paths
+    });
+    PATHS
+        .find(&[(id, 0)])
+        .expect("fixture paths cover ids below 64")
+}
 
 fn trace_limits() -> NativeBudgetTraceLimits {
     NativeBudgetTraceLimits {
@@ -12,7 +33,7 @@ fn attempt(id: u64, charge: u64, granted: bool) -> NativeBudgetAttempt {
     NativeBudgetAttempt {
         occurrence: NativeBudgetOccurrence {
             session: [1; 32],
-            path: vec![(id, 0)],
+            path: fixture_path(id),
             stage: NativeAttemptStage::ProduceIntroduction,
         },
         observation: row(1, 1, false, [charge, 0, 0]),
@@ -100,7 +121,7 @@ fn exact_observation_and_session_are_required_without_consuming_on_error() {
             Err(NativeBudgetTraceError::Observation)
         ));
         let mut missing = rows[0].occurrence.clone();
-        missing.path.push((1, 1));
+        missing.path = fixture_path(63);
         assert!(matches!(
             checked.consume(&missing, &rows[0].observation, &budget()),
             Err(NativeBudgetTraceError::Unknown)

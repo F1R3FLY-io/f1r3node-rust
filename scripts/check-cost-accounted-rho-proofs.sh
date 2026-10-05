@@ -3055,6 +3055,17 @@ Print Assumptions NativePathTrie.chain_snoc.
 Print Assumptions NativePathTrie.digest_chain_correct.
 Print Assumptions NativePathTrie.occurrence_key_correct.
 Print Assumptions NativePathTrie.unchained_digest_collides.
+Print Assumptions NativePathTrie.node_identity_is_path_equality.
+Print Assumptions NativePathTrie.child_spec.
+Print Assumptions NativePathTrie.intern_spec.
+Print Assumptions NativePathTrie.path_of_ancestor.
+Print Assumptions NativePathTrie.trie_decode_denotes_paths.
+Print Assumptions NativePathTrie.trie_nodes_bounded_by_suffixes.
+Print Assumptions NativePathTrie.trie_dfs_is_lex_sort.
+Print Assumptions NativePathTrie.preorder_unique.
+Print Assumptions NativePathTrie.preorder_complete.
+Print Assumptions NativePathTrie.materialized_segments_quadratic.
+Print Assumptions NativePathTrie.materialized_segments_exceed_journal_limit.
 Quit.
 EOF
 then

@@ -5751,3 +5751,100 @@ Tests:
   charges more than 100 times the digest-keyed lookup.
 
 **Cross-refs.** DR-74, DR-84. Leaf `ofp-2-cap-c7a-path-digests`.
+
+## DR-86 — Native evidence interns its causal paths in one hash-consed trie
+
+**Status.** Implemented 2026-10-05 for cap root cause C7b of epic 8946
+(batch B1, phase C).
+
+**Context.** The native evidence decoder rebuilt every causal path of a
+recording and its journal as a vector. A delta entry copied the shared prefix
+of the previous path and appended the suffix (DR-74). The journal check
+counted the sum of the path depths against `total_path_segments`. The journal
+index, `check_link`, `bind_trace` and the replay slot lookup compared whole
+paths. In the gateway funding flow before C9, the depth sum was about
+1.04 M, above the limit of 262,144, although the chain added only about 2.5 k
+new segments. The phase B probe attributed about 18% of each validator
+replay's `VerificationBytes` to path comparisons: the journal index (6.7%)
+and the trace binding and slot lookup (11.7%).
+
+**Decision.**
+
+1. A recording owns one hash-consed trie of its causal paths
+   (`NativePathTrie`). A node is a (parent, segment) pair, interned once. Each
+   node stores the chained digest of C7a and a jump table of ancestors.
+   Occurrences and journal rows name nodes (`PathId`) instead of holding path
+   vectors.
+2. The decoder interns each delta suffix below the ancestor at the prefix
+   depth. It admits the suffix length against the limit Σ s_i before it
+   allocates a node. It checks the canonical prefix before it creates the
+   first suffix node. The new field `total_path_segments` of the recording
+   wire limits holds the limit, set to `deploy_log_items`. A recording and its
+   journal share the counter. The wire format does not change.
+3. The journal check limits the node count. Journal keys and `check_link`
+   compare node ids. `bind_trace` orders the slots by a depth-first walk of
+   the trie that visits children by increasing segment. The replay finds a
+   slot by the digest key of the live path in a sorted index.
+4. The producer records copied paths as before. When it captures its
+   evidence, it builds the same trie in the wire order of the evidence. Its
+   evidence therefore equals the decode of its encoding, ids included.
+5. The committed journal limit `total_path_segments` stays `deploy_log_items`.
+
+The replaced lines stay in the source, commented out with their reason. The
+encode and decode functions of the journal take the recording's trie, so two
+calls in `offered_evidence.rs` change.
+
+**Soundness.**
+
+- The trie decoder accepts exactly the chains that the vector decoder
+  accepts, and each node denotes the decoded path. Node ids are equal exactly
+  when the paths are equal, so the uniqueness checks and the links decide as
+  before.
+- The walk lists the paths in strictly increasing lexicographic order and
+  lists every node. The rows share one session and have distinct paths, so
+  the walk gives the order of the replaced sort. An operation at the empty
+  path, the root, comes first, as before.
+- Equal digest keys mean equal paths under the collision premise of DR-85.
+  The index rejects a duplicate key.
+- The node count is at most Σ s_i, so `deploy_log_items` bounds the trie.
+  The check relaxes: Σ s_i ≤ Σ depth, so evidence that passed before still
+  passes.
+- Each child search charges the B-tree search bound of the children map
+  (DR-78). Each new node charges its vector growth, its tree growth (DR-77)
+  and its digest. The walk, the index and the lookups charge their actual
+  work. Every charge comes before the work.
+
+**Scope.** This change is cost-accounting work. The native evidence codec,
+the journal check and native replay exist only on this branch. The Casper
+changes pass the recording's trie to the journal codec and set the new limit.
+The evidence bytes, the event log and the roots do not change. Protocol 6 is
+not yet released.
+
+**Verification.** `NativePathTrie.v` (part 2) proves without axioms:
+
+- `node_identity_is_path_equality`;
+- `child_spec`, `intern_spec` and `path_of_ancestor`;
+- `trie_decode_denotes_paths` against `NativePathDeltaCodec.decode_all`;
+- `trie_nodes_bounded_by_suffixes`;
+- `trie_dfs_is_lex_sort`, `preorder_unique` and `preorder_complete`;
+- `materialized_segments_quadratic` and
+  `materialized_segments_exceed_journal_limit`: a negative control. A
+  staircase chain of 724 paths has 724 new segments but 262,450
+  materialized segments.
+
+Tests:
+
+- `trie_decode_round_trips_v1_v2` (`wire.rs`): the trie encoder writes the
+  bytes of the segment encoder, and the v2 and v1 decoders rebuild the
+  encoder's trie with the same ids for a recording chain and a journal chain.
+- `delta_limit_checked_before_allocation` (`wire.rs`): a suffix header above
+  the remaining limit fails with no node and no `SearchStateBytes` charge, and
+  the limit counts a recording and its journal together.
+- `trie_order_equals_vec_sort` and `ids_equal_iff_paths_equal`
+  (`tests/path_trie.rs`), with ancestor, prefix and limit tests.
+- `replay_digest_lookup_equals_binary_search` (`tests/checked_trace.rs`): the
+  digest index finds the slot of every operation path and no slot for its
+  prefixes, extensions and other paths.
+
+**Cross-refs.** DR-74, DR-77, DR-78, DR-85. Leaf
+`ofp-2-cap-c7b-decoded-path-trie`.

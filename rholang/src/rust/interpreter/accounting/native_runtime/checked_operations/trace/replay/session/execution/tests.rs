@@ -812,7 +812,7 @@ async fn played_checkpoint(
         .unwrap()
         .unwrap()
         .iter()
-        .map(|record| record.occurrence.path.len())
+        .map(|record| record.occurrence.path.depth())
         .max()
         .unwrap_or(0);
     let checkpoint = play.create_checkpoint().await.unwrap();

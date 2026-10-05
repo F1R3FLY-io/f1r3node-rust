@@ -8,6 +8,7 @@ use thiserror::Error;
 use super::index::{IndexKey, NativeIndex};
 use super::operation_sources::allocate;
 use super::operations::sort;
+use super::path_trie::{NativePathTrie, PathId};
 use super::recording::work;
 use super::{
     HostWorkBudget, InterpreterError, NativeBudgetRecording, NativeObservationLink,
@@ -83,29 +84,46 @@ impl CheckedNativeOperationJournal {
     pub fn retry_count(&self) -> usize { self.recording.retries.len() }
 }
 
+// Changed by C7b (DR-86): a journal key names the trie node of its path, so
+// a comparison reads the session, the node id and the stage. Equal ids mean
+// equal paths (`NativePathTrie.node_identity_is_path_equality`).
+// #[derive(PartialEq, Eq, PartialOrd, Ord)]
+// struct JournalKey<'a> {
+//     session: &'a [u8; 32],
+//     path: &'a [(u64, u64)],
+//     stage: Option<NativeAttemptStage>,
+// }
+//
+// impl IndexKey for JournalKey<'_> {
+//     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
+//         let operations = self
+//             .path
+//             .len()
+//             .checked_mul(2)
+//             .and_then(|n| n.checked_add(4));
+//         let bytes = self
+//             .path
+//             .len()
+//             .checked_mul(16)
+//             .and_then(|n| n.checked_add(34));
+//         Ok((
+//             operations.ok_or(InterpreterError::HostWorkRejected)?,
+//             bytes.ok_or(InterpreterError::HostWorkRejected)?,
+//         ))
+//     }
+// }
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct JournalKey<'a> {
     session: &'a [u8; 32],
-    path: &'a [(u64, u64)],
+    path: PathId,
     stage: Option<NativeAttemptStage>,
 }
 
+const JOURNAL_KEY_COMPARISON_BYTES: usize = 32 + size_of::<PathId>() + 2;
+
 impl IndexKey for JournalKey<'_> {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
-        let operations = self
-            .path
-            .len()
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(4));
-        let bytes = self
-            .path
-            .len()
-            .checked_mul(16)
-            .and_then(|n| n.checked_add(34));
-        Ok((
-            operations.ok_or(InterpreterError::HostWorkRejected)?,
-            bytes.ok_or(InterpreterError::HostWorkRejected)?,
-        ))
+        Ok((4, JOURNAL_KEY_COMPARISON_BYTES))
     }
 }
 
@@ -128,20 +146,39 @@ fn add_count(
     Ok(())
 }
 
+// Changed by C7b (DR-86): an occurrence names a node of the recording's path
+// trie. check_sizes limits the node count, which is at most the number of new
+// suffix segments (`NativePathTrie.trie_nodes_bounded_by_suffixes`), instead
+// of the sum of the path depths.
+// fn check_path(
+//     session: &[u8; 32],
+//     expected: &[u8; 32],
+//     path: &[(u64, u64)],
+//     total: &mut usize,
+//     limits: NativeOperationJournalLimits,
+// ) -> Result<(), NativeOperationJournalError> {
+//     if session != expected {
+//         return Err(NativeOperationJournalError::Session);
+//     }
+//     if path.len() > limits.budget.path_segments {
+//         return Err(NativeOperationJournalError::Limit);
+//     }
+//     add_count(total, path.len(), limits.total_path_segments)
+// }
 fn check_path(
     session: &[u8; 32],
     expected: &[u8; 32],
-    path: &[(u64, u64)],
-    total: &mut usize,
+    path: PathId,
+    paths: &NativePathTrie,
     limits: NativeOperationJournalLimits,
 ) -> Result<(), NativeOperationJournalError> {
     if session != expected {
         return Err(NativeOperationJournalError::Session);
     }
-    if path.len() > limits.budget.path_segments {
+    if !paths.contains(path) || path.depth() > limits.budget.path_segments {
         return Err(NativeOperationJournalError::Limit);
     }
-    add_count(total, path.len(), limits.total_path_segments)
+    Ok(())
 }
 
 fn check_sizes(
@@ -176,7 +213,9 @@ fn check_sizes(
         HostWorkDimension::VerificationBytes,
         work_count(count, 32, 0)?,
     )?;
-    let mut paths = 0;
+    if recording.paths.node_count() > limits.total_path_segments {
+        return Err(NativeOperationJournalError::Limit);
+    }
     for occurrence in recording
         .attempts
         .iter()
@@ -186,8 +225,8 @@ fn check_sizes(
         check_path(
             &occurrence.session,
             session,
-            &occurrence.path,
-            &mut paths,
+            occurrence.path,
+            &recording.paths,
             limits,
         )?;
     }
@@ -199,8 +238,8 @@ fn check_sizes(
         check_path(
             &row.occurrence.session,
             session,
-            &row.occurrence.path,
-            &mut paths,
+            row.occurrence.path,
+            &recording.paths,
             limits,
         )?;
         add_count(&mut sources, 1, limits.source_entries)?;
@@ -304,19 +343,24 @@ fn check_link(
             )
         }
     };
-    work(
-        host,
-        HostWorkDimension::VerificationOperations,
-        work_count(occurrence.path.len(), 2, 10)?,
-    )?;
+    // Changed by C7b (DR-86): the link compares the session and the path ids.
+    // work(
+    //     host,
+    //     HostWorkDimension::VerificationOperations,
+    //     work_count(occurrence.path.len(), 2, 10)?,
+    // )?;
+    // work(
+    //     host,
+    //     HostWorkDimension::VerificationBytes,
+    //     work_count(occurrence.path.len(), 16, 32)?,
+    // )?;
+    work(host, HostWorkDimension::VerificationOperations, 10)?;
     work(
         host,
         HostWorkDimension::VerificationBytes,
-        work_count(occurrence.path.len(), 16, 32)?,
+        32 + size_of::<PathId>(),
     )?;
-    if occurrence.session != row.occurrence.session
-        || occurrence.path.as_slice() != row.occurrence.path.as_ref()
-    {
+    if occurrence.session != row.occurrence.session || occurrence.path != row.occurrence.path {
         return Err(NativeOperationJournalError::Ownership);
     }
     if occurrence.stage != stage {
@@ -436,7 +480,7 @@ impl NativePhloExecutionContract<'_> {
                 &mut occurrences,
                 JournalKey {
                     session: &occurrence.session,
-                    path: &occurrence.path,
+                    path: occurrence.path,
                     stage: Some(occurrence.stage),
                 },
                 host,
@@ -494,7 +538,7 @@ impl NativePhloExecutionContract<'_> {
                 &mut operation_ids,
                 JournalKey {
                     session: &row.occurrence.session,
-                    path: &row.occurrence.path,
+                    path: row.occurrence.path,
                     stage: None,
                 },
                 host,

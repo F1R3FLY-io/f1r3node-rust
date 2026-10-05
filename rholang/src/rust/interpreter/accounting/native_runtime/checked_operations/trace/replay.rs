@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::cmp::Ordering;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex};
@@ -21,7 +22,8 @@ use crate::rust::interpreter::accounting::byte_receipts::ByteObservation;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeBudgetReplayDecision, NativeBudgetTraceError,
 };
-use crate::rust::interpreter::accounting::native_runtime::operations::locked_footprint;
+use crate::rust::interpreter::accounting::native_runtime::operations::{locked_footprint, sort};
+use crate::rust::interpreter::accounting::native_runtime::path_trie::PathKey;
 use crate::rust::interpreter::accounting::native_runtime::replay_authority::{
     ReplayAuthorityBinding, ReplayAuthorityObservation, ReplayAuthorityPublication,
 };
@@ -94,6 +96,9 @@ struct ReplayInner {
     max_path: usize,
     state: Mutex<ReplayState>,
     journal_slots: Vec<usize>,
+    /// The digest key of each slot's path with the slot, sorted by key
+    /// (C7b, DR-86).
+    slot_index: Vec<(PathKey, u32)>,
     retry_predecessors: Vec<[Option<usize>; 2]>,
     changed: tokio::sync::Notify,
 }
@@ -142,6 +147,9 @@ pub struct NativeReplayRestore {
     cursor: usize,
 }
 
+// Changed by C7b (DR-86): current_slot looks the live path up by its digest
+// key. The path comparison stays as the test oracle of that lookup.
+#[cfg(test)]
 fn compare_path(actual: &CausalPath, expected: &[(u64, u64)]) -> Ordering {
     let common = actual.len().min(expected.len());
     let mut order = actual.len().cmp(&expected.len());
@@ -278,12 +286,46 @@ impl CheckedNativeOperationTrace {
             }
             retry_predecessors.push([introduction, comm]);
         }
+        let paths = &self.journal.recording.paths;
+        let mut slot_index = allocate::<(PathKey, u32)>(count, &host)?;
+        work(&host, HostWorkDimension::VerificationOperations, count)?;
+        work(
+            &host,
+            HostWorkDimension::VerificationBytes,
+            checked_mul(count, PathKey::BYTES)?,
+        )?;
+        for slot in 0..count {
+            let row = self.operation(slot).ok_or(NativeReplayError::Stage)?;
+            slot_index.push((
+                paths.key(row.occurrence.path),
+                u32::try_from(slot).map_err(|_| NativeReplayError::Stage)?,
+            ));
+        }
+        sort(&mut slot_index, |left, right| {
+            work(&host, HostWorkDimension::VerificationOperations, 1)?;
+            work(
+                &host,
+                HostWorkDimension::VerificationBytes,
+                2 * PathKey::BYTES,
+            )?;
+            Ok(left.0.cmp(&right.0))
+        })?;
+        let pairs = count.saturating_sub(1);
+        work(&host, HostWorkDimension::VerificationOperations, pairs)?;
+        work(
+            &host,
+            HostWorkDimension::VerificationBytes,
+            checked_mul(pairs, 2 * PathKey::BYTES)?,
+        )?;
+        if slot_index.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(NativeReplayError::Context);
+        }
         let total = self.journal.total();
         let max_path = self
             .journal
             .operations
             .iter()
-            .map(|row| row.occurrence.path.len())
+            .map(|row| row.occurrence.path.depth())
             .max()
             .unwrap_or(0);
         Ok(NativeOperationReplay {
@@ -295,6 +337,7 @@ impl CheckedNativeOperationTrace {
                 max_path,
                 state: Mutex::new(ReplayState::new(slots, undo, total)),
                 journal_slots,
+                slot_index,
                 retry_predecessors,
                 changed: tokio::sync::Notify::new(),
             }),
@@ -418,35 +461,40 @@ impl NativeOperationReplay {
         {
             return Err(NativeReplayError::Context);
         }
-        let mut low = 0;
-        let mut high = self.inner.trace.operation_count();
-        let slot = loop {
-            if low == high {
-                return Err(NativeReplayError::Context);
-            }
-            let mid = low + (high - low) / 2;
-            let row = self
-                .inner
-                .trace
-                .operation(mid)
-                .expect("checked native replay slot");
-            let segments = checked_add(current.path.len(), row.occurrence.path.len())?;
-            work(
-                &self.inner.host,
-                HostWorkDimension::VerificationOperations,
-                checked_add(segments, 1)?,
-            )?;
-            work(
-                &self.inner.host,
-                HostWorkDimension::VerificationBytes,
-                checked_mul(segments, 16)?,
-            )?;
-            match compare_path(&current.path, &row.occurrence.path) {
-                Ordering::Less => high = mid,
-                Ordering::Greater => low = mid + 1,
-                Ordering::Equal => break mid,
-            }
-        };
+        // Changed by C7b (DR-86): the slot of the live path is found by its
+        // digest key in the sorted index. A binary search over n keys makes at
+        // most bit_length(n) comparisons of fixed-size keys. Equal keys mean
+        // equal paths (`NativePathTrie.occurrence_key_correct`).
+        // let mut low = 0;
+        // let mut high = self.inner.trace.operation_count();
+        // let slot = loop {
+        //     if low == high {
+        //         return Err(NativeReplayError::Context);
+        //     }
+        //     let mid = low + (high - low) / 2;
+        //     let row = self
+        //         .inner
+        //         .trace
+        //         .operation(mid)
+        //         .expect("checked native replay slot");
+        //     let segments = checked_add(current.path.len(), row.occurrence.path.len())?;
+        //     work(
+        //         &self.inner.host,
+        //         HostWorkDimension::VerificationOperations,
+        //         checked_add(segments, 1)?,
+        //     )?;
+        //     work(
+        //         &self.inner.host,
+        //         HostWorkDimension::VerificationBytes,
+        //         checked_mul(segments, 16)?,
+        //     )?;
+        //     match compare_path(&current.path, &row.occurrence.path) {
+        //         Ordering::Less => high = mid,
+        //         Ordering::Greater => low = mid + 1,
+        //         Ordering::Equal => break mid,
+        //     }
+        // };
+        let slot = self.lookup_slot(&current.path)?;
         let expected = &self
             .inner
             .trace
@@ -463,6 +511,31 @@ impl NativeOperationReplay {
             return Err(NativeReplayError::Source);
         }
         Ok(slot)
+    }
+
+    /// The slot whose path is `path`, by the sorted digest index.
+    pub(in crate::rust::interpreter::accounting::native_runtime) fn lookup_slot(
+        &self,
+        path: &CausalPath,
+    ) -> Result<usize, NativeReplayError> {
+        let comparisons = (usize::BITS - self.inner.slot_index.len().leading_zeros()) as usize;
+        work(
+            &self.inner.host,
+            HostWorkDimension::VerificationOperations,
+            comparisons,
+        )?;
+        work(
+            &self.inner.host,
+            HostWorkDimension::VerificationBytes,
+            checked_mul(comparisons, 2 * PathKey::BYTES)?,
+        )?;
+        let key = PathKey::of(path);
+        let position = self
+            .inner
+            .slot_index
+            .binary_search_by(|(candidate, _)| candidate.cmp(&key))
+            .map_err(|_| NativeReplayError::Context)?;
+        Ok(self.inner.slot_index[position].1 as usize)
     }
 
     pub fn begin_boundary(&self) -> Result<NativeReplayBoundary, NativeReplayError> {

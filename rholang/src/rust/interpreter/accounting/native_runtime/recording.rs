@@ -26,12 +26,45 @@ pub struct NativeBudgetRecording {
     pub attempts: Arc<[NativeBudgetAttempt]>,
     pub retries: Arc<[NativeBudgetRetry]>,
     pub used: u64,
+    /// The causal paths of the attempts, the retries and the operation
+    /// journal rows, interned once each (C7b, DR-86). Occurrences and journal
+    /// rows name their nodes.
+    pub paths: Arc<NativePathTrie>,
+}
+
+/// An occurrence as the producer records it: the session, a copy of the
+/// causal path and the stage. Captured evidence names the path by its trie
+/// node instead (C7b, DR-86).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct RecordedOccurrence {
+    pub(super) session: [u8; 32],
+    pub(super) path: Vec<(u64, u64)>,
+    pub(super) stage: NativeAttemptStage,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RecordedAttempt {
+    pub(super) occurrence: RecordedOccurrence,
+    pub(super) observation: Arc<ByteObservation>,
+    pub(super) granted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RecordedRetry {
+    pub(super) occurrence: RecordedOccurrence,
+    pub(super) observation: Arc<ByteObservation>,
+    pub(super) accepted_attempt: usize,
+    pub(super) fresh_before: usize,
 }
 
 #[derive(Default)]
 pub(super) struct NativeBudgetRecorder {
-    pub(super) attempts: Vec<NativeBudgetAttempt>,
-    pub(super) retries: Vec<NativeBudgetRetry>,
+    // Changed by C7b (DR-86): the recorder keeps copied paths; the captured
+    // evidence names trie nodes.
+    // pub(super) attempts: Vec<NativeBudgetAttempt>,
+    // pub(super) retries: Vec<NativeBudgetRetry>,
+    pub(super) attempts: Vec<RecordedAttempt>,
+    pub(super) retries: Vec<RecordedRetry>,
     // Changed by C7a (DR-85): the index is keyed by the chained path digest,
     // so a comparison no longer scans the path.
     // occurrences: NativeIndex<NativeBudgetOccurrence, ()>,
@@ -47,7 +80,7 @@ pub(super) struct NativeBudgetRecorder {
 
 pub(in crate::rust::interpreter::accounting) struct NativeObservationPreparation {
     pub(super) generation: Arc<()>,
-    pub(super) occurrence: NativeBudgetOccurrence,
+    pub(super) occurrence: RecordedOccurrence,
     pub(super) occurrence_key: OccurrenceKey,
     pub(super) observation: Arc<ByteObservation>,
     pub(super) charge: Option<PreparedNativePhloCharge>,
@@ -117,14 +150,12 @@ pub(super) fn work(
     reserve_work(budget, dimension, amount).map_err(|_| InterpreterError::HostWorkRejected)
 }
 
-fn copy_occurrence(
-    value: &NativeBudgetOccurrence,
-) -> Result<NativeBudgetOccurrence, InterpreterError> {
+fn copy_occurrence(value: &RecordedOccurrence) -> Result<RecordedOccurrence, InterpreterError> {
     let mut path = Vec::new();
     path.try_reserve_exact(value.path.len())
         .map_err(|_| InterpreterError::HostWorkRejected)?;
     path.extend_from_slice(&value.path);
-    Ok(NativeBudgetOccurrence {
+    Ok(RecordedOccurrence {
         session: value.session,
         path,
         stage: value.stage,
@@ -135,7 +166,7 @@ impl NativeRuntimeConfig {
     fn reserve_record(
         &mut self,
         prepared: &NativeObservationPreparation,
-    ) -> Result<(PreparedInsert<OccurrenceKey, ()>, NativeBudgetOccurrence), InterpreterError> {
+    ) -> Result<(PreparedInsert<OccurrenceKey, ()>, RecordedOccurrence), InterpreterError> {
         if self.replay_bound
             || !Arc::ptr_eq(&self.generation, &prepared.generation)
             || self.session != prepared.occurrence.session
@@ -260,7 +291,7 @@ impl NativeRuntimeConfig {
             return decision.map_err(native_error);
         }
         self.recording.occurrences.commit(key);
-        self.recording.attempts.push(NativeBudgetAttempt {
+        self.recording.attempts.push(RecordedAttempt {
             occurrence,
             observation: Arc::clone(&prepared.observation),
             granted: decision.is_ok(),
@@ -322,7 +353,7 @@ impl NativeRuntimeConfig {
             ));
         }
         self.recording.occurrences.commit(key);
-        self.recording.retries.push(NativeBudgetRetry {
+        self.recording.retries.push(RecordedRetry {
             occurrence,
             observation: Arc::clone(&prepared.observation),
             accepted_attempt: index,
@@ -359,37 +390,46 @@ impl NativeRuntimeConfig {
                 .checked_add(1)
                 .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
-        let path_bytes = self
-            .recording
-            .occurrences
-            .keys()
-            // Changed by C7a (DR-85): each key holds the depth of its path.
-            // .try_fold(0usize, |total, row| {
-            //     total.checked_add(row.path.len().checked_mul(size_of::<(u64, u64)>())?)
-            // })
-            .try_fold(0usize, |total, row| {
-                total.checked_add(row.depth.checked_mul(size_of::<(u64, u64)>())?)
-            })
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Changed by C7b (DR-86): the captured occurrences name trie nodes, so
+        // no path is copied. capture_paths charges the trie it builds.
+        // let path_bytes = self
+        //     .recording
+        //     .occurrences
+        //     .keys()
+        //     .try_fold(0usize, |total, row| {
+        //         total.checked_add(row.depth.checked_mul(size_of::<(u64, u64)>())?)
+        //     })
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // let bytes = size_of::<NativeBudgetAttempt>()
+        //     .checked_add(size_of::<NativeBudgetRetry>())
+        //     .and_then(|record_bytes| count.checked_mul(record_bytes))
+        //     .and_then(|bytes| bytes.checked_mul(2))
+        //     .and_then(|bytes| bytes.checked_add(path_bytes))
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
+        // work(
+        //     &self.host_work,
+        //     HostWorkDimension::VerificationBytes,
+        //     path_bytes,
+        // )?;
         let bytes = size_of::<NativeBudgetAttempt>()
             .checked_add(size_of::<NativeBudgetRetry>())
             .and_then(|record_bytes| count.checked_mul(record_bytes))
             .and_then(|bytes| bytes.checked_mul(2))
-            .and_then(|bytes| bytes.checked_add(path_bytes))
             .ok_or(InterpreterError::HostWorkRejected)?;
         work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
-        work(
-            &self.host_work,
-            HostWorkDimension::VerificationBytes,
-            path_bytes,
-        )?;
+        let paths = self.capture_paths()?;
         let mut attempts = Vec::new();
         attempts
             .try_reserve_exact(self.recording.attempts.len())
             .map_err(|_| InterpreterError::HostWorkRejected)?;
-        for row in &self.recording.attempts {
+        for (row, path) in self.recording.attempts.iter().zip(&paths.attempts) {
             attempts.push(NativeBudgetAttempt {
-                occurrence: copy_occurrence(&row.occurrence)?,
+                occurrence: NativeBudgetOccurrence {
+                    session: row.occurrence.session,
+                    path: *path,
+                    stage: row.occurrence.stage,
+                },
                 observation: Arc::clone(&row.observation),
                 granted: row.granted,
             });
@@ -398,9 +438,13 @@ impl NativeRuntimeConfig {
         retries
             .try_reserve_exact(self.recording.retries.len())
             .map_err(|_| InterpreterError::HostWorkRejected)?;
-        for row in &self.recording.retries {
+        for (row, path) in self.recording.retries.iter().zip(&paths.retries) {
             retries.push(NativeBudgetRetry {
-                occurrence: copy_occurrence(&row.occurrence)?,
+                occurrence: NativeBudgetOccurrence {
+                    session: row.occurrence.session,
+                    path: *path,
+                    stage: row.occurrence.stage,
+                },
                 observation: Arc::clone(&row.observation),
                 accepted_attempt: row.accepted_attempt,
                 fresh_before: row.fresh_before,
@@ -411,6 +455,7 @@ impl NativeRuntimeConfig {
             attempts: attempts.into(),
             retries: retries.into(),
             used: self.reservation.used(),
+            paths: Arc::new(paths.trie),
         })
     }
 }

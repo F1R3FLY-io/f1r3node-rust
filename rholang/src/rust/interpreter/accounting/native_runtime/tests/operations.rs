@@ -370,7 +370,7 @@ proptest! {
             prop_assert_eq!(row.budget_start, start);
             prop_assert_eq!(row.budget_end, end);
             prop_assert_eq!(row.introduction, link);
-            prop_assert_eq!(row.occurrence.path.as_ref(), &[(index as u64, 0)]);
+            prop_assert_eq!(charges.paths.segments(row.occurrence.path), vec![(index as u64, 0)]);
             prop_assert!(row.comm.is_none());
             prop_assert_eq!(row.completion, RSpaceOperationCompletion::Stored);
             prop_assert!(row.footprint.windows(2).all(|pair| pair[0] < pair[1]));

@@ -39,6 +39,7 @@ fn empty_trace() -> CheckedNativeOperationTrace {
         attempts: Arc::from([]),
         retries: Arc::from([]),
         used: 0,
+        paths: fixture_paths(),
     };
     bind(&recording, Arc::from([]), Vec::new()).unwrap()
 }

@@ -5,11 +5,9 @@ use std::sync::Arc;
 use models::rust::host_work::HostWorkDimension;
 use rspace_plus_plus::rspace::operation_context::PathDigest;
 
-use super::recording::work;
+use super::recording::{work, RecordedOccurrence};
 use super::{HostWorkBudget, InterpreterError};
-use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetOccurrence,
-};
+use crate::rust::interpreter::accounting::native_phlo_rules::NativeAttemptStage;
 
 pub(super) trait IndexKey: Ord {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError>;
@@ -36,7 +34,10 @@ impl IndexKey for Arc<[u8]> {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((1, self.len())) }
 }
 
-impl IndexKey for NativeBudgetOccurrence {
+// Changed by C7b (DR-86): the path-keyed comparison belongs to the
+// producer's recorded occurrences, which keep copied paths.
+// impl IndexKey for NativeBudgetOccurrence {
+impl IndexKey for RecordedOccurrence {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
         let operations = self
             .path
@@ -239,6 +240,8 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
     #[cfg(test)]
     pub(super) fn capacity(&self) -> usize { self.logical_capacity }
 
+    // Since C7b (DR-86) only tests read the keys in insertion order.
+    #[cfg(test)]
     pub(super) fn keys(&self) -> impl Iterator<Item = &K> {
         self.nodes.iter().map(|node| &node.key)
     }

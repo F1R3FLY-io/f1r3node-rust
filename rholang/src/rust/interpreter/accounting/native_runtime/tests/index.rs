@@ -238,7 +238,7 @@ fn native_index_long_prefix_comparisons_reserve_the_complete_key_bound() {
 
 #[test]
 fn native_occurrence_comparison_charges_only_the_inspected_prefix() {
-    let first = NativeBudgetOccurrence {
+    let first = RecordedOccurrence {
         session: [7; 32],
         path: vec![(1, 2); 512],
         stage: NativeAttemptStage::ProduceIntroduction,
@@ -332,7 +332,7 @@ proptest! {
         for (value, stage) in suffixes {
             let mut path = prefix.clone();
             path.push((value, 0));
-            let key = NativeBudgetOccurrence {
+            let key = RecordedOccurrence {
                 session: [7; 32], path,
                 stage: [NativeAttemptStage::ProduceIntroduction, NativeAttemptStage::ConsumeIntroduction, NativeAttemptStage::Comm][stage as usize],
             };
@@ -352,12 +352,12 @@ proptest! {
         right_stage in 0usize..3,
     ) {
         let stages = [NativeAttemptStage::ProduceIntroduction, NativeAttemptStage::ConsumeIntroduction, NativeAttemptStage::Comm];
-        let left = NativeBudgetOccurrence {
+        let left = RecordedOccurrence {
             session: left_session,
             path: left_path,
             stage: stages[left_stage],
         };
-        let right = NativeBudgetOccurrence {
+        let right = RecordedOccurrence {
             session: right_session,
             path: right_path,
             stage: stages[right_stage],
@@ -386,12 +386,12 @@ proptest! {
             NativeAttemptStage::Comm,
         ];
         let shared = left_path.len().min(right_path.len()) as u64;
-        let left = NativeBudgetOccurrence {
+        let left = RecordedOccurrence {
             session: [5; 32],
             path: left_path,
             stage: stages[left_stage],
         };
-        let right = NativeBudgetOccurrence {
+        let right = RecordedOccurrence {
             session: [5; 32],
             path: right_path,
             stage: stages[right_stage],
@@ -408,7 +408,7 @@ proptest! {
     }
 }
 
-fn occurrence_key(occurrence: &NativeBudgetOccurrence) -> OccurrenceKey {
+fn occurrence_key(occurrence: &RecordedOccurrence) -> OccurrenceKey {
     let path =
         rspace_plus_plus::rspace::operation_context::CausalPath::from(occurrence.path.clone());
     OccurrenceKey {
@@ -439,10 +439,10 @@ proptest! {
         ];
         let budget = host();
         let mut by_digest = NativeIndex::<OccurrenceKey, ()>::default();
-        let mut by_path = NativeIndex::<NativeBudgetOccurrence, ()>::default();
+        let mut by_path = NativeIndex::<RecordedOccurrence, ()>::default();
         let mut repeated = 0;
         for (session, path, stage) in rows {
-            let occurrence = NativeBudgetOccurrence {
+            let occurrence = RecordedOccurrence {
                 session: [session; 32],
                 path,
                 stage: stages[stage],
@@ -474,11 +474,11 @@ fn digest_keyed_lookup_charge_is_independent_of_depth() {
     fn lookup_bytes(depth: usize) -> (u64, u64) {
         let setup = host();
         let mut by_digest = NativeIndex::<OccurrenceKey, ()>::default();
-        let mut by_path = NativeIndex::<NativeBudgetOccurrence, ()>::default();
+        let mut by_path = NativeIndex::<RecordedOccurrence, ()>::default();
         let occurrence = |leaf: u64| {
             let mut path = vec![(7, 0); depth - 1];
             path.push((leaf, 0));
-            NativeBudgetOccurrence {
+            RecordedOccurrence {
                 session: [1; 32],
                 path,
                 stage: NativeAttemptStage::Comm,
