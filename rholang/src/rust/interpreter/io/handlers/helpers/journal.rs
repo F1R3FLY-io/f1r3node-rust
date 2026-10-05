@@ -55,8 +55,10 @@ use std::path::PathBuf;
 use models::rhoapi::Par;
 
 use super::ack_hash::ack_channel_hash;
+use crate::rust::interpreter::io::errors::fserr_to_code;
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
-use crate::rust::interpreter::io::wal::{WalEntry, WalOp, WalOutcome};
+use crate::rust::interpreter::io::response::extract_err_code;
+use crate::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 use crate::rust::interpreter::io::ConsensusMode;
 
 /// Finalize a reserved WAL entry's outcome to `Failure { code }`.
@@ -185,6 +187,79 @@ pub async fn journal_path_mutation_two_via_table(
             ack_channel_hash(ack),
         )
         .map(|()| true)
+}
+
+/// Journal a state-read op (fs_stat / fs_exists / fs_size / fs_read /
+/// fs_entries / fs_entries_stream_next): record the reply's
+/// Blake2b256 hash into the WAL so verify.rs can compare leader +
+/// follower replies without resending the full byte payload.
+///
+/// Self-guards on Oracular (returns silently without appending).
+/// The reply hash encodes BOTH the success-path value and the
+/// error-code string on the Err path — so `verify_state_read`
+/// catches both value-divergence AND error-code-divergence with
+/// the same compare.
+///
+/// `length` is a side-band field used by handlers that carry a
+/// count the hash can't capture directly (fs_entries → entry
+/// count, fs_entries_stream_next → 0/1 per call).  Set to `None`
+/// for handlers whose reply hash fully encodes the observable
+/// outcome.
+///
+/// Fire-and-forget on WAL cap exhaustion — matches the finalize
+/// helpers' discipline.  State-read is not reserve + finalize
+/// (reads don't need per-entry finalize); the WAL cap failure
+/// path is handled uniformly by the applier.
+pub fn journal_state_read_via_table(
+    handles: &FileHandleTable,
+    cmode: ConsensusMode,
+    op: WalOp,
+    path: PathBuf,
+    reply: &Par,
+    ack: &Par,
+    length: Option<u64>,
+) {
+    if cmode != ConsensusMode::Consensus {
+        return;
+    }
+    let reply_hash: [u8; 32] = {
+        let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(reply).bytes();
+        // M-5: same fail-hard discipline as ack_channel_hash — a
+        // Blake2b256 provider swap producing shorter output would
+        // silently zero-pad into the WAL's payload_ref, breaking
+        // reply-hash verify at consensus boundary.
+        assert_eq!(
+            h.len(),
+            32,
+            "stable_hash must produce a 32-byte Blake2b256; got {}",
+            h.len()
+        );
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&h);
+        buf
+    };
+    let outcome = if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+        WalOutcome::Failure {
+            code: fserr_to_code(&code_str),
+        }
+    } else {
+        WalOutcome::Success
+    };
+    let _ = handles.wal.append_with_ack(
+        WalEntry {
+            op,
+            path,
+            extra_path: None,
+            offset: None,
+            length,
+            payload_ref: Some(PayloadRef::Hash(reply_hash)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome,
+        },
+        ack_channel_hash(ack),
+    );
 }
 
 #[cfg(test)]

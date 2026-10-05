@@ -377,6 +377,12 @@ impl FixedChannels {
     /// Consensus caps rejected at parse_content (Phase-2 ban:
     /// readdir order fs-dependent).  Added by slice 4.29.
     pub fn fs_entries_stream_open() -> Par { byte_name(66) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` — advance a
+    /// stream fd one entry via `readdir`; two-event cost (setup
+    /// + per-entry supplement).  First handler on dev to
+    /// activate `post_reply_supplement`.  Added by slice 4.30.
+    pub fn fs_entries_stream_next() -> Par { byte_name(67) }
 }
 
 pub struct BodyRefs;
@@ -473,6 +479,10 @@ impl BodyRefs {
     /// `rho:io:fs:native:1.0.0/entriesStreamOpen` body-ref
     /// (slice 4.29).
     pub const FS_ENTRIES_STREAM_OPEN: i64 = 66;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` body-ref
+    /// (slice 4.30).
+    pub const FS_ENTRIES_STREAM_NEXT: i64 = 67;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
