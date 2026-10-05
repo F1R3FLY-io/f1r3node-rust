@@ -24,6 +24,7 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::ApprovedBlock;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -375,7 +376,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 if let Some((hash, age)) = oldest {
                     if age > IN_FLIGHT_MARKER_MAX_WARN_AGE {
                         warn!(
-                            block = %hex::encode(&hash),
+                            block = %PrettyPrinter::build_string_bytes(&hash),
                             age_secs = age.as_secs(),
                             in_flight = in_flight.len(),
                             "in-flight block marker is older than the warning age"
