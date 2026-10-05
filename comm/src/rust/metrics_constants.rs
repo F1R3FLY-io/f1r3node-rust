@@ -10,6 +10,9 @@ pub const PEERS_METRIC: &str = "peers";
 // Comm counter metrics
 pub const CONNECT_METRIC: &str = "connect";
 pub const DISCONNECT_METRIC: &str = "disconnect";
+/// Messages refused because the sender belongs to a different chain, or named
+/// no chain while `require-chain-id` is set.
+pub const FOREIGN_CHAIN_REFUSED_METRIC: &str = "chain-id.refused";
 
 // Comm timer/histogram metrics
 pub const CONNECT_TIME_METRIC: &str = "connect-time";

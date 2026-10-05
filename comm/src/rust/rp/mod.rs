@@ -1,3 +1,4 @@
+pub mod chain_id;
 pub mod connect;
 pub mod handle_messages;
 pub mod protocol_helper;
