@@ -346,6 +346,12 @@ impl FixedChannels {
     /// `libc::ftruncate`.  Verifying mutation; constant cost.
     /// First Mutation-family handler on dev (slice 4.24).
     pub fn fs_truncate() -> Par { byte_name(49) }
+
+    /// `rho:io:fs:native:1.0.0/chmod` — path-based chmod via
+    /// `safe_descend_verified` + `fchmodat` (AT_SYMLINK_NOFOLLOW).
+    /// Verifying mutation; constant cost.  First path-mutation
+    /// handler on dev (slice 4.25).
+    pub fn fs_chmod() -> Par { byte_name(59) }
 }
 
 pub struct BodyRefs;
@@ -426,6 +432,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/truncate` body-ref (slice 4.24).
     pub const FS_TRUNCATE: i64 = 49;
+
+    /// `rho:io:fs:native:1.0.0/chmod` body-ref (slice 4.25).
+    pub const FS_CHMOD: i64 = 59;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
