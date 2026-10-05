@@ -1248,6 +1248,7 @@ impl ReducerCore {
                         self.eval_with_authority(res, env, rand, authority.clone())
                             .await
                     }
+                    ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
                         other
@@ -1315,7 +1316,7 @@ impl ReducerCore {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        self.produce(
+        self.reified_produce(
             unbundled,
             ListParWithRandom {
                 pars: subst_data,
@@ -1673,6 +1674,7 @@ impl ReducerCore {
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
         let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
         let subst = self.substitute.substitute_and_charge(&eval_src, 0, env)?;
+        reified_hooks::reject_query_source(&subst)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -8130,6 +8132,9 @@ fn describe_par_type(par: &Par) -> String {
         "non-boolean process".to_string()
     }
 }
+
+#[path = "reified/reducer_hooks.rs"]
+mod reified_hooks;
 
 #[cfg(test)]
 #[path = "reduce_economic_failure_tests.rs"]

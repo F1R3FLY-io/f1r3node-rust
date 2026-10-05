@@ -41,8 +41,11 @@
      bytes_lt               │         │ score_tree.rs:69-85 (ScoreAtom::compare,
                             │         │ line 77 compares GString keys with
                             │         │ String::cmp, the bytewise UTF-8 order)
-   is_identifier            │ §2(d),  │ grammar.js rule var, planned
+   is_var_token             │ §2(d),  │ grammar.js rule var,
                             │ §4.2    │ encoding.rs::is_identifier
+   WordLists, is_identifier,│ plan    │ validation.rs::{REJECTED_PARAM_KEYS,
+     is_theory_name         │ dec. 27 │ REJECTED_THEORY_NAMES, is_param_key,
+                            │         │ is_theory_name}
    par, par_eqb             │ §5      │ models/src/lib.rs:210-225 (Par Eq),
                             │         │ 466-473 (New Eq), 660-666 (EList Eq),
                             │         │ 676-680 (ETuple Eq), 705-711 (EMap Eq)
@@ -134,10 +137,13 @@
    - binder_order is a stable insertion sort. Rust sorts with the stable merge
      sort of slice::sort_by. A stable sort under one comparator has exactly one
      result, so the two sorts agree.
-   - is_identifier follows the regular expression of design section 4.2. The
-     grammar also reserves 16 words (grammar.js, reserved.global). The parser
-     cannot produce such a word as a theory name or a key, but the decoder
-     accepts it.
+   - is_var_token follows the regular expression of design section 4.2. Plan
+     decision 27 removes the words that the parser cannot produce in each
+     position: is_identifier (param keys) and is_theory_name (theory names)
+     are the regular expression minus the two lists of WordLists. Both lists
+     come from the 32 keywords of grammar 02cef80, as measured on parser
+     6548aec. The builtin theories Nat, Int, String, Bool and Any are theory
+     names.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. decode_encode                        decode is a left inverse of encode
@@ -257,7 +263,7 @@ Proof.
   - intros ->. rewrite bytes_compare_refl. reflexivity.
 Qed.
 
-(* is_identifier accepts exactly the strings of the grammar token
+(* is_var_token accepts exactly the strings of the grammar token
    var = /[a-zA-Z]([a-zA-Z0-9_'])*|_([a-zA-Z0-9_'])+/ (grammar.js rule var). *)
 Definition is_ascii_letter (b : nat) : bool :=
   ((65 <=? b) && (b <=? 90)) || ((97 <=? b) && (b <=? 122)).
@@ -267,7 +273,7 @@ Definition is_ascii_digit (b : nat) : bool := (48 <=? b) && (b <=? 57).
 Definition is_identifier_tail_byte (b : nat) : bool :=
   is_ascii_letter b || is_ascii_digit b || (b =? 95) || (b =? 39).
 
-Definition is_identifier (s : bytes) : bool :=
+Definition is_var_token (s : bytes) : bool :=
   match s with
   | [] => false
   | b :: rest =>
@@ -276,6 +282,47 @@ Definition is_identifier (s : bytes) : bool :=
           && negb (match rest with [] => true | _ :: _ => false end)
           && forallb is_identifier_tail_byte rest)
   end.
+
+(* The word lists of plan decision 27, measured on parser 6548aec over the 32
+   keywords of grammar 02cef80. A decoder accepts a param key or a theory name
+   only when the parser accepts it there. The lists are the constants
+   REJECTED_PARAM_KEYS and REJECTED_THEORY_NAMES of
+   models/src/rust/reified/validation.rs, in the same order. *)
+Module WordLists.
+  Import (notations) Stdlib.Strings.String.
+  Local Open Scope string_scope.
+
+  Definition word (s : String.string) : bytes :=
+    map Ascii.nat_of_ascii (String.list_ascii_of_string s).
+
+  (* Bool ByteArray Int Nil String Uri true false, and the 18 other keywords
+     that are not catch, constructor, default, in, method or private. *)
+  Definition rejected_param_keys : list bytes :=
+    map word ["Bool"; "ByteArray"; "Int"; "Nil"; "Set"; "String"; "Uri"; "agent";
+              "and"; "bundle"; "bundle0"; "contract"; "else"; "false"; "for"; "if";
+              "let"; "match"; "matches"; "new"; "not"; "or"; "select"; "true"; "try";
+              "where"].
+
+  (* Every keyword except Bool, ByteArray, Int, Nil, String, Uri, agent,
+     bundle0, catch, constructor, default, method, private and try. *)
+  Definition rejected_theory_names : list bytes :=
+    map word ["Set"; "and"; "bundle"; "contract"; "else"; "false"; "for"; "if";
+              "in"; "let"; "match"; "matches"; "new"; "not"; "or"; "select"; "true";
+              "where"].
+End WordLists.
+
+Definition in_word_list (words : list bytes) (s : bytes) : bool :=
+  existsb (bytes_eqb s) words.
+
+(* is_identifier accepts a key of a named param: a var token outside the
+   param-key list (models/src/rust/reified/validation.rs, is_param_key). *)
+Definition is_identifier (s : bytes) : bool :=
+  is_var_token s && negb (in_word_list WordLists.rejected_param_keys s).
+
+(* is_theory_name accepts the theory name of free Th(a...): a var token
+   outside the theory-name list (validation.rs, is_theory_name). *)
+Definition is_theory_name (s : bytes) : bool :=
+  is_var_token s && negb (in_word_list WordLists.rejected_theory_names s).
 
 (* ── 2. The Par model ──────────────────────────────────────────────────── *)
 
@@ -866,7 +913,7 @@ Definition wf (c : construct) : Prop :=
       (positional <> [] \/ named <> []) /\ named_params_ok named = true
   | CQuery _ payload named =>
       (payload <> [] \/ named <> []) /\ named_params_ok named = true
-  | CFree theory _ => is_identifier theory = true
+  | CFree theory _ => is_theory_name theory = true
   end.
 
 Definition wfb (c : construct) : bool :=
@@ -878,7 +925,7 @@ Definition wfb (c : construct) : bool :=
       negb (is_nil positional && is_nil named) && named_params_ok named
   | CQuery _ payload named =>
       negb (is_nil payload && is_nil named) && named_params_ok named
-  | CFree theory _ => is_identifier theory
+  | CFree theory _ => is_theory_name theory
   end.
 
 Lemma nonempty_sections_iff :
@@ -2127,6 +2174,34 @@ Proof. reflexivity. Qed.
 Example decode_accepts_identifier_theory :
   decode (PTuple [marker_par MFree; PStr (str "Nat"); PList []]) = Some (CFree (str "Nat") []).
 Proof. reflexivity. Qed.
+
+(* Plan decision 27: a word of the param-key list is not a key. The keyword
+   in is outside that list, so it is a key. *)
+Example decode_rejects_keyword_key :
+  decode (PTuple [marker_par MParams; PList []; PMap [(str "true", PNil)]]) = None.
+Proof. reflexivity. Qed.
+
+Example decode_accepts_keyword_key :
+  decode (PTuple [marker_par MParams; PList []; PMap [(str "in", PNil)]]) =
+  Some (CParams [] [(str "in", PNil)]).
+Proof. reflexivity. Qed.
+
+(* new is in the theory-name list. try is a keyword outside it. *)
+Example decode_rejects_keyword_theory :
+  decode (PTuple [marker_par MFree; PStr (str "new"); PList []]) = None.
+Proof. reflexivity. Qed.
+
+Example decode_accepts_keyword_theory :
+  decode (PTuple [marker_par MFree; PStr (str "try"); PList []]) = Some (CFree (str "try") []).
+Proof. reflexivity. Qed.
+
+Example builtin_theories_are_theory_names :
+  forallb is_theory_name [str "Nat"; str "Int"; str "String"; str "Bool"; str "Any"] = true.
+Proof. reflexivity. Qed.
+
+Example word_list_sizes :
+  length WordLists.rejected_param_keys = 26 /\ length WordLists.rejected_theory_names = 18.
+Proof. split; reflexivity. Qed.
 
 Example decode_rejects_newspace_without_annotation :
   decode (PTuple [marker_par MNewSpace; PList [PList []]; PNew 1 [] 0 PNil]) = None.

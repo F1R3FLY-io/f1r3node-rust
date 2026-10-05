@@ -12,7 +12,8 @@ that each active check is in place:
   * footprint: the footprint policy of the milestone protects each pinned
     file of each path glob. byte_identical needs an unchanged file.
     approved_edits also accepts an approved edit. The policy must also hold
-    each no_new_files glob of the check.
+    each no_new_files glob of the check, and its allowed_new_files list may
+    name no file in such a glob.
   * complete: the completeness policies forbid each token of the check, in
     the production scan or in the phase of the milestone.
   * a step with a script: the checker script exists.
@@ -360,6 +361,14 @@ def footprint_problems(check: dict, policy_name: str, context: Context) -> list[
     for glob in check.get("no_new_files", []):
         if glob not in no_new_files:
             problems.append(f"policy {policy_name} has no no_new_files glob {glob}")
+    try:
+        allowed = FOOTPRINT.resolve_allowed_new_files(policies, policy_name) or []
+    except SystemExit as error:
+        return problems + [f"footprint policy {policy_name}: {error}"]
+    for glob in check.get("no_new_files", []):
+        exceptions = [path for path in allowed if FOOTPRINT.matches_any(path, [glob])]
+        if exceptions:
+            problems.append(f"policy {policy_name} allows new files in {glob} ({examples(exceptions)})")
     return problems
 
 

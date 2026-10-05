@@ -51,6 +51,18 @@ impl GeneratedMessage {
     }
 }
 
+/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a
+/// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).
+pub fn is_evaluated_process_expr(expr: &Expr) -> bool {
+    match &expr.expr_instance {
+        Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_)) => true,
+        Some(ExprInstance::ETupleBody(tuple)) => {
+            models::rust::reified::encoding::is_process_marker_tuple(tuple)
+        }
+        _ => false,
+    }
+}
+
 pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {
     vec![
         par.sends
@@ -85,12 +97,7 @@ pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {
             .collect(),
         par.exprs
             .iter()
-            .filter(|expr| {
-                matches!(
-                    expr.expr_instance,
-                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
-                )
-            })
+            .filter(|expr| is_evaluated_process_expr(expr))
             .cloned()
             .map(GeneratedMessage::Expr)
             .collect(),
@@ -135,12 +142,7 @@ pub fn owned_evaluation_terms(par: Par) -> Vec<GeneratedMessage> {
             .collect(),
         par.exprs
             .into_iter()
-            .filter(|expr| {
-                matches!(
-                    expr.expr_instance,
-                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
-                )
-            })
+            .filter(|expr| is_evaluated_process_expr(expr))
             .map(GeneratedMessage::Expr)
             .collect(),
         par.cost_signed_terms

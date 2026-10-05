@@ -12,13 +12,31 @@ This checker compares files with SHA-256 digests pinned from the base revision:
 
 A policy lists globs whose pinned files must be byte-identical, globs in which no
 new file may appear, and approved edits.  An approved edit must undo exactly: each
-added line is removed, and each replaced line is restored.  The result must have the
-pinned digest, so the edit is the only change in that file.
+added line is removed, each replaced line is restored, and each replaced block is
+restored.  The result must have the pinned digest, so the edit is the only change in
+that file.
+
+An edit takes three kinds of change. Each kind must name its text exactly once:
+
+* `added_lines`: each line occurs exactly once in the current file.
+* `replaced_lines`: `[old, new]` pairs. Each new line occurs exactly once in the
+  current file.
+* `replaced_blocks`: `[[old lines...], [new lines...]]` pairs of non-empty line
+  lists. Each new block occurs exactly once in the current file, and each old block
+  occurs exactly once in the restored file. A block can thus replace a multi-line
+  construct, or add lines next to a unique anchor (an old block of the anchor lines
+  and a new block of the anchor lines with the added lines).
+
+The undo removes the added lines first, then restores the replaced lines, and then
+restores the replaced blocks.
 
 A policy can also list `allowed_new_files` as exact paths. A policy inherits this
 list from the policy that it extends. When the list exists, two more rules apply.
 Each file of the file list that is not pinned must be in `allowed_new_files`. Each
-entry of `allowed_new_files` must be a file of the file list.
+entry of `allowed_new_files` must be a file of the file list. An exact path of the
+list also exempts that one file from the `no_new_files` globs of the chain: the
+policy names the file explicitly. check-consensus-checklist.py fails a checklist
+item when a protected glob of the item holds such an exception.
 
 The file list holds the regular files of the tree. When `<root>/.git` exists, the
 command `git ls-files --cached --others --exclude-standard` gives the list.
@@ -242,6 +260,16 @@ def list_tree_files(root):
     return sorted(path for path in candidates if is_regular_file(root / path))
 
 
+def block_hits(lines, block):
+    """Return the start index of each occurrence of the line list BLOCK in LINES."""
+    width = len(block)
+    return [index for index in range(len(lines) - width + 1) if lines[index:index + width] == block]
+
+
+def is_line_block(block):
+    return isinstance(block, list) and bool(block) and all(isinstance(line, str) for line in block)
+
+
 def undo_edit(text, edit):
     lines = text.split("\n")
     problems = []
@@ -257,6 +285,23 @@ def undo_edit(text, edit):
             problems.append(f"replacement line {new!r} occurs {len(hits)} times, expected 1")
             continue
         lines[hits[0]] = old
+    blocks = edit.get("replaced_blocks", [])
+    restored_blocks = []
+    for pair in blocks:
+        if not (isinstance(pair, list) and len(pair) == 2 and all(is_line_block(block) for block in pair)):
+            problems.append(f"replaced block {pair!r} is not a pair of non-empty line lists")
+            continue
+        old, new = pair
+        hits = block_hits(lines, new)
+        if len(hits) != 1:
+            problems.append(f"replacement block starting {new[0]!r} occurs {len(hits)} times, expected 1")
+            continue
+        lines[hits[0]:hits[0] + len(new)] = old
+        restored_blocks.append(old)
+    for old in restored_blocks:
+        count = len(block_hits(lines, old))
+        if count != 1:
+            problems.append(f"original block starting {old[0]!r} occurs {count} times in the restored file, expected 1")
     return "\n".join(lines), problems
 
 
@@ -276,6 +321,7 @@ def check(root, policies, name):
         pinned = json.load(handle)["files"]
     unchanged, no_new_files, edits = resolve_policy(policies, name)
     allowed_new_files = resolve_allowed_new_files(policies, name)
+    exempt_new_files = set(allowed_new_files or [])
     edited_paths = {edit["path"] for edit in edits}
     violations = []
     checked = 0
@@ -292,7 +338,12 @@ def check(root, policies, name):
     directories = sorted({pattern[:-3] for pattern in no_new_files if pattern.endswith("/**")})
     for directory in directories:
         for path in walk_files(root, directory):
-            if path not in pinned and matches_any(path, no_new_files) and path not in edited_paths:
+            if (
+                path not in pinned
+                and matches_any(path, no_new_files)
+                and path not in edited_paths
+                and path not in exempt_new_files
+            ):
                 violations.append(f"{path}: new file in a protected directory")
     for edit in edits:
         path = edit["path"]

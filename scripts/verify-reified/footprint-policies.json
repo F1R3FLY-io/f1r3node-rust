@@ -301,6 +301,117 @@
         "test-vectors/ordinary-float-forms-v1.json",
         "test-vectors/ordinary-source-normalization-v1.json"
       ]
+    },
+    "p2": {
+      "description": "P2 marker-tuple encoding (plan decisions 18, 21, 22, 27 and 32). It extends p1-realign: every base file stays unchanged except the approved P1 and P2 edits. The P2 edits are the module line in models, the hook H1 predicate and both filter closures in util/mod.rs, and in reduce.rs the hook module, the H2 arm, the H3 produce swap and the H4 call. Each new P2 file is an exact path in allowed_new_files.",
+      "extends": "p1-realign",
+      "edits": [
+        {
+          "path": "models/src/rust/mod.rs",
+          "added_lines": [
+            "pub mod reified;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/util/mod.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ],
+              [
+                "",
+                "/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a",
+                "/// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).",
+                "pub fn is_evaluated_process_expr(expr: &Expr) -> bool {",
+                "    match &expr.expr_instance {",
+                "        Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_)) => true,",
+                "        Some(ExprInstance::ETupleBody(tuple)) => {",
+                "            models::rust::reified::encoding::is_process_marker_tuple(tuple)",
+                "        }",
+                "        _ => false,",
+                "    }",
+                "}",
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ]
+            ],
+            [
+              [
+                "            .iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ],
+            [
+              [
+                "            .into_iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .into_iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/reduce.rs",
+          "added_lines": [
+            "                    ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,",
+            "        reified_hooks::reject_query_source(&subst)?;"
+          ],
+          "replaced_lines": [
+            [
+              "        self.produce(",
+              "        self.reified_produce("
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ],
+              [
+                "#[path = \"reified/reducer_hooks.rs\"]",
+                "mod reified_hooks;",
+                "",
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ]
+            ]
+          ]
+        }
+      ],
+      "allowed_new_files": [
+        "models/src/rust/reified/builders.rs",
+        "models/src/rust/reified/encoding.rs",
+        "models/src/rust/reified/mod.rs",
+        "models/src/rust/reified/params.rs",
+        "models/src/rust/reified/query_spec.rs",
+        "models/src/rust/reified/validation.rs",
+        "models/tests/reified_encoding.rs",
+        "models/tests/support/reified_strategies.rs",
+        "rholang/src/rust/interpreter/reified/errors.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/tests/reified_marker_recognition.rs",
+        "test-vectors/protobuf-schema-head-6f7a80da3.json"
+      ]
     }
   }
 }

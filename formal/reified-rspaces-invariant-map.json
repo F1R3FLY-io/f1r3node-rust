@@ -603,7 +603,7 @@
     "P2": {
       "title": "P2: the marker-tuple wire encoding of the Reified RSpaces syntax (Encoding.v)",
       "design": "p2-design-report-2 §5 (-fv: the 12 headline theorems, -invariant-pbt: one test for each theorem, with 4 and 5 sharing reified_markers_disjoint)",
-      "test_status": "planned",
+      "test_status": "required",
       "test_files": [
         "models/tests/reified_encoding.rs",
         "rholang/tests/reified_marker_recognition.rs"

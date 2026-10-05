@@ -1,7 +1,7 @@
 """Unit tests for the Reified RSpaces checkers.
 
 They cover check-complete.py with its production scan, check-footprint.py with
-the pin and the allowed new files, and the ORD phase of check-invariant-map.py.
+the pin, the allowed new files and the replaced blocks, and the ORD phase of check-invariant-map.py.
 They also cover check-consensus-checklist.py and the citation rule of
 check-model-map.py.
 
@@ -256,6 +256,10 @@ BASE_MOD = "pub mod a;\npub mod b;\n"
 BASE_FIELD = "struct S {\n    field: u8,\n}\n"
 PROTECTED = "fn protected() {}\n"
 REALIGN_BASE = "fn base() {}\n"
+BLOCK_BASE = "fn a() {\n    old_one();\n    old_two();\n}\n\nfn b() {}\n"
+BLOCK_OLD = ["    old_one();", "    old_two();"]
+BLOCK_NEW = ["    new_call();"]
+BLOCK_CURRENT = BLOCK_BASE.replace("    old_one();\n    old_two();", "    new_call();")
 
 
 def digest(text):
@@ -336,6 +340,105 @@ class FootprintChecker(unittest.TestCase):
                 self.assertEqual(0, FOOTPRINT.check(root, policies, "campaign"))
                 write(root / "a/b/c.proto", "message Changed {}\n")
                 self.assertEqual(1, FOOTPRINT.check(root, policies, "campaign"))
+
+    def block_case(self, current, blocks, base=None):
+        base = BLOCK_BASE if base is None else base
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "src/block.rs", current)
+            write_json(root / "digests.json", {"files": {"src/block.rs": digest(base)}})
+            policies = {
+                "digests": "digests.json",
+                "policies": {
+                    "phase": {
+                        "unchanged": ["src/**"],
+                        "edits": [{"path": "src/block.rs", "replaced_blocks": blocks}],
+                    }
+                },
+            }
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = FOOTPRINT.check(root, policies, "phase")
+            return code, output.getvalue()
+
+    def test_replaced_block_passes(self):
+        code, output = self.block_case(BLOCK_CURRENT, [[BLOCK_OLD, BLOCK_NEW]])
+        self.assertEqual(0, code, output)
+        self.assertIn("footprint policy phase: checked 1 files, 0 violations", output)
+
+    def test_block_added_at_a_unique_anchor_passes(self):
+        anchor = ["", "fn b() {}"]
+        inserted = ["", "fn helper() {", "    work();", "}", "", "fn b() {}"]
+        current = BLOCK_BASE.replace("\nfn b() {}", "\nfn helper() {\n    work();\n}\n\nfn b() {}")
+        code, output = self.block_case(current, [[anchor, inserted]])
+        self.assertEqual(0, code, output)
+
+    def test_missing_replacement_block_fails(self):
+        code, output = self.block_case(BLOCK_BASE, [[BLOCK_OLD, BLOCK_NEW]])
+        self.assertEqual(1, code, output)
+        self.assertIn("replacement block starting '    new_call();' occurs 0 times, expected 1", output)
+
+    def test_repeated_replacement_block_fails(self):
+        current = BLOCK_CURRENT + "fn c() {\n    new_call();\n}\n"
+        code, output = self.block_case(current, [[BLOCK_OLD, BLOCK_NEW]])
+        self.assertEqual(1, code, output)
+        self.assertIn("replacement block starting '    new_call();' occurs 2 times, expected 1", output)
+
+    def test_ambiguous_original_block_fails(self):
+        base = BLOCK_BASE + "fn c() {\n    old_one();\n    old_two();\n}\n"
+        current = base.replace("    old_one();\n    old_two();", "    new_call();", 1)
+        code, output = self.block_case(current, [[BLOCK_OLD, BLOCK_NEW]], base=base)
+        self.assertEqual(1, code, output)
+        self.assertIn(
+            "original block starting '    old_one();' occurs 2 times in the restored file, expected 1", output
+        )
+
+    def test_change_beyond_the_block_fails(self):
+        current = BLOCK_CURRENT.replace("fn b() {}", "fn b() { extra(); }")
+        code, output = self.block_case(current, [[BLOCK_OLD, BLOCK_NEW]])
+        self.assertEqual(1, code, output)
+        self.assertIn("footprint: src/block.rs: the file holds changes beyond the approved edit", output)
+
+    def test_malformed_block_entry_fails(self):
+        for blocks in ([[BLOCK_OLD]], [[BLOCK_OLD, []]], [["    old_one();", BLOCK_NEW]], ["text"]):
+            code, output = self.block_case(BLOCK_CURRENT, blocks)
+            self.assertEqual(1, code, output)
+            self.assertIn("is not a pair of non-empty line lists", output)
+
+    def test_blocks_restore_after_lines(self):
+        current = BLOCK_CURRENT.replace("fn a() {", "fn a() -> u8 {").replace("fn b() {}", "fn b() {}\nmod added;")
+        edit = {
+            "path": "src/block.rs",
+            "added_lines": ["mod added;"],
+            "replaced_lines": [["fn a() {", "fn a() -> u8 {"]],
+            "replaced_blocks": [[BLOCK_OLD, BLOCK_NEW]],
+        }
+        restored, problems = FOOTPRINT.undo_edit(current, edit)
+        self.assertEqual([], problems)
+        self.assertEqual(BLOCK_BASE, restored)
+
+    def test_allowed_new_file_is_exempt_from_no_new_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "src/base.rs", REALIGN_BASE)
+            write(root / "src/new.rs", "fn new() {}\n")
+            write_json(root / "digests.json", {"files": {"src/base.rs": digest(REALIGN_BASE)}})
+            policies = {
+                "digests": "digests.json",
+                "policies": {
+                    "base": {"unchanged": ["src/**"], "no_new_files": ["src/**"]},
+                    "phase": {"extends": "base", "allowed_new_files": ["digests.json", "src/new.rs"]},
+                },
+            }
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = FOOTPRINT.check(root, policies, "phase")
+            self.assertEqual(0, code, output.getvalue())
+            write(root / "src/stray.rs", "fn stray() {}\n")
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = FOOTPRINT.check(root, policies, "phase")
+        self.assertEqual(1, code, output.getvalue())
+        self.assertIn("footprint: src/stray.rs: new file in a protected directory", output.getvalue())
+        self.assertIn("footprint: src/stray.rs: new file outside the allowed list", output.getvalue())
+        self.assertNotIn("src/new.rs", output.getvalue())
 
     def realign_case(self, extra_files=(), allowed=("digests.json", "src/new.rs"), name="realign"):
         with tempfile.TemporaryDirectory() as directory:
@@ -758,6 +861,18 @@ class ConsensusChecklistChecker(unittest.TestCase):
         def mutate(data):
             data["items"][1]["checks"][0]["no_new_files"] = ["casper/src/**", "rholang/src/**"]
         self.assert_only_failure(self.run_map(mutate), "policy p1 has no no_new_files glob rholang/src/**")
+
+    def test_allowed_new_file_in_a_protected_glob_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_checklist_fixture(root)
+            control = CHECKLIST.check_map(root, checklist_map(), "p2")
+            self.assertEqual([], self.failures(control), "\n".join(control.lines))
+            policies = json.loads((root / "policies/footprint.json").read_text(encoding="utf-8"))
+            policies["policies"]["p2"]["allowed_new_files"] = ["casper/src/new.rs", "docs/new.md"]
+            write_json(root / "policies/footprint.json", policies)
+            report = CHECKLIST.check_map(root, checklist_map(), "p2")
+        self.assert_only_failure(report, "policy p2 allows new files in casper/src/** (casper/src/new.rs)")
 
     def test_missing_forbidden_pattern_fails(self):
         def mutate(data):

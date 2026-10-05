@@ -29,6 +29,7 @@ pub mod phlo_source;
 pub mod phlo_controls;
 pub mod phlo_intent;
 pub mod signed_phlo_deploy;
+pub mod reified;
 pub mod rholang;
 pub mod sorted_par_hash_set;
 pub mod sorted_par_map;

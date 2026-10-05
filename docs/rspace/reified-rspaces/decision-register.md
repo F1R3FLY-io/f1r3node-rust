@@ -740,7 +740,7 @@ The full encoding table after this decision:
 The plan keeps this technical background for the operations owners:
 
 - Replay executes each deploy again from its source text.
-- A pre-upgrade deploy that names a new URN passes admission, because the normalizer does not check URNs. It fails at run time (`util/mod.rs:232`), so an upgraded node would compute a different post-state for it.
+- A pre-upgrade deploy that names a new URN passes admission, because the normalizer does not check URNs. It fails at run time (`util/mod.rs:234`), so an upgraded node would compute a different post-state for it.
 - New nodes replay only above the LFS horizon (`initializing.rs:775-812`).
 - The `header.version` of a block must equal the genesis version (`block_processor.rs:316`).
 
