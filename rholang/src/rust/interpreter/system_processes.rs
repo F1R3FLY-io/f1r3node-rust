@@ -370,6 +370,13 @@ impl FixedChannels {
     /// unlink gate.  Verifying mutation; Consensus + locked
     /// returns `FSERR_BUSY`.  Added by slice 4.28.
     pub fn fs_remove_file() -> Par { byte_name(57) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` — allocate a
+    /// stream fd, `openat` + `fdopendir` under
+    /// `safe_descend_verified`.  Non-verifying stream lifecycle;
+    /// Consensus caps rejected at parse_content (Phase-2 ban:
+    /// readdir order fs-dependent).  Added by slice 4.29.
+    pub fn fs_entries_stream_open() -> Par { byte_name(66) }
 }
 
 pub struct BodyRefs;
@@ -462,6 +469,10 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/removeFile` body-ref (slice 4.28).
     pub const FS_REMOVE_FILE: i64 = 57;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` body-ref
+    /// (slice 4.29).
+    pub const FS_ENTRIES_STREAM_OPEN: i64 = 66;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
