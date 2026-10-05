@@ -137,7 +137,7 @@ tasks:
       - "docs/artifacts/f1r3fly-consensus-neutral-sm.md (RGB and Casanova corrections, section 12 resolved)"
       - "docs/semitopology/GLOSSARY.md and README.md (D6)"
       - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
-      - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 and 6"
+      - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
       - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
     work_log: docs/work-logs/task-022-1-2026-10-05.md
     review_status: "Draft complete. Maintainer approval pending."
