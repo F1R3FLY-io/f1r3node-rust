@@ -149,14 +149,19 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        self.read_continuations(&channels)?;
+        // Changed by C1 (DR-81): the prefetch fills the cache and copies no
+        // continuation.
+        // self.read_continuations(&channels)?;
+        self.prefetch_continuations(&channels)?;
         for channel in &channels {
             self.read_joins(channel)?;
         }
         let reserve =
             |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         let read_data = |channel: &C| self.read_data_with(channel, &reserve);
-        let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        // Changed by C1 (DR-81): candidates read shared views.
+        // let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        let read_continuations = |channels: &[C]| self.read_continuation_views(channels);
         let reader = CandidateReader {
             meter: &reserve,
             data: &read_data,
@@ -281,7 +286,9 @@ where
         let reserve =
             |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         let read_data = |channel: &C| self.read_data_with(channel, &reserve);
-        let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        // Changed by C1 (DR-81): candidates read shared views.
+        // let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        let read_continuations = |channels: &[C]| self.read_continuation_views(channels);
         let reader = CandidateReader {
             meter: &reserve,
             data: &read_data,

@@ -1049,6 +1049,64 @@ where
         Ok(result)
     }
 
+    /// C1 (DR-81): the continuations of `channels` as shared views. A warm
+    /// read clones only the `Arc` pointers. A cold read moves each decoded
+    /// continuation into its `Arc` and prepays its release once, when it
+    /// enters the cache. A caller copies only the continuation it selects.
+    pub(super) fn native_continuation_views(
+        &self,
+        channels: &[C],
+        read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        K: CloneBacking,
+    {
+        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        let key = channels.to_vec();
+        let pointer = size_of::<Arc<WaitingContinuation<P, K>>>();
+        let allocation =
+            shared::rust::clone_backing::arc_allocation_bytes::<WaitingContinuation<P, K>>()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        let installed = self.installed_continuations.native_get(&key, meter)?;
+        let mut prefix = buffer(usize::from(installed.is_some()), meter)?;
+        if let Some(installed) = installed {
+            meter.reserve(2, allocation, allocation)?;
+            prefix.push(Arc::new(installed));
+        }
+        let warm = self.continuations.native_with(&key, meter, |values| {
+            values
+                .map(|values| {
+                    let mut result = buffer(values.len(), meter)?;
+                    for value in values {
+                        meter.reserve(1, pointer, 0)?;
+                        result.push(Arc::clone(value));
+                    }
+                    Ok(result)
+                })
+                .transpose()
+        })?;
+        if let Some(values) = warm {
+            return merge(prefix, values, meter);
+        }
+        let values = read()?;
+        let mut shared = buffer(values.len(), meter)?;
+        let mut cached = buffer(values.len(), meter)?;
+        for value in values {
+            native_backing::reserve_cleanup(&value, meter)?;
+            meter.reserve(2, allocation, allocation)?;
+            let value = Arc::new(value);
+            meter.reserve(1, pointer, 0)?;
+            cached.push(Arc::clone(&value));
+            shared.push(value);
+        }
+        let result = merge(prefix, shared, meter)?;
+        self.continuations.native_insert_new(&key, cached, meter)?;
+        Ok(result)
+    }
+
     pub(super) fn native_joins(
         &self,
         channel: &C,

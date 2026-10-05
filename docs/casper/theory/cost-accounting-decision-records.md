@@ -5398,3 +5398,71 @@ stays recorded in pgmcp, and this change does not alter it.
 
 **Cross-refs.** DR-77, DR-78, DR-79. Leaf
 `ofp-2-cap-c13-incremental-tree-backing`.
+
+## DR-81 — Native continuation reads share the cached payloads
+
+**Status.** Implemented 2026-10-04 for cap root cause C1 of epic 8946
+(batch B1, phase B).
+
+**Context.** The native hot store caches the continuations of a channel
+group once, each behind a shared pointer (`Arc`). The native read
+`native_continuations` copied every cached continuation on every read and
+charged each copy. The consume path also read the continuations once only to
+fill the cache, and then dropped the copies.
+
+The phase A probe of the gateway funding block attributed about 66% of each
+validator replay's `VerificationBytes` to the native history reads
+(`history_reserve` in `native_session/history.rs`).
+
+**Decision.**
+
+1. A new reader `native_continuation_views` returns the shared pointers:
+   - a warm read clones only the pointers, at one operation and one pointer
+     size for each continuation;
+   - a cold read moves each decoded continuation into its pointer, without
+     a copy, and prepays its release once, when it enters the cache.
+2. The candidate reader of metered native replay uses the views. It copies
+   only the continuation that it selects, with `reserve_copy_and_cleanup`.
+3. The consume path prefetches with `prefetch_continuations`, which fills the
+   cache and copies no continuation.
+4. The owned reader `native_continuations` stays for the public
+   `get_continuations` API and serves as the test oracle. The replaced lines
+   stay in the source, commented out with their reason.
+
+**Soundness.** A view resolves to the same payload as a copy, so the
+selection is unchanged. Every payload's release is prepaid when the payload
+enters the cache, and a pointer clone allocates no payload. The last pointer
+drop therefore releases a prepaid payload.
+
+**Scope.** This change is cost-accounting work. Native replay and its hot
+store paths exist only on this branch. The change alters host-work charges of
+protocol 6, which is not yet released. It changes no observable value: the
+selected candidate and the COMM are the same.
+
+**Verification.** `NativeSharedReads.v` proves without axioms:
+
+- `shared_selection_equals_deep_selection`;
+- `prefetch_then_read_equals_read`;
+- `cleanup_prepaid_preserved` and `every_release_was_prepaid`;
+- a negative control: a cold fill without prepayment leads to an unpaid
+  release.
+
+`NativeSharedReadCleanup.tla` checks `LivePrepaid`, `EntriesPrepaid`,
+`EveryReleasePrepaid` and `WarmReadsAllocateNothing`. Two unsafe controls
+violate their invariants:
+
+| Control | Mutation | Violated invariant |
+| --- | --- | --- |
+| `NativeSharedReadCleanupFillWithoutPrepayUnsafe` | a cold read skips the payload prepayment | `LivePrepaid` |
+| `NativeSharedReadCleanupStoreWithoutPrepayUnsafe` | a cold read skips the cache-entry prepayment | `EntriesPrepaid` |
+
+Tests in `hot_store/native/tests.rs`:
+
+- `shared_reads_select_like_deep_reads`: views equal owned reads on a cold
+  and on a warm cache.
+- `shared_read_allocates_no_payload`: the warm view read allocates the same
+  bytes when the payload grows 16 times.
+- `prefetch_leaves_state_and_selection_unchanged`.
+- `every_view_read_cut_rejects_without_filling_the_cache`.
+
+**Cross-refs.** DR-75, DR-79. Leaf `ofp-2-cap-c1-shared-continuation-reads`.

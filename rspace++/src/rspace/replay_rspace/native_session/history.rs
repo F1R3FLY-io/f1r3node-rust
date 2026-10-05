@@ -172,6 +172,32 @@ where
         )
     }
 
+    /// The continuations of `channels` as shared views (C1, DR-81).
+    pub(super) fn read_continuation_views(
+        &self,
+        channels: &[C],
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError> {
+        let reserve =
+            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+        self.space.get_store().get_continuation_views_with_reader(
+            channels,
+            &|| {
+                self.read_records(
+                    NativeLeafKind::Continuations,
+                    channels_hash(channels, &reserve)?,
+                    &reserve,
+                )
+            },
+            &reserve,
+        )
+    }
+
+    /// Fills the continuation cache of `channels` without copying a
+    /// continuation (C1, DR-81).
+    pub(super) fn prefetch_continuations(&self, channels: &[C]) -> Result<(), RSpaceError> {
+        self.read_continuation_views(channels).map(drop)
+    }
+
     pub(super) fn prepare_data(&self, channel: &C) -> Result<(), RSpaceError> {
         self.read_data_with(channel, &|operations, scanned, backing| {
             self.history_reserve(operations, scanned, backing)

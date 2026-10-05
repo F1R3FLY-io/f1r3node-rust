@@ -103,7 +103,7 @@ fn with_reader<T>(
     let continuations = |channels: &[u8]| {
         space
             .get_store()
-            .get_continuations_with_reader(channels, &|| Ok(Vec::new()), meter)
+            .get_continuation_views_with_reader(channels, &|| Ok(Vec::new()), meter)
     };
     action(&CandidateReader {
         meter,

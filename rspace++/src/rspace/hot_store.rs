@@ -208,6 +208,18 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         C: CloneBacking,
         P: CloneBacking,
         K: CloneBacking;
+    /// The continuations of `channels` as shared views, without copying a
+    /// cached continuation (C1, DR-81).
+    fn get_continuation_views_with_reader(
+        &self,
+        channels: &[C],
+        read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        K: CloneBacking;
     fn get_joins_with_reader(
         &self,
         channel: &C,
@@ -571,6 +583,20 @@ where
         K: CloneBacking,
     {
         self.native_continuations(channels, read, meter)
+    }
+
+    fn get_continuation_views_with_reader(
+        &self,
+        channels: &[C],
+        read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        K: CloneBacking,
+    {
+        self.native_continuation_views(channels, read, meter)
     }
 
     fn get_joins_with_reader(

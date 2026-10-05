@@ -12,7 +12,11 @@ use crate::rspace::native_backing;
 
 type Result<T> = std::result::Result<T, RSpaceError>;
 type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<Vec<Datum<A>>>;
-type ContinuationReader<'a, C, P, K> = &'a dyn Fn(&[C]) -> Result<Vec<WaitingContinuation<P, K>>>;
+// Changed by C1 (DR-81): the reader returns shared views.
+// type ContinuationReader<'a, C, P, K> = &'a dyn Fn(&[C]) ->
+// Result<Vec<WaitingContinuation<P, K>>>;
+type ContinuationReader<'a, C, P, K> =
+    &'a dyn Fn(&[C]) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 
 pub(in crate::rspace::replay_rspace) struct CandidateReader<'a, C, P: Clone, A: Clone, K: Clone> {
     pub(in crate::rspace::replay_rspace) meter: &'a (dyn SourceMeter + Send + Sync),
@@ -682,6 +686,9 @@ where
                         return Ok(None);
                     }
                 }
+                // C1 (DR-81): only the selected continuation is copied.
+                native_backing::reserve_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
+                let continuation = continuation.as_ref().clone();
                 let candidate = ProduceCandidate {
                     channels,
                     continuation,

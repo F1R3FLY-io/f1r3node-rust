@@ -852,3 +852,142 @@ fn every_warm_read_cut_keeps_owned_copies_within_accepted_credit() {
         }
     }
 }
+
+fn owned_continuations(
+    store: &Store,
+    rows: &Rows,
+    meter: &Meter,
+) -> Vec<WaitingContinuation<String, String>> {
+    store
+        .get_continuations_with_reader(&[], &|| Ok(rows.continuations.clone()), meter)
+        .expect("owned continuation read")
+}
+
+fn continuation_views(
+    store: &Store,
+    rows: &Rows,
+    meter: &Meter,
+) -> Result<Vec<Arc<WaitingContinuation<String, String>>>, RSpaceError> {
+    store.get_continuation_views_with_reader(&[], &|| Ok(rows.continuations.clone()), meter)
+}
+
+/// C1 (DR-81; `NativeSharedReads.shared_selection_equals_deep_selection`):
+/// shared views hold the same continuations, in the same order, as owned
+/// reads, on a cold and on a warm cache.
+#[test]
+fn shared_reads_select_like_deep_reads() {
+    let rows = Rows::new();
+    for view_first in [true, false] {
+        let store = installed();
+        let unlimited = Meter::new(usize::MAX);
+        let (views, owned) = if view_first {
+            let views = continuation_views(&store, &rows, &unlimited).expect("cold view read");
+            (views, owned_continuations(&store, &rows, &unlimited))
+        } else {
+            let owned = owned_continuations(&store, &rows, &unlimited);
+            (continuation_views(&store, &rows, &unlimited).expect("warm view read"), owned)
+        };
+        let viewed: Vec<_> = views.iter().map(|view| view.as_ref().clone()).collect();
+        assert_eq!(viewed, owned, "view first: {view_first}");
+        assert_eq!(owned[0].continuation, "installed");
+        assert_eq!(&owned[1..], rows.continuations);
+    }
+}
+
+/// C1 (DR-81): a warm view read allocates no continuation payload. Its
+/// allocation does not change when the payload grows 16 times, while a warm
+/// owned read copies every payload.
+#[test]
+fn shared_read_allocates_no_payload() {
+    let measure = |scale: usize| {
+        let continuations = vec![
+            WaitingContinuation {
+                patterns: vec!["pattern".repeat(100 * scale); 3],
+                continuation: "continuation".repeat(500 * scale),
+                persist: true,
+                peeks: [0, 2].into_iter().collect(),
+                source: Consume::default(),
+            };
+            2
+        ];
+        let store = store();
+        let unlimited = Meter::new(usize::MAX);
+        let read = || Ok(continuations.clone());
+        store
+            .get_continuation_views_with_reader(&[], &read, &unlimited)
+            .expect("cache fill");
+        let (views, view_bytes) = measure_allocations(|| {
+            store.get_continuation_views_with_reader(&[], &read, &unlimited)
+        });
+        assert_eq!(views.expect("warm view read").len(), continuations.len());
+        let (owned, owned_bytes) =
+            measure_allocations(|| store.get_continuations_with_reader(&[], &read, &unlimited));
+        assert_eq!(owned.expect("warm owned read"), continuations);
+        (view_bytes, owned_bytes)
+    };
+    let (small_view, small_owned) = measure(1);
+    let (large_view, large_owned) = measure(16);
+    assert_eq!(small_view, large_view, "view bytes depend on the payload");
+    assert!(large_owned > 8 * small_owned, "{large_owned} vs {small_owned} owned bytes");
+    assert!(small_owned > small_view, "{small_owned} owned vs {small_view} view bytes");
+}
+
+/// C1 (DR-81; `NativeSharedReads.prefetch_then_read_equals_read`): a view
+/// read used as a prefetch fills the cache and leaves every later read equal
+/// to a read without the prefetch.
+#[test]
+fn prefetch_leaves_state_and_selection_unchanged() {
+    let rows = Rows::new();
+    let unlimited = Meter::new(usize::MAX);
+    let plain = installed();
+    let expected = owned_continuations(&plain, &rows, &unlimited);
+    let prefetched = installed();
+    continuation_views(&prefetched, &rows, &unlimited).expect("prefetch");
+    let reads = Cell::new(0);
+    let after = prefetched
+        .get_continuations_with_reader(
+            &[],
+            &|| {
+                reads.set(reads.get() + 1);
+                Ok(rows.continuations.clone())
+            },
+            &unlimited,
+        )
+        .expect("read after prefetch");
+    assert_eq!(after, expected);
+    assert_eq!(reads.get(), 0, "the prefetch filled the cache");
+    let views = continuation_views(&prefetched, &rows, &unlimited).expect("view after prefetch");
+    let viewed: Vec<_> = views.iter().map(|view| view.as_ref().clone()).collect();
+    assert_eq!(viewed, expected);
+}
+
+/// C1 (DR-81; `NativeSharedReads.every_release_was_prepaid`): every
+/// reservation cut of a cold view read rejects and leaves the cache empty,
+/// so a later read decodes the history again.
+#[test]
+fn every_view_read_cut_rejects_without_filling_the_cache() {
+    let rows = Rows::new();
+    let full = Meter::new(usize::MAX);
+    continuation_views(&installed(), &rows, &full).expect("full read");
+    for cut in 0..full.calls.get() {
+        let store = installed();
+        let limited = Meter::new(cut);
+        assert_eq!(
+            continuation_views(&store, &rows, &limited).map(|views| views.len()),
+            Err(RSpaceError::HostWorkRejected),
+            "cut {cut}"
+        );
+        let reads = Cell::new(0);
+        store
+            .get_continuations_with_reader(
+                &[],
+                &|| {
+                    reads.set(reads.get() + 1);
+                    Ok(rows.continuations.clone())
+                },
+                &Meter::new(usize::MAX),
+            )
+            .expect("read after cut");
+        assert_eq!(reads.get(), 1, "cut {cut} left the cache empty");
+    }
+}
