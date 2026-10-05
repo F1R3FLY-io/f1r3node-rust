@@ -112,6 +112,51 @@ impl<F: Future> Future for StackGrowingFuture<F> {
     }
 }
 
+type DispatchHandle = JoinHandle<Result<DispatchType, InterpreterError>>;
+
+#[derive(Default)]
+struct DeferredDispatches {
+    handles: std::sync::Mutex<Vec<DispatchHandle>>,
+}
+
+impl DeferredDispatches {
+    fn push(&self, handle: DispatchHandle) {
+        self.handles
+            .lock()
+            .expect("deferred dispatches lock")
+            .push(handle);
+    }
+
+    fn take(&self) -> Vec<DispatchHandle> {
+        std::mem::take(&mut *self.handles.lock().expect("deferred dispatches lock"))
+    }
+}
+
+struct AbortDeferredOnDrop(Arc<DeferredDispatches>);
+
+impl Drop for AbortDeferredOnDrop {
+    fn drop(&mut self) {
+        for handle in self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
+tokio::task_local! {
+    static DEFERRED_DISPATCHES: Arc<DeferredDispatches>;
+}
+
+fn spawn_in_dispatch_scope<F>(future: F) -> JoinHandle<F::Output>
+where
+    F: Future + std::marker::Send + 'static,
+    F::Output: std::marker::Send + 'static,
+{
+    match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+        Ok(scope) => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
+        Err(_) => tokio::spawn(future),
+    }
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -304,7 +349,7 @@ impl DebruijnInterpreter {
                 .fetch_add(futures.len() as u64, Ordering::Relaxed);
             let spawn_start = std::time::Instant::now();
             let handles: Vec<JoinHandle<Result<(), InterpreterError>>> =
-                futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                futures.into_iter().map(spawn_in_dispatch_scope).collect();
             metrics::counter!("reducer.eval_par.spawn_ns", "source" => "rholang")
                 .increment(spawn_start.elapsed().as_nanos() as u64);
 
@@ -330,7 +375,59 @@ impl DebruijnInterpreter {
     }
 
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        self.eval(par, &Env::new(), rand).await
+        let scope = Arc::new(DeferredDispatches::default());
+        let _abort_on_drop = AbortDeferredOnDrop(scope.clone());
+        let env = Env::new();
+
+        let mut errors: Vec<InterpreterError> = Vec::new();
+        if let Err(err) = DEFERRED_DISPATCHES
+            .scope(scope.clone(), self.eval(par, &env, rand))
+            .await
+        {
+            errors.push(err);
+        }
+
+        loop {
+            let handles = scope.take();
+            if handles.is_empty() {
+                break;
+            }
+            for handle in handles {
+                match handle.await {
+                    Ok(Err(err)) => errors.push(err),
+                    Err(join_err) => errors.push(InterpreterError::ReduceError(format!(
+                        "task panicked: {}",
+                        join_err
+                    ))),
+                    Ok(Ok(_)) => {}
+                }
+            }
+        }
+
+        self.aggregate_evaluator_errors(errors).map(|_| ())
+    }
+
+    async fn dispatch_or_defer(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
+        if let Some(TaggedCont::ParBody(_)) = continuation.tagged_cont {
+            if let Ok(scope) = DEFERRED_DISPATCHES.try_with(Arc::clone) {
+                let reducer = self.clone();
+                let handle = tokio::spawn(DEFERRED_DISPATCHES.scope(scope.clone(), async move {
+                    reducer
+                        .dispatch(continuation, data_list, is_replay, previous_output)
+                        .await
+                }));
+                scope.push(handle);
+                return Ok(DispatchType::DeterministicCall);
+            }
+        }
+        self.dispatch(continuation, data_list, is_replay, previous_output)
+            .await
     }
 
     /**
@@ -528,7 +625,7 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone1
-                            .dispatch(
+                            .dispatch_or_defer(
                                 continuation_clone,
                                 data_list_clone,
                                 is_replay_flag,
@@ -564,7 +661,7 @@ impl DebruijnInterpreter {
 
                     // parTraverseSafe — spawn true parallel tasks
                     let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -594,7 +691,7 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![Box::pin(async move {
                         self_clone
-                            .dispatch(
+                            .dispatch_or_defer(
                                 continuation_clone,
                                 data_list_clone,
                                 is_replay,
@@ -606,7 +703,7 @@ impl DebruijnInterpreter {
 
                     // parTraverseSafe — spawn true parallel tasks
                     let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -621,8 +718,13 @@ impl DebruijnInterpreter {
 
                     self.aggregate_evaluator_errors(flattened_results)
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -674,7 +776,7 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone1
-                            .dispatch(
+                            .dispatch_or_defer(
                                 continuation_clone,
                                 data_list_clone,
                                 is_replay_flag,
@@ -709,7 +811,7 @@ impl DebruijnInterpreter {
 
                     // parTraverseSafe — spawn true parallel tasks
                     let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -739,7 +841,7 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![Box::pin(async move {
                         self_clone
-                            .dispatch(
+                            .dispatch_or_defer(
                                 continuation_clone,
                                 data_list_clone,
                                 is_replay,
@@ -751,7 +853,7 @@ impl DebruijnInterpreter {
 
                     // parTraverseSafe — spawn true parallel tasks
                     let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -766,8 +868,13 @@ impl DebruijnInterpreter {
 
                     self.aggregate_evaluator_errors(flattened_results)
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
