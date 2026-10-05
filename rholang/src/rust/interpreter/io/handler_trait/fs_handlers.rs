@@ -163,7 +163,7 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 /// finished), count reaches 27 — fs_remove_dir trait-exempt
 /// (see `handler_trait::fs_handler` module docstring).
 ///
-/// Current: 10 handlers migrated.
+/// Current: 11 handlers migrated.
 ///
 /// Wave 4 slice progression:
 ///   - 4.10: 0 (empty registry infrastructure).
@@ -177,7 +177,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.19: +1 (`fs_stat`).  Count = 8.
 ///   - 4.20: +1 (`fs_read`, FIRST LENGTH-PARAMETERIZED).  Count = 9.
 ///   - 4.21: +1 (`fs_read_at`).  Count = 10.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 10;
+///   - 4.22: +1 (`fs_entries_stream_close`, FIRST STREAM).  Count = 11.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 11;
 
 #[cfg(test)]
 mod tests {
@@ -233,16 +234,17 @@ mod tests {
         /// the migration-complete target (27 handlers, fs_remove_dir
         /// trait-exempt).
         const EXPECTED_REGISTERED_HANDLER_NAMES: &[&str] = &[
-            "fs_quarantine", // slice 4.12
-            "fs_close",      // slice 4.13
-            "fs_flush",      // slice 4.14
-            "fs_tell",       // slice 4.15
-            "fs_seek",       // slice 4.16 (first verifying)
-            "fs_size",       // slice 4.17
-            "fs_exists",     // slice 4.18
-            "fs_stat",       // slice 4.19
-            "fs_read",       // slice 4.20 (first length-parameterized)
-            "fs_read_at",    // slice 4.21
+            "fs_quarantine",           // slice 4.12
+            "fs_close",                // slice 4.13
+            "fs_flush",                // slice 4.14
+            "fs_tell",                 // slice 4.15
+            "fs_seek",                 // slice 4.16 (first verifying)
+            "fs_size",                 // slice 4.17
+            "fs_exists",               // slice 4.18
+            "fs_stat",                 // slice 4.19
+            "fs_read",                 // slice 4.20 (first length-parameterized)
+            "fs_read_at",              // slice 4.21
+            "fs_entries_stream_close", // slice 4.22 (first stream)
         ];
 
         assert_eq!(
