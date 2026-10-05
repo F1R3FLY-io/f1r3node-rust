@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "status": "ratified-bounded-slashing-workflow-tag",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-006"
+  ],
+  "claim_discharge": "discharged",
+  "phase": "pre_pr216_merge",
+  "scope": "harness-profile",
+  "source_digests": {
+    "scripts/casper-soak/src/profiles/slashing.rs": "694491c0d9f4ac986424a0c4cc278ae9918674c4e27fbc4ddf0983e3c2b00665",
+    "scripts/casper-soak/src/bin/casper-slashing.rs": "fbc7cb4f303f79f57aa8bc57a6c837f2507def6388fb789ffb3aafb062996b5a",
+    "scripts/casper-soak/tests/slashing.rs": "e013ec602c58bd291aa02b9af7a3e135581ac51d9e29f3b3f02d8d38dcc44afb",
+    "scripts/casper-soak/check-slashing.sh": "9e0929400d9c4e6ff38b93e41bb046b23845bc7245c41d0768bc931506559234",
+    ".github/workflows/casper-slashing.yml": "53a2f0bcf732405cde493c1aaf13868913ad58c5d97a5116059d90b5cd502675",
+    "formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla": "42dcaf827385e79506bee7087323f640d3f756e60c01b684731c361f6f5c2ab3",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing.cfg": "ec027f41c43cfca705d91e5f872ef34e9f0f00958b15b4e3c72ffa32d36d2ed3",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_order_unsafe.cfg": "7ff73a5f463d6510c84f9042e816db00687c4c86203917ed8e327d0c7885e6bf",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_epoch_unsafe.cfg": "cdc39f894cd45a1dbd9223ac926322d7d99f6cf4d0adea959107ffdecaa9bcc6",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_authorization_unsafe.cfg": "938955b64080a1049dd7d57da178228dec0f4ac4779557fb4415af8c8f14044f",
+    "formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc": "bbfdd0879243ef2f121ddade08982fae495e29d5c589b37aff574991fc7f3f31",
+    "formal/tlaplus/casper_soak/profiles/slashing/README.md": "8b2e66e36b3166079d7b502c497a4954b8a36168b69c30aaaaee3c019aaa2979"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-slashing.md": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "approval": {
+    "confirmation": "017-9 should now be closed out",
+    "scope": "workflow-tag-ratification-and-task-closure",
+    "recorded_at": "2026-09-19T16:44:10Z"
+  },
+  "acceptance": {
+    "report": "docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json",
+    "sha256": "3840449eb7f63f4b0fa7ec853c37a6fe9f91195d83e30d9b156898b4f9597871",
+    "bytes_unchanged": true
+  },
+  "hosted": {
+    "report": "docs/casper/cbc-evidence/runs/casper-slashing-hosted-20260919-01/report.json",
+    "sha256": "5dcb1028ff8cb44fc0533955509fe79fc349f8037d42d7a17712a9687e061416",
+    "run_id": 35452747041,
+    "artifact_id": 10587177940
+  },
+  "workflow_tag": {
+    "path": ".github/workflows/casper-slashing.yml",
+    "cbc": "mandatory",
+    "weight": "high",
+    "ratified": true,
+    "recorded_in": ".gitattributes"
+  },
+  "task_closure": "complete",
+  "base_revision": "4a7bf8960800d76be82d887c205a898169bdb8fe",
+  "reviewed_artifacts_unchanged": true,
+  "previous_ledgers": {
+    "path": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/previous-ledgers.tar.gz",
+    "sha256": "084343234fa3ce8b30c87a0de1143cbd32f91b7685873ade6dacce906ddfb998",
+    "members": 12
+  },
+  "other_claims": "outside-this-acceptance",
+  "live_adapters": "unqualified",
+  "post_merge_execution": "blocked",
+  "policy_activation": false,
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null
+}

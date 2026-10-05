@@ -275,6 +275,72 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    // -----------------------------------------------------------
+    // Fileio handlers — `rho:io:fs:native:*` URN space.
+    //
+    // Byte-name identifiers match fileio's assignment (see Wave 4
+    // triage plan).  Numbering has intentional gaps so sibling
+    // fs_* handlers land at their fileio-canonical slots as later
+    // slices port them (fs_open at 38, fs_close at 39, ...,
+    // fs_lock_range at 62, etc.).
+    // -----------------------------------------------------------
+
+    /// `rho:io:fs:native:1.0.0/quarantine` — safe_descend_verified
+    /// echo of the caller-supplied joined path.  Non-verifying
+    /// lifecycle helper (slice 4.12).
+    pub fn fs_quarantine() -> Par { byte_name(61) }
+
+    /// `rho:io:fs:native:1.0.0/close` — fd release + Phase-2
+    /// shadow-remove on replay.  Non-verifying lifecycle
+    /// (slice 4.13).
+    pub fn fs_close() -> Par { byte_name(39) }
+
+    /// `rho:io:fs:native:1.0.0/flush` — fsync (data + metadata) on
+    /// an open fd.  Non-verifying observation (slice 4.14).
+    pub fn fs_flush() -> Par { byte_name(50) }
+
+    /// `rho:io:fs:native:1.0.0/tell` — current fd position
+    /// (`lseek(SEEK_CUR, 0)`).  Non-verifying observation
+    /// (slice 4.15).
+    pub fn fs_tell() -> Par { byte_name(47) }
+
+    /// `rho:io:fs:native:1.0.0/seek` — move fd position
+    /// (`lseek(off, whence)`).  Verifying observation; advances
+    /// shadow position via the `journal` hook (slice 4.16).
+    pub fn fs_seek() -> Par { byte_name(46) }
+
+    /// `rho:io:fs:native:1.0.0/size` — fd-based size via
+    /// `fstat`.  Verifying observation (slice 4.17).
+    pub fn fs_size() -> Par { byte_name(48) }
+
+    /// `rho:io:fs:native:1.0.0/exists` — path-based existence check
+    /// via `openat(O_NOFOLLOW)` + metadata.  Verifying observation
+    /// (slice 4.18).
+    pub fn fs_exists() -> Par { byte_name(52) }
+
+    /// `rho:io:fs:native:1.0.0/stat` — path-based file/dir metadata
+    /// via `openat(O_NOFOLLOW)` + metadata.  Returns a stat record
+    /// with cmode-gated host-transient field stripping.  Verifying
+    /// observation (slice 4.19).
+    pub fn fs_stat() -> Par { byte_name(51) }
+
+    /// `rho:io:fs:native:1.0.0/read` — sequential fd-based read via
+    /// `libc::read`.  Verifying observation with
+    /// length-parameterized cost; advances shadow position by
+    /// bytes returned on all paths (slice 4.20).
+    pub fn fs_read() -> Par { byte_name(42) }
+
+    /// `rho:io:fs:native:1.0.0/readAt` — positional fd-based read
+    /// via `libc::pread`.  Verifying observation with
+    /// length-parameterized cost; does NOT advance shadow
+    /// position per POSIX pread semantics (slice 4.21).
+    pub fn fs_read_at() -> Par { byte_name(43) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` — release a
+    /// directory-entries stream fd + Phase-2 shadow-remove on
+    /// replay.  Non-verifying stream lifecycle (slice 4.22).
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
 }
 
 pub struct BodyRefs;
@@ -312,6 +378,46 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+
+    // Fileio handlers — see `FixedChannels` above for the URN
+    // space.  Numbering matches fileio's BodyRefs assignment; gaps
+    // reserve slots for sibling fs_* handlers landing in future
+    // slices (fs_open = 38, fs_close = 39, ..., fs_lock_range = 62,
+    // etc.).
+
+    /// `rho:io:fs:native:1.0.0/quarantine` body-ref (slice 4.12).
+    pub const FS_QUARANTINE: i64 = 61;
+
+    /// `rho:io:fs:native:1.0.0/close` body-ref (slice 4.13).
+    pub const FS_CLOSE: i64 = 39;
+
+    /// `rho:io:fs:native:1.0.0/flush` body-ref (slice 4.14).
+    pub const FS_FLUSH: i64 = 50;
+
+    /// `rho:io:fs:native:1.0.0/tell` body-ref (slice 4.15).
+    pub const FS_TELL: i64 = 47;
+
+    /// `rho:io:fs:native:1.0.0/seek` body-ref (slice 4.16).
+    pub const FS_SEEK: i64 = 46;
+
+    /// `rho:io:fs:native:1.0.0/size` body-ref (slice 4.17).
+    pub const FS_SIZE: i64 = 48;
+
+    /// `rho:io:fs:native:1.0.0/exists` body-ref (slice 4.18).
+    pub const FS_EXISTS: i64 = 52;
+
+    /// `rho:io:fs:native:1.0.0/stat` body-ref (slice 4.19).
+    pub const FS_STAT: i64 = 51;
+
+    /// `rho:io:fs:native:1.0.0/read` body-ref (slice 4.20).
+    pub const FS_READ: i64 = 42;
+
+    /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
+    pub const FS_READ_AT: i64 = 43;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` body-ref
+    /// (slice 4.22).
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

@@ -6,18 +6,25 @@
 // legacy sites outside io/ are not part of this discipline.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod consensus_constants;
 pub mod consensus_fingerprint;
+pub mod costs;
+pub mod dir_handle_table;
 pub mod errors;
 pub mod handle_table;
+pub mod handler_trait;
+pub mod handlers;
 pub mod lock;
 pub mod mode;
 pub mod nss;
 pub mod path;
 pub mod response;
+pub mod snapshot;
 pub mod snapshot_chunk;
 pub mod stat;
 pub mod verify;
 pub mod wal;
+pub mod wal_applier;
 
 /// Consensus vs. oracular execution mode.
 ///
@@ -63,6 +70,26 @@ crate::register_consensus_constant!(order = 8, name = CMODE_ORACULAR_STR, str_by
 pub const CMODE_CONSENSUS_STR: &str = "consensus";
 
 crate::register_consensus_constant!(order = 9, name = CMODE_CONSENSUS_STR, str_bytes);
+
+/// Parse a caller-supplied `Par` into a [`ConsensusMode`].  Returns
+/// `None` for malformed input (non-String Par, unknown string).
+/// The dispatcher's step-4 is_replay short-circuit treats `None`
+/// as "fall through to Oracular echo" — matches pre-trait handler
+/// behavior where an unresolved cmode on replay tautologically
+/// echoed `previous`.
+///
+/// Accepted values (byte-for-byte against the registered
+/// consensus constants above): `"oracular"` → [`ConsensusMode::Oracular`];
+/// `"consensus"` → [`ConsensusMode::Consensus`].  Any other string
+/// (including capitalization variants) returns `None`.
+pub fn resolve_cmode(cmode_par: &models::rhoapi::Par) -> Option<ConsensusMode> {
+    let s = crate::rust::interpreter::rho_type::RhoString::unapply(cmode_par)?;
+    match s.as_str() {
+        CMODE_ORACULAR_STR => Some(ConsensusMode::Oracular),
+        CMODE_CONSENSUS_STR => Some(ConsensusMode::Consensus),
+        _ => None,
+    }
+}
 
 /// URI prefix of every `rho:io:fs:native:*` URN.  Kept alongside
 /// the handler definitions so the reducer's phase-scoped URN

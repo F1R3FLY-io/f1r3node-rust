@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "run_id": "casper-rust-migration-20260917-01",
+  "source_revision": "a7a6a16813ccbef5957a05ad49577d6e16193a8f",
+  "dirty_source_tree": true,
+  "status": "language-migration-verified",
+  "languages": [
+    "Rust",
+    "Bash"
+  ],
+  "evidence_kind": "synthetic_fixture",
+  "construction": "not-applicable",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "python_sources_retired": 9,
+  "driver_invocations": 88,
+  "rust_tests_linux": 13,
+  "disk_scenarios": 42,
+  "tlc": {
+    "positive": 1,
+    "negative": 10,
+    "clean_distinct_states": 43424
+  },
+  "archives": {
+    "bindings.tar.gz": "2075837826f6bf825f2038fa6f92b42160e566af9f2c7df40f229c2419133638",
+    "verification.tar.gz": "9979c8a08774e8d0d4ab0ee2f19773df7b25f6ff01868831fbe442663362e947",
+    "source.tar.gz": "b6c42cf4bca916802f6f9e0288564023c281c734014f830eedc16c313ec17059"
+  },
+  "limits": [
+    "The seven node profiles remain unimplemented.",
+    "Fixture verifier substitutes do not qualify node observations.",
+    "The shared claim and TASK-017-4 remain open.",
+    "Native root and systemd fixtures were not executed.",
+    "Hosted CI execution remains unobserved."
+  ],
+  "original_archive_sha256": {
+    "bindings.tar.gz": "9b04d8278d5d1f0494539c7abda8d7bba4c61871f2e67c9b09844b63c1ace76f",
+    "verification.tar.gz": "7ba7abc86d9cbf32e8655a8722f47d79e1af3956b7371f433dfd54f783ce9e32",
+    "source.tar.gz": "44d93afb54706cf056b5ae7bbae5e306ccddcf8ab0d60871e1f5863abe3b3d9c"
+  },
+  "archive_normalization": "Numeric archive owners replace local owner names. Extended attributes are excluded. File bytes remain unchanged except the declared redaction.",
+  "redactions": [
+    {
+      "archive": "verification.tar.gz",
+      "path": "disk.txt",
+      "original_sha256": "5a1a8e0ca55c6e6343869bf71020dde910fbc97b42ed177fb1f39a7d63dcead4",
+      "retained_sha256": "e291410b5129ec1ba99560c26cce0a431fef37047ffed39495580f1ef1aa4601",
+      "rule": "Replace the local workspace prefix with [WORKSPACE_ROOT]."
+    }
+  ]
+}

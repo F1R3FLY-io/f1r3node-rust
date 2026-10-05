@@ -355,6 +355,23 @@ impl TestNode {
             .await
     }
 
+    /// Makes every node receive the blocks of every other node. `sync_with_one`
+    /// makes its caller the receiver, so each pair is synced in both directions.
+    pub async fn sync_all(nodes: &mut [TestNode]) -> Result<(), CasperError> {
+        for sender_idx in 0..nodes.len() {
+            for receiver_idx in 0..nodes.len() {
+                if sender_idx == receiver_idx {
+                    continue;
+                }
+                let [receiver, sender] = nodes
+                    .get_disjoint_mut([receiver_idx, sender_idx])
+                    .expect("receiver and sender are different nodes");
+                receiver.sync_with_one(sender).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Helper method to propagate a block from one node to another specific node.
     ///
     /// This method works around Rust's borrow checker limitation where we cannot do:
@@ -1024,7 +1041,7 @@ impl TestNode {
         let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
         let connections_cell = ConnectionsCell::new();
@@ -1137,6 +1154,7 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            observer: std::sync::OnceLock::new(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),

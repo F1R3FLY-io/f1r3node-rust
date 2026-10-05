@@ -60,6 +60,7 @@ fn spawn_named_task(
 pub struct NodeRuntime {
     node_conf: NodeConf,
     id: NodeIdentifier,
+    observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
 }
 
 impl NodeRuntime {
@@ -68,7 +69,21 @@ impl NodeRuntime {
     /// # Arguments
     /// * `node_conf` - Node configuration
     /// * `id` - Node identifier derived from TLS certificate
-    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self { Self { node_conf, id } }
+    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self {
+        Self {
+            node_conf,
+            id,
+            observer: None,
+        }
+    }
+
+    pub fn with_observer(
+        mut self,
+        observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
+    ) -> Self {
+        self.observer = observer;
+        self
+    }
 
     /// Main node entry point
     ///
@@ -250,6 +265,7 @@ impl NodeRuntime {
             event_bus.clone(),
             node_discovery.clone(),
             last_approved_block.clone(),
+            self.observer.clone(),
         )
         .await?;
 
@@ -331,8 +347,7 @@ impl NodeRuntime {
             mergeable_channels_gc_loop,
         );
 
-        // Wrap with error handling
-        handle_unrecoverable_errors(program).await
+        program.await
     }
 
     /// Node program - orchestrates all concurrent tasks
@@ -945,6 +960,10 @@ async fn node_discovery_loop(
 ) -> eyre::Result<()> {
     use tokio::time::sleep;
 
+    let mut failures = comm::rust::rp::connect::ConnectFailureTracker::new(
+        node_conf.peers_discovery.heartbeat_failure_threshold,
+    )?;
+
     loop {
         tracing::debug!("nodeDiscoveryLoop: Starting iteration");
 
@@ -975,7 +994,15 @@ async fn node_discovery_loop(
         };
 
         // Use find_and_connect with trait object
-        match connect::find_and_connect(&connections, node_discovery.as_ref(), connect_fn).await {
+        match connect::find_and_connect(
+            &connections,
+            node_discovery.as_ref(),
+            connect_fn,
+            rp_conf.bootstrap.as_ref(),
+            &mut failures,
+        )
+        .await
+        {
             Ok(new_connections) => {
                 if !new_connections.is_empty() {
                     info!("Connected to {} new peer(s)", new_connections.len());
@@ -1309,6 +1336,7 @@ async fn await_http_server_task(
 /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
 pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     info!("Starting RChain node runtime...");
+    let observer = crate::rust::soak_observer::Observer::bind(&node_conf)?;
 
     // Create node identifier from certificate
     let id = node_environment::create(&node_conf).await?;
@@ -1316,10 +1344,18 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     info!("Node initialized with ID: {}", hex::encode(&id.key));
 
     // Create NodeRuntime instance
-    let runtime = NodeRuntime::new(node_conf, id);
+    let runtime = NodeRuntime::new(node_conf, id).with_observer(
+        observer
+            .as_ref()
+            .and_then(|observer| observer.authority_handle()),
+    );
 
-    // Run the main node program with error handling
-    handle_unrecoverable_errors(runtime.main()).await
+    let observer = observer.map(|observer| observer.spawn());
+    let result = runtime.main().await;
+    if let Some(observer) = observer {
+        observer.stop().await;
+    }
+    handle_unrecoverable_errors(async { result }).await
 }
 
 /// Handle unrecoverable errors in the node program

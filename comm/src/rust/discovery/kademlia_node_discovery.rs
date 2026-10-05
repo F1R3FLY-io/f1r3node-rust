@@ -29,6 +29,10 @@ impl<T: KademliaRPC + Send + Sync + 'static> NodeDiscovery for KademliaNodeDisco
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.store.remove(&peer.id.key)
     }
+
+    fn evict_unreachable_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
+        self.store.evict_unreachable_peer(peer)
+    }
 }
 
 impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
@@ -115,6 +119,10 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
         let mut result = HashSet::new();
 
         for peer in peers {
+            if self.store.is_suppressed(peer)? {
+                continue;
+            }
+
             // Skip if already in potentials
             if potentials.contains(peer) {
                 continue;
