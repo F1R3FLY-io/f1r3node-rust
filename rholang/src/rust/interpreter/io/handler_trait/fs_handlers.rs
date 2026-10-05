@@ -187,7 +187,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.30: +1 (`fs_entries_stream_next`, FIRST POST_REPLY_SUPPLEMENT).  Count = 18.
 ///   - 4.31: +1 (`fs_entries`, OBSERVATION 9/9).  Count = 19.
 ///   - 4.32: +1 (`fs_open`, LIFECYCLE 3/3).  Count = 20.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 20;
+///   - 4.33: +1 (`fs_copy_file`).  Count = 21.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 21;
 
 #[cfg(test)]
 mod tests {
@@ -263,6 +264,7 @@ mod tests {
             "fs_entries_stream_next",  // slice 4.30 (first post_reply_supplement)
             "fs_entries",              // slice 4.31 (observation 9/9)
             "fs_open",                 // slice 4.32 (lifecycle 3/3)
+            "fs_copy_file",            // slice 4.33
         ];
 
         assert_eq!(

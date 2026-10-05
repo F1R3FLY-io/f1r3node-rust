@@ -396,6 +396,12 @@ impl FixedChannels {
     /// at leader's cached fd (load-bearing for Phase-2 fd-based
     /// re-execute ops).  Added by slice 4.32.
     pub fn fs_open() -> Par { byte_name(40) }
+
+    /// `rho:io:fs:native:1.0.0/copyFile` — two-endpoint byte-count
+    /// copy via `safe_open_verified` + `std::io::copy`.  Verifying
+    /// mutation; reply carries bytes-copied via `ok_u64`.  Added
+    /// by slice 4.33.
+    pub fn fs_copy_file() -> Par { byte_name(56) }
 }
 
 pub struct BodyRefs;
@@ -502,6 +508,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/open` body-ref (slice 4.32).
     pub const FS_OPEN: i64 = 40;
+
+    /// `rho:io:fs:native:1.0.0/copyFile` body-ref (slice 4.33).
+    pub const FS_COPY_FILE: i64 = 56;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
