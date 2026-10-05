@@ -60,6 +60,23 @@ This document captures user stories that drive feature development. User stories
 
 ## Planned Stories
 
+#### US-010: Pluggable state machine replication per shard
+
+> As a **platform architect**, I want **each shard to select its state machine replication mechanism (CBC Casper, Cordial Miners, Casanova, or the RGB peer-clique sidecar with Bitcoin anchoring) behind one replication boundary** so that **a new mechanism plugs in without changes to node wiring, APIs, transport, or Rholang execution**.
+
+**Implemented in:** Planned
+
+**Status:** Planned
+
+**Acceptance Criteria:**
+- [ ] A design document extends docs/artifacts/f1r3fly-consensus-neutral-sm.md. It defines the boundary, maps the needs of all four mechanisms, and resolves the OrderingMedium question (section 12). Maintainers approve it before code.
+- [ ] The boundary expresses ordering, validity, finality or settlement, and external anchoring. It has no DAG parent, justification, bond, or equivocation types, so a mechanism without a block DAG can implement it.
+- [ ] Node services (startup wiring, gRPC and HTTP APIs, proposer loop, transport handlers) use only the boundary. Mechanism-specific API fields move to mechanism-scoped extensions. CBC wire compatibility stays.
+- [ ] CBC Casper implements the boundary with no behavior change. The full test suite passes and a soak gives the same consensus results.
+- [ ] Shard configuration selects the mechanism. A test-only second mechanism runs the node wiring tests without CBC code.
+
+---
+
 #### US-009: Bounded node behavior under resource faults
 
 > As a **node operator**, I want **bounded retries and log storage** so that **resource faults do not fill deployment disks**.
