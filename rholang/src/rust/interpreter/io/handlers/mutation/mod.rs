@@ -20,18 +20,20 @@
 //   - `fs_chown` — path + owner + group + cmode; fchownat.  First
 //     NON-verifying mutation (Consensus caps rejected at
 //     parse_content for NSS-divergence).  Added by slice 4.27.
+//   - `fs_remove_file` — path + cmode; unlinkat under lock-registry
+//     unlink gate (Consensus + locked → FSERR_BUSY, Oracular +
+//     locked → log-warn + proceed).  Added by slice 4.28.
 //
 // Yet to land (listed roughly in handler-migration order):
 //
 //   - `fs_write` / `fs_write_at` — byte-payload mutation; length-
 //     parameterized cost via `post_reply_supplement`.
 //   - `fs_copy_file` — two-endpoint mutation with byte-count reply.
-//   - `fs_remove_file` — single-path mutation with lock-registry
-//     gate.
 //
 // Family: [`HandlerFamily::Mutation`](super::super::handler_trait::family::HandlerFamily::Mutation).
 
 pub mod fs_chmod;
 pub mod fs_chown;
+pub mod fs_remove_file;
 pub mod fs_rename;
 pub mod fs_truncate;

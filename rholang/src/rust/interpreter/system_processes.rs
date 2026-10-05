@@ -364,6 +364,12 @@ impl FixedChannels {
     /// NON-verifying mutation; Consensus caps rejected at
     /// parse_content (NSS mapping host-local).  Added by slice 4.27.
     pub fn fs_chown() -> Par { byte_name(60) }
+
+    /// `rho:io:fs:native:1.0.0/removeFile` — path-based unlink via
+    /// `safe_descend_verified` + `unlinkat` under the LockRegistry
+    /// unlink gate.  Verifying mutation; Consensus + locked
+    /// returns `FSERR_BUSY`.  Added by slice 4.28.
+    pub fn fs_remove_file() -> Par { byte_name(57) }
 }
 
 pub struct BodyRefs;
@@ -453,6 +459,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
     pub const FS_CHOWN: i64 = 60;
+
+    /// `rho:io:fs:native:1.0.0/removeFile` body-ref (slice 4.28).
+    pub const FS_REMOVE_FILE: i64 = 57;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
