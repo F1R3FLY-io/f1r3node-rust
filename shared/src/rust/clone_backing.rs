@@ -62,6 +62,9 @@ pub struct Walker<'a> {
     capacity: usize,
     meter: &'a dyn BackingMeter,
     copy_payload: bool,
+    /// C5 (DR-83): a cleanup walk that visits each shared pointer but not its
+    /// payload, for store-owned pointers whose payload release was prepaid.
+    shared_pointers: bool,
 }
 
 impl<'a> Walker<'a> {
@@ -168,6 +171,7 @@ fn walk<T: CloneBacking>(
         capacity: 0,
         meter,
         copy_payload,
+        shared_pointers: false,
     };
     walker.push(value)?;
     walker.drain()
@@ -183,6 +187,7 @@ fn walk_slice<T: CloneBacking>(
         capacity: 0,
         meter,
         copy_payload,
+        shared_pointers: false,
     };
     walker.slice(values)?;
     walker.drain()
@@ -213,6 +218,24 @@ pub fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
 }
 pub fn inspect<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
     walk(value, meter, false)
+}
+/// C5 (DR-83): the cleanup walk of a value whose shared pointers are
+/// store-owned and whose payload releases were prepaid when the payloads
+/// entered the cache. The walk visits each pointer and skips its payload,
+/// so pointers nested inside a payload are never reached.
+pub fn inspect_shared_pointers<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    let mut walker = Walker {
+        pending: Vec::new(),
+        capacity: 0,
+        meter,
+        copy_payload: false,
+        shared_pointers: true,
+    };
+    walker.push(value)?;
+    walker.drain()
 }
 pub fn inspect_slice<T: CloneBacking>(
     values: &[T],
@@ -307,7 +330,7 @@ impl<T: CloneBacking + Clone> CloneBacking for std::borrow::Cow<'_, T> {
 }
 impl<T: CloneBacking> CloneBacking for Arc<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
-        if walker.copy_payload {
+        if walker.copy_payload || walker.shared_pointers {
             Ok(())
         } else {
             walker.push(self.as_ref())
@@ -318,7 +341,7 @@ impl<T: CloneBacking> CloneBacking for Arc<T> {
 }
 impl<T: CloneBacking> CloneBacking for Arc<[T]> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
-        if walker.copy_payload {
+        if walker.copy_payload || walker.shared_pointers {
             Ok(())
         } else {
             walker.slice(self.as_ref())

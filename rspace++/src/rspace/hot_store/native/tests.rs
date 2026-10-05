@@ -1107,3 +1107,61 @@ fn every_data_view_cut_rejects_without_filling_the_cache() {
         assert_eq!(reads.get(), 1, "cut {cut} left the cache empty");
     }
 }
+
+fn charge(reserve: impl FnOnce(&Meter) -> Result<(), RSpaceError>) -> (usize, usize, usize) {
+    let meter = Meter::new(usize::MAX);
+    reserve(&meter).expect("charge");
+    (meter.operations.get(), meter.scanned.get(), meter.backing.get())
+}
+
+/// C5 (DR-83): the shared charge of a store-owned pointer vector equals the
+/// walker's charge minus the walk into the payloads. For payload-free
+/// pointers, the only difference is the push of each empty payload.
+#[test]
+fn shared_copy_charge_omits_only_the_payload_walk() {
+    for length in [0_usize, 1, 3, 17] {
+        let values: Vec<Arc<()>> = (0..length).map(|_| Arc::new(())).collect();
+        let shared =
+            charge(|meter| native_backing::reserve_shared_copy_and_cleanup(&values, meter));
+        let walked = charge(|meter| native_backing::reserve_copy_and_cleanup(&values, meter));
+        assert_eq!(walked.0, shared.0 + 3 * length, "operations at length {length}");
+        assert_eq!(walked.1, shared.1, "scanned bytes at length {length}");
+        assert_eq!(walked.2, shared.2, "backing at length {length}");
+    }
+}
+
+/// C5 (DR-83): the shared charge does not depend on the payload size, stays
+/// below the walked charge, and covers the allocation of the pointer copy.
+#[test]
+fn shared_copy_charge_is_independent_of_payload() {
+    let measure = |scale: usize| {
+        let values: Vec<Arc<String>> = (0..3)
+            .map(|_| Arc::new("payload".repeat(100 * scale)))
+            .collect();
+        let shared =
+            charge(|meter| native_backing::reserve_shared_copy_and_cleanup(&values, meter));
+        let walked = charge(|meter| native_backing::reserve_copy_and_cleanup(&values, meter));
+        let (copy, allocated) = measure_allocations(|| values.clone());
+        assert_eq!(copy.len(), values.len());
+        assert!(allocated <= shared.2, "{allocated} allocated > {} reserved", shared.2);
+        (shared, walked)
+    };
+    let (small_shared, small_walked) = measure(1);
+    let (large_shared, large_walked) = measure(16);
+    assert_eq!(small_shared, large_shared);
+    assert!(large_walked.1 > small_walked.1);
+    assert!(small_shared.1 < small_walked.1);
+}
+
+/// C5 (DR-83): the shared cleanup of one pointer does not depend on its
+/// payload and stays below the walked cleanup.
+#[test]
+fn shared_cleanup_charges_the_pointer_only() {
+    let small = Arc::new("p".to_owned());
+    let large = Arc::new("p".repeat(10_000));
+    let small_shared = charge(|meter| native_backing::reserve_shared_cleanup(&small, meter));
+    let large_shared = charge(|meter| native_backing::reserve_shared_cleanup(&large, meter));
+    let large_walked = charge(|meter| native_backing::reserve_cleanup(&large, meter));
+    assert_eq!(small_shared, large_shared);
+    assert!(large_shared.1 < large_walked.1);
+}

@@ -71,6 +71,28 @@ pub(crate) fn reserve_cleanup<T: CloneBacking>(
 ) -> Result<(), RSpaceError> {
     inspect(value, meter)
 }
+
+/// C5 (DR-83): the copy and the cleanup of a store-owned vector of shared
+/// pointers. The copy walk is the walker's own: a pointer copy carries no
+/// payload. The cleanup walk visits each pointer and skips its payload,
+/// because each payload's release was prepaid when it entered the cache
+/// (C1, DR-81).
+pub(crate) fn reserve_shared_copy_and_cleanup<T: CloneBacking>(
+    values: &Vec<std::sync::Arc<T>>,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve(values, reserve))?;
+    walk(meter, |reserve| clone_backing::inspect_shared_pointers(values, reserve))
+}
+
+/// C5 (DR-83): the cleanup of one store-owned shared pointer, without the
+/// walk into its prepaid payload.
+pub(crate) fn reserve_shared_cleanup<T: CloneBacking>(
+    value: &std::sync::Arc<T>,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_shared_pointers(value, reserve))
+}
 pub(crate) fn inspect_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn SourceMeter,

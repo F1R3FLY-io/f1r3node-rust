@@ -5528,3 +5528,56 @@ Tests in `hot_store/native/tests.rs`:
   a first draft that reserved the snapshot after the insert.
 
 **Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.
+
+## DR-83 — Continuation-shard replaces count store-owned pointers inline
+
+**Status.** Implemented 2026-10-05 for cap root cause C5 of epic 8946
+(batch B1, phase B). Its gate H8 holds: in the phase A probe,
+`reserve_replace` was 6.6% of each validator replay's `VerificationBytes`
+and 19.7% of its `SearchStateBytes`. The same item's C6 (H4, export at 0.9%
+and 1.4%) and C11 (H9, no measurable duplicate-check site) are refuted and
+change nothing.
+
+**Context.** A replace in a persistent hot-store shard charges a copy and a
+cleanup of every value in the shard. The values of a continuation shard are
+vectors of store-owned shared pointers. The cleanup walk followed each
+pointer into its payload, although each payload's release was prepaid when
+it entered the cache: on a cold read (DR-81) and on a stored consume
+(`native_store_consume` prepays the stored continuation).
+
+**Decision.**
+
+1. The walker gains a shared-pointer cleanup walk
+   (`clone_backing::inspect_shared_pointers`). It visits each pointer and
+   skips its payload, so pointers nested inside a payload are never reached.
+2. `native_backing::reserve_shared_copy_and_cleanup` charges a store-owned
+   pointer vector with the walker's copy walk and the shared cleanup walk.
+   `reserve_shared_cleanup` charges one retired pointer the same way.
+3. The continuation-shard replaces use them: `reserve_replace_shared` in
+   `native_store_consume` and `native_retire_produce_match`, the copy of the
+   existing pointer vector there, and the retired pointer of a match. Data and
+   join shards keep the full charge. The replaced lines stay in the source,
+   commented out with their reason.
+
+**Soundness.** Every store-owned pointer's payload release was prepaid at
+entry. A replace copies and drops pointers only, so the last drop releases a
+prepaid payload. The shared charge equals the walked charge minus the walk
+into the payloads.
+
+**Scope.** This change is cost-accounting work. The native hot store paths
+exist only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. It changes no observable value.
+
+**Verification.** `NativeSharedReads.v` adds
+`shared_replace_needs_no_payload_cleanup`, without axioms. Tests in
+`hot_store/native/tests.rs`:
+
+- `shared_copy_charge_omits_only_the_payload_walk`: for payload-free
+  pointers, the walked charge exceeds the shared charge by exactly the push
+  of each empty payload.
+- `shared_copy_charge_is_independent_of_payload`: the shared charge stays
+  the same when the payload grows 16 times, stays below the walked charge,
+  and covers the allocation of the pointer copy.
+- `shared_cleanup_charges_the_pointer_only`.
+
+**Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.

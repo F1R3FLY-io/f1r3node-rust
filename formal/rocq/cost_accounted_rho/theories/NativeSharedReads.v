@@ -30,6 +30,12 @@
    - insert_first_fills_cache_on_rejection: a negative control. A read that
      inserts before it reserves leaves the cache filled after a rejection.
 
+   C5 (decision record DR-83) charges the replace of a continuation-shard
+   entry with each store-owned pointer inline:
+   - shared_replace_needs_no_payload_cleanup: a replace (pointer copies and
+     drops) from a state where every live payload is prepaid releases no
+     payload unpaid.
+
    Rust correspondence: rspace++/src/rspace/hot_store/native.rs
    (native_continuation_views); rspace++/src/rspace/replay_rspace/
    native_session/history.rs (read_continuation_views,
@@ -248,6 +254,18 @@ Section Release.
     - apply step_keeps_paid_releases; assumption.
   Qed.
 
+  (* C5 (DR-83): a replace of a cache entry copies and drops pointers only:
+     Share events for the pointers that it keeps and Drop events for the
+     pointers that it removes. From a state where every live payload is
+     prepaid, such a replace releases no payload unpaid, so its charge needs
+     no payload cleanup. *)
+  Corollary shared_replace_needs_no_payload_cleanup : forall kept removed current,
+    live_prepaid current -> unpaid_release current = false ->
+    unpaid_release (fold_left step (map Share kept ++ map Drop removed) current) = false.
+  Proof.
+    intros kept removed current live paid. apply every_release_was_prepaid; assumption.
+  Qed.
+
   Definition empty_state : state :=
     {| count := fun _ => 0; prepaid := fun _ => false; unpaid_release := false |}.
 
@@ -271,3 +289,4 @@ Print Assumptions prepaid_fill_releases_paid.
 Print Assumptions rejected_cold_read_leaves_cache.
 Print Assumptions accepted_cold_read_equals_read.
 Print Assumptions insert_first_fills_cache_on_rejection.
+Print Assumptions shared_replace_needs_no_payload_cleanup.

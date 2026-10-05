@@ -50,6 +50,38 @@ where
     K: Clone + Hash + Eq + CloneBacking,
     V: Clone + CloneBacking,
 {
+    reserve_replace_with(map, key, meter, |value, meter| {
+        native_backing::reserve_copy_and_cleanup(value, meter)
+    })
+}
+
+/// C5 (DR-83): the replace charge of a continuation shard. Its values are
+/// store-owned vectors of shared pointers, each counted inline
+/// (`native_backing::reserve_shared_copy_and_cleanup`).
+fn reserve_replace_shared<K, T>(
+    map: &imbl::HashMap<K, Vec<Arc<T>>>,
+    key: &K,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError>
+where
+    K: Clone + Hash + Eq + CloneBacking,
+    T: CloneBacking,
+{
+    reserve_replace_with(map, key, meter, |values, meter| {
+        native_backing::reserve_shared_copy_and_cleanup(values, meter)
+    })
+}
+
+fn reserve_replace_with<K, V>(
+    map: &imbl::HashMap<K, V>,
+    key: &K,
+    meter: &dyn SourceMeter,
+    reserve_value: impl Fn(&V, &dyn SourceMeter) -> Result<(), RSpaceError>,
+) -> Result<(), RSpaceError>
+where
+    K: Clone + Hash + Eq + CloneBacking,
+    V: Clone + CloneBacking,
+{
     lookup(map, key, meter)?;
     let (operations, bytes) =
         persistent_insert_backing::<K, V>(map.len()).ok_or(RSpaceError::HostWorkRejected)?;
@@ -67,7 +99,7 @@ where
     for (existing, value) in map.iter() {
         inspect_key(existing, repetitions, meter)?;
         native_backing::reserve_copy_and_cleanup(existing, meter)?;
-        native_backing::reserve_copy_and_cleanup(value, meter)?;
+        reserve_value(value, meter)?;
     }
     Ok(())
 }
@@ -495,11 +527,16 @@ where
                     "native continuation retirement index is invalid".to_owned(),
                 ));
             }
-            reserve_replace(&continuation_shard, &key, meter)?;
-            native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            // Changed by C5 (DR-83): the continuation shard holds store-owned
+            // shared pointers whose payload releases were prepaid at entry.
+            // reserve_replace(&continuation_shard, &key, meter)?;
+            // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            reserve_replace_shared(&continuation_shard, &key, meter)?;
+            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let index = index as usize;
-            native_backing::reserve_cleanup(&values[index], meter)?;
+            // native_backing::reserve_cleanup(&values[index], meter)?;
+            native_backing::reserve_shared_cleanup(&values[index], meter)?;
             let moved = values
                 .len()
                 .checked_sub(index)
@@ -681,8 +718,12 @@ where
         let continuation_update = if duplicate {
             None
         } else {
-            reserve_replace(&continuation_shard, &key, meter)?;
-            native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            // Changed by C5 (DR-83): the continuation shard holds store-owned
+            // shared pointers whose payload releases were prepaid at entry.
+            // reserve_replace(&continuation_shard, &key, meter)?;
+            // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            reserve_replace_shared(&continuation_shard, &key, meter)?;
+            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let count = values
                 .len()
