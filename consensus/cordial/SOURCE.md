@@ -4,7 +4,11 @@ Upstream: <https://github.com/iCog-Labs-Dev/cordial-f1r3node>
 
 Source branch: `dev`
 
-Source revision: `45de8b8ac85238f9b26563ed525c301c6e03a36d`
+Source revision: `66c837cf41933cc0d1340b984d8b5322d0b52d1a`
+
+The previous pin was `45de8b8ac85238f9b26563ed525c301c6e03a36d`.
+`cordial-miners-core` and `cordial-app-runtime` are byte-identical at both revisions.
+The upstream changes between the two revisions affect only the adapter PoR module, which is not imported.
 
 ## Imported modules
 
@@ -12,6 +16,31 @@ Source revision: `45de8b8ac85238f9b26563ed525c301c6e03a36d`
 | --- | --- |
 | `crates/cordial-miners-core` | `consensus/cordial/cordial-miners-core` |
 | `crates/cordial-app-runtime` | `consensus/cordial/cordial-app-runtime` |
+| `crates/cordial-f1r3node-adapter` (native modules only) | `consensus/cordial/cordial-f1r3node-adapter` |
+
+### Adapter modules
+
+The import includes these native adapter modules:
+
+| Module | Status | Use in this node |
+| --- | --- | --- |
+| `proposer` | Patched | `DurableBlocklace::propose` builds every proposal through `CordialProposer`. |
+| `ordered_output`, `shared_ordered_output`, `ordered_output_file`, `ordered_output_server` | Unchanged | `OrderedOutputStatus` is served at `GET /api/cordial/ordered-output/status`. |
+| `deploy_trace` | Patched | `DeployTracer` is served at `GET /api/cordial/deploys/{id}/trace`. |
+| `app_event_extractor` | Unchanged | Available with `cordial-app-runtime`. It is not connected to a node API yet. |
+
+The import excludes these adapter modules:
+
+| Modules | Reason |
+| --- | --- |
+| `casper_adapter`, `block_translation`, `snapshot`, `shard_conf`, `grpc_ingest`, `app_event_block_scan`, `app_event_envelope`, `app_event_extraction_pipeline`, `crypto_bridge` | They present Cordial through Casper-shaped types such as `BlockMessage` and `CasperSnapshot`. |
+| `live_ingress`, `live_grpc`, `live_deploy_ingress`, `live_deploy_proxy`, `live_http_deploy_proxy`, `grpc_deploy_ingress`, `http_deploy_ingress`, `http_observer`, `repository`, `rspace_runtime`, `runtime_bridge`, binaries | They mirror or proxy an external f1r3node process, or they return stub adapters. |
+| `slashing` | It formats evidence as Casper slash deploys. Slashing is outside the approved scope. |
+| `por/*` | PoR is outside the approved scope. |
+
+The import also excludes `cordial-f1r3space-adapter`.
+Its `BlocklaceRepository` contract accepts unvalidated block writes and caller-supplied finality cursors.
+`DurableBlocklace` keeps validated admission, a durable pending set, and a cursor derived from tau ordering.
 
 The import retains native source, tests, benchmarks, documentation, and agent instructions.
 The import excludes the prototype node factory and its stub adapters.
@@ -38,7 +67,14 @@ recorded by exact SHA-256 and reason in `local-patches.json`; the original blob 
 See [Native admission v2](ADMISSION-V2.md) for the incompatible signed-content format,
 mandatory received-block checks, tests, and remaining production gates.
 
-Three native files are intentionally patched: `crypto.rs`, `consensus/validation.rs`, and
+Three adapter files are patched: `src/lib.rs`, `src/proposer.rs`, and `src/deploy_trace.rs`.
+The upstream proposer executes deploys during proposal on the state of one predecessor.
+The patched proposer uses a `PayloadBuilder` port instead, so Rholang executes only after tau commitment.
+The patched tracer has a capacity limit and evicts the oldest trace.
+Four upstream adapter test files are imported unchanged.
+`tests/test_proposer_payload.rs` is a new local test file for the patched proposer and tracer.
+
+Three native core files are intentionally patched: `crypto.rs`, `consensus/validation.rs`, and
 `consensus/mod.rs`. Approval, finality, tau ordering, and PoR implementations are unchanged.
 One upstream test helper in `tests/test_dissemination.rs` now explicitly disables signature
 checking for its synthetic one-byte identities and unsigned blocks. Those structural fixtures
@@ -58,6 +94,7 @@ Run these commands from the target repository:
 rtk proxy python3 scripts/check_cordial_import.py
 rtk cargo test --locked --release -p cordial-miners-core
 rtk cargo test --locked --release -p cordial-app-runtime
+rtk cargo test --locked --release -p cordial-f1r3node-adapter
 ```
 
 The import does not enable Cordial in the production node.

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 cordial-miners-core = { path = "../cordial-miners-core" }
+cordial-f1r3node-adapter = { path = "../cordial-f1r3node-adapter" }
 consensus-api = { path = "../../api" }
 consensus-runtime = { path = "../../runtime" }
 async-trait.workspace = true

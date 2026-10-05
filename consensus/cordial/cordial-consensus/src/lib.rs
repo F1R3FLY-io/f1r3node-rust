@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 mod execution;
 mod node;
+mod proposal;
 mod runtime;
 mod store;
 pub use execution::{
@@ -182,18 +183,8 @@ impl Chain {
         if !self.weights.contains_key(&creator) {
             return Err(Error::UnknownValidator);
         }
-        let initial = predecessors.is_empty();
-        if initial && !data.is_empty() {
-            return Err(Error::Packet(
-                "initial blocks cannot contain application data".into(),
-            ));
-        }
         let content = BlockContent {
-            payload: encode(&Payload {
-                chain: self.fingerprint,
-                initial,
-                data,
-            })?,
+            payload: self.payload_bytes(predecessors.is_empty(), data)?,
             predecessors: predecessors.into_iter().collect(),
         };
         let content_hash = hash_content(&content);
@@ -207,6 +198,22 @@ impl Chain {
         };
         self.authenticate(&block)?;
         Ok(block)
+    }
+
+    pub(crate) fn payload_bytes(&self, initial: bool, data: Vec<u8>) -> Result<Vec<u8>, Error> {
+        if data.len() > MAX_PAYLOAD_BYTES {
+            return Err(Error::Packet("block limit exceeded".into()));
+        }
+        if initial && !data.is_empty() {
+            return Err(Error::Packet(
+                "initial blocks cannot contain application data".into(),
+            ));
+        }
+        encode(&Payload {
+            chain: self.fingerprint,
+            initial,
+            data,
+        })
     }
 
     pub fn encode_block(&self, block: &Block) -> Result<Vec<u8>, Error> {

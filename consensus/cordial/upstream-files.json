@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/iCog-Labs-Dev/cordial-f1r3node",
-  "revision": "45de8b8ac85238f9b26563ed525c301c6e03a36d",
+  "revision": "66c837cf41933cc0d1340b984d8b5322d0b52d1a",
   "files": [
     {
       "path": "cordial-app-runtime/AGENTS.md",
@@ -60,6 +60,71 @@
     {
       "path": "cordial-app-runtime/tests/test_runtime_processing.rs",
       "blob": "597760c78ab9d5d6b85224447513b935228784bc",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/Cargo.toml",
+      "blob": "bffe75eb6c29bf9d14de7c05c0dfe34353f783fd",
+      "adapted": true
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/app_event_extractor.rs",
+      "blob": "53092fb46ced4c0000d20fac162afc9a231ee44e",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/deploy_trace.rs",
+      "blob": "3decc04abd3fa026e0067044710919fe0e007362",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/lib.rs",
+      "blob": "10e9c0d498d2345b8b4c61d40410346e2020f2fc",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/ordered_output.rs",
+      "blob": "46ba4346865a7f964777e61f26434712bc534dba",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/ordered_output_file.rs",
+      "blob": "f8ab54ad7791a7b4358a56df5563fbf5a9dad7f4",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/ordered_output_server.rs",
+      "blob": "2544fe7b1233ac5e850dc97fc2801f932884b699",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/proposer.rs",
+      "blob": "c05f7d9e40936f1f9e85a0851bc1339ce9a1156f",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/src/shared_ordered_output.rs",
+      "blob": "d0a3b8cd00c301543b9ea3adfebb9e64c4c27001",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/tests/test_app_event_extractor.rs",
+      "blob": "a8e0dc3870f92a85b669944e0d7015f066dbccfb",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/tests/test_ordered_output_file.rs",
+      "blob": "61639f21b44257f60e9fd69f6cf78b0b02561b98",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/tests/test_ordered_output_server.rs",
+      "blob": "669b009ee90069b03364f735c35071e4f93752b2",
+      "adapted": false
+    },
+    {
+      "path": "cordial-f1r3node-adapter/tests/test_shared_ordered_output.rs",
+      "blob": "f151d109996edd2746618ca9e533d7a49218e8c7",
       "adapted": false
     },
     {

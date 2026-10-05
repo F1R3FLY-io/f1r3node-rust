@@ -299,6 +299,15 @@ async fn cordial_real_nodes_tls_deploy_execution_late_join_restart_and_partition
             let data: Value = client.post(node.url("/api/cordial/data")).json(&json!({"channel": channel, "index": index})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
             assert_eq!(data["data"], serde_json::to_value(vec![channel]).unwrap());
         }
+        let trace = get(&client, &nodes[0], &format!("/api/cordial/deploys/{id}/trace")).await;
+        assert_eq!(trace["state"], "FinalizedOrdered", "{trace}");
+        for node in &nodes[..4] {
+            let status = get(&client, node, "/api/cordial/ordered-output/status").await;
+            assert!(status["len"].as_u64().unwrap() > index, "{status}");
+            assert!(status["anchor_hash"].is_string(), "{status}");
+            assert_eq!(status["wavelength"], 3);
+            assert_eq!(status["bond_count"], 4);
+        }
         nodes[4].start(); ready(&client, &mut nodes[4]).await;
         wait_index(&client, &nodes[4], index).await;
         assert_eq!(get(&client, &nodes[4], &format!("/api/cordial/receipts/{index}")).await, expected);
@@ -347,6 +356,6 @@ async fn cordial_real_nodes_tls_deploy_execution_late_join_restart_and_partition
         let malformed = client.post(nodes[0].url("/api/deploy")).body(vec![255; 32]).send().await.unwrap();
         assert_eq!(malformed.status(), reqwest::StatusCode::BAD_REQUEST);
         for node in &mut nodes { node.stop().await; }
-        std::fs::write(directory.join("result.json"), serde_json::to_vec_pretty(&json!({"result":"passed", "validators":4, "late_observers":1, "transport":"real TLS", "process":"node binary", "deploy_id": id, "receipt_index": index, "receipt": expected, "verified":["grpc-deploy", "multi-deploy-batches", "crash-restart", "equivocation-query", "http-duplicate", "native-commit", "execution-root-agreement", "committed-data-query", "late-join", "restart", "pause-resume-recovery", "malformed-input", "duplicate-native-packets", "cross-chain-rejection", "unsupported-capabilities", "graceful-shutdown"]})).unwrap()).unwrap();
+        std::fs::write(directory.join("result.json"), serde_json::to_vec_pretty(&json!({"result":"passed", "validators":4, "late_observers":1, "transport":"real TLS", "process":"node binary", "deploy_id": id, "receipt_index": index, "receipt": expected, "verified":["grpc-deploy", "multi-deploy-batches", "crash-restart", "equivocation-query", "deploy-trace", "ordered-output-status", "http-duplicate", "native-commit", "execution-root-agreement", "committed-data-query", "late-join", "restart", "pause-resume-recovery", "malformed-input", "duplicate-native-packets", "cross-chain-rejection", "unsupported-capabilities", "graceful-shutdown"]})).unwrap()).unwrap();
     }).await.expect("Cordial network acceptance exceeded its deadline");
 }

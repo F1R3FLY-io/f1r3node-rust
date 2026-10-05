@@ -10,10 +10,12 @@ use std::{
     time::Duration,
 };
 
+type NetworkNodes = BTreeMap<Vec<u8>, (Peer, ConsensusHandle)>;
+
 #[derive(Clone)]
 struct LocalNetwork {
     local: Peer,
-    nodes: Arc<Mutex<BTreeMap<Vec<u8>, (Peer, ConsensusHandle)>>>,
+    nodes: Arc<Mutex<NetworkNodes>>,
 }
 
 #[async_trait::async_trait]

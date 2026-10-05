@@ -503,6 +503,7 @@ jobs:
           - consensus-runtime
           - cordial-miners-core
           - cordial-app-runtime
+          - cordial-f1r3node-adapter
           - cordial-consensus
           - cordial-rholang
     steps:

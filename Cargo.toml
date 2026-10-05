@@ -5,6 +5,7 @@ members = [
 	"consensus/cordial/cordial-consensus",
 	"consensus/cordial/cordial-miners-core",
 	"consensus/cordial/cordial-app-runtime",
+	"consensus/cordial/cordial-f1r3node-adapter",
 	"consensus/api",
 	"consensus/runtime",
 	"casper",

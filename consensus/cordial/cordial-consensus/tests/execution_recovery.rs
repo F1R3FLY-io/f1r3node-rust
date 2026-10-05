@@ -348,16 +348,14 @@ fn tampered_execution_journals_are_rejected_on_recovery() {
     receipt_one.extend(1u64.to_be_bytes());
     let mut orphan = b"execution/".to_vec();
     orphan.extend(9u64.to_be_bytes());
-    let cases: Vec<(
-        &str,
-        Box<
-            dyn FnOnce(
-                &heed::Env,
-                &mut heed::RwTxn,
-                heed::Database<heed::types::Bytes, heed::types::Bytes>,
-            ),
-        >,
-    )> = vec![
+    type StorageMutation = Box<
+        dyn FnOnce(
+            &heed::Env,
+            &mut heed::RwTxn,
+            heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        ),
+    >;
+    let cases: Vec<(&str, StorageMutation)> = vec![
         (
             "missing deploy index",
             Box::new(move |_, txn, meta| {

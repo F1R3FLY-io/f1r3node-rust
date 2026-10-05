@@ -1,0 +1,21 @@
+[package]
+name = "cordial-f1r3node-adapter"
+description = "Native Cordial Miners proposal, ordered output, deploy tracing, and app-event extraction for f1r3node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cordial-miners-core = { path = "../cordial-miners-core" }
+cordial-app-runtime = { path = "../cordial-app-runtime" }
+sha2 = "0.10"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+hex.workspace = true
+anyhow = "1"
+tokio.workspace = true
+axum.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+k256.workspace = true
+tower = { workspace = true, features = ["util"] }

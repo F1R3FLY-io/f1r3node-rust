@@ -238,7 +238,7 @@ async fn committed_deploy_executes_once_and_replays_after_rspace_reopen() {
         future_height.valid_after_block_number = 1000;
         let mut failed_term = deploy.data.clone();
         failed_term.term = "new x in { x!(1 / 0) }".into();
-        let invalid_payloads = vec![
+        let invalid_payloads = [
             invalid_signature.encode_to_vec(),
             sign_batch(wrong_shard),
             sign_batch(expired),

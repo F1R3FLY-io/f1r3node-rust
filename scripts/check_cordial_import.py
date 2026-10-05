@@ -52,7 +52,7 @@ def main():
     lockfile = tomllib.loads((ROOT / "Cargo.lock").read_text())
     if any(package["name"] == "cordial-por" for package in lockfile["package"]):
         errors.append("PoR must not remain in the resolved dependency graph")
-    for crate in ("cordial-miners-core", "cordial-app-runtime"):
+    for crate in ("cordial-miners-core", "cordial-app-runtime", "cordial-f1r3node-adapter"):
         if f"consensus/cordial/{crate}" not in members:
             errors.append(f"Missing workspace member: {crate}")
         manifest = tomllib.loads((CORDIAL / crate / "Cargo.toml").read_text())

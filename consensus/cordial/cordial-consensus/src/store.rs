@@ -69,6 +69,8 @@ pub struct DurableBlocklace {
     missing: BTreeMap<BlockIdentity, Vec<BlockIdentity>>,
     output_db: Database<Bytes, Bytes>,
     output: Vec<BlockIdentity>,
+    anchor: Option<BlockIdentity>,
+    output_at_ns: u128,
     executed_count: u64,
     executed_state: [u8; 32],
     submissions: BTreeMap<[u8; 32], Vec<u8>>,
@@ -149,12 +151,7 @@ impl DurableBlocklace {
                 .map_size(config.map_size_bytes)
                 .open(path)?
         };
-        let (blocks, meta, pending_db, output_db): (
-            Database<Bytes, Bytes>,
-            Database<Bytes, Bytes>,
-            Database<Bytes, Bytes>,
-            Database<Bytes, Bytes>,
-        ) = if existing {
+        let (blocks, meta, pending_db, output_db) = if existing {
             let txn = env.read_txn()?;
             let blocks = env
                 .open_database(&txn, Some("admitted"))?
@@ -199,6 +196,8 @@ impl DurableBlocklace {
             missing: BTreeMap::new(),
             output_db,
             output: Vec::new(),
+            anchor: None,
+            output_at_ns: now_ns(),
             executed_count: 0,
             executed_state,
             submissions: BTreeMap::new(),
@@ -277,6 +276,7 @@ impl DurableBlocklace {
             state.pending.insert(block.identity, packet.to_vec());
         }
         drop(txn);
+        state.anchor = state.latest_anchor();
         state.recover_execution()?;
         state.recover_submissions()?;
         let recovered = state.pending.keys().cloned().collect();
@@ -475,65 +475,39 @@ impl DurableBlocklace {
         key: &k256::ecdsa::SigningKey,
         payload: Vec<u8>,
     ) -> Result<Option<Block>, Error> {
-        use cordial_miners_core::consensus::{
-            cordiality::is_weighted_supermajority, round::compute_all_depths, select_predecessors,
+        use crate::proposal::{ChainPayloadBuilder, QuorumPrefixTipSelector};
+        use cordial_f1r3node_adapter::proposer::{
+            CordialProposer, FnBroadcaster, ProposeError, Secp256k1BlockSigner,
         };
         self.check_health()?;
         let creator = NodeId(key.verifying_key().to_sec1_bytes().to_vec());
         if !self.chain.weights().contains_key(&creator) {
             return Err(Error::UnknownValidator);
         }
-        let own = self.view.blocks_by(&creator);
-        let predecessors = if own.is_empty() {
-            vec![]
-        } else {
-            if !self.view.satisfies_chain_axiom(&creator) {
-                return Err(Error::Configuration(
-                    "local validator has conflicting persisted histories".into(),
-                ));
-            }
-            let depths = compute_all_depths(&self.view);
-            let mut support = BTreeMap::<u64, std::collections::HashSet<NodeId>>::new();
-            for (id, depth) in &depths {
-                support
-                    .entry(*depth)
-                    .or_default()
-                    .insert(id.creator.clone());
-            }
-            let Some(round) = support.into_iter().rev().find_map(|(round, creators)| {
-                is_weighted_supermajority(&creators, self.chain.weights()).then_some(round)
-            }) else {
-                return Ok(None);
-            };
-            if own.iter().any(|block| {
-                depths
-                    .get(&block.identity)
-                    .is_some_and(|depth| *depth > round)
-            }) {
-                return Ok(None);
-            }
-            let mut prefix = Blocklace::new();
-            let mut identities: Vec<_> = depths
-                .into_iter()
-                .filter(|(_, depth)| *depth <= round)
-                .collect();
-            identities.sort_by(|(left, ld), (right, rd)| ld.cmp(rd).then(left.cmp(right)));
-            for (id, _) in identities {
-                let block = self
-                    .view
-                    .get(&id)
-                    .ok_or_else(|| Error::Corrupt("proposal history is missing".into()))?;
-                if !validated_received_insert(block, &mut prefix, self.chain.weights()).is_valid() {
-                    return Err(Error::Corrupt(
-                        "proposal prefix failed native validation".into(),
-                    ));
-                }
-            }
-            select_predecessors(&prefix, self.chain.weights())
-                .into_iter()
-                .collect()
+        if !self.view.satisfies_chain_axiom(&creator) {
+            return Err(Error::Configuration(
+                "local validator has conflicting persisted histories".into(),
+            ));
+        }
+        let selector = QuorumPrefixTipSelector::new(creator.clone());
+        let result = CordialProposer::new(
+            &selector,
+            ChainPayloadBuilder::new(&self.chain, payload),
+            Secp256k1BlockSigner::new(key.to_bytes().to_vec()),
+            FnBroadcaster::new(|_| Ok(())),
+            creator,
+            self.chain.weights().clone(),
+        )
+        .propose(&self.view);
+        if let Some(error) = selector.take_failure() {
+            return Err(error);
+        }
+        let block = match result {
+            Ok(block) => block,
+            Err(ProposeError::NoTips) => return Ok(None),
+            Err(ProposeError::Payload(reason)) => return Err(Error::Packet(reason)),
+            Err(error) => return Err(Error::Packet(error.to_string())),
         };
-        let block = self.chain.build_block(key, predecessors, payload)?;
         match self.admit(&self.chain.encode_block(&block)?)? {
             Admission::Accepted(_) => Ok(Some(block)),
             Admission::Duplicate(_) => Ok(None),
@@ -788,25 +762,67 @@ impl DurableBlocklace {
         )?;
         txn.commit()?;
         self.output = output;
+        self.anchor = self.latest_anchor();
+        self.output_at_ns = now_ns();
         Ok(added)
     }
 
-    fn native_output(&self) -> Result<Vec<BlockIdentity>, Error> {
+    fn leader(&self, wave: u64) -> Option<NodeId> {
         let validators = &self.chain.spec().validators;
-        let leader = |wave| {
-            Some(NodeId(
-                validators[(wave % validators.len() as u64) as usize]
-                    .public_key
-                    .clone(),
-            ))
-        };
+        Some(NodeId(
+            validators[(wave % validators.len() as u64) as usize]
+                .public_key
+                .clone(),
+        ))
+    }
+
+    fn native_output(&self) -> Result<Vec<BlockIdentity>, Error> {
         weighted_tau(
             &self.view,
             self.chain.spec().wavelength,
             self.chain.weights(),
-            leader,
+            |wave| self.leader(wave),
         )
         .map_err(|error| Error::Corrupt(format!("native ordering failed: {error:?}")))
+    }
+
+    fn latest_anchor(&self) -> Option<BlockIdentity> {
+        if self.output.is_empty() {
+            return None;
+        }
+        cordial_miners_core::consensus::latest_weighted_final_leader(
+            &self.view,
+            self.chain.spec().wavelength,
+            self.chain.weights(),
+            |wave| self.leader(wave),
+        )
+    }
+
+    pub fn ordered_output_status(
+        &self,
+    ) -> Result<cordial_f1r3node_adapter::ordered_output_server::OrderedOutputStatus, Error> {
+        self.check_health()?;
+        Ok(
+            cordial_f1r3node_adapter::ordered_output_server::OrderedOutputStatus {
+                anchor_hash: self
+                    .anchor
+                    .as_ref()
+                    .map(|anchor| hex::encode(anchor.content_hash)),
+                len: self.output.len(),
+                bond_count: self.chain.weights().len(),
+                wavelength: self.chain.spec().wavelength,
+                computed_at_ns: self.output_at_ns,
+                is_stale: false,
+            },
+        )
+    }
+
+    pub fn depth(&self, identity: &BlockIdentity) -> Option<u64> {
+        cordial_miners_core::consensus::round::depth(&self.view, identity)
+    }
+
+    pub fn anchor(&self) -> Option<&BlockIdentity> {
+        self.anchor.as_ref()
     }
 
     fn check_pending_capacity(&self, bytes: usize) -> Result<(), Error> {
@@ -909,4 +925,11 @@ fn submission_key(id: &[u8; 32]) -> Vec<u8> {
     let mut key = b"submission/".to_vec();
     key.extend(id);
     key
+}
+
+fn now_ns() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }

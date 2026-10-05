@@ -12,7 +12,7 @@ Design reference: [f1r3node Consensus Architecture](https://app.notion.com/p/f1r
 | --- | --- | --- |
 | `api/` | `consensus-api` | Shared contract: commands, capabilities, status, opaque identifiers, admission outcomes, and errors. |
 | `runtime/` | `consensus-runtime` | Shared runtime: bounded queues, request deadlines, readiness, task supervision, and shutdown. |
-| `cordial/` | `cordial-*` | Cordial Miners protocol. See [cordial/INTEGRATION-PROFILE.md](cordial/INTEGRATION-PROFILE.md). |
+| `cordial/` | `cordial-*` | Cordial Miners protocol: native core, upstream adapter modules, durable store, and Rholang execution. See [cordial/INTEGRATION-PROFILE.md](cordial/INTEGRATION-PROFILE.md) and [cordial/SOURCE.md](cordial/SOURCE.md). |
 
 CBC Casper is the default consensus protocol. Its crate stays at the workspace root in [`casper/`](../casper).
 
@@ -57,6 +57,6 @@ Run these commands from the workspace root:
 
 ```bash
 cargo test --release -p consensus-api -p consensus-runtime
-cargo test --release -p cordial-miners-core -p cordial-app-runtime -p cordial-consensus -p cordial-rholang
+cargo test --release -p cordial-miners-core -p cordial-app-runtime -p cordial-f1r3node-adapter -p cordial-consensus -p cordial-rholang
 cargo test --release -p node --test consensus_casper --test consensus_cordial --test cordial_network
 ```

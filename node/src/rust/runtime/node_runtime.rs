@@ -462,19 +462,17 @@ impl NodeRuntime {
         // Supportive tasks: Failures are logged as warnings, node continues
         info!("All tasks started. Node is now running.");
 
-        let result = loop {
-            tokio::select! {
-                Some(result) = critical_tasks.join_next() => {
-                    break match result {
-                        Ok(task) => task.result.and_then(|_| Err(eyre::eyre!("Task {} completed unexpectedly", task.name))),
-                        Err(error) => Err(error.into()),
-                    };
+        let result = tokio::select! {
+            Some(result) = critical_tasks.join_next() => {
+                match result {
+                    Ok(task) => task.result.and_then(|_| Err(eyre::eyre!("Task {} completed unexpectedly", task.name))),
+                    Err(error) => Err(error.into()),
                 }
-                result = consensus.wait() => {
-                    break result.map_err(eyre::Report::new).and_then(|_| Err(eyre::eyre!("Consensus stopped unexpectedly")));
-                }
-                _ = shutdown_signal() => break Ok(()),
             }
+            result = consensus.wait() => {
+                result.map_err(eyre::Report::new).and_then(|_| Err(eyre::eyre!("Consensus stopped unexpectedly")))
+            }
+            _ = shutdown_signal() => Ok(()),
         };
         let consensus_shutdown = consensus.shutdown().await;
         servers.shutdown.signal();

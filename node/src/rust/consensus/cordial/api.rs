@@ -97,6 +97,8 @@ impl PreparedApplication {
             .route("/api/cordial/objects/{id}", get(object))
             .route("/api/cordial/receipts/{index}", get(receipt))
             .route("/api/cordial/equivocations", get(equivocations))
+            .route("/api/cordial/ordered-output/status", get(ordered_output))
+            .route("/api/cordial/deploys/{id}/trace", get(deploy_trace))
             .route("/api/cordial/data", post(data))
             .layer(DefaultBodyLimit::max(cordial_consensus::MAX_PAYLOAD_BYTES))
             .with_state(state.clone());
@@ -212,6 +214,30 @@ async fn receipt(State(api): State<Api>, Path(index): Path<u64>) -> Result<Json<
     let summary: cordial_rholang::ExecutionSummary = serde_json::from_slice(&receipt.result)
         .map_err(|error| http_error(ConsensusError::Protocol(error.to_string())))?;
     Ok(Json(json!({"receipt": receipt, "summary": summary})))
+}
+
+async fn ordered_output(State(api): State<Api>) -> Result<Json<Value>, HttpError> {
+    let status = api.queries.ordered_output().await.map_err(http_error)?;
+    Ok(Json(json!(status)))
+}
+
+async fn deploy_trace(
+    State(api): State<Api>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, HttpError> {
+    let id = hex::decode(&id)
+        .ok()
+        .filter(|id| id.len() == 32)
+        .ok_or_else(|| {
+            http_error(ConsensusError::InvalidInput(
+                "invalid deploy identifier".into(),
+            ))
+        })?;
+    let report = api.queries.deploy_trace(&id).ok_or((
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": "deploy trace not found"})),
+    ))?;
+    Ok(Json(json!(report)))
 }
 
 async fn equivocations(State(api): State<Api>) -> Result<Json<Value>, HttpError> {

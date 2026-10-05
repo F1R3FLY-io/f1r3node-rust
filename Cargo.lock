@@ -1188,6 +1188,7 @@ dependencies = [
  "bincode",
  "consensus-api",
  "consensus-runtime",
+ "cordial-f1r3node-adapter",
  "cordial-miners-core",
  "fs2",
  "heed",
@@ -1197,6 +1198,24 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "cordial-f1r3node-adapter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.9",
+ "cordial-app-runtime",
+ "cordial-miners-core",
+ "hex",
+ "k256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tower 0.5.3",
 ]
 
 [[package]]

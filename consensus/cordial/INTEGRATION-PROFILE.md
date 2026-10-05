@@ -139,7 +139,9 @@ Neither mode claims that the node synchronized with peers or supports proposal a
 A configured validator advertises proposal support. A validator with an application executor also advertises deploy submission.
 Observers reject submission and proposal requests. All Cordial nodes reject Casper-style last-finalized-block queries.
 
-The proposer reconstructs the highest quorum-supported native prefix and uses native predecessor selection.
+The store builds each proposal with the upstream `CordialProposer` from `cordial-f1r3node-adapter`.
+Its tip selector reconstructs the highest quorum-supported native prefix and uses native predecessor selection.
+Its payload builder signs the chain fingerprint into the payload. The proposer does not execute deploys.
 It stores the proposal before publication. Restart continues the persisted validator history.
 The submit path validates signed deploys and stores a bounded durable pool.
 Proposal admission removes selected pool entries only after the proposal is durable.
@@ -189,6 +191,9 @@ Execution uses `cordial-execution/`. Native consensus uses `cordial-consensus/`.
 | HTTP `GET /api/cordial/objects/{id}` | Read the encoded native object. |
 | HTTP `GET /api/cordial/receipts/{index}` | Read a durable execution receipt and decoded result. |
 | HTTP `POST /api/cordial/data` | Read a Rholang channel at an executed state root. |
+| HTTP `GET /api/cordial/equivocations` | Read durable equivocation evidence. |
+| HTTP `GET /api/cordial/ordered-output/status` | Read the upstream `OrderedOutputStatus`: committed length, anchor leader, wavelength, and validator count. |
+| HTTP `GET /api/cordial/deploys/{id}/trace` | Read the upstream `DeployTraceReport` for a deploy. The bounded trace table is in memory and restarts empty. |
 | Admin HTTP `POST /api/propose` | Request a synchronous native proposal. |
 
 Unsupported Casper queries return gRPC `Unimplemented`. Unsupported HTTP operations return status 501.

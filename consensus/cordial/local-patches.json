@@ -22,5 +22,17 @@
   "cordial-miners-core/src/consensus/evidence.rs": {
     "sha256": "d74065d49c5c72f9aa5f58fb1fe0fcfd46d63eb620396cef529590a1a6a74007",
     "reason": "Make the previously ignored evidence example executable with real signatures and assertions; no algorithm changes."
+  },
+  "cordial-f1r3node-adapter/src/lib.rs": {
+    "sha256": "cc1bad6779e2b1203be3e57e6ef9d94c49b7b67e13a5970f8be3d4670f98d7b3",
+    "reason": "Export only native modules. Casper-shaped translation, external-node mirror tools, and PoR modules are not imported."
+  },
+  "cordial-f1r3node-adapter/src/proposer.rs": {
+    "sha256": "b95217258a8fb861613524356588a1f8b24fcd2d8258d99ba3eabe3855928244",
+    "reason": "Replace pre-commit execution with a PayloadBuilder port so Rholang executes only after tau commitment; remove slash-deploy formatting and DeployPool selection; allow a validator's initial block when other validators already have blocks."
+  },
+  "cordial-f1r3node-adapter/src/deploy_trace.rs": {
+    "sha256": "86436d9621c7ae2c737498b9a57b0385eb5a3179acae1614a8c5c10c22307a09",
+    "reason": "Bound the tracer with a capacity and evict the oldest trace, so a long-running node keeps bounded memory."
   }
 }

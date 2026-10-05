@@ -3,6 +3,8 @@ use consensus_api::{
     ProtocolDescriptor,
 };
 use consensus_runtime::{PreparedConsensus, RuntimeBuilder, RuntimeConfig};
+use cordial_f1r3node_adapter::deploy_trace::{DeployTraceReport, DeployTracer, TraceIngressSource};
+use cordial_f1r3node_adapter::ordered_output_server::OrderedOutputStatus;
 use cordial_miners_core::BlockIdentity;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -65,12 +67,14 @@ enum Query {
         oneshot::Sender<Result<Option<ExecutionReceipt>, ConsensusError>>,
     ),
     Equivocations(oneshot::Sender<Result<Vec<EquivocationRecord>, ConsensusError>>),
+    OrderedOutput(oneshot::Sender<Result<OrderedOutputStatus, ConsensusError>>),
 }
 
 #[derive(Clone)]
 pub struct CordialQueries {
     sender: mpsc::Sender<Query>,
     timeout: Duration,
+    tracer: DeployTracer,
 }
 
 impl CordialQueries {
@@ -110,6 +114,12 @@ impl CordialQueries {
     pub async fn equivocations(&self) -> Result<Vec<EquivocationRecord>, ConsensusError> {
         self.request(Query::Equivocations).await
     }
+    pub async fn ordered_output(&self) -> Result<OrderedOutputStatus, ConsensusError> {
+        self.request(Query::OrderedOutput).await
+    }
+    pub fn deploy_trace(&self, id: &[u8]) -> Option<DeployTraceReport> {
+        self.tracer.get_deploy_trace(id)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -139,6 +149,7 @@ pub struct CordialNode {
     network: Arc<dyn PeerNetwork>,
     executor: Option<Box<dyn Application>>,
     queries: mpsc::Receiver<Query>,
+    tracer: DeployTracer,
 }
 
 type Outgoing = (Peer, &'static str, Vec<u8>);
@@ -202,7 +213,12 @@ impl CordialNode {
             runtime_config,
         )?;
         let (sender, queries) = mpsc::channel(command_capacity);
-        let handle = CordialQueries { sender, timeout };
+        let tracer = DeployTracer::new();
+        let handle = CordialQueries {
+            sender,
+            timeout,
+            tracer: tracer.clone(),
+        };
         Ok((
             builder.build(Box::new(Self {
                 path,
@@ -212,6 +228,7 @@ impl CordialNode {
                 network,
                 executor,
                 queries,
+                tracer,
             })),
             handle,
         ))
@@ -226,7 +243,18 @@ impl CordialNode {
         if let Some(executor) = &self.executor {
             while !context.control.is_cancelled()
                 && executor.execute_next(state).await.map_err(classify)?
-            {}
+            {
+                let index = state.execution_checkpoint().next_index.saturating_sub(1);
+                if let Some(receipt) = state.execution_receipt(index).map_err(classify)? {
+                    let anchor = state
+                        .anchor()
+                        .map(|anchor| anchor.content_hash)
+                        .unwrap_or(receipt.object.content_hash);
+                    for id in &receipt.deploy_ids {
+                        self.tracer.record_finalized(id, &anchor);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -258,6 +286,11 @@ impl CordialNode {
         state
             .mark_proposed(&block.identity, &submissions[..included])
             .map_err(classify)?;
+        let height = state.depth(&block.identity).unwrap_or_default() as i64;
+        for submission in &submissions[..included] {
+            self.tracer
+                .record_block_included(&submission.id, &block.identity.content_hash, height);
+        }
         let packet = self.chain.encode_block(&block).map_err(classify)?;
         for peer in self
             .network
@@ -285,7 +318,11 @@ impl CordialNode {
             .ok_or(ConsensusError::UnsupportedCapability("submit"))?;
         let submission = executor.validate_submission(payload).map_err(classify)?;
         let id = hex::encode(submission.id);
-        if state.submit(submission.clone()).map_err(classify)? {
+        self.tracer
+            .record_observed(&submission.id, TraceIngressSource::Unknown);
+        let added = state.submit(submission.clone()).map_err(classify)?;
+        self.tracer.record_accepted(&submission.id);
+        if added {
             let packet = encode(&SubmitEnvelope {
                 chain: self.chain.fingerprint(),
                 payload: submission.payload,
@@ -407,6 +444,9 @@ impl CordialNode {
             Query::Equivocations(reply) => {
                 let _ = reply.send(state.equivocations(64).map_err(classify));
             }
+            Query::OrderedOutput(reply) => {
+                let _ = reply.send(state.ordered_output_status().map_err(classify));
+            }
         }
     }
 }
@@ -436,19 +476,19 @@ impl ConsensusAdapter for CordialNode {
                 .await;
             }
         });
-        if let Some(key) = &self.options.key {
-            if let Some(block) = state.propose(key, vec![]).map_err(classify)? {
-                let packet = self.chain.encode_block(&block).map_err(classify)?;
-                for peer in self
-                    .network
-                    .peers()
-                    .into_iter()
-                    .take(self.options.max_peers)
-                {
-                    let _ = outbound.try_send((peer, BLOCK_PACKET_KIND, packet.clone()));
-                }
-                self.advance(&mut state, &context).await?;
+        if let Some(key) = &self.options.key
+            && let Some(block) = state.propose(key, vec![]).map_err(classify)?
+        {
+            let packet = self.chain.encode_block(&block).map_err(classify)?;
+            for peer in self
+                .network
+                .peers()
+                .into_iter()
+                .take(self.options.max_peers)
+            {
+                let _ = outbound.try_send((peer, BLOCK_PACKET_KIND, packet.clone()));
             }
+            self.advance(&mut state, &context).await?;
         }
         let mut cursors = BTreeMap::new();
         let mut interval = tokio::time::interval(self.options.tick);
