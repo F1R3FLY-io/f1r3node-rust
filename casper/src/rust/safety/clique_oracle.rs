@@ -229,7 +229,7 @@ impl CliqueOracle {
     /// validator's own height-zero block is participation. A latest message this
     /// node does not hold also counts; `receive_shipped_genesis` stores genesis and
     /// inserts it `Approved`, so only its genesis-refusal path reaches that branch,
-    /// where counting the newcomer keeps #18's stall rather than diverging.
+    /// where counting the newcomer stalls finalization rather than diverging.
     pub(crate) fn participating_weight_map(
         weight_map: WeightMap,
         dag: &KeyValueDagRepresentation,
