@@ -171,6 +171,84 @@ pub fn entry_stat_row(dir_fd: libc::c_int, name: &OsStr, mode: ConsensusMode) ->
     }
 }
 
+/// Enumerate `dir_fd` into a sorted-by-caller `Vec<OsString>`
+/// (`.` / `..` skipped), capped at `max`.  Returns `(names,
+/// hit_cap)` where `hit_cap = true` indicates the caller should
+/// surface `FSERR_QUOTA_EXCEEDED` (the enumeration was truncated).
+///
+/// # Why fdopendir takes ownership
+///
+/// `fdopendir(dir_fd)` succeeds → the DIR* owns `dir_fd`; a later
+/// `closedir(dir)` releases the fd.  On fdopendir failure the
+/// caller's fd stays live and this function closes it manually
+/// before returning the error.
+///
+/// # Safety contract
+///
+/// `dir_fd` must be a caller-supplied open dirfd that this
+/// function may take ownership of (via fdopendir on success +
+/// manual close on failure).  The caller must NOT close `dir_fd`
+/// after this call returns — the DIR*'s drop handles it.
+///
+/// # Determinism note
+///
+/// The returned `Vec<OsString>` reflects `readdir` order, which
+/// is filesystem-dependent and NOT stable across validators.
+/// `fs_entries` sorts the slice BEFORE building reply rows so
+/// its reply bytes are deterministic.  Callers that need
+/// deterministic order MUST sort post-call.
+pub fn read_dir_capped(
+    dir_fd: libc::c_int,
+    max: usize,
+) -> std::io::Result<(Vec<std::ffi::OsString>, bool)> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    // SAFETY: `dir_fd` is a caller-supplied open dirfd per
+    // contract; `fdopendir` takes ownership on success (closedir
+    // handles the fd on drop).  On failure we manually close it.
+    // `readdir` / `CStr::from_ptr` on the returned DIR* are
+    // single-threaded here (the caller holds no shared pointer),
+    // and each dirent buffer is copied before the next readdir
+    // call.
+    unsafe {
+        let dir = libc::fdopendir(dir_fd);
+        if dir.is_null() {
+            let e = std::io::Error::last_os_error();
+            libc::close(dir_fd);
+            return Err(e);
+        }
+        let mut names: Vec<OsString> = Vec::new();
+        let mut hit_cap = false;
+        loop {
+            // Reset errno; readdir returns NULL on both EOF and
+            // error.  Must clear before the call + check after.
+            errno_reset();
+            let ent = libc::readdir(dir);
+            if ent.is_null() {
+                let e = std::io::Error::last_os_error();
+                if e.raw_os_error() == Some(0) {
+                    break; // Clean EOF.
+                }
+                libc::closedir(dir);
+                return Err(e);
+            }
+            let name_ptr = (*ent).d_name.as_ptr();
+            let name_c = std::ffi::CStr::from_ptr(name_ptr);
+            let name_bytes = name_c.to_bytes();
+            if name_bytes == b"." || name_bytes == b".." {
+                continue;
+            }
+            if names.len() >= max {
+                hit_cap = true;
+                break;
+            }
+            names.push(OsString::from_vec(name_bytes.to_vec()));
+        }
+        libc::closedir(dir);
+        Ok((names, hit_cap))
+    }
+}
+
 /// Does `reply` start with `[true, ...]`?  Used by the two-event
 /// cost supplement classifier: `n = 1` on `[true, entryRecord]`,
 /// `n = 0` on `[false, ...]` (EOS or error).

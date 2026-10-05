@@ -383,6 +383,12 @@ impl FixedChannels {
     /// + per-entry supplement).  First handler on dev to
     /// activate `post_reply_supplement`.  Added by slice 4.30.
     pub fn fs_entries_stream_next() -> Par { byte_name(67) }
+
+    /// `rho:io:fs:native:1.0.0/entries` — bulk directory
+    /// enumeration (sorted, deterministic).  Verifying
+    /// observation with two-event cost (setup + per-entry).
+    /// Added by slice 4.31.
+    pub fn fs_entries() -> Par { byte_name(53) }
 }
 
 pub struct BodyRefs;
@@ -483,6 +489,9 @@ impl BodyRefs {
     /// `rho:io:fs:native:1.0.0/entriesStreamNext` body-ref
     /// (slice 4.30).
     pub const FS_ENTRIES_STREAM_NEXT: i64 = 67;
+
+    /// `rho:io:fs:native:1.0.0/entries` body-ref (slice 4.31).
+    pub const FS_ENTRIES: i64 = 53;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

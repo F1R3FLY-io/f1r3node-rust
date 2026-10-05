@@ -185,7 +185,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.28: +1 (`fs_remove_file`, FIRST LOCK-GATED MUTATION).  Count = 16.
 ///   - 4.29: +1 (`fs_entries_stream_open`).  Count = 17.
 ///   - 4.30: +1 (`fs_entries_stream_next`, FIRST POST_REPLY_SUPPLEMENT).  Count = 18.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 18;
+///   - 4.31: +1 (`fs_entries`, OBSERVATION 9/9).  Count = 19.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 19;
 
 #[cfg(test)]
 mod tests {
@@ -259,6 +260,7 @@ mod tests {
             "fs_remove_file",          // slice 4.28 (first lock-gated mutation)
             "fs_entries_stream_open",  // slice 4.29
             "fs_entries_stream_next",  // slice 4.30 (first post_reply_supplement)
+            "fs_entries",              // slice 4.31 (observation 9/9)
         ];
 
         assert_eq!(

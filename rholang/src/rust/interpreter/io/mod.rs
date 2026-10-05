@@ -186,6 +186,25 @@ const _: () = assert!(
 
 crate::register_consensus_constant!(order = 7, name = MAX_CHUNK_ITEMS, u64_be);
 
+/// Per-call cap on `fs_entries` output size — prevents a malicious
+/// caller pointing the native at a million-entry directory and
+/// OOMing the node.  Rholang-side alternative for large directories
+/// is `entriesStreamOpen` / `_Next` / `_Close`.  Consensus-
+/// observable (divergent caps fork at the `FSERR_QUOTA_EXCEEDED`
+/// boundary); folded at order 16.
+pub const MAX_ENTRIES: usize = 65_536;
+
+// Compile-time floor: entry cap below 4096 would surface
+// FSERR_QUOTA_EXCEEDED on legitimate medium directories and fork
+// consensus at every well-formed enumerate workload.
+const _: () = assert!(
+    MAX_ENTRIES >= 4096,
+    "MAX_ENTRIES below 4096 — a divergent lower cap forks consensus \
+     at legitimate medium-directory enumerate workloads"
+);
+
+crate::register_consensus_constant!(order = 16, name = MAX_ENTRIES, u64_be);
+
 /// Composition-time nonce embedded into the composed fs_genesis
 /// source (`new_gint_par(FS_NONCE, ...)` in the signed-registry
 /// insertion).  A drift is caught by the composed-source golden
