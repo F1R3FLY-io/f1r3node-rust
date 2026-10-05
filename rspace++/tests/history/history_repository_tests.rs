@@ -475,6 +475,29 @@ async fn record_root_makes_root_visible_to_contains_root() {
 }
 
 #[test]
+fn reset_does_not_move_the_current_root_pointer() {
+    let repo = create_empty_repository();
+    let (first, _) = insert_datum(1);
+    let (second, _) = insert_datum(2);
+    let first_root = repo.checkpoint(vec![first]).root();
+    let second_root = repo.checkpoint(vec![second]).root();
+    let current = || {
+        repo.roots_repository
+            .lock()
+            .unwrap()
+            .roots_store
+            .current_root()
+            .unwrap()
+    };
+    assert_eq!(current(), Some(second_root.clone()));
+
+    let next = repo.reset(&first_root).unwrap();
+
+    assert_eq!(next.root(), first_root);
+    assert_eq!(current(), Some(second_root));
+}
+
+#[test]
 fn lock_site_metrics_count_each_call_site_separately() {
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 

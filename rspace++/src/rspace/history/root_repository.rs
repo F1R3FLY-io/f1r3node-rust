@@ -48,6 +48,15 @@ impl RootRepository {
         }
     }
 
+    pub fn validate_root(&self, root: &Blake2b256Hash) -> Result<(), RootError> {
+        if self.roots_store.contains_root(root)? {
+            Ok(())
+        } else {
+            tracing::error!(root = %root, "root not found in store: cannot reset");
+            Err(RootError::RootNotFound(root.clone()))
+        }
+    }
+
     /// Pure lookup: returns true if the root is recorded in the store.
     /// Companion to `validate_and_set_current_root` without the side-effect
     /// of updating the current-root pointer.

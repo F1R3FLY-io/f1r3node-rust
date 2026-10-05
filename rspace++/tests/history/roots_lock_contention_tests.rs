@@ -6,6 +6,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::{
     HistoryRepository, HistoryRepositoryInstances,
 };
+use rspace_plus_plus::rspace::history::roots_store::{RootsStore, RootsStoreInstances};
 use rspace_plus_plus::rspace::hot_store_action::{HotStoreAction, InsertAction, InsertData};
 use rspace_plus_plus::rspace::shared::rspace_store_manager::get_or_create_rspace_store;
 
@@ -178,6 +179,87 @@ fn run_phase(
         counters,
         histograms,
     }
+}
+
+fn roots_store_counters(f: impl FnOnce()) -> (u64, u64) {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, f);
+    let mut reads = 0;
+    let mut writes = 0;
+    for (key, _, _, value) in snapshotter.snapshot().into_vec() {
+        if let DebugValue::Counter(value) = value {
+            match key.key().name() {
+                "history.roots_store.reads" => reads += value,
+                "history.roots_store.writes" => writes += value,
+                _ => {}
+            }
+        }
+    }
+    (reads, writes)
+}
+
+#[test]
+fn lmdb_roots_store_reset_reads_once_and_never_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        get_or_create_rspace_store(dir.path().join("store").to_str().unwrap(), 1 << 28).unwrap();
+    let repo: Repo =
+        HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)
+            .unwrap();
+    let first = repo.checkpoint(batch(1, 4));
+    let second = first.checkpoint(batch(2, 4));
+    let roots = [repo.root(), first.root(), second.root()];
+
+    let (reads, writes) = roots_store_counters(|| {
+        for root in &roots {
+            repo.reset(root).unwrap();
+        }
+    });
+
+    assert_eq!((reads, writes), (3, 0));
+    assert!(repo.reset(&Blake2b256Hash::new(b"absent root")).is_err());
+}
+
+#[test]
+fn lmdb_roots_store_record_root_commits_both_keys_in_one_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        get_or_create_rspace_store(dir.path().join("store").to_str().unwrap(), 1 << 28).unwrap();
+    let roots_kv = store.roots.clone();
+    let repo: Repo =
+        HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)
+            .unwrap();
+    let root = Blake2b256Hash::new(b"recorded root");
+
+    let (_, writes) = roots_store_counters(|| repo.record_root(&root).unwrap());
+
+    assert_eq!(writes, 1);
+    assert!(repo.contains_root(&root).unwrap());
+    assert_eq!(
+        RootsStoreInstances::roots_store(roots_kv)
+            .current_root()
+            .unwrap(),
+        Some(root)
+    );
+}
+
+#[test]
+fn lmdb_repository_reopens_at_the_last_committed_root_after_resets() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let store = get_or_create_rspace_store(path.to_str().unwrap(), 1 << 28).unwrap();
+    let (history, roots, cold) = (store.history.clone(), store.roots.clone(), store.cold.clone());
+    let repo: Repo =
+        HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)
+            .unwrap();
+    let first = repo.checkpoint(batch(1, 4));
+    let second = first.checkpoint(batch(2, 4));
+    second.reset(&first.root()).unwrap();
+
+    let reopened: Repo = HistoryRepositoryInstances::lmdb_repository(history, roots, cold).unwrap();
+
+    assert_eq!(reopened.root(), second.root());
 }
 
 #[test]

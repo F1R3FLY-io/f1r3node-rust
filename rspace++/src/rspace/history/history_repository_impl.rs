@@ -555,8 +555,8 @@ where
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         debug!("[HistoryRepositoryImpl] reset to {}", root);
 
-        let roots_lock = lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RESET_SITE);
-        roots_lock.validate_and_set_current_root(root.clone())?;
+        lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RESET_SITE)
+            .validate_root(root)?;
 
         let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_RESET_SITE);
         let next = history_lock.reset(root)?;

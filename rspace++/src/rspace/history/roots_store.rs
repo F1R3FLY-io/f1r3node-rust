@@ -51,9 +51,9 @@ impl RootsStoreInstances {
                 result
             }
 
-            fn put_one(&self, key: ByteBuffer, value: ByteBuffer) -> Result<(), KvStoreError> {
+            fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
                 let start = Instant::now();
-                let result = self.store.put_one(key, value);
+                let result = self.store.put(kv_pairs);
                 metrics::counter!(HISTORY_ROOTS_STORE_WRITE_NS_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 metrics::counter!(HISTORY_ROOTS_STORE_WRITES_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
@@ -82,7 +82,7 @@ impl RootsStoreInstances {
 
                 match self.get_one(&key_bytes)? {
                     Some(_) => {
-                        self.put_one(current_root_name, key_bytes)?;
+                        self.put(vec![(current_root_name, key_bytes)])?;
                         Ok(Some(key))
                     }
                     None => Ok(None),
@@ -94,8 +94,7 @@ impl RootsStoreInstances {
                 let current_root_name: ByteBuffer = "current-root".as_bytes().to_vec();
                 let key_bytes = key.bytes();
 
-                self.put_one(key_bytes.to_vec(), tag)?;
-                self.put_one(current_root_name, key_bytes.to_vec())?;
+                self.put(vec![(key_bytes.to_vec(), tag), (current_root_name, key_bytes.to_vec())])?;
 
                 Ok(())
             }
