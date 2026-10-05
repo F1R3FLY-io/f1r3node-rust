@@ -408,6 +408,12 @@ impl FixedChannels {
     /// Non-verifying lock lifecycle; minted LockId is consensus-
     /// observable.  First Lock-family handler on dev (slice 4.34).
     pub fn fs_lock_range() -> Par { byte_name(62) }
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` — whole-file
+    /// sequential (exclusive) lock acquire via
+    /// `LockRegistry::try_acquire_sequential_wait`.  Non-verifying;
+    /// LockId consensus-observable.  Added by slice 4.35.
+    pub fn fs_lock_sequential() -> Par { byte_name(63) }
 }
 
 pub struct BodyRefs;
@@ -520,6 +526,10 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/lockRange` body-ref (slice 4.34).
     pub const FS_LOCK_RANGE: i64 = 62;
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` body-ref
+    /// (slice 4.35).
+    pub const FS_LOCK_SEQUENTIAL: i64 = 63;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

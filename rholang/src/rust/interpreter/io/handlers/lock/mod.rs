@@ -10,11 +10,11 @@
 //
 //   - `fs_lock_range` — range-based acquire; returns `LockId`
 //     on success.  Added by slice 4.34.
+//   - `fs_lock_sequential` — whole-file sequential acquire (no
+//     offset / length / mode slots).  Added by slice 4.35.
 //
 // Yet to land:
 //
-//   - `fs_lock_sequential` — whole-file sequential acquire (no
-//     offset / length / mode slots).
 //   - `fs_release_lock` — release by `LockId`.
 //   - `fs_unlock_range` — release by (fd, offset, length)
 //     without needing the LockId handle.
@@ -40,3 +40,4 @@
 // shapes.  Documented at every parked-wait call site.
 
 pub mod fs_lock_range;
+pub mod fs_lock_sequential;
