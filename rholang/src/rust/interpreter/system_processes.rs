@@ -389,6 +389,13 @@ impl FixedChannels {
     /// observation with two-event cost (setup + per-entry).
     /// Added by slice 4.31.
     pub fn fs_entries() -> Par { byte_name(53) }
+
+    /// `rho:io:fs:native:1.0.0/open` — allocate a FileHandle via
+    /// `safe_open_verified` + Phase-2 real-open on Consensus
+    /// caps.  Non-verifying lifecycle.  Shadow-insert on replay
+    /// at leader's cached fd (load-bearing for Phase-2 fd-based
+    /// re-execute ops).  Added by slice 4.32.
+    pub fn fs_open() -> Par { byte_name(40) }
 }
 
 pub struct BodyRefs;
@@ -492,6 +499,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/entries` body-ref (slice 4.31).
     pub const FS_ENTRIES: i64 = 53;
+
+    /// `rho:io:fs:native:1.0.0/open` body-ref (slice 4.32).
+    pub const FS_OPEN: i64 = 40;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

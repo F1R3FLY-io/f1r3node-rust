@@ -41,6 +41,7 @@
 
 pub mod ack_hash;
 pub mod journal;
+pub mod open_impl;
 pub mod read_impl;
 pub mod readdir;
 pub mod unlink;
@@ -50,6 +51,7 @@ pub use journal::{
     finalize_failure_journal_via_table, journal_path_mutation_single_via_table,
     journal_path_mutation_two_via_table, journal_state_read_via_table, journal_truncate_via_table,
 };
+pub use open_impl::open_impl_via_table;
 pub use read_impl::read_impl_via_table;
 pub use readdir::{entry_stat_row, errno_reset, read_dir_capped, readdir_one_entry, reply_is_ok};
 pub use unlink::{target_dev_inode_at, unlink_leaf_via_dirfd, RemoveKind};
