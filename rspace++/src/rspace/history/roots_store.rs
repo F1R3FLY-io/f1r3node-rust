@@ -17,18 +17,12 @@ use crate::rspace::metrics_constants::{
 pub trait RootsStore: Send + Sync {
     fn current_root(&self) -> Result<Option<Blake2b256Hash>, RootError>;
 
-    fn validate_and_set_current_root(
-        &self,
-        key: Blake2b256Hash,
-    ) -> Result<Option<Blake2b256Hash>, RootError>;
-
     fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError>;
 
     /// Pure lookup: returns true if the root has been recorded in the store.
-    /// Companion to `validate_and_set_current_root` without the side-effect of
-    /// updating the current-root pointer. Used by joiner-side LFS sync to
-    /// check whether a root has already been imported before requesting it
-    /// from peers.
+    /// It never updates the current-root pointer. Used by joiner-side LFS sync
+    /// to check whether a root has already been imported before requesting
+    /// it from peers.
     fn contains_root(&self, key: &Blake2b256Hash) -> Result<bool, RootError>;
 }
 
@@ -71,22 +65,6 @@ impl RootsStoreInstances {
                 let maybe_decoded = bytes.map(Blake2b256Hash::from_bytes);
 
                 Ok(maybe_decoded)
-            }
-
-            fn validate_and_set_current_root(
-                &self,
-                key: Blake2b256Hash,
-            ) -> Result<Option<Blake2b256Hash>, RootError> {
-                let current_root_name: ByteBuffer = "current-root".as_bytes().to_vec();
-                let key_bytes = key.bytes();
-
-                match self.get_one(&key_bytes)? {
-                    Some(_) => {
-                        self.put(vec![(current_root_name, key_bytes)])?;
-                        Ok(Some(key))
-                    }
-                    None => Ok(None),
-                }
             }
 
             fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {

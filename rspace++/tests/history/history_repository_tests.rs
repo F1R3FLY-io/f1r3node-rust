@@ -717,21 +717,6 @@ impl RootsStore for InmemRootsStore {
         Ok(self.maybe_current_root.lock().unwrap().clone())
     }
 
-    fn validate_and_set_current_root(
-        &self,
-        key: Blake2b256Hash,
-    ) -> Result<Option<Blake2b256Hash>, RootError> {
-        let roots_lock = self.roots.lock().unwrap();
-        let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();
-
-        if roots_lock.contains(&key) {
-            *maybe_current_root_lock = Some(key);
-            Ok(maybe_current_root_lock.clone())
-        } else {
-            Ok(None)
-        }
-    }
-
     fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {
         let mut roots_lock = self.roots.lock().unwrap();
         let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();

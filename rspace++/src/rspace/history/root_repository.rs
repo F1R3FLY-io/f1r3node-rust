@@ -32,22 +32,6 @@ impl RootRepository {
         }
     }
 
-    pub fn validate_and_set_current_root(&self, root: Blake2b256Hash) -> Result<(), RootError> {
-        match self
-            .roots_store
-            .validate_and_set_current_root(root.clone())?
-        {
-            Some(_) => {
-                tracing::debug!("[RootRepository] validateAndSetCurrentRoot OK: {}", root);
-                Ok(())
-            }
-            None => {
-                tracing::error!(root = %root, "root not found in store: cannot set current root");
-                Err(RootError::RootNotFound(root))
-            }
-        }
-    }
-
     pub fn validate_root(&self, root: &Blake2b256Hash) -> Result<(), RootError> {
         if self.roots_store.contains_root(root)? {
             Ok(())
@@ -57,9 +41,8 @@ impl RootRepository {
         }
     }
 
-    /// Pure lookup: returns true if the root is recorded in the store.
-    /// Companion to `validate_and_set_current_root` without the side-effect
-    /// of updating the current-root pointer.
+    /// Pure lookup: returns true if the root is recorded in the store. It
+    /// never updates the current-root pointer.
     pub fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, RootError> {
         self.roots_store.contains_root(root)
     }
@@ -83,18 +66,6 @@ mod tests {
     impl RootsStore for InmemRootsStore {
         fn current_root(&self) -> Result<Option<Blake2b256Hash>, RootError> {
             Ok(self.current.lock().unwrap().clone())
-        }
-
-        fn validate_and_set_current_root(
-            &self,
-            key: Blake2b256Hash,
-        ) -> Result<Option<Blake2b256Hash>, RootError> {
-            if self.roots.lock().unwrap().contains(&key) {
-                *self.current.lock().unwrap() = Some(key.clone());
-                Ok(Some(key))
-            } else {
-                Ok(None)
-            }
         }
 
         fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {
@@ -137,8 +108,7 @@ mod tests {
         assert!(!repo.contains_root(&hash_for(42)).unwrap());
     }
 
-    /// The contract that distinguishes contains_root from
-    /// validate_and_set_current_root: a positive lookup must NOT mutate the
+    /// The contract of contains_root: a positive lookup must NOT mutate the
     /// current-root pointer. This is the explicit reason the API was added —
     /// LFS forward-horizon sync calls contains_root in a hot loop and any
     /// pointer churn would interfere with concurrent reset/checkpoint flows.
