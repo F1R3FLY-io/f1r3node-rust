@@ -547,6 +547,93 @@ until the decision lands.
 legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
 
+### Replication medium
+
+A replication medium is the state machine replication (SMR) mechanism of a
+shard. It orders commits, decides conflicts, finalizes commits, and keeps the
+membership view. The `ReplicationMedium` trait in the
+[replication boundary design](designs/replication-boundary.md) is its
+interface.
+
+**Preferred usage.** Use "replication medium" or "medium" for the mechanism
+behind the boundary. The four planned media are CBC Casper, the
+[RGB peer clique](peer-clique/GLOSSARY.md), [Casanova](casanova/GLOSSARY.md),
+and [Cordial Miners](cordial-miners/GLOSSARY.md).
+*Distinguish from* the execution machine (Rholang and RSpace++), which every
+medium shares.
+*Avoid*: "consensus engine" for the boundary, because the RGB peer clique and
+anchoring are not only consensus.
+
+### Mechanism identifier
+
+A mechanism identifier names the replication medium of a shard: `cbc`,
+`peer-clique`, `casanova`, `cordial`, or `stub` for tests.
+
+**Preferred usage.** Use in configuration and in the
+[shard replication binding](#shard-replication-binding).
+
+### Shard replication binding
+
+The shard replication binding is the mechanism identifier that a shard
+records when it starts. The binding never changes for the life of the shard.
+A node refuses to start a shard when its configured mechanism differs from
+the binding.
+
+**Preferred usage.** Use for the fixed mechanism of a shard.
+*Avoid*: "consensus switching" for a running shard. Switching does not exist.
+The RGB term "shard consensus selection" means the choice at shard start.
+
+### Commit
+
+A commit is the unit that a replication medium orders and finalizes. It has a
+pre-state, a set of deploys, a post-state, and evidence that only its medium
+can check. A CBC Casper block, a peer-clique per-transaction commit, a
+Casanova block, and a Cordial Miners block are commits.
+
+**Preferred usage.** Use "commit" at the boundary and the medium term inside
+one medium.
+*Distinguish from* a Git commit. Write "Git commit" when both appear.
+
+### Finality event
+
+A finality event states that a commit is irrevocable under the fault
+assumptions of its medium. It carries the post-state hash and the mechanism
+evidence. Examples of evidence are a clique oracle result, a quorum
+certificate, an FTM-observed set, and a final leader block.
+
+**Preferred usage.** Use at the boundary.
+*Distinguish from* an [anchor port](#anchor-port) result. An anchor
+commitment always follows a finality event.
+
+### Mechanism evidence
+
+Mechanism evidence is the opaque data that proves the order or the finality
+of a commit. Only the medium that produced it decodes it. Justifications and
+bonds, quorum certificates, FTM-observed sets, and blocklace positions are
+mechanism evidence.
+
+**Preferred usage.** Use when node code passes medium data without reading
+it.
+
+### Execution port
+
+The execution port is the only path from a replication medium to Rholang and
+RSpace++. It plays deploys, replays commits, and merges parent post-states for
+media with a DAG.
+
+**Preferred usage.** Use for the medium-to-execution interface.
+*Distinguish from* the replication medium, which never executes deploys
+itself.
+
+### Anchor port
+
+The anchor port publishes an anchor commitment for a finality event to Bitcoin
+layer 1 or to a Lightning channel, and reports its status. Every medium can
+use it. The RGB peer clique requires it.
+
+**Preferred usage.** Use for the anchoring interface.
+*Distinguish from* [Anchor](#anchor), which is a test-net node role.
+
 ## Architecture Stack Mapping
 
 - **Formal-verification stack** = Rocq mechanization (`formal/rocq/`), TLA+

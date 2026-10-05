@@ -714,3 +714,20 @@ invariant. Ledger README section 2.2 states that rule.
 and can require a FIP as a condition.
 *Avoid*: "FIPS approval" for one proposal, and "FIPS 204" or "FIPS 205",
 which are NIST signature standards and not this process.
+
+## Replication Boundary Mapping
+
+CBC Casper is the `cbc` [replication medium](../Glossary.md#replication-medium)
+of the [replication boundary design](../designs/replication-boundary.md). The
+table maps each boundary term to its Casper term. The Casper terms stay
+canonical inside Casper documents.
+
+| Boundary term | Casper term |
+|---|---|
+| [Commit](../Glossary.md#commit) | Block, with its parents and deploys |
+| [Finality event](../Glossary.md#finality-event) | A new [last finalized block (LFB)](#last-finalized-block-lfb) from the clique oracle |
+| [Mechanism evidence](../Glossary.md#mechanism-evidence) | Justifications, sequence number, bonds, and the fault tolerance value |
+| Membership view | Bonded validators and their stake |
+| `DagMedium` capability | Parents, [merge scope](#merge-scope), and the [finalized floor](#finalized-floor) |
+| `EquivocationEvidence` capability | Equivocation records of the [equivocation detector](#equivocation-detector) |
+| Proposal timing (`on_tick`) | Heartbeat proposal and [block proposal](#block-proposal) |

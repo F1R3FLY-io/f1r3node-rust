@@ -118,7 +118,24 @@ tasks:
       - "The document extends docs/artifacts/f1r3fly-consensus-neutral-sm.md and maps the needs of CBC Casper, Cordial Miners, Casanova, and the RGB peer-clique sidecar."
       - "The document resolves the OrderingMedium question of section 12 of the note."
       - "The document assigns each coupling-survey leak to a task and states the migration order."
+      - "Each supported mechanism has a glossary in the form of docs/casper/GLOSSARY.md, and docs/Glossary.md defines the shared boundary terms."
       - "A maintainer approves the document before code changes start."
+    decisions_2026_10_05:
+      - "D1: the core trait is ReplicationMedium."
+      - "D2: a shard binds one mechanism at start. The binding never changes, and no runtime switching exists."
+      - "D3: the deploy pool and the rejected-deploy buffer are generic node services. A medium has no deploy submission method."
+      - "D4: anchoring is available to every mechanism. RGB anchors to Bitcoin layer 1 and to Lightning state channels."
+      - "D5: each mechanism has its own glossary."
+    deliverables:
+      - docs/designs/replication-boundary.md
+      - docs/peer-clique/GLOSSARY.md
+      - docs/casanova/GLOSSARY.md
+      - docs/cordial-miners/GLOSSARY.md
+      - "docs/Glossary.md (nine boundary terms)"
+      - "docs/casper/GLOSSARY.md (boundary mapping)"
+      - "docs/artifacts/f1r3fly-consensus-neutral-sm.md (RGB and Casanova corrections, section 12 resolved)"
+    work_log: docs/work-logs/task-022-1-2026-10-05.md
+    review_status: "Draft complete. Maintainer approval pending."
   - id: TASK-022-2
     title: "Add the boundary interface crate and the CBC Casper adapter"
     status: pending
