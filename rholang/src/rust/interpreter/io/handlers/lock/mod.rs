@@ -15,11 +15,11 @@
 //   - `fs_release_lock` — release by `LockId`.  S4.7 hardening
 //     adds a holder-identity check (arity 3 incl. ack).  Added
 //     by slice 4.36.
+//   - `fs_release_all_for_holder` — deploy-end sweep.  Cancel-
+//     first / release-second ordering (B1 fix discipline).
+//     Added by slice 4.37.
 //
-// Yet to land:
-//
-//   - `fs_unlock_range` — release by (fd, offset, length)
-//     without needing the LockId handle.
+// Lock family 4/4 complete.
 //
 // Family: [`HandlerFamily::Lock`](super::super::handler_trait::family::HandlerFamily::Lock).
 //
@@ -43,4 +43,5 @@
 
 pub mod fs_lock_range;
 pub mod fs_lock_sequential;
+pub mod fs_release_all_for_holder;
 pub mod fs_release_lock;

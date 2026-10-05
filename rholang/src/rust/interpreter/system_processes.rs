@@ -419,6 +419,12 @@ impl FixedChannels {
     /// lock by `LockId` with holder-identity check.  Non-
     /// verifying; pure LockRegistry op.  Added by slice 4.36.
     pub fn fs_release_lock() -> Par { byte_name(64) }
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` — deploy-end
+    /// sweep: cancel all parked waiters for this holder, then
+    /// release all held locks.  Non-verifying.  Added by slice
+    /// 4.37.
+    pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
 }
 
 pub struct BodyRefs;
@@ -539,6 +545,10 @@ impl BodyRefs {
     /// `rho:io:fs:native:1.0.0/releaseLock` body-ref
     /// (slice 4.36).
     pub const FS_RELEASE_LOCK: i64 = 64;
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` body-ref
+    /// (slice 4.37).
+    pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
