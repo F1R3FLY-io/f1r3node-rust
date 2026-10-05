@@ -324,6 +324,12 @@ impl FixedChannels {
     /// with cmode-gated host-transient field stripping.  Verifying
     /// observation (slice 4.19).
     pub fn fs_stat() -> Par { byte_name(51) }
+
+    /// `rho:io:fs:native:1.0.0/read` — sequential fd-based read via
+    /// `libc::read`.  Verifying observation with
+    /// length-parameterized cost; advances shadow position by
+    /// bytes returned on all paths (slice 4.20).
+    pub fn fs_read() -> Par { byte_name(42) }
 }
 
 pub struct BodyRefs;
@@ -391,6 +397,9 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/stat` body-ref (slice 4.19).
     pub const FS_STAT: i64 = 51;
+
+    /// `rho:io:fs:native:1.0.0/read` body-ref (slice 4.20).
+    pub const FS_READ: i64 = 42;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
