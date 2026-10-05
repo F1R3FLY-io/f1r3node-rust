@@ -407,3 +407,123 @@ proptest! {
         prop_assert!(charged <= 32 + 16 * shared + 1);
     }
 }
+
+fn occurrence_key(occurrence: &NativeBudgetOccurrence) -> OccurrenceKey {
+    let path =
+        rspace_plus_plus::rspace::operation_context::CausalPath::from(occurrence.path.clone());
+    OccurrenceKey {
+        session: occurrence.session,
+        digest: path.digest(),
+        depth: path.len(),
+        last: path.last_segment(),
+        stage: occurrence.stage,
+    }
+}
+
+proptest! {
+    /// C7a (DR-85; `NativePathTrie.digest_chain_correct`): the digest-keyed
+    /// recording index reports a repeated occurrence exactly when the
+    /// path-keyed index does. The small session, segment and stage domains
+    /// make repeated occurrences frequent.
+    #[test]
+    fn digest_keyed_occurrences_match_path_keyed_index(
+        rows in prop::collection::vec(
+            (0_u8..2, prop::collection::vec((0_u64..3, 0_u64..3), 0..6), 0usize..3),
+            0..96,
+        ),
+    ) {
+        let stages = [
+            NativeAttemptStage::ProduceIntroduction,
+            NativeAttemptStage::ConsumeIntroduction,
+            NativeAttemptStage::Comm,
+        ];
+        let budget = host();
+        let mut by_digest = NativeIndex::<OccurrenceKey, ()>::default();
+        let mut by_path = NativeIndex::<NativeBudgetOccurrence, ()>::default();
+        let mut repeated = 0;
+        for (session, path, stage) in rows {
+            let occurrence = NativeBudgetOccurrence {
+                session: [session; 32],
+                path,
+                stage: stages[stage],
+            };
+            let key = occurrence_key(&occurrence);
+            let seen_by_digest = by_digest.get(&key, &budget).expect("lookup fits").is_some();
+            let seen_by_path = by_path.get(&occurrence, &budget).expect("lookup fits").is_some();
+            prop_assert_eq!(seen_by_digest, seen_by_path);
+            if seen_by_path {
+                repeated += 1;
+                continue;
+            }
+            let prepared = by_digest.prepare_insert(key, (), &budget).expect("insert fits");
+            by_digest.commit(prepared);
+            let prepared = by_path.prepare_insert(occurrence, (), &budget).expect("insert fits");
+            by_path.commit(prepared);
+        }
+        prop_assert_eq!(by_digest.len(), by_path.len());
+        prop_assert!(repeated <= 96);
+    }
+}
+
+/// C7a (DR-85): a comparison in the digest-keyed index charges a fixed number
+/// of bytes, so a lookup charge is bounded by the index height for every path
+/// depth. The path-keyed index scans the shared prefix, so its charge grows
+/// with the depth.
+#[test]
+fn digest_keyed_lookup_charge_is_independent_of_depth() {
+    fn lookup_bytes(depth: usize) -> (u64, u64) {
+        let setup = host();
+        let mut by_digest = NativeIndex::<OccurrenceKey, ()>::default();
+        let mut by_path = NativeIndex::<NativeBudgetOccurrence, ()>::default();
+        let occurrence = |leaf: u64| {
+            let mut path = vec![(7, 0); depth - 1];
+            path.push((leaf, 0));
+            NativeBudgetOccurrence {
+                session: [1; 32],
+                path,
+                stage: NativeAttemptStage::Comm,
+            }
+        };
+        for leaf in 0..32 {
+            let row = occurrence(leaf * 2);
+            let prepared = by_digest
+                .prepare_insert(occurrence_key(&row), (), &setup)
+                .expect("insert fits");
+            by_digest.commit(prepared);
+            let prepared = by_path
+                .prepare_insert(row, (), &setup)
+                .expect("insert fits");
+            by_path.commit(prepared);
+        }
+        let probe = occurrence(33);
+        let digest_budget = host();
+        assert!(by_digest
+            .get(&occurrence_key(&probe), &digest_budget)
+            .expect("lookup fits")
+            .is_none());
+        let path_budget = host();
+        assert!(by_path
+            .get(&probe, &path_budget)
+            .expect("lookup fits")
+            .is_none());
+        (
+            digest_budget
+                .usage(models::rust::host_work::HostWorkDimension::VerificationBytes)
+                .get(),
+            path_budget
+                .usage(models::rust::host_work::HostWorkDimension::VerificationBytes)
+                .get(),
+        )
+    }
+    let (shallow_digest, shallow_path) = lookup_bytes(1);
+    let (deep_digest, deep_path) = lookup_bytes(1_000);
+    let comparison = OCCURRENCE_KEY_COMPARISON_BYTES as u64;
+    let bound = height_bound(32) as u64 * comparison;
+    for charge in [shallow_digest, deep_digest] {
+        assert!(charge > 0);
+        assert_eq!(charge % comparison, 0);
+        assert!(charge <= bound);
+    }
+    assert!(deep_path > 100 * shallow_path);
+    assert!(deep_digest < deep_path / 100);
+}

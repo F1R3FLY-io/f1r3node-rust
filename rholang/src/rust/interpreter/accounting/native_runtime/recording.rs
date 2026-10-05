@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use models::rust::host_work::HostWorkDimension;
 
-use super::index::{reserve_vector, NativeIndex, PreparedInsert};
+use super::index::{reserve_vector, NativeIndex, OccurrenceKey, PreparedInsert};
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::reserve_work;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
@@ -32,7 +32,10 @@ pub struct NativeBudgetRecording {
 pub(super) struct NativeBudgetRecorder {
     pub(super) attempts: Vec<NativeBudgetAttempt>,
     pub(super) retries: Vec<NativeBudgetRetry>,
-    occurrences: NativeIndex<NativeBudgetOccurrence, ()>,
+    // Changed by C7a (DR-85): the index is keyed by the chained path digest,
+    // so a comparison no longer scans the path.
+    // occurrences: NativeIndex<NativeBudgetOccurrence, ()>,
+    occurrences: NativeIndex<OccurrenceKey, ()>,
     accepted: NativeIndex<(NativeAttemptStage, [u8; 32]), usize>,
     pub(super) invalid: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
@@ -45,6 +48,7 @@ pub(super) struct NativeBudgetRecorder {
 pub(in crate::rust::interpreter::accounting) struct NativeObservationPreparation {
     pub(super) generation: Arc<()>,
     pub(super) occurrence: NativeBudgetOccurrence,
+    pub(super) occurrence_key: OccurrenceKey,
     pub(super) observation: Arc<ByteObservation>,
     pub(super) charge: Option<PreparedNativePhloCharge>,
     pub(super) comparison_bytes: usize,
@@ -131,13 +135,7 @@ impl NativeRuntimeConfig {
     fn reserve_record(
         &mut self,
         prepared: &NativeObservationPreparation,
-    ) -> Result<
-        (
-            PreparedInsert<NativeBudgetOccurrence, ()>,
-            NativeBudgetOccurrence,
-        ),
-        InterpreterError,
-    > {
+    ) -> Result<(PreparedInsert<OccurrenceKey, ()>, NativeBudgetOccurrence), InterpreterError> {
         if self.replay_bound
             || !Arc::ptr_eq(&self.generation, &prepared.generation)
             || self.session != prepared.occurrence.session
@@ -154,6 +152,19 @@ impl NativeRuntimeConfig {
                 "native budget recording exceeds the attempt limit",
             ));
         }
+        // Changed by C7a (DR-85): the index key is a fixed-size copy, so only
+        // the attempt's copy of the path remains.
+        // work(
+        //     &self.host_work,
+        //     HostWorkDimension::VerificationOperations,
+        //     prepared
+        //         .occurrence
+        //         .path
+        //         .len()
+        //         .checked_mul(2)
+        //         .and_then(|count| count.checked_add(34))
+        //         .ok_or(InterpreterError::HostWorkRejected)?,
+        // )?;
         work(
             &self.host_work,
             HostWorkDimension::VerificationOperations,
@@ -161,26 +172,32 @@ impl NativeRuntimeConfig {
                 .occurrence
                 .path
                 .len()
-                .checked_mul(2)
-                .and_then(|count| count.checked_add(34))
+                .checked_add(34)
                 .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
         if self
             .recording
             .occurrences
-            .get(&prepared.occurrence, &self.host_work)?
+            .get(&prepared.occurrence_key, &self.host_work)?
             .is_some()
         {
             return Err(recording_error(
                 "native budget occurrence was already recorded",
             ));
         }
+        // Changed by C7a (DR-85): the key no longer copies the path.
+        // let bytes = prepared
+        //     .occurrence
+        //     .path
+        //     .len()
+        //     .checked_mul(size_of::<(u64, u64)>())
+        //     .and_then(|bytes| bytes.checked_mul(2))
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
         let bytes = prepared
             .occurrence
             .path
             .len()
             .checked_mul(size_of::<(u64, u64)>())
-            .and_then(|bytes| bytes.checked_mul(2))
             .ok_or(InterpreterError::HostWorkRejected)?;
         work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
         #[cfg(test)]
@@ -199,7 +216,9 @@ impl NativeRuntimeConfig {
             1,
             &self.host_work,
         )?;
-        let key = copy_occurrence(&prepared.occurrence)?;
+        // Changed by C7a (DR-85): the key is the fixed-size occurrence key.
+        // let key = copy_occurrence(&prepared.occurrence)?;
+        let key = prepared.occurrence_key;
         let insertion = self
             .recording
             .occurrences
@@ -344,8 +363,12 @@ impl NativeRuntimeConfig {
             .recording
             .occurrences
             .keys()
+            // Changed by C7a (DR-85): each key holds the depth of its path.
+            // .try_fold(0usize, |total, row| {
+            //     total.checked_add(row.path.len().checked_mul(size_of::<(u64, u64)>())?)
+            // })
             .try_fold(0usize, |total, row| {
-                total.checked_add(row.path.len().checked_mul(size_of::<(u64, u64)>())?)
+                total.checked_add(row.depth.checked_mul(size_of::<(u64, u64)>())?)
             })
             .ok_or(InterpreterError::HostWorkRejected)?;
         let bytes = size_of::<NativeBudgetAttempt>()

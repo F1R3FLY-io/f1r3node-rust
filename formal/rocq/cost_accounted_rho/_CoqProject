@@ -625,6 +625,7 @@ theories/IncrementalTreeBacking.v
 theories/OrderedLookupBound.v
 theories/NativeSharedReads.v
 theories/DetachedPathCompaction.v
+theories/NativePathTrie.v
 theories/OfferedOnlyActivation.v
 theories/GenesisVersionAdoption.v
 theories/NativePathDeltaCodec.v

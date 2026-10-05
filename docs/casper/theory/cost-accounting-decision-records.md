@@ -5676,3 +5676,78 @@ Tests:
   splitter, so the legacy flag took effect.
 
 **Cross-refs.** DR-74. Leaf `ofp-2-cap-c9-path-compaction`.
+
+## DR-85 — Causal paths carry a chained digest, and the recording index compares digests
+
+**Status.** Implemented 2026-10-05 for cap root cause C7a of epic 8946
+(batch B1, phase C). Its gate H5 holds: in the phase B probe, the recording
+occurrence index was 33.6% of the producer execution budget's
+`VerificationBytes` (169 MB of 502 MB).
+
+**Context.** The native recorder detects a repeated occurrence with an
+index of the recorded occurrences (`NativeBudgetRecorder::occurrences`). The
+index was keyed by `NativeBudgetOccurrence` (session, path, stage), and a
+comparison read the two paths segment by segment up to their first
+difference. The recorded paths share long prefixes, so each comparison on a
+search path read most of the path. The index also held a second copy of each
+path.
+
+**Decision.**
+
+1. Each node of a `CausalPath` stores the digest of its path. `push_back`
+   computes it in constant time from the parent digest:
+   - the root digest is Blake2b-256 over the domain tag
+     `f1r3fly/causal-path/v1` and the node-kind byte 0;
+   - a child digest is Blake2b-256 over the domain tag, the node-kind byte 1,
+     the parent digest and the two segment words in big-endian order.
+2. The recording index is keyed by `OccurrenceKey`: the session, the digest,
+   the depth, the last segment and the stage. A comparison charges a fixed
+   90 bytes and 7 operations, whatever the path depth.
+3. `reserve_record` copies the path once, for the attempt, instead of twice.
+   Its operation and `SearchStateBytes` charges count one copy.
+   `capture_recording` sums the depths of the keys.
+
+The replaced lines stay in the source, commented out with their reason.
+
+**Soundness.** Two paths have equal chained digests exactly when they are
+equal, if the child digest determines its parent digest and segment and no
+child digest equals the root digest. Blake2b-256 collision resistance and
+the node-kind byte justify that premise. The digest-keyed index therefore
+reports a repeat exactly when the path-keyed index does. The index order
+changes from path order to digest order, but only lookups use it:
+`NativeIndex::keys` iterates in insertion order.
+
+A digest collision would make the producer reject its own execution as a
+repeat. Validators do not use the recorder: they check the decoded journal
+independently. A collision therefore cannot make a validator accept a wrong
+value.
+
+**Scope.** This change is cost-accounting work. The native recorder and the
+causal-path digests exist only on this branch. The recording content and its
+encoding do not change. The change alters host-work charges of protocol 6,
+which is not yet released.
+
+**Verification.** `NativePathTrie.v` (part 1) proves without axioms:
+
+- `chain_snoc`: the digest of `p ++ [s]` is the child digest of the digest
+  of `p` and `s`;
+- `digest_chain_correct`: equal digests exactly when the paths are equal;
+- `occurrence_key_correct`: equal occurrence keys exactly when the sessions,
+  paths and stages are equal;
+- `unchained_digest_collides`: a negative control. A key that hashes only the
+  last segment gives two different paths the same key.
+
+Tests:
+
+- `path_digest_folds_the_segments` (`operation_context.rs`): the digest of a
+  path folds the child digest over its segments, and paths with a shared
+  prefix have equal digests exactly when they are equal.
+- `digest_keyed_occurrences_match_path_keyed_index` (`tests/index.rs`): on
+  generated occurrence sequences with frequent repeats, the digest-keyed
+  index reports the same repeats as the path-keyed index.
+- `digest_keyed_lookup_charge_is_independent_of_depth` (`tests/index.rs`): a
+  comparison charges 90 bytes, and a lookup stays within the index height
+  bound for paths of depth 1 and 1,000. The path-keyed lookup at depth 1,000
+  charges more than 100 times the digest-keyed lookup.
+
+**Cross-refs.** DR-74, DR-84. Leaf `ofp-2-cap-c7a-path-digests`.

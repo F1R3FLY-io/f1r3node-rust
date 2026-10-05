@@ -3,6 +3,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use models::rust::host_work::HostWorkDimension;
+use rspace_plus_plus::rspace::operation_context::PathDigest;
 
 use super::recording::work;
 use super::{HostWorkBudget, InterpreterError};
@@ -92,6 +93,28 @@ impl IndexKey for NativeBudgetOccurrence {
 
 impl IndexKey for (NativeAttemptStage, [u8; 32]) {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((2, 33)) }
+}
+
+/// The key of the recording occurrence index (C7a, DR-85): the session, the
+/// chained digest of the path, the path depth, the last segment and the
+/// stage. Two occurrences have equal keys exactly when their paths are
+/// equal, unless Blake2b-256 collides. A comparison reads a fixed number of
+/// bytes, whatever the path depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct OccurrenceKey {
+    pub(super) session: [u8; 32],
+    pub(super) digest: PathDigest,
+    pub(super) depth: usize,
+    pub(super) last: Option<(u64, u64)>,
+    pub(super) stage: NativeAttemptStage,
+}
+
+const OCCURRENCE_KEY_COMPARISON_BYTES: usize = 32 + 32 + size_of::<usize>() + 17 + 1;
+
+impl IndexKey for OccurrenceKey {
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
+        Ok((5, OCCURRENCE_KEY_COMPARISON_BYTES))
+    }
 }
 
 pub(super) fn height_bound(nodes: usize) -> usize {

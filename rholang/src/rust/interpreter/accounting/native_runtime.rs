@@ -211,6 +211,13 @@ impl RuntimeBudget {
                 path: order.path.to_vec(),
                 stage: observation.kind.into(),
             };
+            let occurrence_key = index::OccurrenceKey {
+                session,
+                digest: order.path.digest(),
+                depth: order.path.len(),
+                last: order.path.last_segment(),
+                stage: observation.kind.into(),
+            };
             let comparison_bytes =
                 super::native_phlo_rules::observation_comparison_bytes(observation, &host_work)
                     .map_err(|_| InterpreterError::HostWorkRejected)?;
@@ -229,6 +236,7 @@ impl RuntimeBudget {
             Ok(Some(NativeObservationPreparation {
                 generation: Arc::clone(&generation),
                 occurrence,
+                occurrence_key,
                 observation: Arc::clone(observation),
                 charge,
                 comparison_bytes,

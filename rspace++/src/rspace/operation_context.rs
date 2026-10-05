@@ -1,15 +1,46 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 
 pub type PathSegment = (u64, u64);
+
+/// The chained digest of a causal path (C7a, DR-85): the root digest for the
+/// empty path, and `child_path_digest(parent, segment)` for each segment.
+pub type PathDigest = [u8; 32];
+
+const PATH_DIGEST_DOMAIN: &[u8] = b"f1r3fly/causal-path/v1";
+
+static ROOT_PATH_DIGEST: LazyLock<PathDigest> = LazyLock::new(|| {
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(PATH_DIGEST_DOMAIN);
+    hasher.update([0]);
+    hasher.finalize().into()
+});
+
+/// The digest of the empty causal path.
+pub fn root_path_digest() -> PathDigest { *ROOT_PATH_DIGEST }
+
+/// The digest of the path `parent · segment`, from the digest of `parent`.
+pub fn child_path_digest(parent: &PathDigest, segment: PathSegment) -> PathDigest {
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(PATH_DIGEST_DOMAIN);
+    hasher.update([1]);
+    hasher.update(parent);
+    hasher.update(segment.0.to_be_bytes());
+    hasher.update(segment.1.to_be_bytes());
+    hasher.finalize().into()
+}
 
 struct PathNode {
     parent: Option<Arc<PathNode>>,
     ancestors: Vec<Arc<PathNode>>,
     segment: Option<PathSegment>,
     depth: usize,
+    digest: PathDigest,
 }
 
 #[derive(Clone)]
@@ -27,6 +58,12 @@ impl CausalPath {
             .filter_map(|node| node.segment)
     }
 
+    /// The chained digest of this path, computed when its last segment was
+    /// pushed (C7a, DR-85).
+    pub fn digest(&self) -> PathDigest { self.tail.digest }
+
+    pub fn last_segment(&self) -> Option<PathSegment> { self.tail.segment }
+
     pub fn new() -> Self {
         Self {
             tail: Arc::new(PathNode {
@@ -34,6 +71,7 @@ impl CausalPath {
                 ancestors: Vec::new(),
                 segment: None,
                 depth: 0,
+                digest: root_path_digest(),
             }),
         }
     }
@@ -54,6 +92,7 @@ impl CausalPath {
             ancestors,
             segment: Some(segment),
             depth: parent.depth + 1,
+            digest: child_path_digest(&parent.digest, segment),
         });
     }
 
@@ -180,7 +219,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::CausalPath;
+    use super::{CausalPath, child_path_digest, root_path_digest};
 
     fn comparison_sign(ordering: Ordering) -> i8 {
         match ordering {
@@ -252,6 +291,32 @@ mod tests {
             prop_assert_eq!(extended_prefix.last(), Some(&(u64::MAX, u64::MAX)));
         }
 
+
+        /// C7a (DR-85; `NativePathTrie.digest_chain_correct`): the digest of
+        /// a path folds `child_path_digest` over its segments from the root
+        /// digest, and two paths have equal digests exactly when they are
+        /// equal. The small segment domain makes equal paths frequent.
+        #[test]
+        fn path_digest_folds_the_segments(
+            prefix in prop::collection::vec((0_u64..3, 0_u64..3), 0..32),
+            left_suffix in prop::collection::vec((0_u64..3, 0_u64..3), 0..4),
+            right_suffix in prop::collection::vec((0_u64..3, 0_u64..3), 0..4),
+        ) {
+            let mut left = prefix.clone();
+            left.extend(left_suffix);
+            let mut right = prefix;
+            right.extend(right_suffix);
+            let folded = left
+                .iter()
+                .fold(root_path_digest(), |digest, segment| child_path_digest(&digest, *segment));
+            let persistent_left = CausalPath::from(left.clone());
+            let persistent_right = CausalPath::from(right.clone());
+
+            prop_assert_eq!(persistent_left.digest(), folded);
+            prop_assert_eq!(persistent_left.digest() == persistent_right.digest(), left == right);
+            prop_assert_eq!(persistent_left.last_segment(), left.last().copied());
+            prop_assert_eq!(CausalPath::new().digest(), root_path_digest());
+        }
 
         #[test]
         fn causal_path_sort_preserves_vec_sort(
