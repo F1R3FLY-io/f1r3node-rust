@@ -25,7 +25,9 @@
 //   - `observation`: fs_flush (4.14), fs_tell (4.15), fs_seek (4.16),
 //     fs_size (4.17), fs_exists (4.18), fs_stat (4.19), fs_read (4.20),
 //     fs_read_at (4.21) registered.  fs_entries yet to land.
-//   - `mutation`: yet to land.
+//   - `mutation`: fs_truncate (slice 4.24) registered.  fs_chmod,
+//     fs_chown, fs_write, fs_write_at, fs_rename, fs_copy_file,
+//     fs_remove_file yet to land.
 //   - `stream`: fs_entries_stream_close (slice 4.22) registered.
 //     fs_entries_stream_open / _next yet to land.
 //   - `lock`: yet to land.
@@ -33,5 +35,6 @@
 
 pub mod helpers;
 pub mod lifecycle;
+pub mod mutation;
 pub mod observation;
 pub mod stream;
