@@ -17,11 +17,12 @@
 //   - `fs_rename` — two-endpoint path + cmode; renameat.  First
 //     two-endpoint mutation; exercises
 //     `journal_path_mutation_two_via_table`.  Added by slice 4.26.
+//   - `fs_chown` — path + owner + group + cmode; fchownat.  First
+//     NON-verifying mutation (Consensus caps rejected at
+//     parse_content for NSS-divergence).  Added by slice 4.27.
 //
 // Yet to land (listed roughly in handler-migration order):
 //
-//   - `fs_chown` — owner/group mutation.  Consensus caps rejected
-//     (host uid/gid state is not deterministic across validators).
 //   - `fs_write` / `fs_write_at` — byte-payload mutation; length-
 //     parameterized cost via `post_reply_supplement`.
 //   - `fs_copy_file` — two-endpoint mutation with byte-count reply.
@@ -31,5 +32,6 @@
 // Family: [`HandlerFamily::Mutation`](super::super::handler_trait::family::HandlerFamily::Mutation).
 
 pub mod fs_chmod;
+pub mod fs_chown;
 pub mod fs_rename;
 pub mod fs_truncate;
