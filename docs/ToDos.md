@@ -369,11 +369,16 @@ tasks:
       - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
-    status: in_progress
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-10-02T15:30:00Z
+    status: review
+    reopened_at: 2026-10-05
+    reopened_reason: "The PR #622 review of 2026-10-05 found two probe defects. A container that stopped during a sample caused a false breach. An unreadable rotated container log was skipped without a report. The fix changes the driver and the disk fixture, so the acceptance of 2026-10-04 does not cover the new bytes."
+    resolution: "First version implemented in 83a41b564 (PR #622). Review package casper-soak-log-budget-guardian-20261004-01 at 6ea45dc8f, accepted by jltatbeach in PR #622 comment 5983133741. The acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 and the ledger records of the driver and the disk fixture carry the new digests."
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
     mirrored_as: TASK-017-17
     design: docs/casper/design/soak-log-budget-guardian.md
+    implementation_status: "Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The driver samples the container json-file log and the node log directory of each owned container, refuses admission on an unreadable probe, and breaches on 3 strikes or one sample at two times the budget. Ten log scenarios in scripts/bench/test-soak-disk-admission.sh pass in the disposable container, and the breach and refusal scenarios fail against the previous driver. CLAIM-SOAK-001 records the log caps as enforced. The 2026-10-05 fix skips a container that stops during a sample and fails the probe on a rotated log that exists but cannot be read. Scenarios log-probe-vanished and log-rotated-unreadable pass, and both fail against the driver at 514eb3026. All 12 log scenarios pass. Pending: a new review package and maintainer acceptance for the changed driver and fixture."
     owner_branch: formal/soak-casper-consensus
     blocked_by: []
     blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
@@ -386,7 +391,7 @@ tasks:
 ---
 ```
 
-**Current state:** Created on 2026-09-23 after the disk incident. No branch exists yet. The fix branch is created from dev in the single checkout when the observation branch has no uncommitted work.
+**Current state:** TASK-020-1, TASK-020-2, and TASK-020-3 merged to dev through PR #451 on 2026-10-03 and reached master with the soak stack. TASK-020-4 is implemented on PR #622: the soak guardian samples the node log directory and the container json-file size, and CLAIM-SOAK-001 records the log caps as enforced. The maintainer accepted the first version on 2026-10-04. The probe fix of 2026-10-05 waits for a new review package and acceptance, and no soak has run the guardian yet. Also open: the TASK-020-1 verification status and the system-integration main promotion revision of TASK-020-3.
 
 ---
 
@@ -1912,11 +1917,15 @@ tasks:
 
   - id: TASK-017-17
     title: "Enforce the node log budgets in the soak guardian"
-    status: in_progress
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-10-02T15:30:00Z
+    status: review
+    reopened_at: 2026-10-05
+    resolution: "See TASK-020-4. Accepted in PR #622 comment 5983133741."
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
     created_at: 2026-10-02
     mirror_of: TASK-020-4
+    implementation_status: "See TASK-020-4. Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04 and accepted. The probe fix of 2026-10-05 needs a new review package and maintainer acceptance."
     branch: formal/soak-casper-consensus
     design: docs/casper/design/soak-log-budget-guardian.md
     placement_note: "Recorded before TASK-017-15 so that the TASK-017-16 record of branch 4 merges without a conflict."

@@ -21,6 +21,8 @@ references:
 
 With disk protection enabled, the soak driver never starts an iteration from a free-space sample that is missing, malformed, or below floor plus band. It never starts one after its guardian process has died. During an iteration, the guardian records a breach before it stops the writers. A dead guardian or an unavailable sample stops the iteration. Every probe and attribution command runs under a deadline. A retained breach marker blocks the next segment.
 
+With a node log budget enabled, the guardian also samples the container json-file log and the node log directory of each owned node container. It records a breach and stops the writers after three consecutive samples over a budget, or one sample at two times a budget. A log probe that cannot be read refuses admission before work and is a breach during work.
+
 ## Implementation surface
 
 | Behavior | Driver symbols |
@@ -30,15 +32,17 @@ With disk protection enabled, the soak driver never starts an iteration from a f
 | Emergency | The guardian loop, `disk_diagnostics_bounded`, `disk_guardian_diagnostics`, `guardian_stamp_health_tag` |
 | Supervision | The iteration watcher loop over `HOST_GUARDIAN_PID` and `HOST_GUARDIAN_BREACH` |
 | Restart | The `HOST_GUARDIAN_BREACH` recovery before the first iteration |
+| Log budgets | `log_budget_sample`, `log_budget_probe`, `log_file_bytes`, `log_budget_refusal`, `guardian_log_breached` |
 
 ## Checks
 
 | Check | Command | Status |
 | --- | --- | --- |
 | Bounded models, six registered standalone models, and sixty-one controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
-| Consumer storage budget | `MC_SoakStorageBudget` invariant `WithinBudget`, with `deploy_storage/MC_DeployStorageBound` for the deploy cap | Proven in the model. Block, log, and history caps are assumptions until the node enforces them |
+| Consumer storage budget | `MC_SoakStorageBudget` invariant `WithinBudget`, with `deploy_storage/MC_DeployStorageBound` for the deploy cap | Proven in the model. Block and history caps are assumptions until the node enforces them. The log caps are enforced: see the next row |
+| Node log caps (TASK-020-4) | The guardian checks `SOAK_CONTAINER_LOG_BUDGET_MB` (default 400) and `SOAK_NODE_LOG_BUDGET_MB` (default 2560) against the EPIC-020 source caps. The ten `log-*` scenarios of `scripts/bench/test-soak-disk-admission.sh` are the evidence. They cover the budgets, the refusal, the sudo fallback, disabled budgets, the range check, and a writer at its descriptor limit | Green locally. The breach and refusal scenarios fail against the driver without the log guardian |
 | Conditional no-overrun theorem | `MC_SoakDiskGuardian` invariant `NoOverrun` under `FloorCoversReaction` and `BoundTermination` | Proven in the model. The rate premise awaits the timeline measurement, and the termination premise awaits D2 |
-| Container regressions, 42 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
+| Container regressions, 52 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally. CI runs the same command |
 | Host driver regression, band scenario | `scripts/bench/test-run-merge-recovery-soak.sh` | Green locally and in CI |
 
 ## Pending obligations
