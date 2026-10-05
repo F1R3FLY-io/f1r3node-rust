@@ -55,6 +55,9 @@ pub mod native_phlo_rules;
 pub mod phlo_execution;
 pub mod economic_failure;
 mod native_runtime;
+/// D-M4 (DR-91): the counting-allocator helper for tests outside this module.
+#[cfg(test)]
+pub(crate) use native_runtime::clone_backing::tests::measured as measured_allocations;
 pub(crate) use native_runtime::{clone_backing, NativeAuthorityCheckpoint};
 pub use native_runtime::{
     decode_native_budget_recording, decode_native_operation_journal,

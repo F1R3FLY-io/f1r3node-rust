@@ -626,6 +626,7 @@ theories/CandidateReadCoverage.v
 theories/ReplayAuthorityPrepareCoverage.v
 theories/ResultBackingCoverage.v
 theories/NativeDuplicatePrefilter.v
+theories/FreeMapExtraction.v
 theories/IncrementalTreeBacking.v
 theories/OrderedLookupBound.v
 theories/NativeSharedReads.v

@@ -6165,3 +6165,60 @@ The existing stored-consume test, which stores continuations with equal
 (default) sources, passes unchanged.
 
 **Cross-refs.** DR-83 (C5). Leaf `ofp-2-cap-d-a4-duplicate-prefilter`.
+
+## DR-91 — Bound values move out of the owned free map
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A3 of epic 8946 (D-M4
+of the Phase D plan).
+
+**Context.** After a successful spatial match, `Matcher::get_with_context`
+(`matcher/match.rs`) takes the free map out of the matcher context and
+builds the bound values of levels `0..free_count`. For every level it
+inspected the whole free map, looked the level up, and copied the bound
+value; the map was dropped right after. In the gateway funding block the map
+inspections charged about 45 MB and the copies about 20 MB of
+VerificationBytes per validator replay. The charge was quadratic in the
+number of bindings.
+
+**Decision.**
+
+1. The extraction moves into `Matcher::extract_bound_pars`, which consumes
+   the owned free map (a `BTreeMap<i32, Par>`) in key order. For each level
+   it skips the keys below the level, one operation each, and takes the key
+   equal to the level, if any, charging one operation and the bytes of the
+   moved slot. A missing level binds the default `Par`, as before.
+2. The bound values are moved, not copied. The bindings that are skipped
+   (keys below a level, such as negative keys) or left over (keys at or
+   above `free_count`) are dropped with the map, as before.
+3. The replaced loop stays in the source, commented out with its reason. A
+   test-only re-export `accounting::measured_allocations` gives tests outside
+   the accounting module the counting-allocator helper.
+
+**Soundness.** The keys of a `BTreeMap` come out in ascending order, so the
+cursor reaches each level's key, if present, before any larger key. The
+cursor extraction therefore returns exactly the per-level lookups. Each moved
+value was already charged for its copy and cleanup when the matcher built
+it, and the legacy code dropped the same map. The charge depends only on the
+number of keys and levels, so every replay computes it identically.
+
+**Scope.** Cost-accounting work: the metered matcher exists for native
+replay on this branch; the unmetered matcher uses the same extraction, which
+returns the same values. No encoding, root or event changes.
+
+**Verification.** `FreeMapExtraction.v` proves without axioms
+`extraction_by_move_equals_lookup` (for a sorted map and strictly increasing
+levels, the cursor extraction equals the lookups at those levels) and
+`legacy_extraction_charge_quadratic`, with the negative control
+`legacy_extraction_charge_example`.
+
+Tests in `matcher/match.rs`:
+
+- `bound_pars_by_move_equal_lookup_extraction` (256 cases): maps with keys
+  from -3 to 8, including negative, missing and out-of-range keys, give the
+  legacy lookup values.
+- `extraction_charge_independent_of_binding_sizes`: 512-expression bindings
+  leave the charge unchanged.
+- `extraction_allocates_no_binding_copy`: the extraction allocates only the
+  result vector (counting allocator).
+
+**Cross-refs.** DR-88. Leaf `ofp-2-cap-d-a3-bound-values-by-move`.
