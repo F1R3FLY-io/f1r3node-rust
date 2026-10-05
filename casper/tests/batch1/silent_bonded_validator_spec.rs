@@ -86,6 +86,18 @@ async fn run_rounds(nodes: &mut [TestNode], shard_id: &str, first_deploy: i32) {
 /// does not propose. Returns the nodes after `ROUNDS` blocks, with the newcomer
 /// active at the last finalized block.
 async fn network_with_a_silent_newcomer(node_count: usize) -> (Vec<TestNode>, String) {
+    network_with_newcomer_stake(node_count, 1000, 0).await
+}
+
+/// `network_with_a_silent_newcomer` with the newcomer's bond and the on-chain
+/// fault-tolerance threshold as parameters. At the default threshold of 0 silence
+/// stalls finalization only above half the stake; the shipped 0.67 stalls from
+/// about 17%, where a geometry under a third exercises the filter.
+async fn network_with_newcomer_stake(
+    node_count: usize,
+    bond_amount: i64,
+    ftt_ppm: i64,
+) -> (Vec<TestNode>, String) {
     let validator_key_pairs = vec![
         DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
         DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
@@ -100,6 +112,7 @@ async fn network_with_a_silent_newcomer(node_count: usize) -> (Vec<TestNode>, St
         .collect();
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
     parameters.2.proof_of_stake.epoch_length = 4;
+    parameters.2.proof_of_stake.fault_tolerance_threshold_ppm = ftt_ppm;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -113,7 +126,8 @@ async fn network_with_a_silent_newcomer(node_count: usize) -> (Vec<TestNode>, St
         node.allow_empty_blocks = true;
     }
 
-    let bond = bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone())).unwrap();
+    let bond =
+        bonding_util::bonding_deploy(bond_amount, &DEFAULT_SEC, Some(shard_id.clone())).unwrap();
     TestNode::propagate_block_at_index(&mut nodes, 0, &[bond])
         .await
         .unwrap();
@@ -226,6 +240,14 @@ async fn a_newcomer_that_starts_its_node_is_accepted_and_then_counts() {
         );
     }
 
+    let before = nodes[0]
+        .casper
+        .last_finalized_block()
+        .await
+        .unwrap()
+        .body
+        .state
+        .block_number;
     run_rounds(&mut nodes, &shard_id, 3000).await;
     let lfb = nodes[0].casper.last_finalized_block().await.unwrap();
     assert!(
@@ -233,5 +255,79 @@ async fn a_newcomer_that_starts_its_node_is_accepted_and_then_counts() {
         "the newcomer's stake must count from its first block (#{}), but LFB is #{}",
         first.body.state.block_number,
         lfb.body.state.block_number
+    );
+    assert!(
+        lfb.body.state.block_number >= before,
+        "finalization regressed from #{before} to #{}",
+        lfb.body.state.block_number
+    );
+}
+
+/// The newcomer holds 4 of 13 stake, under a third, at the shipped 0.67 threshold
+/// where its silence stalls finalization without the filter. It is kept off the
+/// rounds after a block finalizes, so it proposes a sibling from a stale view with
+/// its stake counted again. No two nodes may finalize mutually unreachable blocks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_in_model_silent_newcomer_cannot_finalize_a_fork_after_it_returns() {
+    let (mut nodes, shard_id) = network_with_newcomer_stake(4, 4, 670_000).await;
+
+    for round in 0..6 {
+        let deploy =
+            construct_deploy::basic_deploy_data(5000 + round, None, Some(shard_id.clone()))
+                .unwrap();
+        TestNode::propagate_block_at_index(&mut nodes[..3], round as usize % 3, &[deploy])
+            .await
+            .unwrap();
+    }
+
+    let deploy = construct_deploy::basic_deploy_data(6000, None, Some(shard_id.clone())).unwrap();
+    let sibling = TestNode::propagate_block_at_index(&mut nodes, 3, &[deploy]).await;
+
+    for round in 0..8 {
+        let deploy =
+            construct_deploy::basic_deploy_data(7000 + round, None, Some(shard_id.clone()))
+                .unwrap();
+        let _ = TestNode::propagate_block_at_index(&mut nodes[..3], round as usize % 3, &[deploy])
+            .await;
+    }
+
+    let mut lfb_hashes = Vec::new();
+    let mut lfb_numbers = Vec::new();
+    for node in nodes.iter() {
+        let lfb = node.casper.last_finalized_block().await.unwrap();
+        lfb_hashes.push(lfb.block_hash.clone());
+        lfb_numbers.push(lfb.body.state.block_number);
+    }
+
+    // A merged sibling is reachable and benign; only unreachable tips diverge.
+    let dag = nodes[0].block_dag_storage.get_representation().unwrap();
+    let closure = |start: &models::rust::block_hash::BlockHash| {
+        let mut seen = std::collections::HashSet::new();
+        let mut queue = vec![start.clone()];
+        while let Some(hash) = queue.pop() {
+            if !seen.insert(hash.clone()) {
+                continue;
+            }
+            if let Ok(meta) = dag.lookup_unsafe(&hash) {
+                queue.extend(meta.parents);
+            }
+        }
+        seen
+    };
+    let incompatible: Vec<(usize, usize)> = (0..lfb_hashes.len())
+        .flat_map(|i| ((i + 1)..lfb_hashes.len()).map(move |j| (i, j)))
+        .filter(|(i, j)| {
+            !closure(&lfb_hashes[*i]).contains(&lfb_hashes[*j])
+                && !closure(&lfb_hashes[*j]).contains(&lfb_hashes[*i])
+        })
+        .collect();
+    assert!(
+        incompatible.is_empty(),
+        "nodes finalized mutually unreachable blocks: pairs {incompatible:?}, LFBs \
+         {lfb_numbers:?}, sibling #{}",
+        match &sibling {
+            Ok(block) => block.body.state.block_number,
+            Err(_) => -1,
+        }
     );
 }
