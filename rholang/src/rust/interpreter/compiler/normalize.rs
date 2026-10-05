@@ -354,25 +354,56 @@ pub fn normalize_ann_proc<'ast>(
             channel,
             send_type,
             inputs,
+            params,
         } => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_send_normalizer::normalize_p_send;
-            normalize_p_send(channel, send_type, inputs, input, _env, parser)
+            normalize_p_send(
+                channel,
+                send_type,
+                inputs,
+                params.as_ref(),
+                input,
+                _env,
+                parser,
+            )
         }
 
         // SendSync - handle synchronous send operations
         Proc::SendSync {
             channel,
             inputs,
+            params,
             cont,
         } => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_send_sync_normalizer::normalize_p_send_sync;
-            normalize_p_send_sync(channel, inputs, cont, &proc.span, input, _env, parser)
+            normalize_p_send_sync(
+                channel,
+                inputs,
+                params.as_ref(),
+                cont,
+                &proc.span,
+                input,
+                _env,
+                parser,
+            )
         }
 
         // New - handle name declarations and scoping
         Proc::New { decls, proc } => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_new_normalizer::normalize_p_new;
             normalize_p_new(decls, proc, input, _env, parser)
+        }
+
+        // UseBlock - handle the Reified RSpaces `use s { P }` block
+        Proc::UseBlock { space, proc } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_use_block_normalizer::normalize_p_use_block;
+            normalize_p_use_block(space, proc, input, _env, parser)
+        }
+
+        // FreeTheory - handle the Reified RSpaces theory reference `free Th(args)`
+        Proc::FreeTheory { name, args } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_free_theory_normalizer::normalize_p_free_theory;
+            normalize_p_free_theory(name, args, input, _env, parser)
         }
 
         // Contract - handle contract declarations

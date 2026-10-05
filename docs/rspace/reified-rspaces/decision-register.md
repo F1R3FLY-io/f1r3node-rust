@@ -674,8 +674,9 @@ The full encoding table after this decision:
 **Statement.**
 
 - This is item UD-2 of the P3 design pass.
-- A tree-sitter external scanner (`rholang-tree-sitter/src/scanner.c`) emits the `use` keyword only when the next token starts a space name.
-- The scanner emits the `free` keyword only when the next token is an identifier that is not a baseline keyword.
+- A tree-sitter external scanner (`rholang-tree-sitter/src/scanner.c`) emits the `use` keyword only when separators follow, then a space name, then `{`. A space name is an identifier outside the USE exclusion table, `_`, or `@` with a simple quoted process.
+- The scanner emits the `free` keyword only when separators follow, then an identifier outside the FREE exclusion table, then `(`.
+- The exclusion tables (USE 11 words, FREE 11 words, QUOTE 5 words) come mechanically from the baseline `grammar.json` (parser commit `6548aec`).
 - These sequences are never valid at the baseline, so every program that parses today parses unchanged.
 
 **User's words.** "Lookahead (Recommended)"
@@ -749,11 +750,11 @@ The plan also records two items under this decision:
 - UD-9 resolved: the same resolution as [decision 25](#decision-25).
 - Identifier rule: it implements the rule of [decision 21](#decision-21) that decoders reject every non-canonical form.
   - A param key or a theory name that a decoder accepts must be one that the frontend can produce.
-  - `models/src/rust/reified/validation.rs` holds one constant word list.
+  - `models/src/rust/reified/validation.rs` holds two constant word lists: the 26 words that a param key rejects (`REJECTED_PARAM_KEYS`), and the 18 words that a theory name rejects (`REJECTED_THEORY_NAMES`).
   - A P3b test checks every word-shaped string token of `grammar.js` against the parser.
   - `x!(d; w=1)` must parse as key `w` exactly when the validators accept `w`.
   - `free w()` must parse as a theory call exactly when the validators accept `w` as a theory name.
-  - `Encoding.v` models the same predicate.
+  - `Encoding.v` models the same two predicates.
   - The builtin theories `Nat`, `Int`, `String`, `Bool`, and `Any` must be accepted.
 
 **User's words.** First "New networks only", and then "the better solution is to stage rollout once the implementation is complete, which is an ops problem unrelated to the current campaign".
@@ -835,7 +836,7 @@ A join into an ordered collection needs an envelope with several `ord` values an
 
 **Reason.** With a peek waiter at the head of a queue, a stored copy of the datum can match the next waiter.
 That pending match breaks the no-pending-match invariant of the space.
-The re-offer equals the re-produce of the baseline reducer (`reduce.rs:973-1008`), so the events and the observer calls stay equal to those of the host.
+The re-offer equals the re-produce of the baseline reducer (`reduce.rs:977-1012`), so the events and the observer calls stay equal to those of the host.
 
 ### <a id="decision-31"></a>Decision 31: Every operation on an ordered collection bumps its counter
 
@@ -875,13 +876,13 @@ With a counter step on every operation, both cases race on the counters, and mer
 **Statement.** The user approved four changes of the plan text, items A5, A6, A7, and A21 of the P4 design.
 
 - A5: `canonical_inner_channel_bytes` is the bincode of the sorted Par, which is the preimage of the store identity. Protocol Buffers encodes `locally_free`, so prost bytes would split one store channel into two keys.
-- A6: `HANDLE_OP` is bound to the URN `rho:reified:internal:handleOp`. The baseline binds every system definition to a URN (`rho_runtime.rs:1569-1575`), and `registry_lookup` serves any key.
+- A6: `HANDLE_OP` is bound to the URN `rho:reified:internal:handleOp`. The baseline binds every system definition to a URN (`rho_runtime.rs:1574-1580`), and `registry_lookup` serves any key.
 - A6, continued: the operation accepts a call only with the unforgeable `this`. It must be a `GPrivate` of exactly 34 bytes with KIND H or h, and its config record `C(sid)` must exist.
 - A6, continued: this replaces the `GByteArray(sid)` forwarder of I-2, which would leak the capability through `config` and `toByteArray`.
 - A7: P2 implements the send hook as the same-signature swap of `self.produce(` for `self.reified_produce(`. The function `reified_produce` splits the trailing params first, and it fails closed as decision 22 says.
 - A7, continued: the H2 arm is one line without a guard, of at most 100 columns, for example `eval_marker`. The reason is that H1 admits only marker tuples into process position.
 - A21: a persistent send (`!!`) to a two-byte `0xE0` operation channel, or to an H or h handle, aborts the deploy. The two-byte channels are the factories, `getSpaceAgent`, `assertEqual`, `vector`, and the internal operations.
-- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:709-775`, `1010-1058`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
+- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:713-779`, `1014-1062`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
 
 **User's words.** "Approve all four (Recommended)"
 

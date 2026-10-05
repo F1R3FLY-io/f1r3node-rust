@@ -257,12 +257,17 @@ impl ParBuilderUtil {
         let name_decls: Vec<NameDecl<'ast>> = decls
             .into_iter()
             .map(|var| match var {
-                Var::Id(id) => NameDecl { id, uri: None },
+                Var::Id(id) => NameDecl {
+                    id,
+                    space: None,
+                    uri: None,
+                },
                 Var::Wildcard => NameDecl {
                     id: Id {
                         name: "_",
                         pos: SourcePos { line: 0, col: 0 },
                     },
+                    space: None,
                     uri: None,
                 },
             })
@@ -408,6 +413,7 @@ impl ParBuilderUtil {
                 name,
                 pos: SourcePos { line: 0, col: 0 },
             },
+            space: None,
             uri: None,
         }
     }

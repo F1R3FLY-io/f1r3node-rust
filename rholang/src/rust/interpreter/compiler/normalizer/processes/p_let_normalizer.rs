@@ -119,6 +119,7 @@ pub fn normalize_p_let<'ast>(
                             pos: variable_span.start,
                         })),
                     },
+                    query_spec: None,
                 };
                 input_binds.push(smallvec::SmallVec::from_vec(vec![bind]));
             } else {
@@ -150,6 +151,7 @@ pub fn normalize_p_let<'ast>(
                             pos: variable_span.start,
                         })),
                     },
+                    query_spec: None,
                 };
                 input_binds.push(smallvec::SmallVec::from_vec(vec![bind]));
             }
@@ -204,6 +206,7 @@ pub fn normalize_p_let<'ast>(
                         name: parser.ast_builder().alloc_str(&name),
                         pos: decl_span.start,
                     },
+                    space: None,
                     uri: None,
                 }
             })

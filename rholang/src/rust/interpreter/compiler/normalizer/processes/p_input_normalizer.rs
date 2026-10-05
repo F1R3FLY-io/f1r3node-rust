@@ -18,6 +18,9 @@ use crate::rust::interpreter::compiler::normalizer::cost_accounting::sig::{
     signature_to_wire, wire_signature_connective_used, wire_signature_locally_free,
 };
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
+use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{
+    alloc_desugared_send, check_query_source, normalize_bind_source,
+};
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
 use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_binds;
@@ -95,7 +98,8 @@ pub fn normalize_p_input<'ast>(
                 ),
                 |(sends, continuation), bind| {
                     match bind {
-                        Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {
+                        Bind::Linear { lhs, rhs, .. } | Bind::Signed { lhs, rhs, .. } => {
+                            check_query_source(bind)?;
                             let signature = match bind {
                                 Bind::Signed { sig, .. } => Some(sig.clone()),
                                 _ => None,
@@ -130,7 +134,11 @@ pub fn normalize_p_input<'ast>(
                                     let rhs = Source::Simple { name: *name };
                                     list_linear_bind.push(match signature {
                                         Some(sig) => Bind::Signed { lhs, rhs, sig },
-                                        None => Bind::Linear { lhs, rhs },
+                                        None => Bind::Linear {
+                                            lhs,
+                                            rhs,
+                                            query_spec: None,
+                                        },
                                     });
 
                                     // Add send: temp!()
@@ -154,13 +162,18 @@ pub fn normalize_p_input<'ast>(
                                     Ok((sends, new_continuation))
                                 }
 
-                                Source::SendReceive { name, inputs, .. } => {
+                                Source::SendReceive {
+                                    name,
+                                    inputs,
+                                    params,
+                                } => {
                                     // SendReceive desugaring: x <- name!(args) becomes new temp in { name!(temp, args) | x <- temp }
                                     list_name_decl.push(rholang_parser::ast::NameDecl {
                                         id: rholang_parser::ast::Id {
                                             name: parser.ast_builder().alloc_str(&identifier),
                                             pos: SourcePos { line: 0, col: 0 },
                                         },
+                                        space: None,
                                         uri: None,
                                     });
 
@@ -170,7 +183,11 @@ pub fn normalize_p_input<'ast>(
                                     };
                                     list_linear_bind.push(match signature {
                                         Some(sig) => Bind::Signed { lhs, rhs, sig },
-                                        None => Bind::Linear { lhs, rhs },
+                                        None => Bind::Linear {
+                                            lhs,
+                                            rhs,
+                                            query_spec: None,
+                                        },
                                     });
 
                                     // Prepend temp variable to inputs
@@ -184,10 +201,11 @@ pub fn normalize_p_input<'ast>(
 
                                     // Create new send
                                     let new_send = AnnProc {
-                                        proc: parser.ast_builder().alloc_send(
-                                            rholang_parser::ast::SendType::Single,
+                                        proc: alloc_desugared_send(
+                                            parser,
                                             *name,
                                             &new_inputs,
+                                            params.as_deref(),
                                         ),
                                         span: SourceSpan {
                                             start: SourcePos { line: 0, col: 0 },
@@ -252,7 +270,7 @@ pub fn normalize_p_input<'ast>(
         let processed_receipts: Result<Vec<_>, InterpreterError> = flat_receipts
             .iter()
             .map(|receipt| match receipt {
-                Bind::Linear { lhs, rhs } => {
+                Bind::Linear { lhs, rhs, .. } => {
                     let names: Vec<_> = lhs.names.iter().collect();
                     let remainder = &lhs.remainder;
 
@@ -319,6 +337,7 @@ pub fn normalize_p_input<'ast>(
                 &'ast rholang_parser::ast::Name<'ast>,
                 Option<&'ast rholang_parser::ast::Signature<'ast>>,
             )>,
+            bind_queries: Vec<Option<&'ast rholang_parser::ast::QuerySpec<'ast>>>,
             input: ProcVisitInputs,
             env: &HashMap<String, Par>,
             parser: &'ast rholang_parser::RholangParser<'ast>,
@@ -336,7 +355,7 @@ pub fn normalize_p_input<'ast>(
             let mut locally_free = Vec::new();
             let mut connective_used = false;
 
-            for (name, signature) in sources {
+            for ((name, signature), query) in sources.into_iter().zip(bind_queries) {
                 let NameVisitOutputs {
                     par,
                     free_map: updated_known_free,
@@ -351,6 +370,15 @@ pub fn normalize_p_input<'ast>(
                 )?;
 
                 current_known_free = updated_known_free;
+                let (par, query_known_free) = normalize_bind_source(
+                    par,
+                    query,
+                    &input.bound_map_chain,
+                    current_known_free,
+                    env,
+                    parser,
+                )?;
+                current_known_free = query_known_free;
                 locally_free = union(
                     locally_free,
                     par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
@@ -450,7 +478,8 @@ pub fn normalize_p_input<'ast>(
         }
 
         let processed_patterns = process_patterns(patterns, input.clone(), env, parser)?;
-        let processed_sources = process_sources(sources, input.clone(), env, parser)?;
+        let bind_queries = flat_receipts.iter().map(|bind| bind.query_spec()).collect();
+        let processed_sources = process_sources(sources, bind_queries, input.clone(), env, parser)?;
         let (sources_par, sources_free, sources_locally_free, sources_connective_used) =
             processed_sources;
 
@@ -637,6 +666,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: channel },
+            query_spec: None,
         };
 
         // Create body: x!(*y)
@@ -740,6 +770,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: channel },
+            query_spec: None,
         };
 
         // Create body: Nil
@@ -807,6 +838,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: nil_channel },
+            query_spec: None,
         };
 
         // Create second bind: x2, @y2 <- @1
@@ -825,6 +857,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: one_channel },
+            query_spec: None,
         };
 
         // Create body: x1!(y2) | x2!(y1)
@@ -959,6 +992,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: nil_channel },
+            query_spec: None,
         };
 
         let y1_eval2 =
@@ -976,6 +1010,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: one_channel },
+            query_spec: None,
         };
 
         let body = ParBuilderUtil::create_ast_nil(&parser);

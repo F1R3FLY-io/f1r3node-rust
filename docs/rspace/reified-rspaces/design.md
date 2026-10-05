@@ -166,7 +166,7 @@ Table S3.1 gives the play steps of `PlayBackend` in `rspace/space_play.rs`, over
 
 | Step | Produce | HEAD | Consume | HEAD |
 |---|---|---|---|---|
-| 1 | Run the callback `before_observe` of the agent with the produce identity. It takes the place of `register_introduction_authority` in the reducer. | `rholang/src/rust/interpreter/reduce.rs:535-539` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:647-651` |
+| 1 | Run the callback `before_observe` of the agent with the produce identity. It takes the place of `register_introduction_authority` in the reducer. | `rholang/src/rust/interpreter/reduce.rs:539-543` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:651-655` |
 | 2 | `start_accounting_operation` with the channel and its join groups. | `rspace/ops_produce.rs:43-52` | `start_accounting_operation` with the channels and no joins. | `rspace/ops_consume.rs:44-45` |
 | 3 | `observe_produce`. | `rspace/ops_produce.rs:77` | `observe_consume`. | `rspace/ops_consume.rs:73-81` |
 | 4, Store or Park | `log_produce`, which logs the event and steps the counter of a non-persistent produce. Then `store_data`, which calls `put_datum`. | `rspace/ops_produce.rs:105-106`, `212-226`, `rspace/trace_log.rs:158-172` | `log_consume`, then `store_waiting_continuation`: `put_continuation`, and then `put_join` for each channel. | `rspace/ops_consume.rs:146-147`, `179-190` |
@@ -186,7 +186,7 @@ Its HEAD columns cite `replay_rspace.rs`.
 
 | Step | Produce | HEAD | Consume | HEAD |
 |---|---|---|---|---|
-| 1 | Run `before_observe`, as in Table S3.1. | `rholang/src/rust/interpreter/reduce.rs:535-539` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:647-651` |
+| 1 | Run `before_observe`, as in Table S3.1. | `rholang/src/rust/interpreter/reduce.rs:539-543` | The same, with the consume identity. | `rholang/src/rust/interpreter/reduce.rs:651-655` |
 | 2 | `start_accounting_operation` with the channel and its join groups. | `1053-1059` | `start_accounting_operation` with the channels and no joins. | `760-761` |
 | 3 | A replay directive of the observer fails the operation with `NativeReplayDirectiveUnsupported`. The host would run the operation natively instead. | `1084-1100` | The same. | `788-805` |
 | 4 | `observe_produce`. | `1101` | `observe_consume`. | `806-814` |
@@ -928,7 +928,7 @@ A commit without an operation context is not tracked, because it emits no sub-or
 #### S5.8. Peek re-offer (FR-10)
 
 A peek reads a value and leaves it available to other receives.
-The host gets this effect in two steps: RSpace removes the peeked data, and the reducer produces each non-persistent result again (`produce_peeks`, `rholang/src/rust/interpreter/reduce.rs:973-1008`).
+The host gets this effect in two steps: RSpace removes the peeked data, and the reducer produces each non-persistent result again (`produce_peeks`, `rholang/src/rust/interpreter/reduce.rs:977-1012`).
 [Decision 30](decision-register.md#decision-30) gives spaces the same behavior for the incoming datum.
 It keeps [retention](glossary.md#retention) for the stored records that a peek binds ([decision 19](decision-register.md#decision-19)).
 
@@ -1084,7 +1084,7 @@ The path $`p`$ is a proper prefix of each $`Q_i`$, so $`P < Q_i`$, and $`Q_i < Q
 
 Now let $`R`$ be another emitted order of the session.
 If $`R`$ lies strictly between $`P`$ and $`Q_{n-1}`$, then $`R`$ must extend $`p`$, because $`P`$ and $`Q_{n-1}`$ agree on every segment of $`p`$.
-The scheduler emits only paths of the form $`u \mathbin{+\!\!+} [(k, 0)]`$, where the participant path $`u`$ alternates split segments $`(k', 1)`$ and branch segments $`(b, 0)`$ (`rholang/src/rust/interpreter/deterministic_reduction.rs:79-116`).
+The scheduler emits only paths of the form $`u \mathbin{+\!\!+} [(k, 0)]`$, where the participant path $`u`$ alternates split segments $`(k', 1)`$ and branch segments $`(b, 0)`$ (`rholang/src/rust/interpreter/deterministic_reduction.rs:81-118`).
 Such a path never continues after its final operation segment, so no scheduler path extends $`p`$, and none has the tag 2.
 The parent of another transaction is a scheduler order, because a commit starts no transaction inside a sub-order scope.
 So its sub-orders extend its own parent path, which is not $`p`$ within one evaluation scope (FR-5'), and they cannot extend $`p`$ either.

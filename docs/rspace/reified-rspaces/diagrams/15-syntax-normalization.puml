@@ -1,0 +1,104 @@
+' 15 Normalization of the Reified syntax: from source text to the bytes of a Par.
+'
+' Source of Figure 1 in ../syntax-contract.md. The figure restates
+' Compiler::source_to_adt (rholang/src/rust/interpreter/compiler/compiler.rs),
+' the dispatch of normalize_ann_proc (compiler/normalize.rs), the P3b arms
+' (compiler/normalizer/processes/) and the P2 builders
+' (models/src/rust/reified/builders.rs). It adds no new fact.
+'
+' Reading order:
+'   1. The baseline float rewrite runs first, and the v3 parser reads the text.
+'      The external scanner decides whether `use` and `free` are keywords.
+'   2. The parser rejects a malformed params section or query by variant.
+'   3. The dispatch sends each Reified AST part to its arm. An arm normalizes
+'      the parts in the scope of the syntax contract and calls one builder.
+'   4. The builders and the validators re-check every parser guarantee.
+'   5. The sorter puts the marker tuples in canonical order, and prost gives
+'      the bytes that the dual-frontend corpus pins.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 15-syntax-normalization.puml   Check: ./render.sh --check
+
+@startuml 15-syntax-normalization
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Normalization of the Reified syntax: Compiler::source_to_adt
+
+start
+:source text; <<$rrs_host>>
+:preprocess_floats: the baseline rewrite of unsuffixed floats to f64
+(retired at the final parser pin); <<$rrs_host>>
+partition "v3 parser (tree-sitter grammar, external scanner, AST builder)" {
+  :the scanner reads `use` and `free`:
+  a keyword only when the next text can never continue a baseline program,
+  an ordinary identifier otherwise; <<$rrs_syntax>>
+  :the AST builder walks each params section and each query once; <<$rrs_syntax>>
+  if (a repeated key, a positional param after a named one,
+a key that is not an identifier, or a malformed query?) then (yes)
+    :ParserError "Parse failed: <variant> at <span>"
+    no Par; <<$rrs_reject>>
+    stop
+  else (no)
+  endif
+}
+:AST with UseBlock, NameDecl.space, FreeTheory,
+Hyperparam lists and QuerySpec; <<$rrs_syntax>>
+partition "Normalizer arms (one adapter for each Reified AST part)" {
+  split
+    :UseBlock
+    normalize_p_use_block:
+    space and body in the current scope; <<$rrs_syntax>>
+    :use_block; <<$rrs_syntax>>
+  split again
+    :New with annotations
+    normalize_p_new:
+    annotations in the scope outside the new,
+    in binding order; <<$rrs_syntax>>
+    :new_space; <<$rrs_syntax>>
+  split again
+    :FreeTheory
+    normalize_p_free_theory:
+    arguments in the current scope; <<$rrs_syntax>>
+    :efree; <<$rrs_syntax>>
+  split again
+    :Send params (also the !? and !m desugarings)
+    normalize_p_send:
+    values after the data, in the current scope; <<$rrs_syntax>>
+    :send_params; <<$rrs_syntax>>
+  split again
+    :Receive query
+    normalize_p_input:
+    channel, payload, then params,
+    in the scope outside the receive; <<$rrs_syntax>>
+    :query_spec; <<$rrs_syntax>>
+  end split
+}
+if (a builder or a validator rejects the parts?) then (yes)
+  :NormalizerError "reified syntax: <message>"
+  no Par; <<$rrs_reject>>
+  stop
+else (no)
+endif
+:marker tuples in their recognized positions:
+USE and NEWSPACE in Par.exprs, PARAMS as the last data element,
+QUERY as the bind source, FREE as a value; <<$rrs_syntax>>
+:ParSortMatcher sorts the Par: the marker tuples need no new sort score; <<$rrs_host>>
+:prost bytes of the Par, pinned by test-vectors/reified-syntax-corpus-v1.json; <<$rrs_host>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_syntax>     | Reified syntax: parser, normalizer arms, builders, marker tuples |
+|<$rrs_host>       | baseline code that the campaign does not change |
+|<$rrs_reject>     | rejection: the source gives no Par |
+endlegend
+@enduml

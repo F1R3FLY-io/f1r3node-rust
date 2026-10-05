@@ -755,10 +755,10 @@ The inner join has the body `gen_body(level + 1, 1)`, with levels above $`\ell`$
 
 - *Case 1: $`k`$ is non-persistent* (`<-` or `<<-`). Then $`k`$ is a linear item. When $`k`$ is stored, the produce that fires it removes it, in play (`rspace++/src/rspace/rspace/ops_produce.rs:202-205`) and in replay (`rspace++/src/rspace/replay_rspace.rs:1324-1330`). When $`k`$ is the arriving consume, the host fires it and does not store it, in play (`rspace++/src/rspace/rspace/ops_consume.rs:124-143`) and in replay (`rspace++/src/rspace/replay_rspace.rs:969-972`).
 
-  The reducer consumes again only for a persistent continuation (`rholang/src/rust/interpreter/reduce.rs:835-900`). Its re-produce paths issue only sends (`rholang/src/rust/interpreter/reduce.rs:709-775` and `rholang/src/rust/interpreter/reduce.rs:986-989`). So no step restores $`k`$.
+  The reducer consumes again only for a persistent continuation (`rholang/src/rust/interpreter/reduce.rs:839-904`). Its re-produce paths issue only sends (`rholang/src/rust/interpreter/reduce.rs:713-779` and `rholang/src/rust/interpreter/reduce.rs:990-993`). So no step restores $`k`$.
 - *Case 2: $`k`$ is persistent* (`<=`). By S2, no channel of $`k`$ carries `!!`, so each matched datum is non-persistent, which makes it a linear item. The host removes each non-persistent matched datum. On the produce side, `remove_matched_datum_and_join` removes the stored data (`rspace++/src/rspace/rspace/ops_produce.rs:228-248`, and `rspace++/src/rspace/replay_rspace.rs:1708-1728` in replay), and the arriving datum is never stored (`rspace++/src/rspace/rspace/ops_produce.rs:163-210`). On the consume side, `store_persistent_data` removes them (`rspace++/src/rspace/rspace/ops_consume.rs:192-202`, and `rspace++/src/rspace/replay_rspace.rs:1596-1606` in replay).
 
-  The persistent re-produce (`rholang/src/rust/interpreter/reduce.rs:709-775`) needs a persistent arriving send, which S2 excludes. The peek re-produce (`rholang/src/rust/interpreter/reduce.rs:986-989`) needs a peek continuation, and $`k`$ has the single arrow `<=`. So nothing restores the matched data.
+  The persistent re-produce (`rholang/src/rust/interpreter/reduce.rs:713-779`) needs a persistent arriving send, which S2 excludes. The peek re-produce (`rholang/src/rust/interpreter/reduce.rs:990-993`) needs a peek continuation, and $`k`$ has the single arrow `<=`. So nothing restores the matched data.
 
 A join has at least one channel, so in both cases the COMM removes at least one linear item that nothing restores. ∎
 

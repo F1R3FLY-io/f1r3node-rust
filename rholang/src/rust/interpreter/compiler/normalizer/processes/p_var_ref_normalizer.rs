@@ -200,6 +200,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: channel_name },
+            query_spec: None,
         };
 
         // Create continuation body: Nil

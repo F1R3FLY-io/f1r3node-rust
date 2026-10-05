@@ -45,7 +45,7 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 | `agent-api.md` | Factories, handles, methods, replies, errors, `getSpaceAgent`, space references, and user agent-backed spaces. | Planned in P4 and P8, which add sections. P10 completes it (`rrs-doc-agent-api`). |
 | `theory-seam.md` | Admission verdicts, builtin theories, theory identity, charging, guard composition, and the path after the F1r3lang merge. | Planned in P7 (`rrs-theory-seam`, `rrs-reducer-theory-admission`). P10 completes it (`rrs-doc-theory-seam`). |
 | `pathmap-prefix-delivery.md` | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | Planned in P5 (`rrs-pathmap-prefix-delivery`). |
-| `syntax-contract.md` | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | Planned in P2 (encoding table and builders), with sections from P3 and P4. P12 adds the Rholang 1.4 productions. |
+| [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | The P3 sections are written: the grammar forms, the normalization mapping with the builders and the marker tuples, the errors, the keyword rule, and the corpus. P4 adds sections, and P12 adds the Rholang 1.4 productions. |
 | [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections are written. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
 | `security.md` | Capability checks, private channels, input validation, query limits, failure atomicity, and a threat model. | Planned in P10 (`rrs-perf-docs-final-spec-design-security`). |
 | `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 (`rrs-perf-docs-final-benchmarks`). |
@@ -82,6 +82,7 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 12 | Routing decision | Planned in P10 (`rrs-doc-diagrams`) |
 | 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 extends it to all phases (`rrs-doc-diagrams`). |
 | 14 | Phase Gantt chart | Planned in P10 (`rrs-doc-diagrams`) |
+| 15 | [Normalization of the Reified syntax](diagrams/15-syntax-normalization.svg) (activity) | Drawn in P3 |
 
 ## Campaign phases
 

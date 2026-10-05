@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
-use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};
+use rholang_parser::ast::{AnnProc, Bind, HyperparamList, Id, Name, SyncSendCont};
 use uuid::Uuid;
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::alloc_desugared_send;
 use crate::rust::interpreter::errors::InterpreterError;
 
 pub fn normalize_p_send_sync<'ast>(
     channel: &'ast Name<'ast>,
     messages: &'ast rholang_parser::ast::ProcList<'ast>,
+    params: Option<&'ast HyperparamList<'ast>>,
     cont: &SyncSendCont<'ast>,
     span: &rholang_parser::SourceSpan,
     input: ProcVisitInputs,
@@ -44,9 +46,7 @@ pub fn normalize_p_send_sync<'ast>(
         }
 
         AnnProc {
-            proc: parser
-                .ast_builder()
-                .alloc_send(SendType::Single, *channel, &listproc),
+            proc: alloc_desugared_send(parser, *channel, &listproc, params),
             span: *span,
         }
     };
@@ -63,6 +63,7 @@ pub fn normalize_p_send_sync<'ast>(
                 remainder: None,
             },
             rhs: rholang_parser::ast::Source::Simple { name: name_var },
+            query_spec: None,
         };
 
         // Create receipt containing the bind
@@ -91,6 +92,7 @@ pub fn normalize_p_send_sync<'ast>(
             name: identifier_str,
             pos: span.start,
         },
+        space: None,
         uri: None,
     };
 
@@ -144,8 +146,16 @@ mod tests {
             end: SourcePos { line: 3, col: 3 },
         };
 
-        let result =
-            normalize_p_send_sync(&channel, &messages, &cont, &span, inputs(), &env, &parser);
+        let result = normalize_p_send_sync(
+            &channel,
+            &messages,
+            None,
+            &cont,
+            &span,
+            inputs(),
+            &env,
+            &parser,
+        );
         assert!(result.is_ok());
     }
 }

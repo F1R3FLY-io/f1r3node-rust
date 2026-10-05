@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use models::rhoapi::{Par, Send};
 use models::rust::utils::union;
-use rholang_parser::ast::{Name, SendType};
+use rholang_parser::ast::{HyperparamList, Name, SendType};
 
 use crate::rust::interpreter::compiler::exports::{
     NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
+use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::normalize_send_params;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 
@@ -16,6 +17,7 @@ pub fn normalize_p_send<'ast>(
     channel: &'ast Name<'ast>,
     send_type: &SendType,
     inputs: &'ast rholang_parser::ast::ProcList<'ast>,
+    params: Option<&'ast HyperparamList<'ast>>,
     input: ProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
@@ -52,6 +54,15 @@ pub fn normalize_p_send<'ast>(
         };
         acc.2 = union(acc.2.clone(), proc_match_result.par.locally_free.clone());
         acc.3 = acc.3 || proc_match_result.par.connective_used;
+    }
+
+    let (trailing_params, params_free_map) =
+        normalize_send_params(params, &input.bound_map_chain, acc.1.free_map, env, parser)?;
+    acc.1.free_map = params_free_map;
+    if let Some(params_par) = trailing_params {
+        acc.2 = union(acc.2, params_par.locally_free.clone());
+        acc.3 = acc.3 || params_par.connective_used;
+        acc.0.push(params_par);
     }
 
     let persistent = match send_type {

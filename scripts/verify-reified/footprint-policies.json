@@ -414,7 +414,7 @@
       ]
     },
     "p4": {
-      "description": "P4 hashmap:queue (decision 34, A14 and readiness review F1). It holds one cumulative edit per path from the base revision. The five P1 edits and the three P2 edits are verbatim, and the P4 lines are merged into the models module, reduce.rs and rho_runtime.rs entries. It extends campaign, so every other base file stays unchanged, and every new file is an exact path of allowed_new_files. Batch 4A wrote the draft. Batch 4E-S added the reduce.rs swaps for consume and allocate_new_bindings. It also added the R7 wrap and the two register lines in rho_runtime.rs. It listed the new files of batches 4B, 4C and 4D and the smoke test. The P3 normalizer entries, the Cargo.toml entries and the files of batches 4E-T, 4E-F and 4E-D are added when they land.",
+      "description": "P4 hashmap:queue (decision 34, A14 and readiness review F1). It holds one cumulative edit per path from the base revision. The five P1 edits and the three P2 edits are verbatim, and the P4 lines are merged into the models module, reduce.rs and rho_runtime.rs entries. It extends campaign, so every other base file stays unchanged, and every new file is an exact path of allowed_new_files. Batch 4A wrote the draft. Batch 4E-S added the reduce.rs swaps for consume and allocate_new_bindings. It also added the R7 wrap and the two register lines in rho_runtime.rs. It listed the new files of batches 4B, 4C and 4D and the smoke test. The P3 normalizer entries, the Cargo.toml entries and the files of batches 4E-T, 4E-F and 4E-D are added when they land. P3b adds the node normalizer arms of the Reified syntax, and the local parser [patch] in Cargo.toml and Cargo.lock, which is never committed (I-14).",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -617,6 +617,476 @@
               "        reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),"
             ]
           ]
+        },
+        {
+          "path": "Cargo.toml",
+          "replaced_blocks": [
+            [
+              [
+                "debug = true",
+                ""
+              ],
+              [
+                "debug = true",
+                "",
+                "[patch.\"https://github.com/F1R3FLY-io/rholang-rs\"]",
+                "rholang-parser = { path = \"../rholang-rs-reified-rspaces/rholang-parser\" }",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "Cargo.lock",
+          "replaced_blocks": [
+            [
+              [
+                "name = \"rholang-parser\"",
+                "version = \"0.1.0\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-parser\"",
+                "version = \"0.1.0\""
+              ]
+            ],
+            [
+              [
+                "name = \"rholang-tree-sitter\"",
+                "version = \"0.1.2\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-tree-sitter\"",
+                "version = \"0.1.2\""
+              ]
+            ],
+            [
+              [
+                "name = \"rholang-tree-sitter-proc-macro\"",
+                "version = \"0.1.2\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-tree-sitter-proc-macro\"",
+                "version = \"0.1.2\""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalize.rs",
+          "added_line_counts": [
+            [
+              "            params,",
+              2
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            normalize_p_send(channel, send_type, inputs, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_send(",
+                "                channel,",
+                "                send_type,",
+                "                inputs,",
+                "                params.as_ref(),",
+                "                input,",
+                "                _env,",
+                "                parser,",
+                "            )"
+              ]
+            ],
+            [
+              [
+                "            normalize_p_send_sync(channel, inputs, cont, &proc.span, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_send_sync(",
+                "                channel,",
+                "                inputs,",
+                "                params.as_ref(),",
+                "                cont,",
+                "                &proc.span,",
+                "                input,",
+                "                _env,",
+                "                parser,",
+                "            )"
+              ]
+            ],
+            [
+              [
+                "            normalize_p_new(decls, proc, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_new(decls, proc, input, _env, parser)",
+                "        }",
+                "",
+                "        // UseBlock - handle the Reified RSpaces `use s { P }` block",
+                "        Proc::UseBlock { space, proc } => {",
+                "            use crate::rust::interpreter::compiler::normalizer::processes::p_use_block_normalizer::normalize_p_use_block;",
+                "            normalize_p_use_block(space, proc, input, _env, parser)",
+                "        }",
+                "",
+                "        // FreeTheory - handle the Reified RSpaces theory reference `free Th(args)`",
+                "        Proc::FreeTheory { name, args } => {",
+                "            use crate::rust::interpreter::compiler::normalizer::processes::p_free_theory_normalizer::normalize_p_free_theory;",
+                "            normalize_p_free_theory(name, args, input, _env, parser)"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/mod.rs",
+          "added_lines": [
+            "pub mod p_free_theory_normalizer;",
+            "pub mod p_use_block_normalizer;",
+            "pub mod reified_syntax;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
+          "added_lines": [
+            "                                        space: None,",
+            "                                            params.as_deref(),",
+            "            bind_queries: Vec<Option<&'ast rholang_parser::ast::QuerySpec<'ast>>>,"
+          ],
+          "added_line_counts": [
+            [
+              "            query_spec: None,",
+              6
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "                Bind::Linear { lhs, rhs } => {",
+              "                Bind::Linear { lhs, rhs, .. } => {"
+            ],
+            [
+              "            for (name, signature) in sources {",
+              "            for ((name, signature), query) in sources.into_iter().zip(bind_queries) {"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "                        Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {"
+              ],
+              [
+                "                        Bind::Linear { lhs, rhs, .. } | Bind::Signed { lhs, rhs, .. } => {",
+                "                            check_query_source(bind)?;"
+              ]
+            ],
+            [
+              [
+                "                                    let rhs = Source::Simple { name: *name };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear { lhs, rhs },"
+              ],
+              [
+                "                                    let rhs = Source::Simple { name: *name };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear {",
+                "                                            lhs,",
+                "                                            rhs,",
+                "                                            query_spec: None,",
+                "                                        },"
+              ]
+            ],
+            [
+              [
+                "                                Source::SendReceive { name, inputs, .. } => {"
+              ],
+              [
+                "                                Source::SendReceive {",
+                "                                    name,",
+                "                                    inputs,",
+                "                                    params,",
+                "                                } => {"
+              ]
+            ],
+            [
+              [
+                "                                    };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear { lhs, rhs },"
+              ],
+              [
+                "                                    };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear {",
+                "                                            lhs,",
+                "                                            rhs,",
+                "                                            query_spec: None,",
+                "                                        },"
+              ]
+            ],
+            [
+              [
+                "                                        proc: parser.ast_builder().alloc_send(",
+                "                                            rholang_parser::ast::SendType::Single,"
+              ],
+              [
+                "                                        proc: alloc_desugared_send(",
+                "                                            parser,"
+              ]
+            ],
+            [
+              [
+                "        let processed_sources = process_sources(sources, input.clone(), env, parser)?;"
+              ],
+              [
+                "        let bind_queries = flat_receipts.iter().map(|bind| bind.query_spec()).collect();",
+                "        let processed_sources = process_sources(sources, bind_queries, input.clone(), env, parser)?;"
+              ]
+            ],
+            [
+              [
+                "use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;"
+              ],
+              [
+                "use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;",
+                "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{",
+                "    alloc_desugared_send, check_query_source, normalize_bind_source,",
+                "};"
+              ]
+            ],
+            [
+              [
+                "                current_known_free = updated_known_free;"
+              ],
+              [
+                "                current_known_free = updated_known_free;",
+                "                let (par, query_known_free) = normalize_bind_source(",
+                "                    par,",
+                "                    query,",
+                "                    &input.bound_map_chain,",
+                "                    current_known_free,",
+                "                    env,",
+                "                    parser,",
+                "                )?;",
+                "                current_known_free = query_known_free;"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_let_normalizer.rs",
+          "added_lines": [
+            "                    space: None,"
+          ],
+          "added_line_counts": [
+            [
+              "                    query_spec: None,",
+              2
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_match_normalizer.rs",
+          "added_line_counts": [
+            [
+              "            query_spec: None,",
+              2
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_new_normalizer.rs",
+          "added_line_counts": [
+            [
+              "                space: None,",
+              8
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "            NameDecl { id, uri: None } => Ok((",
+              "            NameDecl { id, uri: None, .. } => Ok(("
+            ],
+            [
+              "            free_map: input.free_map.clone(),",
+              "            free_map: annotations_free_map,"
+            ],
+            [
+              "        par: prepend_new(input.par.clone(), result_new),",
+              "        par,"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            NameDecl { id, uri: Some(urn) } => Ok(("
+              ],
+              [
+                "            NameDecl {",
+                "                id, uri: Some(urn), ..",
+                "            } => Ok(("
+              ]
+            ],
+            [
+              [
+                "use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};"
+              ],
+              [
+                "use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};",
+                "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{",
+                "    normalize_space_annotations, push_space_annotated_new,",
+                "};"
+              ]
+            ],
+            [
+              [
+                "    let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();",
+                ""
+              ],
+              [
+                "    let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();",
+                "",
+                "    let (space_annotations, annotations_free_map) = normalize_space_annotations(",
+                "        decls,",
+                "        &input.bound_map_chain,",
+                "        input.free_map.clone(),",
+                "        env,",
+                "        parser,",
+                "    )?;",
+                ""
+              ]
+            ],
+            [
+              [
+                "    };",
+                ""
+              ],
+              [
+                "    };",
+                "",
+                "    let par = match space_annotations {",
+                "        Some(annotations) => push_space_annotated_new(input.par.clone(), result_new, annotations)?,",
+                "        None => prepend_new(input.par.clone(), result_new),",
+                "    };",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_normalizer.rs",
+          "added_lines": [
+            "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::normalize_send_params;",
+            "    params: Option<&'ast HyperparamList<'ast>>,"
+          ],
+          "replaced_lines": [
+            [
+              "use rholang_parser::ast::{Name, SendType};",
+              "use rholang_parser::ast::{HyperparamList, Name, SendType};"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "        acc.3 = acc.3 || proc_match_result.par.connective_used;"
+              ],
+              [
+                "        acc.3 = acc.3 || proc_match_result.par.connective_used;",
+                "    }",
+                "",
+                "    let (trailing_params, params_free_map) =",
+                "        normalize_send_params(params, &input.bound_map_chain, acc.1.free_map, env, parser)?;",
+                "    acc.1.free_map = params_free_map;",
+                "    if let Some(params_par) = trailing_params {",
+                "        acc.2 = union(acc.2, params_par.locally_free.clone());",
+                "        acc.3 = acc.3 || params_par.connective_used;",
+                "        acc.0.push(params_par);"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_sync_normalizer.rs",
+          "added_lines": [
+            "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::alloc_desugared_send;",
+            "    params: Option<&'ast HyperparamList<'ast>>,",
+            "            query_spec: None,",
+            "        space: None,"
+          ],
+          "replaced_lines": [
+            [
+              "use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};",
+              "use rholang_parser::ast::{AnnProc, Bind, HyperparamList, Id, Name, SyncSendCont};"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            proc: parser",
+                "                .ast_builder()",
+                "                .alloc_send(SendType::Single, *channel, &listproc),"
+              ],
+              [
+                "            proc: alloc_desugared_send(parser, *channel, &listproc, params),"
+              ]
+            ],
+            [
+              [
+                "        let result =",
+                "            normalize_p_send_sync(&channel, &messages, &cont, &span, inputs(), &env, &parser);"
+              ],
+              [
+                "        let result = normalize_p_send_sync(",
+                "            &channel,",
+                "            &messages,",
+                "            None,",
+                "            &cont,",
+                "            &span,",
+                "            inputs(),",
+                "            &env,",
+                "            &parser,",
+                "        );"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_var_ref_normalizer.rs",
+          "added_lines": [
+            "            query_spec: None,"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/test_utils/par_builder_util.rs",
+          "added_lines": [
+            "            space: None,"
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "                Var::Id(id) => NameDecl { id, uri: None },"
+              ],
+              [
+                "                Var::Id(id) => NameDecl {",
+                "                    id,",
+                "                    space: None,",
+                "                    uri: None,",
+                "                },"
+              ]
+            ],
+            [
+              [
+                "                    },"
+              ],
+              [
+                "                    },",
+                "                    space: None,"
+              ]
+            ]
+          ]
         }
       ],
       "allowed_new_files": [
@@ -635,10 +1105,13 @@
         "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.svg",
         "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.puml",
         "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.svg",
+        "docs/rspace/reified-rspaces/diagrams/15-syntax-normalization.puml",
+        "docs/rspace/reified-rspaces/diagrams/15-syntax-normalization.svg",
         "docs/rspace/reified-rspaces/diagrams/concept-colors.iuml",
         "docs/rspace/reified-rspaces/diagrams/fonts.lock",
         "docs/rspace/reified-rspaces/diagrams/render.sh",
         "docs/rspace/reified-rspaces/glossary.md",
+        "docs/rspace/reified-rspaces/syntax-contract.md",
         "docs/rspace/reified-rspaces/verification.md",
         "formal/reified-rspaces-invariant-map.json",
         "formal/reified-rspaces-model-map.json",
@@ -666,10 +1139,60 @@
         "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe_IndStep_Apalache.cfg",
         "formal/tlaplus/reified_rspaces/UuidUnsafe.cfg",
+        "models/src/rust/reified/builders.rs",
+        "models/src/rust/reified/encoding.rs",
+        "models/src/rust/reified/mod.rs",
+        "models/src/rust/reified/params.rs",
+        "models/src/rust/reified/query_spec.rs",
+        "models/src/rust/reified/validation.rs",
+        "models/src/rust/space_factory_urn.rs",
+        "models/tests/reified_encoding.rs",
+        "models/tests/support/reified_strategies.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_free_theory_normalizer.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_use_block_normalizer.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/reified_syntax.rs",
+        "rholang/src/rust/interpreter/reified/costs.rs",
+        "rholang/src/rust/interpreter/reified/errors.rs",
+        "rholang/src/rust/interpreter/reified/execution.rs",
+        "rholang/src/rust/interpreter/reified/factory.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/src/rust/interpreter/reified/mod.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/reified/route.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/reified/schedule.rs",
+        "rholang/src/rust/interpreter/reified/scope.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs",
+        "rholang/src/rust/interpreter/spaces/counter.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/mod.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+        "rholang/src/rust/interpreter/spaces/factory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/spaces/matching.rs",
+        "rholang/src/rust/interpreter/spaces/mod.rs",
+        "rholang/src/rust/interpreter/spaces/namespace.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+        "rholang/src/rust/interpreter/spaces/outer/mod.rs",
+        "rholang/src/rust/interpreter/spaces/record.rs",
+        "rholang/src/rust/interpreter/spaces/types/config.rs",
+        "rholang/src/rust/interpreter/spaces/types/id.rs",
+        "rholang/src/rust/interpreter/spaces/types/mod.rs",
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs",
+        "rholang/tests/reified_marker_recognition.rs",
         "rholang/tests/reified_ordinary_regression.rs",
+        "rholang/tests/reified_p4_smoke.rs",
         "rholang/tests/reified_source_normalization.rs",
         "rholang/tests/reified_space_store_handle_par.rs",
         "rholang/tests/reified_space_txn_host_bounds.rs",
+        "rholang/tests/reified_syntax_corpus.rs",
+        "rholang/tests/reified_syntax_identifiers.rs",
+        "rholang/tests/reified_syntax_normalize.rs",
         "rspace++/src/rspace/replay_rspace/space_replay.rs",
         "rspace++/src/rspace/rspace/space_play.rs",
         "rspace++/src/rspace/space_store_handle.rs",
@@ -677,6 +1200,7 @@
         "rspace++/tests/reified_space_store_handle.rs",
         "rspace++/tests/reified_space_store_handle/support.rs",
         "rspace++/tests/reified_space_store_handle_props.rs",
+        "scripts/check-reified-rspaces-patch-gate.sh",
         "scripts/check-reified-rspaces-proofs.sh",
         "scripts/check-reified-rspaces-tla-invariants.sh",
         "scripts/verify-reified/apalache-expect.sh",
@@ -792,6 +1316,7 @@
         "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/pass/doc.md.txt",
         "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/fail/doc.md.txt",
         "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/patch-gate/parser-override.toml",
         "scripts/verify-reified/tests/test_checkers.py",
         "scripts/verify-reified/tests/test_closure.py",
         "scripts/verify-reified/tests/test_doc_lint.py",
@@ -801,51 +1326,8 @@
         "test-vectors/ordinary-execution-v1.json",
         "test-vectors/ordinary-float-forms-v1.json",
         "test-vectors/ordinary-source-normalization-v1.json",
-        "models/src/rust/reified/builders.rs",
-        "models/src/rust/reified/encoding.rs",
-        "models/src/rust/reified/mod.rs",
-        "models/src/rust/reified/params.rs",
-        "models/src/rust/reified/query_spec.rs",
-        "models/src/rust/reified/validation.rs",
-        "models/tests/reified_encoding.rs",
-        "models/tests/support/reified_strategies.rs",
-        "rholang/src/rust/interpreter/reified/errors.rs",
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-        "rholang/tests/reified_marker_recognition.rs",
         "test-vectors/protobuf-schema-head-6f7a80da3.json",
-        "rholang/src/rust/interpreter/reified/costs.rs",
-        "rholang/src/rust/interpreter/reified/mod.rs",
-        "rholang/src/rust/interpreter/reified/route.rs",
-        "rholang/src/rust/interpreter/reified/runtime.rs",
-        "rholang/src/rust/interpreter/reified/schedule.rs",
-        "rholang/src/rust/interpreter/reified/scope.rs",
-        "rholang/src/rust/interpreter/reified/system_channels.rs",
-        "rholang/src/rust/interpreter/spaces/agent.rs",
-        "rholang/src/rust/interpreter/spaces/disciplines/mod.rs",
-        "rholang/src/rust/interpreter/spaces/errors.rs",
-        "rholang/src/rust/interpreter/spaces/factory/mod.rs",
-        "rholang/src/rust/interpreter/spaces/mod.rs",
-        "rholang/src/rust/interpreter/spaces/namespace.rs",
-        "rholang/src/rust/interpreter/spaces/outer/mod.rs",
-        "rholang/src/rust/interpreter/spaces/types/mod.rs",
-        "rholang/src/rust/interpreter/spaces/counter.rs",
-        "rholang/src/rust/interpreter/spaces/generic.rs",
-        "rholang/src/rust/interpreter/spaces/matching.rs",
-        "rholang/src/rust/interpreter/spaces/record.rs",
-        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
-        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
-        "rholang/src/rust/interpreter/spaces/types/config.rs",
-        "rholang/src/rust/interpreter/spaces/types/id.rs",
-        "rholang/src/rust/interpreter/spaces/types/qualifier.rs",
-        "rholang/src/rust/interpreter/reified/execution.rs",
-        "models/src/rust/space_factory_urn.rs",
-        "rholang/src/rust/interpreter/reified/factory.rs",
-        "rholang/src/rust/interpreter/reified/handle.rs",
-        "rholang/src/rust/interpreter/reified/system_processes.rs",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
-        "rholang/tests/reified_p4_smoke.rs"
+        "test-vectors/reified-syntax-corpus-v1.json"
       ]
     }
   }

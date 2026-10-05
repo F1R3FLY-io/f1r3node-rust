@@ -1100,6 +1100,10 @@ class Config:
     render_script: Path
     render_check: bool
     only: frozenset[str] | None = None
+    # A corpus that --corpus names must exist. A default corpus that does not
+    # exist yet (the examples manifest arrives in P10) adds no rows, and the
+    # per-block rule still rejects every block that no existing corpus holds.
+    explicit_corpora: bool = False
 
 
 @dataclass
@@ -1166,7 +1170,8 @@ class LintContext:
             missing: list[Path] = []
             for corpus_path in self.cfg.corpora:
                 if not corpus_path.is_file():
-                    missing.append(corpus_path)
+                    if self.cfg.explicit_corpora:
+                        missing.append(corpus_path)
                     continue
                 r, p = corpus_rows(corpus_path)
                 rows |= r
@@ -1633,7 +1638,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT, help="repository root")
     p.add_argument("--doc-root", type=Path, help="campaign document root (default: docs/rspace/reified-rspaces)")
     p.add_argument("--corpus", type=Path, action="append",
-                   help="snippet corpus file (repeatable; default: the two campaign corpora)")
+                   help="snippet corpus file (repeatable; default: the two campaign corpora, where a default corpus that does not exist yet adds no rows)")
     p.add_argument("--rocq-theories", type=Path, help="Rocq theories directory for bare File.v citations")
     p.add_argument("--palette", type=Path, help="the shared PlantUML palette")
     p.add_argument("--render-script", type=Path, help="the diagram render script with a --check mode")
@@ -1664,6 +1669,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         render_script=rooted(args.render_script, DEFAULT_RENDER_SCRIPT),
         render_check=not args.no_render_check,
         only=only,
+        explicit_corpora=bool(args.corpus),
     )
 
 

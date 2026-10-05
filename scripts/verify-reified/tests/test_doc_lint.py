@@ -238,10 +238,22 @@ class ExactFindings(unittest.TestCase):
         self.assertTrue(details[0].startswith("01-sample.puml does not include the shared palette"))
 
     def test_snippet_corpus_missing_corpus_file_fails(self):
-        findings = self.findings("snippet-corpus", "fail-missing-corpus")
+        case = FIXTURES / "snippet-corpus" / "fail-missing-corpus"
+        listed = ("--corpus", str(case / "test-vectors" / "reified-syntax-corpus-v1.json"),
+                  "--corpus", str(case / "examples" / "reified_rspaces" / "MANIFEST.toml"))
+        _, violations, _, _ = lint_case(case, extra=listed)
+        findings = [(v.line, v.rule, v.detail) for v in violations]
         self.assertEqual(1, len(findings), findings)
         self.assertEqual("snippet-corpus", findings[0][1])
         self.assertIn("examples/reified_rspaces/MANIFEST.toml does not exist", findings[0][2])
+
+    def test_snippet_corpus_missing_default_corpus_adds_no_rows(self):
+        """A default corpus that does not exist yet is skipped. Its absence is not a
+        finding, and a block that no existing corpus holds still fails."""
+        self.assertEqual([], self.findings("snippet-corpus", "fail-missing-corpus"))
+        details = [d for _, rule, d in self.findings("snippet-corpus") if rule == "snippet-corpus"]
+        self.assertTrue(details)
+        self.assertTrue(all("does not exist" not in d for d in details), details)
 
     def test_mermaid_names_the_plantuml_equivalent(self):
         self.assertIn("PlantUML expresses this type as an activity or component diagram",

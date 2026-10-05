@@ -8,6 +8,9 @@ use crate::rust::interpreter::compiler::exports::{
     BoundMapChain, IdContextPos, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{
+    normalize_space_annotations, push_space_annotated_new,
+};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_new};
 
@@ -22,14 +25,16 @@ pub fn normalize_p_new<'ast>(
     let new_tagged_bindings: Vec<(Option<String>, String, VarSort, usize, usize)> = decls
         .iter()
         .map(|decl| match decl {
-            NameDecl { id, uri: None } => Ok((
+            NameDecl { id, uri: None, .. } => Ok((
                 None,
                 id.name.to_string(),
                 VarSort::NameSort,
                 id.pos.line,
                 id.pos.col,
             )),
-            NameDecl { id, uri: Some(urn) } => Ok((
+            NameDecl {
+                id, uri: Some(urn), ..
+            } => Ok((
                 Some((**urn).to_string()), // Dereference Uri to get the inner &str
                 id.name.to_string(),
                 VarSort::NameSort,
@@ -62,12 +67,20 @@ pub fn normalize_p_new<'ast>(
     let new_env: BoundMapChain<VarSort> = input.bound_map_chain.put_all_pos(new_bindings);
     let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();
 
+    let (space_annotations, annotations_free_map) = normalize_space_annotations(
+        decls,
+        &input.bound_map_chain,
+        input.free_map.clone(),
+        env,
+        parser,
+    )?;
+
     let body_result = normalize_ann_proc(
         proc,
         ProcVisitInputs {
             par: Par::default(),
             bound_map_chain: new_env.clone(),
-            free_map: input.free_map.clone(),
+            free_map: annotations_free_map,
         },
         env,
         parser,
@@ -85,8 +98,13 @@ pub fn normalize_p_new<'ast>(
         locally_free: filter_and_adjust_bitset(body_result.par.clone().locally_free, new_count),
     };
 
+    let par = match space_annotations {
+        Some(annotations) => push_space_annotated_new(input.par.clone(), result_new, annotations)?,
+        None => prepend_new(input.par.clone(), result_new),
+    };
+
     Ok(ProcVisitOutputs {
-        par: prepend_new(input.par.clone(), result_new),
+        par,
         free_map: body_result.free_map.clone(),
     })
 }
@@ -120,6 +138,7 @@ mod tests {
                     name: "x",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: None,
             },
             NameDecl {
@@ -127,6 +146,7 @@ mod tests {
                     name: "y",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: None,
             },
             NameDecl {
@@ -134,6 +154,7 @@ mod tests {
                     name: "z",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: None,
             },
         ];
@@ -233,6 +254,7 @@ mod tests {
                     name: "x",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: None,
             },
             NameDecl {
@@ -240,6 +262,7 @@ mod tests {
                     name: "y",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: None,
             },
             NameDecl {
@@ -247,6 +270,7 @@ mod tests {
                     name: "r",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: Some(Uri::from("rho:registry")),
             },
             NameDecl {
@@ -254,6 +278,7 @@ mod tests {
                     name: "out",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: Some(Uri::from("rho:stdout")),
             },
             NameDecl {
@@ -261,6 +286,7 @@ mod tests {
                     name: "z",
                     pos: SourcePos { line: 0, col: 0 },
                 },
+                space: None,
                 uri: None,
             },
         ];

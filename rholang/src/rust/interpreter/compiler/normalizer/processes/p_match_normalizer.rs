@@ -349,6 +349,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: nil_source },
+            query_spec: None,
         };
 
         // Create ForComprehension
@@ -472,6 +473,7 @@ mod tests {
                 remainder: None,
             },
             rhs: Source::Simple { name: nil_source },
+            query_spec: None,
         };
 
         // Create for-comprehension body: Nil
