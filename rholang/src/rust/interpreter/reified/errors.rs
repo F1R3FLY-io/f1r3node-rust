@@ -1,4 +1,7 @@
 //! The errors of the Reified RSpaces reducer hooks.
+//!
+//! P2 added the first four variants. P4 adds the reducer-level codes of the P4 design C.10
+//! and of readiness review §4. The space-level codes are in `spaces::errors::SpaceError`.
 
 use models::rust::reified::encoding::{Marker, ReifiedDecodeError};
 
@@ -16,6 +19,34 @@ pub enum ReifiedReduceError {
     ParamsUnsupported,
     #[error("a receive from this channel takes no query")]
     QuerySpecUnsupported,
+    /// A persistent send to a factory channel `[0xE0, 0x00..=0x20]` (A21).
+    #[error("a persistent send to a space factory aborts")]
+    PersistentFactoryCall,
+    /// A persistent send to a space handle `H(sid)` or `h(sid)` (A21).
+    #[error("a persistent send to a space handle aborts")]
+    PersistentHandleCall,
+    /// A persistent send to another op channel that takes calls (readiness review §4).
+    #[error("a persistent send to a Reified system channel aborts")]
+    PersistentOpCall,
+    /// A space that a user agent implements (P8).
+    #[error("spaces that user agents implement are not available")]
+    AgentSpacesUnavailable,
+    /// A join whose channels route to more than one space, or to a space and the default
+    /// space.
+    #[error("a join reads from more than one space")]
+    CrossSpaceJoin,
+    /// A join on a collection of an ordered discipline (A3, joins arrive in P5).
+    #[error("a join on an ordered collection is not supported")]
+    OrderedJoinUnsupported,
+    /// The empty `Par` as a space reference.
+    #[error("the space reference is empty")]
+    EmptySpaceRef,
+    /// A space handle under a bundle without the write flag.
+    #[error("the space handle is not writable")]
+    HandleNotWritable,
+    /// A Reified id that is not a space handle, as a space reference.
+    #[error("the value is not a space reference")]
+    NotASpaceRef,
 }
 
 impl ReifiedReduceError {
@@ -26,6 +57,15 @@ impl ReifiedReduceError {
             ReifiedReduceError::RuntimeUnavailable { .. } => "RuntimeUnavailable",
             ReifiedReduceError::ParamsUnsupported => "ParamsUnsupported",
             ReifiedReduceError::QuerySpecUnsupported => "QuerySpecUnsupported",
+            ReifiedReduceError::PersistentFactoryCall => "PersistentFactoryCall",
+            ReifiedReduceError::PersistentHandleCall => "PersistentHandleCall",
+            ReifiedReduceError::PersistentOpCall => "PersistentOpCall",
+            ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
+            ReifiedReduceError::CrossSpaceJoin => "CrossSpaceJoin",
+            ReifiedReduceError::OrderedJoinUnsupported => "OrderedJoinUnsupported",
+            ReifiedReduceError::EmptySpaceRef => "EmptySpaceRef",
+            ReifiedReduceError::HandleNotWritable => "HandleNotWritable",
+            ReifiedReduceError::NotASpaceRef => "NotASpaceRef",
         }
     }
 }
@@ -33,5 +73,55 @@ impl ReifiedReduceError {
 impl From<ReifiedReduceError> for InterpreterError {
     fn from(error: ReifiedReduceError) -> Self {
         InterpreterError::ReduceError(format!("reified:{}: {}", error.code(), error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::rust::interpreter::spaces::errors::SpaceError;
+
+    #[test]
+    fn reducer_codes_are_distinct_and_disjoint_from_the_space_codes() {
+        let errors = [
+            ReifiedReduceError::Malformed(ReifiedDecodeError::NotSoleNew),
+            ReifiedReduceError::RuntimeUnavailable {
+                marker: Marker::Use,
+            },
+            ReifiedReduceError::ParamsUnsupported,
+            ReifiedReduceError::QuerySpecUnsupported,
+            ReifiedReduceError::PersistentFactoryCall,
+            ReifiedReduceError::PersistentHandleCall,
+            ReifiedReduceError::PersistentOpCall,
+            ReifiedReduceError::AgentSpacesUnavailable,
+            ReifiedReduceError::CrossSpaceJoin,
+            ReifiedReduceError::OrderedJoinUnsupported,
+            ReifiedReduceError::EmptySpaceRef,
+            ReifiedReduceError::HandleNotWritable,
+            ReifiedReduceError::NotASpaceRef,
+        ];
+        let codes: BTreeSet<&str> = errors.iter().map(ReifiedReduceError::code).collect();
+        assert_eq!(codes.len(), errors.len());
+        let space_codes: BTreeSet<&str> = [
+            SpaceError::SpaceAlreadyExists,
+            SpaceError::PositionalParamsUnsupported,
+            SpaceError::DanglingHandle,
+            SpaceError::DanglingName,
+            SpaceError::CounterOverflow,
+            SpaceError::SpacesUnsupportedInNativeReplay,
+        ]
+        .iter()
+        .map(SpaceError::code)
+        .collect();
+        assert!(codes.is_disjoint(&space_codes));
+        for error in errors {
+            let code = error.code();
+            assert_eq!(
+                InterpreterError::from(error.clone()),
+                InterpreterError::ReduceError(format!("reified:{code}: {error}"))
+            );
+        }
     }
 }

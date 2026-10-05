@@ -260,6 +260,9 @@ BLOCK_BASE = "fn a() {\n    old_one();\n    old_two();\n}\n\nfn b() {}\n"
 BLOCK_OLD = ["    old_one();", "    old_two();"]
 BLOCK_NEW = ["    new_call();"]
 BLOCK_CURRENT = BLOCK_BASE.replace("    old_one();\n    old_two();", "    new_call();")
+COUNTED_LINE = "        + Bound"
+COUNTED_BASE = "fn a()\nwhere\n    T: One\n{}\n\nfn b()\nwhere\n    T: One\n{}\n"
+COUNTED_CURRENT = COUNTED_BASE.replace("    T: One\n", "    T: One\n" + COUNTED_LINE + "\n")
 
 
 def digest(text):
@@ -415,6 +418,70 @@ class FootprintChecker(unittest.TestCase):
         restored, problems = FOOTPRINT.undo_edit(current, edit)
         self.assertEqual([], problems)
         self.assertEqual(BLOCK_BASE, restored)
+
+    def counted_case(self, current, counts, base=COUNTED_BASE):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "src/bounds.rs", current)
+            write_json(root / "digests.json", {"files": {"src/bounds.rs": digest(base)}})
+            policies = {
+                "digests": "digests.json",
+                "policies": {
+                    "phase": {
+                        "unchanged": ["src/**"],
+                        "edits": [{"path": "src/bounds.rs", "added_line_counts": counts}],
+                    }
+                },
+            }
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = FOOTPRINT.check(root, policies, "phase")
+            return code, output.getvalue()
+
+    def test_counted_added_lines_pass(self):
+        code, output = self.counted_case(COUNTED_CURRENT, [[COUNTED_LINE, 2]])
+        self.assertEqual(0, code, output)
+        self.assertIn("footprint policy phase: checked 1 files, 0 violations", output)
+
+    def test_counted_added_line_with_another_count_fails(self):
+        for count in (1, 3):
+            code, output = self.counted_case(COUNTED_CURRENT, [[COUNTED_LINE, count]])
+            self.assertEqual(1, code, output)
+            self.assertIn(f"added line {COUNTED_LINE!r} occurs 2 times, expected {count}", output)
+
+    def test_counted_added_line_present_at_the_base_fails(self):
+        base = COUNTED_BASE + COUNTED_LINE + "\n"
+        current = COUNTED_CURRENT + COUNTED_LINE + "\n"
+        code, output = self.counted_case(current, [[COUNTED_LINE, 3]], base=base)
+        self.assertEqual(1, code, output)
+        self.assertIn("footprint: src/bounds.rs: the file holds changes beyond the approved edit", output)
+
+    def test_malformed_counted_line_entry_fails(self):
+        malformed = (
+            [[COUNTED_LINE]],
+            [[COUNTED_LINE, 0]],
+            [[COUNTED_LINE, "2"]],
+            [[COUNTED_LINE, True]],
+            [[2, 2]],
+            [COUNTED_LINE],
+        )
+        for counts in malformed:
+            code, output = self.counted_case(COUNTED_CURRENT, counts)
+            self.assertEqual(1, code, output)
+            self.assertIn("is not a [line, count] pair with a positive count", output)
+
+    def test_counted_lines_restore_with_the_other_kinds(self):
+        base = BLOCK_BASE + COUNTED_BASE
+        current = (BLOCK_CURRENT + COUNTED_CURRENT).replace("fn a() {", "fn a() -> u8 {") + "mod added;\n"
+        edit = {
+            "path": "src/block.rs",
+            "added_lines": ["mod added;"],
+            "added_line_counts": [[COUNTED_LINE, 2]],
+            "replaced_lines": [["fn a() {", "fn a() -> u8 {"]],
+            "replaced_blocks": [[BLOCK_OLD, BLOCK_NEW]],
+        }
+        restored, problems = FOOTPRINT.undo_edit(current, edit)
+        self.assertEqual([], problems)
+        self.assertEqual(base, restored)
 
     def test_allowed_new_file_is_exempt_from_no_new_files(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -16,9 +16,14 @@ added line is removed, each replaced line is restored, and each replaced block i
 restored.  The result must have the pinned digest, so the edit is the only change in
 that file.
 
-An edit takes three kinds of change. Each kind must name its text exactly once:
+An edit takes four kinds of change:
 
 * `added_lines`: each line occurs exactly once in the current file.
+* `added_line_counts`: `[line, count]` pairs, where `count` is a positive integer.
+  Each line occurs exactly `count` times in the current file, and the undo removes
+  every occurrence. The digest comparison then proves that the base revision did not
+  hold the line. A counted line lets one policy approve identical lines, for example
+  one bound line in several `where` clauses.
 * `replaced_lines`: `[old, new]` pairs. Each new line occurs exactly once in the
   current file.
 * `replaced_blocks`: `[[old lines...], [new lines...]]` pairs of non-empty line
@@ -27,8 +32,8 @@ An edit takes three kinds of change. Each kind must name its text exactly once:
   construct, or add lines next to a unique anchor (an old block of the anchor lines
   and a new block of the anchor lines with the added lines).
 
-The undo removes the added lines first, then restores the replaced lines, and then
-restores the replaced blocks.
+The undo removes the added lines first, then removes the counted added lines, then
+restores the replaced lines, and then restores the replaced blocks.
 
 A policy can also list `allowed_new_files` as exact paths. A policy inherits this
 list from the policy that it extends. When the list exists, two more rules apply.
@@ -270,6 +275,18 @@ def is_line_block(block):
     return isinstance(block, list) and bool(block) and all(isinstance(line, str) for line in block)
 
 
+def is_line_count(entry):
+    """Return True for a `[line, count]` pair of a line and a positive integer count."""
+    return (
+        isinstance(entry, list)
+        and len(entry) == 2
+        and isinstance(entry[0], str)
+        and isinstance(entry[1], int)
+        and not isinstance(entry[1], bool)
+        and entry[1] >= 1
+    )
+
+
 def undo_edit(text, edit):
     lines = text.split("\n")
     problems = []
@@ -279,6 +296,16 @@ def undo_edit(text, edit):
             problems.append(f"added line {added!r} occurs {len(hits)} times, expected 1")
             continue
         del lines[hits[0]]
+    for entry in edit.get("added_line_counts", []):
+        if not is_line_count(entry):
+            problems.append(f"added line count {entry!r} is not a [line, count] pair with a positive count")
+            continue
+        added, count = entry
+        hits = sum(1 for line in lines if line == added)
+        if hits != count:
+            problems.append(f"added line {added!r} occurs {hits} times, expected {count}")
+            continue
+        lines = [line for line in lines if line != added]
     for old, new in edit.get("replaced_lines", []):
         hits = [index for index, line in enumerate(lines) if line == new]
         if len(hits) != 1:

@@ -35,6 +35,8 @@ use super::rho_runtime::RhoISpace;
 
 #[cfg(test)]
 mod capability_tests;
+#[path = "reified/schedule.rs"]
+pub(crate) mod reified_schedule;
 
 type ParticipantId = CausalPath;
 
@@ -343,6 +345,7 @@ enum Intent {
             >,
         >,
     },
+    Space(reified_schedule::SpaceIntent),
 }
 
 enum Completion {
@@ -372,6 +375,7 @@ enum Completion {
             RSpaceError,
         >,
     },
+    Space(OperationOrder, reified_schedule::SpaceDelivery),
 }
 
 impl Intent {
@@ -387,6 +391,7 @@ impl Intent {
                 response,
                 result: Err(error),
             },
+            Self::Space(space) => Completion::Space(order, space.reject(error)),
         }
     }
 }
@@ -395,6 +400,7 @@ impl Completion {
     fn order(&self) -> &OperationOrder {
         match self {
             Self::Produce { order, .. } | Self::Consume { order, .. } => order,
+            Self::Space(order, _) => order,
         }
     }
 
@@ -410,6 +416,7 @@ impl Completion {
             } => {
                 let _ = response.send(result);
             }
+            Self::Space(_, delivery) => delivery.deliver(),
         }
     }
 }
@@ -690,6 +697,7 @@ impl ReductionSession {
                     &self.budget,
                 );
             }
+            Intent::Space(space) => space.extend_footprint(&mut footprint, &self.budget),
         }
         Ok(PreparedIntent {
             order,
@@ -738,6 +746,7 @@ impl ReductionSession {
                     result,
                 }
             }
+            Intent::Space(space) => space.execute(order).await,
         }
     }
 

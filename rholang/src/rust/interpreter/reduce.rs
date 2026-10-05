@@ -187,6 +187,8 @@ pub struct ReducerCore {
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
     pub(crate) reduction_coordinator: ReductionCoordinator,
+    pub(crate) space_ctx: super::reified::scope::SpaceCtx,
+    pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,
 }
 
 type Application = Option<(
@@ -453,6 +455,7 @@ impl ReducerCore {
     }
 
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
+        self.reified.begin_evaluation_scope();
         self.eval(par, &Env::new(), rand).await
     }
 
@@ -466,6 +469,7 @@ impl ReducerCore {
         super::accounting::economic_failure::EvaluationFailureSummary,
     ) {
         let env = Env::new();
+        self.reified.begin_evaluation_scope();
         StackGrowingFuture {
             inner: deterministic_reduction::root_with_observation(
                 self.space.clone(),
@@ -1433,7 +1437,7 @@ impl ReducerCore {
             &env.shift(receive.bind_count),
         )?;
 
-        self.consume(
+        self.reified_consume(
             binds,
             ParWithRandom {
                 body: Some(subst_body),
@@ -1657,7 +1661,7 @@ impl ReducerCore {
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
-        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {
+        match self.reified_allocate(new, &env, &mut rand) {
             Ok(env) => {
                 self.eval_with_authority(
                     unwrap_option_safe(new.p.clone())?,
@@ -7819,6 +7823,8 @@ impl ReducerCore {
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
             reduction_coordinator,
+            space_ctx: Default::default(),
+            reified: super::reified::runtime::unavailable(),
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();

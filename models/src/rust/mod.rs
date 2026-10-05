@@ -33,6 +33,7 @@ pub mod reified;
 pub mod rholang;
 pub mod sorted_par_hash_set;
 pub mod sorted_par_map;
+pub mod space_factory_urn;
 pub mod string_ops;
 pub mod test_utils;
 pub mod utils;

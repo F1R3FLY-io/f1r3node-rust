@@ -27,6 +27,7 @@ use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::rspace_interface::{
     ISpace, RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource,
 };
+use rspace_plus_plus::rspace::space_store_handle::SpaceTxnHost;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
@@ -48,6 +49,7 @@ use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
+use super::reified;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -1486,6 +1488,7 @@ async fn setup_reducer(
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
     reduction_coordinator: ReductionCoordinator,
+    reified_runtime: Arc<reified::runtime::ReifiedRuntime>,
 ) -> Arc<ReducerCore> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
@@ -1501,7 +1504,7 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
-        rspace.clone(),
+        reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
@@ -1532,6 +1535,8 @@ async fn setup_reducer(
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         reduction_coordinator,
+        space_ctx: Default::default(),
+        reified: reified_runtime,
     });
 
     reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -1905,6 +1910,8 @@ pub async fn create_native_replay_env(
             "native replay environment requires exclusive merge-tracker ownership".to_owned(),
         ));
     }
+    let native_space_runtime = reified::runtime::native_replay();
+    reified::system_processes::register(extra_system_processes, &native_space_runtime);
     let (block_data, invalid_blocks, deploy_data, mut urn_map, proc_defs) =
         setup_maps_and_refs(extra_system_processes);
     insert_mergeable_bindings(&mut urn_map, &mergeable_tags)?;
@@ -1934,6 +1941,7 @@ pub async fn create_native_replay_env(
         external_services.chroma,
         cost.clone(),
         ReductionCoordinator::default(),
+        native_space_runtime,
     )
     .await;
     Ok(NativeReplayEnvironment {
@@ -1965,11 +1973,14 @@ pub async fn create_rho_env<T>(
 )
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
         + 'static,
 {
+    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());
+    reified::system_processes::register(extra_system_processes, &space_runtime);
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
@@ -2008,6 +2019,7 @@ where
         chromadb_service,
         cost,
         reduction_coordinator,
+        space_runtime,
     )
     .await;
     let reducer = Arc::new(DebruijnInterpreter {
@@ -2044,6 +2056,7 @@ async fn create_runtime<T>(
 ) -> RhoRuntimeImpl
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
@@ -2113,6 +2126,7 @@ pub async fn create_rho_runtime<T>(
 ) -> RhoRuntimeImpl
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
@@ -2155,6 +2169,7 @@ pub async fn create_replay_rho_runtime<T>(
 ) -> RhoRuntimeImpl
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
@@ -2180,11 +2195,13 @@ pub(crate) async fn _create_runtimes<T, R>(
 ) -> (RhoRuntimeImpl, RhoRuntimeImpl)
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
         + 'static,
     R: IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync

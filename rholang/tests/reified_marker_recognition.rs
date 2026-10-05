@@ -1,10 +1,14 @@
-// P2 tests of the Reified RSpaces recognition hooks (plan decision 22).
+// P2 tests of the Reified RSpaces recognition hooks (plan decision 22), with the P4 codes.
 //
 // The property tests have the names that formal/reified-rspaces-invariant-map.json maps to
 // the headlines E7-E12 of formal/rocq/reified_rspaces/theories/Encoding.v. Each fixture is a
-// Par that the models builders build, and the reducer evaluates it with `inj`. Until the
-// Reified RSpaces runtime exists, every recognized construct fails closed with a typed
-// `reified:<Code>:` error. Two tests check consensus checklist items 18 and 19 for P2.
+// Par that the models builders build, and the reducer evaluates it with `inj`. Every
+// recognized construct fails closed with a typed `reified:<Code>:` error. No space reference
+// of a fixture names a native space. So a USE or NEWSPACE construct fails with the code of its
+// first space reference (P4 design C.2 and C.3). The empty Par gives `EmptySpaceRef`. Every
+// other value gives `AgentSpacesUnavailable`, because agent spaces arrive in P8. Before the
+// strict decode, the hooks recompute the flags that the encoder derives (I-20). Two tests
+// check consensus checklist items 18 and 19 for P2.
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
@@ -434,6 +438,41 @@ fn tuple_expr(tuple: ETuple) -> Expr {
 
 fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
 
+/// The typed error of a USE or NEWSPACE hook for a reference without components.
+const EMPTY_SPACE_REF: &str = "reified:EmptySpaceRef: the space reference is empty";
+/// The typed error of a USE or NEWSPACE hook for a space of a user agent (P8).
+const AGENT_SPACES_UNAVAILABLE: &str =
+    "reified:AgentSpacesUnavailable: spaces that user agents implement are not available";
+
+/// True when `par` holds no process and no expression. The bit sets do not count.
+fn is_empty_par(par: &Par) -> bool {
+    Par {
+        locally_free: Vec::new(),
+        connective_used: false,
+        ..par.clone()
+    } == Par::default()
+}
+
+/// The error of the P4 hook H2 for a USE or NEWSPACE construct whose space references name no
+/// native space (P4 design C.2 and C.3). The hook classifies the space of a USE, or the
+/// annotations of a NEWSPACE in binder order, and the first reference fails closed. A fixture
+/// holds no bundle and no Reified id. So the empty `Par` is `EmptySpaceRef`, and every other
+/// value is a space of a user agent. Evaluation keeps each component of a reference, so the
+/// classification of the evaluated reference is the classification of the fixture.
+fn space_ref_error(construct: &ReifiedConstruct) -> Option<&'static str> {
+    let reference = match construct {
+        ReifiedConstruct::Use(block) => &block.space,
+        ReifiedConstruct::NewSpace(new_space) => new_space.annotations.iter().flatten().next()?,
+        ReifiedConstruct::Params(_) | ReifiedConstruct::Query(_) | ReifiedConstruct::Free(_) => {
+            return None
+        }
+    };
+    Some(match is_empty_par(reference) {
+        true => EMPTY_SPACE_REF,
+        false => AGENT_SPACES_UNAVAILABLE,
+    })
+}
+
 /// A tuple `Par` with a marker head and the canonical flags of its elements.
 fn marker_tuple(marker: Marker, fields: Vec<Par>) -> Par {
     let mut ps = Vec::with_capacity(fields.len() + 1);
@@ -506,16 +545,17 @@ async fn check_recognized_in_place(construct: &ReifiedConstruct) -> Result<(), T
                 decode_process_tuple(&tuple_of(&par)).map(ReifiedConstruct::from),
                 Ok(construct.clone())
             );
+            // The hook evaluates the reference fields of this construct, so the error is the
+            // error of its own first space reference.
+            let expected = space_ref_error(construct);
+            prop_assert!(expected.is_some());
             for program in [
                 par.clone(),
                 new_par(1, par.clone()),
                 bundle_par(par.clone()),
             ] {
                 let outcome = evaluate(program).await;
-                prop_assert_eq!(outcome.code(), Some("RuntimeUnavailable"));
-                let error = outcome.error.clone().unwrap_or_default();
-                let named = format!("the {marker} construct");
-                prop_assert!(error.contains(&named), "{}", error);
+                prop_assert_eq!(outcome.error.as_deref(), expected);
                 prop_assert!(outcome.store.is_empty());
             }
         }
@@ -613,8 +653,9 @@ fn arb_forged() -> BoxedStrategy<ETuple> {
 }
 
 /// E8 (marker_forging_grants_no_capability): a term that a hook recognizes is the canonical
-/// encoding of a well-formed construct that the position allows, so a forged term behaves as
-/// the syntax that it equals. A malformed marker term fails closed.
+/// encoding of a well-formed construct that the position allows. The hook refreshes the
+/// derived flags of the term first (I-20). So a forged term behaves as the syntax that it
+/// equals. A malformed marker term fails closed.
 #[test]
 fn marker_forging_grants_no_capability() {
     let runtime = runtime();
@@ -629,18 +670,25 @@ fn marker_forging_grants_no_capability() {
 async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
     let marker = marker_of(&forged.ps[0]).expect("a forged tuple has a marker head");
     let forged_par = process(forged.clone());
+    // I-20: before the strict decode, a hook recomputes the flags that the encoder derives.
+    // The fields of a forged tuple carry their derived flags, so only the flag of the tuple
+    // can be stale. `tuple` recomputes that flag from the fields. The decoders read a tuple of
+    // another marker as no construct, whatever its flags are.
+    let refreshed = tuple_of(&tuple(forged.ps.clone()));
+    prop_assert_eq!(&refreshed.ps, &forged.ps);
+    let refreshed_par = process(refreshed.clone());
     let channel = gstring("rrs-p2-e8");
 
     // Process position (H1 and H2).
     let outcome = evaluate(forged_par.clone()).await;
-    match (marker, decode_process_tuple(&forged)) {
+    match (marker, decode_process_tuple(&refreshed)) {
         (Marker::Use | Marker::NewSpace, Ok(construct)) => {
             let construct = ReifiedConstruct::from(construct);
             prop_assert_eq!(construct.marker(), marker);
             let canonical =
                 encode(&construct).map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert_eq!(&canonical, &tuple_expr(forged.clone()));
-            prop_assert_eq!(outcome.code(), Some("RuntimeUnavailable"));
+            prop_assert_eq!(&canonical, &tuple_expr(refreshed.clone()));
+            prop_assert_eq!(outcome.error.as_deref(), space_ref_error(&construct));
             prop_assert_eq!(&outcome, &evaluate(position_par(&construct)).await);
         }
         (Marker::Use | Marker::NewSpace, Err(_)) => {
@@ -655,10 +703,10 @@ async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
 
     // The last data element of a send (H3).
     let outcome = evaluate(send(channel.clone(), vec![forged_par.clone()])).await;
-    match split_trailing_params(std::slice::from_ref(&forged_par)) {
+    match split_trailing_params(std::slice::from_ref(&refreshed_par)) {
         Ok(Some(params)) => {
             let construct = ReifiedConstruct::Params(params);
-            prop_assert_eq!(&position_par(&construct), &forged_par);
+            prop_assert_eq!(&position_par(&construct), &refreshed_par);
             prop_assert_eq!(outcome.code(), Some("ParamsUnsupported"));
             let replayed = evaluate(send(channel.clone(), vec![position_par(&construct)])).await;
             prop_assert_eq!(&outcome, &replayed);
@@ -679,10 +727,10 @@ async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
         false,
     ))
     .await;
-    match decode_query_source(&forged_par) {
+    match decode_query_source(&refreshed_par) {
         Ok(Some(query)) => {
             let construct = ReifiedConstruct::Query(query);
-            prop_assert_eq!(&position_par(&construct), &forged_par);
+            prop_assert_eq!(&position_par(&construct), &refreshed_par);
             prop_assert_eq!(outcome.code(), Some("QuerySpecUnsupported"));
             let replayed = evaluate(receive(
                 position_par(&construct),
@@ -1223,7 +1271,9 @@ fn reified_decode_commutes_with_substitution() {
         send(gstring("rrs-p2-h3-c"), vec![gint(0)]),
     );
     let outcome = runtime.block_on(evaluate(stored));
-    assert_eq!(outcome.code(), Some("RuntimeUnavailable"));
+    // The space of the recognized USE is an ordinary name, so the hook fails closed at the
+    // agent gate (P8).
+    assert_eq!(outcome.code(), Some("AgentSpacesUnavailable"));
 }
 
 // ── E12 ────────────────────────────────────────────────────────────────────
@@ -1308,17 +1358,10 @@ fn reified_plan_nil_encoding_counterexample() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_hook_errors_are_typed() {
     let channel = gstring("rrs-p2-hooks");
+    // The space of `sample_use` and the annotation of `sample_new_space` are ordinary names.
     let cases = [
-        (
-            sample_use(),
-            "reified:RuntimeUnavailable: the USE construct needs the Reified RSpaces runtime, \
-             which is not available",
-        ),
-        (
-            sample_new_space(),
-            "reified:RuntimeUnavailable: the NEWSPACE construct needs the Reified RSpaces \
-             runtime, which is not available",
-        ),
+        (sample_use(), AGENT_SPACES_UNAVAILABLE),
+        (sample_new_space(), AGENT_SPACES_UNAVAILABLE),
         (
             marker_tuple(Marker::Use, vec![gint(1)]),
             "reified:Malformed: the USE tuple has 2 elements instead of 3",

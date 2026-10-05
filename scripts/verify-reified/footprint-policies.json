@@ -412,6 +412,441 @@
         "rholang/tests/reified_marker_recognition.rs",
         "test-vectors/protobuf-schema-head-6f7a80da3.json"
       ]
+    },
+    "p4": {
+      "description": "P4 hashmap:queue (decision 34, A14 and readiness review F1). It holds one cumulative edit per path from the base revision. The five P1 edits and the three P2 edits are verbatim, and the P4 lines are merged into the models module, reduce.rs and rho_runtime.rs entries. It extends campaign, so every other base file stays unchanged, and every new file is an exact path of allowed_new_files. Batch 4A wrote the draft. Batch 4E-S added the reduce.rs swaps for consume and allocate_new_bindings. It also added the R7 wrap and the two register lines in rho_runtime.rs. It listed the new files of batches 4B, 4C and 4D and the smoke test. The P3 normalizer entries, the Cargo.toml entries and the files of batches 4E-T, 4E-F and 4E-D are added when they land.",
+      "extends": "campaign",
+      "unchanged": [
+        "**"
+      ],
+      "edits": [
+        {
+          "path": "rspace++/src/rspace/mod.rs",
+          "added_lines": [
+            "pub mod space_store_handle;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/rspace.rs",
+          "added_lines": [
+            "mod space_play;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/replay_rspace.rs",
+          "added_lines": [
+            "mod space_replay;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/reporting_rspace.rs",
+          "replaced_lines": [
+            [
+              "    replay_rspace: ReplayRSpace<C, P, A, K>,",
+              "    pub(crate) replay_rspace: ReplayRSpace<C, P, A, K>,"
+            ]
+          ]
+        },
+        {
+          "path": "scripts/audit/check-rocq-line-refs.sh",
+          "replaced_lines": [
+            [
+              "    \"${REPO}/formal/rocq/validator/theories\"",
+              "    \"${REPO}/formal/rocq/reified_rspaces/theories\""
+            ]
+          ],
+          "added_lines": [
+            "    # 2026-10-04: the validator tree no longer exists. Its entry now names the Reified RSpaces theories."
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/util/mod.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ],
+              [
+                "",
+                "/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a",
+                "/// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).",
+                "pub fn is_evaluated_process_expr(expr: &Expr) -> bool {",
+                "    match &expr.expr_instance {",
+                "        Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_)) => true,",
+                "        Some(ExprInstance::ETupleBody(tuple)) => {",
+                "            models::rust::reified::encoding::is_process_marker_tuple(tuple)",
+                "        }",
+                "        _ => false,",
+                "    }",
+                "}",
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ]
+            ],
+            [
+              [
+                "            .iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ],
+            [
+              [
+                "            .into_iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .into_iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "models/src/rust/mod.rs",
+          "added_lines": [
+            "pub mod reified;",
+            "pub mod space_factory_urn;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/mod.rs",
+          "added_lines": [
+            "pub mod reified;",
+            "pub mod spaces;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/reduce.rs",
+          "added_lines": [
+            "                    ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,",
+            "        reified_hooks::reject_query_source(&subst)?;",
+            "    pub(crate) space_ctx: super::reified::scope::SpaceCtx,",
+            "    pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,",
+            "            space_ctx: Default::default(),",
+            "            reified: super::reified::runtime::unavailable(),"
+          ],
+          "added_line_counts": [
+            [
+              "        self.reified.begin_evaluation_scope();",
+              2
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "        self.produce(",
+              "        self.reified_produce("
+            ],
+            [
+              "        self.consume(",
+              "        self.reified_consume("
+            ],
+            [
+              "        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {",
+              "        match self.reified_allocate(new, &env, &mut rand) {"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ],
+              [
+                "#[path = \"reified/reducer_hooks.rs\"]",
+                "mod reified_hooks;",
+                "",
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/deterministic_reduction.rs",
+          "added_lines": [
+            "#[path = \"reified/schedule.rs\"]",
+            "pub(crate) mod reified_schedule;",
+            "    Space(reified_schedule::SpaceIntent),",
+            "    Space(OperationOrder, reified_schedule::SpaceDelivery),",
+            "            Self::Space(space) => Completion::Space(order, space.reject(error)),",
+            "            Self::Space(order, _) => order,",
+            "            Self::Space(_, delivery) => delivery.deliver(),",
+            "            Intent::Space(space) => space.extend_footprint(&mut footprint, &self.budget),",
+            "            Intent::Space(space) => space.execute(order).await,"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/rho_runtime.rs",
+          "added_lines": [
+            "use rspace_plus_plus::rspace::space_store_handle::SpaceTxnHost;",
+            "use super::reified;",
+            "    reified_runtime: Arc<reified::runtime::ReifiedRuntime>,",
+            "        space_ctx: Default::default(),",
+            "        reified: reified_runtime,",
+            "    let native_space_runtime = reified::runtime::native_replay();",
+            "    reified::system_processes::register(extra_system_processes, &native_space_runtime);",
+            "        native_space_runtime,",
+            "    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());",
+            "    reified::system_processes::register(extra_system_processes, &space_runtime);",
+            "        space_runtime,"
+          ],
+          "added_line_counts": [
+            [
+              "        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>",
+              6
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "        rspace.clone(),",
+              "        reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),"
+            ]
+          ]
+        }
+      ],
+      "allowed_new_files": [
+        "docs/rspace/reified-rspaces/README.md",
+        "docs/rspace/reified-rspaces/decision-register.md",
+        "docs/rspace/reified-rspaces/design.md",
+        "docs/rspace/reified-rspaces/diagrams/01-substrate-components.puml",
+        "docs/rspace/reified-rspaces/diagrams/01-substrate-components.svg",
+        "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.puml",
+        "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.svg",
+        "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.puml",
+        "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.svg",
+        "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.puml",
+        "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.svg",
+        "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.puml",
+        "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.svg",
+        "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.puml",
+        "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.svg",
+        "docs/rspace/reified-rspaces/diagrams/concept-colors.iuml",
+        "docs/rspace/reified-rspaces/diagrams/fonts.lock",
+        "docs/rspace/reified-rspaces/diagrams/render.sh",
+        "docs/rspace/reified-rspaces/glossary.md",
+        "docs/rspace/reified-rspaces/verification.md",
+        "formal/reified-rspaces-invariant-map.json",
+        "formal/reified-rspaces-model-map.json",
+        "formal/rocq/reified_rspaces/Makefile",
+        "formal/rocq/reified_rspaces/_CoqProject",
+        "formal/rocq/reified_rspaces/theories/Encoding.v",
+        "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+        "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+        "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+        "formal/tlaplus/reified_rspaces/DoublePairUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/DoublePairUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/JoinResidueUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinResidueUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_TwoBlock.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/RootIgnoresVolatileUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/TxnLockCoverage.tla",
+        "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/UuidUnsafe.cfg",
+        "rholang/tests/reified_ordinary_regression.rs",
+        "rholang/tests/reified_source_normalization.rs",
+        "rholang/tests/reified_space_store_handle_par.rs",
+        "rholang/tests/reified_space_txn_host_bounds.rs",
+        "rspace++/src/rspace/replay_rspace/space_replay.rs",
+        "rspace++/src/rspace/rspace/space_play.rs",
+        "rspace++/src/rspace/space_store_handle.rs",
+        "rspace++/tests/legacy_golden_corpus.rs",
+        "rspace++/tests/reified_space_store_handle.rs",
+        "rspace++/tests/reified_space_store_handle/support.rs",
+        "rspace++/tests/reified_space_store_handle_props.rs",
+        "scripts/check-reified-rspaces-proofs.sh",
+        "scripts/check-reified-rspaces-tla-invariants.sh",
+        "scripts/verify-reified/apalache-expect.sh",
+        "scripts/verify-reified/check-closure.py",
+        "scripts/verify-reified/check-complete.py",
+        "scripts/verify-reified/check-consensus-checklist.py",
+        "scripts/verify-reified/check-footprint.py",
+        "scripts/verify-reified/check-invariant-map.py",
+        "scripts/verify-reified/check-model-map.py",
+        "scripts/verify-reified/closure-policies.json",
+        "scripts/verify-reified/complete-policies.json",
+        "scripts/verify-reified/consensus-checklist.json",
+        "scripts/verify-reified/doc_lint.py",
+        "scripts/verify-reified/footprint-policies.json",
+        "scripts/verify-reified/merge-ordinary-capture.py",
+        "scripts/verify-reified/rocq-negative-controls.py",
+        "scripts/verify-reified/run-checker-tests.py",
+        "scripts/verify-reified/rust_citations.py",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-doi/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-doi/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-key/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-key/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/02-unused.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/02-uncolored.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/02-uncolored.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/fail/glossary.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/pass/glossary.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/fail/target.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/pass/target.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/markdown-fence/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/markdown-fence/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-abut/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-abut/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-delimiter/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-delimiter/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-undelimited/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-undelimited/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/mermaid/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/mermaid/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/Bad_Name.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/README.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/06A-upper-letter.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/06A-upper-letter.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/Sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/Sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/notes.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/README.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/06a-sub-figure.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/06a-sub-figure.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/fonts.lock",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/guide.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/fail/theories/Sample.v",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/pass/theories/Sample.v",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/fail/src/rust_cite_fixture.rs",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/pass/src/rust_cite_fixture.rs",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail-missing-corpus/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail-missing-corpus/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/examples/reified_rspaces/MANIFEST.toml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/examples/reified_rspaces/MANIFEST.toml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-contraction/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-contraction/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-paragraph-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-paragraph-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-procedure-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-procedure-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/test_checkers.py",
+        "scripts/verify-reified/tests/test_closure.py",
+        "scripts/verify-reified/tests/test_doc_lint.py",
+        "scripts/verify-reified/tlc-expect-violation.sh",
+        "test-vectors/head-file-digests-6f7a80da3.json",
+        "test-vectors/legacy-golden-corpus-v1.json",
+        "test-vectors/ordinary-execution-v1.json",
+        "test-vectors/ordinary-float-forms-v1.json",
+        "test-vectors/ordinary-source-normalization-v1.json",
+        "models/src/rust/reified/builders.rs",
+        "models/src/rust/reified/encoding.rs",
+        "models/src/rust/reified/mod.rs",
+        "models/src/rust/reified/params.rs",
+        "models/src/rust/reified/query_spec.rs",
+        "models/src/rust/reified/validation.rs",
+        "models/tests/reified_encoding.rs",
+        "models/tests/support/reified_strategies.rs",
+        "rholang/src/rust/interpreter/reified/errors.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/tests/reified_marker_recognition.rs",
+        "test-vectors/protobuf-schema-head-6f7a80da3.json",
+        "rholang/src/rust/interpreter/reified/costs.rs",
+        "rholang/src/rust/interpreter/reified/mod.rs",
+        "rholang/src/rust/interpreter/reified/route.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/reified/schedule.rs",
+        "rholang/src/rust/interpreter/reified/scope.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/mod.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs",
+        "rholang/src/rust/interpreter/spaces/factory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/mod.rs",
+        "rholang/src/rust/interpreter/spaces/namespace.rs",
+        "rholang/src/rust/interpreter/spaces/outer/mod.rs",
+        "rholang/src/rust/interpreter/spaces/types/mod.rs",
+        "rholang/src/rust/interpreter/spaces/counter.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/spaces/matching.rs",
+        "rholang/src/rust/interpreter/spaces/record.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+        "rholang/src/rust/interpreter/spaces/types/config.rs",
+        "rholang/src/rust/interpreter/spaces/types/id.rs",
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs",
+        "rholang/src/rust/interpreter/reified/execution.rs",
+        "models/src/rust/space_factory_urn.rs",
+        "rholang/src/rust/interpreter/reified/factory.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+        "rholang/tests/reified_p4_smoke.rs"
+      ]
     }
   }
 }
