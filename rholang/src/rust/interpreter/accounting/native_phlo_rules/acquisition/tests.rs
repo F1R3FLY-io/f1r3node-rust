@@ -43,10 +43,21 @@ fn purse_limits() -> NativePhloPurseLimits {
     }
 }
 
+fn key_limits() -> models::rust::phlo_obligation::PhloObligationKeyLimits {
+    models::rust::phlo_obligation::PhloObligationKeyLimits {
+        wire: models::rust::phlo_wire::PhloWireLimits {
+            total_bytes: 10_000_000,
+            field_bytes: 10_000_000,
+        },
+        authority_nodes: 1_000_000,
+    }
+}
+
 fn limits() -> NativePhloAcquisitionLimits {
     NativePhloAcquisitionLimits {
         schedule: PhloGenesisPolicy::LIMITS,
         entries: 100_000,
+        key: key_limits(),
     }
 }
 
@@ -123,7 +134,24 @@ fn check_case(
         .into_iter()
         .filter(|quantity| *quantity > 0)
         .count();
-    assert_eq!(prepared.resources().len(), positive * 2 * copies);
+    // Changed by C8 (DR-87): the two regions share one purse identity, so the
+    // demand holds one entry for each positive class, and each entry sums
+    // the quantities of its occurrences.
+    // assert_eq!(prepared.resources().len(), positive * 2 * copies);
+    assert_eq!(
+        prepared.resources().len(),
+        if copies == 0 { 0 } else { positive }
+    );
+    assert_eq!(prepared.occurrence_count(), positive * 2 * copies);
+    let mut sums = vec![0_u64; prepared.resources().len()];
+    for (position, (_, amount)) in prepared.occurrences().enumerate() {
+        let entry = prepared.occurrence_entry(position).unwrap();
+        assert_eq!(prepared.resources()[entry].resource, amount.resource);
+        sums[entry] += amount.quantity;
+    }
+    for (entry, sum) in prepared.resources().iter().zip(sums) {
+        assert_eq!(entry.quantity, sum);
+    }
     for ((origin, amount), expected) in prepared.occurrences().zip(located.occurrences()) {
         assert_eq!(origin, expected);
         assert_eq!(amount.resource.location, expected.purse().encoded_channel());
@@ -289,12 +317,16 @@ fn native_acquisition_limits_reject_without_changing_observations() {
     let measured = rules.measure(&input, 1).unwrap();
     let regions = measured.region_demands(region_limits(), &budget()).unwrap();
     let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    // Changed by C8 (DR-87): the entry limit counts the four distinct keys
+    // (one purse identity, four positive classes) instead of the eight
+    // located occurrences.
+    // entries: 8 accepted and entries: 7 rejected before.
     assert!(located
         .prepare_acquisition_demand(
             &binding,
             &terms,
             NativePhloAcquisitionLimits {
-                entries: 8,
+                entries: 4,
                 ..limits()
             },
             &budget()
@@ -305,7 +337,7 @@ fn native_acquisition_limits_reject_without_changing_observations() {
             &binding,
             &terms,
             NativePhloAcquisitionLimits {
-                entries: 7,
+                entries: 3,
                 ..limits()
             },
             &budget()
@@ -371,17 +403,48 @@ fn native_acquisition_does_not_expand_maximum_quantity_or_hide_quantity_overflow
     let measured = rules.measure(&input, 1).unwrap();
     let regions = measured.region_demands(region_limits(), &budget()).unwrap();
     let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    // Changed by C8 (DR-87): the two regions share one purse identity, so the
+    // aggregation adds their maximum quantities and rejects the overflow when
+    // it prepares the demand. Before C8 the counted check rejected the same
+    // overflow later. The replaced lines follow.
+    // let prepared = located
+    //     .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+    //     .unwrap();
+    // assert_eq!(prepared.resources().len(), 8);
+    // assert_eq!(
+    //     prepared
+    //         .resources()
+    //         .iter()
+    //         .filter(|entry| entry.quantity == u64::MAX)
+    //         .count(),
+    //     6
+    // );
+    // ... check_counted_phlo_execution(controls, witness, execution_limits())
+    //     == Err(PhloExecutionError::ArithmeticOverflow)
+    assert!(matches!(
+        located.prepare_acquisition_demand(&binding, &terms, limits(), &budget()),
+        Err(NativePhloAcquisitionError::QuantityOverflow)
+    ));
+
+    let mut single = snapshot([u64::MAX; 3], 3, 1);
+    Arc::make_mut(&mut single.rows[0])
+        .authority
+        .regions
+        .truncate(1);
+    let measured = rules.measure(&single, 1).unwrap();
+    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
+    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
     let prepared = located
         .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
         .unwrap();
-    assert_eq!(prepared.resources().len(), 8);
+    assert_eq!(prepared.resources().len(), 4);
     assert_eq!(
         prepared
             .resources()
             .iter()
             .filter(|entry| entry.quantity == u64::MAX)
             .count(),
-        6
+        3
     );
     let schedules = [binding.schedule()];
     let controls = check_phlo_controls(
@@ -406,10 +469,7 @@ fn native_acquisition_does_not_expand_maximum_quantity_or_hide_quantity_overflow
             required: prepared.resources(),
             fresh: prepared.resources(),
         };
-    assert_eq!(
-        check_counted_phlo_execution(controls, witness, execution_limits()),
-        Err(PhloExecutionError::ArithmeticOverflow)
-    );
+    assert!(check_counted_phlo_execution(controls, witness, execution_limits()).is_ok());
 }
 
 proptest! {
@@ -461,3 +521,5 @@ proptest! {
         prop_assert_eq!(first, reverse);
     }
 }
+
+mod aggregation;

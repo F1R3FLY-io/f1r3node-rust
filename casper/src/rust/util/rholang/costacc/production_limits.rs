@@ -163,6 +163,7 @@ pub fn offered_funded_v6_production_limits() -> NativeOfferedProductionLimits {
                         classes: funding.controls.total_classes,
                     },
                     entries: case.obligations,
+                    key,
                 },
                 demand: NativePrepaidDemandLimits {
                     draws: prepaid.draws,

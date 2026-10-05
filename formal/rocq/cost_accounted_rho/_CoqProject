@@ -604,6 +604,7 @@ theories/StateImportScan.v
 theories/StateImportCheckpoint.v
 theories/StateImportRetry.v
 theories/CountedFundingProjection.v
+theories/AggregatedAcquisitionDemand.v
 theories/PrepaidReceiptStorage.v
 theories/NativeAttemptReplay.v
 theories/NativeIndexBounds.v

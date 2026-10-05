@@ -169,6 +169,47 @@ pub enum PhloObligationError {
     RetainedResourcesOnFailure,
 }
 
+impl<'a> PhloResource<'a> {
+    /// The canonical obligation-key encoding of this resource (C8, DR-87).
+    /// The key derivation, its work limits and its host-work charges are
+    /// those of the settlement key encoding, so equal encodings mean equal
+    /// resource keys.
+    pub fn encoded_obligation_key(
+        self,
+        limits: PhloObligationKeyLimits,
+        host: &HostWorkBudget,
+    ) -> Result<Vec<u8>, PhloObligationError> {
+        let mut budget = WorkBudget {
+            remaining_nodes: limits.authority_nodes,
+            remaining_bytes: limits.wire.field_bytes,
+        };
+        let resource = resource_key_with_host_work(self, &mut budget, Some(host))?.into_wire()?;
+        reserve_key_work(
+            Some(host),
+            HostWorkDimension::VerificationOperations,
+            resource
+                .authority
+                .len()
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(16))
+                .ok_or(PhloExecutionError::ArithmeticOverflow)?,
+        )?;
+        let record = PhloObligationKeyV1::Resource(resource);
+        let prepared = record.prepare_encoding(limits)?;
+        reserve_key_work(
+            Some(host),
+            HostWorkDimension::SearchStateBytes,
+            prepared.encoded_len(),
+        )?;
+        reserve_key_work(
+            Some(host),
+            HostWorkDimension::VerificationOperations,
+            prepared.encoded_len(),
+        )?;
+        Ok(prepared.encode()?)
+    }
+}
+
 pub fn project_phlo_obligations<'a>(
     execution: CheckedPhloExecution<'a>,
     outcome: PhloOutcome<'a>,

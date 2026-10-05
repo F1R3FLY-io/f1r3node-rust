@@ -144,6 +144,13 @@ impl FundingFixture {
                 NativePhloAcquisitionLimits {
                     schedule: PhloGenesisPolicy::LIMITS,
                     entries: 100_000,
+                    key: models::rust::phlo_obligation::PhloObligationKeyLimits {
+                        wire: models::rust::phlo_wire::PhloWireLimits {
+                            total_bytes: 10_000_000,
+                            field_bytes: 10_000_000,
+                        },
+                        authority_nodes: 1_000_000,
+                    },
                 },
                 &host,
             )

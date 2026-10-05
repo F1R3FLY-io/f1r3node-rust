@@ -5848,3 +5848,87 @@ Tests:
 
 **Cross-refs.** DR-74, DR-77, DR-78, DR-85. Leaf
 `ofp-2-cap-c7b-decoded-path-trie`.
+
+## DR-87 — The acquisition demand holds one entry for each obligation key
+
+**Status.** Implemented 2026-10-05 for cap root cause C8 of epic 8946
+(batch B1, phase C).
+
+**Context.** `prepare_acquisition_demand` pushed one resource entry for each
+located occurrence of a measured class. In the gateway funding flow, 2,899
+occurrences of a few keys gave 5,798 entries in the required and fresh parts
+of the witness, 5,798 authority nodes and about 4.76 MiB of key bytes. These
+counts exhausted the protocol-6 limits for obligations (4,096), authority
+nodes (4,096) and key bytes (262,144), and the limits were raised
+provisionally.
+
+**Decision.**
+
+1. The demand holds one entry for each distinct key: a purse identity and a
+   class. Each entry holds the summed quantity of its occurrences. The
+   entries are sorted by the identity encoding and the class.
+2. The purse identity is the canonical obligation-key encoding of the
+   purse's location and authority (`PhloResource::encoded_obligation_key`).
+   Two purses on one channel with different authorities therefore stay
+   distinct. Two signatures with one authority value merge. The spec text
+   names (purse channel, class) as the key. The authority is added, because
+   the payment exactness that the spec requires needs it.
+3. The entry limit applies to the distinct keys. A zero quantity and an
+   overflowing quantity sum are rejected when the demand is prepared. The
+   later checks rejected the same inputs before.
+4. The demand maps each occurrence to its entry (`occurrence_entry`). The
+   prepaid selection still works on occurrences, so the evidence positions
+   do not change. The binding maps each position to its entry and keeps a
+   quantity bound for each occurrence, so it decides as before.
+5. Settlement already merged the obligations of each key before it encoded
+   them. It now receives distinct entries.
+6. The committed limits stay at their original values.
+
+The replaced lines stay in the source, commented out with their reason.
+
+**Soundness.** Aggregation keeps the counted quantity of every key, the
+priced value, the counted discharge and the exhaustion of supply. Payments
+stay exact. The obligations and the funding case are equal as sets, and the
+funding case is put in canonical order before family selection and capture,
+so its bytes do not change. Validators compute the same aggregation from the
+same evidence.
+
+**Scope.** This change is cost-accounting work. The acquisition demand, the
+prepaid binding and the settlement of offered deploys exist only on this
+branch. The Casper changes are in the cost-accounting tree: the demand
+binding and the acquisition limits. No encoding changes. The accepted set
+grows: an offer whose occurrences exceeded the limits, but whose distinct
+keys fit, is now accepted. This is a protocol-6 rule change, and protocol 6
+is not yet released. Prepaid draws are not aggregated: each draw still
+derives two keys. Phase D (S11) measures that remaining use.
+
+**Verification.** `AggregatedAcquisitionDemand.v` proves without axioms:
+
+- `aggregate_preserves_counts` and `aggregate_expansion_permutation`;
+- `aggregate_preserves_weighted_usage`;
+- `aggregate_preserves_partition` and `aggregate_preserves_exhaustion`;
+- `aggregate_keys_distinct`;
+- `aggregated_payment_exact`;
+- `occurrence_key_work_exceeds_aggregated`: a negative control. 2,899
+  occurrences of eight one-node keys need 5,798 authority nodes, above the
+  limit of 4,096, and their aggregate needs 16.
+
+Tests in `acquisition/tests/aggregation.rs`:
+
+- `aggregated_witness_checks_like_occurrence_witness`: on generated purses,
+  including one channel with two authorities, the entries have distinct keys
+  and sum their occurrences, the result does not depend on the row order,
+  and the aggregated demand checks, discharges and projects its obligations
+  like the per-occurrence demand. At the distinct entry limit, the
+  aggregated witness passes and a larger per-occurrence witness fails.
+- `settlement_encodes_each_key_once`: a demand with 64 copies of each
+  occurrence gives one obligation for each key and the fee, encodes each key
+  once, and does the encoding work of a demand with one occurrence per key.
+- `funding_flow_has_nine_keys`: two purse identities and four classes in
+  2,904 occurrences give nine obligations under the original limits, which
+  the per-occurrence demand exceeds.
+
+The existing acquisition tests now assert the aggregated entry counts. The
+gateway funding flow itself is measured in the phase C probe.
+
+**Cross-refs.** DR-77, DR-85, DR-86. Leaf `ofp-2-cap-c8-aggregated-demand`.

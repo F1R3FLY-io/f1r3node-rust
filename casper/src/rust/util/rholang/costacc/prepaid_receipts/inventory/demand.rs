@@ -99,10 +99,14 @@ impl NativePrepaidInventory<'_, '_> {
         limits: NativePrepaidDemandLimits,
         budget: &HostWorkBudget,
     ) -> Result<CanonicalPrepaidSelection, CasperError> {
-        let count = demand.resources().len();
-        if count > limits.execution.resource_entries {
+        // Changed by C8 (DR-87): the entry limit applies to the distinct
+        // demand keys, and the selection walks the located occurrences.
+        // let count = demand.resources().len();
+        // if count > limits.execution.resource_entries {
+        if demand.resources().len() > limits.execution.resource_entries {
             return Err(invalid("measured prepaid demand entry limit exceeded"));
         }
+        let count = demand.occurrence_count();
         reserve(
             budget,
             HostWorkDimension::SearchStateBytes,
@@ -268,28 +272,57 @@ impl NativePrepaidInventory<'_, '_> {
                 "each selected prepaid cell requires one demand position",
             ));
         }
+        // Changed by C8 (DR-87): the origins and the remaining quantity of
+        // each located occurrence are sized by the occurrence count, because
+        // the demand entries are aggregated.
+        // reserve(
+        //     budget,
+        //     HostWorkDimension::SearchStateBytes,
+        //     count
+        //         .checked_mul(size_of::<MeasuredPhloPrepaidUse<'_>>())
+        //         .and_then(|size| {
+        //             input
+        //                 .demand
+        //                 .resources()
+        //                 .len()
+        //                 .checked_mul(size_of::<NativePhloLocatedDemand<'_>>())
+        //                 .and_then(|origins| size.checked_add(origins))
+        //         })
+        //         .ok_or_else(|| invalid("measured prepaid allocation overflow"))?,
+        // )?;
+        // let mut origins = Vec::new();
+        // origins
+        //     .try_reserve_exact(input.demand.resources().len())
+        //     .map_err(|_| invalid("measured prepaid occurrence allocation failed"))?;
+        // for (origin, _) in input.demand.occurrences() {
+        //     reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+        //     origins.push(origin);
+        // }
+        let occurrences = input.demand.occurrence_count();
         reserve(
             budget,
             HostWorkDimension::SearchStateBytes,
             count
                 .checked_mul(size_of::<MeasuredPhloPrepaidUse<'_>>())
                 .and_then(|size| {
-                    input
-                        .demand
-                        .resources()
-                        .len()
-                        .checked_mul(size_of::<NativePhloLocatedDemand<'_>>())
+                    occurrences
+                        .checked_mul(size_of::<NativePhloLocatedDemand<'_>>() + size_of::<u64>())
                         .and_then(|origins| size.checked_add(origins))
                 })
                 .ok_or_else(|| invalid("measured prepaid allocation overflow"))?,
         )?;
         let mut origins = Vec::new();
         origins
-            .try_reserve_exact(input.demand.resources().len())
+            .try_reserve_exact(occurrences)
             .map_err(|_| invalid("measured prepaid occurrence allocation failed"))?;
-        for (origin, _) in input.demand.occurrences() {
+        let mut remaining = Vec::new();
+        remaining
+            .try_reserve_exact(occurrences)
+            .map_err(|_| invalid("measured prepaid occurrence allocation failed"))?;
+        for (origin, amount) in input.demand.occurrences() {
             reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             origins.push(origin);
+            remaining.push(amount.quantity);
         }
         let mut assignments = Vec::new();
         assignments
@@ -323,8 +356,26 @@ impl NativePrepaidInventory<'_, '_> {
                         "prepaid stack head differs from the measured authority",
                     ));
                 }
+                // C8 (DR-87): each occurrence keeps its own quantity bound, so
+                // binding to an aggregated entry decides as binding to the
+                // occurrence did.
+                let left = remaining
+                    .get_mut(index)
+                    .ok_or_else(|| invalid("prepaid demand position is out of range"))?;
+                *left = left.checked_sub(1).ok_or_else(|| {
+                    invalid("prepaid resource exceeds the remaining measured demand")
+                })?;
+                // Changed by C8 (DR-87): an assignment names the aggregated entry
+                // of its occurrence.
+                // assignments.push(MeasuredPhloPrepaidUse {
+                //     demand_index: index,
+                //     resource: cell.resource(),
+                // });
                 assignments.push(MeasuredPhloPrepaidUse {
-                    demand_index: index,
+                    demand_index: input
+                        .demand
+                        .occurrence_entry(index)
+                        .ok_or_else(|| invalid("prepaid demand position is out of range"))?,
                     resource: cell.resource(),
                 });
             }
