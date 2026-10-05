@@ -189,6 +189,128 @@ pub async fn journal_path_mutation_two_via_table(
         .map(|()| true)
 }
 
+/// Reserve a `WalOp::Write` (or `WalOp::WriteAt` when `offset` is
+/// `Some`) entry for an fd-based write.  Fd-based cmode lookup —
+/// the shadow handle carries `cmode`; we read it via `with_mut`.
+/// Returns `Ok(false)` if the fd is unknown (handler will report
+/// `FSERR_CLOSED` separately) OR if the handle's cmode is Oracular
+/// (no WAL under Oracular).
+///
+/// # Payload persistence (Phase 7b-2)
+///
+/// On Consensus, persist the payload bytes to the payload store
+/// BEFORE appending the WAL entry so a joining validator's fetch
+/// protocol sees the bytes as soon as the WAL entry lands.  Also
+/// records the `payload_hash -> deploy_sig` mapping via the
+/// payload source recorder (DD-7b-2 Option 2).  Both persist calls
+/// are fail-open — a store write failure logs a warning and falls
+/// through to the WAL append; joiners can still fetch the payload
+/// from another peer by its content hash.
+///
+/// # Resolved offset
+///
+/// For sequential writes (`offset = None`), the resolved offset
+/// stored in the WAL entry is the handle's current `position` —
+/// the leader's syscall-time file offset.  For positional writes
+/// (`offset = Some(off)`), the resolved offset is `off` directly.
+#[allow(clippy::result_unit_err)]
+pub async fn journal_write_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    bytes: &[u8],
+    offset: Option<u64>,
+    ack: &Par,
+) -> Result<bool, ()> {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path, position)) => {
+            let (op, resolved_offset) = match offset {
+                Some(off) => (WalOp::WriteAt, Some(off)),
+                None => (WalOp::Write, Some(position)),
+            };
+            if let Some(store) = handles.payload_store() {
+                if let Err(e) = store.persist(bytes) {
+                    tracing::warn!(
+                        target: "f1r3fly.fs_wal.payload_store",
+                        error = %e,
+                        "payload store persist failed on Consensus write; \
+                         joiners will need to fetch from another peer"
+                    );
+                }
+            }
+            let PayloadRef::Hash(payload_hash) = PayloadRef::hash(bytes) else {
+                unreachable!("PayloadRef::hash always returns Hash variant")
+            };
+            if let Some(recorder) = handles.payload_source_recorder() {
+                let sig = handles.current_deploy_sig();
+                if !sig.is_empty() {
+                    if let Err(e) = recorder.record(payload_hash, &sig) {
+                        tracing::warn!(
+                            target: "f1r3fly.fs_wal.payload_source_index",
+                            error = %e,
+                            "payload_source recorder record failed on \
+                             Consensus write; joiners will fall back to \
+                             peer fetch for this payload hash"
+                        );
+                    }
+                }
+            }
+            handles
+                .wal
+                .append_with_ack(
+                    WalEntry {
+                        op,
+                        path: canon_path,
+                        extra_path: None,
+                        offset: resolved_offset,
+                        length: Some(bytes.len() as u64),
+                        payload_ref: Some(PayloadRef::Hash(payload_hash)),
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                        outcome: WalOutcome::Success,
+                    },
+                    ack_channel_hash(ack),
+                )
+                .map(|()| true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Finalize a partial write: patch the pre-appended WAL entry's
+/// `length` + `payload_ref` to reflect the actual number of bytes
+/// written.  Re-persists the truncated slice to the payload store
+/// (fail-open, same discipline as `journal_write_via_table`).
+///
+/// Call site: the `journal` hook of fs_write / fs_write_at, on the
+/// success path when `actual_n < requested_bytes.len()`.  No-ops
+/// silently if the ack hash isn't present (Oracular caller, or the
+/// placeholder was already finalized).
+pub fn finalize_write_journal_via_table(
+    handles: &FileHandleTable,
+    requested_bytes: &[u8],
+    actual_n: u64,
+    ack: &Par,
+) {
+    let n = (actual_n as usize).min(requested_bytes.len());
+    let actual_slice = &requested_bytes[..n];
+    if let Some(store) = handles.payload_store() {
+        if let Err(e) = store.persist(actual_slice) {
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.payload_store",
+                error = %e,
+                "payload store persist failed on partial-write finalize"
+            );
+        }
+    }
+    let _ = handles
+        .wal
+        .update_partial_write_by_ack_hash(ack_channel_hash(ack), actual_slice);
+}
+
 /// Journal a state-read op (fs_stat / fs_exists / fs_size / fs_read /
 /// fs_entries / fs_entries_stream_next): record the reply's
 /// Blake2b256 hash into the WAL so verify.rs can compare leader +

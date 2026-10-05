@@ -425,6 +425,13 @@ impl FixedChannels {
     /// release all held locks.  Non-verifying.  Added by slice
     /// 4.37.
     pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
+
+    /// `rho:io:fs:native:1.0.0/write` — fd + ByteArray; libc::write
+    /// to the shadow fd under spawn_blocking.  Verifying length-
+    /// parameterized mutation (single-event incremental cost +
+    /// H-6 reserve-then-finalize with partial-write patch).  Added
+    /// by slice 4.38.
+    pub fn fs_write() -> Par { byte_name(44) }
 }
 
 pub struct BodyRefs;
@@ -549,6 +556,9 @@ impl BodyRefs {
     /// `rho:io:fs:native:1.0.0/releaseAllForHolder` body-ref
     /// (slice 4.37).
     pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
+
+    /// `rho:io:fs:native:1.0.0/write` body-ref (slice 4.38).
+    pub const FS_WRITE: i64 = 44;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {

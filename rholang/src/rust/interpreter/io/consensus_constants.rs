@@ -68,7 +68,9 @@ pub use super::wal::{MAX_WAL_ENTRIES, WAL_OP_VARIANTS, WAL_OUTCOME_VARIANTS};
 // constants, mod.rs origin).
 pub use super::{CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR, FS_NONCE};
 // Byte gates + per-runtime caps (mod.rs origin).
-pub use super::{MAX_CHUNK_ITEMS, MAX_ENTRIES, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
+pub use super::{
+    MAX_CHUNK_ITEMS, MAX_ENTRIES, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES, MAX_WRITE_BYTES,
+};
 
 #[cfg(test)]
 mod tests {
@@ -109,6 +111,7 @@ mod tests {
             "MAX_OPEN_FDS",
             "MAX_CHUNK_ITEMS",
             "MAX_ENTRIES",
+            "MAX_WRITE_BYTES",
             // mod.rs (composition-time constants)
             "CMODE_ORACULAR_STR",
             "CMODE_CONSENSUS_STR",
@@ -164,6 +167,7 @@ mod tests {
         let _ = super::MAX_OPEN_FDS;
         let _ = super::MAX_CHUNK_ITEMS;
         let _ = super::MAX_ENTRIES;
+        let _ = super::MAX_WRITE_BYTES;
         let _ = super::CMODE_ORACULAR_STR;
         let _ = super::CMODE_CONSENSUS_STR;
         let _ = super::FS_NONCE;

@@ -25,11 +25,15 @@
 //     locked → log-warn + proceed).  Added by slice 4.28.
 //   - `fs_copy_file` — two-endpoint byte-count copy via
 //     `safe_open_verified` + `std::io::copy`.  Added by slice 4.33.
+//   - `fs_write` — fd + ByteArray; libc::write.  First length-
+//     parameterized mutation (single-event incremental cost + H-6
+//     reserve-then-finalize with partial-write patch via
+//     `finalize_write_journal_via_table`).  Added by slice 4.38.
 //
-// Yet to land (listed roughly in handler-migration order):
+// Yet to land:
 //
-//   - `fs_write` / `fs_write_at` — byte-payload mutation; length-
-//     parameterized cost via `post_reply_supplement`.
+//   - `fs_write_at` — same as fs_write but with offset; libc::pwrite;
+//     no shadow position advance (POSIX pwrite semantics).
 //
 // Family: [`HandlerFamily::Mutation`](super::super::handler_trait::family::HandlerFamily::Mutation).
 
@@ -39,3 +43,4 @@ pub mod fs_copy_file;
 pub mod fs_remove_file;
 pub mod fs_rename;
 pub mod fs_truncate;
+pub mod fs_write;

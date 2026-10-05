@@ -29,14 +29,14 @@
 //     with reply-hash capture (fs_entries_stream_next and future
 //     fs_stat / fs_exists / fs_size / fs_read / fs_entries
 //     migrations to full journaling).  Added by slice 4.30.
+//   - `journal_write_via_table` + `finalize_write_journal_via_table`
+//     + `write_impl_via_table` — fs_write / fs_write_at reserve +
+//     finalize + syscall shim.  Added by slice 4.38.
 //
 // Yet to land (listed roughly in handler-migration order):
 //
 //   - `journal_read_via_table`, `journal_read_divergence_via_table`
 //     — WAL read entry with divergence discriminator (fs_read).
-//   - `finalize_write_journal_via_table` — write-specific finalize
-//     with byte-count fixup.
-//   - `holder_id_of`, `resolve_lock_mode` — lock-handler helpers.
 //   - `per_entry_ack_seed` — fs_remove_dir manifest per-entry ack.
 
 pub mod ack_hash;
@@ -46,11 +46,13 @@ pub mod open_impl;
 pub mod read_impl;
 pub mod readdir;
 pub mod unlink;
+pub mod write_impl;
 
 pub use ack_hash::ack_channel_hash;
 pub use journal::{
-    finalize_failure_journal_via_table, journal_path_mutation_single_via_table,
-    journal_path_mutation_two_via_table, journal_state_read_via_table, journal_truncate_via_table,
+    finalize_failure_journal_via_table, finalize_write_journal_via_table,
+    journal_path_mutation_single_via_table, journal_path_mutation_two_via_table,
+    journal_state_read_via_table, journal_truncate_via_table, journal_write_via_table,
 };
 pub use lock_helpers::{
     dev_inode_from_fd_via_table, holder_id_of, lock_err_reply, resolve_lock_mode,
@@ -59,3 +61,4 @@ pub use open_impl::open_impl_via_table;
 pub use read_impl::read_impl_via_table;
 pub use readdir::{entry_stat_row, errno_reset, read_dir_capped, readdir_one_entry, reply_is_ok};
 pub use unlink::{target_dev_inode_at, unlink_leaf_via_dirfd, RemoveKind};
+pub use write_impl::write_impl_via_table;
