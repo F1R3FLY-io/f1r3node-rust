@@ -336,6 +336,22 @@ impl FixedChannels {
     /// length-parameterized cost; does NOT advance shadow
     /// position per POSIX pread semantics (slice 4.21).
     pub fn fs_read_at() -> Par { byte_name(43) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` — release a
+    /// directory-entries stream fd + Phase-2 shadow-remove on
+    /// replay.  Non-verifying stream lifecycle (slice 4.22).
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
+
+    /// `rho:io:fs:native:1.0.0/truncate` — fd-based truncate via
+    /// `libc::ftruncate`.  Verifying mutation; constant cost.
+    /// First Mutation-family handler on dev (slice 4.24).
+    pub fn fs_truncate() -> Par { byte_name(49) }
+
+    /// `rho:io:fs:native:1.0.0/chmod` — path-based chmod via
+    /// `safe_descend_verified` + `fchmodat` (AT_SYMLINK_NOFOLLOW).
+    /// Verifying mutation; constant cost.  First path-mutation
+    /// handler on dev (slice 4.25).
+    pub fn fs_chmod() -> Par { byte_name(59) }
 }
 
 pub struct BodyRefs;
@@ -409,6 +425,16 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
     pub const FS_READ_AT: i64 = 43;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` body-ref
+    /// (slice 4.22).
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
+
+    /// `rho:io:fs:native:1.0.0/truncate` body-ref (slice 4.24).
+    pub const FS_TRUNCATE: i64 = 49;
+
+    /// `rho:io:fs:native:1.0.0/chmod` body-ref (slice 4.25).
+    pub const FS_CHMOD: i64 = 59;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
