@@ -1,41 +1,40 @@
 // Cost-Accounted Rho — Rust runtime budget conservation, Verus-verified.
 //
-// A correspondence→PROOF cross-witness for the accounting runtime's escrow
-// reconciliation: splitting an escrow into a charged amount and a refund conserves
-// the total, and the refund is bounded by the escrow. This is the Verus image of
-// the Rocq CASettlement.charged_plus_refund_eq_escrow / post_evaluation_settlement
-// guarantees on the functional reconciliation core (reconcile / reserve_canonical_
-// with_cost). Pure (overflow-free nat) functional core; the lock-free AtomicU64/CAS
-// linearizability is the Iris leg.
+// A correspondence→PROOF cross-witness for protocol-4 reservation settlement:
+// splitting a fixed reservation into an exact debit and a refund conserves the
+// total, and the refund is bounded by the reservation. This is the Verus image of
+// the Rocq Settlement.debit_plus_refund_eq_reservation /
+// post_evaluation_settlement_no_mint guarantees on the pure, overflow-free
+// reconciliation core. The lock-free AtomicU64/CAS linearizability is the Iris leg.
 use vstd::prelude::*;
 
 verus! {
 
-// The refund left when `charged` is debited from `escrow`.
-spec fn refund(escrow: nat, charged: nat) -> nat
-    recommends charged <= escrow,
+// The refund left when `debit` is removed from `reservation`.
+spec fn refund(reservation: nat, debit: nat) -> nat
+    recommends debit <= reservation,
 {
-    (escrow - charged) as nat
+    (reservation - debit) as nat
 }
 
-// Conservation: charged + refund == escrow (no funds created or destroyed).
-proof fn budget_split_conserves(escrow: nat, charged: nat)
-    requires charged <= escrow,
-    ensures charged + refund(escrow, charged) == escrow,
+// Conservation: exact debit plus refund equals the fixed reservation.
+proof fn budget_split_conserves(reservation: nat, debit: nat)
+    requires debit <= reservation,
+    ensures debit + refund(reservation, debit) == reservation,
 {
 }
 
-// The refund never exceeds the escrow.
-proof fn refund_bounded(escrow: nat, charged: nat)
-    requires charged <= escrow,
-    ensures refund(escrow, charged) <= escrow,
+// The refund never exceeds the reservation.
+proof fn refund_bounded(reservation: nat, debit: nat)
+    requires debit <= reservation,
+    ensures refund(reservation, debit) <= reservation,
 {
 }
 
 // Monotone debit: charging more never increases the refund.
-proof fn debit_monotone(escrow: nat, c1: nat, c2: nat)
-    requires c1 <= c2, c2 <= escrow,
-    ensures refund(escrow, c2) <= refund(escrow, c1),
+proof fn debit_monotone(reservation: nat, c1: nat, c2: nat)
+    requires c1 <= c2, c2 <= reservation,
+    ensures refund(reservation, c2) <= refund(reservation, c1),
 {
 }
 

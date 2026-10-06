@@ -7,7 +7,7 @@ use models::rhoapi::{
 
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::eval::eval;
+use crate::eval::{eval, eval_metered};
 
 fn par_of(instance: ExprInstance) -> Par {
     models::par_from_default! {
@@ -62,6 +62,212 @@ fn evar_resolves_from_env() {
     let env = env.put(gint(7));
     let result = eval(&evar(0), &env).unwrap();
     assert_int(&result, 7);
+}
+
+#[test]
+fn owned_environment_push_matches_put_and_prepays_growth() {
+    use std::cell::Cell;
+
+    use shared::rust::clone_backing::BackingError;
+
+    let mut owned = Env::<Par>::new();
+    let mut copied = Env::<Par>::new();
+    for value in 0..16 {
+        owned.push(gint(value)).unwrap();
+        copied = copied.put(gint(value));
+        assert_eq!(owned.env_map, copied.env_map);
+        assert_eq!(owned.level, copied.level);
+    }
+    let used = Cell::new([0usize; 3]);
+    let full = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = used.get();
+        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+            *total += amount;
+        }
+        used.set(next);
+        Ok(())
+    };
+    let mut paid = Env::<Par>::new();
+    paid.push_metered(gint(7), &full).unwrap();
+    assert_eq!(paid.get(&0), Some(gint(7)));
+    let required = used.get();
+    assert!(required.iter().all(|value| *value > 0));
+    for dimension in 0..3 {
+        let mut limit = required;
+        limit[dimension] -= 1;
+        let spent = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = spent.get();
+            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            if next.iter().zip(limit).any(|(value, max)| *value > max) {
+                return Err(BackingError::Rejected);
+            }
+            spent.set(next);
+            Ok(())
+        };
+        let mut empty = Env::<Par>::new();
+        assert_eq!(
+            empty.push_metered(gint(7), &meter),
+            Err(BackingError::Rejected)
+        );
+        assert!(empty.env_map.is_empty());
+        assert_eq!(empty.level, 0);
+    }
+
+    let lookup_used = Cell::new([0usize; 3]);
+    let lookup_full = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = lookup_used.get();
+        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+            *total += amount;
+        }
+        lookup_used.set(next);
+        Ok(())
+    };
+    assert_eq!(paid.get_metered(&0, &lookup_full), Ok(Some(gint(7))));
+    let lookup_required = lookup_used.get();
+    assert!(lookup_required.iter().all(|value| *value > 0));
+    for dimension in 0..3 {
+        let mut limit = lookup_required;
+        limit[dimension] -= 1;
+        let spent = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = spent.get();
+            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            if next.iter().zip(limit).any(|(value, max)| *value > max) {
+                return Err(BackingError::Rejected);
+            }
+            spent.set(next);
+            Ok(())
+        };
+        assert_eq!(paid.get_metered(&0, &meter), Err(BackingError::Rejected));
+        assert_eq!(paid.get(&0), Some(gint(7)));
+    }
+}
+
+#[test]
+fn metered_environment_copy_rejects_unfunded_arc_cleanup() {
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    use shared::rust::clone_backing::{self, BackingError};
+
+    let value = Arc::<str>::from("payload".repeat(1024));
+    let mut env = Env::<Arc<str>>::new();
+    env.push(value.clone()).unwrap();
+    let copied_scans = Cell::new(0usize);
+    clone_backing::reserve(&value, &|_, scanned, _| {
+        copied_scans.set(copied_scans.get() + scanned);
+        Ok(())
+    })
+    .unwrap();
+    let lookup_scans = env.env_map.capacity().max(1) * std::mem::size_of::<i32>();
+    let limit = lookup_scans + copied_scans.get();
+    let used = Cell::new(0usize);
+    let meter = |_: usize, scanned: usize, _: usize| {
+        let next = used.get() + scanned;
+        if next > limit {
+            Err(BackingError::Rejected)
+        } else {
+            used.set(next);
+            Ok(())
+        }
+    };
+    assert_eq!(env.get_metered(&0, &meter), Err(BackingError::Rejected));
+    assert_eq!(env.get(&0), Some(value));
+}
+
+#[test]
+fn metered_guard_evaluation_preserves_results_and_rejects_each_short_dimension() {
+    use std::cell::Cell;
+
+    use shared::rust::clone_backing::BackingError;
+
+    let mut env = Env::<Par>::new();
+    env.push(gint(7)).unwrap();
+    let guard = par_of(ExprInstance::EAndBody(EAnd {
+        p1: Some(par_of(ExprInstance::EEqBody(EEq {
+            p1: Some(evar(0)),
+            p2: Some(gint(7)),
+        }))),
+        p2: Some(gbool(true)),
+    }));
+    let expected = eval(&guard, &env).unwrap();
+    assert_bool(&expected, true);
+    let used = Cell::new([0usize; 3]);
+    let full = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = used.get();
+        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+            *total += amount;
+        }
+        used.set(next);
+        Ok(())
+    };
+    assert_eq!(eval_metered(&guard, &env, &full), Ok(expected));
+    let required = used.get();
+    assert!(required.iter().all(|value| *value > 0));
+    for dimension in 0..3 {
+        let mut limit = required;
+        limit[dimension] -= 1;
+        let spent = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = spent.get();
+            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            if next.iter().zip(limit).any(|(value, max)| *value > max) {
+                return Err(BackingError::Rejected);
+            }
+            spent.set(next);
+            Ok(())
+        };
+        assert_eq!(
+            eval_metered(&guard, &env, &meter),
+            Err(EvalError::HostWork(BackingError::Rejected))
+        );
+        assert_eq!(env.get(&0), Some(gint(7)));
+    }
+}
+
+#[test]
+fn metered_evaluator_folds_each_expression_before_starting_the_next() {
+    use std::cell::RefCell;
+
+    let input = models::par_from_default! {
+        exprs: vec![
+            Expr { expr_instance: Some(ExprInstance::GBool(true)) },
+            Expr { expr_instance: Some(ExprInstance::GBool(false)) },
+        ],
+        ..Par::default()
+    };
+    let calls = RefCell::new(Vec::new());
+    let meter = |operations, scanned, backing| {
+        calls.borrow_mut().push((operations, scanned, backing));
+        Ok(())
+    };
+    let output = eval_metered(&input, &Env::new(), &meter).unwrap();
+    assert_eq!(output.exprs.len(), 2);
+    let structural_ops: Vec<_> = calls
+        .borrow()
+        .iter()
+        .filter_map(|(operations, _, _)| (*operations != 0).then_some(*operations))
+        .collect();
+    assert_eq!(structural_ops, [1, 4, 2, 4, 2]);
+}
+
+#[test]
+fn malformed_later_operand_does_not_mask_earlier_evaluation_error() {
+    let guard = par_of(ExprInstance::EAndBody(EAnd {
+        p1: Some(par_of(ExprInstance::EDivBody(EDiv {
+            p1: Some(gint(1)),
+            p2: Some(gint(0)),
+        }))),
+        p2: None,
+    }));
+    assert_eq!(eval(&guard, &Env::new()), Err(EvalError::DivisionByZero));
 }
 
 #[test]
@@ -506,7 +712,7 @@ use std::sync::Mutex;
 
 use models::rhoapi::EMatches;
 
-use crate::eval::eval_with;
+use crate::eval::{eval_with, eval_with_metered};
 use crate::oracle::{NoSpatialMatch, SpatialMatch};
 
 /// A free variable Par — what a pattern's binders look like. Evaluating
@@ -537,6 +743,20 @@ struct StructuralEqualityOracle;
 
 impl SpatialMatch for StructuralEqualityOracle {
     fn matches(&self, target: &Par, pattern: &Par) -> bool { target == pattern }
+}
+
+#[test]
+fn metered_match_never_uses_an_unmetered_only_oracle() {
+    use shared::rust::clone_backing::BackingError;
+
+    let guard = ematches(gint(5), gint(5));
+    let result = eval_with_metered(
+        &guard,
+        &Env::new(),
+        &StructuralEqualityOracle,
+        &|_, _, _| Ok(()),
+    );
+    assert_eq!(result, Err(EvalError::HostWork(BackingError::Rejected)));
 }
 
 /// Oracle that answers a fixed verdict and records every question asked,

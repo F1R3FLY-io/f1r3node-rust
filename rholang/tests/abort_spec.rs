@@ -1,5 +1,6 @@
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/AbortSpec.scala
 
+use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
@@ -13,6 +14,10 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn abort_should_terminate_execution_with_user_abort_error() {
     with_runtime("abort-spec-", |mut runtime| async move {
+        runtime.cost.set_deploy_signature_funded(
+            b"abort-spec-deploy",
+            Sig::Ground(b"abort-spec-payer".to_vec()),
+        );
         let rho_code = r#"
             new abort(`rho:execution:abort`) in {
               abort!("Test abort")

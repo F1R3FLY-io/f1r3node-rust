@@ -17,6 +17,14 @@ services:
     restart: always
     networks:
       - f1r3fly
+    environment:
+      # Passed only when set, so logging.filter in the node config applies by default.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
     container_name: ${READONLY_HOST:-rnode.readonly}
     command:
       - run

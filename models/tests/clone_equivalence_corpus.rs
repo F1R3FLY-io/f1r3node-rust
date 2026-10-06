@@ -803,6 +803,7 @@ fn corpus() -> Vec<(String, Par)> {
                         var_instance: Some(VarInstance::FreeVar(-1)),
                     }),
                     free_count: 2,
+                    cost_signature: None,
                 }],
                 body: Some(gint(1)),
                 persistent: false,
@@ -879,6 +880,8 @@ fn corpus() -> Vec<(String, Par)> {
             }],
             locally_free: vec![0xff, 0x00, 0x7f],
             connective_used: true,
+            cost_signed_terms: vec![],
+            cost_stacks: vec![],
         }),
     ));
 

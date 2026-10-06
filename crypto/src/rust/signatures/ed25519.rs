@@ -1,5 +1,5 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 use super::signatures_alg::SignaturesAlg;
 use crate::rust::private_key::PrivateKey;
@@ -14,7 +14,7 @@ impl SignaturesAlg for Ed25519 {
         let public_key = match parse_public_key(pub_key) {
             Ok(key) => key,
             Err(err) => {
-                eprintln!("{}", err);
+                tracing::warn!("{}", err);
                 return false;
             }
         };
@@ -22,7 +22,7 @@ impl SignaturesAlg for Ed25519 {
         let signature = match parse_signature(signature) {
             Ok(sig) => sig,
             Err(err) => {
-                eprintln!("{}", err);
+                tracing::warn!("{}", err);
                 return false;
             }
         };

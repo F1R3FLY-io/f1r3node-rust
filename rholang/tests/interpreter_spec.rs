@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use models::rhoapi::{expr, Expr, Par};
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -160,7 +161,7 @@ async fn interpreter_should_yield_correct_results_for_prime_check_contract() {
             })
             .unwrap_or_default();
 
-        let expected: Vec<Par> = vec!["Nil", "Nil", "Pr", "Pr", "Pr", "Co", "Co"]
+        let expected: Vec<Par> = ["Nil", "Nil", "Pr", "Pr", "Pr", "Co", "Co"]
             .iter()
             .flat_map(|s| rho_string(s))
             .collect();
@@ -169,6 +170,87 @@ async fn interpreter_should_yield_correct_results_for_prime_check_contract() {
         let expected_set: HashSet<Par> = expected.into_iter().collect();
 
         assert_eq!(results_set, expected_set);
+    })
+    .await
+}
+
+#[tokio::test]
+async fn interpreter_should_capture_the_current_outer_value_in_nested_contracts() {
+    with_runtime("nested-contract-capture-spec-", |mut runtime| async move {
+        let term = r#"
+            @"service_id_listeners"!({}) |
+            contract @"service_id_notify_listeners"(@payload, @ret_id) = {
+                new loop, stdOut(`rho:io:stdout`) in {
+                    stdOut!(["before loop", payload]) |
+                    contract loop(@listeners) = {
+                        stdOut!(["loop", payload, *loop]) |
+                        @"results"!((ret_id, payload))
+                    } |
+                    for(@listeners <<- @"service_id_listeners") {
+                        stdOut!(["outer", payload, *loop]) |
+                        loop!("whatever")
+                    }
+                }
+            } |
+            @"service_id_notify_listeners"!("1", "result1") |
+            @"service_id_notify_listeners"!("2", "result2")
+        "#;
+
+        success(&mut runtime, term).await.unwrap();
+
+        fn rho_par(expr: Expr) -> Vec<Par> {
+            vec![Par {
+                exprs: vec![expr],
+                ..Default::default()
+            }]
+        }
+
+        fn rho_string(s: &str) -> Vec<Par> {
+            rho_par(Expr {
+                expr_instance: Some(expr::ExprInstance::GString(s.to_string())),
+            })
+        }
+
+        let tuple_space = runtime.get_hot_changes().await;
+        let results_channel = rho_string("results");
+        let results_row = tuple_space.get(&results_channel).expect("results row");
+        let results: HashSet<Par> = results_row
+            .data
+            .iter()
+            .flat_map(|datum| datum.a.pars.clone())
+            .collect();
+        let expected: HashSet<Par> = vec![
+            Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(expr::ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                        ps: vec![
+                            rho_string("result1").into_iter().next().expect("result1"),
+                            rho_string("1").into_iter().next().expect("payload1"),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }],
+                ..Default::default()
+            },
+            Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(expr::ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                        ps: vec![
+                            rho_string("result2").into_iter().next().expect("result2"),
+                            rho_string("2").into_iter().next().expect("payload2"),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }],
+                ..Default::default()
+            },
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(results, expected);
     })
     .await
 }
@@ -209,49 +291,54 @@ async fn interpreter_should_capture_parsing_errors_without_token_charge() {
     .await
 }
 
-// D3 (DR-9, OD-3) RENAME: was `interpreter_should_exhaust_budget_on_first_metered_reduction`.
-// Under D3 per-op metering (Reduction/Primitive/Substitution weights in
-// costs.rs) is DIAGNOSTIC only and contributes ZERO to the liveness budget;
-// the budget is denominated in COMMs — a send/receive reduction costs exactly
-// ONE token (`reduce.rs::eval_send`/`eval_receive` -> `reserve_comm`), every
-// other reduction costs zero (`accounting/mod.rs::consensus_cost_unit`,
-// `reconcile_lane`). So a budget is NEVER exhausted "on the first metered
-// reduction"; it is exhausted only when the COMM COUNT exceeds the token
-// budget. This test now exercises that per-COMM gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget() {
+async fn interpreter_should_enforce_the_exact_weighted_rspace_budget() {
     with_runtime("metered-comm-spec-", |mut runtime| async move {
-        // BOUNDARY (not exhaustion): a single send is exactly ONE COMM, so a
-        // 1-token budget admits it and DOES NOT OOP. Under the pre-D3 per-op
-        // model this same term exhausted the budget on its first reduction.
-        let one_comm = "@{0}!(0)";
-        let one_token = Cost::create(1, "single token budget");
+        runtime.cost.set_deploy_signature_funded(
+            b"interpreter-metered-comm-deploy",
+            Sig::Ground(b"interpreter-metered-comm-payer".to_vec()),
+        );
+        let one_comm = "new x in { x!(0) | for (_ <- x) { Nil } }";
+        let one_probe = runtime
+            .evaluate_with_phlo(one_comm, Cost::create(i64::MAX, "one COMM probe"))
+            .await
+            .unwrap();
+        assert!(one_probe.errors.is_empty());
+        assert!(one_probe.cost.value > 1);
+
+        let exact_one = Cost::create(one_probe.cost.value, "exact one-COMM budget");
         let admitted = runtime
-            .evaluate_with_phlo(one_comm, one_token.clone())
+            .evaluate_with_phlo(one_comm, exact_one.clone())
             .await
             .unwrap();
         assert!(
             admitted.errors.is_empty(),
-            "D3: one COMM exactly fits a 1-token budget — no OOP (got {:?})",
+            "the exact introduction, transfer, trace, and COMM budget must admit (got {:?})",
             admitted.errors
         );
-        // Consensus cost = COMM count = 1 (`total_cost` == consumed_units).
-        assert_eq!(admitted.cost.value, 1);
+        assert_eq!(admitted.cost.value, exact_one.value);
 
-        // EXHAUSTION: two parallel sends are TWO COMMs; the second exceeds the
-        // 1-token budget, so reconcile_lane fires the OOP boundary
-        // (`cost_unit > 0 && next > initial`) -> OutOfPhlogistonsError.
-        let two_comms = "@{0}!(0) | @{1}!(1)";
+        let two_comms =
+            "new x, y in { x!(0) | for (_ <- x) { Nil } | y!(1) | for (_ <- y) { Nil } }";
+        let two_probe = runtime
+            .evaluate_with_phlo(two_comms, Cost::create(i64::MAX, "two COMM probe"))
+            .await
+            .unwrap();
+        assert!(two_probe.errors.is_empty());
+        assert!(two_probe.cost.value > exact_one.value);
+
         let exhausted = runtime
-            .evaluate_with_phlo(two_comms, one_token.clone())
+            .evaluate_with_phlo(two_comms, exact_one.clone())
             .await
             .unwrap();
         assert!(
-            !exhausted.errors.is_empty(),
-            "D3: a second COMM over a 1-token budget must OOP"
+            matches!(exhausted.errors.as_slice(), [
+                InterpreterError::OutOfPhlogistonsError
+            ]),
+            "the larger weighted trace must exhaust the one-COMM reservation: {:?}",
+            exhausted.errors
         );
-        // On OOP, consumed_units is clamped UP to `initial` (the 1-token budget).
-        assert_eq!(exhausted.cost.value, one_token.value);
+        assert_eq!(exhausted.cost.value, exact_one.value);
     })
     .await
 }

@@ -1,0 +1,50 @@
+# LMD-GHOST Fork-Choice Estimator — Formal Verification
+#
+# Mechanizes the GHOST-style heaviest-subtree fork-choice estimator and the
+# properties on which its consensus-critical correctness rests: score
+# order-independence (no fork from validator-iteration order), the (score DESC,
+# hash ASC) tie-break TOTAL order that makes the ranked output node-identical
+# (S1 fork-prevention), the LMD upward argmax descent's termination and
+# heaviest-child selection, the parent-count / parent-depth truncation that
+# preserves the ghost main parent, the slashing invalid-message filter (T-10),
+# and the "Rocq assumes what Rust enforces" seams (validation ⇒ wf DAG; honest
+# fork-choice parents pass the validator's bound-check — validators do NOT
+# recompute fork choice, they range-check declared parents).
+#
+# Source: f1r3node-rust/casper/src/rust/{estimator,validate}.rs,
+#         casper/src/rust/engine/multi_parent_casper/snapshot.rs,
+#         casper/src/rust/util/{proto_util,dag_operations}.rs,
+#         shared/src/rust/shared/list_ops.rs (sort_by_with_decreasing_order).
+#
+# Zero `Admitted`. No custom `Axiom` or `Parameter`. Section `Variable`/
+# `Hypothesis` (GuardBridge, as in finalized_floor) become premises of the
+# closed term, NOT axioms.
+#
+# NOTE — a `Recovery`-analog (finalized_floor/theories/Recovery.v) is
+# DELIBERATELY OMITTED here: fork choice is a STATELESS re-derivation each round
+# (estimator.rs::tips recomputes from the DAG + latest messages every call),
+# so there is no effect-application / idempotence obligation to discharge.
+#
+# Module dependency graph (-> = "depends on"):
+#
+#   Foundation            (standalone: DAG, block numbers, parents, ancestry, height bound)
+#   Score      -> Foundation                 (per-validator weight, supporting-chain scores)
+#   Filter     -> Foundation                 (T-10 slashed/invalid latest-message filter)
+#   TieBreak   -> Foundation                 (the (score DESC, hash ASC) TOTAL order + unique sort — S1)
+#   Lca        -> Foundation                 (LCUA common-ancestor + depth cutoff filter)
+#   Rank       -> Foundation Score TieBreak   (LMD upward argmax descent: terminates, picks heaviest)
+#   Bound      -> Foundation Rank            (parent-count cap: keeps the ghost main parent; typed empty err)
+#   GuardBridge-> Foundation Rank Bound Filter Score TieBreak  (validation⇒wf; honest parents validate)
+#   MainTheorem-> all                        (four end-to-end capstones, axiom-free)
+
+-Q theories ForkChoice
+
+theories/Foundation.v
+theories/Score.v
+theories/Filter.v
+theories/TieBreak.v
+theories/Lca.v
+theories/Rank.v
+theories/Bound.v
+theories/GuardBridge.v
+theories/MainTheorem.v

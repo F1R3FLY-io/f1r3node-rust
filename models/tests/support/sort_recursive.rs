@@ -434,6 +434,7 @@ mod differential_sorter {
                 None
             },
             free_count: 2,
+            cost_signature: None,
         }
     }
 
@@ -554,6 +555,8 @@ mod differential_sorter {
             conditionals: vec![if_node()],
             locally_free: vec![1, 2, 3],
             connective_used: true,
+            cost_signed_terms: vec![],
+            cost_stacks: vec![],
         }
     }
 
@@ -852,6 +855,7 @@ mod differential_sorter {
             source: Some(gstring("src")),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         };
         let sorted_bind = ReceiveSortMatcher::sort_bind(rb).term;
         assert_eq!(

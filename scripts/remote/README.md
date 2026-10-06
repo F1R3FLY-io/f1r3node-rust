@@ -1,6 +1,6 @@
 # Remote testbed scripts
 
-Provisioning and teardown scripts for the F1R3FLY distributed OCI testbed (EPOCH-009 / US-003).
+Provisioning and teardown scripts for the F1R3FLY distributed OCI testbed (EPIC-009 / US-003).
 
 **Naming convention.** Script names use an `oci-` prefix for cloud-specific work (e.g. `oci-provision.sh`, `oci-destroy.sh`) and no prefix for cloud-agnostic work (`deploy.sh`, `status.sh`, `teardown.sh`, `image-transfer.sh`). The wrapping Justfile recipes use a neutral `vps-` prefix so the user-facing interface stays stable when other providers (AWS, GCP) are added — see `docs/Backlog.md` BACKLOG-FI-002.
 
@@ -79,7 +79,7 @@ After provisioning, ship the node image from your local Docker daemon to both VP
 ./scripts/remote/image-transfer.sh --apply f1r3fly-rust:local
 ```
 
-Default image is `sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest` — matches the compose-file defaults so distributed deploys work without env overrides.
+Default image is `us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest` — matches the `shard.vps1.yml` / `shard.vps2.yml` defaults so distributed deploys work without env overrides.
 
 **Migration note:** Once CI starts publishing to OCIR on `master` pushes (pending the `/ci.yml` update queued earlier), replace `image-transfer.sh` with `docker pull <OCIR-URL>` run over SSH on each VPS. Keep `image-transfer.sh` as a fallback for:
 - Air-gapped testbeds

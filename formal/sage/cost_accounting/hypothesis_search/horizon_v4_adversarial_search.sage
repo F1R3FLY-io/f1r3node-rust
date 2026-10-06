@@ -69,24 +69,6 @@ def digest_value(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=schema_json_default).encode("utf-8")).hexdigest()[:16]
 
 
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (0, 0, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def discover_source_seeds(roots, limit):
     seeds = []
     for root in roots:
@@ -253,14 +235,14 @@ def adversarial_replay_records(profile, search_mode, objectives):
     cfg = hypothesis_settings(profile, search_mode)
     mutations = find_or_none(
         st.lists(
-            st.sampled_from(["cost_trace_digest", "cost_trace_event_count", "cost_trace_present", "signature", "block_hash", "failed"]),
+            st.sampled_from(authenticated_replay_fields(["signature", "block_hash", "failed"])),
             min_size=int(3),
             max_size=int(6),
             unique=True,
         ),
-        lambda xs: "cost_trace_digest" in xs and "cost_trace_event_count" in xs and ("signature" in xs or "block_hash" in xs),
+        lambda xs: "authority_cost_witness" in xs and "authority_byte_events" in xs and ("signature" in xs or "block_hash" in xs),
         cfg,
-    ) or ["cost_trace_digest", "cost_trace_event_count", "signature", "block_hash"]
+    ) or authenticated_replay_fields(["signature", "block_hash"])
     scenario = canonical_scenario(
         "horizon_v4_replay_auth_mutation_matrix",
         events=[
@@ -279,7 +261,7 @@ def adversarial_replay_records(profile, search_mode, objectives):
         minimized_input_digest=digest_value(mutations),
         reproducer_command=command_for_fixture(),
         threat_family="adversarial_replay",
-        expected_invariants=["full_replay_payload_authenticates_cost_trace_fields", "block_authenticates_cost_trace_payload"],
+        expected_invariants=["full_replay_payload_authenticates_authority_cost_fields", "block_authenticates_authority_cost_payload"],
         rust_reproducer={"test": "generated_frontier_adversarial_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="confirmed_safe",
@@ -311,7 +293,7 @@ def adversarial_replay_records(profile, search_mode, objectives):
             "horizon_v4_adversarial_replay",
             "confirmed_safe",
             "horizon_v4_replay_auth_mutation_matrix",
-            "Replay payload mutations across cost trace, status, signature, and block hash fields remain authenticated.",
+            "Replay payload mutations across processed cost, authority witness, byte events, status, signature, and block-hash fields remain authenticated.",
             scenario,
             {"adversarial_replay": mutations, "tamper": True, "signed_payload": True},
             ["Rust: generated_frontier_adversarial_fixtures_hold", "Casper: replay/block hash field sensitivity tests"],
@@ -335,22 +317,19 @@ def adversarial_settlement_records(profile, search_mode, objectives):
         "horizon_v4_refund_as_runtime_fuel_attempt",
         events=[canonical_event("source", 2, descriptor="v4/refund-as-fuel", deploy=0, path=[0])],
         initial_budget=4,
-        phlo_limit=4,
-        phlo_price=3,
-        token_cost=2,
-        settlement={"escrow": 12, "token_cost": 6, "refund": 6, "authority": "casper", "attempted_fuel_replenish": False},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]},
-        replay_mutations=["cost", "cost_trace_digest"],
+        settlement=vault_settlement(12, 12, 0, 0, 6, 0, attempted_fuel_replenish=False),
+        replay_fields={"fields": authenticated_replay_fields()},
+        replay_mutations=authenticated_replay_fields(),
         attack_campaign="adversarial_settlement_refund_as_fuel",
         oracle_kind="settlement_isolation",
-        production_path="DeployData::refund_amount_for_token_cost + RuntimeBudget",
-        campaign_steps=["precharge", "reserve", "settle", "attempt_refund_as_fuel", "replay"],
+        production_path="authority::verify_with_allocation + acceptance::settle_candidate + RuntimeBudget",
+        campaign_steps=["reserve_vault_authority", "reserve", "settle", "attempt_refund_as_fuel", "replay"],
         minimized_input_digest=digest_value("refund-as-fuel"),
         reproducer_command=command_for_fixture(),
         threat_family="adversarial_settlement",
         expected_invariants=[
             "uc_ca_058_refund_cannot_replenish_runtime_fuel",
-            "uc_ca_009_charged_plus_refund_equals_escrow",
+            "uc_ca_009_debit_plus_refund_equals_reservation",
         ],
         rust_reproducer={"test": "generated_frontier_adversarial_fixtures_hold"},
         promotion_target="rust:test",
@@ -360,12 +339,9 @@ def adversarial_settlement_records(profile, search_mode, objectives):
         "horizon_v4_low_price_cost_invalid_boundary",
         events=[canonical_event("source", 1, descriptor="v4/low-price", deploy=0, path=[0])],
         initial_budget=2,
-        phlo_limit=2,
-        phlo_price=0,
-        token_cost=1,
-        settlement={"escrow": 0, "token_cost": 0, "refund": 0, "authority": "casper", "cost_invalid_evidence": True},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "slash_fields"]},
-        replay_mutations=["slash_fields", "cost_trace_digest"],
+        settlement=vault_settlement(0, 0, 0, 0, 0, 0, expected_admitted=False, cost_invalid_evidence=True),
+        replay_fields={"fields": authenticated_replay_fields(["slash_fields"])},
+        replay_mutations=authenticated_replay_fields(["slash_fields"]),
         attack_campaign="adversarial_settlement_low_price",
         oracle_kind="low_deploy_price_boundary",
         production_path="cost invalid evidence classification",
@@ -407,9 +383,9 @@ def adversarial_slashing_records(profile, search_mode, objectives):
         "horizon_v4_stale_slashing_evidence_replay",
         events=[canonical_event("source", 1, descriptor="v4/stale-slash-evidence", deploy=0, path=[0])],
         initial_budget=4,
-        settlement={"kind": "slash_after_evaluation", "escrow": 8, "token_cost": 2, "refund": 6, "stale_evidence": True},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "slash_fields", "genesis"]},
-        replay_mutations=["slash_fields", "genesis", "cost_trace_digest"],
+        settlement=vault_settlement(8, 8, 0, 0, 2, 0, kind="slash_after_evaluation", stale_evidence=True),
+        replay_fields={"fields": authenticated_replay_fields(["slash_fields", "genesis"])},
+        replay_mutations=authenticated_replay_fields(["slash_fields", "genesis"]),
         attack_campaign="adversarial_slashing_stale_cost_evidence",
         oracle_kind="stale_cost_evidence_boundary",
         production_path="slashing evidence validation + replay payload authentication",
@@ -430,23 +406,20 @@ def adversarial_slashing_records(profile, search_mode, objectives):
         ],
         deploy_count=2,
         initial_budget=6,
-        phlo_limit=6,
-        phlo_price=2,
-        token_cost=3,
-        settlement={"kind": "slash_after_evaluation", "escrow": 12, "token_cost": 6, "refund": 6},
-        replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "signature", "slash_fields", "genesis"]},
-        replay_mutations=["cost_trace_digest", "cost_trace_event_count", "slash_fields"],
+        settlement=vault_settlement(12, 12, 0, 0, 6, 0, kind="slash_after_evaluation"),
+        replay_fields={"fields": authenticated_replay_fields(["signature", "slash_fields", "genesis"])},
+        replay_mutations=authenticated_replay_fields(["slash_fields"]),
         attack_campaign="adversarial_slashing_refund_replay_composition",
         oracle_kind="slashing_refund_replay_composition",
         production_path="runtime budget + processed deploy payload + settlement projection",
-        campaign_steps=["precharge", "reserve", "finalize", "settle", "slash", "replay"],
+        campaign_steps=["reserve_vault_authority", "reserve", "finalize", "settle", "slash", "replay"],
         minimized_input_digest=digest_value("slash-refund-replay"),
         reproducer_command=command_for_fixture(),
         threat_family="adversarial_slashing",
         expected_invariants=[
             "slash_system_effect_is_unmetered_for_user_budget",
             "uc_ca_058_refund_cannot_replenish_runtime_fuel",
-            "replay_payload_authenticates_cost_trace_payload",
+            "replay_payload_authenticates_authority_cost_payload",
         ],
         rust_reproducer={"test": "generated_frontier_adversarial_fixtures_hold"},
         promotion_target="rust:test",
@@ -523,7 +496,7 @@ def adversarial_lifecycle_records(profile, search_mode, objectives):
         minimized_input_digest=digest_value("rollback-after-reserve"),
         reproducer_command=command_for_fixture(),
         threat_family="adversarial_lifecycle",
-        expected_invariants=["rollback_preserves_authenticated_trace_boundary"],
+        expected_invariants=["rollback_preserves_diagnostic_trace_boundary"],
         rust_reproducer={"test": "generated_frontier_adversarial_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="proof_or_model_strengthening",

@@ -22,17 +22,20 @@ def execute_slash(execution_bond, vault):
     return Integer(0), vault + execution_bond, execution_bond
 
 
-def recoverable_rejected(rejected_hashes, own_hashes, current_evidence_hashes):
-    covered = set(own_hashes)
-    current = set(current_evidence_hashes)
-    out = []
-    seen = set()
-    for h in sorted(rejected_hashes):
-        if h in covered or h in seen or h not in current:
+def canonical_slash_candidates(evidence, bonds, current_epoch):
+    selected = {}
+    for validator, evidence_epoch, invalid_hash, invalid in evidence:
+        if not authorized(
+            bonds.get(validator, 0),
+            evidence_epoch,
+            evidence_epoch,
+            current_epoch,
+            invalid,
+        ):
             continue
-        seen.add(h)
-        out.append(h)
-    return out
+        key = (validator, evidence_epoch)
+        selected[key] = min(invalid_hash, selected.get(key, invalid_hash))
+    return sorted((validator, epoch, invalid_hash) for (validator, epoch), invalid_hash in selected.items())
 
 
 def check_authorization_cases(max_bond):
@@ -68,31 +71,41 @@ def check_authorization_cases(max_bond):
     return {"cases": cases, "failures": failures}
 
 
-def check_recovery_cases():
-    rejected = ["h1", "h2", "h2", "h3"]
-    own = ["h1"]
-    current = ["h2"]
-    recovered = recoverable_rejected(rejected, own, current)
-    stale_recovered = "h3" in recovered
-    own_recovered = "h1" in recovered
-    duplicate_count = recovered.count("h2")
-    holds = recovered == ["h2"] and not stale_recovered and not own_recovered and duplicate_count == 1
+def check_candidate_scan_cases():
+    evidence = [
+        ("v1", 0, "h2", True),
+        ("v1", 0, "h1", True),
+        ("v1", 0, "h2", True),
+        ("v2", 0, "h3", True),
+        ("v3", 1, "h4", True),
+    ]
+    bonds = {"v1": 10, "v2": 0, "v3": 10}
+    merge_rejected_hints = [("v1", 0, "h2"), ("v2", 0, "h3")]
+    selected = canonical_slash_candidates(evidence, bonds, 0)
+    selected_with_hints = canonical_slash_candidates(evidence, bonds, 0)
+    target_keys = [(validator, epoch) for validator, epoch, _ in selected]
+    holds = (
+        selected == [("v1", 0, "h1")]
+        and selected_with_hints == selected
+        and len(target_keys) == len(set(target_keys))
+        and all(candidate[0] != "v2" for candidate in selected)
+    )
     return {
-        "model": "sage_parent_prestate_recovered_slash_authorization",
-        "recovered": recovered,
+        "model": "sage_parent_prestate_canonical_slash_selection",
+        "selected": selected,
+        "merge_rejected_hints": merge_rejected_hints,
         "holds": holds,
-        "stale_recovered": stale_recovered,
-        "own_recovered": own_recovered,
-        "duplicate_count": duplicate_count,
+        "target_keys_unique": len(target_keys) == len(set(target_keys)),
+        "zero_bond_excluded": all(candidate[0] != "v2" for candidate in selected),
     }
 
 
 def run_analysis(max_bond):
     auth = check_authorization_cases(max_bond)
-    recovery = check_recovery_cases()
+    selection = check_candidate_scan_cases()
     failures = list(auth["failures"])
-    if not recovery["holds"]:
-        failures.append({"property": "recovery_current_evidence"})
+    if not selection["holds"]:
+        failures.append({"property": "canonical_slash_candidate_selection"})
     return {
         "summaries": [
             {
@@ -102,7 +115,7 @@ def run_analysis(max_bond):
                 "failures": len(failures),
             }
         ],
-        "recovery": recovery,
+        "selection": selection,
         "failures": failures,
     }
 
@@ -111,8 +124,8 @@ def self_test():
     result = run_analysis(3)
     if result["failures"]:
         raise AssertionError("parent-pre-state authorization model failed")
-    if result["recovery"]["recovered"] != ["h2"]:
-        raise AssertionError("recovered slash evidence filter changed")
+    if result["selection"]["selected"] != [("v1", 0, "h1")]:
+        raise AssertionError("canonical slash selection changed")
     return result
 
 
@@ -123,10 +136,10 @@ def print_summary(result):
                 **summary
             )
         )
-    recovery = result["recovery"]
+    selection = result["selection"]
     print(
-        "recovery holds={holds} recovered={recovered} duplicate_count={duplicate_count}".format(
-            **recovery
+        "selection holds={holds} selected={selected} target_keys_unique={target_keys_unique} zero_bond_excluded={zero_bond_excluded}".format(
+            **selection
         )
     )
     if result["failures"]:

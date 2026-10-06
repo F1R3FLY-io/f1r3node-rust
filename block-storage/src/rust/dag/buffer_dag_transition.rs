@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Atomic buffer-DAG transition (Bug #17 / T-9.20).
@@ -28,7 +28,7 @@
 //     BugFixAtomicBufferDagTransition.v`): for every crash point during
 //     `atomic_insert_then_buffer`, applying `reconcile_buffer_against_dag`
 //     on resume yields the same slashing projection as the no-crash run.
-//   - Design §9.20 in `docs/theory/slashing/design/09-bug-fixes-and-rationale.md`
+//   - Design §9.20 in `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md`
 //     ("Bug #17 — Non-transactional buffer-DAG transition").
 //
 // Lock-order contract.

@@ -1,6 +1,12 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ScoreTree.scala
 
+use std::cmp::Ordering;
+use std::mem::size_of;
+
+use shared::rust::clone_backing::BackingError;
 use shared::rust::ByteString;
+
+use super::metered::SorterMeter;
 
 /**
  * Sorts the insides of the Par and ESet/EMap of the rholangADT
@@ -225,6 +231,27 @@ impl ScoreAtom {
 }
 
 impl<T> Tree<T> {
+    pub fn create_node_from_i64s_metered(
+        children: &[i64],
+        meter: &SorterMeter<'_>,
+    ) -> Result<Tree<ScoreAtom>, BackingError> {
+        let mut result = meter.vec(children.len())?;
+        for value in children {
+            result.push(Tree::<ScoreAtom>::create_leaf_from_i64(*value));
+        }
+        Ok(Tree::Node(result))
+    }
+
+    pub fn create_node_from_i32_metered(
+        left: i32,
+        right: Vec<Tree<ScoreAtom>>,
+        meter: &SorterMeter<'_>,
+    ) -> Result<Tree<ScoreAtom>, BackingError> {
+        let mut result = meter.vec(right.len().checked_add(1).ok_or(BackingError::Overflow)?)?;
+        result.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(left)));
+        result.extend(right);
+        Ok(Tree::Node(result))
+    }
     pub fn create_leaf_from_i64(item: i64) -> Tree<ScoreAtom> {
         Tree::Leaf(ScoreAtom::create_from_i64(item))
     }
@@ -496,6 +523,169 @@ impl<T: EmittedBytes> ScoredTerm<T> {
  *
  * The general order is ground, vars, arithmetic, comparisons, logical, and then others
  */
+impl<T> ScoredTerm<T> {
+    pub fn sort_vec_metered(
+        scored_terms: &mut Vec<ScoredTerm<T>>,
+        meter: &SorterMeter<'_>,
+    ) -> Result<(), BackingError> {
+        let len = scored_terms.len();
+        let mut indices = meter.vec(len)?;
+        indices.extend(0..len);
+        for start in (0..len / 2).rev() {
+            sift_down(&mut indices, start, len, scored_terms, meter)?;
+        }
+        for end in (1..len).rev() {
+            meter.reserve(1, size_of::<usize>() * 2, 0)?;
+            indices.swap(0, end);
+            sift_down(&mut indices, 0, end, scored_terms, meter)?;
+        }
+        let mut slots = meter.vec(len)?;
+        let scanned = len
+            .checked_mul(size_of::<ScoredTerm<T>>())
+            .ok_or(BackingError::Overflow)?;
+        meter.reserve(len, scanned, 0)?;
+        slots.extend(scored_terms.drain(..).map(Some));
+        for index in indices {
+            scored_terms.push(slots[index].take().ok_or(BackingError::Rejected)?);
+        }
+        Ok(())
+    }
+}
+
+fn sift_down<T>(
+    indices: &mut [usize],
+    mut root: usize,
+    end: usize,
+    scored_terms: &[ScoredTerm<T>],
+    meter: &SorterMeter<'_>,
+) -> Result<(), BackingError> {
+    while let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) {
+        meter.reserve(1, size_of::<usize>() * 3, 0)?;
+        if left >= end {
+            break;
+        }
+        let mut child = left;
+        if left + 1 < end
+            && compare_index(scored_terms, indices[left], indices[left + 1], meter)?
+                == Ordering::Less
+        {
+            child = left + 1;
+        }
+        if compare_index(scored_terms, indices[root], indices[child], meter)? != Ordering::Less {
+            break;
+        }
+        indices.swap(root, child);
+        root = child;
+    }
+    Ok(())
+}
+
+fn compare_index<T>(
+    scored_terms: &[ScoredTerm<T>],
+    left: usize,
+    right: usize,
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    let order =
+        compare_score_metered(&scored_terms[left].score, &scored_terms[right].score, meter)?;
+    Ok(if order == Ordering::Equal {
+        left.cmp(&right)
+    } else {
+        order
+    })
+}
+
+fn compare_score_metered(
+    left: &Tree<ScoreAtom>,
+    right: &Tree<ScoreAtom>,
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    struct Frame<'a> {
+        left: &'a [Tree<ScoreAtom>],
+        right: &'a [Tree<ScoreAtom>],
+        index: usize,
+    }
+
+    let mut frames = Vec::new();
+    meter.push(&mut frames, Frame {
+        left: std::slice::from_ref(left),
+        right: std::slice::from_ref(right),
+        index: 0,
+    })?;
+    while let Some(frame) = frames.last_mut() {
+        meter.reserve(1, size_of::<Tree<ScoreAtom>>() * 2, 0)?;
+        let left = frame.left.get(frame.index);
+        let right = frame.right.get(frame.index);
+        match (left, right) {
+            (None, None) => {
+                frames.pop();
+            }
+            (None, Some(_)) => return Ok(Ordering::Less),
+            (Some(_), None) => return Ok(Ordering::Greater),
+            (Some(left), Some(right)) => {
+                frame.index += 1;
+                match (left, right) {
+                    (Tree::Leaf(left), Tree::Leaf(right)) => {
+                        let order = compare_atom_metered(left, right, meter)?;
+                        if order != Ordering::Equal {
+                            return Ok(order);
+                        }
+                    }
+                    (Tree::Leaf(_), Tree::Node(_)) => return Ok(Ordering::Less),
+                    (Tree::Node(_), Tree::Leaf(_)) => return Ok(Ordering::Greater),
+                    (Tree::Node(left), Tree::Node(right)) => {
+                        meter.push(&mut frames, Frame {
+                            left,
+                            right,
+                            index: 0,
+                        })?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn compare_atom_metered(
+    left: &ScoreAtom,
+    right: &ScoreAtom,
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    match (&left.value, &right.value) {
+        (TaggedAtom::IntAtom(left), TaggedAtom::IntAtom(right)) => {
+            meter.reserve(1, size_of::<i64>() * 2, 0)?;
+            Ok(left.cmp(right))
+        }
+        (TaggedAtom::IntAtom(_), _) => Ok(Ordering::Less),
+        (_, TaggedAtom::IntAtom(_)) => Ok(Ordering::Greater),
+        (TaggedAtom::StringAtom(left), TaggedAtom::StringAtom(right)) => {
+            compare_bytes_metered(left.as_bytes(), right.as_bytes(), meter)
+        }
+        (TaggedAtom::StringAtom(_), _) => Ok(Ordering::Less),
+        (_, TaggedAtom::StringAtom(_)) => Ok(Ordering::Greater),
+        (TaggedAtom::BytesAtom(left), TaggedAtom::BytesAtom(right)) => {
+            compare_bytes_metered(left, right, meter)
+        }
+    }
+}
+
+fn compare_bytes_metered(
+    left: &[u8],
+    right: &[u8],
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    for (left, right) in left.iter().zip(right) {
+        meter.reserve(1, 2, 0)?;
+        let order = left.cmp(right);
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+    }
+    meter.reserve(1, size_of::<usize>() * 2, 0)?;
+    Ok(left.len().cmp(&right.len()))
+}
+
 pub struct Score;
 
 impl Score {
@@ -515,11 +705,14 @@ impl Score {
     pub const DEPLOYER_AUTH: i32 = 10;
     pub const DEPLOY_ID: i32 = 11;
     pub const SYS_AUTH_TOKEN: i32 = 12;
+    pub const AUTHORITY_ID: i32 = 18;
+    pub const PRINCIPAL_ID: i32 = 20;
     pub const EPATHMAP: i32 = 13;
     pub const DOUBLE: i32 = 14;
     pub const BIG_INT: i32 = 15;
     pub const BIG_RAT: i32 = 16;
     pub const FIXED_POINT: i32 = 17;
+    pub const FLOAT32: i32 = 19;
 
     // Vars
     pub const BOUND_VAR: i32 = 50;
@@ -565,6 +758,14 @@ impl Score {
     pub const BUNDLE_WRITE: i32 = 307;
     pub const BUNDLE_READ_WRITE: i32 = 308;
     pub const IF: i32 = 309;
+    pub const COST_SIG_GROUND: i32 = 310;
+    pub const COST_SIG_BOUND: i32 = 311;
+    pub const COST_SIG_QUOTE: i32 = 312;
+    pub const COST_SIG_COMPOUND: i32 = 313;
+    pub const COST_SIGNED_TERM: i32 = 314;
+    pub const COST_STACK: i32 = 315;
+    pub const COST_SIG_NAME: i32 = 316;
+    pub const COST_SIG_UNIT: i32 = 317;
 
     pub const CONNECTIVE_NOT: i32 = 400;
     pub const CONNECTIVE_AND: i32 = 401;
@@ -584,5 +785,165 @@ impl Score {
 // ===========================================================================
 
 #[cfg(test)]
+mod score_tag_tests {
+    use std::collections::HashMap;
+
+    use super::Score;
+
+    #[test]
+    fn all_score_tags_are_unique_and_declared() {
+        let tags = [
+            ("ABSENT", Score::ABSENT),
+            ("BOOL", Score::BOOL),
+            ("INT", Score::INT),
+            ("STRING", Score::STRING),
+            ("URI", Score::URI),
+            ("PRIVATE", Score::PRIVATE),
+            ("ELIST", Score::ELIST),
+            ("ETUPLE", Score::ETUPLE),
+            ("ESET", Score::ESET),
+            ("EMAP", Score::EMAP),
+            ("DEPLOYER_AUTH", Score::DEPLOYER_AUTH),
+            ("DEPLOY_ID", Score::DEPLOY_ID),
+            ("SYS_AUTH_TOKEN", Score::SYS_AUTH_TOKEN),
+            ("AUTHORITY_ID", Score::AUTHORITY_ID),
+            ("PRINCIPAL_ID", Score::PRINCIPAL_ID),
+            ("EPATHMAP", Score::EPATHMAP),
+            ("DOUBLE", Score::DOUBLE),
+            ("BIG_INT", Score::BIG_INT),
+            ("BIG_RAT", Score::BIG_RAT),
+            ("FIXED_POINT", Score::FIXED_POINT),
+            ("FLOAT32", Score::FLOAT32),
+            ("BOUND_VAR", Score::BOUND_VAR),
+            ("FREE_VAR", Score::FREE_VAR),
+            ("WILDCARD", Score::WILDCARD),
+            ("REMAINDER", Score::REMAINDER),
+            ("EVAR", Score::EVAR),
+            ("ENEG", Score::ENEG),
+            ("EMULT", Score::EMULT),
+            ("EDIV", Score::EDIV),
+            ("EPLUS", Score::EPLUS),
+            ("EMINUS", Score::EMINUS),
+            ("ELT", Score::ELT),
+            ("ELTE", Score::ELTE),
+            ("EGT", Score::EGT),
+            ("EGTE", Score::EGTE),
+            ("EEQ", Score::EEQ),
+            ("ENEQ", Score::ENEQ),
+            ("ENOT", Score::ENOT),
+            ("EAND", Score::EAND),
+            ("EOR", Score::EOR),
+            ("EMETHOD", Score::EMETHOD),
+            ("EBYTEARR", Score::EBYTEARR),
+            ("EEVAL", Score::EEVAL),
+            ("EMATCHES", Score::EMATCHES),
+            ("EPERCENT", Score::EPERCENT),
+            ("EPLUSPLUS", Score::EPLUSPLUS),
+            ("EMINUSMINUS", Score::EMINUSMINUS),
+            ("EMOD", Score::EMOD),
+            ("QUOTE", Score::QUOTE),
+            ("CHAN_VAR", Score::CHAN_VAR),
+            ("SEND", Score::SEND),
+            ("RECEIVE", Score::RECEIVE),
+            ("NEW", Score::NEW),
+            ("MATCH", Score::MATCH),
+            ("BUNDLE_EQUIV", Score::BUNDLE_EQUIV),
+            ("BUNDLE_READ", Score::BUNDLE_READ),
+            ("BUNDLE_WRITE", Score::BUNDLE_WRITE),
+            ("BUNDLE_READ_WRITE", Score::BUNDLE_READ_WRITE),
+            ("IF", Score::IF),
+            ("COST_SIG_GROUND", Score::COST_SIG_GROUND),
+            ("COST_SIG_BOUND", Score::COST_SIG_BOUND),
+            ("COST_SIG_QUOTE", Score::COST_SIG_QUOTE),
+            ("COST_SIG_COMPOUND", Score::COST_SIG_COMPOUND),
+            ("COST_SIGNED_TERM", Score::COST_SIGNED_TERM),
+            ("COST_STACK", Score::COST_STACK),
+            ("COST_SIG_NAME", Score::COST_SIG_NAME),
+            ("COST_SIG_UNIT", Score::COST_SIG_UNIT),
+            ("CONNECTIVE_NOT", Score::CONNECTIVE_NOT),
+            ("CONNECTIVE_AND", Score::CONNECTIVE_AND),
+            ("CONNECTIVE_OR", Score::CONNECTIVE_OR),
+            ("CONNECTIVE_VARREF", Score::CONNECTIVE_VARREF),
+            ("CONNECTIVE_BOOL", Score::CONNECTIVE_BOOL),
+            ("CONNECTIVE_INT", Score::CONNECTIVE_INT),
+            ("CONNECTIVE_STRING", Score::CONNECTIVE_STRING),
+            ("CONNECTIVE_URI", Score::CONNECTIVE_URI),
+            ("CONNECTIVE_BYTEARRAY", Score::CONNECTIVE_BYTEARRAY),
+            ("PAR", Score::PAR),
+        ];
+        let declarations = include_str!("score_tree.rs")
+            .split_once("impl Score {")
+            .expect("Score implementation")
+            .1
+            .split_once("\n}\n")
+            .expect("Score implementation end")
+            .0
+            .lines()
+            .filter_map(|line| {
+                line.trim_start()
+                    .strip_prefix("pub const ")
+                    .and_then(|rest| rest.split_once(": i32"))
+                    .map(|(name, _)| name)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declarations,
+            tags.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+        );
+
+        let mut seen = HashMap::new();
+        for (name, value) in tags {
+            assert!(
+                seen.insert(value, name).is_none(),
+                "duplicate score tag: {name}"
+            );
+        }
+        assert_eq!(Score::EPATHMAP, 13);
+        assert_eq!(Score::DOUBLE, 14);
+        assert_eq!(Score::AUTHORITY_ID, 18);
+        assert_eq!(Score::FLOAT32, 19);
+        assert_eq!(Score::PRINCIPAL_ID, 20);
+    }
+}
+
+#[cfg(test)]
 #[path = "../../../../tests/support/score_tree_oracle.rs"]
 mod score_tree_oracle;
+#[cfg(test)]
+mod metered_tests {
+    use super::*;
+
+    #[test]
+    fn metered_sort_preserves_score_order_and_equal_score_input_order() {
+        let mut ordinary = vec![
+            ScoredTerm {
+                term: 3,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(2),
+            },
+            ScoredTerm {
+                term: 2,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(1),
+            },
+            ScoredTerm {
+                term: 1,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(1),
+            },
+            ScoredTerm {
+                term: 4,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(3),
+            },
+        ];
+        let mut metered = ordinary.clone();
+        ScoredTerm::sort_vec(&mut ordinary);
+        let backing = |_: usize, _: usize, _: usize| Ok(());
+        ScoredTerm::sort_vec_metered(&mut metered, &SorterMeter::new(&backing)).unwrap();
+        assert_eq!(metered, ordinary);
+        assert_eq!(
+            metered
+                .into_iter()
+                .map(|item| item.term)
+                .collect::<Vec<_>>(),
+            [2, 1, 3, 4]
+        );
+    }
+}

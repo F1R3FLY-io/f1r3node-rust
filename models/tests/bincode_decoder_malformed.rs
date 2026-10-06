@@ -490,7 +490,7 @@ fn mutation_batch_child() {
         }
         MutationFamily::Variant => {
             for offset in start..end {
-                for index in [2u32, 9, 36, 37, u32::MAX] {
+                for index in [2u32, 9, 37, 38, u32::MAX] {
                     let mut mutant = bytes.clone();
                     mutant[offset..offset + 4].copy_from_slice(&index.to_le_bytes());
                     mutations += 1;
@@ -607,7 +607,7 @@ fn byte_substitution_at_every_offset_agrees() {
 /// Every 4-byte window is overwritten with a value just past each oneof's
 /// variant count, and with `u32::MAX`.
 ///
-/// `36`, `9` and `2` are the first INVALID index for `ExprInstance`,
+/// `37`, `9` and `2` are the first INVALID index for `ExprInstance`,
 /// `ConnectiveInstance` and `TaggedCont` respectively — the off-by-one that a
 /// range check written with `>` instead of `>=` would let through, which would
 /// then be a decoder that accepts a term the derived decoder refuses.

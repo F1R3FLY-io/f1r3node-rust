@@ -1,6 +1,7 @@
 // See models/src/main/scala/coop/rchain/models/ParSet.scala
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use shared::rust::clone_backing::{BackingError, BackingMeter};
 
 use super::sorted_par_hash_set::SortedParHashSet;
 use super::utils::union;
@@ -27,6 +28,21 @@ impl ParSet {
             locally_free,
             remainder,
         }
+    }
+
+    pub fn new_metered(
+        vec: Vec<Par>,
+        connective_used: bool,
+        locally_free: Vec<u8>,
+        remainder: Option<Var>,
+        meter: &dyn BackingMeter,
+    ) -> Result<ParSet, BackingError> {
+        Ok(ParSet {
+            ps: SortedParHashSet::create_from_vec_metered(vec, meter)?,
+            connective_used,
+            locally_free,
+            remainder,
+        })
     }
 
     pub fn create_from_vec_and_remainder(vec: Vec<Par>, remainder: Option<Var>) -> Self {

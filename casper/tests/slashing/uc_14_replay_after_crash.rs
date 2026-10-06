@@ -1,6 +1,6 @@
 // UC-14 — Replay determinism across simulated crash boundary.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-14.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-14.
 // Theorems: T-15 (bisim) corollary on replay determinism.
 // Reference: design/12-failure-modes.md §12.2.3.
 //

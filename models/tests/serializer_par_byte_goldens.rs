@@ -138,6 +138,7 @@ fn odd_shapes_par() -> Par {
                     var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
                 }),
                 free_count: -7,
+                cost_signature: None,
             }],
             body: Some(gint(6)),
             persistent: true,
@@ -323,6 +324,8 @@ fn odd_shapes_par() -> Par {
         // shape 2 — the outermost blanked field
         locally_free: vec![0xE1, 0xE2, 0xE3],
         connective_used: true,
+        cost_signed_terms: vec![],
+        cost_stacks: vec![],
     }
 }
 

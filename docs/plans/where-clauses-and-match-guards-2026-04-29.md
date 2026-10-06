@@ -1,7 +1,6 @@
 ---
 title: Rholang `where` clauses on receives and `where` guards on match cases
 status: draft
-author: claude-session
 date: 2026-04-29
 related-docs:
   - docs/rholang/rholangtut.md

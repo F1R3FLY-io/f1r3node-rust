@@ -1,14 +1,16 @@
 (* ═══════════════════════════════════════════════════════════════════════════
    InvalidBlock.v — The InvalidBlock taxonomy and is_slashable predicate
 
-   Mirrors the 22-variant Rust enum at
-     casper/src/rust/block_status.rs:32-67
+   Mirrors the 27-variant Rust enum at
+     casper/src/rust/block_status.rs:31-74
    and the parallel Scala enum at
      coop/rchain/casper/BlockStatus.scala (case classes extending InvalidBlock).
 
    Proves: T-3 (slashable taxonomy correctness) — is_slashable returns TRUE
-   exactly on the 17 documented slashable variants (post-fix #1, the
-   IgnorableEquivocation variant is also slashable, making it 18).
+   exactly on the 19 documented slashable variants. The post-fix set is the
+   17 historically-slashable variants PLUS IgnorableEquivocation (bug fix #1)
+   PLUS UnauthorizedSlashDeploy (the 27th Rust variant, slashable per
+   InvalidBlock::is_slashable at block_status.rs:206).
 
    ─────────────────────────────────────────────────────────────────────────
    Spec-to-Code Traceability
@@ -30,6 +32,7 @@
    IBInvalidTransaction         │ InvalidTransaction            │ yes
    IBInvalidBondsCache          │ InvalidBondsCache             │ yes
    IBInvalidBlockHash           │ InvalidBlockHash              │ yes
+   IBUnauthorizedSlashDeploy    │ UnauthorizedSlashDeploy       │ yes (27th variant)
    IBContainsExpiredDeploy      │ ContainsExpiredDeploy         │ yes
    IBContainsTimeExpiredDeploy  │ ContainsTimeExpiredDeploy     │ yes
    IBContainsFutureDeploy       │ ContainsFutureDeploy          │ yes
@@ -42,6 +45,7 @@
    IBNotOfInterest              │ NotOfInterest                 │ no
    IBLowDeployCost              │ LowDeployCost                 │ no
    ─────────────────────────────────────────────────────────────────────────
+   Cardinality: 27 variants total, 19 slashable, 8 non-slashable.
 
    Companion doc: slashing-verification.md §3.3
    ═══════════════════════════════════════════════════════════════════════════ *)
@@ -71,6 +75,7 @@ Inductive InvalidBlock : Type :=
   | IBInvalidTransaction         : InvalidBlock
   | IBInvalidBondsCache          : InvalidBlock
   | IBInvalidBlockHash           : InvalidBlock
+  | IBUnauthorizedSlashDeploy    : InvalidBlock
   | IBContainsExpiredDeploy      : InvalidBlock
   | IBContainsTimeExpiredDeploy  : InvalidBlock
   | IBContainsFutureDeploy       : InvalidBlock
@@ -84,13 +89,16 @@ Inductive InvalidBlock : Type :=
   | IBLowDeployCost              : InvalidBlock.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   §2 — Pre-fix is_slashable (current Rust behavior)
+   §2 — Pre-fix is_slashable (historical dev/Scala behavior)
    ═══════════════════════════════════════════════════════════════════════════
 
-   This matches the 17-element slashable set in
-     casper/src/rust/block_status.rs:172-194
-   IgnorableEquivocation is intentionally non-slashable (the documented
-   DOS vector). *)
+   This models the historical 17-element slashable set (pre bug fix #1).
+   IgnorableEquivocation is intentionally non-slashable here (the documented
+   DOS vector), and UnauthorizedSlashDeploy — being the 27th variant that did
+   not exist in the pre-fix taxonomy — is likewise non-slashable via the
+   wildcard arm. The real current Rust `InvalidBlock::is_slashable`
+   (casper/src/rust/block_status.rs:183-238) has 19 slashable variants; that
+   post-fix behavior is §3 below. *)
 
 Definition is_slashable_pre_fix (ib : InvalidBlock) : bool :=
   match ib with
@@ -115,10 +123,14 @@ Definition is_slashable_pre_fix (ib : InvalidBlock) : bool :=
   end.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   §3 — Post-fix is_slashable (per bug fix #1, T-9.1)
+   §3 — Post-fix is_slashable (the real current Rust behavior)
    ═══════════════════════════════════════════════════════════════════════════
 
-   Adds IgnorableEquivocation to the slashable set, closing the DOS vector. *)
+   The 19-element slashable set that mirrors, arm-for-arm, the exhaustive
+   `InvalidBlock::is_slashable` match at casper/src/rust/block_status.rs:191-236.
+   It is the historical 17 (§2) plus IgnorableEquivocation (bug fix #1, closing
+   the DOS vector) plus UnauthorizedSlashDeploy (the 27th variant, slashable at
+   block_status.rs:206). *)
 
 Definition is_slashable (ib : InvalidBlock) : bool :=
   match ib with
@@ -137,6 +149,7 @@ Definition is_slashable (ib : InvalidBlock) : bool :=
   | IBInvalidTransaction
   | IBInvalidBondsCache
   | IBInvalidBlockHash
+  | IBUnauthorizedSlashDeploy      (* ← 27th variant; slashable (block_status.rs:206) *)
   | IBContainsExpiredDeploy
   | IBContainsTimeExpiredDeploy
   | IBContainsFutureDeploy => true
@@ -156,14 +169,19 @@ Proof.
   intros ib H. destruct ib; simpl in H |- *; try discriminate; reflexivity.
 Qed.
 
-(* The two definitions agree on every variant other than IgnorableEquivocation. *)
-Theorem slashable_diff_only_ignorable :
+(* The two definitions agree on every variant other than the two the post-fix
+   set adds: IgnorableEquivocation (bug fix #1) and UnauthorizedSlashDeploy
+   (the 27th variant). *)
+Theorem slashable_diff_only_ignorable_or_unauth :
   forall ib,
     ib <> IBIgnorableEquivocation ->
+    ib <> IBUnauthorizedSlashDeploy ->
     is_slashable ib = is_slashable_pre_fix ib.
 Proof.
-  intros ib Hne. destruct ib; simpl; try reflexivity.
-  exfalso. apply Hne. reflexivity.
+  intros ib Hne1 Hne2. destruct ib; simpl;
+    solve [ reflexivity
+          | exfalso; apply Hne1; reflexivity
+          | exfalso; apply Hne2; reflexivity ].
 Qed.
 
 Theorem ignorable_pre_fix_not_slashable :
@@ -174,9 +192,20 @@ Theorem ignorable_post_fix_slashable :
   is_slashable IBIgnorableEquivocation = true.
 Proof. reflexivity. Qed.
 
-(* The set of slashable variants under the post-fix predicate has cardinality 18. *)
+(* UnauthorizedSlashDeploy (the 27th Rust variant) is non-slashable in the
+   historical pre-fix taxonomy but slashable under the real current predicate. *)
+Theorem unauthorized_pre_fix_not_slashable :
+  is_slashable_pre_fix IBUnauthorizedSlashDeploy = false.
+Proof. reflexivity. Qed.
+
+Theorem unauthorized_post_fix_slashable :
+  is_slashable IBUnauthorizedSlashDeploy = true.
+Proof. reflexivity. Qed.
+
+(* The set of slashable variants under the post-fix predicate has cardinality 19
+   (the historical 17 + IgnorableEquivocation + UnauthorizedSlashDeploy). *)
 (* (Cardinality is implicit in the syntactic count of [true] match arms — the
-    compiler checks exhaustiveness.) *)
+    compiler checks exhaustiveness against all 27 constructors.) *)
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §5 — Decidable equality for InvalidBlock

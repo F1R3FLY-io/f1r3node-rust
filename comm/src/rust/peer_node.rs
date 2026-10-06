@@ -9,6 +9,9 @@ use url::Url;
 
 use crate::rust::errors::{parse_error, CommError};
 
+/// Node IDs are the last 20 bytes of the Keccak-256 hash of the TLS public key.
+const NODE_ID_BYTES: usize = 20;
+
 #[derive(Debug, Clone)]
 pub struct NodeIdentifier {
     pub key: Bytes,
@@ -31,12 +34,14 @@ impl Hash for NodeIdentifier {
 }
 
 impl NodeIdentifier {
-    pub fn new(name: String) -> Self {
-        let bytes = hex::decode(&name).unwrap();
-
-        Self {
-            key: Bytes::from(bytes),
-        }
+    pub fn new(name: &str) -> Result<Self, CommError> {
+        hex::decode(name)
+            .ok()
+            .filter(|key| key.len() == NODE_ID_BYTES && key.iter().any(|b| *b != 0))
+            .map(|key| Self {
+                key: Bytes::from(key),
+            })
+            .ok_or_else(|| parse_error(format!("invalid node ID: {name}")))
     }
 
     pub fn to_string(&self) -> String { hex::encode(self.key.clone()) }
@@ -107,7 +112,7 @@ impl PeerNode {
 
         let id = match url.username() {
             "" => return Err(parse_error("missing node ID".to_string())),
-            id => id,
+            id => NodeIdentifier::new(id)?,
         };
 
         let host = match url.host_str() {
@@ -127,13 +132,7 @@ impl PeerNode {
             .and_then(|(_, value)| value.parse::<u16>().ok())
             .ok_or_else(|| parse_error("missing or invalid protocol port".to_string()))?;
 
-        // Create PeerNode
-        Ok(Self::new(
-            NodeIdentifier::new(id.to_string()),
-            host,
-            protocol_port,
-            discovery_port,
-        ))
+        Ok(Self::new(id, host, protocol_port, discovery_port))
     }
 
     pub fn key(&self) -> &Bytes { &self.id.key }

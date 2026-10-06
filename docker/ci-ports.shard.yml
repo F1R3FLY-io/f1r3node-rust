@@ -1,0 +1,61 @@
+# CI-only host port remap for docker/shard.yml. See ci-ports.standalone.yml
+# for why: 40400-40455 overlaps the kernel ephemeral range and the GitHub
+# runner agent can already hold ports in it before the job starts.
+#
+# Uniform -26000 offset, so the per-node grouping is preserved and a host port
+# still maps to its node by the same arithmetic (boot 144xx, validator1 1441x,
+# validator2 1442x, validator3 1443x, readonly 1445x). Container ports are
+# unchanged.
+#
+# chroma-db (8000), prometheus (9090) and grafana (3000) are deliberately NOT
+# listed: they are already outside the ephemeral range, and because of the
+# !override below, naming one here would replace its ports list entirely
+# rather than leave it alone.
+#
+# `ports: !override` is load-bearing. Compose MERGES list-valued keys, so a
+# plain `ports:` here would ADD 14400-1445x while leaving 40400-4045x bound --
+# the ephemeral-range collision this file exists to avoid would still happen,
+# silently, and the smoke tests would still fail intermittently. Verified with
+# `docker compose config`: without !override the merged service lists both
+# ranges; with it, only ours. Requires Compose v2.24+ (runner has v5.1.1).
+services:
+  boot:
+    ports: !override
+      - "14400:40400"
+      - "14401:40401"
+      - "14402:40402"
+      - "14403:40403"
+      - "14404:40404"
+      - "14405:40405"
+  validator1:
+    ports: !override
+      - "14410:40400"
+      - "14411:40401"
+      - "14412:40402"
+      - "14413:40403"
+      - "14414:40404"
+      - "14415:40405"
+  validator2:
+    ports: !override
+      - "14420:40400"
+      - "14421:40401"
+      - "14422:40402"
+      - "14423:40403"
+      - "14424:40404"
+      - "14425:40405"
+  validator3:
+    ports: !override
+      - "14430:40400"
+      - "14431:40401"
+      - "14432:40402"
+      - "14433:40403"
+      - "14434:40404"
+      - "14435:40405"
+  readonly:
+    ports: !override
+      - "14450:40400"
+      - "14451:40401"
+      - "14452:40402"
+      - "14453:40403"
+      - "14454:40404"
+      - "14455:40405"

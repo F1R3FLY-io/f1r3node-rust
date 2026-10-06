@@ -1,6 +1,6 @@
 // UC-40 — Coop vault accounting under failed transfer (post-fix #4).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-40.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-40.
 // Theorems: T-8 (forfeited stake reaches Coop vault when transfer
 // succeeds), T-9.4 (transfer-failure safety).
 // Reference: design/06-proposing-and-effect.md §6.5,

@@ -328,8 +328,25 @@ Definition rb_cost_trace_commitment_valid
   rb_cost_trace_commitment_present present /\
   rb_cost_trace_event_count_matches trace count.
 
+(* ── Replay modes (TM-CA-151 diagnostic-refinement scoping) ───────────────────
+   [rb_replay_mode] distinguishes the DIGEST-INCLUSIVE replay-authentication
+   refinement from legacy replay. Per TM-CA-151
+   (docs/casper/theory/cost-accounting-threat-model.md) the per-operation cost-trace
+   commitment — the digest, [rb_cost_trace_commitment_valid] — is DIAGNOSTIC /
+   TELEMETRY ONLY. It was REMOVED from production consensus: the replay comparison
+   and the signed block-hash preimage authenticate RSpace events + supply balances
+   + consumed_units (the non-digest fields), NOT the digest.
+
+   [RbDiagnosticRefinement] (formerly [RbCostAccountedReplay]) is therefore the
+   name of the strictly-FINER diagnostic refinement that ALSO requires the
+   cost-trace commitment to be valid. Its obligations
+   ([rb_diagnostic_refinement_requires_commitment],
+   [rb_diagnostic_refinement_rejects_absent_commitment]) are Rocq statements ABOUT
+   that refinement level — NOT claims that the per-operation digest is a production
+   consensus requirement. [RbLegacyReplay] imposes no cost-trace obligation.
+   (Disclaimer ported from formal/sage/cost_accounting/replay_auth_model.sage.) *)
 Inductive rb_replay_mode : Type :=
-  | RbCostAccountedReplay
+  | RbDiagnosticRefinement
   | RbLegacyReplay.
 
 Definition rb_replay_mode_accepts_cost_trace
@@ -339,7 +356,7 @@ Definition rb_replay_mode_accepts_cost_trace
   (present : bool)
   : Prop :=
   match mode with
-  | RbCostAccountedReplay =>
+  | RbDiagnosticRefinement =>
       rb_cost_trace_commitment_valid trace count present
   | RbLegacyReplay => True
   end.
@@ -347,16 +364,16 @@ Definition rb_replay_mode_accepts_cost_trace
 Definition rb_finalize_trace_window (b : rb_state) : rb_state :=
   b.
 
-Fixpoint rb_sum_escrowed_amount (settlements : list fee_settlement) : nat :=
+Fixpoint rb_sum_reserved_amount (settlements : list fee_settlement) : nat :=
   match settlements with
   | [] => 0
-  | s :: rest => escrowed_amount s + rb_sum_escrowed_amount rest
+  | s :: rest => reserved_amount s + rb_sum_reserved_amount rest
   end.
 
-Fixpoint rb_sum_charged_amount (settlements : list fee_settlement) : nat :=
+Fixpoint rb_sum_debited_amount (settlements : list fee_settlement) : nat :=
   match settlements with
   | [] => 0
-  | s :: rest => charged_amount s + rb_sum_charged_amount rest
+  | s :: rest => debited_amount s + rb_sum_debited_amount rest
   end.
 
 Fixpoint rb_sum_refund_amount (settlements : list fee_settlement) : nat :=
@@ -759,6 +776,126 @@ Definition rb_full_replay_payload_equiv
   rb_full_system_logs a = rb_full_system_logs b /\
   rb_full_genesis a = rb_full_genesis b.
 
+(* ── Item 2509: consensus-core vs diagnostic-only split of the full replay-payload
+   equivalence ─────────────────────────────────────────────────────────────────
+   [rb_full_replay_payload_equiv] (above) authenticates EVERY field. Per TM-CA-151
+   the three cost-trace fields (traces / presence flags / event counts) are the
+   DIAGNOSTIC digest — telemetry, NOT the production consensus surface. We SPLIT
+   the equivalence into two independent halves:
+
+     • [rb_full_replay_payload_consensus_equiv]: the DEPLOYED-CONSENSUS surface —
+       RSpace events (user + system logs), consumed_units (user costs), the user
+       signatures, the pass/fail + error status, the system kinds / error messages
+       / slash fields, and the genesis flag. This is what production replay
+       compares (and the signed block-hash preimage covers).
+     • [rb_full_replay_payload_diagnostic_equiv]: the digest-ONLY fields (cost
+       traces, their presence flags, their event counts).
+
+   [rb_full_replay_payload_equiv_split] proves the ORIGINAL equivalence is EXACTLY
+   the conjunction of the two — so every existing field-sensitivity theorem keeps
+   its full content, while the split makes explicit that the digest half is
+   diagnostic, not consensus. [rb_full_replay_payload_consensus_coarser_than_full]
+   witnesses the scope operationally: two payloads agreeing on the ENTIRE consensus
+   surface are consensus-equivalent EVEN WHEN their digests differ (hence NOT
+   full-equivalent) — the residual is exactly the diagnostic digest. *)
+Definition rb_full_replay_payload_consensus_equiv
+  (a b : rb_full_replay_payload)
+  : Prop :=
+  rb_full_user_signatures a = rb_full_user_signatures b /\
+  rb_full_user_costs a = rb_full_user_costs b /\
+  rb_full_user_failed a = rb_full_user_failed b /\
+  rb_full_user_errors a = rb_full_user_errors b /\
+  rb_full_user_logs a = rb_full_user_logs b /\
+  rb_full_system_kinds a = rb_full_system_kinds b /\
+  rb_full_system_error_messages a = rb_full_system_error_messages b /\
+  rb_full_system_slash_fields a = rb_full_system_slash_fields b /\
+  rb_full_system_logs a = rb_full_system_logs b /\
+  rb_full_genesis a = rb_full_genesis b.
+
+Definition rb_full_replay_payload_diagnostic_equiv
+  (a b : rb_full_replay_payload)
+  : Prop :=
+  rb_full_user_cost_traces a = rb_full_user_cost_traces b /\
+  rb_full_user_cost_trace_present a =
+    rb_full_user_cost_trace_present b /\
+  rb_full_user_cost_trace_event_counts a =
+    rb_full_user_cost_trace_event_counts b.
+
+Theorem rb_full_replay_payload_equiv_split :
+  forall a b,
+    rb_full_replay_payload_equiv a b <->
+    (rb_full_replay_payload_consensus_equiv a b /\
+     rb_full_replay_payload_diagnostic_equiv a b).
+Proof.
+  intros a b.
+  unfold rb_full_replay_payload_equiv,
+    rb_full_replay_payload_consensus_equiv,
+    rb_full_replay_payload_diagnostic_equiv.
+  tauto.
+Qed.
+
+(* Full equivalence is strictly finer than the consensus surface. *)
+Theorem rb_full_replay_payload_equiv_implies_consensus :
+  forall a b,
+    rb_full_replay_payload_equiv a b ->
+    rb_full_replay_payload_consensus_equiv a b.
+Proof.
+  intros a b Hequiv.
+  apply rb_full_replay_payload_equiv_split in Hequiv. tauto.
+Qed.
+
+(* Two witnesses that agree on EVERY consensus field but differ ONLY in the
+   diagnostic digest (cost traces): consensus-equal, yet not full-equal. *)
+Definition rb_full_payload_consensus_witness : rb_full_replay_payload :=
+  {| rb_full_user_signatures := [];
+     rb_full_user_costs := [];
+     rb_full_user_cost_traces := [];
+     rb_full_user_cost_trace_present := [];
+     rb_full_user_cost_trace_event_counts := [];
+     rb_full_user_failed := [];
+     rb_full_user_errors := [];
+     rb_full_user_logs := [];
+     rb_full_system_kinds := [];
+     rb_full_system_error_messages := [];
+     rb_full_system_slash_fields := [];
+     rb_full_system_logs := [];
+     rb_full_genesis := false |}.
+
+Definition rb_full_payload_consensus_witness_alt_digest : rb_full_replay_payload :=
+  {| rb_full_user_signatures := [];
+     rb_full_user_costs := [];
+     (* the ONLY difference from the witness above — a non-empty diagnostic digest *)
+     rb_full_user_cost_traces := [ @nil rb_trace_entry ];
+     rb_full_user_cost_trace_present := [];
+     rb_full_user_cost_trace_event_counts := [];
+     rb_full_user_failed := [];
+     rb_full_user_errors := [];
+     rb_full_user_logs := [];
+     rb_full_system_kinds := [];
+     rb_full_system_error_messages := [];
+     rb_full_system_slash_fields := [];
+     rb_full_system_logs := [];
+     rb_full_genesis := false |}.
+
+Theorem rb_full_replay_payload_consensus_coarser_than_full :
+  rb_full_replay_payload_consensus_equiv
+    rb_full_payload_consensus_witness
+    rb_full_payload_consensus_witness_alt_digest
+  /\ ~ rb_full_replay_payload_equiv
+        rb_full_payload_consensus_witness
+        rb_full_payload_consensus_witness_alt_digest.
+Proof.
+  split.
+  - unfold rb_full_replay_payload_consensus_equiv,
+      rb_full_payload_consensus_witness,
+      rb_full_payload_consensus_witness_alt_digest; cbn.
+    repeat split; reflexivity.
+  - unfold rb_full_replay_payload_equiv,
+      rb_full_payload_consensus_witness,
+      rb_full_payload_consensus_witness_alt_digest; cbn.
+    intros [_ [_ [Htr _]]]. discriminate Htr.
+Qed.
+
 Record rb_block_auth_payload := {
   rb_block_sender : nat;
   rb_block_seq_num : nat;
@@ -778,6 +915,9 @@ Record rb_replay_cache_key_model := {
   rb_cache_start_state : nat;
   rb_cache_sender : nat;
   rb_cache_seq_num : nat;
+  rb_cache_timestamp : nat;
+  rb_cache_height : nat;
+  rb_cache_invalid_blocks : list (nat * nat);
   rb_cache_replay_payload : rb_full_replay_payload
 }.
 
@@ -787,6 +927,9 @@ Definition rb_replay_cache_key_equiv
   rb_cache_start_state a = rb_cache_start_state b /\
   rb_cache_sender a = rb_cache_sender b /\
   rb_cache_seq_num a = rb_cache_seq_num b /\
+  rb_cache_timestamp a = rb_cache_timestamp b /\
+  rb_cache_height a = rb_cache_height b /\
+  rb_cache_invalid_blocks a = rb_cache_invalid_blocks b /\
   rb_full_replay_payload_equiv
     (rb_cache_replay_payload a)
     (rb_cache_replay_payload b).
@@ -962,27 +1105,89 @@ Proof.
 Qed.
 
 Theorem rb_replay_cache_key_payload_change_detected :
-  forall state sender seq p1 p2,
+  forall state sender seq timestamp height invalid_blocks p1 p2,
     ~ rb_full_replay_payload_equiv p1 p2 ->
     ~ rb_replay_cache_key_equiv
       {|
         rb_cache_start_state := state;
         rb_cache_sender := sender;
         rb_cache_seq_num := seq;
+        rb_cache_timestamp := timestamp;
+        rb_cache_height := height;
+        rb_cache_invalid_blocks := invalid_blocks;
         rb_cache_replay_payload := p1
       |}
       {|
         rb_cache_start_state := state;
         rb_cache_sender := sender;
         rb_cache_seq_num := seq;
+        rb_cache_timestamp := timestamp;
+        rb_cache_height := height;
+        rb_cache_invalid_blocks := invalid_blocks;
         rb_cache_replay_payload := p2
       |}.
 Proof.
-  intros state sender seq p1 p2 Hpayload Hequiv.
+  intros state sender seq timestamp height invalid_blocks p1 p2 Hpayload Hequiv.
   unfold rb_replay_cache_key_equiv in Hequiv.
-  destruct Hequiv as [_ [_ [_ Hequiv_payload]]].
+  destruct Hequiv as [_ [_ [_ [_ [_ [_ Hequiv_payload]]]]]].
   exact (Hpayload Hequiv_payload).
 Qed.
+
+Theorem rb_replay_cache_key_binds_runtime_context :
+  forall a b,
+    rb_replay_cache_key_equiv a b ->
+    rb_cache_timestamp a = rb_cache_timestamp b /\
+    rb_cache_height a = rb_cache_height b /\
+    rb_cache_invalid_blocks a = rb_cache_invalid_blocks b.
+Proof.
+  intros a b [_ [_ [_ [timestamp [height [invalid_blocks _]]]]]].
+  repeat split; assumption.
+Qed.
+
+Theorem rb_replay_cache_context_substitution_rejected :
+  forall a b,
+    (rb_cache_timestamp a <> rb_cache_timestamp b \/
+     rb_cache_height a <> rb_cache_height b \/
+     rb_cache_invalid_blocks a <> rb_cache_invalid_blocks b) ->
+    ~ rb_replay_cache_key_equiv a b.
+Proof.
+  intros a b different equivalent.
+  apply rb_replay_cache_key_binds_runtime_context in equivalent.
+  destruct equivalent as [timestamp [height invalid_blocks]].
+  destruct different as [different | [different | different]]; contradiction.
+Qed.
+
+Section ReplayContextDigest.
+  Variable digest : list (nat * nat) -> nat.
+  Variable admissible : list (nat * nat) -> Prop.
+  Hypothesis digest_separates_admissible_contexts :
+    forall a b, admissible a -> admissible b -> digest a = digest b -> a = b.
+
+  Definition rb_digest_cache_key_equiv
+    (a b : rb_replay_cache_key_model) : Prop :=
+    rb_cache_start_state a = rb_cache_start_state b /\
+    rb_cache_sender a = rb_cache_sender b /\
+    rb_cache_seq_num a = rb_cache_seq_num b /\
+    rb_cache_timestamp a = rb_cache_timestamp b /\
+    rb_cache_height a = rb_cache_height b /\
+    digest (rb_cache_invalid_blocks a) = digest (rb_cache_invalid_blocks b) /\
+    rb_full_replay_payload_equiv
+      (rb_cache_replay_payload a) (rb_cache_replay_payload b).
+
+  Theorem rb_digest_cache_key_refines_complete_key :
+    forall a b,
+      admissible (rb_cache_invalid_blocks a) ->
+      admissible (rb_cache_invalid_blocks b) ->
+      rb_digest_cache_key_equiv a b -> rb_replay_cache_key_equiv a b.
+  Proof.
+    intros a b allowed_a allowed_b
+      [state [sender [seq [timestamp [height [context payload]]]]]].
+    unfold rb_replay_cache_key_equiv.
+    refine (conj state (conj sender (conj seq (conj timestamp
+      (conj height (conj _ payload)))))).
+    eapply digest_separates_admissible_contexts; eassumption.
+  Qed.
+End ReplayContextDigest.
 
 Theorem rb_full_replay_payload_signature_change_detected :
   forall sigs1 sigs2 costs traces trace_counts failed errors user_logs kinds
@@ -1194,10 +1399,13 @@ Proof.
   simpl. split; reflexivity.
 Qed.
 
-Theorem rb_cost_accounted_replay_requires_commitment :
+(* TM-CA-151: a DIAGNOSTIC-REFINEMENT obligation (the digest is NOT production
+   consensus — see the [rb_replay_mode] banner). Under the finer diagnostic
+   refinement, accepting a cost trace reduces to the explicit commitment validity. *)
+Theorem rb_diagnostic_refinement_requires_commitment :
   forall trace count present,
     rb_replay_mode_accepts_cost_trace
-      RbCostAccountedReplay trace count present ->
+      RbDiagnosticRefinement trace count present ->
     rb_cost_trace_commitment_valid trace count present.
 Proof.
   intros trace count present Haccept.
@@ -1897,6 +2105,171 @@ Proof.
   repeat split; reflexivity.
 Qed.
 
+Record rb_meter_identity_state := {
+  rb_meter_identity_unmetered : bool;
+  rb_meter_identity_next_local_index : nat;
+  rb_meter_identity_recorded_local_indices : list nat;
+  rb_meter_identity_source_path : list nat
+}.
+
+Definition rb_meter_identity_set_unmetered
+  (s : rb_meter_identity_state)
+  (unmetered : bool)
+  : rb_meter_identity_state :=
+  {|
+    rb_meter_identity_unmetered := unmetered;
+    rb_meter_identity_next_local_index := rb_meter_identity_next_local_index s;
+    rb_meter_identity_recorded_local_indices :=
+      rb_meter_identity_recorded_local_indices s;
+    rb_meter_identity_source_path := rb_meter_identity_source_path s
+  |}.
+
+Definition rb_meter_identity_reserve
+  (s : rb_meter_identity_state)
+  : rb_meter_identity_state :=
+  if rb_meter_identity_unmetered s then s
+  else
+    {|
+      rb_meter_identity_unmetered := false;
+      rb_meter_identity_next_local_index :=
+        S (rb_meter_identity_next_local_index s);
+      rb_meter_identity_recorded_local_indices :=
+        rb_meter_identity_recorded_local_indices s ++
+          [rb_meter_identity_next_local_index s];
+      rb_meter_identity_source_path := rb_meter_identity_source_path s
+    |}.
+
+Definition rb_meter_identity_child
+  (s : rb_meter_identity_state)
+  (component : nat)
+  : rb_meter_identity_state :=
+  if rb_meter_identity_unmetered s then s
+  else
+    {|
+      rb_meter_identity_unmetered := false;
+      rb_meter_identity_next_local_index := 0;
+      rb_meter_identity_recorded_local_indices :=
+        rb_meter_identity_recorded_local_indices s;
+      rb_meter_identity_source_path :=
+        rb_meter_identity_source_path s ++ [component]
+    |}.
+
+Fixpoint rb_meter_identity_child_many
+  (components : list nat)
+  (s : rb_meter_identity_state)
+  : rb_meter_identity_state :=
+  match components with
+  | [] => s
+  | component :: rest =>
+      rb_meter_identity_child_many rest
+        (rb_meter_identity_child s component)
+  end.
+
+Fixpoint rb_meter_identity_reserve_many
+  (count : nat)
+  (s : rb_meter_identity_state)
+  : rb_meter_identity_state :=
+  match count with
+  | 0 => s
+  | S rest =>
+      rb_meter_identity_reserve_many rest (rb_meter_identity_reserve s)
+  end.
+
+Theorem rb_meter_identity_unmetered_reserve_preserves_state :
+  forall s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_reserve s = s.
+Proof.
+  intros s Hunmetered.
+  unfold rb_meter_identity_reserve.
+  rewrite Hunmetered.
+  reflexivity.
+Qed.
+
+Theorem rb_meter_identity_unmetered_reserve_many_preserves_state :
+  forall count s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_reserve_many count s = s.
+Proof.
+  induction count as [| count IH]; intros s Hunmetered.
+  - reflexivity.
+  - simpl.
+    rewrite rb_meter_identity_unmetered_reserve_preserves_state by exact Hunmetered.
+    apply IH.
+    exact Hunmetered.
+Qed.
+
+Theorem rb_meter_identity_unmetered_child_preserves_state :
+  forall component s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_child s component = s.
+Proof.
+  intros component s Hunmetered.
+  unfold rb_meter_identity_child.
+  rewrite Hunmetered.
+  reflexivity.
+Qed.
+
+Theorem rb_meter_identity_unmetered_child_many_preserves_state :
+  forall components s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_child_many components s = s.
+Proof.
+  induction components as [| component rest IH]; intros s Hunmetered.
+  - reflexivity.
+  - simpl.
+    rewrite rb_meter_identity_unmetered_child_preserves_state by exact Hunmetered.
+    apply IH.
+    exact Hunmetered.
+Qed.
+
+Theorem rb_meter_identity_metered_reserve_uses_next_identity :
+  forall s,
+    rb_meter_identity_unmetered s = false ->
+    rb_meter_identity_next_local_index (rb_meter_identity_reserve s) =
+      S (rb_meter_identity_next_local_index s) /\
+    rb_meter_identity_recorded_local_indices (rb_meter_identity_reserve s) =
+      rb_meter_identity_recorded_local_indices s ++
+        [rb_meter_identity_next_local_index s].
+Proof.
+  intros s Hmetered.
+  unfold rb_meter_identity_reserve.
+  rewrite Hmetered.
+  split; reflexivity.
+Qed.
+
+Theorem rb_meter_identity_scoped_unmetered_work_preserves_next_metered_identity :
+  forall count s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_reserve_many count
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false).
+Proof.
+  intros count s.
+  rewrite rb_meter_identity_unmetered_reserve_many_preserves_state.
+  - reflexivity.
+  - reflexivity.
+Qed.
+
+Theorem rb_meter_identity_scoped_unmetered_children_preserve_next_metered_identity :
+  forall components s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_child_many components
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false).
+Proof.
+  intros components s.
+  rewrite rb_meter_identity_unmetered_child_many_preserves_state.
+  - reflexivity.
+  - reflexivity.
+Qed.
+
 Theorem rb_reserve_isolated_from_other_budget :
   forall b1 b1' b2 e r,
     rb_reserve b1 e = (b1', r) ->
@@ -1911,10 +2284,10 @@ Qed.
 
 Theorem rb_sum_settlement_app :
   forall left right,
-    rb_sum_escrowed_amount (left ++ right) =
-      rb_sum_escrowed_amount left + rb_sum_escrowed_amount right /\
-    rb_sum_charged_amount (left ++ right) =
-      rb_sum_charged_amount left + rb_sum_charged_amount right /\
+    rb_sum_reserved_amount (left ++ right) =
+      rb_sum_reserved_amount left + rb_sum_reserved_amount right /\
+    rb_sum_debited_amount (left ++ right) =
+      rb_sum_debited_amount left + rb_sum_debited_amount right /\
     rb_sum_refund_amount (left ++ right) =
       rb_sum_refund_amount left + rb_sum_refund_amount right /\
     rb_sum_settled_amount (left ++ right) =
@@ -1926,14 +2299,14 @@ Proof.
     repeat split; rewrite ?Hescrow, ?Hcharged, ?Hrefund, ?Hsettled; lia.
 Qed.
 
-Theorem rb_sum_refund_le_escrow :
+Theorem rb_sum_refund_le_reservation :
   forall settlements,
-    rb_sum_refund_amount settlements <= rb_sum_escrowed_amount settlements.
+    rb_sum_refund_amount settlements <= rb_sum_reserved_amount settlements.
 Proof.
   induction settlements as [| s rest IH].
   - simpl. lia.
   - simpl.
-    pose proof (refund_le_escrow s).
+    pose proof (refund_le_reservation s).
     lia.
 Qed.
 
@@ -1944,19 +2317,19 @@ Theorem rb_multi_deploy_settlement_frontier :
     rb_sum_settled_amount (left ++ right) =
       rb_sum_settled_amount left + rb_sum_settled_amount right /\
     rb_sum_refund_amount (left ++ right) <=
-      rb_sum_escrowed_amount (left ++ right).
+      rb_sum_reserved_amount (left ++ right).
 Proof.
   intros left right.
   destruct (rb_sum_settlement_app left right) as [_ [_ [Hrefund Hsettled]]].
   repeat split; try exact Hrefund; try exact Hsettled.
-  apply rb_sum_refund_le_escrow.
+  apply rb_sum_refund_le_reservation.
 Qed.
 
 Theorem rb_trace_mismatch_preserves_settlement_accounting :
   forall (trace1 trace2 : list rb_trace_entry) s,
     trace1 <> trace2 ->
-    escrowed_amount s = escrowed_amount s /\
-    charged_amount s = charged_amount s /\
+    reserved_amount s = reserved_amount s /\
+    debited_amount s = debited_amount s /\
     refund_amount s = refund_amount s /\
     settled_amount s = settled_amount s.
 Proof.
@@ -2048,10 +2421,13 @@ Proof.
   discriminate Heq.
 Qed.
 
-Theorem rb_cost_accounted_replay_rejects_absent_commitment :
+(* TM-CA-151: a DIAGNOSTIC-REFINEMENT obligation (the digest is NOT production
+   consensus — see the [rb_replay_mode] banner). The finer diagnostic refinement
+   cannot accept an absent commitment even when the trace count is zero. *)
+Theorem rb_diagnostic_refinement_rejects_absent_commitment :
   forall trace count,
     ~ rb_replay_mode_accepts_cost_trace
-        RbCostAccountedReplay trace count false.
+        RbDiagnosticRefinement trace count false.
 Proof.
   intros trace count Haccept.
   unfold rb_replay_mode_accepts_cost_trace,
@@ -2084,7 +2460,7 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Option E Reconciliation Theorems
+   Diagnostic Reservation Reconciliation Theorems
    ═══════════════════════════════════════════════════════════════════════════
 
    These theorems formalize the post-hoc canonical reconciliation
@@ -2093,11 +2469,11 @@ Qed.
    `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`.
 
    The Rust runtime races lock-free CAS attempts against a shared
-   `consumed_tokens` counter. The consensus-relevant `total_cost`,
-   `cost_trace_digest`, and `last_oop_event` come from a post-execution
-   canonical walk over the attempt log — NOT from the runtime CAS
-   outcomes (which depend on Tokio scheduling). This module proves the
-   invariants that justify that decoupling:
+   `consumed_tokens` counter. The post-execution canonical walk is a
+   low-level reservation and diagnostic mechanism; it is not the semantic
+   definition of native Rholang cost. Native cost is the successful atomic
+   COMM trace proved in AtomicCommAccounting.v. This section proves the
+   internal invariants of the reservation mechanism:
 
    - `rb_event_weight_sum_permutation_invariant`: the multiset weight
      is independent of input order (the foundation of permutation
@@ -2111,7 +2487,7 @@ Qed.
    - `rb_reconcile_oop_iff_overflow`: the canonical OOP fires iff
      sum_of_weights > initial; otherwise no OOP. Permutation-invariant.
 
-   Together these mirror the headline Option E theorem:
+   Together these establish the diagnostic reconciliation theorem:
      "for the same multiset of attempts and the same initial budget,
       reconciliation produces the same observable accounting state
       regardless of which CAS race winners occurred at runtime."
@@ -2379,10 +2755,9 @@ Qed.
       (lowK_merge_comm / _assoc / _id_l / _id_r, identity []) — associativity
       being the bounded-K absorption law lowK_absorb.  Then
       rb_reconcile_bounded_K_eq_sort_truncate shows the cost walk over the
-      lowest min(MAX_COST_TRACE_EVENTS, initial+1) events produces the SAME
-      committed event_log, last_oop, consumed, and OOP-count as the full
-      sorted-then-truncated walk (weights >= 1 ⇒ <= initial events committed
-      + 1 boundary).
+      lowest initial+1 events produces the SAME committed event_log,
+      last_oop, consumed, and OOP-count as the full canonical walk
+      (weights >= 1 ⇒ <= initial events committed + 1 boundary).
 
    2. total_cost SCHEDULE-INDEPENDENCE.  rb_total_cost_eq_min_initial_sum +
       rb_total_cost_schedule_independent + rb_total_cost_clamped_characterization
@@ -3510,20 +3885,15 @@ Qed.
    Bounded-K equivalence of the cost walk
    ══════════════════════════════════════════════════════════════════════════
 
-   The Rust `reconcile` (accounting/mod.rs:455) sorts the attempt log by the
-   canonical Ord, truncates to MAX_COST_TRACE_EVENTS, then walks committing
-   events until the cumulative weight would exceed `initial` (the OOP
-   boundary). With every billable weight >= 1, the walk can commit at most
-   `initial` events before stopping, so it inspects at most `initial + 1`
-   events. Hence the walk reads only the lowest `min(MAX, initial+1)` events.
-
-   MAX_COST_TRACE_EVENTS = 1_048_576 in accounting/mod.rs:27. Its concrete
-   value is irrelevant to these proofs — only that the walk window is
-   min(MAX, initial+1). *)
-Definition MAX_COST_TRACE_EVENTS : nat := Nat.pow 2 20.  (* = 1_048_576 *)
+   The Rust `reconcile` keeps the canonical lowest `initial + 1` COMM
+   attempts and walks them until the cumulative weight would exceed
+   `initial` (the OOP boundary). With every billable weight >= 1, the walk
+   can commit at most `initial` events before stopping, so it inspects at
+   most `initial + 1` events. The bound is derived from authenticated
+   execution capacity and therefore cannot truncate an accepted trace. *)
 
 Definition rb_bounded_K (initial : nat) : nat :=
-  Nat.min MAX_COST_TRACE_EVENTS (initial + 1).
+  initial + 1.
 
 (* Every weight >= 1 transfers across the canonical sort (it is a
    permutation). *)
@@ -3582,32 +3952,14 @@ Proof.
         reflexivity.
 Qed.
 
-(* lowestK at the bounded-K window equals the bounded-K prefix of the full
-   sorted-then-truncated (to MAX) multiset that the Rust walk consumes. *)
-Lemma rb_bounded_K_le_max : forall initial,
-  rb_bounded_K initial <= MAX_COST_TRACE_EVENTS.
-Proof. intro initial. unfold rb_bounded_K. apply Nat.le_min_l. Qed.
-
-Lemma lowestK_bounded_K_is_prefix_of_truncated : forall initial events,
-  lowestK (rb_bounded_K initial) events
-  = firstn (rb_bounded_K initial)
-           (firstn MAX_COST_TRACE_EVENTS (rb_event_sort events)).
-Proof.
-  intros initial events. unfold lowestK.
-  rewrite firstn_firstn.
-  rewrite (Nat.min_l (rb_bounded_K initial) MAX_COST_TRACE_EVENTS
-             (rb_bounded_K_le_max initial)).
-  reflexivity.
-Qed.
-
-(* The full sorted-then-truncated multiset the runtime walks. *)
+(* The full canonical multiset against which the bounded window refines. *)
 Definition rb_sort_truncate (events : list rb_event) : list rb_event :=
-  firstn MAX_COST_TRACE_EVENTS (rb_event_sort events).
+  rb_event_sort events.
 
 (* ── DELIVERABLE 1 (headline): the cost walk's full output — final state
    (committed event_log, consumed, last_oop) AND the per-event results list —
-   over the bounded lowest-K fold equals the output over the full
-   sorted-then-truncated multiset.  Weights >= 1 and consumed starts at 0
+   over the bounded lowest-K fold equals the output over the full canonical
+   multiset.  Weights >= 1 and consumed starts at 0
    (a fresh per-deploy budget), so the walk inspects <= initial + 1 events
    and never looks past the lowest min(MAX, initial+1). *)
 Theorem rb_reconcile_bounded_K_eq_sort_truncate : forall b events,
@@ -3619,35 +3971,13 @@ Theorem rb_reconcile_bounded_K_eq_sort_truncate : forall b events,
   = rb_reserve_many b (rb_sort_truncate events).
 Proof.
   intros b events Hpos Hvalid Hunmet Hcons0.
-  unfold rb_sort_truncate.
-  rewrite (lowestK_bounded_K_is_prefix_of_truncated (rb_initial b) events).
-  set (S := firstn MAX_COST_TRACE_EVENTS (rb_event_sort events)).
-  (* All weights in S are >= 1 (S is a sublist of the sorted positives). *)
-  assert (HposS : Forall rb_event_positive S).
-  { unfold S. apply Forall_firstn. apply rb_event_positive_sort. exact Hpos. }
-  (* Case on whether the bounded window reaches the prefix-stability bound. *)
-  destruct (Nat.le_gt_cases (rb_initial b + 1) MAX_COST_TRACE_EVENTS) as [Hle | Hgt].
-  - (* initial + 1 <= MAX: bounded_K = initial + 1 >= initial - consumed + 1. *)
-    assert (HbK : rb_bounded_K (rb_initial b) = rb_initial b + 1).
-    { unfold rb_bounded_K. rewrite Nat.min_r by lia. reflexivity. }
-    rewrite HbK.
-    symmetry.
-    apply rb_reserve_many_prefix_stable.
-    + exact HposS.
-    + exact Hvalid.
-    + exact Hunmet.
-    + rewrite Hcons0. lia.
-  - (* MAX < initial + 1: bounded_K = MAX, and length S <= MAX so the prefix
-       is all of S — both sides walk S. *)
-    assert (HbK : rb_bounded_K (rb_initial b) = MAX_COST_TRACE_EVENTS).
-    { unfold rb_bounded_K. rewrite Nat.min_l by lia. reflexivity. }
-    rewrite HbK.
-    assert (HlenS : length S <= MAX_COST_TRACE_EVENTS).
-    { unfold S. rewrite length_firstn. lia. }
-    assert (Hsafe : firstn MAX_COST_TRACE_EVENTS S = S)
-      by (apply firstn_all2; exact HlenS).
-    rewrite Hsafe.
-    reflexivity.
+  unfold rb_sort_truncate, lowestK, rb_bounded_K.
+  symmetry.
+  apply rb_reserve_many_prefix_stable.
+  - apply rb_event_positive_sort. exact Hpos.
+  - exact Hvalid.
+  - exact Hunmet.
+  - rewrite Hcons0. lia.
 Qed.
 
 (* Explicit corollaries: each observable the runtime reads off `reconcile`
@@ -3824,17 +4154,14 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Per-Signature Token Pool (WD-D0)
+   Per-Signature Settlement Composition
    ═══════════════════════════════════════════════════════════════════════════
 
-   The Rust `RuntimeBudget` gains a per-signature token pool
-   `lanes : DashMap<[u8;32], Lane>` (spec §4.6 spectral decomposition into
-   per-signature pools; §7.6 "no interleaving" is PER-SIGNATURE, not global).
-   Each `Lane` mirrors the scalar `RuntimeBudget` fields and is reconciled by
-   the SAME canonical walk (`reconcile_lane`, extracted from the scalar
-   `reconcile`), so a lane is an INDEPENDENT INSTANCE of the proven scalar
-   budget model above. The deploy's consumed cost is the SUM over lanes
-   (`RuntimeBudget::lane_pool_total_cost`).
+   Native execution records each located resource debit in an AuthorityEvent
+   keyed by Sig::lane_hash. Admission and replay allocate those events from
+   independent purse inventories before the SystemVault applies their sum
+   atomically. The scalar RuntimeBudget is only the aggregate execution-
+   capacity ceiling; it is not a second per-purse ledger.
 
    We model:
    - a lane [rb_lane] as a scalar budget paired with the event list routed to
@@ -3847,7 +4174,7 @@ Qed.
      [rb_total_cost].
 
    Headline obligations (the WD-D0 entries in
-   `docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`
+   `docs/casper/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`
    Decision 8 and `workstream-d-acceptance.md` D0):
    - [rb_pool_total_cost_eq_sum]: the reconciled pool's total cost equals the
      sum over lanes of [rb_total_cost] of each independently-reconciled lane
@@ -3855,9 +4182,8 @@ Qed.
    - [rb_pool_reconcile_preserves_valid]: each reconciled lane is valid, so the
      pool is a vector of valid scalar budgets (N independent instances).
    - [rb_pool_total_cost_permutation_invariant]: the pool total is INVARIANT
-     under reordering lanes — the commutative / order-independent sum that the
-     Rust `lane_pool_total_cost` and the 2-lane loom test rely on (disjoint
-     signatures contend on nothing, so visiting order is irrelevant).
+     under reordering lanes — the commutative / order-independent sum that
+     canonical authority settlement and its 2-lane loom model rely on.
 
    No `Axiom`, no `Admitted`: everything reduces to the scalar theorems above
    plus stdlib [map]/[fold_right]/[Permutation] facts. *)
@@ -3871,8 +4197,7 @@ Definition rb_pool : Type := list rb_lane.
 Definition rb_lane_reconcile (l : rb_lane) : rb_state :=
   rb_reconcile (fst l) (snd l).
 
-(* Reconcile every lane independently (mirrors mapping `reconcile_one_lane`
-   over the `DashMap` entries). *)
+(* Reconcile every located purse independently. *)
 Definition rb_pool_reconcile (p : rb_pool) : list rb_state :=
   map rb_lane_reconcile p.
 
@@ -3910,7 +4235,7 @@ Qed.
    `rb_total_cost` of each independently-reconciled lane. This is
    `rb_pool_total_cost = Σ rb_total_cost` (WD-D0): the per-signature pool's
    cost is exactly N independent applications of the scalar `rb_total_cost`,
-   one per lane, summed — the Rust `lane_pool_total_cost`. *)
+   one per lane, summed by native settlement. *)
 Theorem rb_pool_total_cost_eq_sum : forall p,
   rb_pool_reconciled_total_cost p =
   fold_right (fun l acc => rb_total_cost (rb_lane_reconcile l) + acc) 0 p.
@@ -3950,9 +4275,8 @@ Qed.
 
 (* `rb_pool_total_cost` is invariant under permutation of the lane-state list:
    the sum is commutative/associative, so it does not depend on the order in
-   which lanes are visited. This is the order-independence the Rust
-   `lane_pool_total_cost` (iterating a `DashMap`) and the 2-lane loom test
-   rely on. *)
+   which lanes are visited. This is the order-independence the native
+   authority allocator and the 2-lane loom test rely on. *)
 Theorem rb_pool_total_cost_permutation_invariant : forall states1 states2,
   Permutation states1 states2 ->
   rb_pool_total_cost states1 = rb_pool_total_cost states2.

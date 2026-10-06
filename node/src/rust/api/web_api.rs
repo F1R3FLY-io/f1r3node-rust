@@ -5,7 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use casper::rust::api::block_api::{
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
+    OfferedSettlementReceipt,
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
@@ -13,21 +18,16 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-// ⚠ RETIRED with `to_signed_deploy` (see the note above that function): it was
-// this file's only use of the SINGLE-signature envelope. `to_cosigned_deploy`
-// names `Cosigned`/`Cosigner` at its own site, so nothing here needs `Signed`
-// any more — which is precisely the claim `to_signed_deploy`'s retirement
-// makes, now visible in the import list.
-//
-// use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
 };
 use eyre::{eyre, Result};
 use hex;
-use models::casper::LightBlockInfo;
+use models::casper::{DeployDataProto, LightBlockInfo};
 use models::rust::casper::protocol::casper_message::DeployData;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -52,11 +52,30 @@ pub trait WebApi {
     /// Get API status information
     async fn status(&self) -> Result<ApiStatus>;
 
+    /// Whether the Casper instance has entered the Running state and can serve
+    /// deploys. Backs the `/api/ready` readiness probe.
+    fn is_ready(&self) -> bool;
+
     /// Prepare deploy request
     async fn prepare_deploy(&self, request: Option<PrepareRequest>) -> Result<PrepareResponse>;
 
     /// Deploy a contract
     async fn deploy(&self, request: DeployRequest) -> Result<String>;
+
+    async fn deploy_offered(&self, _request: OfferedDeployRequest) -> Result<String> {
+        Err(eyre!(
+            "offered-funded deploy admission is not active under the current genesis policy"
+        ))
+    }
+
+    async fn offered_settlement_receipt(
+        &self,
+        _deploy_id: String,
+    ) -> Result<Option<OfferedReceiptResponse>> {
+        Err(eyre!(
+            "offered-funded settlement receipt lookup is unavailable"
+        ))
+    }
 
     /// Get data at a par (parallel expression)
     async fn get_data_at_par(
@@ -76,7 +95,7 @@ pub trait WebApi {
     /// Find a deploy by ID with the specified view.
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse>;
 
-    /// Perform exploratory deploy
+    /// Perform exploratory deploy against the requested block or the LFB post-state.
     async fn exploratory_deploy(
         &self,
         term: String,
@@ -100,6 +119,10 @@ pub trait WebApi {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson>;
+
+    /// Bulk snapshot of pending deploys (deploy_storage + rejected-recovery
+    /// buffer), optionally filtered by deployer public key (hex-encoded).
+    async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson>;
 
     /// Get balance for an address via exploratory deploy against SystemVault.
     /// Queries against `block_hash` if provided, otherwise LFB.
@@ -130,6 +153,7 @@ pub trait WebApi {
         &self,
         term: String,
         block_hash: Option<String>,
+        deployer: Option<String>,
     ) -> Result<EstimateCostResponse>;
 
     /// Get current epoch rewards from PoS contract
@@ -155,6 +179,45 @@ pub struct DeployFinalizationStatusJson {
     /// Hex-encoded block hash. Absent (`null`) when the deploy has never
     /// been included in any block.
     pub latest_block_hash: Option<String>,
+}
+
+/// JSON-serializable view of a single pending deploy.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingDeployJson {
+    pub term: String,
+    pub timestamp: i64,
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: i64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: i64,
+    #[serde(rename = "validAfterBlockNumber")]
+    pub valid_after_block_number: i64,
+    #[serde(rename = "shardId")]
+    pub shard_id: String,
+    /// Hex-encoded deployer public key.
+    pub deployer: String,
+    /// Hex-encoded deploy signature.
+    pub sig: String,
+    #[serde(rename = "sigAlgorithm")]
+    pub sig_algorithm: String,
+    #[serde(rename = "expirationTimestamp")]
+    pub expiration_timestamp: Option<i64>,
+    /// `true` when the deploy is in the rejected-recovery buffer
+    /// (recovering after a merge conflict); `false` when it is fresh in
+    /// deploy_storage (not yet proposed).
+    #[serde(rename = "isRejected")]
+    pub is_rejected: bool,
+}
+
+/// JSON-serializable view of a pending-deploys response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingDeploysJson {
+    pub deploys: Vec<PendingDeployJson>,
+    /// Total count of pending deploys that matched the query before cap
+    /// truncation was applied. Compare with `deploys.len()` to detect
+    /// truncation.
+    #[serde(rename = "totalAvailable")]
+    pub total_available: u32,
 }
 
 fn deploy_state_json_label(
@@ -259,9 +322,12 @@ impl WebApiImpl {
         }
     }
 
-    /// Enrich a BlockInfoSerde with transfer data from BlockReportAPI.
-    /// On success: each deploy gets `Some(transfers)`.
-    /// On failure (validator node): each deploy gets `None` (field omitted).
+    /// Enrich a BlockInfoSerde with transfer data from the block report.
+    ///
+    /// A report gives each deploy `Some(transfers)`, where an empty vector means
+    /// the deploy moved nothing. Anything else — a validator node, a reporter busy
+    /// with another replay, pruned pre-state, or a store failure — gives `None`,
+    /// which omits the field rather than claiming the deploy had no transfers.
     async fn enrich_transfers(&self, serde: &mut BlockInfoSerde, block_hash_hex: String) {
         let deploys = match serde.deploys.as_mut() {
             Some(deploys) => deploys,
@@ -277,6 +343,11 @@ impl WebApiImpl {
                 return;
             }
         };
+        // Serves the cached report when there is one and replays only when the
+        // reporter is idle: block_report refuses rather than queues, so a read
+        // arriving during catch-up returns without waiting instead of adding to
+        // the load. A replay that does happen also caches, so ordinary reads
+        // repopulate what pre-caching missed.
         match self
             .block_report_api
             .block_report(block_hash_bytes, false)
@@ -309,7 +380,7 @@ impl WebApiImpl {
 #[async_trait::async_trait]
 impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<ApiStatus> {
-        const STATUS_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+        use crate::rust::web::shared_handlers::STATUS_SLOW_THRESHOLD;
         let total_start = Instant::now();
 
         let rp_conf_start = Instant::now();
@@ -345,19 +416,9 @@ impl WebApi for WebApiImpl {
             })
             .collect();
 
-        let total_elapsed = total_start.elapsed();
-        if total_elapsed >= STATUS_SLOW_THRESHOLD {
-            warn!(
-                ?total_elapsed,
-                ?rp_conf_elapsed,
-                ?connections_elapsed,
-                ?discovery_elapsed,
-                peers,
-                nodes,
-                "Web API status assembly is slow"
-            );
-        }
-
+        // Timed below, not above: this is the one step that waits on `global_lock`,
+        // so it is the step a slow-status warning most needs to name.
+        let lfb_start = Instant::now();
         let lfb_number = match BlockAPI::last_finalized_block(&self.engine_cell).await {
             Ok(block_info) => block_info
                 .block_info
@@ -366,9 +427,31 @@ impl WebApi for WebApiImpl {
                 .unwrap_or(-1),
             Err(_) => -1,
         };
+        let lfb_elapsed = lfb_start.elapsed();
+
+        let total_elapsed = total_start.elapsed();
+        if total_elapsed >= STATUS_SLOW_THRESHOLD {
+            warn!(
+                ?total_elapsed,
+                ?rp_conf_elapsed,
+                ?connections_elapsed,
+                ?discovery_elapsed,
+                ?lfb_elapsed,
+                peers,
+                nodes,
+                "Web API status assembly is slow"
+            );
+        }
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
+
+        // Advertise the floor admission and validity actually enforce — the
+        // chain-adopted value; local conf only until casper is up.
+        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().min_phlo_price,
+            None => self.min_phlo_price,
+        };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {
@@ -385,7 +468,7 @@ impl WebApi for WebApiImpl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price: self.min_phlo_price,
+            min_phlo_price,
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -398,6 +481,8 @@ impl WebApi for WebApiImpl {
             epoch_length: self.epoch_length,
         })
     }
+
+    fn is_ready(&self) -> bool { self.is_ready.load(Ordering::Acquire) }
 
     async fn prepare_deploy(&self, request: Option<PrepareRequest>) -> Result<PrepareResponse> {
         let seq_number = BlockAPI::get_latest_message(&self.engine_cell)
@@ -421,23 +506,41 @@ impl WebApi for WebApiImpl {
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
         crate::rust::runtime::require_legacy_source_route("Signed deploy")
             .map_err(eyre::Error::msg)?;
-        // Multi-sig-aware decode. For legacy single-sig requests
-        // (cosigners.is_empty()), this produces a one-element Cosigned
-        // envelope; the downstream BlockAPI::deploy_cosigned routes it
-        // through the legacy single-sig path inside the engine for
-        // byte-identical observable behavior. For multi-sig requests,
-        // the full canonical Cosigned envelope is constructed with
-        // per-signer signature verification.
-        let cosigned_deploy = to_cosigned_deploy(&request)?;
-        BlockAPI::deploy_cosigned(
+        let signed_deploy = to_signed_deploy(&request)?;
+        BlockAPI::deploy(
             &self.engine_cell,
-            cosigned_deploy,
+            signed_deploy,
             &self.trigger_propose_f,
-            self.min_phlo_price,
             self.is_node_read_only,
             &self.shard_id,
         )
         .await
+    }
+
+    async fn deploy_offered(&self, request: OfferedDeployRequest) -> Result<String> {
+        let proto = decode_offered_deploy_proto(&request)?;
+        BlockAPI::deploy_offered(
+            &self.engine_cell,
+            proto,
+            &self.trigger_propose_f,
+            self.is_node_read_only,
+            &self.shard_id,
+        )
+        .await
+    }
+
+    async fn offered_settlement_receipt(
+        &self,
+        deploy_id: String,
+    ) -> Result<Option<OfferedReceiptResponse>> {
+        let deploy_id_bytes = hex::decode(deploy_id.trim_start_matches("0x"))
+            .map_err(|_| eyre::Report::new(InvalidHashError(deploy_id.clone())))?;
+        if deploy_id_bytes.len() != 32 {
+            return Err(eyre::Report::new(InvalidHashError(deploy_id)));
+        }
+        BlockAPI::find_offered_settlement_receipt(&self.engine_cell, &deploy_id_bytes.into())
+            .await
+            .map(|receipt| receipt.map(OfferedReceiptResponse::from))
     }
 
     async fn get_data_at_par(
@@ -496,18 +599,22 @@ impl WebApi for WebApiImpl {
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
-        let deploy_id_bytes =
-            hex::decode(&deploy_id).map_err(|e| eyre!("Invalid deploy ID format: {}", e))?;
+        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy ID",
+                deploy_id
+            )))
+        })?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
 
         // Retry loop: deploy may not be visible in DAG immediately after submission
-        let light_block: LightBlockInfoSerde = {
+        let light_block: LightBlockInfo = {
             let mut attempt: u16 = 1;
             loop {
                 match BlockAPI::find_deploy(&self.engine_cell, &deploy_id_bytes).await {
-                    Ok(block) => break LightBlockInfoSerde::from(block),
+                    Ok(block) => break block,
                     Err(err) => {
                         let not_found = err.downcast_ref::<DeployNotFoundError>().is_some();
 
@@ -528,6 +635,10 @@ impl WebApi for WebApiImpl {
                 }
             }
         };
+        let known_block_hash = hex::decode(&light_block.block_hash)
+            .map(prost::bytes::Bytes::from)
+            .map_err(|e| eyre!("Invalid block hash returned by findDeploy: {}", e))?;
+        let light_block = LightBlockInfoSerde::from(light_block);
 
         // Always fetch full block to get deploy execution details
         let block_info = self
@@ -548,6 +659,12 @@ impl WebApi for WebApiImpl {
         })?;
 
         let is_full = view == ViewMode::Full;
+        let finalization = BlockAPI::deploy_finalization_status_with_known_block(
+            &self.engine_cell,
+            &deploy_id_bytes,
+            Some(&known_block_hash),
+        )
+        .await?;
 
         Ok(DeployResponse {
             deploy_id,
@@ -557,6 +674,8 @@ impl WebApi for WebApiImpl {
             cost: deploy.cost,
             errored: deploy.errored,
             is_finalized: light_block.is_finalized,
+            finalization_state: deploy_state_json_label(finalization.state).to_string(),
+            rejection_count: finalization.rejection_count,
             deployer: if is_full {
                 Some(deploy.deployer.clone())
             } else {
@@ -569,6 +688,16 @@ impl WebApi for WebApiImpl {
             },
             system_deploy_error: if is_full {
                 Some(deploy.system_deploy_error.clone())
+            } else {
+                None
+            },
+            phlo_price: if is_full {
+                Some(deploy.phlo_price)
+            } else {
+                None
+            },
+            phlo_limit: if is_full {
+                Some(deploy.phlo_limit)
             } else {
                 None
             },
@@ -604,6 +733,7 @@ impl WebApi for WebApiImpl {
             block_hash,
             use_pre_state_hash,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -648,13 +778,62 @@ impl WebApi for WebApiImpl {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson> {
-        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x"))
-            .map_err(|e| eyre!("invalid hex for deploy_sig: {}", e))?;
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy signature",
+                deploy_sig_hex
+            )))
+        })?;
         let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
             rejection_count: status.rejection_count,
             latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+        })
+    }
+
+    async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson> {
+        let deployer_bytes = match deployer.as_deref() {
+            None => None,
+            Some(s) if s.trim_start_matches("0x").is_empty() => None,
+            Some(s) => {
+                let hex_str = s.trim_start_matches("0x");
+                Some(hex::decode(hex_str).map_err(|_| {
+                    eyre::Report::new(InvalidPublicKeyError(format!(
+                        "'{}' is not a valid hex deployer public key",
+                        s
+                    )))
+                })?)
+            }
+        };
+
+        let snapshot =
+            BlockAPI::list_pending_deploys(&self.engine_cell, deployer_bytes.as_deref()).await?;
+
+        let deploys = snapshot
+            .deploys
+            .into_iter()
+            .map(|(signed, is_rejected)| {
+                let dd = &signed.data;
+                PendingDeployJson {
+                    term: dd.term.clone(),
+                    timestamp: dd.time_stamp,
+                    phlo_price: dd.phlo_price,
+                    phlo_limit: dd.phlo_limit,
+                    valid_after_block_number: dd.valid_after_block_number,
+                    shard_id: dd.shard_id.clone(),
+                    deployer: hex::encode(&signed.pk.bytes),
+                    sig: hex::encode(&signed.sig),
+                    sig_algorithm: signed.sig_algorithm.name(),
+                    expiration_timestamp: dd.expiration_timestamp,
+                    is_rejected,
+                }
+            })
+            .collect();
+
+        Ok(PendingDeploysJson {
+            deploys,
+            total_available: snapshot.total_available,
         })
     }
 
@@ -695,6 +874,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -739,6 +919,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -771,6 +952,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -840,10 +1022,23 @@ impl WebApi for WebApiImpl {
         &self,
         term: String,
         block_hash: Option<String>,
+        deployer: Option<String>,
     ) -> Result<EstimateCostResponse> {
         crate::rust::runtime::require_legacy_source_route("Cost estimation")
             .map_err(eyre::Error::msg)?;
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
+
+        let deployer_pk = deployer
+            .map(|hex_str| {
+                validate_and_decode_pubkey(&hex_str).map(|bytes| PublicKey::from_bytes(&bytes))
+            })
+            .transpose()?;
+
+        let deployer_identity = if deployer_pk.is_some() {
+            DeployerIdentity::Provided
+        } else {
+            DeployerIdentity::Ephemeral
+        };
 
         let (_pars, _block, cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
@@ -851,6 +1046,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            deployer_pk,
         )
         .await?;
 
@@ -858,6 +1054,7 @@ impl WebApi for WebApiImpl {
             cost,
             block_number,
             block_hash: resolved_hash,
+            deployer_identity,
         })
     }
 
@@ -880,6 +1077,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -903,12 +1101,11 @@ impl WebApi for WebApiImpl {
     ) -> Result<ValidatorStatusResponse> {
         crate::rust::runtime::require_legacy_source_route("Validator exploratory query")
             .map_err(eyre::Error::msg)?;
+        let _ = validate_and_decode_pubkey(&pubkey)?;
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
+        }"#
         .to_string();
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
@@ -919,6 +1116,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -948,10 +1146,9 @@ impl WebApi for WebApiImpl {
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
         crate::rust::runtime::require_legacy_source_route("Bond-status runtime query")
             .map_err(eyre::Error::msg)?;
-        let pubkey_bytes =
-            hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let pk_bytes = validate_and_decode_pubkey(&pubkey)?;
 
-        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pubkey_bytes).await?;
+        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
 
         Ok(BondStatusResponse {
             public_key: pubkey,
@@ -1004,6 +1201,9 @@ pub enum RhoExpr {
     // === Extended numerics ===
     ExprFloat {
         data: f64,
+    },
+    ExprFloat32 {
+        data: f32,
     },
     ExprBigInt {
         data: String,
@@ -1157,6 +1357,8 @@ pub enum RhoUnforg {
     UnforgPrivate { data: String },
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
+    UnforgAuthority { data: String },
+    UnforgPrincipal { key_family: u32, public_key: String },
     UnforgSysAuthToken,
 }
 
@@ -1164,36 +1366,42 @@ pub enum RhoUnforg {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployRequest {
     pub data: DeployData,
-    /// Primary signer's public key (hex-encoded).
     pub deployer: String,
-    /// Primary signer's signature (hex-encoded).
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
-    /// Additional cosigners beyond the primary. Empty (default) for legacy
-    /// single-signature deploys. When non-empty, the deploy is treated as
-    /// a multi-signature deploy and validated via `Cosigned::from_signed_data`
-    /// (per-signer signature verification, canonical pk-ascending sort,
-    /// no-duplicate check). D3 (DR-9): no per-signer phlo_share / share-sum.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cosigners: Vec<CosignerJson>,
 }
 
-/// JSON shape for one cosigner in a multi-signature [`DeployRequest`].
-/// Mirrors the wire `CompoundSigner` proto message (proto field 14 inside
-/// `DeployDataProto`).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct CosignerJson {
-    /// Cosigner public key (hex-encoded).
-    pub pk: String,
-    /// Cosigner signature over the canonical deploy hash (hex-encoded).
-    /// Must be a valid signature against the same canonical message hash
-    /// used by the primary signer (`Signed::<DeployData>::signature_hash`).
-    pub signature: String,
-    #[serde(rename = "sigAlgorithm")]
-    pub sig_algorithm: String,
-    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
-    // pool Σ⟦s⟧, not an envelope escrow share.
+pub struct OfferedDeployRequest {
+    #[serde(rename = "deployDataProtoBase64")]
+    pub deploy_data_proto_base64: String,
+}
+
+fn decode_offered_deploy_proto(request: &OfferedDeployRequest) -> Result<DeployDataProto> {
+    let wire = STANDARD
+        .decode(&request.deploy_data_proto_base64)
+        .map_err(|error| {
+            eyre::Report::new(DeployValidationError {
+                message: format!("Invalid offered-funded base64: {}", error),
+            })
+        })?;
+    if STANDARD.encode(&wire) != request.deploy_data_proto_base64 {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded base64 is not canonical".to_string(),
+        }));
+    }
+    let proto = DeployDataProto::decode(wire.as_slice()).map_err(|error| {
+        eyre::Report::new(DeployValidationError {
+            message: format!("Invalid offered-funded protobuf: {}", error),
+        })
+    })?;
+    if proto.encode_to_vec() != wire {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded protobuf is not canonical".to_string(),
+        }));
+    }
+    Ok(proto)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1201,7 +1409,7 @@ pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1210,6 +1418,18 @@ pub struct ExploreDeployRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SimpleExploreDeployRequest {
     pub term: String,
+}
+
+/// Request body for POST /api/estimate-cost.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EstimateCostRequest {
+    pub term: String,
+    /// Hex-encoded 65-byte uncompressed secp256k1 public key (`04`-prefixed).
+    /// For identity-dependent terms such as vault transfers, pass the deployer
+    /// public key; without it the term executes under an ephemeral identity and
+    /// the returned cost can be significantly lower than the real deploy cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1226,7 +1446,7 @@ pub struct DataAtNameByBlockHashRequest {
     pub name: RhoUnforg,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1268,6 +1488,11 @@ pub struct PrepareResponse {
     pub names: Vec<String>,
     #[serde(rename = "seqNumber")]
     pub seq_number: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReadyResponse {
+    pub ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1337,6 +1562,69 @@ pub struct VersionInfo {
 /// Unified deploy response. Default (full) includes all fields.
 /// Summary view (`?view=summary`) omits Optional fields for lightweight polling.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedPurseSettlementResponse {
+    pub address: String,
+    #[serde(rename = "resourceRev")]
+    pub resource_rev: String,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "postBalance")]
+    pub post_balance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedReceiptResponse {
+    #[serde(rename = "deployId")]
+    pub deploy_id: String,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+    #[serde(rename = "phloUsed")]
+    pub phlo_used: u64,
+    #[serde(rename = "freshPhlo")]
+    pub fresh_phlo: u64,
+    #[serde(rename = "retainedPhlo")]
+    pub retained_phlo: u64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: u64,
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: u64,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "revSpent")]
+    pub rev_spent: String,
+    #[serde(rename = "revCeiling")]
+    pub rev_ceiling: String,
+    pub purses: Vec<OfferedPurseSettlementResponse>,
+}
+
+impl From<OfferedSettlementReceipt> for OfferedReceiptResponse {
+    fn from(receipt: OfferedSettlementReceipt) -> Self {
+        Self {
+            deploy_id: hex::encode(receipt.deploy_id),
+            block_hash: hex::encode(receipt.block_hash),
+            phlo_used: receipt.phlo_used,
+            fresh_phlo: receipt.fresh_phlo,
+            retained_phlo: receipt.retained_phlo,
+            phlo_limit: receipt.phlo_limit,
+            phlo_price: receipt.phlo_price,
+            fee_rev: receipt.fee_rev.to_string(),
+            rev_spent: receipt.rev_spent.to_string(),
+            rev_ceiling: receipt.rev_ceiling.to_string(),
+            purses: receipt
+                .purses
+                .into_iter()
+                .map(|purse| OfferedPurseSettlementResponse {
+                    address: hex::encode(purse.address),
+                    resource_rev: purse.resource_rev.to_string(),
+                    fee_rev: purse.fee_rev.to_string(),
+                    post_balance: purse.post_balance.to_string(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployResponse {
     // === Always present (summary + full) ===
     #[serde(rename = "deployId")]
@@ -1350,6 +1638,10 @@ pub struct DeployResponse {
     pub errored: bool,
     #[serde(rename = "isFinalized")]
     pub is_finalized: bool,
+    #[serde(rename = "finalizationState")]
+    pub finalization_state: String,
+    #[serde(rename = "rejectionCount")]
+    pub rejection_count: u32,
 
     // === Full view only (omitted in summary) ===
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1358,8 +1650,10 @@ pub struct DeployResponse {
     pub term: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
-    // D3 (DR-9): phloPrice / phloLimit removed from the deploy response — a
-    // deploy's cost is the per-COMM token count (in `cost`), no escrow.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
+    pub phlo_price: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
+    pub phlo_limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
     pub sig_algorithm: Option<String>,
     #[serde(
@@ -1439,6 +1733,18 @@ pub struct EpochResponse {
     pub block_hash: String,
 }
 
+/// Which identity produced a cost estimate.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeployerIdentity {
+    /// The estimate was produced under the caller-supplied deployer public key.
+    Provided,
+    /// The estimate was produced under an ephemeral, process-wide random key.
+    /// This may significantly underestimate the real deploy cost for
+    /// identity-dependent terms.
+    Ephemeral,
+}
+
 /// Cost estimation response
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EstimateCostResponse {
@@ -1447,6 +1753,8 @@ pub struct EstimateCostResponse {
     pub block_number: i64,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
+    #[serde(rename = "deployerIdentity")]
+    pub deployer_identity: DeployerIdentity,
 }
 
 /// Epoch rewards response
@@ -1503,117 +1811,66 @@ impl std::fmt::Display for WebApiError {
 
 impl std::error::Error for WebApiError {}
 
-// Conversion functions
-
-/// Look up a signature algorithm by name, supporting all wire-recognized
-/// algorithms. Shared between `to_signed_deploy` and `to_cosigned_deploy`.
-fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
-    match name {
-        "secp256k1" => Ok(Box::new(crypto::rust::signatures::secp256k1::Secp256k1)),
-        "secp256k1-eth" => Ok(Box::new(
-            crypto::rust::signatures::secp256k1_eth::Secp256k1Eth,
-        )),
-        "ed25519" => Ok(Box::new(crypto::rust::signatures::ed25519::Ed25519)),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
-        _ => Err(eyre!("Signature algorithm not supported: {}", name)),
-    }
+fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(pubkey_hex).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!(
+            "invalid public key hex: {}",
+            e
+        )))
+    })?;
+    PublicKey::validate_secp256k1_bytes(&bytes).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
+    })?;
+    Ok(bytes)
 }
 
-// ⚠ RETIRED, NOT DELETED — `to_signed_deploy`, below, is commented out rather
-// than removed because its disappearance is the evidence for a claim the file
-// still makes elsewhere: that the legacy single-signature path and the
-// multi-signature path are ONE path.
-//
-// Its doc comment said "Used only when `request.cosigners.is_empty()`". That
-// stopped being true when `deploy` was made multi-sig-aware: the handler now
-// calls `to_cosigned_deploy(&request)` UNCONDITIONALLY, and that function
-// folds the empty-cosigners case into a one-element `Cosigned` envelope which
-// `BlockAPI::deploy_cosigned` routes through the legacy single-sig path inside
-// the engine "for byte-identical observable behavior" (see `deploy`, and
-// `to_cosigned_deploy`'s own documentation).
-//
-// So this function had no caller anywhere in the workspace — not in `node`,
-// not in a test — and `cargo clippy --workspace` reported it as never used
-// under the CI gate's `-D warnings`. A second, independently-maintained
-// decode-and-verify path for deploys is exactly the kind of thing that drifts
-// from the one that ships and then gets resurrected by a well-meaning caller;
-// keeping it live would give the single-envelope claim a live counterexample.
-//
-// Nothing else referenced it: `lookup_sig_algorithm`, the one helper it shared
-// with `to_cosigned_deploy`, stays live because `to_cosigned_deploy` calls it.
-//
-// /// Convert DeployRequest to Signed DeployData (legacy single-sig path).
-// /// Used only when `request.cosigners.is_empty()` — the multi-sig path
-// /// uses [`to_cosigned_deploy`].
-// fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-//     // Decode hex strings
-//     let pk_bytes = hex::decode(&request.deployer)
-//         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-//
-//     let sig_bytes = hex::decode(&request.signature)
-//         .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-//
-//     let pk = PublicKey::from_bytes(&pk_bytes);
-//     let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
-//     let deploy_data = request.data.clone();
-//
-//     Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-//         .map_err(|e| eyre!("Invalid signature: {}", e))?
-//         .ok_or_else(|| eyre!("Failed to create signed deploy"))
-// }
+// Conversion functions
 
-/// Convert DeployRequest to a [`Cosigned<DeployData>`] envelope. Handles
-/// both legacy single-signature requests (cosigners empty → one-element
-/// envelope) and multi-signature requests (cosigners non-empty → N-element
-/// envelope). Invariants enforced by `Cosigned::from_signed_data`:
-///
-/// - Every signer's signature verifies against the canonical message hash.
-/// - Canonical pk-ascending sort; no duplicate cosigner public keys.
-///
-/// D3 (DR-9): no per-signer phlo_share and no share-sum invariant — funding is
-/// the per-signature supply pool Σ⟦s⟧.
-fn to_cosigned_deploy(
-    request: &DeployRequest,
-) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>> {
-    use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+/// Convert DeployRequest to Signed DeployData
+fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+    // Decode hex strings
+    let pk_bytes = hex::decode(&request.deployer)
+        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
 
-    let primary_pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Primary public key is not valid base16: {}", e))?;
-    let primary_sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Primary signature is not valid base16: {}", e))?;
+    let sig_bytes = hex::decode(&request.signature)
+        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
 
-    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
-    // pool Σ⟦s⟧, not an envelope escrow share.
-    let mut signers = Vec::with_capacity(1 + request.cosigners.len());
-    signers.push(Cosigner {
-        pk: PublicKey::from_bytes(&primary_pk_bytes),
-        sig: primary_sig_bytes.into(),
-        sig_algorithm: lookup_sig_algorithm(&request.sig_algorithm)?,
-    });
-    for (i, cs) in request.cosigners.iter().enumerate() {
-        let pk_bytes = hex::decode(&cs.pk)
-            .map_err(|e| eyre!("Cosigner {} public key is not valid base16: {}", i, e))?;
-        let sig_bytes = hex::decode(&cs.signature)
-            .map_err(|e| eyre!("Cosigner {} signature is not valid base16: {}", i, e))?;
-        signers.push(Cosigner {
-            pk: PublicKey::from_bytes(&pk_bytes),
-            sig: sig_bytes.into(),
-            sig_algorithm: lookup_sig_algorithm(&cs.sig_algorithm)?,
-        });
-    }
+    // Create public key
+    let pk = PublicKey::from_bytes(&pk_bytes);
 
-    Cosigned::from_signed_data(request.data.clone(), signers)
-        .map_err(|e| eyre!("Cosigned envelope validation failed: {}", e))
+    // Look up signature algorithm by name
+    let sig_alg: Box<dyn SignaturesAlg> = match request.sig_algorithm.as_str() {
+        "secp256k1" => Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+        "secp256k1-eth" => Box::new(crypto::rust::signatures::secp256k1_eth::Secp256k1Eth),
+        "ed25519" => Box::new(crypto::rust::signatures::ed25519::Ed25519),
+        #[cfg(feature = "schnorr_secp256k1_experimental")]
+        "schnorr-secp256k1" => Box::new(SchnorrSecp256k1),
+        #[cfg(feature = "schnorr_secp256k1_experimental")]
+        "frost-secp256k1" => Box::new(FrostSecp256k1),
+        _ => {
+            return Err(eyre!(
+                "Signature algorithm not supported: {}",
+                request.sig_algorithm
+            ))
+        }
+    };
+
+    // Create DeployData (use the data from request)
+    let deploy_data = request.data.clone();
+
+    // Create signed deploy
+    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
+        .map_err(|e| eyre!("Invalid signature: {}", e))?
+        .ok_or_else(|| eyre!("Failed to create signed deploy"))
 }
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
 #[cfg(test)]
 use models::rhoapi::{Bundle, Expr};
-use models::rhoapi::{GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{
+    GAuthorityId, GDeployId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable, Par,
+};
 
 #[path = "rho_expr_pda.rs"]
 mod rho_expr_pda;
@@ -1634,6 +1891,16 @@ fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
         }),
         RhoUnforg::UnforgDeployer { data } => UnfInstance::GDeployerIdBody(GDeployerId {
             public_key: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgAuthority { data } => UnfInstance::GAuthorityIdBody(GAuthorityId {
+            id: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgPrincipal {
+            key_family,
+            public_key,
+        } => UnfInstance::GPrincipalIdBody(GPrincipalId {
+            key_family,
+            public_key: decode_hex(&public_key)?.into(),
         }),
         RhoUnforg::UnforgSysAuthToken => {
             use models::rhoapi::GSysAuthToken;
@@ -1679,6 +1946,17 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
                 data: hex::encode(&deployer_id.public_key),
             },
         },
+        UnfInstance::GAuthorityIdBody(authority_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgAuthority {
+                data: hex::encode(&authority_id.id),
+            },
+        },
+        UnfInstance::GPrincipalIdBody(principal_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrincipal {
+                key_family: principal_id.key_family,
+                public_key: hex::encode(&principal_id.public_key),
+            },
+        },
         UnfInstance::GSysAuthTokenBody(_) => RhoExpr::ExprUnforg {
             data: RhoUnforg::UnforgSysAuthToken,
         },
@@ -1697,6 +1975,7 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
         RhoExpr::ExprInt { data } => data.to_string(),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
+        RhoExpr::ExprFloat32 { data } => data.to_string(),
         RhoExpr::ExprBigInt { data } => data.clone(),
         RhoExpr::ExprUri { data } => data.clone(),
         RhoExpr::ExprBytes { data } => data.clone(),
@@ -1704,6 +1983,13 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
             RhoUnforg::UnforgPrivate { data } => data.clone(),
             RhoUnforg::UnforgDeploy { data } => data.clone(),
             RhoUnforg::UnforgDeployer { data } => data.clone(),
+            RhoUnforg::UnforgAuthority { data } => data.clone(),
+            RhoUnforg::UnforgPrincipal {
+                key_family,
+                public_key,
+            } => {
+                format!("{key_family}:{public_key}")
+            }
             RhoUnforg::UnforgSysAuthToken => "SysAuthToken".to_string(),
         },
         // Complex types: serialize to JSON string
@@ -1743,3 +2029,1136 @@ mod rho_expr_conversion_oracle;
 #[cfg(test)]
 #[path = "../../../tests/support/rho_expr_pda_tests.rs"]
 mod rho_expr_pda_tests;
+
+#[cfg(test)]
+mod offered_tests {
+    use casper::rust::api::block_api::OfferedPurseSettlement;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{
+        Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
+    };
+
+    use super::*;
+    #[test]
+    fn offered_receipt_json_preserves_rev_amounts_and_post_balance() {
+        let response = OfferedReceiptResponse::from(OfferedSettlementReceipt {
+            deploy_id: vec![1; 32],
+            block_hash: vec![2; 32].into(),
+            phlo_used: 7,
+            fresh_phlo: 5,
+            retained_phlo: 2,
+            phlo_limit: 10,
+            phlo_price: 2,
+            fee_rev: 1,
+            rev_spent: 15,
+            rev_ceiling: 21,
+            purses: vec![OfferedPurseSettlement {
+                address: vec![3; 32],
+                resource_rev: 14,
+                fee_rev: 1,
+                post_balance: 100,
+            }],
+        });
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["phloUsed"], 7);
+        assert_eq!(json["freshPhlo"], 5);
+        assert_eq!(json["retainedPhlo"], 2);
+        assert_eq!(json["phloLimit"], 10);
+        assert_eq!(json["phloPrice"], 2);
+        assert_eq!(json["feeRev"], "1");
+        assert_eq!(json["revSpent"], "15");
+        assert_eq!(json["revCeiling"], "21");
+        assert_eq!(json["purses"][0]["resourceRev"], "14");
+        assert_eq!(json["purses"][0]["postBalance"], "100");
+    }
+
+    #[test]
+    fn test_deploy_response_full_view_includes_all_fields() {
+        let response = DeployResponse {
+            deploy_id: "abc123".to_string(),
+            block_hash: "hash1".to_string(),
+            block_number: 100,
+            timestamp: 1700000000000,
+            cost: 500,
+            errored: false,
+            is_finalized: true,
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
+            deployer: Some("deployer1".to_string()),
+            term: Some("new ret in { ret!(42) }".to_string()),
+            system_deploy_error: Some(String::new()),
+            phlo_price: Some(10),
+            phlo_limit: Some(100000),
+            sig_algorithm: Some("secp256k1".to_string()),
+            valid_after_block_number: Some(0),
+            transfers: Some(vec![]),
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+
+        assert_eq!(json["deployId"], "abc123");
+        assert_eq!(json["blockHash"], "hash1");
+        assert_eq!(json["blockNumber"], 100);
+        assert_eq!(json["cost"], 500);
+        assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["finalizationState"], "Finalized");
+        assert_eq!(json["rejectionCount"], 0);
+        assert!(json.get("deployer").is_some());
+        assert!(json.get("term").is_some());
+        assert!(json.get("phloPrice").is_some());
+        assert!(json.get("phloLimit").is_some());
+        assert!(json.get("transfers").is_some());
+    }
+
+    #[test]
+    fn test_deploy_response_summary_view_omits_optional_fields() {
+        let response = DeployResponse {
+            deploy_id: "abc123".to_string(),
+            block_hash: "hash1".to_string(),
+            block_number: 100,
+            timestamp: 1700000000000,
+            cost: 500,
+            errored: false,
+            is_finalized: true,
+            finalization_state: "Pending".to_string(),
+            rejection_count: 2,
+            deployer: None,
+            term: None,
+            system_deploy_error: None,
+            phlo_price: None,
+            phlo_limit: None,
+            sig_algorithm: None,
+            valid_after_block_number: None,
+            transfers: None,
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+
+        // Core fields present
+        assert_eq!(json["deployId"], "abc123");
+        assert_eq!(json["blockHash"], "hash1");
+        assert_eq!(json["cost"], 500);
+        assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["finalizationState"], "Pending");
+        assert_eq!(json["rejectionCount"], 2);
+
+        // Optional fields omitted
+        assert!(json.get("deployer").is_none());
+        assert!(json.get("term").is_none());
+        assert!(json.get("phloPrice").is_none());
+        assert!(json.get("phloLimit").is_none());
+        assert!(json.get("sigAlgorithm").is_none());
+        assert!(json.get("validAfterBlockNumber").is_none());
+        assert!(json.get("transfers").is_none());
+    }
+
+    #[test]
+    fn offered_http_wire_decoding_preserves_full_proto_and_rejects_noncanonical_data() {
+        let proto = DeployDataProto {
+            authorization_v61: Some(models::casper::DeployAuthorizationV61 {
+                format_version:
+                    models::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+                ..Default::default()
+            }),
+            funding_intent: Some(vec![1, 2, 3].into()),
+            phlo_limit: 7,
+            phlo_price: 11,
+            ..Default::default()
+        };
+        let wire = proto.encode_to_vec();
+        let request = OfferedDeployRequest {
+            deploy_data_proto_base64: STANDARD.encode(&wire),
+        };
+        assert_eq!(decode_offered_deploy_proto(&request).unwrap(), proto);
+
+        let padded_variant = OfferedDeployRequest {
+            deploy_data_proto_base64: format!("{}=", request.deploy_data_proto_base64),
+        };
+        assert!(decode_offered_deploy_proto(&padded_variant).is_err());
+
+        let mut noncanonical = wire;
+        noncanonical.extend_from_slice(&[0x38, 0x00]);
+        let noncanonical = OfferedDeployRequest {
+            deploy_data_proto_base64: STANDARD.encode(noncanonical),
+        };
+        assert!(decode_offered_deploy_proto(&noncanonical).is_err());
+    }
+
+    #[test]
+    fn test_deploy_request_serialization() {
+        let request = DeployRequest {
+            data: DeployData {
+                term: "contract".to_string(),
+                time_stamp: 1234567890,
+                phlo_price: 1,
+                phlo_limit: 1000000,
+                valid_after_block_number: 0,
+                shard_id: "".to_string(),
+                expiration_timestamp: None,
+            },
+            deployer: "0123456789abcdef".to_string(),
+            signature: "fedcba9876543210".to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: DeployRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(request.deployer, deserialized.deployer);
+        assert_eq!(request.signature, deserialized.signature);
+        assert_eq!(request.sig_algorithm, deserialized.sig_algorithm);
+    }
+
+    #[test]
+    fn test_rho_expr_serialization() {
+        let expr = RhoExpr::ExprBool { data: true };
+        let json = serde_json::to_string(&expr).unwrap();
+        let deserialized: RhoExpr = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            RhoExpr::ExprBool { data } => assert!(data),
+            _ => panic!("Expected ExprBool"),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_par_proto_empty() {
+        let par = Par::default();
+        let result = expr_from_par_proto(par);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_expr_from_par_proto_single_bool() {
+        let par = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            }],
+            ..Default::default()
+        };
+        let result = expr_from_par_proto(par);
+        assert!(matches!(result, Some(RhoExpr::ExprBool { data: true })));
+    }
+
+    #[test]
+    fn test_expr_from_par_proto_multiple_exprs() {
+        let par = Par {
+            exprs: vec![
+                Expr {
+                    expr_instance: Some(ExprInstance::GBool(true)),
+                },
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(42)),
+                },
+            ],
+            ..Default::default()
+        };
+        let result = expr_from_par_proto(par);
+        match result {
+            Some(RhoExpr::ExprPar { data }) => {
+                assert_eq!(data.len(), 2);
+                assert!(matches!(data[0], RhoExpr::ExprBool { data: true }));
+                assert!(matches!(data[1], RhoExpr::ExprInt { data: 42 }));
+            }
+            _ => panic!("Expected ExprPar with 2 elements"),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_primitive_types() {
+        // Test GBool
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GBool(true)),
+        };
+        let result = expr_from_expr_proto(expr);
+        assert!(matches!(result, Some(RhoExpr::ExprBool { data: true })));
+
+        // Test GInt
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GInt(42)),
+        };
+        let result = expr_from_expr_proto(expr);
+        assert!(matches!(result, Some(RhoExpr::ExprInt { data: 42 })));
+
+        // Test GString
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GString("hello".to_string())),
+        };
+        let result = expr_from_expr_proto(expr);
+        assert!(matches!(result, Some(RhoExpr::ExprString { data }) if data == "hello"));
+
+        // Test GUri
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GUri("rho:io:stdout".to_string())),
+        };
+        let result = expr_from_expr_proto(expr);
+        assert!(matches!(result, Some(RhoExpr::ExprUri { data }) if data == "rho:io:stdout"));
+
+        // Test GByteArray
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GByteArray(vec![0x01, 0x02, 0x03])),
+        };
+        let result = expr_from_expr_proto(expr);
+        assert!(matches!(result, Some(RhoExpr::ExprBytes { data }) if data == "010203"));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_tuple() {
+        let tuple = ETuple {
+            ps: vec![
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GInt(1)),
+                    }],
+                    ..Default::default()
+                },
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GString("hello".to_string())),
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(tuple)),
+        };
+        let result = expr_from_expr_proto(expr);
+        match result {
+            Some(RhoExpr::ExprTuple { data }) => {
+                assert_eq!(data.len(), 2);
+                assert!(matches!(data[0], RhoExpr::ExprInt { data: 1 }));
+                assert!(matches!(data[1], RhoExpr::ExprString { data: ref d } if d == "hello"));
+            }
+            _ => panic!("Expected ExprTuple"),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_list() {
+        let list = EList {
+            ps: vec![
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GInt(1)),
+                    }],
+                    ..Default::default()
+                },
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GInt(2)),
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        };
+        let result = expr_from_expr_proto(expr);
+        match result {
+            Some(RhoExpr::ExprList { data }) => {
+                assert_eq!(data.len(), 2);
+                assert!(matches!(data[0], RhoExpr::ExprInt { data: 1 }));
+                assert!(matches!(data[1], RhoExpr::ExprInt { data: 2 }));
+            }
+            _ => panic!("Expected ExprList"),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_set() {
+        let set = ESet {
+            ps: vec![
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GString("a".to_string())),
+                    }],
+                    ..Default::default()
+                },
+                Par {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GString("b".to_string())),
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::ESetBody(set)),
+        };
+        let result = expr_from_expr_proto(expr);
+        match result {
+            Some(RhoExpr::ExprSet { data }) => {
+                assert_eq!(data.len(), 2);
+                assert!(matches!(data[0], RhoExpr::ExprString { data: ref d } if d == "a"));
+                assert!(matches!(data[1], RhoExpr::ExprString { data: ref d } if d == "b"));
+            }
+            _ => panic!("Expected ExprSet"),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_map() {
+        let map = EMap {
+            kvs: vec![
+                KeyValuePair {
+                    key: Some(Par {
+                        exprs: vec![Expr {
+                            expr_instance: Some(ExprInstance::GString("key1".to_string())),
+                        }],
+                        ..Default::default()
+                    }),
+                    value: Some(Par {
+                        exprs: vec![Expr {
+                            expr_instance: Some(ExprInstance::GInt(42)),
+                        }],
+                        ..Default::default()
+                    }),
+                },
+                KeyValuePair {
+                    key: Some(Par {
+                        exprs: vec![Expr {
+                            expr_instance: Some(ExprInstance::GString("key2".to_string())),
+                        }],
+                        ..Default::default()
+                    }),
+                    value: Some(Par {
+                        exprs: vec![Expr {
+                            expr_instance: Some(ExprInstance::GString("value2".to_string())),
+                        }],
+                        ..Default::default()
+                    }),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::EMapBody(map)),
+        };
+        let result = expr_from_expr_proto(expr);
+        match result {
+            Some(RhoExpr::ExprMap { data }) => {
+                assert_eq!(data.len(), 2);
+                assert!(data.contains_key("key1"));
+                assert!(data.contains_key("key2"));
+                assert!(matches!(data["key1"], RhoExpr::ExprInt { data: 42 }));
+                assert!(
+                    matches!(data["key2"], RhoExpr::ExprString { data: ref d } if d == "value2")
+                );
+            }
+            _ => panic!("Expected ExprMap"),
+        }
+    }
+
+    #[test]
+    fn test_unforg_from_proto_private() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: vec![0x01, 0x02, 0x03],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        match result {
+            Some(RhoExpr::ExprUnforg { data }) => {
+                assert!(matches!(data, RhoUnforg::UnforgPrivate { data: ref d } if d == "010203"));
+            }
+            _ => panic!("Expected ExprUnforg with UnforgPrivate"),
+        }
+    }
+
+    #[test]
+    fn test_unforg_from_proto_deploy() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId {
+                sig: vec![0x04, 0x05, 0x06],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        match result {
+            Some(RhoExpr::ExprUnforg { data }) => {
+                assert!(matches!(data, RhoUnforg::UnforgDeploy { data: ref d } if d == "040506"));
+            }
+            _ => panic!("Expected ExprUnforg with UnforgDeploy"),
+        }
+    }
+
+    #[test]
+    fn test_unforg_from_proto_deployer() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                public_key: vec![0x07, 0x08, 0x09],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        match result {
+            Some(RhoExpr::ExprUnforg { data }) => {
+                assert!(matches!(data, RhoUnforg::UnforgDeployer { data: ref d } if d == "070809"));
+            }
+            _ => panic!("Expected ExprUnforg with UnforgDeployer"),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_bundle_proto() {
+        let bundle = Bundle {
+            body: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::GString("bundle_content".to_string())),
+                }],
+                ..Default::default()
+            }),
+            write_flag: true,
+            read_flag: false,
+        };
+        let result = expr_from_bundle_proto(bundle);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprBundle { ref data, write: true, read: false })
+            if matches!(data.as_ref(), RhoExpr::ExprString { data } if data == "bundle_content")
+        ));
+    }
+
+    #[test]
+    fn test_expr_from_bundle_proto_empty() {
+        let bundle = Bundle {
+            body: None,
+            write_flag: false,
+            read_flag: true,
+        };
+        let result = expr_from_bundle_proto(bundle);
+        // Empty body bundle returns ExprBundle with ExprUnknown body
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprBundle {
+                read: true,
+                write: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_extract_key_from_expr() {
+        // Test string key
+        let expr = RhoExpr::ExprString {
+            data: "hello".to_string(),
+        };
+        assert_eq!(extract_key_from_expr(&expr), "hello");
+
+        // Test int key
+        let expr = RhoExpr::ExprInt { data: 42 };
+        assert_eq!(extract_key_from_expr(&expr), "42");
+
+        // Test bool key
+        let expr = RhoExpr::ExprBool { data: true };
+        assert_eq!(extract_key_from_expr(&expr), "true");
+
+        // Test URI key
+        let expr = RhoExpr::ExprUri {
+            data: "rho:io:stdout".to_string(),
+        };
+        assert_eq!(extract_key_from_expr(&expr), "rho:io:stdout");
+
+        // Test bytes key
+        let expr = RhoExpr::ExprBytes {
+            data: "010203".to_string(),
+        };
+        assert_eq!(extract_key_from_expr(&expr), "010203");
+
+        // Test unforgeable keys
+        let expr = RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrivate {
+                data: "private".to_string(),
+            },
+        };
+        assert_eq!(extract_key_from_expr(&expr), "private");
+
+        // Test complex key type — serialized to JSON
+        let expr = RhoExpr::ExprPar { data: vec![] };
+        let key = extract_key_from_expr(&expr);
+        assert!(
+            !key.is_empty(),
+            "complex keys should serialize to non-empty string"
+        );
+    }
+
+    fn int_par(value: i64) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(value)),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn as_json(expr: &RhoExpr) -> serde_json::Value { serde_json::to_value(expr).unwrap() }
+
+    #[test]
+    fn test_expr_from_expr_proto_extended_numerics() {
+        let double = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GDouble(2.5f64.to_bits())),
+        });
+        assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
+
+        let float32 = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GFloat32(2.5f32.to_bits())),
+        });
+        assert!(matches!(float32, Some(RhoExpr::ExprFloat32 { data }) if data == 2.5));
+
+        let big_int = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GBigInt(vec![0x01, 0x00])),
+        });
+        assert!(matches!(big_int, Some(RhoExpr::ExprBigInt { data }) if data == "256"));
+
+        let big_rat = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GBigRat(models::rhoapi::GBigRational {
+                numerator: vec![0x03],
+                denominator: vec![0x07],
+            })),
+        });
+        assert!(matches!(
+            big_rat,
+            Some(RhoExpr::ExprBigRat { numerator, denominator })
+            if numerator == "3" && denominator == "7"
+        ));
+
+        let fixed_point = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GFixedPoint(models::rhoapi::GFixedPoint {
+                unscaled: vec![0x7b],
+                scale: 2,
+            })),
+        });
+        assert!(matches!(
+            fixed_point,
+            Some(RhoExpr::ExprFixedPoint { value, scale: 2 }) if value == "123"
+        ));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_unary_operators() {
+        use models::rhoapi::{ENeg, ENot};
+
+        let not = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(int_par(1)),
+            })),
+        })
+        .unwrap();
+        assert_eq!(
+            as_json(&not),
+            serde_json::json!({"ExprNot": {"data": {"ExprInt": {"data": 1}}}})
+        );
+
+        let neg = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::ENegBody(ENeg {
+                p: Some(int_par(2)),
+            })),
+        })
+        .unwrap();
+        assert!(matches!(neg, RhoExpr::ExprNeg { .. }));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_binary_operators() {
+        use models::rhoapi::{
+            EAnd, EDiv, EEq, EGt, EGte, ELt, ELte, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
+            EPercentPercent, EPlus, EPlusPlus,
+        };
+
+        let plus = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(int_par(1)),
+                p2: Some(int_par(2)),
+            })),
+        })
+        .unwrap();
+        assert_eq!(
+            as_json(&plus),
+            serde_json::json!({"ExprPlus": {
+                "left": {"ExprInt": {"data": 1}},
+                "right": {"ExprInt": {"data": 2}},
+            }})
+        );
+
+        let cases = vec![
+            (
+                ExprInstance::EMinusBody(EMinus {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprMinus",
+            ),
+            (
+                ExprInstance::EMultBody(EMult {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprMult",
+            ),
+            (
+                ExprInstance::EDivBody(EDiv {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprDiv",
+            ),
+            (
+                ExprInstance::EModBody(EMod {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprMod",
+            ),
+            (
+                ExprInstance::ELtBody(ELt {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprLt",
+            ),
+            (
+                ExprInstance::ELteBody(ELte {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprLte",
+            ),
+            (
+                ExprInstance::EGtBody(EGt {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprGt",
+            ),
+            (
+                ExprInstance::EGteBody(EGte {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprGte",
+            ),
+            (
+                ExprInstance::EEqBody(EEq {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprEq",
+            ),
+            (
+                ExprInstance::ENeqBody(ENeq {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprNeq",
+            ),
+            (
+                ExprInstance::EAndBody(EAnd {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprAnd",
+            ),
+            (
+                ExprInstance::EOrBody(EOr {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprOr",
+            ),
+            (
+                ExprInstance::EPlusPlusBody(EPlusPlus {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprConcat",
+            ),
+            (
+                ExprInstance::EPercentPercentBody(EPercentPercent {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprInterpolate",
+            ),
+            (
+                ExprInstance::EMinusMinusBody(EMinusMinus {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprDiff",
+            ),
+        ];
+
+        for (instance, expected_variant) in cases {
+            let result = expr_from_expr_proto(Expr {
+                expr_instance: Some(instance),
+            })
+            .unwrap();
+            let json = as_json(&result);
+            assert!(
+                json.get(expected_variant).is_some(),
+                "expected {expected_variant}, got {json}"
+            );
+            assert_eq!(json[expected_variant]["left"]["ExprInt"]["data"], 1);
+            assert_eq!(json[expected_variant]["right"]["ExprInt"]["data"], 2);
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_matches_and_method() {
+        use models::rhoapi::{EMatches, EMethod};
+
+        let matches_expr = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMatchesBody(EMatches {
+                target: Some(int_par(1)),
+                pattern: Some(int_par(2)),
+            })),
+        })
+        .unwrap();
+        let json = as_json(&matches_expr);
+        assert_eq!(json["ExprMatches"]["target"]["ExprInt"]["data"], 1);
+        assert_eq!(json["ExprMatches"]["pattern"]["ExprInt"]["data"], 2);
+
+        let method_expr = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "nth".to_string(),
+                target: Some(int_par(1)),
+                arguments: vec![int_par(2), int_par(3)],
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+        match method_expr {
+            RhoExpr::ExprMethod { name, args, target } => {
+                assert_eq!(name, "nth");
+                assert_eq!(args.len(), 2);
+                assert!(matches!(*target, RhoExpr::ExprInt { data: 1 }));
+            }
+            other => panic!("expected ExprMethod, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_var_instances() {
+        use models::rhoapi::var::VarInstance;
+        use models::rhoapi::{EVar, Var};
+
+        let var_of = |instance: Option<VarInstance>| {
+            expr_from_expr_proto(Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: instance.map(|var_instance| Var {
+                        var_instance: Some(var_instance),
+                    }),
+                })),
+            })
+            .unwrap()
+        };
+
+        assert!(matches!(
+            var_of(Some(VarInstance::BoundVar(3))),
+            RhoExpr::ExprVar { index: 3 }
+        ));
+        assert!(matches!(
+            var_of(Some(VarInstance::FreeVar(2))),
+            RhoExpr::ExprVar { index: 2 }
+        ));
+        assert!(matches!(
+            var_of(Some(VarInstance::Wildcard(
+                models::rhoapi::var::WildcardMsg {}
+            ))),
+            RhoExpr::ExprVar { index: -1 }
+        ));
+        assert!(matches!(var_of(None), RhoExpr::ExprVar { index: -1 }));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_pathmap_and_zipper() {
+        use models::rhoapi::{EPathMap, EZipper};
+
+        let pathmap = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap {
+                ps: vec![int_par(1), int_par(2)],
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+        assert!(matches!(&pathmap, RhoExpr::ExprList { data } if data.len() == 2));
+
+        let zipper = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap {
+                    ps: vec![int_par(1)],
+                    ..Default::default()
+                }),
+                current_path: vec![vec![0xaa]],
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+        match zipper {
+            RhoExpr::ExprTuple { data } => {
+                assert_eq!(data.len(), 2);
+                assert!(matches!(&data[0], RhoExpr::ExprList { data } if data.len() == 1));
+                assert!(matches!(&data[1], RhoExpr::ExprList { data }
+                        if matches!(&data[0], RhoExpr::ExprBytes { data } if data == "aa")));
+            }
+            other => panic!("expected ExprTuple, got {:?}", other),
+        }
+
+        let empty_zipper = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper::default())),
+        })
+        .unwrap();
+        assert!(matches!(
+            &empty_zipper,
+            RhoExpr::ExprTuple { data }
+            if matches!(&data[0], RhoExpr::ExprList { data } if data.is_empty())
+        ));
+    }
+
+    #[test]
+    fn test_expr_from_par_proto_process_par_is_unknown_process() {
+        let par = Par {
+            sends: vec![models::rhoapi::Send::default()],
+            ..Default::default()
+        };
+        let result = expr_from_par_proto(par);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnknown { type_name }) if type_name == "Process"
+        ));
+    }
+
+    #[test]
+    fn test_par_to_expr_none_falls_back_to_nil_unknown() {
+        let result = par_to_expr(None);
+        assert!(matches!(result, RhoExpr::ExprUnknown { type_name } if type_name == "Nil"));
+    }
+
+    #[test]
+    fn test_unforg_from_proto_sys_auth_token() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GSysAuthTokenBody(
+                models::rhoapi::GSysAuthToken {},
+            )),
+        };
+        let result = unforg_from_proto(unforg);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgSysAuthToken
+            })
+        ));
+    }
+
+    #[test]
+    fn test_to_par_builds_unforgeable_for_each_variant() {
+        let private = to_par(RhoUnforg::UnforgPrivate {
+            data: "0102".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(
+            private.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GPrivateBody(body) if body.id == vec![1u8, 2]
+        ));
+
+        let deploy = to_par(RhoUnforg::UnforgDeploy {
+            data: "0304".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(
+            deploy.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GDeployIdBody(body) if body.sig == vec![3u8, 4]
+        ));
+
+        let deployer = to_par(RhoUnforg::UnforgDeployer {
+            data: "0506".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(
+            deployer.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GDeployerIdBody(body) if body.public_key == vec![5u8, 6]
+        ));
+
+        let token = to_par(RhoUnforg::UnforgSysAuthToken).unwrap();
+        assert!(matches!(
+            token.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GSysAuthTokenBody(_)
+        ));
+    }
+
+    #[test]
+    fn test_to_par_rejects_invalid_hex() {
+        let result = to_par(RhoUnforg::UnforgPrivate {
+            data: "not-hex".to_string(),
+        });
+        assert!(result.unwrap_err().to_string().contains("Invalid hex"));
+    }
+
+    #[test]
+    fn test_validate_and_decode_pubkey() {
+        let bad_hex = validate_and_decode_pubkey("zz");
+        assert!(bad_hex
+            .unwrap_err()
+            .to_string()
+            .contains("invalid public key hex"));
+
+        let bad_key = validate_and_decode_pubkey("0102");
+        assert!(bad_key.is_err());
+
+        let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+        let valid = validate_and_decode_pubkey(&hex::encode(&pk.bytes)).unwrap();
+        assert_eq!(valid, pk.bytes.to_vec());
+    }
+
+    fn sample_deploy_data() -> DeployData {
+        DeployData {
+            term: "new x in { x!(1) }".to_string(),
+            time_stamp: 1,
+            phlo_price: 1,
+            phlo_limit: 1000,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        }
+    }
+
+    #[test]
+    fn test_to_signed_deploy_accepts_a_correctly_signed_request() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let signed = Signed::create(sample_deploy_data(), Box::new(Secp256k1), sk).unwrap();
+
+        let request = DeployRequest {
+            data: signed.data.clone(),
+            deployer: hex::encode(&signed.pk.bytes),
+            signature: hex::encode(&signed.sig),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+
+        let result = to_signed_deploy(&request).unwrap();
+        assert_eq!(result.sig, signed.sig);
+        assert_eq!(result.pk.bytes, signed.pk.bytes);
+    }
+
+    #[test]
+    fn test_to_signed_deploy_error_paths() {
+        let base = DeployRequest {
+            data: sample_deploy_data(),
+            deployer: "zz".to_string(),
+            signature: "00".to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        assert!(to_signed_deploy(&base)
+            .unwrap_err()
+            .to_string()
+            .contains("Public key is not valid base16"));
+
+        let bad_sig_hex = DeployRequest {
+            deployer: "00".to_string(),
+            signature: "zz".to_string(),
+            ..base.clone()
+        };
+        assert!(to_signed_deploy(&bad_sig_hex)
+            .unwrap_err()
+            .to_string()
+            .contains("Signature is not valid base16"));
+
+        let unsupported_alg = DeployRequest {
+            deployer: "00".to_string(),
+            signature: "00".to_string(),
+            sig_algorithm: "rot13".to_string(),
+            ..base.clone()
+        };
+        assert!(to_signed_deploy(&unsupported_alg)
+            .unwrap_err()
+            .to_string()
+            .contains("Signature algorithm not supported"));
+
+        let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+        let wrong_sig = DeployRequest {
+            deployer: hex::encode(&pk.bytes),
+            signature: "0011".to_string(),
+            ..base
+        };
+        assert!(to_signed_deploy(&wrong_sig).is_err());
+    }
+
+    #[test]
+    fn test_web_api_error_display() {
+        assert_eq!(
+            WebApiError::BlockApiError("a".to_string()).to_string(),
+            "Block API error: a"
+        );
+        assert_eq!(
+            WebApiError::SignatureError("b".to_string()).to_string(),
+            "Signature error: b"
+        );
+        assert_eq!(
+            WebApiError::InvalidFormat("c".to_string()).to_string(),
+            "Invalid format: c"
+        );
+    }
+
+    #[test]
+    fn test_deploy_state_json_labels() {
+        use casper::rust::api::deploy_finalization_status::DeployFinalizationState as S;
+        assert_eq!(deploy_state_json_label(S::Finalized), "Finalized");
+        assert_eq!(deploy_state_json_label(S::Failed), "Failed");
+        assert_eq!(deploy_state_json_label(S::Pending), "Pending");
+        assert_eq!(deploy_state_json_label(S::Expired), "Expired");
+    }
+
+    #[test]
+    fn test_to_rho_data_response_converts_pars_and_keeps_cost() {
+        let response = to_rho_data_response(vec![int_par(9)], LightBlockInfo::default(), 42);
+        assert_eq!(response.cost, 42);
+        assert_eq!(response.expr.len(), 1);
+        assert!(matches!(response.expr[0], RhoExpr::ExprInt { data: 9 }));
+    }
+
+    #[test]
+    fn test_extract_key_from_expr_remaining_variants() {
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprFloat { data: 1.5 }),
+            "1.5"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprBigInt {
+                data: "12345".to_string()
+            }),
+            "12345"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgDeploy {
+                    data: "dd".to_string()
+                }
+            }),
+            "dd"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgDeployer {
+                    data: "ee".to_string()
+                }
+            }),
+            "ee"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgSysAuthToken
+            }),
+            "SysAuthToken"
+        );
+    }
+}

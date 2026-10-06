@@ -1,6 +1,6 @@
 // UC-46 — Network partition then merge with both-side equivocations.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-46.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-46.
 // Theorems: T-1 (soundness), T-9.2 (atomic record insert under
 // concurrent dispatch), T-15 (bisimilarity).
 // Reference: design/12-failure-modes.md §12.3.3.

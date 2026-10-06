@@ -91,3 +91,62 @@ impl<T: Eq + Hash> FromIterator<T> for HashableSet<T> {
         HashableSet(HashSet::from_iter(iter))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::DefaultHasher;
+
+    use super::*;
+
+    fn hash_of(set: &HashableSet<i32>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        set.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn equality_ignores_insertion_order() {
+        let a: HashableSet<i32> = [1, 2, 3].into_iter().collect();
+        let b: HashableSet<i32> = [3, 1, 2].into_iter().collect();
+        let c: HashableSet<i32> = [1, 2, 4].into_iter().collect();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(HashableSet::<i32>::new().0.is_empty());
+    }
+
+    #[test]
+    fn hash_is_order_independent_and_discriminates() {
+        let a: HashableSet<i32> = [10, 20, 30].into_iter().collect();
+        let b: HashableSet<i32> = [30, 20, 10].into_iter().collect();
+        let c: HashableSet<i32> = [10, 20, 31].into_iter().collect();
+        assert_eq!(hash_of(&a), hash_of(&b));
+        assert_ne!(hash_of(&a), hash_of(&c));
+    }
+
+    #[test]
+    fn ordering_compares_length_first_then_lexicographically() {
+        let small: HashableSet<i32> = [9, 9, 100].into_iter().collect();
+        let large: HashableSet<i32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(small.cmp(&large), Ordering::Less);
+        assert_eq!(large.cmp(&small), Ordering::Greater);
+
+        let a: HashableSet<i32> = [1, 2, 3].into_iter().collect();
+        let b: HashableSet<i32> = [1, 2, 4].into_iter().collect();
+        assert_eq!(a.cmp(&b), Ordering::Less);
+        assert_eq!(a.cmp(&a.clone()), Ordering::Equal);
+        assert_eq!(a.partial_cmp(&b), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn iteration_yields_all_elements() {
+        let set: HashableSet<i32> = [5, 6, 7].into_iter().collect();
+
+        let mut borrowed: Vec<i32> = (&set).into_iter().copied().collect();
+        borrowed.sort_unstable();
+        assert_eq!(borrowed, vec![5, 6, 7]);
+
+        let mut owned: Vec<i32> = set.into_iter().collect();
+        owned.sort_unstable();
+        assert_eq!(owned, vec![5, 6, 7]);
+    }
+}

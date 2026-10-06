@@ -7,7 +7,7 @@
 //! `substitute.rs`, the `sorter/` family, `pretty_printer.rs`, and the ad-hoc
 //! `collect_nodes` in `rholang/tests/by_reference_readers_equivalence.rs` — and
 //! a fifth was about to be added for each explicit-worklist driver. Independent
-//! enumerations of a 36-variant schema drift; this module makes drift a
+//! enumerations of a 37-variant schema drift; this module makes drift a
 //! **compile error**.
 //!
 //! Full analysis and proof standard:
@@ -51,8 +51,9 @@
 use std::collections::BTreeMap;
 
 use crate::rhoapi::connective::ConnectiveInstance;
+use crate::rhoapi::cost_signature::Value as CostValue;
 use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{Connective, Expr, Par};
+use crate::rhoapi::{Connective, CostSignature, CostSignatureCompound, CostStack, Expr, Par};
 /// The number of variants `connective.ConnectiveInstance` has.
 /// ★ GENERATED, never a literal. See [`EXPR_INSTANCE_VARIANT_COUNT`].
 pub use crate::rust::rholang::bincode_schema_tables::CONNECTIVE_INSTANCE_VARIANT_COUNT;
@@ -92,6 +93,7 @@ fn expr_instance_child_pars_with<'a>(
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_) => {}
+        ExprInstance::GFloat32(_) => {}
 
         // ---- a variable is a `Var`, not a `Par` ----
         ExprInstance::EVarBody(_) => {}
@@ -221,11 +223,22 @@ pub fn connective_instance_child_pars<'a>(c: &'a ConnectiveInstance, out: &mut V
     }
 }
 
+fn cost_signature_child_pars<'a>(signature: &'a CostSignature, out: &mut Vec<&'a Par>) {
+    let mut work = vec![signature];
+    while let Some(signature) = work.pop() {
+        match &signature.value {
+            Some(CostValue::Quote(par) | CostValue::Name(par)) => out.push(par),
+            Some(CostValue::Compound(compound)) => work.extend(compound.elements.iter().rev()),
+            Some(CostValue::Ground(_) | CostValue::BoundLevel(_) | CostValue::Unit(_)) | None => {}
+        }
+    }
+}
+
 /// Append every child `Par` of `p`, in traversal order.
 ///
 /// Field order matches `SubstituteTrait<Par>::substitute_no_sort`: exprs,
 /// connectives, sends, bundles, receives, news, matches, conditionals.
-/// `unforgeables` carries no `Par` (`GUnforgeable`'s four variants are all
+/// `unforgeables` carries no `Par` (`GUnforgeable`'s six variants are all
 /// byte arrays), which is why it is absent rather than forgotten.
 fn par_child_pars_with<'a>(
     p: &'a Par,
@@ -253,6 +266,9 @@ fn par_child_pars_with<'a>(
         for bind in &r.binds {
             out.extend(bind.source.iter());
             out.extend(bind.patterns.iter());
+            if let Some(signature) = &bind.cost_signature {
+                cost_signature_child_pars(signature, out);
+            }
         }
         out.extend(r.body.iter());
         out.extend(r.condition.iter());
@@ -273,6 +289,17 @@ fn par_child_pars_with<'a>(
         out.extend(i.condition.iter());
         out.extend(i.if_true.iter());
         out.extend(i.if_false.iter());
+    }
+    for signed in &p.cost_signed_terms {
+        out.extend(signed.body.iter());
+        if let Some(signature) = &signed.signature {
+            cost_signature_child_pars(signature, out);
+        }
+    }
+    for stack in &p.cost_stacks {
+        for signature in &stack.cells {
+            cost_signature_child_pars(signature, out);
+        }
     }
 }
 
@@ -333,6 +360,7 @@ fn take_expr_instance_child_pars_with(
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_) => {}
+        ExprInstance::GFloat32(_) => {}
 
         ExprInstance::EVarBody(_) => {}
 
@@ -450,6 +478,17 @@ fn take_connective_instance_child_pars(c: ConnectiveInstance, out: &mut Vec<Par>
     }
 }
 
+fn take_cost_signature_child_pars(signature: CostSignature, out: &mut Vec<Par>) {
+    let mut work = vec![signature];
+    while let Some(mut signature) = work.pop() {
+        match signature.value.take() {
+            Some(CostValue::Quote(par) | CostValue::Name(par)) => out.push(par),
+            Some(CostValue::Compound(compound)) => work.extend(compound.elements.into_iter().rev()),
+            Some(CostValue::Ground(_) | CostValue::BoundLevel(_) | CostValue::Unit(_)) | None => {}
+        }
+    }
+}
+
 /// By-move twin of [`par_child_pars`]: strips `p` of every child `Par`.
 fn take_par_child_pars_with(
     p: &mut Par,
@@ -477,6 +516,9 @@ fn take_par_child_pars_with(
         for mut bind in std::mem::take(&mut r.binds) {
             out.extend(bind.source.take());
             out.append(&mut bind.patterns);
+            if let Some(signature) = bind.cost_signature.take() {
+                take_cost_signature_child_pars(signature, out);
+            }
         }
         out.extend(r.body.take());
         out.extend(r.condition.take());
@@ -497,6 +539,17 @@ fn take_par_child_pars_with(
         out.extend(i.condition.take());
         out.extend(i.if_true.take());
         out.extend(i.if_false.take());
+    }
+    for mut signed in std::mem::take(&mut p.cost_signed_terms) {
+        out.extend(signed.body.take());
+        if let Some(signature) = signed.signature.take() {
+            take_cost_signature_child_pars(signature, out);
+        }
+    }
+    for stack in std::mem::take(&mut p.cost_stacks) {
+        for signature in stack.cells {
+            take_cost_signature_child_pars(signature, out);
+        }
     }
 }
 
@@ -765,6 +818,26 @@ pub fn dismantle_all<I: IntoIterator<Item = Par>>(pars: I) {
     }
 }
 
+pub fn dismantle_cost_signature(signature: CostSignature) {
+    dismantle(par_from_default! {
+        cost_stacks: vec![CostStack { cells: vec![signature] }],
+        ..Default::default()
+    });
+}
+
+pub(crate) fn dismantle_cost_signature_in_place(signature: &mut CostSignature) {
+    if let Some(value) = signature.value.take() {
+        dismantle_cost_signature(CostSignature { value: Some(value) });
+    }
+}
+
+pub fn dismantle_cost_signature_compound(compound: CostSignatureCompound) {
+    dismantle(par_from_default! {
+        cost_stacks: vec![CostStack { cells: compound.elements }],
+        ..Default::default()
+    });
+}
+
 /// [`dismantle_all`] over an injection map.
 pub fn dismantle_injections(injections: BTreeMap<String, Par>) {
     dismantle_all(injections.into_values());
@@ -807,6 +880,7 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::EVarBody(_) => false,
 
         // Runtime cursor state is compared as one value; it is not surface
@@ -908,6 +982,7 @@ pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::EVarBody(_) => false,
 
         // Runtime cursor state, not surface pattern syntax.
@@ -965,7 +1040,7 @@ pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
 /// `EPathmapBody = 32` and `EMatchesBody = 27`, but serde numbers them 25 and
 /// 27 respectively, because prost emits the oneof arms in `.proto` declaration
 /// order and serde counts from zero. Reading the proto tags as serde indices
-/// would silently mis-decode 12 of the 36 arms.
+/// would silently mis-decode 12 of the 37 arms.
 ///
 /// The match is exhaustive with no `_` arm — guard 1 of this module — so a
 /// variant added to `RhoTypes.proto` fails to compile here rather than being
@@ -1011,6 +1086,7 @@ pub fn expr_instance_variant_index(e: &ExprInstance) -> u32 {
         ExprInstance::GBigInt(_) => 33,
         ExprInstance::GBigRat(_) => 34,
         ExprInstance::GFixedPoint(_) => 35,
+        ExprInstance::GFloat32(_) => 36,
     }
 }
 
@@ -1103,6 +1179,7 @@ mod tests {
                 }),
                 vec![],
             ),
+            (ExprInstance::GFloat32(1.0f32.to_bits()), vec![]),
             (
                 ExprInstance::EVarBody(EVar {
                     v: Some(Var::default()),
@@ -1521,6 +1598,7 @@ mod tests {
                     source: Some(tagged(6)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(tagged(8)),
                 condition: Some(tagged(9)),
@@ -1578,6 +1656,72 @@ mod tests {
             };
         }
         dismantle(p);
+    }
+
+    #[test]
+    fn cost_signatures_have_matching_borrow_and_move_par_children() {
+        use crate::rhoapi::cost_signature::Value;
+        use crate::rhoapi::{CostSignature, CostSignatureCompound, CostSignedTerm, CostStack};
+
+        let signature = CostSignature {
+            value: Some(Value::Compound(CostSignatureCompound {
+                elements: vec![
+                    CostSignature {
+                        value: Some(Value::Quote(tagged(2))),
+                    },
+                    CostSignature {
+                        value: Some(Value::Name(tagged(3))),
+                    },
+                ],
+            })),
+        };
+        let mut p = par_from_default! {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: Some(tagged(1)),
+                signature: Some(signature),
+            }],
+            cost_stacks: vec![CostStack { cells: vec![CostSignature {
+                value: Some(Value::Quote(tagged(4))),
+            }] }],
+            ..Default::default()
+        };
+        let mut borrowed = Vec::new();
+        par_child_pars(&p, &mut borrowed);
+        assert_eq!(tags(&borrowed), vec![1, 2, 3, 4]);
+
+        let mut moved = Vec::new();
+        take_par_child_pars(&mut p, &mut moved);
+        assert_eq!(
+            moved.iter().map(|p| p.locally_free[0]).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        dismantle_all(moved);
+    }
+
+    #[test]
+    fn deep_cost_signature_clone_and_teardown_are_stack_safe() {
+        use crate::rhoapi::cost_signature::Value;
+
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut signature = CostSignature {
+                    value: Some(Value::Unit(true)),
+                };
+                for _ in 0..4096 {
+                    signature = CostSignature {
+                        value: Some(Value::Compound(CostSignatureCompound {
+                            elements: vec![signature],
+                        })),
+                    };
+                }
+                let cloned = signature.clone();
+                dismantle_cost_signature(signature);
+                dismantle_cost_signature(cloned);
+            })
+            .expect("spawn")
+            .join()
+            .expect("small-stack cost signature thread");
     }
 
     /// The variant-index tables must be BIJECTIONS onto `0..COUNT`. Without

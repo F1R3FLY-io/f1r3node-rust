@@ -528,4 +528,117 @@ mod tests {
         let interceptor = SslSessionServerInterceptor::new(network_id.to_string());
         assert_eq!(interceptor.network_id(), network_id);
     }
+
+    fn generated_cert_and_address() -> (Vec<u8>, Vec<u8>) {
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+        let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
+            .expect("certificate generation");
+        let address = CertificateHelper::public_address(&public_key).expect("public address");
+        (cert_der, address)
+    }
+
+    #[test]
+    fn test_validate_certificate_chain_rejects_empty_chain() {
+        let header = create_test_header("test_network", b"sender".to_vec());
+        let result = SslSessionServerInterceptor::validate_certificate_chain(&header, &[]);
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().contains("No TLS Session"));
+    }
+
+    #[test]
+    fn test_validate_certificate_chain_requires_sender() {
+        let header = Header {
+            sender: None,
+            network_id: "test_network".to_string(),
+        };
+        let (cert_der, _) = generated_cert_and_address();
+        let result = SslSessionServerInterceptor::validate_certificate_chain(&header, &[cert_der]);
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("missing sender"));
+    }
+
+    #[test]
+    fn test_validate_certificate_chain_accepts_matching_sender() {
+        let (cert_der, address) = generated_cert_and_address();
+        let header = create_test_header("test_network", address);
+        let result = SslSessionServerInterceptor::validate_certificate_chain(&header, &[cert_der]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_certificate_chain_rejects_wrong_sender() {
+        let (cert_der, _) = generated_cert_and_address();
+        let header = create_test_header("test_network", b"impostor".to_vec());
+        let result = SslSessionServerInterceptor::validate_certificate_chain(&header, &[cert_der]);
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().contains("Certificate verification failed"));
+    }
+
+    #[test]
+    fn test_validate_protocol_with_matching_certificate() {
+        let (cert_der, address) = generated_cert_and_address();
+        let header = create_test_header("test_network", address);
+        let protocol = create_test_protocol(header);
+        let result = SslSessionServerInterceptor::validate_protocol_with_certificates(
+            &protocol,
+            "test_network",
+            &Some(vec![cert_der]),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_public_key_from_der_rejects_garbage() {
+        let result = SslSessionServerInterceptor::extract_public_key_from_der(b"garbage");
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().contains("Invalid certificate format"));
+    }
+
+    #[test]
+    fn test_extract_public_key_from_der_accepts_valid_certificate() {
+        let (cert_der, _) = generated_cert_and_address();
+        let result = SslSessionServerInterceptor::extract_public_key_from_der(&cert_der);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_stream_request_requires_context() {
+        let request = Request::new(());
+        let result = SslSessionServerInterceptor::validate_stream_request(&request);
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), Code::Internal);
+    }
+
+    #[test]
+    fn test_validate_stream_request_requires_passed_tls() {
+        let mut request = Request::new(());
+        request
+            .extensions_mut()
+            .insert(CertificateValidationContext {
+                peer_certificates: None,
+                tls_validation_passed: false,
+                network_id: "test_network".to_string(),
+            });
+        let result = SslSessionServerInterceptor::validate_stream_request(&request);
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_validate_stream_request_accepts_valid_tls_session() {
+        let mut request = Request::new(());
+        request
+            .extensions_mut()
+            .insert(CertificateValidationContext {
+                peer_certificates: Some(vec![vec![1, 2, 3]]),
+                tls_validation_passed: true,
+                network_id: "test_network".to_string(),
+            });
+        let result = SslSessionServerInterceptor::validate_stream_request(&request);
+        assert!(result.is_ok());
+    }
 }

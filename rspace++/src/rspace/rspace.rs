@@ -3,51 +3,49 @@
 // NOTE: Manual marks are used instead of trace_i()/with_marks() because
 // the functions are not async-compatible with Span trait's closure pattern.
 // This matches Scala's Span[F].traceI() and withMarks() semantics.
+//
+// Module layout (child modules of this file):
+//   locks.rs       — two-phase striped lock acquisition + LOCK_SEQUENCE
+//   setup.rs       — construction/wiring (apply, create, create_with_replay,
+//                    create_history_repo, spawn, hot-store rebuild)
+//   ispace_impl.rs — the ISpace trait impl (operation entry points,
+//                    checkpointing, state accessors)
+//   trace_log.rs   — event-log + produce-counter bookkeeping
+//   ops_consume.rs — locked consume path and its store helpers
+//   ops_produce.rs — locked produce path, matcher driver, candidate
+//                    retirement
+//   ops_install.rs — install registry and restore
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::Instant;
 
-pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-use async_trait::async_trait;
-use dashmap::DashMap;
 use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
-use tracing::{Level, event};
 
-use super::candidate_order::order_candidates_with_index;
-use super::checkpoint::SoftCheckpoint;
-use super::errors::{HistoryRepositoryError, RSpaceError};
-use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::stable_hash_provider::StableHashSerialize;
-use super::history::history_reader::HistoryReader;
-use super::history::instances::radix_history::RadixHistory;
-use super::logging::{BasicLogger, StepCommObserver};
-use super::r#match::Match;
-use super::metrics_constants::{
-    CHANGES_SPAN, CONSUME_COMM_LABEL, HISTORY_CHECKPOINT_SPAN, LOCKED_CONSUME_SPAN,
-    LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RESET_SPAN, REVERT_SOFT_CHECKPOINT_SPAN,
-    RSPACE_METRICS_SOURCE, RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
-};
-use super::replay_rspace::ReplayRSpace;
-use super::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
-    ProduceCommitGuard, RSpaceResult,
-};
-use super::trace::Log;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
-use super::util::unpack_option;
-use crate::rspace::checkpoint::Checkpoint;
-use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
-use crate::rspace::hot_store::{HotStore, HotStoreInstances};
-use crate::rspace::internal::*;
-use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
-use crate::rspace::serializers::serializers::CandidateOrderingBytes;
+use crate::rspace::history::history_repository::HistoryRepository;
+use crate::rspace::hot_store::HotStore;
+use crate::rspace::internal::Install;
+use crate::rspace::logging::StepCommObserver;
+use crate::rspace::r#match::Match;
+use crate::rspace::operation_context::OperationOrder;
 use crate::rspace::space_matcher::SpaceMatcher;
+use crate::rspace::trace::Log;
+use crate::rspace::trace::event::Produce;
+
+mod ispace_impl;
+mod accounting;
+mod locks;
+mod ops_consume;
+mod ops_install;
+mod ops_produce;
+mod setup;
+#[cfg(test)]
+mod tests;
+mod trace_log;
+
+pub use locks::LOCK_SEQUENCE;
 
 #[derive(Clone)]
 pub struct RSpaceStore {
@@ -59,21 +57,47 @@ pub struct RSpaceStore {
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
+    // Left as RwLock, unlike store below: its only reader is spawn() (rare,
+    // not on the produce/consume hot path), so it doesn't have that field's
+    // problem.
     pub history_repository:
         Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
-    pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
+    // get_store() is called multiple times per produce()/consume() and never
+    // contends a writer on that path — writes only happen at checkpoint/spawn
+    // boundaries, replacing the whole pointer wholesale. ArcSwap is lock-free
+    // for this "read-mostly, rare wholesale swap" pattern: std::sync::RwLock
+    // does atomic RMW on shared reader-count state per read-lock/unlock,
+    // which scales badly under many concurrent readers (confirmed: isolated
+    // read-lock-only benchmark measured negative scaling — see issue #50
+    // follow-up).
+    pub store: Arc<arc_swap::ArcSwap<Box<dyn HotStore<C, P, A, K>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
-    produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
+    ordered_event_log: Arc<std::sync::Mutex<BTreeMap<OperationOrder, Log>>>,
+    // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
+    // shards keyed by channel_hash(produce) % NUM_LOCK_STRIPES, instead of
+    // one global std::sync::Mutex<BTreeMap>. The hot path (log_produce/
+    // produce_counters) only ever contends the one shard its key hashes to.
+    // Checkpoint boundaries (take/reset/restore_produce_counter in
+    // trace_log.rs) lock
+    // every shard for the whole operation, in the same fixed index order
+    // every time, restoring the single global lock's point-in-time
+    // linearization for this field specifically — not across it and
+    // event_log, which remain two separate locks taken sequentially, same
+    // as before this change (pre-existing, out of scope here).
+    produce_counter: Arc<Vec<std::sync::Mutex<BTreeMap<Produce, i32>>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
-    phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
-    phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
-    /// Live single-step COMM observer (MeTTaIL reactive stepper). `None` in
-    /// production: the `log_comm` seam then pays only one branch-predicted
-    /// `is_none` check per COMM — zero allocation, no vtable. Installed via
-    /// [`RSpace::set_step_observer`]. Not part of any FFI surface (RSpace
-    /// has no `extern "C"` consumers); appended last so existing field offsets
-    /// are unchanged.
+    accounting_observer: Arc<
+        std::sync::RwLock<
+            Option<Arc<dyn crate::rspace::rspace_interface::RSpaceAccountingObserver<C, P, A, K>>>,
+        >,
+    >,
+    // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
+    // See striped_locks.rs for the stripe count and hashing/lock scheme.
+    // No DashMap entry() → no parking_lot shard contention per produce/consume.
+    phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    /// Optional live MeTTaIL stepper. Absent from production consensus paths.
     step_observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>,
 }
 
@@ -82,70 +106,40 @@ where
     C: Clone
         + Debug
         + Default
-        + StableHashSerialize
-        + std::hash::Hash
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + Hash
         + Ord
         + Eq
         + 'static
         + Sync
         + Send,
-    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    P: Clone
+        + Debug
+        + Default
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + 'static
+        + Sync
+        + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + 'static
+        + Sync
+        + Send,
 {
-    pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
-        self.store.read().expect("store read lock").clone()
-    }
-
-    fn channel_hash(channel: &C) -> u64 {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        channel.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    async fn acquire_locks(
-        lock_map: &DashMap<u64, Arc<tokio::sync::Mutex<()>>>,
-        keys: &[u64],
-    ) -> ChannelLockGuard {
-        let mut sorted_keys: Vec<u64> = keys.to_vec();
-        sorted_keys.sort();
-        sorted_keys.dedup();
-
-        let mut held: Vec<HeldLock> = Vec::with_capacity(sorted_keys.len());
-        for k in &sorted_keys {
-            let lock = lock_map
-                .entry(*k)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone();
-            let guard = lock.lock_owned().await;
-            held.push(HeldLock { _guard: guard });
-        }
-
-        ChannelLockGuard { _held: held }
-    }
-
-    async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, channel_hashes).await;
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, channel_hashes).await;
-        (phase_a, phase_b)
-    }
-
-    async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
-        let channel_hash = Self::channel_hash(channel);
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
-
-        let store = self.get_store();
-        let join_hashes: Vec<u64> = store
-            .get_joins(channel)
-            .into_iter()
-            .flatten()
-            .map(|ch| Self::channel_hash(&ch))
-            .collect();
-
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
-        (phase_a, phase_b)
-    }
+    pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> { self.store.load_full() }
 
     pub fn get_history_repository(
         &self,
@@ -155,14 +149,10 @@ where
             .expect("history read lock")
             .clone()
     }
-}
 
-struct HeldLock {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-}
-
-struct ChannelLockGuard {
-    _held: Vec<HeldLock>,
+    pub fn set_step_observer(&mut self, observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>) {
+        self.step_observer = observer;
+    }
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
@@ -170,1356 +160,37 @@ where
     C: Clone
         + Debug
         + Default
-        + StableHashSerialize
-        + std::hash::Hash
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + Hash
         + Ord
         + Eq
         + 'static
         + Sync
         + Send,
-    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-{
-}
-
-#[async_trait]
-impl<C, P, A, K> ISpace<C, P, A, K> for RSpace<C, P, A, K>
-where
-    C: Clone
+    P: Clone
         + Debug
         + Default
-        + StableHashSerialize
-        + std::hash::Hash
-        + Ord
-        + Eq
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
         + 'static
         + Sync
         + Send,
-    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + 'static
+        + Sync
+        + Send,
 {
-    async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
-        // Span[F].withMarks("create-checkpoint") from Scala - works because
-        // this is NOT async
-        let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
-        event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
-
-        // Get changes with span
-        let changes = {
-            let _changes_span =
-                tracing::info_span!(target: "f1r3fly.rspace", CHANGES_SPAN).entered();
-            self.get_store().changes()
-        };
-
-        // Create history checkpoint with span
-        let next_history = {
-            let _history_span =
-                tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
-            self.get_history_repository().checkpoint(changes)
-        };
-        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
-
-        let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
-
-        let history_reader = self
-            .get_history_repository()
-            .get_history_reader(&self.get_history_repository().root())?;
-
-        self.create_new_hot_store(history_reader);
-        self.restore_installs();
-
-        // Mark the completion of create-checkpoint
-        event!(Level::DEBUG, mark = "finished-create-checkpoint", "create_checkpoint");
-
-        Ok(Checkpoint {
-            root: self.get_history_repository().root(),
-            log,
-        })
-    }
-
-    async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
-        let _span = tracing::info_span!(target: "f1r3fly.rspace", RESET_SPAN).entered();
-        let next_history = self.get_history_repository().reset(root)?;
-        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
-
-        *self.event_log.lock().expect("event log lock") = Vec::new();
-        *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
-
-        self.phase_a_locks.clear();
-        self.phase_b_locks.clear();
-
-        let history_reader = self.get_history_repository().get_history_reader(root)?;
-        self.create_new_hot_store(history_reader);
-        self.restore_installs();
-
-        Ok(())
-    }
-
-    async fn consume_result(
-        &self,
-        channel: Vec<C>,
-        pattern: Vec<P>,
-    ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        let consume_res = self
-            .consume(channel, pattern, K::default(), false, BTreeSet::new())
-            .await?;
-        Ok(unpack_option(&consume_res))
-    }
-
-    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
-
-    async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
-        self.get_store().get_continuations(&channels)
-    }
-
-    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
-
-    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
-        let len = self.get_store().get_data(channel).len();
-        for index in (0..len).rev() {
-            self.get_store().remove_datum(channel, index as i32)?;
-        }
-        Ok(())
-    }
-
-    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
-        let len = self.get_store().get_continuations(&channels).len();
-        for index in (0..len).rev() {
-            let _ = self
-                .get_store()
-                .remove_continuation(&channels, index as i32);
-        }
-        Ok(())
-    }
-
-    async fn clear(&self) -> Result<(), RSpaceError> {
-        self.reset(&RadixHistory::empty_root_node_hash()).await
-    }
-
-    async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
-
-    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
-
-    async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
-        let cache_snapshot = self.get_store().snapshot();
-        let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let curr_produce_counter =
-            std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
-
-        SoftCheckpoint {
-            cache_snapshot,
-            log: curr_event_log,
-            produce_counter: curr_produce_counter,
-        }
-    }
-
-    async fn take_event_log(&self) -> Log {
-        let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
-        curr_event_log
-    }
-
-    /// Forward the reactive single-step gate from the installed observer (if
-    /// any). `None` in production (no observer) — the reducer then never
-    /// pauses. The same `StepGate` the stepper `release_one`s after
-    /// publishing each COMM event.
-    fn step_gate(&self) -> Option<Arc<super::logging::StepGate>> {
-        self.step_observer
-            .as_ref()
-            .and_then(|observer| observer.step_gate())
-    }
-
-    /// Forward a non-COMM structural reduction to the installed observer (if
-    /// any) — the symmetric emit twin of `step_gate`. `None`-op in
-    /// production (one branch-predicted `is_none` check, no allocation, no
-    /// vtable). `redex` is borrowed; the observer clones only when it captures.
-    fn observe_reduction(&self, redex: &C, kind: super::logging::ReductionKind) {
-        if let Some(observer) = &self.step_observer {
-            observer.observe_reduction(redex, kind);
-        }
-    }
-
-    async fn revert_to_soft_checkpoint(
-        &self,
-        checkpoint: SoftCheckpoint<C, P, A, K>,
-    ) -> Result<(), RSpaceError> {
-        let _span =
-            tracing::info_span!(target: "f1r3fly.rspace", REVERT_SOFT_CHECKPOINT_SPAN).entered();
-        let history = self.get_history_repository();
-        let history_reader = history.get_history_reader(&history.root())?;
-        let hot_store = HotStoreInstances::create_from_hs_and_hr(
-            checkpoint.cache_snapshot,
-            history_reader.base(),
-        );
-
-        *self.store.write().expect("store write lock") = Arc::new(hot_store);
-        *self.event_log.lock().expect("event log lock") = checkpoint.log;
-        *self.produce_counter.lock().expect("produce counter lock") = checkpoint.produce_counter;
-
-        Ok(())
-    }
-
-    async fn consume(
-        &self,
-        channels: Vec<C>,
-        patterns: Vec<P>,
-        continuation: K,
-        persist: bool,
-        peeks: BTreeSet<i32>,
-    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
-        // ★ A MALFORMED CONSUME IS A DECIDABLE NEGATIVE, NOT AN INVARIANT
-        // VIOLATION — so it is REFUSED, through the `Result` this signature has
-        // always carried, rather than aborting the process.
-        //
-        // The distinction that decides the disposition is whether the CALLER'S
-        // OWN INPUTS can express the fault. Here they can: the two lengths are
-        // right there in the arguments, and `ConsumeParams` puts `channels` and
-        // `patterns` in two INDEPENDENT repeated protobuf fields
-        // (`models/src/main/protobuf/RSpacePlusPlusTypes.proto`), so any wire
-        // encoding at all can carry `channels.len() != patterns.len()`. That is
-        // the opposite classification from an absent required child in a `Par`
-        // (#127/#136), which no honest producer can emit and which therefore
-        // stays an invariant.
-        //
-        // ⚠ CONSENSUS-VISIBLE. This turns "every node aborts" into "this call
-        // fails". A validator that today dies would instead reject. It requires
-        // a coordinated `Validate::version` bump, which is F1r3node's act, not
-        // this file's — `casper/src/rust/validate.rs` compares versions for
-        // EXACT equality with no activation-height machinery.
-        //
-        // ⚠ THE MESSAGES AND THE VARIANT ARE DELIBERATELY UNCHANGED from
-        // `ReplayRSpace::locked_install_internal`, which already refused this
-        // exact condition this exact way. Four sites now agree; before this
-        // change three panicked and one returned `Err`, which was itself a
-        // play/replay asymmetry (see the sibling table in
-        // `rspace++/tests/consume_arity_refusal.rs`).
-        if channels.is_empty() {
-            Err(RSpaceError::BugFoundError("RUST ERROR: channels can't be empty".to_string()))
-        } else if channels.len() != patterns.len() {
-            Err(RSpaceError::BugFoundError(
-                "RUST ERROR: channels.length must equal patterns.length".to_string(),
-            ))
-        } else {
-            let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
-
-            let lock_start = Instant::now();
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
-            let _lock_guard = self.consume_lock(&channel_hashes).await;
-            let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-            tracing::trace!(target: "rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
-            metrics::counter!("rspace.consume.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
-                .increment(lock_start.elapsed().as_nanos() as u64);
-
-            metrics::counter!("rspace.consume.calls", "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            let start = Instant::now();
-            let result = self.locked_consume(
-                &channels,
-                &patterns,
-                &continuation,
-                persist,
-                &peeks,
-                &consume_ref,
-            );
-            let duration = start.elapsed();
-            metrics::histogram!("comm_consume_time_seconds", "source" => RSPACE_METRICS_SOURCE)
-                .record(duration.as_secs_f64());
-            result
-        }
-    }
-
-    async fn produce(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        self.produce_with_guard(channel, data, persist, None).await
-    }
-
-    async fn produce_guarded(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-        guard: &dyn ProduceCommitGuard,
-    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        self.produce_with_guard(channel, data, persist, Some(guard))
-            .await
-    }
-
-    async fn install(
-        &self,
-        channels: Vec<C>,
-        patterns: Vec<P>,
-        continuation: K,
-    ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        metrics::counter!("rspace.install.calls", "source" => RSPACE_METRICS_SOURCE).increment(1);
-        let start = Instant::now();
-        let result = self.locked_install_internal(channels, patterns, continuation, true);
-        let duration = start.elapsed();
-        metrics::histogram!("install_time_seconds", "source" => RSPACE_METRICS_SOURCE)
-            .record(duration.as_secs_f64());
-        result
-    }
-
-    async fn rig_and_reset(
-        &self,
-        _start_root: Blake2b256Hash,
-        _log: Log,
-    ) -> Result<(), RSpaceError> {
-        panic!("\nERROR: RSpace rig_and_reset should not be called here");
-    }
-
-    async fn rig(&self, _log: Log) -> Result<(), RSpaceError> {
-        panic!("\nERROR: RSpace rig should not be called here");
-    }
-
-    async fn check_replay_data(&self) -> Result<(), RSpaceError> {
-        panic!("\nERROR: RSpace check_replay_data should not be called here");
-    }
-
-    async fn is_replay(&self) -> bool { false }
-
-    async fn update_produce(&self, produce_ref: Produce) -> () {
-        for event in self.event_log.lock().expect("event log lock").iter_mut() {
-            match event {
-                Event::IoEvent(IOEvent::Produce(produce)) => {
-                    if produce.hash == produce_ref.hash {
-                        *produce = produce_ref.clone();
-                    }
-                }
-
-                Event::Comm(comm) => {
-                    let COMM {
-                        produces: _produces,
-                        times_repeated: _times_repeated,
-                        ..
-                    } = comm;
-
-                    let updated_comm = COMM {
-                        produces: _produces
-                            .iter()
-                            .map(|p| {
-                                if p.hash == produce_ref.hash {
-                                    produce_ref.clone()
-                                } else {
-                                    p.clone()
-                                }
-                            })
-                            .collect(),
-                        times_repeated: _times_repeated
-                            .iter()
-                            .map(|(k, v)| {
-                                if k.hash == produce_ref.hash {
-                                    (produce_ref.clone(), v.clone())
-                                } else {
-                                    (k.clone(), v.clone())
-                                }
-                            })
-                            .collect(),
-                        ..comm.clone()
-                    };
-
-                    *comm = updated_comm;
-                }
-
-                _ => continue,
-            }
-        }
-    }
-}
-
-impl<C, P, A, K> RSpace<C, P, A, K>
-where
-    C: Clone + Debug + Default + StableHashSerialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-{
-    /**
-     * Creates [[RSpace]] from [[HistoryRepository]] and [[HotStore]].
-     */
-    pub fn apply(
-        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-        store: Box<dyn HotStore<C, P, A, K>>,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-    ) -> RSpace<C, P, A, K>
-    where
-        C: Clone + Debug + Ord + Hash,
-        P: Clone + Debug,
-        A: Clone + Debug,
-        K: Clone + Debug,
-    {
-        RSpace {
-            history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
-            store: Arc::new(std::sync::RwLock::new(Arc::new(store))),
-            matcher,
-            installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
-            produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-            phase_a_locks: Arc::new(DashMap::new()),
-            phase_b_locks: Arc::new(DashMap::new()),
-            step_observer: None,
-        }
-    }
-
-    /// Install (or clear) the live single-step COMM observer. Off (`None`) by
-    /// default; the MeTTaIL reactive stepper sets `Some(..)` before running
-    /// `inj`, and the `log_comm` seam then emits each committed COMM to it.
-    /// Idempotent; pass `None` to detach.
-    pub fn set_step_observer(&mut self, observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>) {
-        self.step_observer = observer;
-    }
-
-    pub fn create(
-        store: RSpaceStore,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-    ) -> Result<RSpace<C, P, A, K>, HistoryRepositoryError>
-    where
-        C: Clone
-            + Debug
-            + Default
-            + Send
-            + Sync
-            + Serialize
-            + Ord
-            + Hash
-            + ColdStoreDecode
-            + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    {
-        let setup = Self::create_history_repo(store).unwrap();
-        let (history_reader, store) = setup;
-        let space = Self::apply(Arc::new(history_reader), store, matcher);
-        Ok(space)
-    }
-
-    pub fn create_with_replay(
-        store: RSpaceStore,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-    ) -> Result<(RSpace<C, P, A, K>, ReplayRSpace<C, P, A, K>), HistoryRepositoryError>
-    where
-        C: Clone
-            + Debug
-            + Default
-            + Send
-            + Sync
-            + Serialize
-            + Ord
-            + Hash
-            + ColdStoreDecode
-            + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    {
-        let setup = Self::create_history_repo(store).unwrap();
-        let (history_repo, store) = setup;
-        let history_repo_arc = Arc::new(history_repo);
-
-        // Play
-        let space = Self::apply(history_repo_arc.clone(), store, matcher.clone());
-        // Replay
-        let history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>> =
-            history_repo_arc.get_history_reader(&history_repo_arc.root())?;
-        let replay_store = HotStoreInstances::create_from_hr(history_reader.base());
-        let replay = ReplayRSpace::apply_with_logger(
-            history_repo_arc.clone(),
-            Arc::new(replay_store),
-            matcher.clone(),
-            Box::new(BasicLogger::new()),
-        );
-        Ok((space, replay))
-    }
-
-    /**
-     * Creates [[HistoryRepository]] and [[HotStore]].
-     */
-    pub fn create_history_repo(
-        store: RSpaceStore,
-    ) -> Result<
-        (
-            Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
-            Box<dyn HotStore<C, P, A, K>>,
-        ),
-        HistoryRepositoryError,
-    >
-    where
-        C: Clone
-            + Debug
-            + Default
-            + Send
-            + Sync
-            + Serialize
-            + ColdStoreDecode
-            + Eq
-            + Hash
-            + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    {
-        let history_repo =
-            HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)?;
-
-        let history_reader = history_repo.get_history_reader(&history_repo.root())?;
-
-        let hot_store = HotStoreInstances::create_from_hr(history_reader.base());
-
-        Ok((history_repo, hot_store))
-    }
-
-    fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {
-        produce_refs
-            .iter()
-            .cloned()
-            .map(|p| {
-                (
-                    p.clone(),
-                    self.produce_counter
-                        .lock()
-                        .expect("produce counter lock")
-                        .get(&p)
-                        .unwrap_or(&0)
-                        .clone(),
-                )
-            })
-            .collect()
-    }
-
-    fn locked_consume(
-        &self,
-        channels: &[C],
-        patterns: &[P],
-        continuation: &K,
-        persist: bool,
-        peeks: &BTreeSet<i32>,
-        consume_ref: &Consume,
-    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
-        // Span[F].traceI("locked-consume") from Scala
-        let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
-        event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
-
-        let t0 = Instant::now();
-        metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t0.elapsed().as_nanos() as u64);
-
-        let t1 = Instant::now();
-        let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
-        metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t1.elapsed().as_nanos() as u64);
-
-        let t2 = Instant::now();
-        // Borrow-zip: no per-consume channel/pattern clones.
-        let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
-        // The complete, guard-aware candidate search (plan §7.12 / defect D1).
-        // A `where` guard on this consume participates in SELECTION, not only
-        // in approval: when it rejects the datum the spatial matcher offered
-        // first, the search advances to the next resting datum instead of
-        // abandoning the rendezvous. It returns `None` only when NO selection
-        // of resting data satisfies both the spatial patterns and the guard —
-        // and then the continuation is installed and the data left alone,
-        // exactly as a spatial miss always did.
-        let options = self.extract_prepared_data_candidates(
-            &self.matcher,
-            &zipped,
-            continuation,
-            &mut channel_to_indexed_data,
-        );
-        metrics::counter!("rspace.consume.match_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t2.elapsed().as_nanos() as u64);
-
-        let wk = WaitingContinuation {
-            patterns: Arc::new(patterns.to_vec()),
-            continuation: Arc::new(continuation.clone()),
-            persist,
-            peeks: peeks.clone(),
-            source: consume_ref.clone(),
-        };
-
-        match options {
-            Some((data_candidates, permit)) => {
-                let t3 = Instant::now();
-                let produce_counters_closure =
-                    |produces: &[Produce]| self.produce_counters(produces);
-                let comm = COMM::new(
-                    &data_candidates,
-                    consume_ref.clone(),
-                    peeks.clone(),
-                    produce_counters_closure,
-                );
-                let result = permit.commit(|| {
-                    self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
-                    self.record_comm(comm.clone(), "comm.consume");
-                    self.store_persistent_data(&data_candidates, peeks);
-                    self.wrap_result(channels, &wk, consume_ref, &data_candidates)
-                })?;
-                self.observe_comm(channels, &wk, &data_candidates, &comm, "comm.consume");
-                metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t3.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
-                Ok(result)
-            }
-            None => {
-                let t3 = Instant::now();
-                self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
-                self.store_waiting_continuation(channels.to_vec(), wk);
-                metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t3.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
-                Ok(None)
-            }
-        }
-    }
-
-    /*
-     * Here, we create a cache of the data at each channel as
-     * `channelToIndexedData` which is used for finding matches.  When a
-     * speculative match is found, we can remove the matching datum from the
-     * remaining data candidates in the cache.
-     *
-     * Put another way, this allows us to speculatively remove matching data
-     * without affecting the actual store contents.
-     */
-    fn fetch_channel_to_index_data(&self, channels: &[C]) -> HashMap<C, Vec<(Datum<A>, i32)>> {
-        let mut map = HashMap::with_capacity(channels.len());
-        for c in channels {
-            let data = self.get_store().get_data(c);
-            let shuffled_data = self.shuffle_with_index(data);
-            map.insert(c.clone(), shuffled_data);
-        }
-        map
-    }
-
-    async fn produce_with_guard(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-        guard: Option<&dyn ProduceCommitGuard>,
-    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        let produce_ref = Produce::create(&channel, &data, persist);
-        let lock_start = Instant::now();
-        let lock_guard = self.produce_lock(&channel).await;
-        let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-        tracing::trace!(target: "rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
-        metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(lock_start.elapsed().as_nanos() as u64);
-        metrics::counter!("rspace.produce.calls", "source" => RSPACE_METRICS_SOURCE).increment(1);
-        let start = Instant::now();
-        let prepared = self.locked_produce(channel, data, persist, &produce_ref, guard);
-        metrics::histogram!("comm_produce_time_seconds", "source" => RSPACE_METRICS_SOURCE)
-            .record(start.elapsed().as_secs_f64());
-        drop(lock_guard);
-        let (result, notification) = prepared?;
-        if let Some((candidate, comm)) = notification {
-            self.observe_comm(
-                &candidate.channels,
-                &candidate.continuation,
-                &candidate.data_candidates,
-                &comm,
-                "comm.produce",
-            );
-        }
-        Ok(result)
-    }
-
-    fn locked_produce(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-        produce_ref: &Produce,
-        guard: Option<&dyn ProduceCommitGuard>,
-    ) -> Result<
-        (MaybeProduceResult<C, P, A, K>, Option<(ProduceCandidate<C, P, A, K>, COMM)>),
-        RSpaceError,
-    > {
-        // Span[F].traceI("locked-produce") from Scala
-        let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
-        event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
-
-        let t0 = Instant::now();
-        let grouped_channels = self.get_store().get_joins(&channel);
-        metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t0.elapsed().as_nanos() as u64);
-
-        // Wrap the produced payload in an `Arc` once — the speculative
-        // candidate below and the `store_data` fallthrough share it by
-        // refcount (previously each took a deep copy).
-        let data = Arc::new(data);
-
-        let t1 = Instant::now();
-        let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
-            a: Arc::clone(&data),
-            persist,
-            source: produce_ref.clone(),
-        });
-        metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t1.elapsed().as_nanos() as u64);
-
-        let mut notification = None;
-        let permit = extracted
-            .as_ref()
-            .and_then(|candidate| candidate.commit.clone())
-            .unwrap_or_default();
-        let result = permit.commit_with(guard, || {
-            self.log_produce(produce_ref, &channel, &data, persist);
-            match extracted {
-                Some(produce_candidate) => {
-                    let t2 = Instant::now();
-                    // ★ The produced datum must be either CONSUMED or STORED —
-                    // never neither. It rides in its own candidate pool at index
-                    // `-1` (`extract_produce_candidate` above), so the fired COMM
-                    // consumed it exactly when a candidate carries that index.
-                    //
-                    // With the guard-aware selector this is unreachable from any
-                    // state the fixed matcher itself produced, and the reasoning is
-                    // worth writing down because it is what makes the selector safe
-                    // on this path: at quiescence no selection of RESTING data
-                    // satisfies any waiting continuation (else the consume or
-                    // produce that created that state would have fired it), and
-                    // admissibility is monotone in the data — adding this datum can
-                    // only create selections that CONTAIN it. So every selection
-                    // available here contains the fresh datum.
-                    //
-                    // It is reachable from a state some OTHER matcher produced: a
-                    // hot store restored from a checkpoint written before this fix
-                    // can hold a resting datum stranded by defect D1 next to the
-                    // continuation it satisfies, and a later produce of a datum
-                    // that does not match spatially would then fire on the stranded
-                    // pair. Dropping the produced message there would be silent
-                    // message loss — no rule of the rho calculus discards a
-                    // message — so it is stored instead. AFTER `process_match_found`,
-                    // which addresses the store by index: `put_datum` inserts at
-                    // position 0 and would shift every index out from under it.
-                    let comm_consumed_the_produced_datum = produce_candidate
-                        .data_candidates
-                        .iter()
-                        .any(|candidate| candidate.datum_index < 0);
-
-                    let (matched, comm) = self.process_match_found_deferred(&produce_candidate);
-                    notification = comm.map(|comm| (produce_candidate, comm));
-                    let result = matched.map(|consume_result| {
-                        (consume_result.0, consume_result.1, produce_ref.clone())
-                    });
-
-                    if !comm_consumed_the_produced_datum {
-                        tracing::debug!(
-                            target: "f1r3fly.rspace",
-                            "a COMM fired on resting data only; storing the produced datum rather \
-                             than dropping it (pre-fix stranded pair — see locked_produce)"
-                        );
-                        metrics::counter!(
-                            RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
-                            "source" => RSPACE_METRICS_SOURCE
-                        )
-                        .increment(1);
-                        let _ = self.store_data(channel, data, persist, produce_ref.clone());
-                    }
-
-                    metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t2.elapsed().as_nanos() as u64);
-                    event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
-                    result
-                }
-                None => {
-                    let t2 = Instant::now();
-                    let result = self.store_data(channel, data, persist, produce_ref.clone());
-                    metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t2.elapsed().as_nanos() as u64);
-                    event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
-                    result
-                }
-            }
-        })?;
-        Ok((result, notification))
-    }
-
-    /*
-     * Find produce candidate
-     *
-     * NOTE: On Rust side, we are NOT passing functions through. Instead just
-     * the data. And then in 'run_matcher_for_channels' we call the
-     * functions defined below
-     */
-    fn extract_produce_candidate(
-        &self,
-        grouped_channels: Vec<Vec<C>>,
-        bat_channel: C,
-        data: Datum<A>,
-    ) -> MaybeProduceCandidate<C, P, A, K> {
-        let fetch_matching_continuations =
-            |channels: Vec<C>| -> Vec<(WaitingContinuation<P, K>, i32)> {
-                let continuations = self.get_store().get_continuations(&channels);
-                self.shuffle_with_index(continuations)
-            };
-
-        /*
-         * Here, we create a cache of the data at each channel as
-         * `channelToIndexedData` which is used for finding matches.  When a
-         * speculative match is found, we can remove the matching datum from
-         * the remaining data candidates in the cache.
-         *
-         * Put another way, this allows us to speculatively remove matching
-         * data without affecting the actual store contents.
-         *
-         * In this version, we also add the produced data directly to this
-         * cache.
-         */
-        let fetch_matching_data = |channel| -> (C, Vec<(Datum<A>, i32)>) {
-            let data_vec = self.get_store().get_data(&channel);
-            let mut shuffled_data = self.shuffle_with_index(data_vec);
-            if channel == bat_channel {
-                shuffled_data.insert(0, (data.clone(), -1));
-            }
-            (channel, shuffled_data)
-        };
-
-        self.run_matcher_for_channels(
-            grouped_channels,
-            fetch_matching_continuations,
-            fetch_matching_data,
-        )
-    }
-
-    /// `E(S)` for this space — see
-    /// [`SpaceMatcher::enumerate_enabled_rendezvous`], which is where the whole
-    /// query lives. This binder supplies nothing but the two private handles
-    /// (`matcher`, hot store); `ReplayRSpace::enabled_rendezvous` is the same
-    /// three lines, so play and replay cannot enumerate differently.
-    ///
-    /// Read-only: no store mutation, no event log entry, no produce counter
-    /// movement. Costs matcher time, not phlogiston.
-    pub fn enabled_rendezvous(&self) -> Vec<ProduceCandidate<C, P, A, K>> {
-        self.enumerate_enabled_rendezvous(&self.matcher, &self.get_store())
-    }
-
-    /// Fire the rendezvous `pc` names: remove its continuation (unless
-    /// persistent), remove the data it selected (highest store index first),
-    /// drop the joins, append the `COMM` event, and return the continuation and
-    /// matched payloads for dispatch.
-    ///
-    /// # Why this is `pub`
-    ///
-    /// `locked_produce` reaches it with a candidate it just *searched for*. A
-    /// speculative evaluator must fire a candidate it *named* — a specific
-    /// member of [`RSpace::enabled_rendezvous`]'s answer, which for a
-    /// persistent continuation or a join is generally not the one a search
-    /// would return. Forcing the choice by trimming the store instead
-    /// ("install a state in which the wanted match is the only one and let
-    /// the search find it") is not sound: a persistent continuation or a
-    /// join over a channel bound twice still admits several selections
-    /// after any such trim, and the trim itself perturbs the very store
-    /// indices the removal arithmetic below addresses.
-    ///
-    /// The alternative to exporting it is for the caller to reimplement the
-    /// index arithmetic, the join bookkeeping and the event emission outside
-    /// this crate, where they could drift from the consensus behaviour
-    /// silently. Nothing about the method changed: the body below is
-    /// untouched, and every production caller still reaches it through
-    /// `locked_produce`.
-    pub fn process_match_found(
-        &self,
-        pc: ProduceCandidate<C, P, A, K>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
-        let matched: Vec<&A> = pc.data_candidates.iter().map(|c| &*c.datum.a).collect();
-        let Some(permit) = pc.commit.clone().or_else(|| {
-            self.matcher
-                .prepare_commit(&pc.continuation.continuation, &matched)
-        }) else {
-            return None;
-        };
-        let Ok((result, comm)) = permit.commit(|| self.process_match_found_deferred(&pc)) else {
-            return None;
-        };
-        if let Some(comm) = comm {
-            self.observe_comm(
-                &pc.channels,
-                &pc.continuation,
-                &pc.data_candidates,
-                &comm,
-                "comm.produce",
-            );
-        }
-        result
-    }
-
-    fn process_match_found_deferred(
-        &self,
-        pc: &ProduceCandidate<C, P, A, K>,
-    ) -> (MaybeConsumeResult<C, P, A, K>, Option<COMM>) {
-        let ProduceCandidate {
-            channels,
-            continuation,
-            continuation_index,
-            data_candidates,
-            ..
-        } = pc;
-
-        let WaitingContinuation {
-            patterns: _patterns,
-            continuation: _cont,
-            persist,
-            peeks,
-            source: consume_ref,
-        } = &continuation;
-
-        let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
-        let comm = COMM::new(
-            data_candidates,
-            consume_ref.clone(),
-            peeks.clone(),
-            produce_counters_closure,
-        );
-        let notification = self.step_observer.as_ref().map(|_| comm.clone());
-        self.record_comm(comm, "comm.produce");
-
-        if !persist {
-            self.get_store()
-                .remove_continuation(channels, *continuation_index);
-        }
-
-        self.remove_matched_datum_and_join(channels, data_candidates);
-
-        (self.wrap_result(channels, continuation, consume_ref, data_candidates), notification)
-    }
-
-    fn log_comm(
-        &self,
-        channels: &[C],
-        wk: &WaitingContinuation<P, K>,
-        data_candidates: &[ConsumeCandidate<C, A>],
-        comm: COMM,
-        label: &str,
-    ) {
-        self.observe_comm(channels, wk, data_candidates, &comm, label);
-        self.record_comm(comm, label);
-    }
-
-    fn record_comm(&self, comm: COMM, label: &str) {
-        // Increment counter FIRST (matching Scala) using constants to avoid
-        // memory leaks Labels are always "comm.consume" or
-        // "comm.produce" based on the RSpace implementation
-        match label {
-            "comm.consume" => {
-                metrics::counter!(CONSUME_COMM_LABEL, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(1);
-            }
-            "comm.produce" => {
-                metrics::counter!(PRODUCE_COMM_LABEL, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(1);
-            }
-            _ => {
-                // This should never happen, but log if it does
-                tracing::warn!("Unexpected label in log_comm: {}", label);
-            }
-        }
-
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .insert(0, Event::Comm(comm));
-    }
-
-    fn observe_comm(
-        &self,
-        channels: &[C],
-        wk: &WaitingContinuation<P, K>,
-        data_candidates: &[ConsumeCandidate<C, A>],
-        comm: &COMM,
-        label: &str,
-    ) {
-        // Live single-step emit seam. `None` in production (one
-        // branch-predicted `is_none`, no alloc/vtable). When a
-        // StepCommObserver is installed, hand it the full COMM payload
-        // — the rendezvous channels, the consumed data, and the firing
-        // waiting-continuation (patterns + continuation) — extracted to
-        // slices so the observer can clone lock-free.
-        if let Some(observer) = &self.step_observer {
-            // Materialize through the Arc — observer-only path (None in
-            // production), cost-identical to the earlier value-shaped clone.
-            let consumed: Vec<A> = data_candidates
-                .iter()
-                .map(|candidate| (*candidate.datum.a).clone())
-                .collect();
-            observer.observe_comm(channels, &consumed, &wk.patterns, &wk.continuation, comm, label);
-        }
-    }
-
-    fn log_consume(
-        &self,
-        consume_ref: &Consume,
-        _channels: &[C],
-        _patterns: &[P],
-        _continuation: &K,
-        _persist: bool,
-        _peeks: &BTreeSet<i32>,
-    ) {
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .insert(0, Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
-    }
-
-    fn log_produce(&self, produce_ref: &Produce, _channel: &C, _data: &A, persist: bool) {
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .insert(0, Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
-        if !persist {
-            let mut counter = self.produce_counter.lock().expect("produce counter lock");
-            let current = counter.get(produce_ref).copied().unwrap_or(0);
-            counter.insert(produce_ref.clone(), current + 1);
-        }
-    }
-
-    pub fn spawn(&self) -> Result<Self, RSpaceError> {
-        // Span[F].withMarks("spawn") from Scala - works because this is NOT
-        // async
-        let _span = tracing::info_span!(target: "f1r3fly.rspace", "spawn").entered();
-        event!(Level::DEBUG, mark = "started-spawn", "spawn");
-
-        let history_repo = self.get_history_repository();
-        let next_history = history_repo.reset(&history_repo.root())?;
-        let history_reader = next_history.get_history_reader(&next_history.root())?;
-        let hot_store = HotStoreInstances::create_from_hr(history_reader.base());
-        let rspace = RSpace::apply(Arc::new(next_history), hot_store, self.matcher.clone());
-        rspace.restore_installs();
-
-        // Mark the completion of spawn operation
-        event!(Level::DEBUG, mark = "finished-spawn", "spawn");
-        Ok(rspace)
-    }
-
-    /* RSpaceOps */
-
-    fn store_waiting_continuation(
-        &self,
-        channels: Vec<C>,
-        wc: WaitingContinuation<P, K>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
-        let _ = self.get_store().put_continuation(&channels, wc);
-        for channel in channels.iter() {
-            self.get_store().put_join(channel, &channels);
-        }
-        None
-    }
-
-    // Takes the shared `Arc` payload — the datum stored is the same
-    // allocation the speculative candidate borrowed (no copy).
-    fn store_data(
-        &self,
-        channel: C,
-        data: Arc<A>,
-        persist: bool,
-        produce_ref: Produce,
-    ) -> MaybeProduceResult<C, P, A, K> {
-        self.get_store().put_datum(&channel, Datum {
-            a: data,
-            persist,
-            source: produce_ref,
-        });
-
-        None
-    }
-
-    fn store_persistent_data(
-        &self,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        _peeks: &BTreeSet<i32>,
-    ) -> Option<Vec<()>> {
-        // ★ HIGHEST index FIRST, and no `.rev()`.
-        //
-        // `remove_datum` removes POSITIONALLY, so removing a low index shifts
-        // every higher one down by one and the next removal addresses the wrong
-        // element (or runs off the end). Removing from the back leaves the
-        // indices of everything still to be removed untouched. This matters
-        // exactly when one receive takes two data from the SAME channel —
-        // `for(@x <- c; @y <- c)` — because only then do two candidates carry
-        // indices into the same vector.
-        //
-        // The `.rev()` this replaces inverted the sort into ascending order and
-        // so removed exactly one datum of such a pair: the second
-        // `remove_datum` ran out of bounds, its `Err` was swallowed by
-        // `.ok()`, and the caller discards this function's `None`. The
-        // datum was therefore DELIVERED to the continuation and LEFT
-        // RESTING — available to be consumed a second time. Scala's
-        // `storePersistentData` sorts `_.datumIndex` with
-        // `Ordering[Int].reverse` and traverses in that order, i.e.
-        // descending; the port re-reversed it.
-        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = sorted_candidates
-            .into_iter()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    datum_index,
-                } = consume_candidate;
-
-                if !persist {
-                    self.get_store().remove_datum(channel, *datum_index).ok()
-                } else {
-                    Some(())
-                }
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
-        }
-    }
-
-    fn restore_installs(&self) {
-        // Move out the install map to avoid cloning the whole structure on each
-        // restore.
-        let installs = {
-            let mut installs_lock = self.installs.lock().unwrap();
-            std::mem::take(&mut *installs_lock)
-        };
-        {
-            let mut installs_lock = self.installs.lock().unwrap();
-            installs_lock.reserve(installs.len());
-        }
-
-        for (channels, install) in installs {
-            // ⚠ The arity refusal `locked_install_internal` grew below CANNOT
-            // fire here: every entry in `installs` was put there BY that same
-            // function, after its own check passed, so `channels.len() ==
-            // patterns.len()` holds by construction on this path. Any `Err`
-            // reaching this line is therefore a store fault, not a malformed
-            // request, and `restore_installs` has no channel to carry it —
-            // hence a named `expect` rather than a bare `unwrap`.
-            self.locked_install_internal(channels, install.patterns, install.continuation, true)
-                .expect(
-                    "restore_installs: re-installing an entry this space itself recorded (its \
-                     arity was already checked at install time)",
-                );
-        }
-    }
-
-    fn locked_install_internal(
-        &self,
-        channels: Vec<C>,
-        patterns: Vec<P>,
-        continuation: K,
-        record_install: bool,
-    ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        // ★ Same decidable negative as `consume`, same refusal. `InstallParams`
-        // is the second wire message that puts `channels` and `patterns` in two
-        // independent repeated fields, so the fault is caller-expressible here
-        // for exactly the same reason.
-        //
-        // ⚠ THIS SITE IS WHY THE FOUR MOVE TOGETHER. Its ReplaySpace twin,
-        // `ReplayRSpace::locked_install_internal`, ALREADY returned this exact
-        // `Err` with this exact message, so before this change
-        // `RSpace::install` aborted the process where
-        // `ReplayRSpace::install` refused — a play/replay asymmetry
-        // sitting in the tree, masked only because both of
-        // this function's in-tree callers turn the `Err` back into a panic.
-        // Converting play here makes the two agree.
-        if channels.len() != patterns.len() {
-            Err(RSpaceError::BugFoundError(
-                "RUST ERROR: channels.length must equal patterns.length".to_string(),
-            ))
-        } else {
-            let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
-            let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);
-            // Borrow-zip: no per-install channel/pattern clones.
-            let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
-            let options: Option<Vec<ConsumeCandidate<C, A>>> = self
-                .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
-                .into_iter()
-                .collect();
-
-            match options {
-                None => {
-                    if record_install {
-                        self.installs
-                            .lock()
-                            .unwrap()
-                            .insert(channels.clone(), Install {
-                                patterns: patterns.clone(),
-                                continuation: continuation.clone(),
-                            });
-                    }
-
-                    self.get_store()
-                        .install_continuation(&channels, WaitingContinuation {
-                            patterns: Arc::new(patterns),
-                            continuation: Arc::new(continuation),
-                            persist: true,
-                            peeks: BTreeSet::default(),
-                            source: consume_ref,
-                        });
-
-                    for channel in channels.iter() {
-                        self.get_store().install_join(channel, &channels);
-                    }
-                    Ok(None)
-                }
-                Some(_) => Err(RSpaceError::BugFoundError(
-                    "RUST ERROR: Installing can be done only on startup".to_string(),
-                )),
-            }
-        }
-    }
-
-    fn create_new_hot_store(
-        &self,
-        history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
-    ) {
-        let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
-        *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
-    }
-
-    // The public result stays value-shaped (`RSpaceResult<C, A>` /
-    // `ContResult` unchanged) — this is the single per-fired-COMM
-    // materialization boundary, cost-identical to the earlier value-shaped
-    // clones. The multiplicative per-ATTEMPT copies died in the
-    // store/matcher hops; the dispatch-side copy into the continuation env
-    // is stage-L2 territory (the continuation-environment boundary is
-    // outside this transport change).
-    fn wrap_result(
-        &self,
-        channels: &[C],
-        wk: &WaitingContinuation<P, K>,
-        _consume_ref: &Consume,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
-        let cont_result = ContResult {
-            continuation: (*wk.continuation).clone(),
-            persistent: wk.persist,
-            channels: channels.to_vec(),
-            patterns: (*wk.patterns).clone(),
-            peek: !wk.peeks.is_empty(),
-        };
-
-        let rspace_results = data_candidates
-            .iter()
-            .map(|data_candidate| RSpaceResult {
-                channel: data_candidate.channel.clone(),
-                matched_datum: (*data_candidate.datum.a).clone(),
-                removed_datum: (*data_candidate.removed_datum).clone(),
-                persistent: data_candidate.datum.persist,
-            })
-            .collect();
-
-        Some((cont_result, rspace_results))
-    }
-
-    fn remove_matched_datum_and_join(
-        &self,
-        channels: &[C],
-        data_candidates: &[ConsumeCandidate<C, A>],
-    ) -> Option<Vec<()>> {
-        // ★ HIGHEST index FIRST — see `store_persistent_data` for why the
-        // `.rev()` this replaces silently duplicated a datum whenever one
-        // receive took two data from the same channel.
-        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = sorted_candidates
-            .into_iter()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    datum_index,
-                } = consume_candidate;
-
-                if *datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
-                        .remove_datum(channel, *datum_index)
-                        .is_err()
-                {
-                    return None;
-                }
-                self.get_store().remove_join(channel, channels);
-
-                Some(())
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
-        }
-    }
-
-    fn run_matcher_for_channels(
-        &self,
-        grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
-        fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
-    ) -> MaybeProduceCandidate<C, P, A, K> {
-        let mut remaining = grouped_channels;
-
-        loop {
-            match remaining.split_first() {
-                Some((channels, rest)) => {
-                    let t_cont = Instant::now();
-                    let match_candidates = fetch_matching_continuations(channels.to_vec());
-                    metrics::counter!("rspace.matcher.fetch_continuations_ns", "source" => RSPACE_METRICS_SOURCE)
-                        .increment(t_cont.elapsed().as_nanos() as u64);
-                    metrics::counter!("rspace.matcher.continuations_returned", "source" => RSPACE_METRICS_SOURCE)
-                        .increment(match_candidates.len() as u64);
-
-                    let t_data = Instant::now();
-                    let channel_to_indexed_data: HashMap<C, Vec<(Datum<A>, i32)>> = channels
-                        .iter()
-                        .map(|c| fetch_matching_data(c.clone()))
-                        .collect();
-                    metrics::counter!("rspace.matcher.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
-                        .increment(t_data.elapsed().as_nanos() as u64);
-
-                    let t_match = Instant::now();
-                    let first_match = self.extract_first_match(
-                        &self.matcher,
-                        channels.to_vec(),
-                        match_candidates,
-                        channel_to_indexed_data,
-                    );
-                    metrics::counter!("rspace.matcher.extract_first_match_ns", "source" => RSPACE_METRICS_SOURCE)
-                        .increment(t_match.elapsed().as_nanos() as u64);
-
-                    match first_match {
-                        Some(produce_candidate) => return Some(produce_candidate),
-                        None => remaining = rest.to_vec(),
-                    }
-                }
-                None => {
-                    return None;
-                }
-            }
-        }
-    }
-
-    /// The candidate pool in THE canonical order — see
-    /// [`crate::rspace::candidate_order`], which now owns it so the replay
-    /// space can order its pools identically (the guard-aware selector's
-    /// replay-equivalence argument depends on play and replay enumerating
-    /// candidates in the same order).
-    ///
-    /// The name is historical: this never shuffled. A random shuffle would make
-    /// equally valid matches diverge across validators, so the order is a hash
-    /// of the serialized candidate with the store index as tie breaker.
-    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
-    where D: CandidateOrderingBytes {
-        order_candidates_with_index(t)
-    }
 }

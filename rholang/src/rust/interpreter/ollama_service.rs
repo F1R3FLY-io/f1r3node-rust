@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use super::errors::InterpreterError;
 
+// In-binary fallbacks; the operator-facing defaults live in defaults.conf.
+const DEFAULT_BASE_URL: &str = "http://localhost:11434";
+const DEFAULT_MODEL: &str = "llama4:latest";
+const DEFAULT_TIMEOUT_SEC: u64 = 30;
+
 #[derive(Clone, Debug)]
 pub struct OllamaConfig {
     pub enabled: bool,
@@ -19,9 +24,9 @@ impl OllamaConfig {
     pub fn from_env() -> Self {
         Self::from_config_values(
             false,
-            "http://localhost:11434".to_string(),
-            "llama4:latest".to_string(),
-            30,
+            DEFAULT_BASE_URL.to_string(),
+            DEFAULT_MODEL.to_string(),
+            DEFAULT_TIMEOUT_SEC,
         )
     }
 
@@ -52,9 +57,9 @@ impl OllamaConfig {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            base_url: "http://localhost:11434".to_string(),
-            model: "llama4:latest".to_string(),
-            timeout_sec: 30,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            model: DEFAULT_MODEL.to_string(),
+            timeout_sec: DEFAULT_TIMEOUT_SEC,
             validate_connection: false,
         }
     }
@@ -408,4 +413,162 @@ pub async fn create_ollama_service_validated(
     }
 
     Ok(Arc::new(tokio::sync::Mutex::new(service)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mock_service() -> OllamaService {
+        OllamaService::new_mock(
+            "chat answer".to_string(),
+            "generate answer".to_string(),
+            vec!["llama4:latest".to_string(), "mistral".to_string()],
+        )
+    }
+
+    #[test]
+    fn disabled_config_uses_defaults() {
+        let config = OllamaConfig::disabled();
+        assert!(!config.enabled);
+        assert_eq!(config.base_url, "http://localhost:11434");
+        assert_eq!(config.model, "llama4:latest");
+        assert_eq!(config.timeout_sec, 30);
+        assert!(!config.validate_connection);
+    }
+
+    #[test]
+    fn from_config_values_uses_config_when_env_is_unset() {
+        let config = OllamaConfig::from_config_values(
+            false,
+            "http://example:1234".to_string(),
+            "custom-model".to_string(),
+            7,
+        );
+        assert!(!config.enabled);
+        assert_eq!(config.base_url, "http://example:1234");
+        assert_eq!(config.model, "custom-model");
+        assert_eq!(config.timeout_sec, 7);
+        assert!(!config.validate_connection);
+    }
+
+    #[test]
+    fn parse_bool_env_accepts_scala_compatible_values() {
+        let var = "RHOLANG_TEST_OLLAMA_PARSE_BOOL";
+        assert_eq!(parse_bool_env(var), None);
+
+        for (value, expected) in [
+            ("true", Some(true)),
+            ("1", Some(true)),
+            ("YES", Some(true)),
+            ("on", Some(true)),
+            ("false", Some(false)),
+            ("0", Some(false)),
+            ("no", Some(false)),
+            ("off", Some(false)),
+            ("banana", None),
+        ] {
+            env::set_var(var, value);
+            assert_eq!(parse_bool_env(var), expected, "value {value}");
+        }
+        env::remove_var(var);
+    }
+
+    #[tokio::test]
+    async fn mock_service_answers_all_endpoints() {
+        let service = mock_service();
+        assert_eq!(
+            service
+                .chat(None, vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                }])
+                .await
+                .unwrap(),
+            "chat answer"
+        );
+        assert_eq!(
+            service.generate(Some("mistral"), "prompt").await.unwrap(),
+            "generate answer"
+        );
+        assert_eq!(service.list_models().await.unwrap(), vec![
+            "llama4:latest".to_string(),
+            "mistral".to_string()
+        ]);
+    }
+
+    #[tokio::test]
+    async fn disabled_service_errors_on_every_endpoint() {
+        let service = OllamaService::new_disabled();
+        assert!(matches!(
+            service.chat(None, vec![]).await,
+            Err(InterpreterError::OllamaError(_))
+        ));
+        assert!(matches!(
+            service.generate(None, "p").await,
+            Err(InterpreterError::OllamaError(_))
+        ));
+        assert!(matches!(
+            service.list_models().await,
+            Err(InterpreterError::OllamaError(_))
+        ));
+    }
+
+    #[test]
+    fn from_config_selects_the_variant_by_enabled_flag() {
+        let disabled = OllamaService::from_config(&OllamaConfig::disabled());
+        assert!(matches!(disabled, OllamaService::Disabled));
+
+        let enabled_config = OllamaConfig {
+            enabled: true,
+            base_url: "http://localhost:1".to_string(),
+            model: "m".to_string(),
+            timeout_sec: 1,
+            validate_connection: false,
+        };
+        let real = OllamaService::from_config(&enabled_config);
+        assert!(matches!(real, OllamaService::Real { .. }));
+    }
+
+    #[tokio::test]
+    async fn shared_service_constructors_wrap_the_expected_variants() {
+        let disabled = create_disabled_ollama_service();
+        assert!(matches!(*disabled.lock().await, OllamaService::Disabled));
+
+        let from_config = create_ollama_service(&OllamaConfig::disabled());
+        assert!(matches!(*from_config.lock().await, OllamaService::Disabled));
+    }
+
+    #[tokio::test]
+    async fn validated_constructor_skips_validation_when_disabled_or_configured_off() {
+        let disabled = create_ollama_service_validated(&OllamaConfig::disabled())
+            .await
+            .unwrap();
+        assert!(matches!(*disabled.lock().await, OllamaService::Disabled));
+
+        let no_validation = OllamaConfig {
+            enabled: true,
+            base_url: "http://localhost:1".to_string(),
+            model: "m".to_string(),
+            timeout_sec: 1,
+            validate_connection: false,
+        };
+        let real = create_ollama_service_validated(&no_validation)
+            .await
+            .unwrap();
+        assert!(matches!(*real.lock().await, OllamaService::Real { .. }));
+    }
+
+    #[test]
+    fn chat_message_round_trips_through_serde() {
+        let message = ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(json, r#"{"role":"user","content":"hi"}"#);
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.role, "user");
+        assert_eq!(back.content, "hi");
+    }
 }

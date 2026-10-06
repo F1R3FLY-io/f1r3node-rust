@@ -32,6 +32,8 @@ mod tests {
             finalization_rate: 1,
             max_number_of_parents: 2147483647,
             max_parent_depth: 100,
+            deploy_lifespan: 50,
+            deploy_play_budget: Duration::ZERO,
             fork_choice_stale_threshold: Duration::from_secs(30 * 60),
             fork_choice_check_if_stale_interval: Duration::from_secs(30),
             synchrony_constraint_threshold: 0.0,
@@ -42,6 +44,7 @@ mod tests {
                 drop_peer_after_retries: 5,
             },
             genesis_block_data: GenesisBlockData {
+                resource_policy: None,
                 genesis_data_dir: "/tmp/genesis".to_string(),
                 bonds_file: "bonds.txt".to_string(),
                 wallets_file: "wallets.txt".to_string(),
@@ -54,12 +57,6 @@ mod tests {
                 genesis_block_number: 0,
                 pos_multi_sig_public_keys: vec![],
                 pos_multi_sig_quorum: 0,
-                max_cosigners_per_deploy:
-                    casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
-                // Task #13b: default EMPTY genesis client funding-slot list.
-                client_fuel_allocations: Vec::new(),
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,
@@ -73,7 +70,6 @@ mod tests {
                 ceremony_master_mode: false,
             },
             min_phlo_price: 0,
-            strict_funding_enforcement: false,
             heartbeat_conf: HeartbeatConf {
                 enabled: false,
                 check_interval: Duration::from_secs(60),
@@ -81,17 +77,15 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             },
-            disable_late_block_filtering: true,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,
-            finalizer: casper::rust::casper_conf::FinalizerConf::default(),
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
-            max_user_deploys_per_block: 32,
+            max_user_deploys_per_block: 128,
         }
     }
 
@@ -127,6 +121,7 @@ mod tests {
                 lookup_interval: Duration::from_secs(20),
                 cleanup_interval: Duration::from_secs(10 * 60),
                 heartbeat_batch_size: 50,
+                heartbeat_failure_threshold: 3,
                 init_wait_loop_interval: Duration::from_secs(5),
             },
             api_server: ApiServer {
@@ -136,12 +131,16 @@ mod tests {
                 grpc_max_recv_message_size: 16 * 1024 * 1024,
                 port_http: 40403,
                 port_admin_http: 40405,
+                http_max_body_bytes: 16 * 1024 * 1024,
                 max_blocks_limit: 100,
                 enable_reporting: true,
+                exploratory_deploy_max_concurrent: 1,
+                exploratory_deploy_phlo_limit: 5_000_000,
+                exploratory_deploy_execution_timeout: Duration::from_secs(15),
                 keep_alive_time: Duration::from_secs(60),
                 keep_alive_timeout: Duration::from_secs(20),
-                permit_keep_alive_time: Duration::from_secs(10),
-                max_connection_idle: Duration::from_secs(60),
+                tcp_keepalive_time: Duration::from_secs(10),
+                request_timeout: Duration::from_secs(60),
                 max_connection_age: Duration::from_secs(60),
                 max_connection_age_grace: Duration::from_secs(60),
             },
@@ -151,7 +150,6 @@ mod tests {
             tls: TlsConf {
                 certificate_path: PathBuf::from("/tmp/cert.pem"),
                 key_path: PathBuf::from("/tmp/key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },
@@ -165,6 +163,7 @@ mod tests {
                 tick_interval: Duration::from_secs(10),
                 influxdb_endpoint: InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: DevConf {
                 deployer_private_key: None,

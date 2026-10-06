@@ -257,20 +257,16 @@ fn control_a_non_binding_attempt_is_unchanged_by_the_fix() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// §2 — RED 2: the multiplicity guard is live
+// §2 — duplicate detection is diagnostic; source consensus folds last-wins
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Two aggregated maps that both claim the same level must be refused, and the
-/// refusal must be able to **name** the level.
+/// Duplicate levels are identifiable, but source consensus folds maps in order.
 ///
 /// The fixture is the measured signature: an instrumented probe over the 49-test
 /// matcher suite found aggregations whose `added_vars` sequence read `[0, 1, 0, 1]`
 /// — two maps, each carrying levels 0 and 1, which is precisely what a pair of
 /// cumulative snapshots looks like. Pinning it as a fixture makes the property
 /// permanently checkable in CI without a diagnostic build.
-///
-/// At HEAD `aggregate_updates` returns `Some({0↦7, 1↦8})` and the test fails by
-/// assertion — cleanly, with no panic.
 #[test]
 fn aggregate_updates_names_the_level_two_attempts_both_claimed() {
     let current = new_free_map();
@@ -280,28 +276,19 @@ fn aggregate_updates_names_the_level_two_attempts_both_claimed() {
     assert_eq!(
         first_duplicate_added_var(&current, &[a.clone(), b.clone()]),
         Some(0),
-        "the refusal names a LEVEL, not merely a boolean"
+        "the diagnostic identifies the duplicate level"
     );
     assert_eq!(
         aggregate_updates(current, vec![a, b]),
-        None,
-        "the aggregation refuses through its own Option channel"
+        Some(FreeMap::from([(0, seven()), (1, eight())])),
+        "source consensus preserves deterministic last-wins aggregation"
     );
 }
 
-/// ★ THE DISCRIMINATOR between a faithful port and a plausible-looking one.
-///
-/// Scala checks the multiplicity of **keys**, not disagreement of values. A
-/// "fix" that compares the two bound `Par`s and only refuses when they differ
-/// passes the test above — the values there are equal in one map and different
-/// in the other, so it is not decisive on its own — and fails this one, where
-/// the two maps are identical.
-///
-/// Refusing here is correct on the merits, not just for fidelity: two matches
-/// that both claim level 5 mean the pattern used level 5 as a binder twice,
-/// which is a linearity violation regardless of what the two matches bound.
+/// Matching equal duplicate values and conflicting duplicate values follow
+/// the same source-order rule. The latter pins the actual consensus choice.
 #[test]
-fn aggregate_updates_refuses_a_repeat_even_when_the_two_values_agree() {
+fn aggregate_updates_folds_duplicate_levels_in_source_order() {
     let current = new_free_map();
     let a = FreeMap::from([(5, seven())]);
 
@@ -312,8 +299,16 @@ fn aggregate_updates_refuses_a_repeat_even_when_the_two_values_agree() {
     );
     assert_eq!(
         aggregate_updates(current, vec![a.clone(), a]),
-        None,
-        "agreement on the value does not make the repeat legal"
+        Some(FreeMap::from([(5, seven())])),
+        "identical duplicate values remain a successful aggregation"
+    );
+
+    let first = FreeMap::from([(5, seven())]);
+    let second = FreeMap::from([(5, eight())]);
+    assert_eq!(
+        aggregate_updates(new_free_map(), vec![first, second]),
+        Some(FreeMap::from([(5, eight())])),
+        "the later map wins exactly as in the source fold"
     );
 }
 

@@ -1,12 +1,17 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
-use casper::rust::{ProposeFunction, ValidBlockProcessing};
+use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_ACTIVE_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
+    BLOCK_PROCESSOR_METRICS_SOURCE,
+};
+use casper::rust::ValidBlockProcessing;
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
@@ -14,35 +19,12 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::mpsc;
 
-const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
+/// Pipeline width; replay itself is serialized by the runtime's ReplayLock.
+const MAX_PARALLEL_BLOCKS: usize = 2;
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
-const MALLOC_TRIM_EVERY_BLOCKS: usize = 8;
-const TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: bool = false;
-static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn malloc_trim(pad: usize) -> i32;
-}
-
-fn maybe_trim_allocator_after_block() {
-    let interval = MALLOC_TRIM_EVERY_BLOCKS;
-    if interval == 0 {
-        return;
-    }
-
-    let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !count.is_multiple_of(interval) {
-        return;
-    }
-
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let _ = malloc_trim(0);
-    }
-}
-
-/// Ensures the in-flight marker is always cleared, even on early-return or panic.
+/// Ensures the in-flight marker is always cleared, even on early-return or
+/// panic.
 struct InFlightBlockGuard {
     blocks_in_processing: Arc<DashSet<BlockHash>>,
     hash: BlockHash,
@@ -61,6 +43,29 @@ impl Drop for InFlightBlockGuard {
     fn drop(&mut self) { self.blocks_in_processing.remove(&self.hash); }
 }
 
+struct ActiveBlockProcessingGuard;
+
+impl ActiveBlockProcessingGuard {
+    fn new() -> Self {
+        metrics::gauge!(
+            BLOCK_PROCESSING_ACTIVE_METRIC,
+            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+        )
+        .increment(1.0);
+        Self
+    }
+}
+
+impl Drop for ActiveBlockProcessingGuard {
+    fn drop(&mut self) {
+        metrics::gauge!(
+            BLOCK_PROCESSING_ACTIVE_METRIC,
+            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+        )
+        .decrement(1.0);
+    }
+}
+
 /// Configuration for BlockProcessorInstance
 pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
     pub blocks_queue_rx: mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
@@ -70,10 +75,6 @@ pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
     pub block_processor: Arc<BlockProcessor<T>>,
 
     pub blocks_in_processing: Arc<DashSet<BlockHash>>,
-
-    pub trigger_propose_f: Option<Arc<ProposeFunction>>,
-
-    pub max_parallel_blocks: usize,
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
@@ -84,16 +85,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         ),
         block_processor: Arc<BlockProcessor<T>>,
         blocks_in_processing: Arc<DashSet<BlockHash>>,
-        trigger_propose_f: Option<Arc<ProposeFunction>>,
-        max_parallel_blocks: usize,
     ) -> Self {
         Self {
             blocks_queue_rx,
             block_queue_tx,
             block_processor,
             blocks_in_processing,
-            trigger_propose_f,
-            max_parallel_blocks,
         }
     }
 
@@ -105,7 +102,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     ///
     /// # Arguments
     ///
-    /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for re-enqueuing buffer pendants)
+    /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for
+    ///   re-enqueuing buffer pendants)
     pub fn create(
         self,
     ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
@@ -117,16 +115,22 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 block_queue_tx,
                 block_processor,
                 blocks_in_processing,
-                trigger_propose_f,
-                max_parallel_blocks,
             } = self;
 
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel_blocks));
+            tracing::info!(
+                max_parallel_blocks = MAX_PARALLEL_BLOCKS,
+                "Starting bounded block processing"
+            );
+            metrics::gauge!(
+                BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
+                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+            )
+            .set(MAX_PARALLEL_BLOCKS as f64);
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_BLOCKS));
 
             while let Some((casper, block)) = blocks_queue_rx.recv().await {
                 let block_processor = block_processor.clone();
                 let blocks_in_processing = blocks_in_processing.clone();
-                let trigger_propose_f = trigger_propose_f.clone();
                 let block_queue_tx = block_queue_tx.clone();
                 let casper = casper.clone();
                 let result_tx = result_tx.clone();
@@ -135,14 +139,18 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                 // Spawn task to process the block
                 tokio::spawn(async move {
+                    let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     if !blocks_in_processing.contains(&block.block_hash) {
                         // Fallback for legacy enqueue paths: mark before processing.
                         blocks_in_processing.insert(block.block_hash.clone());
                         let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                         if blocks_in_processing.len() > max_in_flight {
-                            // Ensure in-flight marker is always cleared, even when ack cleanup fails.
+                            // Ensure in-flight marker is always cleared, even when ack cleanup
+                            // fails.
                             blocks_in_processing.remove(&block.block_hash);
+                            block_processor
+                                .note_local_backpressure_drop(&block.block_hash, "instance-legacy");
                             if let Err(err) = block_processor.ack_processed(&block).await {
                                 tracing::warn!(
                                     "Dropping block {} and cleanup failed: {}",
@@ -173,27 +181,60 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     .await;
 
                     match result {
-                        Ok(res) => {
+                        Ok(BlockProcessOutcome::Processed(block, res)) => {
                             tracing::info!("Block {} processing finished.", block_str);
-                            match result_tx.send(res).await {
-                                Ok(_) => {}
-                                Err(err) => tracing::error!(
-                                    "Failed to send block processing result: {}",
-                                    err
-                                ),
-                            }
-                        }
-                        Err(e) => match &e {
-                            CasperError::Other(msg) if msg == "Missing dependencies" => {
+                            if let Err(err) =
+                                block_processor.clear_validation_failures(&block.block_hash)
+                            {
                                 tracing::warn!(
-                                    "Block {} delayed: missing dependencies.",
-                                    block_str
+                                    block = %block_str,
+                                    error = %err,
+                                    "failed to clear validation-failure ledger"
                                 );
                             }
-                            _ => {
-                                tracing::error!("Error processing block {}: {}", block_str, e);
+                            match result_tx.send((block, res)).await {
+                                Ok(_) => {}
+                                Err(err) => {
+                                    tracing::error!(error = %err, "block processing result send failed")
+                                }
                             }
-                        },
+                        }
+                        Ok(BlockProcessOutcome::MissingDependencies) => {
+                            tracing::warn!("Block {} delayed: missing dependencies.", block_str);
+                        }
+                        // Already logged at INFO by the pipeline; a routine
+                        // drop is not a failure.
+                        Ok(BlockProcessOutcome::NotOfInterest)
+                        | Ok(BlockProcessOutcome::Malformed) => {}
+                        Err(e) => {
+                            tracing::error!(block = %block_str, error = %e, "block processing failed");
+                            match block_processor.note_validation_failure(&block.block_hash) {
+                                Ok(ValidationFailureDisposition::Retry) => {}
+                                Ok(ValidationFailureDisposition::PurgeAndQuarantine) => {
+                                    tracing::warn!(
+                                        block = %block_str,
+                                        "hard-failing block purged from buffer after \
+                                         reaching the validation-error attempt cap"
+                                    );
+                                    if let Err(purge_err) =
+                                        block_processor.purge_from_buffer_and_ack(&block).await
+                                    {
+                                        tracing::warn!(
+                                            block = %block_str,
+                                            error = %purge_err,
+                                            "purge after validation-error cap failed"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        block = %block_str,
+                                        error = %err,
+                                        "failed to record validation failure"
+                                    );
+                                }
+                            }
+                        }
                     }
 
                     // Release in-flight marker before scanning dependency-free pendants.
@@ -203,7 +244,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
-                    // In Scala, if this fails, the stream short-circuits and triggerProposeF won't be called
                     match casper.get_dependency_free_from_buffer() {
                         Ok(buffer_pendants) => {
                             if !buffer_pendants.is_empty() {
@@ -222,12 +262,28 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             // Enqueue pendants if we can mark them as queued/in-processing first.
                             for pendant in &buffer_pendants {
                                 let pendant_hash = BlockHash::from(pendant.block_hash.clone());
+                                if block_processor
+                                    .is_validation_failure_quarantined(&pendant_hash)
+                                    .unwrap_or(false)
+                                {
+                                    tracing::debug!(
+                                        "Skipping dependency-free pendant {} during \
+                                         validation-failure quarantine",
+                                        PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                    );
+                                    continue;
+                                }
                                 if blocks_in_processing.insert(pendant_hash.clone()) {
                                     let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                                     if blocks_in_processing.len() > max_in_flight {
                                         blocks_in_processing.remove(&pendant_hash);
+                                        block_processor.note_local_backpressure_drop(
+                                            &pendant_hash,
+                                            "instance-pendant",
+                                        );
                                         tracing::warn!(
-                                            "Skipping dependency-free pendant {} enqueue because in-flight block cap {} is reached",
+                                            "Skipping dependency-free pendant {} enqueue because \
+                                             in-flight block cap {} is reached",
                                             PrettyPrinter::build_string_bytes(&pendant.block_hash),
                                             max_in_flight
                                         );
@@ -240,7 +296,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     {
                                         blocks_in_processing.remove(&pendant_hash);
                                         tracing::warn!(
-                                            "Dropping dependency-free pendant {} because block queue is closed",
+                                            "Dropping dependency-free pendant {} because block \
+                                             queue is closed",
                                             PrettyPrinter::build_string_bytes(&pendant.block_hash)
                                         );
                                     } else {
@@ -251,71 +308,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     }
                                 } else {
                                     tracing::info!(
-                                        "Skipping dependency-free pendant {} enqueue because it is already marked in-flight",
+                                        "Skipping dependency-free pendant {} enqueue because it \
+                                         is already marked in-flight",
                                         PrettyPrinter::build_string_bytes(&pendant.block_hash)
                                     );
                                 }
                             }
-
-                            // Only call trigger_propose if get_dependency_free_from_buffer succeeded
-                            // and this path is explicitly enabled. Heartbeat proposer is the
-                            // default liveness path to avoid propose storms under heavy replay.
-                            if TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING {
-                                if let Some(trigger_propose) = trigger_propose_f {
-                                    // Skip trigger if local validator is not currently bonded.
-                                    // This avoids repeated ReadOnlyMode propose attempts on non-bonded nodes.
-                                    let is_bonded_validator = if let Some(validator) =
-                                        casper.get_validator()
-                                    {
-                                        match casper.get_snapshot().await {
-                                            Ok(snapshot) => snapshot
-                                                .on_chain_state
-                                                .active_validators
-                                                .contains(&validator.public_key.bytes),
-                                            Err(err) => {
-                                                tracing::warn!(
-                                                "Failed to get Casper snapshot for trigger-propose bond check: {}",
-                                                err
-                                            );
-                                                false
-                                            }
-                                        }
-                                    } else {
-                                        false
-                                    };
-
-                                    if is_bonded_validator {
-                                        // Clone the Arc and cast to trait object
-                                        let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =
-                                            Arc::clone(&casper)
-                                                as Arc<dyn MultiParentCasper + Send + Sync>;
-                                        match trigger_propose(casper_arc, true).await {
-                                            Ok(_) => {}
-                                            Err(err) => {
-                                                tracing::error!(
-                                                    "Failed to trigger propose: {}",
-                                                    err
-                                                )
-                                            }
-                                        }
-                                    } else {
-                                        tracing::debug!(
-                                            "Skipping trigger propose after block processing: validator is not bonded"
-                                        );
-                                    }
-                                }
-                            }
                         }
                         Err(err) => {
-                            tracing::error!(
-                                "Failed to get dependency-free blocks from buffer: {}. Skipping trigger propose.",
-                                err
-                            );
-                            // Don't call trigger_propose if get_dependency_free_from_buffer failed
+                            tracing::error!(error = %err, "dependency-free block buffer retrieval failed");
                         }
                     }
-
-                    maybe_trim_allocator_after_block();
 
                     drop(permit);
                 });
@@ -330,6 +333,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     }
 }
 
+/// A processing attempt's outcome. The non-`Processed` variants are normal
+/// pipeline exits — a duplicate delivery, a malformed block, a block waiting
+/// on its dependencies — not failures, and they must never travel the error
+/// channel: an `Err` here means something actually broke.
+enum BlockProcessOutcome {
+    Processed(BlockMessage, ValidBlockProcessing),
+    NotOfInterest,
+    Malformed,
+    MissingDependencies,
+}
+
 /// Process a block through all validation steps
 ///
 /// This implements the Scala pipeline:
@@ -337,19 +351,18 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 /// 2. checkIfWellFormedAndStore
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
-/// 5. Enqueue dependency-free blocks from buffer
-/// 6. Trigger propose if configured
-async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
+/// 5. Enqueue dependency-free blocks from buffer (in the outer loop)
+async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
     block: BlockMessage,
-) -> Result<(BlockMessage, ValidBlockProcessing), CasperError> {
+) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
     // Step 1: Check if block is of interest
     // Equivalent to: blockProcessor.checkIfOfInterest(c, b)
-    let is_of_interest = match block_processor.check_if_of_interest(casper.clone(), &block) {
-        Ok(is_of_interest) => is_of_interest,
+    let verdict = match block_processor.check_if_of_interest(casper.clone(), &block) {
+        Ok(verdict) => verdict,
         Err(err) => {
             block_processor
                 .ack_processed(&block)
@@ -364,18 +377,17 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
         }
     };
 
-    if !is_of_interest {
-        tracing::info!("Block {} is not of interest. Dropped.", block_str);
+    if !verdict.is_fresh() {
         block_processor
-            .purge_from_buffer_and_ack(&block)
+            .dispose_not_of_interest(verdict, &block)
             .await
             .map_err(|err| {
                 CasperError::RuntimeError(format!(
-                    "Block {} was not of interest, and purge+cleanup failed: {}",
+                    "Block {} was not of interest, and cleanup failed: {}",
                     block_str, err
                 ))
             })?;
-        return Err(CasperError::Other("Block not of interest".to_string()));
+        return Ok(BlockProcessOutcome::NotOfInterest);
     }
 
     // Step 2: Check if well-formed and store
@@ -407,11 +419,45 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                     block_str, err
                 ))
             })?;
-        return Err(CasperError::Other("Block is malformed".to_string()));
+        return Ok(BlockProcessOutcome::Malformed);
     }
 
     // Step 3: Log started
     tracing::info!("Block {} processing started.", block_str);
+
+    // Settled-history door: a signature-checked block at-or-below this node's
+    // sync anchor, solicited by a bonded validator's block, enters the DAG the
+    // way LFS restore admitted its neighbours — hash-checked, unjudged. Judging
+    // it instead runs tip-state validation checks against settled history,
+    // which is how a restored joiner recorded verdicts against honest
+    // validators. The outer loop's pendant scan then re-enqueues whatever was
+    // deferred waiting on this block.
+    match block_processor
+        .try_admit_settled(casper.clone(), &block)
+        .await
+    {
+        Ok(true) => {
+            return Ok(BlockProcessOutcome::Processed(
+                block,
+                rspace_plus_plus::rspace::history::Either::Left(
+                    casper::rust::block_status::BlockError::AdmittedSettled,
+                ),
+            ));
+        }
+        Ok(false) => {}
+        Err(err) => {
+            block_processor
+                .ack_processed(&block)
+                .await
+                .map_err(|ack_err| {
+                    CasperError::RuntimeError(format!(
+                        "try_admit_settled failed for {}, and cleanup failed: {}",
+                        block_str, ack_err
+                    ))
+                })?;
+            return Err(err);
+        }
+    }
 
     // Step 4: Check dependencies with effects
     // Equivalent to: blockProcessor.checkDependenciesWithEffects(c, b)
@@ -437,7 +483,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     if !has_dependencies {
         tracing::info!("Block {} missing dependencies.", block_str);
         // `check_dependencies_with_effects` already performs ack/cleanup for this path.
-        return Err(CasperError::Other("Missing dependencies".to_string()));
+        return Ok(BlockProcessOutcome::MissingDependencies);
     }
 
     // Step 5: Validate block with effects
@@ -448,7 +494,8 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     {
         Ok(validation_result) => validation_result,
         Err(err) => {
-            // ensure this block is no longer tracked in the retriever even when validation fails
+            // ensure this block is no longer tracked in the retriever even when validation
+            // fails
             block_processor
                 .ack_processed(&block)
                 .await
@@ -464,5 +511,10 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok((block, validation_result))
+    Ok(BlockProcessOutcome::Processed(block, validation_result))
 }
+
+const _: () = assert!(
+    MAX_PARALLEL_BLOCKS >= 1 && MAX_PARALLEL_BLOCKS <= tokio::sync::Semaphore::MAX_PERMITS,
+    "parallel width must be a valid semaphore permit count"
+);

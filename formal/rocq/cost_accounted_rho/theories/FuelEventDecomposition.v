@@ -90,7 +90,7 @@ Proof.
   induction S; simpl.
   - reflexivity.
   - apply token_fuel_events_length.
-  - rewrite app_length. rewrite IHS1, IHS2. reflexivity.
+  - rewrite length_app. rewrite IHS1, IHS2. reflexivity.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════

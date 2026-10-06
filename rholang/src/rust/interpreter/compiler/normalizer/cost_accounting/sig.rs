@@ -1,26 +1,12 @@
-//! Signature resolution: surface [`Signature`] → [`Sig`] IR → native funding
-//! [`accounting::Sig`](crate::rust::interpreter::accounting::Sig).
-//!
-//! W1 does NOT derive its own supply channel (the transpiler's Part-B
-//! `supply_channel`/`atom_channel` are DROPPED): native `from_sig` is the
-//! authoritative, consensus-anchored channel basis (design §3.1 — native wins).
-//! Surface forms DECORATE; they never re-emit metered operations. So this module
-//! only RESOLVES a surface signature to a native `Sig` (the `from_sig` of which is
-//! `Σ⟦s⟧`); the located-stack attribution that uses it is a metering-context
-//! concern (Phase 3), not codegen here.
-//!
-//! Resolution is **binding-sensitive** ("signatures are names"): a `new`/`for`-
-//! bound ground sig is RING-FENCED (keyed on the binder's stable source span via
-//! [`canon_bound`] → `ir::Sig::Bound`, bridged to a distinct native `Ground`),
-//! while a FREE ground sig is content-by-spelling ([`canon_ground`]), so the same
-//! free `g` is one global channel across deploys/parties (the §9 rendezvous).
-
 use std::collections::HashMap;
 
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par};
+use models::rhoapi::{CostSignature, CostSignatureCompound, Expr, Par};
+use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
+use models::rust::utils::union;
 use prost::Message;
 use rholang_parser::ast::{AnnProc, Name, Signature, Var};
 use rholang_parser::{RholangParser, SourceSpan};
@@ -28,6 +14,7 @@ use rholang_parser::{RholangParser, SourceSpan};
 use super::ir::Sig;
 use crate::rust::interpreter::accounting::{Sig as NativeSig, SignatureChannel};
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
+use crate::rust::interpreter::compiler::free_map::FreeMap;
 use crate::rust::interpreter::compiler::normalize::{ProcVisitInputs, VarSort};
 use crate::rust::interpreter::compiler::normalize_drive::{
     norm_drive_from, NormKont, NormVal, NormWork, SigInput, Step,
@@ -230,24 +217,277 @@ pub fn signature_to_channel<'ast>(
     )
 }
 
-/// Canonical bytes for a `new`-bound ground principal: the binder's source span,
-/// a stable, binder-unique, binding-depth-INDEPENDENT identity. Two uses of the
-/// same bound signature (e.g. a token and its gate, both in the binder's scope)
-/// canonicalise to the same bytes — so they resolve to the same channel — while
-/// two distinct `new`-binders never collide (each `new` has a distinct source
-/// span), which is exactly the ring-fencing guarantee.
-pub fn canon_bound(span: &SourceSpan) -> Vec<u8> {
-    format!(
-        "{}:{}-{}:{}",
-        span.start.line, span.start.col, span.end.line, span.end.col
-    )
-    .into_bytes()
+pub enum ResolvedSignatureAtom {
+    Ground(Vec<u8>),
+    BoundLevel(i32),
+    Quote(Par),
+    Unit,
 }
 
-/// Canonical bytes for a ground principal: the wire encoding of the
-/// sort-canonicalized `Par` holding the identifier as a ground string. Depends
-/// only on the spelling, so the same `g` everywhere yields the same channel (and
-/// the §9 rendezvous works).
+pub enum ResolvedSignatureEvent {
+    Atom(ResolvedSignatureAtom),
+    Compound(usize),
+}
+
+pub struct LoweredSignature {
+    pub signature: CostSignature,
+    pub locally_free: Vec<u8>,
+    pub connective_used: bool,
+}
+
+fn combine_wire_signatures(elements: Vec<CostSignature>) -> CostSignature {
+    sort_signature(&CostSignature {
+        value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+            elements,
+        })),
+    })
+    .term
+}
+
+pub fn lower_resolved_signature(
+    events: impl IntoIterator<Item = ResolvedSignatureEvent>,
+) -> Result<LoweredSignature, InterpreterError> {
+    let mut stack = Vec::new();
+    for event in events {
+        match event {
+            ResolvedSignatureEvent::Atom(atom) => {
+                let value = match atom {
+                    ResolvedSignatureAtom::Ground(bytes) => CostSignatureValue::Ground(bytes),
+                    ResolvedSignatureAtom::BoundLevel(level) if level >= 0 => {
+                        CostSignatureValue::BoundLevel(level)
+                    }
+                    ResolvedSignatureAtom::BoundLevel(_) => {
+                        return Err(InterpreterError::NormalizerError(
+                            "cost-accounting: negative bound signature level".to_string(),
+                        ));
+                    }
+                    ResolvedSignatureAtom::Quote(par) => CostSignatureValue::Quote(par),
+                    ResolvedSignatureAtom::Unit => CostSignatureValue::Unit(true),
+                };
+                stack.push(CostSignature { value: Some(value) });
+            }
+            ResolvedSignatureEvent::Compound(arity) => {
+                if arity < 2 || stack.len() < arity {
+                    return Err(InterpreterError::NormalizerError(
+                        "cost-accounting: malformed compound signature".to_string(),
+                    ));
+                }
+                let elements = stack.split_off(stack.len() - arity);
+                stack.push(combine_wire_signatures(elements));
+            }
+        }
+    }
+    if stack.len() != 1 {
+        return Err(InterpreterError::NormalizerError(
+            "cost-accounting: malformed signature event sequence".to_string(),
+        ));
+    }
+    let signature = stack.pop().expect("one signature remains");
+    Ok(LoweredSignature {
+        locally_free: wire_signature_locally_free(&signature),
+        connective_used: wire_signature_connective_used(&signature),
+        signature,
+    })
+}
+
+pub fn wire_signature_locally_free(signature: &CostSignature) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut work = vec![signature];
+    while let Some(current) = work.pop() {
+        match &current.value {
+            Some(CostSignatureValue::BoundLevel(level)) if *level >= 0 => {
+                result = union(result, models::create_bit_vector(&[*level as usize]));
+            }
+            Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
+                result = union(result, par.locally_free.clone());
+            }
+            Some(CostSignatureValue::Compound(compound)) => {
+                work.extend(compound.elements.iter().rev());
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+pub fn wire_signature_connective_used(signature: &CostSignature) -> bool {
+    let mut work = vec![signature];
+    while let Some(current) = work.pop() {
+        match &current.value {
+            Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
+                if par.connective_used {
+                    return true;
+                }
+            }
+            Some(CostSignatureValue::Compound(compound)) => {
+                work.extend(compound.elements.iter().rev());
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+pub(crate) fn descend_wire_sig<'ast>(
+    sig: SigInput<'ast>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    free_map: FreeMap<VarSort>,
+) -> Result<Step<'ast>, InterpreterError> {
+    let ground = |name: Name<'ast>| -> Result<Step<'ast>, InterpreterError> {
+        let signature = match name {
+            Name::NameVar(Var::Id(id)) => match bound_map_chain.get(id.name) {
+                Some(ctx) if ctx.typ == VarSort::NameSort => CostSignature {
+                    value: Some(CostSignatureValue::BoundLevel(ctx.index as i32)),
+                },
+                Some(ctx) => {
+                    return Err(InterpreterError::UnexpectedNameContext {
+                        var_name: id.name.to_string(),
+                        proc_var_source_span: ctx.source_span,
+                        name_source_span: SourceSpan {
+                            start: id.pos,
+                            end: id.pos,
+                        },
+                    });
+                }
+                None => CostSignature {
+                    value: Some(CostSignatureValue::Ground(canon_ground(id.name))),
+                },
+            },
+            Name::NameVar(Var::Wildcard) => {
+                return Err(InterpreterError::NormalizerError(
+                    "cost-accounting: a wildcard `_` is not a valid ground signature".to_string(),
+                ));
+            }
+            Name::Quote(_) => {
+                return Err(InterpreterError::NormalizerError(
+                    "cost-accounting: a quoted-principal ground signature `@P` is not supported"
+                        .to_string(),
+                ));
+            }
+        };
+        Ok(Step::Done(NormVal::WireSig(signature, free_map)))
+    };
+
+    match sig {
+        SigInput::Ref(signature) => match signature {
+            Signature::Ground(name) => ground(*name),
+            Signature::Hash(proc) => Ok(Step::Descend {
+                kont: NormKont::WireSigHash,
+                work: NormWork::Proc {
+                    proc: *proc,
+                    input: ProcVisitInputs {
+                        par: Par::default(),
+                        bound_map_chain,
+                        free_map,
+                    },
+                },
+            }),
+            Signature::Compound(left, right) => Ok(Step::Descend {
+                kont: NormKont::WireSigCompound {
+                    right: Some(SigInput::Ref(right)),
+                    bound_map_chain: bound_map_chain.clone(),
+                    left: None,
+                },
+                work: NormWork::WireSig {
+                    sig: SigInput::Ref(left),
+                    bound_map_chain,
+                    free_map,
+                },
+            }),
+            Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
+                "cost-accounting: a lollipop `-o` cannot appear in a fundable signature"
+                    .to_string(),
+            )),
+        },
+        SigInput::Own(signature) => match signature {
+            Signature::Ground(name) => ground(name),
+            Signature::Hash(proc) => Ok(Step::Descend {
+                kont: NormKont::WireSigHash,
+                work: NormWork::Proc {
+                    proc,
+                    input: ProcVisitInputs {
+                        par: Par::default(),
+                        bound_map_chain,
+                        free_map,
+                    },
+                },
+            }),
+            Signature::Compound(left, right) => Ok(Step::Descend {
+                kont: NormKont::WireSigCompound {
+                    right: Some(SigInput::Own(*right)),
+                    bound_map_chain: bound_map_chain.clone(),
+                    left: None,
+                },
+                work: NormWork::WireSig {
+                    sig: SigInput::Own(*left),
+                    bound_map_chain,
+                    free_map,
+                },
+            }),
+            Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
+                "cost-accounting: a lollipop `-o` cannot appear in a fundable signature"
+                    .to_string(),
+            )),
+        },
+    }
+}
+
+pub(crate) fn combine_wire_sig_hash<'ast>(value: NormVal) -> Result<Step<'ast>, InterpreterError> {
+    let normalized = value.into_proc();
+    let signature = CostSignature {
+        value: Some(CostSignatureValue::Quote(
+            ParSortMatcher::sort_match(&normalized.par).term,
+        )),
+    };
+    Ok(Step::Done(NormVal::WireSig(signature, normalized.free_map)))
+}
+
+pub(crate) fn combine_wire_sig_compound<'ast>(
+    right: Option<SigInput<'ast>>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    left: Option<CostSignature>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let (signature, free_map) = value.into_wire_sig();
+    match left {
+        None => Ok(Step::Descend {
+            kont: NormKont::WireSigCompound {
+                right: None,
+                bound_map_chain: bound_map_chain.clone(),
+                left: Some(signature),
+            },
+            work: NormWork::WireSig {
+                sig: right.expect("wire signature right child exists"),
+                bound_map_chain,
+                free_map,
+            },
+        }),
+        Some(left) => Ok(Step::Done(NormVal::WireSig(
+            combine_wire_signatures(vec![left, signature]),
+            free_map,
+        ))),
+    }
+}
+
+pub fn signature_to_wire<'ast>(
+    sig: &'ast Signature<'ast>,
+    bound_map_chain: &BoundMapChain<VarSort>,
+    free_map: FreeMap<VarSort>,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<(CostSignature, FreeMap<VarSort>), InterpreterError> {
+    norm_drive_from(
+        Step::Tail(NormWork::WireSig {
+            sig: SigInput::Ref(sig),
+            bound_map_chain: bound_map_chain.clone(),
+            free_map,
+        }),
+        env,
+        parser,
+    )
+    .map(NormVal::into_wire_sig)
+}
+
 pub fn canon_ground(name: &str) -> Vec<u8> {
     let par = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GString(name.to_string())),

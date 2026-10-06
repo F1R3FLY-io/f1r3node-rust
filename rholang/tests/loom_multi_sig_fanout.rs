@@ -164,7 +164,7 @@ fn loom_bang_bounded_counter_monotone_under_concurrent_invokes() {
         // so 0–2 decrements may apply). NEVER negative, never > initial.
         let final_val = counter.load(Ordering::SeqCst);
         assert!(
-            final_val >= 1 && final_val <= 3,
+            (1..=3).contains(&final_val),
             "Bang counter went out of [1,3]: {}",
             final_val
         );

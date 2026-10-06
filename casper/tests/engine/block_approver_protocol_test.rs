@@ -71,12 +71,13 @@ impl TestContext {
             genesis_params.proof_of_stake.epoch_length,
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
+            genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
+            genesis_params.proof_of_stake.max_parent_depth,
+            genesis_params.proof_of_stake.deploy_lifespan,
+            genesis_params.proof_of_stake.min_phlo_price,
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
-            genesis_params.proof_of_stake.max_cosigners_per_deploy,
-            genesis_params.proof_of_stake.initial_phlogiston,
-            genesis_params.proof_of_stake.epoch_phlogiston,
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
@@ -96,14 +97,14 @@ impl TestContext {
 #[serial]
 async fn block_approver_protocol_should_respond_to_valid_approved_block_candidates() {
     // In Rust, we use TestContext struct to hold both protocol and node.
-    let mut ctx = TestContext::create_protocol().await.unwrap();
+    let ctx = TestContext::create_protocol().await.unwrap();
 
     let genesis = ctx.node.genesis.clone();
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &genesis);
 
     ctx.protocol
         .unapproved_block_packet_handler(
-            &mut ctx.node.runtime_manager,
+            &ctx.node.runtime_manager,
             &ctx.node.local,
             unapproved,
             SHARD_ID,
@@ -134,7 +135,7 @@ async fn block_approver_protocol_should_respond_to_valid_approved_block_candidat
 #[tokio::test]
 #[serial]
 async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block_candidates() {
-    let mut ctx = TestContext::create_protocol().await.unwrap();
+    let ctx = TestContext::create_protocol().await.unwrap();
 
     let different_unapproved1 = TestContext::create_unapproved(
         ctx.required_sigs / 2, // wrong number of signatures
@@ -150,7 +151,7 @@ async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block
 
     ctx.protocol
         .unapproved_block_packet_handler(
-            &mut ctx.node.runtime_manager,
+            &ctx.node.runtime_manager,
             &ctx.node.local,
             different_unapproved1,
             SHARD_ID,
@@ -160,7 +161,7 @@ async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block
 
     ctx.protocol
         .unapproved_block_packet_handler(
-            &mut ctx.node.runtime_manager,
+            &ctx.node.runtime_manager,
             &ctx.node.local,
             different_unapproved2,
             SHARD_ID,
@@ -184,13 +185,13 @@ async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block
 #[tokio::test]
 #[serial]
 async fn block_approver_protocol_should_successfully_validate_correct_candidate() {
-    let mut ctx = TestContext::create_protocol().await.unwrap();
+    let ctx = TestContext::create_protocol().await.unwrap();
 
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
     // Scala: BlockApproverProtocol.validateCandidate[Effect](...) - static method call
     let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
-        &mut ctx.node.runtime_manager,
+        &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
         ctx.protocol.deploy_timestamp,
@@ -201,12 +202,13 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         ctx.protocol.epoch_length,
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
-        ctx.protocol.max_cosigners_per_deploy,
-        ctx.protocol.initial_phlogiston,
-        ctx.protocol.epoch_phlogiston,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
@@ -219,7 +221,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
 #[tokio::test]
 #[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() {
-    let mut ctx = TestContext::create_protocol().await.unwrap();
+    let ctx = TestContext::create_protocol().await.unwrap();
 
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
@@ -227,7 +229,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
     let wrong_bonds = HashMap::new();
 
     let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
-        &mut ctx.node.runtime_manager,
+        &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
         ctx.protocol.deploy_timestamp,
@@ -238,12 +240,13 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         ctx.protocol.epoch_length,
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
-        ctx.protocol.max_cosigners_per_deploy,
-        ctx.protocol.initial_phlogiston,
-        ctx.protocol.epoch_phlogiston,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
@@ -256,7 +259,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
 #[tokio::test]
 #[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults() {
-    let mut ctx = TestContext::create_protocol().await.unwrap();
+    let ctx = TestContext::create_protocol().await.unwrap();
 
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
@@ -264,7 +267,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
     let wrong_vaults = vec![];
 
     let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
-        &mut ctx.node.runtime_manager,
+        &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
         ctx.protocol.deploy_timestamp,
@@ -275,12 +278,13 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         ctx.protocol.epoch_length,
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
-        ctx.protocol.max_cosigners_per_deploy,
-        ctx.protocol.initial_phlogiston,
-        ctx.protocol.epoch_phlogiston,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
@@ -299,29 +303,30 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
 #[tokio::test]
 #[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_contracts() {
-    let mut ctx = TestContext::create_protocol().await.unwrap();
+    let ctx = TestContext::create_protocol().await.unwrap();
 
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
     // Scala: validateCandidate with incorrect genesis params (minimumBond + 1, maximumBond - 1, etc.)
     let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
-        &mut ctx.node.runtime_manager,
+        &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
         ctx.protocol.deploy_timestamp,
         &ctx.protocol.vaults,
         &ctx.protocol.bonds_bytes,
-        ctx.protocol.minimum_bond + 1,                // incorrect
-        ctx.protocol.maximum_bond - 1,                // incorrect
-        ctx.protocol.epoch_length + 1,                // incorrect
-        ctx.protocol.quarantine_length + 1,           // incorrect
-        ctx.protocol.number_of_active_validators + 1, // incorrect
+        ctx.protocol.minimum_bond + 1,                  // incorrect
+        ctx.protocol.maximum_bond - 1,                  // incorrect
+        ctx.protocol.epoch_length + 1,                  // incorrect
+        ctx.protocol.quarantine_length + 1,             // incorrect
+        ctx.protocol.number_of_active_validators + 1,   // incorrect
+        ctx.protocol.fault_tolerance_threshold_ppm + 1, // incorrect
+        ctx.protocol.max_parent_depth + 1,              // incorrect
+        ctx.protocol.deploy_lifespan + 1,               // incorrect
+        ctx.protocol.min_phlo_price + 1,                // incorrect
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
-        ctx.protocol.max_cosigners_per_deploy,
-        ctx.protocol.initial_phlogiston,
-        ctx.protocol.epoch_phlogiston,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,

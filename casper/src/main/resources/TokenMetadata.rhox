@@ -40,7 +40,7 @@ in {
     ret!(("$$nativeTokenName$$", "$$nativeTokenSymbol$$", $$nativeTokenDecimals$$))
   } |
 
-  rs!(
+  $$resourcePolicyGetter$$rs!(
     "04856ecb339aa2462bc25f4d4d5f5e5317c58e366222bed85f488c576f423ff7136ba22c4198b1b7b8d5d2c61722b948fee9d8d8e10e468dc52b490d3393444fd0".hexToBytes(),
     (9223372036854775807, bundle+{*TokenMetadata}),
     "3044022065f630061a79b4ae846a705faf6c96dc3f97d90bb9f1dd1dec8d8581d27f50d902207d99a932eee9a9743bef7c7148db938c4ec34bdd4d99b1445db98bc0a61ec851".hexToBytes(),

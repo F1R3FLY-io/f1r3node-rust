@@ -584,6 +584,7 @@ fn receive_bind(with_remainder: bool) -> ReceiveBind {
             None
         },
         free_count: 2,
+        cost_signature: None,
     }
 }
 
@@ -724,6 +725,8 @@ fn full_par() -> Par {
         conditionals: vec![if_node()],
         locally_free: vec![1, 2, 3],
         connective_used: true,
+        cost_signed_terms: vec![],
+        cost_stacks: vec![],
     }
 }
 

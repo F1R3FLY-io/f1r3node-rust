@@ -20,6 +20,32 @@ use crate::rust::transport::f1r3fly_tls_transport::{
     F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
 };
 
+/// Fallback timeout for the server-side TLS handshake after accepting a TCP
+/// connection, used only when a caller does not set `handshake_timeout` on
+/// the builder. Without a timeout at all, a peer that stalls or goes silent
+/// mid-handshake leaks the accepted socket (and its task) for the lifetime
+/// of the process.
+///
+/// `DEFAULT_CONNECT_TIMEOUT` in `f1r3fly_connector.rs` is not what a running
+/// client actually waits — `GrpcTransportClient` connects with the configured
+/// `RPConf::default_timeout` via `new_with_timeout`. Callers should pass that
+/// same value here (`.handshake_timeout(rp_config.default_timeout)`), or the
+/// server can hold a stalled handshake for longer than the peer that opened
+/// it is still waiting.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Inter-node keepalive settings, shared with `grpc_transport_receiver`.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(600);
+pub const HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+pub const HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for handing a completed handshake off to the connection channel.
+/// The channel is bounded (`mpsc::channel(10)`); if the receiver (tonic's
+/// accept loop) falls behind draining it, `send().await` blocks forever,
+/// holding the already-established connection's socket open indefinitely.
+/// Dropping the connection after this timeout bounds that hold time instead.
+const CHANNEL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// F1r3fly Server Builder for creating tonic servers with custom TLS
 ///
 /// This builder allows creating tonic gRPC servers that use F1r3fly's custom
@@ -43,6 +69,7 @@ pub struct F1r3flyServer {
     tcp_nodelay: bool,
     http2_keepalive_interval: Option<Duration>,
     http2_keepalive_timeout: Option<Duration>,
+    handshake_timeout: Duration,
 }
 
 /// Error types for F1r3flyServer
@@ -79,11 +106,24 @@ impl F1r3flyServer {
         Ok(Self {
             acceptor,
             bind_addr,
-            tcp_keepalive: Some(Duration::from_secs(600)), // Default 10 minutes
+            tcp_keepalive: Some(TCP_KEEPALIVE),
             tcp_nodelay: true,
-            http2_keepalive_interval: Some(Duration::from_secs(30)),
-            http2_keepalive_timeout: Some(Duration::from_secs(5)),
+            http2_keepalive_interval: Some(HTTP2_KEEPALIVE_INTERVAL),
+            http2_keepalive_timeout: Some(HTTP2_KEEPALIVE_TIMEOUT),
+            // Falls back to the constant below; callers with an `RPConf` should
+            // pass `rp_config.default_timeout` so a stalled handshake does not
+            // outlive the timeout the peer that opened it is actually using.
+            handshake_timeout: HANDSHAKE_TIMEOUT,
         })
+    }
+
+    /// Configure how long an in-flight TLS handshake may run before this
+    /// server abandons it. Should match the peer's own connect timeout
+    /// (`RPConf::default_timeout`) — a mismatch means one side gives up on a
+    /// connection the other side is still holding open.
+    pub fn handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
     }
 
     /// Configure TCP keepalive settings
@@ -129,6 +169,7 @@ impl F1r3flyServer {
         let acceptor = self.acceptor;
         let tcp_keepalive = self.tcp_keepalive;
         let tcp_nodelay = self.tcp_nodelay;
+        let handshake_timeout = self.handshake_timeout;
 
         // Spawn background task to handle incoming connections
         let listener_task = tokio::spawn(async move {
@@ -158,15 +199,20 @@ impl F1r3flyServer {
                         let tx_clone = tx.clone();
 
                         tokio::spawn(async move {
-                            let result = match acceptor_clone.accept(tcp_stream).await {
-                                Ok(f1r3fly_transport) => {
+                            let result = match tokio::time::timeout(
+                                handshake_timeout,
+                                acceptor_clone.accept(tcp_stream),
+                            )
+                            .await
+                            {
+                                Ok(Ok(f1r3fly_transport)) => {
                                     tracing::debug!(
                                         "F1r3fly TLS handshake successful for {}",
                                         peer_addr
                                     );
                                     Ok(F1r3flyServerConnection::new(f1r3fly_transport, peer_addr))
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     tracing::warn!(
                                         "F1r3fly TLS handshake failed for {}: {}",
                                         peer_addr,
@@ -174,18 +220,47 @@ impl F1r3flyServer {
                                     );
                                     Err(F1r3flyServerError::TlsTransport(e))
                                 }
+                                Err(_elapsed) => {
+                                    tracing::warn!(
+                                        "F1r3fly TLS handshake timed out for {} after {:?}",
+                                        peer_addr,
+                                        handshake_timeout
+                                    );
+                                    Err(F1r3flyServerError::Io(io::Error::new(
+                                        io::ErrorKind::TimedOut,
+                                        format!(
+                                            "TLS handshake timed out after {:?}",
+                                            handshake_timeout
+                                        ),
+                                    )))
+                                }
                             };
 
-                            // Send result through channel
-                            if let Err(_) = tx_clone.send(result).await {
-                                tracing::debug!(
-                                    "Connection channel closed, stopping TLS handshake task"
-                                );
+                            // Send result through channel. If the receiver can't drain it in
+                            // time, drop the connection instead of blocking this task (and
+                            // holding its socket) indefinitely.
+                            match tokio::time::timeout(CHANNEL_SEND_TIMEOUT, tx_clone.send(result))
+                                .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(_)) => {
+                                    tracing::debug!(
+                                        "Connection channel closed, stopping TLS handshake task"
+                                    );
+                                }
+                                Err(_elapsed) => {
+                                    tracing::warn!(
+                                        "Dropping accepted connection for {}: receiver did not \
+                                         drain connection channel within {:?}",
+                                        peer_addr,
+                                        CHANNEL_SEND_TIMEOUT
+                                    );
+                                }
                             }
                         });
                     }
                     Some(Err(e)) => {
-                        tracing::error!("TCP listener error: {}", e);
+                        tracing::error!(error = %e, "TCP listener accept failed");
                         let _ = tx.send(Err(F1r3flyServerError::Io(e))).await;
                     }
                     None => {
@@ -317,7 +392,7 @@ mod tests {
     #[test]
     fn test_f1r3fly_server_builder_creation() {
         // Generate test certificates
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -332,14 +407,14 @@ mod tests {
         assert!(server.is_ok());
         let server = server.unwrap();
         assert_eq!(server.bind_addr, bind_addr);
-        assert_eq!(server.tcp_nodelay, true);
+        assert!(server.tcp_nodelay);
         assert_eq!(server.tcp_keepalive, Some(Duration::from_secs(600)));
     }
 
     #[test]
     fn test_f1r3fly_server_configuration() {
         // Generate test certificates
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -357,7 +432,7 @@ mod tests {
                 .http2_keepalive_timeout(Some(Duration::from_secs(10)));
 
         assert_eq!(server.tcp_keepalive, Some(Duration::from_secs(300)));
-        assert_eq!(server.tcp_nodelay, false);
+        assert!(!server.tcp_nodelay);
         assert_eq!(
             server.http2_keepalive_interval,
             Some(Duration::from_secs(60))

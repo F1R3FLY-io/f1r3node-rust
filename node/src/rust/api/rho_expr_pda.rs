@@ -258,6 +258,9 @@ fn drive(root: Work) -> Option<RhoExpr> {
                     ExprInstance::GDouble(bits) => values.push(Some(RhoExpr::ExprFloat {
                         data: f64::from_bits(bits),
                     })),
+                    ExprInstance::GFloat32(bits) => values.push(Some(RhoExpr::ExprFloat32 {
+                        data: f32::from_bits(bits),
+                    })),
                     ExprInstance::GBigInt(bytes) => values.push(Some(RhoExpr::ExprBigInt {
                         data: BigInt::from_signed_bytes_be(&bytes).to_string(),
                     })),

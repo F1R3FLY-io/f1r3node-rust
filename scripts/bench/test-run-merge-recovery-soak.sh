@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TMP="$(mktemp -d)"
+DRIVER_PID=""
+cleanup() {
+	[ -z "$DRIVER_PID" ] || kill "$DRIVER_PID" 2>/dev/null || true
+	rm -rf "$TMP"
+}
+trap cleanup EXIT
+mkdir -p "$TMP/bin" "$TMP/system-integration"
+cat >"$TMP/bin/poetry" <<'SH'
+#!/usr/bin/env bash
+trap 'exit 143' TERM INT
+printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+# Docker sessions write monitor artifacts under log-archive/. Subprocess
+# sessions write them under .subprocess-data/. The first scenario splits
+# telemetry across the archive and legacy data roots.
+mkdir -p "$FAKE_ARCHIVE_DIR/session" "$FAKE_DATA_DIR/session"
+# Every harness CSV below is written CRLF (sed 's/$/\r/'): the real harness
+# writes them with Python csv.writer, whose default line terminator is \r\n,
+# so a fixture with bare \n would pass extractors that break in production.
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-timeseries.csv"
+elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb
+1.0,rnode.test.validator1,256.0,10.0,0
+1.0,rnode.test.validator2,512.0,20.0,0
+CSV
+# Per-core telemetry for validator1 only: validator2 must keep its "all"
+# fallback row in the summary grid (mixed real/fallback rendering). The
+# __system__ row is host state and must not become a grid node, and the
+# non-numeric core id is a malformed row that must be rejected — the grid
+# assertion below proves both filters.
+# validator1 appears under BOTH container namings — the legacy
+# "rnode.<network>." prefix and the bare per-iteration shard hash
+# ("f6f7eb46.") that once leaked 42 columns into the published grid. The
+# node id is the name's final dot-segment, so both rows must fold into one
+# "validator1" key with the per-cell max (7.5 beats 3.0).
+# CRLF matters most here: cpu_percent is the LAST column, so without
+# CR-stripping every row fails the numeric check (smoke run 31547587950
+# published an all-fallback grid exactly this way).
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv"
+elapsed_s,node,core,cpu_percent
+1.0,f6f7eb46.validator1,0,3.0
+2.0,rnode.test.validator1,0,7.5
+1.0,rnode.test.validator1,1,42.0
+1.0,__system__,0,93.0
+1.0,rnode.test.validator1,not-a-core,88.0
+CSV
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_DATA_DIR/session/node-metrics-timeseries.csv"
+elapsed_s,node,metric,value
+1.0,rnode.test.validator1,replay_cache_entries,12
+1.0,rnode.test.validator1,replay_cache_retained_bytes,1048576
+CSV
+# The identical node log in BOTH roots (teardown archives a copy of a log
+# that also lives under data/): counting metrics must see it once.
+cat >"$FAKE_DATA_DIR/session/validator1.log" <<'LOG'
+proposal rejected: too far ahead of the last finalized block
+Propose timing: total_ms=3525
+LOG
+cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
+printf 'fake pytest started\n'
+printf 'low      |      30 |    1.0 |    1.9    5.9    5.9 |   90.0  100.0  101.0 |   45.4\r\n'
+printf 'sustained |    1200 |    4.0 |   18.3   87.6  106.6 |   85.1  120.6  133.3 |  -20.2\r\n'
+printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
+if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
+	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
+fi
+while :; do sleep 1; done
+SH
+cat >"$TMP/bin/docker" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+	ps)
+		if printf '%s\n' "$*" | grep -q -- '--format' && [ -s "$FAKE_POETRY_PID_FILE" ]; then
+			printf 'rnode.test.validator1\n'
+		fi
+		;;
+	inspect) cat "$FAKE_POETRY_PID_FILE" ;;
+	port) printf '0.0.0.0:40413\n' ;;
+	rm|kill) exit 0 ;;
+esac
+SH
+cat >"$TMP/bin/curl" <<'SH'
+#!/usr/bin/env bash
+cat <<'METRICS'
+replay_cache_entries{source="casper"} 12
+replay_cache_retained_bytes{source="casper"} 1048576
+block_processing_active{source="block-processor"} 2
+block_processing_parallel_limit{source="block-processor"} 2
+block_processing_queue_pending{source="block-processor"} 7
+METRICS
+SH
+chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
+
+test ! -e "$TMP/output"
+PATH="$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
+	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/system-integration/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=120 \
+	SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
+	SOAK_OUTPUT_DIR="$TMP/output" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver.log" 2>&1 &
+DRIVER_PID=$!
+
+for _ in $(seq 1 20); do
+	[ -e "$TMP/output/iteration-00001-docker/.started" ] && break
+	sleep 0.25
+done
+test -e "$TMP/output/iteration-00001-docker/.started"
+jq -e '
+  .target_ref == "unknown"
+  and .target_sha == "unknown"
+  and (.started_at | type) == "number"
+  and .requested_seconds == 120
+  and .iterations == 1
+  and .failures == 0
+' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
+for _ in $(seq 1 20); do
+	[ -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv" ] &&
+		[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] &&
+		[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
+		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
+			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
+	sleep 0.25
+done
+test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"
+test -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv"
+test -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
+grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
+	"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv"
+printf '%s\n' 'injected orchestrator host guardian breach' \
+	>"$TMP/output/host-guardian-breach.txt"
+
+for _ in $(seq 1 20); do
+	kill -0 "$DRIVER_PID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$DRIVER_PID" 2>/dev/null; then
+	cat "$TMP/driver.log" >&2
+	echo 'soak driver did not stop promptly after guardian breach' >&2
+	exit 1
+fi
+set +e
+wait "$DRIVER_PID"
+status=$?
+set -e
+DRIVER_PID=""
+[ "$status" -eq 1 ]
+
+test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
+grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
+grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output/summary.txt"
+jq -e '
+  .iterations == 1
+  and .failures == 1
+  and .rss_peak_mb == 768
+  and .cpu_peak_pct == 30
+  and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
+  and .iteration_metrics[0].exit_code == 1
+  and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
+  and .finalization_p50_ms == 85100
+  and .finalization_p95_ms == 120600
+  and .finalization_p99_ms == 133300
+  and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
+  and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
+  and .iteration_metrics[0].too_far_ahead_errors == 1
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 3, p95: 3, max: 3, min: 3, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 3, p95: 3, max: 3, samples: 1}
+' "$TMP/output/summary.json" >/dev/null
+grep -q 'replay_cache_retained_bytes,1048576' \
+	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
+test ! -e "$TMP/output/iteration-00001-docker/.pytest-output.fifo"
+test -s "$TMP/fake-poetry.pid"
+! kill -0 "$(cat "$TMP/fake-poetry.pid")" 2>/dev/null
+
+# Scenario 2: the soak window ends mid-iteration. timeout(1) kills pytest and
+# reports 124; the driver must write the deadline marker, NOT count the
+# iteration as a failure (exit 0, no exit-code.txt, no early-exit), and still
+# publish telemetry from the subprocess monitor root before the kill.
+mkdir -p "$TMP/si2"
+PATH="$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
+	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/.subprocess-data" \
+	FAKE_EMIT_SOAK_METRIC=true \
+	SOAK_DURATION_SECONDS=6 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si2" \
+	SOAK_OUTPUT_DIR="$TMP/output2" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver2.log" 2>&1 &
+DRIVER_PID=$!
+
+for _ in $(seq 1 60); do
+	kill -0 "$DRIVER_PID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$DRIVER_PID" 2>/dev/null; then
+	cat "$TMP/driver2.log" >&2
+	echo 'soak driver did not stop at its deadline' >&2
+	exit 1
+fi
+set +e
+wait "$DRIVER_PID"
+status=$?
+set -e
+DRIVER_PID=""
+if [ "$status" -ne 0 ]; then
+	cat "$TMP/driver2.log" >&2
+	echo "deadline-killed iteration must not fail the soak (driver exited $status)" >&2
+	exit 1
+fi
+
+test -e "$TMP/output2/iteration-00001-docker/deadline.txt"
+test ! -e "$TMP/output2/iteration-00001-docker/exit-code.txt"
+test ! -e "$TMP/output2/early-exit.txt"
+grep -q '^early_exit_reason=none$' "$TMP/output2/summary.txt"
+jq -e '
+  .iterations == 1
+  and .failures == 0
+  and .rss_peak_mb == 768
+  and .cpu_peak_pct == 30
+  and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
+  and .iteration_metrics[0].exit_code == 124
+  and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
+  and .finalization_p50_ms == 85100
+  and .finalization_p95_ms == 120600
+  and .finalization_p99_ms == 133300
+  and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
+  and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 4, p95: 4, max: 4, min: 4, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 4, p95: 4, max: 4, samples: 1}
+' "$TMP/output2/summary.json" >/dev/null
+test -s "$TMP/fake-poetry-2.pid"
+! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
+
+mkdir -p "$TMP/bin3" "$TMP/si3" "$TMP/tmp3/test-stale" "$TMP/tmp3/test-live" "$TMP/runner3/_diag"
+perl -e 'utime $^T - 7200, $^T - 7200, @ARGV' "$TMP/tmp3/test-stale"
+printf '7000\n' >"$TMP/fake-df-avail"
+cat >"$TMP/bin3/df" <<'SH'
+#!/usr/bin/env bash
+printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
+printf '/dev/fake 47000 40000 %s 85%% /\n' "$(cat "$FAKE_DF_AVAIL_FILE")"
+SH
+cat >"$TMP/bin3/docker" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP/bin3/df" "$TMP/bin3/docker"
+PATH="$TMP/bin3:$TMP/bin:$PATH" \
+	FAKE_DF_AVAIL_FILE="$TMP/fake-df-avail" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-3.pid" \
+	FAKE_DATA_DIR="$TMP/si3/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/si3/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=120 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si3" \
+	SOAK_OUTPUT_DIR="$TMP/output3" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_TMP_ROOT="$TMP/tmp3" \
+	SOAK_RUNNER_ROOT="$TMP/runner3" \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver3.log" 2>&1 &
+DRIVER_PID=$!
+
+for _ in $(seq 1 60); do
+	kill -0 "$DRIVER_PID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$DRIVER_PID" 2>/dev/null; then
+	cat "$TMP/driver3.log" >&2
+	echo 'soak driver did not stop when hygiene left free space inside the band' >&2
+	exit 1
+fi
+set +e
+wait "$DRIVER_PID"
+status=$?
+set -e
+DRIVER_PID=""
+if [ "$status" -ne 1 ]; then
+	cat "$TMP/driver3.log" >&2
+	echo "a no-op hygiene pass inside the band must fail the soak closed (driver exited $status)" >&2
+	exit 1
+fi
+
+test -d "$TMP/tmp3/test-stale"
+test -d "$TMP/tmp3/test-live"
+grep -q 'free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming' "$TMP/driver3.log"
+grep -q '^disk hygiene: 7000MB free -> 7000MB free$' "$TMP/driver3.log"
+! grep -q '^disk usage: ' "$TMP/driver3.log"
+grep -q '^host_protection_breach: disk floor: free 7000MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene$' \
+	"$TMP/output3/early-exit.txt"
+grep -q 'still inside hygiene band' "$TMP/output3/protection-breach.txt"
+grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output3/summary.txt"
+grep -q "$TMP/output3" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$TMP/runner3/_diag" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$TMP/tmp3/test-live" "$TMP/output3/disk-floor-breach.txt"
+test "$(find "$TMP/output3" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 0
+test ! -e "$TMP/fake-poetry-3.pid"
+
+printf 'soak driver tests passed (fail-closed + deadline + disk-band paths)\n'

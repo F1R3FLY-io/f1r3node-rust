@@ -1,0 +1,76 @@
+' State Diagram 06 — finalization downward-closure (L-ANC) + the warm-path guards.
+'
+' The warm up-walk as a state machine:
+'   Pivot F(parent) --(guards hold)--> Up-walk --(advance while finalized)-->
+'   Up-walk, and --(first non-finalized)--> Highest finalized = frontier.
+' Two guards (committee-constancy for L-ANC, snapshot re-check for L-SNAP) can
+' trip and divert to the Cold down-walk fallback, which yields the IDENTICAL
+' frontier (transparent) and emits floor_incremental_guard_fallback.
+'
+' Source of truth for the determinism-linchpin figure (section 3.1) in
+' docs/theory/finalized-floor/finalized-floor-verification.md.
+'
+' Render:
+'   plantuml -tsvg docs/theory/finalized-floor/diagrams/06-state-finalization-guards.puml
+
+@startuml 06-state-finalization-guards
+!theme plain
+
+skinparam state {
+  BackgroundColor<<pivot>>    #C8E6C9
+  BackgroundColor<<walk>>     #BBDEFB
+  BackgroundColor<<accept>>   #A5D6A7
+  BackgroundColor<<fallback>> #FFE0B2
+  BorderColor #444444
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Finalization downward-closure (L-ANC) and the warm-path guards
+
+' Edge color legend:
+'   green  (#2E7D32) = guards hold / normal progression
+'   red    (#C62828) = guard trips → fallback
+'   blue   (#1565C0) = up-walk advance
+'   orange (#E65100) = stop / frontier reached
+'   gray   (#546E7A) = fallback converges to the same frontier
+
+state "Pivot F(parent)\n(finalized over just(parent))"                as Pivot    <<pivot>>
+state "Up-walk\n(advance toward parent)"                              as Upwalk   <<walk>>
+state "Highest finalized = frontier"                                  as Frontier <<accept>>
+state "Cold down-walk (fallback)\ntop-down from parent"               as Cold     <<fallback>>
+
+[*] -[#2E7D32]-> Pivot
+
+Pivot   -[#2E7D32]-> Upwalk : guards HOLD ──\ncommittee constant (L-ANC)\n∧ pivot still ft_witnessed ≥ θ\nover J (L-SNAP)
+
+Upwalk  -[#1565C0]-> Upwalk : ft_witnessed(next) ≥ θ\n⟹ advance  (amortized O(1))
+Upwalk  -[#E65100]-> Frontier : ft_witnessed(next) < θ\n⟹ STOP at first non-finalized
+
+Pivot   -[#C62828]-> Cold : committee-constancy guard TRIPS\ncommittee changed in band (bonding)\n⟹ L-ANC premise fails\n/ floor_incremental_guard_fallback
+Pivot   -[#C62828]-> Cold : L-SNAP guard TRIPS\npivot no longer ft_witnessed ≥ θ\nover the larger snapshot J\n/ floor_incremental_guard_fallback
+
+Cold    -[#546E7A]-> Frontier : top-down walk yields the\nIDENTICAL frontier (transparent)
+
+Frontier -[#E65100]-> [*]
+
+note top of Pivot
+  L-ANC (the determinism linchpin). Under a CONSTANT committee, finalized
+  blocks form a DOWNWARD-CLOSED PREFIX of the spine — the same quorum that
+  finalizes a block finalizes every ancestor (GuardBridge.chain_adj_AdjDC
+  derives this AdjDC premise; Floor.frontier_cache_transparent uses it).
+  ⟹ warm == cold, so the cache never forks (S1).
+end note
+
+legend bottom
+  L-SNAP : just(B) ⊇ just(P) ⟹ Finalized(C, just(B)) ≥ Finalized(C, just(P)) —
+  the pivot stays finalized over the child's larger snapshot.
+  Both guard trips are safe: the Cold fallback recomputes the SAME frontier the
+  warm path would have (Rocq Floor.frontier_cache_transparent), so no fork (S1).
+endlegend
+
+@enduml

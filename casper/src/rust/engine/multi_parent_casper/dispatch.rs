@@ -19,6 +19,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -36,6 +37,13 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
+    async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
+        self.block_retriever
+            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
+            .await
+            .map(|_| ())
+    }
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         super::snapshot::compute_snapshot(self).await
     }
@@ -56,6 +64,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_get_approved_block(self)
     }
 
+    fn offered_funded_active(&self) -> bool { self.offered_funded_active }
+
     fn deploy(
         &self,
         deploy: Signed<DeployData>,
@@ -63,11 +73,12 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_deploy(self, deploy)
     }
 
-    fn deploy_cosigned(
+    fn deploy_envelope(
         &self,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+        envelope: DeployEnvelope,
+        adopted_policy: &crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy,
     ) -> Result<Either<DeployError, DeployId>, CasperError> {
-        super::block_admission::admit_deploy_cosigned(self, cosigned)
+        super::block_admission::admit_deploy_envelope(self, envelope, adopted_policy)
     }
 
     async fn estimator(
@@ -79,6 +90,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
     fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
 
+    #[tracing::instrument(level = "info", skip(self, block, snapshot), fields(block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash)))]
     async fn validate(
         &self,
         block: &BlockMessage,
@@ -104,6 +116,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         .await
     }
 
+    #[tracing::instrument(level = "info", skip(self, block), fields(block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash)))]
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
@@ -206,6 +219,10 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        self.block_dag_storage.genesis_hash().map_err(Into::into)
+    }
+
     fn get_validator(&self) -> Option<ValidatorIdentity> { self.validator_id.clone() }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
@@ -215,6 +232,14 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
     fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
+
+    fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
+        self.rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .contains_sig(sig)
+            .map_err(Into::into)
+    }
 
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
         let snapshot = self.get_snapshot().await?;
@@ -232,5 +257,9 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         // module-level doc-comment.
         super::block_admission::admit_has_pending_deploys_in_storage_for_snapshot(self, snapshot)
             .await
+    }
+
+    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+        super::block_admission::admit_list_pending_deploys(self).await
     }
 }

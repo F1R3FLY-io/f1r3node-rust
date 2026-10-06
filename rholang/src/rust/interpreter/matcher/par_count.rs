@@ -1,7 +1,7 @@
 use super::exports::*;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParCount {
     pub sends: usize,
     pub receives: usize,
@@ -10,6 +10,9 @@ pub struct ParCount {
     pub matches: usize,
     pub unforgeables: usize,
     pub bundles: usize,
+    pub conditionals: usize,
+    pub cost_signed_terms: usize,
+    pub cost_stacks: usize,
 }
 
 impl ParCount {
@@ -22,7 +25,29 @@ impl ParCount {
             matches: par.matches.len(),
             unforgeables: par.unforgeables.len(),
             bundles: par.bundles.len(),
+            conditionals: par.conditionals.len(),
+            cost_signed_terms: par.cost_signed_terms.len(),
+            cost_stacks: par.cost_stacks.len(),
         }
+    }
+
+    pub fn without_frees(par: &Par) -> Self {
+        let mut count = Self::new(par);
+        count.exprs = par
+            .exprs
+            .iter()
+            .filter(|expr| {
+                !matches!(
+                    &expr.expr_instance,
+                    Some(EVarBody(EVar {
+                        v: Some(Var {
+                            var_instance: Some(FreeVar(_) | Wildcard(_)),
+                        }),
+                    }))
+                )
+            })
+            .count();
+        count
     }
 
     pub fn _new(&self) -> Self {
@@ -34,6 +59,9 @@ impl ParCount {
             matches: 0,
             unforgeables: 0,
             bundles: 0,
+            conditionals: 0,
+            cost_signed_terms: 0,
+            cost_stacks: 0,
         }
     }
 
@@ -46,6 +74,9 @@ impl ParCount {
             matches: self.matches.max(other.matches),
             unforgeables: self.unforgeables.max(other.unforgeables),
             bundles: self.bundles.max(other.bundles),
+            conditionals: self.conditionals.max(other.conditionals),
+            cost_signed_terms: self.cost_signed_terms.max(other.cost_signed_terms),
+            cost_stacks: self.cost_stacks.max(other.cost_stacks),
         }
     }
 
@@ -58,6 +89,9 @@ impl ParCount {
             exprs: 1000,
             unforgeables: 1000,
             bundles: 1000,
+            conditionals: 1000,
+            cost_signed_terms: 1000,
+            cost_stacks: 1000,
         }
     }
 
@@ -70,6 +104,9 @@ impl ParCount {
             matches: self.matches.min(other.matches),
             unforgeables: self.unforgeables.min(other.unforgeables),
             bundles: self.bundles.min(other.bundles),
+            conditionals: self.conditionals.min(other.conditionals),
+            cost_signed_terms: self.cost_signed_terms.min(other.cost_signed_terms),
+            cost_stacks: self.cost_stacks.min(other.cost_stacks),
         }
     }
 
@@ -82,6 +119,11 @@ impl ParCount {
             matches: self.matches.saturating_add(other.matches),
             unforgeables: self.unforgeables.saturating_add(other.unforgeables),
             bundles: self.bundles.saturating_add(other.bundles),
+            conditionals: self.conditionals.saturating_add(other.conditionals),
+            cost_signed_terms: self
+                .cost_signed_terms
+                .saturating_add(other.cost_signed_terms),
+            cost_stacks: self.cost_stacks.saturating_add(other.cost_stacks),
         }
     }
 
@@ -224,4 +266,68 @@ enum CountWork<'a> {
     },
     ReduceAnd(usize),
     ReduceOr(usize),
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::utils::{
+        new_boundvar_expr, new_freevar_expr, new_gint_expr, new_wildcard_expr, no_frees,
+    };
+
+    use super::*;
+
+    #[test]
+    fn borrowed_count_matches_filtered_pattern() {
+        let par = Par {
+            exprs: vec![
+                new_wildcard_expr(),
+                new_freevar_expr(3),
+                new_boundvar_expr(2),
+                new_gint_expr(7),
+            ],
+            ..Par::default()
+        };
+
+        assert_eq!(
+            ParCount::without_frees(&par),
+            ParCount::new(&no_frees(&par))
+        );
+        assert_eq!(ParCount::without_frees(&par).exprs, 2);
+    }
+
+    #[test]
+    fn nested_connective_bounds_keep_fixed_and_flexible_alternatives() {
+        let fixed = Par {
+            exprs: vec![new_gint_expr(1), new_gint_expr(2)],
+            ..Par::default()
+        };
+        let flexible = Par {
+            exprs: vec![new_wildcard_expr()],
+            ..Par::default()
+        };
+        let count = ParCount::new(&Par::default());
+        let and = Connective {
+            connective_instance: Some(ConnAndBody(ConnectiveBody {
+                ps: vec![fixed.clone(), flexible.clone()],
+            })),
+        };
+        let or = Connective {
+            connective_instance: Some(ConnOrBody(ConnectiveBody {
+                ps: vec![fixed, flexible],
+            })),
+        };
+
+        let (and_min, and_max) = count.min_max_con(&and);
+        assert_eq!((and_min.exprs, and_max.exprs), (2, 2));
+        let (or_min, or_max) = count.min_max_con(&or);
+        assert_eq!((or_min.exprs, or_max.exprs), (0, 1000));
+
+        let nested = Par {
+            exprs: vec![new_gint_expr(3)],
+            connectives: vec![and],
+            ..Par::default()
+        };
+        let (nested_min, nested_max) = count.min_max_par(&nested);
+        assert_eq!((nested_min.exprs, nested_max.exprs), (3, 3));
+    }
 }

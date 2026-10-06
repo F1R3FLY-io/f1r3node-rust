@@ -14,22 +14,17 @@ use node::rust::configuration::commandline::options::{
     OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
 };
 use node::rust::configuration::config_check::{
-    check_host, check_ports, load_private_key_from_file,
+    check_api_server, check_host, check_ports, load_private_key_from_file,
 };
 use node::rust::configuration::{NodeConf, Options, Profile};
-use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
+use node::rust::effects::console_io::{console_io, decrypt_key_from_file, ConsoleIO};
 use node::rust::effects::repl_client::GrpcReplClient;
 use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    init_json_logging()?;
-
     // Parse CLI arguments, handling help/version display gracefully
     let options = match Options::try_parse() {
         Ok(opts) => opts,
@@ -51,16 +46,42 @@ fn main() -> Result<()> {
         .is_some_and(|subcommand| matches!(subcommand, OptionsSubCommand::Run(_)))
     {
         // Start the node
-        let rt = Builder::new_multi_thread().enable_all().build()?;
+        let mut rt_builder = Builder::new_multi_thread();
+        rt_builder.enable_all();
+        // TOKIO_WORKER_THREADS lets deployments (e.g. k8s pods with a cgroup CPU
+        // quota) cap the worker pool explicitly. Without it, tokio defaults to
+        // available_parallelism(), which in a container can read the host's
+        // core count rather than the pod's actual CPU quota — see
+        // https://github.com/F1R3FLY-io/f1r3node-rust/issues/43.
+        if let Ok(threads_str) = std::env::var("TOKIO_WORKER_THREADS") {
+            match threads_str.parse::<usize>() {
+                Ok(n) if n > 0 => {
+                    rt_builder.worker_threads(n);
+                }
+                _ => {
+                    // Logging isn't initialized yet at this point (it happens
+                    // inside start_node, after the runtime is built).
+                    eprintln!(
+                        "Ignoring invalid TOKIO_WORKER_THREADS={:?} (expected a positive \
+                         integer); using tokio's default worker thread count",
+                        threads_str
+                    );
+                }
+            }
+        }
+        let rt = rt_builder.build()?;
         rt.block_on(async {
             // Execute CLI command
             start_node(options).await?;
             Ok::<_, eyre::Error>(())
         })?;
     } else {
+        let mut logging_cfg = shared::rust::tracing_init::LoggingConfig::default();
+        apply_log_cli_overrides(&options, &mut logging_cfg);
+        let _log_guards = init_logging(&logging_cfg, None)?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
-        run_cli(options, &rt)?;
+        run_cli(options, &rt, &mut console_io()?)?;
     }
 
     Ok(())
@@ -68,9 +89,24 @@ fn main() -> Result<()> {
 
 /// Starts the F1r3fly node instance
 async fn start_node(options: Options) -> Result<()> {
+    let log_overrides = (
+        options.log_level.clone(),
+        options.log_format.clone(),
+        options.log_sink.clone(),
+    );
     // Defaults are baked into the binary via include_str!; the optional
     // <data-dir>/rnode.conf override and CLI flags layer on top.
-    let (node_conf, profile, config_file) = node::rust::configuration::builder::build(options)?;
+    let (mut node_conf, profile, config_file, deferred_warnings) =
+        node::rust::configuration::builder::build(options)?;
+
+    apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
+
+    let data_dir = node_conf.storage.data_dir.clone();
+    let _log_guards = init_logging(&node_conf.logging, Some(&data_dir))?;
+
+    for w in deferred_warnings {
+        warn!("{}", w);
+    }
 
     // Set system property for data directory (equivalent to Scala's System.setProperty)
     // SAFETY: This is called early in node startup before spawning threads that read env vars
@@ -83,6 +119,7 @@ async fn start_node(options: Options) -> Result<()> {
 
     // Start the node with configuration validation and setup
     check_host(&node_conf).await?;
+    check_api_server(&node_conf)?;
     let conf_with_ports = check_ports(&node_conf).await?;
     let conf_with_decrypt = load_private_key_from_file(conf_with_ports).await?;
     info!("{}", get_version_info_str());
@@ -95,50 +132,45 @@ async fn start_node(options: Options) -> Result<()> {
 }
 
 /// Executes CLI commands
-fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
+fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Result<()> {
     let (grpc_port, grpc_deploy_port) = if let Some(port) = options.grpc_port {
         (port, port)
     } else {
         (GRPC_INTERNAL_PORT, GRPC_EXTERNAL_PORT)
     };
 
-    let (repl_client, mut deploy_client, propose_client) = rt.block_on(async {
-        let request_timeout = match &options.subcommand {
-            Some(OptionsSubCommand::Eval(eval)) => eval.timeout,
-            _ => node::rust::effects::repl_client::DEFAULT_REQUEST_TIMEOUT,
-        };
-        let repl_client = GrpcReplClient::with_timeout(
+    let repl_client = |request_timeout| {
+        rt.block_on(GrpcReplClient::with_timeout(
             options.grpc_host.clone(),
             grpc_port,
             options.grpc_max_recv_message_size as usize,
             request_timeout,
-        )
-        .await
-        .map_err(|e| eyre::eyre!("Failed to create REPL client: {}", e))?;
-
-        let deploy_client = GrpcDeployService::new(
+        ))
+        .map_err(|e| eyre::eyre!("Failed to create REPL client: {}", e))
+    };
+    let deploy_client = || {
+        rt.block_on(GrpcDeployService::new(
             &options.grpc_host,
             grpc_deploy_port,
             options.grpc_max_recv_message_size as usize,
-        )
-        .await?;
-
-        let propose_client = GrpcProposeService::new(
+        ))
+    };
+    let propose_client = || {
+        rt.block_on(GrpcProposeService::new(
             &options.grpc_host,
             grpc_port,
             options.grpc_max_recv_message_size as usize,
-        )
-        .await?;
-
-        eyre::Ok((repl_client, deploy_client, propose_client))
-    })?;
+        ))
+    };
 
     match options.subcommand {
         Some(command) => match command {
             OptionsSubCommand::Eval(eval_options) => {
+                let repl_client = repl_client(eval_options.timeout)?;
+
                 ReplRuntime::new().eval_program(
                     rt,
-                    &mut console_io()?,
+                    console,
                     &repl_client,
                     eval_options.file_names,
                     eval_options.print_unmatched_sends_only,
@@ -148,21 +180,29 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok::<(), eyre::Error>(())
             }
             OptionsSubCommand::Repl => {
-                ReplRuntime::new().repl_program(rt, &mut console_io()?, &repl_client)?;
+                let repl_client =
+                    repl_client(node::rust::effects::repl_client::DEFAULT_REQUEST_TIMEOUT)?;
+
+                ReplRuntime::new().repl_program(rt, console, &repl_client)?;
 
                 Ok(())
             }
             OptionsSubCommand::Deploy {
+                phlo_limit,
+                phlo_price,
                 valid_after_block,
                 private_key,
                 private_key_path,
                 location,
                 shard_id,
             } => {
-                let private_key =
-                    get_private_key(private_key, private_key_path, &mut console_io()?)?;
+                let mut deploy_client = deploy_client()?;
+
+                let private_key = get_private_key(private_key, private_key_path, console)?;
                 rt.block_on(DeployRuntime::deploy_file_program(
                     &mut deploy_client,
+                    phlo_limit,
+                    phlo_price,
                     valid_after_block,
                     &private_key,
                     &location,
@@ -171,10 +211,14 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::FindDeploy { id } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::find_deploy(&mut deploy_client, &id));
                 Ok(())
             }
             OptionsSubCommand::Propose(propose_options) => {
+                let propose_client = propose_client()?;
+
                 rt.block_on(DeployRuntime::propose(
                     propose_client,
                     propose_options.print_unmatched_sends,
@@ -182,10 +226,14 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::ShowBlock { hash } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::get_block(&mut deploy_client, hash));
                 Ok(())
             }
             OptionsSubCommand::ShowBlocks { depth } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::get_blocks(&mut deploy_client, depth));
                 Ok(())
             }
@@ -193,6 +241,8 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 depth,
                 show_justification_lines,
             } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::visualize_dag(
                     &mut deploy_client,
                     depth,
@@ -201,26 +251,36 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::MachineVerifiableDag => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::machine_verifiable_dag(&mut deploy_client));
                 Ok(())
             }
             OptionsSubCommand::Keygen { path } => {
-                generate_key(&path, &mut console_io()?)?;
+                generate_key(&path, console)?;
                 Ok(())
             }
             OptionsSubCommand::LastFinalizedBlock => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::last_finalized_block(&mut deploy_client));
                 Ok(())
             }
             OptionsSubCommand::IsFinalized { hash } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::is_finalized(&mut deploy_client, hash));
                 Ok(())
             }
             OptionsSubCommand::BondStatus { public_key } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::bond_status(&mut deploy_client, &public_key));
                 Ok(())
             }
             OptionsSubCommand::ContAtName { names } => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::listen_for_continuation_at_name(
                     &mut deploy_client,
                     names,
@@ -228,6 +288,8 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::Status => {
+                let mut deploy_client = deploy_client()?;
+
                 rt.block_on(DeployRuntime::status(&mut deploy_client));
                 Ok(())
             }
@@ -242,23 +304,46 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn init_json_logging() -> eyre::Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+pub fn init_logging(
+    cfg: &shared::rust::tracing_init::LoggingConfig,
+    data_dir: Option<&std::path::Path>,
+) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
+    shared::rust::tracing_init::init(cfg, data_dir)
+}
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_target(true)
-                .with_file(true)
-                .with_line_number(true)
-                .with_current_span(false) // logs only for now
-                .with_span_list(false) // logs only for now
-                .flatten_event(true), // put event fields at top level
-        )
-        .try_init()?;
-    Ok(())
+fn apply_log_cli_overrides(options: &Options, cfg: &mut shared::rust::tracing_init::LoggingConfig) {
+    apply_log_cli_overrides_raw(
+        (
+            options.log_level.clone(),
+            options.log_format.clone(),
+            options.log_sink.clone(),
+        ),
+        cfg,
+    );
+}
+
+fn apply_log_cli_overrides_raw(
+    overrides: (Option<String>, Option<String>, Option<String>),
+    cfg: &mut shared::rust::tracing_init::LoggingConfig,
+) {
+    use shared::rust::tracing_init::{LogFormat, LogSink};
+    let (level, format, sink) = overrides;
+    if let Some(l) = level {
+        cfg.filter = l;
+    }
+    if let Some(f) = format {
+        cfg.format = match f.to_lowercase().as_str() {
+            "pretty" => LogFormat::Pretty,
+            _ => LogFormat::Json,
+        };
+    }
+    if let Some(s) = sink {
+        cfg.sink = match s.to_lowercase().as_str() {
+            "file" => LogSink::File,
+            "both" => LogSink::Both,
+            _ => LogSink::Stdout,
+        };
+    }
 }
 
 /// Generate a new key pair and save to file (equivalent to generateKey)
@@ -354,3 +439,6 @@ async fn log_configuration(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod keygen_test;

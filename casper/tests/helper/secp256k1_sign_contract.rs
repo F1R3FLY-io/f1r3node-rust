@@ -41,7 +41,7 @@ pub async fn get(
                     let result_par = new_gbytearray_par(der_bytes, Vec::new(), false);
 
                     let output = vec![result_par];
-                    produce(&output, &ack_channel).await?;
+                    produce(&output, ack_channel).await?;
                     Ok(output)
                 } else {
                     Err(illegal_argument_error("secp256k1_sign"))

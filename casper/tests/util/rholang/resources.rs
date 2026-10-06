@@ -89,6 +89,7 @@ fn shared_lmdb_dir() -> &'static ProcessScratchDir {
 /// for why a `std` guard was wrong here in the first place.
 pub use casper::rust::test_utils::util::rholang::resources::SHARED_LMDB_LOCK;
 
+#[allow(clippy::await_holding_lock)]
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS
         .get_or_init(|| Arc::new(Mutex::new(None)))
@@ -123,6 +124,17 @@ where
     Ok(f(runtime_manager, genesis_context, genesis_block).await)
 }
 
+/// LMDB named-DB slot budget for the shared, process-cached test
+/// environments. Scoped DB names accumulate monotonically across
+/// store-manager creations (each mints a fresh `{scope}-{db}` name set,
+/// ~10 slots in the worst env per creation, never reclaimed), and the
+/// slashing-tests CI job runs uncapped proptests at PROPTEST_CASES=10000
+/// with a store manager per case: 10k cases x ~2 managers x ~10 slots
+/// = ~200k. Slot bookkeeping is ~100 bytes each (~20 MB per env at this
+/// cap). Durable fix — reusing or evicting scoped DBs per case — is
+/// tracked in the PR #125 findings comment.
+const TEST_LMDB_MAX_DBS: u32 = 200_000;
+
 pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
@@ -143,7 +155,7 @@ pub fn mk_test_rnode_store_manager_with_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // If scope_id is provided, create a scoped database name using name_override
             // This ensures test isolation while keeping the original ID for lookup
@@ -211,8 +223,12 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
 ) -> impl KeyValueStoreManager {
     let shared_path = shared_lmdb_dir().to_path_buf();
     // Dual-scope variant — same shared-env consideration as
-    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
-    let limit_size = 1 * GB;
+    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB,
+    // then to 4 GB (matching with_scope): scoped-DB data accumulates in the
+    // shared env across store-manager creations, and the slashing proptest
+    // suite filled 1 GB mid-job (MDB_MAP_FULL). map_size is virtual address
+    // space; real disk usage matches data written.
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -223,7 +239,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // Determine which scope to use based on database type
             let scope_to_use = if db.id().starts_with("rspace-") {
@@ -385,23 +401,13 @@ pub async fn block_dag_storage_from_dyn(
     let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
         KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
-    let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get deploy-index store: {:?}",
-            e
-        ))
-    })?;
-    let deploy_index_db: KeyValueTypedStoreImpl<
-        block_storage::rust::dag::block_dag_key_value_storage::DeployId,
-        BlockHashSerde,
-    > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
-
     Ok(BlockDagKeyValueStorage::from_parts(
         Arc::new(RwLock::new(())),
         latest_messages_db,
         Arc::new(RwLock::new(block_metadata_store)),
-        Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_db,
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         equivocation_tracker_store,
         Arc::new(AtomicU64::new(0)),
     ))
@@ -430,6 +436,11 @@ pub async fn key_value_deploy_storage_from_dyn(
 
     Ok(KeyValueDeployStorage {
         store: deploy_storage_db,
+        envelope_store: KeyValueTypedStoreImpl::new(
+            kvm.store("deploy_envelope_storage".to_string()).await?,
+        ),
+        envelope_rejections:
+            block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejectionLog::default(),
     })
 }
 
@@ -519,8 +530,7 @@ pub async fn mk_runtime_manager_at(
         >,
     >,
 ) -> RuntimeManager {
-    let mergeable_tags =
-        mergeable_tags.unwrap_or_else(|| std::sync::Arc::new(Genesis::default_mergeable_tags()));
+    let mergeable_tags = mergeable_tags.unwrap_or_else(Genesis::default_mergeable_tags_arc);
 
     let r_store = kvm.r_space_stores().await.unwrap();
     let m_store = mergeable_store_from_dyn(kvm).await.unwrap();
@@ -540,7 +550,7 @@ pub async fn mk_runtime_manager_with_history_at(
     let (rt_manager, history_repo) = RuntimeManager::create_with_history(
         r_store,
         m_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     );
     (rt_manager, history_repo)
@@ -561,9 +571,14 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(block_metadata_store))),
-        deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        )))),
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        lifecycle: Arc::new(RwLock::new(
+            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
+        carrier_index: Arc::new(RwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     }
 }
 
@@ -573,8 +588,6 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: Vec::new(),
         parents: Vec::new(),
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),

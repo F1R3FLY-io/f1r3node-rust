@@ -70,6 +70,30 @@ pub trait HeightChecker {
     ) -> Result<CheckProposeConstraintsResult, CasperError>;
 }
 
+/// What the created block may carry. `RecoveryEmpty` mints a justification
+/// with no user deploys — the recovery lane's block when finality is stalled
+/// past the height constraint, where a deploy-carrying block would bury its
+/// deploys at a never-finalizing height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploySelection {
+    Standard,
+    StandardAllowEmpty,
+    RecoveryEmpty,
+}
+
+impl DeploySelection {
+    pub fn allows_empty(&self) -> bool { !matches!(self, DeploySelection::Standard) }
+}
+
+/// Whether a propose request may mint a block without user deploys. Only the
+/// heartbeat lane may also mint past the height constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyBlocks {
+    Forbidden,
+    Allowed,
+    HeartbeatLane,
+}
+
 #[allow(async_fn_in_trait)]
 pub trait BlockCreator {
     async fn create_block(
@@ -77,8 +101,25 @@ pub trait BlockCreator {
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
-        allow_empty_blocks: bool,
+        selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError>;
+
+    async fn create_block_with_casper(
+        &mut self,
+        _casper: &(dyn Casper + Send + Sync),
+        casper_snapshot: &CasperSnapshot,
+        validator_identity: &ValidatorIdentity,
+        dummy_deploy_opt: Option<(PrivateKey, String)>,
+        selection: DeploySelection,
+    ) -> Result<BlockCreatorResult, CasperError> {
+        self.create_block(
+            casper_snapshot,
+            validator_identity,
+            dummy_deploy_opt,
+            selection,
+        )
+        .await
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -189,111 +230,133 @@ where
         &mut self,
         casper_snapshot: &mut CasperSnapshot,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        allow_empty_blocks_for_request: bool,
+        empty_blocks: EmptyBlocks,
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
         let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
 
-        match constraint_check {
-            CheckProposeConstraintsResult::Failure(failure) => Ok((
-                ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(failure)),
-                None,
-            )),
-            CheckProposeConstraintsResult::Success => {
-                let block_result = self
-                    .block_creator
-                    .create_block(
-                        casper_snapshot,
-                        &self.validator,
-                        self.dummy_deploy_opt.clone(),
-                        allow_empty_blocks_for_request,
-                    )
+        // The height constraint must not gate the recovery lane it exists to
+        // be rescued by: past the threshold, no proposal can land, so no new
+        // justifications, so the clique never re-forms. An empty recovery
+        // mint carries the justifications without burying deploys at a
+        // never-finalizing height; manual proposals keep the gate.
+        let selection = match constraint_check {
+            CheckProposeConstraintsResult::Failure(
+                CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
+            ) if empty_blocks == EmptyBlocks::HeartbeatLane => {
+                tracing::info!(
+                    "Height constraint exceeded with recovery eligible: minting an \
+                     empty recovery block instead of failing the recovery lane"
+                );
+                DeploySelection::RecoveryEmpty
+            }
+            CheckProposeConstraintsResult::Failure(failure) => {
+                return Ok((
+                    ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(failure)),
+                    None,
+                ))
+            }
+            CheckProposeConstraintsResult::Success if empty_blocks == EmptyBlocks::Forbidden => {
+                DeploySelection::Standard
+            }
+            CheckProposeConstraintsResult::Success => DeploySelection::StandardAllowEmpty,
+        };
+
+        let block_result = self
+            .block_creator
+            .create_block_with_casper(
+                casper.as_ref(),
+                casper_snapshot,
+                &self.validator,
+                self.dummy_deploy_opt.clone(),
+                selection,
+            )
+            .await?;
+
+        match block_result {
+            BlockCreatorResult::NoNewDeploys => {
+                Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
+            }
+            BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
+                // Publish BlockCreated event immediately after block is created (before validation)
+                self.propose_effect_handler.publish_block_created(&block)?;
+
+                let validation_result = casper
+                    .validate_self_created(&block, casper_snapshot, pre_state_hash, post_state_hash)
                     .await?;
 
-                match block_result {
-                    BlockCreatorResult::NoNewDeploys => {
-                        Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
-                    }
-                    BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
-                        // Publish BlockCreated event immediately after block is created (before validation)
-                        self.propose_effect_handler.publish_block_created(&block)?;
-
-                        let validation_result = casper
-                            .validate_self_created(
-                                &block,
-                                casper_snapshot,
-                                pre_state_hash,
-                                post_state_hash,
-                            )
+                match validation_result {
+                    ValidBlockProcessing::Right(valid_status) => {
+                        self.propose_effect_handler
+                            .handle_propose_effect(casper, &block)
                             .await?;
-
-                        match validation_result {
-                            ValidBlockProcessing::Right(valid_status) => {
-                                self.propose_effect_handler
-                                    .handle_propose_effect(casper, &block)
-                                    .await?;
-                                Ok((ProposeResult::success(valid_status), Some(block)))
-                            }
-                            ValidBlockProcessing::Left(invalid_reason) => {
-                                // Some self-validation failures are recoverable races in fast, multi-parent
-                                // proposing: parent selection can become stale, and safety checks can reject
-                                // the candidate by the time validation runs.
-                                if matches!(
-                                    invalid_reason,
-                                    BlockError::Invalid(InvalidBlock::InvalidParents)
-                                        | BlockError::Invalid(InvalidBlock::InvalidFollows)
-                                        | BlockError::Invalid(
-                                            InvalidBlock::JustificationRegression
-                                        )
-                                        | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
-                                        | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-                                        | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
-                                ) {
-                                    let recoverable_reason = match &invalid_reason {
-                                        BlockError::Invalid(InvalidBlock::InvalidParents) => {
-                                            "invalid_parents"
-                                        }
-                                        BlockError::Invalid(InvalidBlock::InvalidFollows) => {
-                                            "invalid_follows"
-                                        }
-                                        BlockError::Invalid(InvalidBlock::InvalidBondsCache) => {
-                                            "invalid_bonds_cache"
-                                        }
-                                        BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy) => {
-                                            "invalid_repeat_deploy"
-                                        }
-                                        BlockError::Invalid(
-                                            InvalidBlock::JustificationRegression,
-                                        ) => "justification_regression",
-                                        BlockError::Invalid(
-                                            InvalidBlock::NeglectedInvalidBlock,
-                                        ) => "neglected_invalid_block",
-                                        _ => "other",
-                                    };
-                                    metrics::counter!(
-                                        "propose_recoverable_self_validation_failures_total",
-                                        "source" => "casper_proposer",
-                                        "reason" => recoverable_reason
-                                    )
-                                    .increment(1);
-                                    tracing::info!(
-                                        "Block validation failed with {:?} - \
-                                         proposal conditions no longer met, skipping propose",
-                                        invalid_reason
-                                    );
-                                    return Ok((
-                                        ProposeResult::failure(ProposeFailure::InternalDeployError),
-                                        None,
-                                    ));
+                        Ok((ProposeResult::success(valid_status), Some(block)))
+                    }
+                    ValidBlockProcessing::Left(invalid_reason) => {
+                        // Some self-validation failures are recoverable races in fast, multi-parent
+                        // proposing: parent selection can become stale, and safety checks can reject
+                        // the candidate by the time validation runs. ContainsExpiredDeploy is in this
+                        // set as a wedge-breaker, not a race: deploy selection excludes block-expired
+                        // deploys, but any residual expiry disagreement with validation must cost one
+                        // skipped propose rather than the permanent BugError retry loop of issue #197
+                        // (the pool is unchanged on this path, so erroring here re-proposes the same
+                        // block forever).
+                        if matches!(
+                            invalid_reason,
+                            BlockError::Invalid(InvalidBlock::InvalidParents)
+                                | BlockError::Invalid(InvalidBlock::InvalidFollows)
+                                | BlockError::Invalid(InvalidBlock::JustificationRegression)
+                                | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
+                                | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
+                                | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
+                                | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
+                        ) {
+                            let recoverable_reason = match &invalid_reason {
+                                BlockError::Invalid(InvalidBlock::InvalidParents) => {
+                                    "invalid_parents"
                                 }
+                                BlockError::Invalid(InvalidBlock::InvalidFollows) => {
+                                    "invalid_follows"
+                                }
+                                BlockError::Invalid(InvalidBlock::InvalidBondsCache) => {
+                                    "invalid_bonds_cache"
+                                }
+                                BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy) => {
+                                    "invalid_repeat_deploy"
+                                }
+                                BlockError::Invalid(InvalidBlock::JustificationRegression) => {
+                                    "justification_regression"
+                                }
+                                BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock) => {
+                                    "neglected_invalid_block"
+                                }
+                                BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy) => {
+                                    "contains_expired_deploy"
+                                }
+                                _ => "other",
+                            };
+                            metrics::counter!(
+                                "propose_recoverable_self_validation_failures_total",
+                                "source" => "casper_proposer",
+                                "reason" => recoverable_reason
+                            )
+                            .increment(1);
+                            tracing::info!(
+                                "Block validation failed with {:?} - \
+                                         proposal conditions no longer met, skipping propose",
+                                invalid_reason
+                            );
+                            return Ok((
+                                ProposeResult::failure(ProposeFailure::InternalDeployError),
+                                None,
+                            ));
+                        }
 
-                                // Other validation failures are unexpected and should error
-                                Err(CasperError::RuntimeError(format!(
+                        // Other validation failures are unexpected and should error
+                        Err(CasperError::RuntimeError(format!(
                                     "Validation of self created block failed with reason: {:?}, cancelling propose.",
                                     invalid_reason
                                 )))
-                            }
-                        }
                     }
                 }
             }
@@ -362,10 +425,36 @@ where
 
         // get snapshot to serve as a base for propose
         let snapshot_start = std::time::Instant::now();
-        let mut casper_snapshot = self
+        let mut casper_snapshot = match self
             .casper_snapshot_provider
             .get_casper_snapshot(casper.clone())
-            .await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            // Not having the history to build a snapshot is a reason not to
+            // propose, not an error to retry. The constraint that would have
+            // stopped this node lives inside the snapshot it cannot build, so
+            // as an error every attempt re-runs the whole failing walk.
+            Err(CasperError::BlockNotHeld(missing, _)) => {
+                tracing::info!(
+                    target: "f1r3fly.casper.proposer",
+                    "Not proposing: snapshot needs {}, which this node does not hold.",
+                    PrettyPrinter::build_string_bytes(&missing)
+                );
+                let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ));
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        result.propose_status.clone(),
+                        0,
+                    ),
+                    propose_result: result,
+                    block_message_opt: None,
+                });
+            }
+            Err(err) => return Err(err),
+        };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         let elapsed = start_time.elapsed();
@@ -410,8 +499,13 @@ where
             );
         }
 
-        let allow_empty_blocks_for_request =
-            (self.allow_empty_blocks && is_async) || allow_empty_for_recovery;
+        let empty_blocks = if self.allow_empty_blocks && is_async {
+            EmptyBlocks::HeartbeatLane
+        } else if allow_empty_for_recovery {
+            EmptyBlocks::Allowed
+        } else {
+            EmptyBlocks::Forbidden
+        };
 
         let (result, propose_core_ms) = if is_async {
             // Empty blocks are reserved for heartbeat/liveness-driven proposes.
@@ -419,11 +513,7 @@ where
             // propose
             let propose_start = std::time::Instant::now();
             let (propose_result, block_opt) = self
-                .do_propose(
-                    &mut casper_snapshot,
-                    casper.clone(),
-                    allow_empty_blocks_for_request,
-                )
+                .do_propose(&mut casper_snapshot, casper.clone(), empty_blocks)
                 .await?;
             let propose_core_ms = propose_start.elapsed().as_millis();
 
@@ -454,7 +544,7 @@ where
             // propose
             let propose_start = std::time::Instant::now();
             let (propose_result, block_opt) = self
-                .do_propose(&mut casper_snapshot, casper, allow_empty_blocks_for_request)
+                .do_propose(&mut casper_snapshot, casper, empty_blocks)
                 .await?;
             let propose_core_ms = propose_start.elapsed().as_millis();
 
@@ -514,14 +604,6 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    pending_cosigner_metadata: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<
-                prost::bytes::Bytes,
-                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-            >,
-        >,
-    >,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -536,16 +618,11 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         dummy_deploy_opt,
         ProductionCasperSnapshotProvider,
         ProductionActiveValidatorChecker,
-        ProductionStakeChecker::new(
-            runtime_manager.clone(),
-            block_store.clone(),
-            validator_arc.clone(),
-        ),
+        ProductionStakeChecker::new(validator_arc.clone()),
         ProductionHeightChecker::new(validator_arc),
         ProductionBlockCreator::new(
             deploy_storage,
             rejected_deploy_buffer,
-            pending_cosigner_metadata,
             runtime_manager.clone(),
             block_store.clone(),
         ),
@@ -579,11 +656,19 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
     ) -> CheckProposeConstraintsResult {
-        if casper_snapshot
-            .on_chain_state
-            .active_validators
-            .contains(&validator_identity.public_key.bytes)
-        {
+        let in_committee = casper_snapshot
+            .parents
+            .first()
+            .map(|parent| {
+                parent
+                    .body
+                    .state
+                    .bonds
+                    .iter()
+                    .any(|bond| bond.validator == validator_identity.public_key.bytes)
+            })
+            .unwrap_or(false);
+        if in_committee {
             CheckProposeConstraintsResult::success()
         } else {
             CheckProposeConstraintsResult::not_bonded()
@@ -592,23 +677,11 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
 }
 
 pub struct ProductionStakeChecker {
-    runtime_manager: RuntimeManager,
-    block_store: KeyValueBlockStore,
     validator: Arc<ValidatorIdentity>,
 }
 
 impl ProductionStakeChecker {
-    pub fn new(
-        runtime_manager: RuntimeManager,
-        block_store: KeyValueBlockStore,
-        validator: Arc<ValidatorIdentity>,
-    ) -> Self {
-        Self {
-            runtime_manager,
-            block_store,
-            validator,
-        }
-    }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
 }
 
 impl StakeChecker for ProductionStakeChecker {
@@ -616,13 +689,7 @@ impl StakeChecker for ProductionStakeChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
-        synchrony_constraint_checker::check(
-            casper_snapshot,
-            &self.runtime_manager,
-            &self.block_store,
-            &self.validator,
-        )
-        .await
+        synchrony_constraint_checker::check(casper_snapshot, &self.validator).await
     }
 }
 
@@ -646,19 +713,6 @@ impl HeightChecker for ProductionHeightChecker {
 pub struct ProductionBlockCreator {
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    /// Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` with the
-    /// owning `MultiParentCasperImpl.pending_cosigner_metadata`; populated
-    /// by `admit_deploy_cosigned` at submission and consulted by
-    /// `block_creator::create` at proposal time to reconstruct full
-    /// `Cosigned<DeployData>` envelopes for multi-sig deploys.
-    pending_cosigner_metadata: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<
-                prost::bytes::Bytes,
-                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-            >,
-        >,
-    >,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
@@ -667,21 +721,12 @@ impl ProductionBlockCreator {
     pub fn new(
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        pending_cosigner_metadata: Arc<
-            parking_lot::Mutex<
-                std::collections::HashMap<
-                    prost::bytes::Bytes,
-                    crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-                >,
-            >,
-        >,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {
         Self {
             deploy_storage,
             rejected_deploy_buffer,
-            pending_cosigner_metadata,
             runtime_manager,
             block_store,
         }
@@ -689,12 +734,16 @@ impl ProductionBlockCreator {
 }
 
 impl BlockCreator for ProductionBlockCreator {
+    #[tracing::instrument(
+        level = "info",
+        skip(self, casper_snapshot, validator_identity, dummy_deploy_opt)
+    )]
     async fn create_block(
         &mut self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
-        allow_empty_blocks: bool,
+        selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
         block_creator::create(
             casper_snapshot,
@@ -702,10 +751,32 @@ impl BlockCreator for ProductionBlockCreator {
             dummy_deploy_opt,
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            self.pending_cosigner_metadata.clone(),
             &self.runtime_manager,
             &mut self.block_store,
-            allow_empty_blocks,
+            selection,
+        )
+        .await
+    }
+
+    async fn create_block_with_casper(
+        &mut self,
+        casper: &(dyn Casper + Send + Sync),
+        casper_snapshot: &CasperSnapshot,
+        validator_identity: &ValidatorIdentity,
+        dummy_deploy_opt: Option<(PrivateKey, String)>,
+        selection: DeploySelection,
+    ) -> Result<BlockCreatorResult, CasperError> {
+        block_creator::create_with_approved_genesis(
+            casper.get_approved_block()?,
+            casper.offered_funded_active(),
+            casper_snapshot,
+            validator_identity,
+            dummy_deploy_opt,
+            self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
+            &self.runtime_manager,
+            &mut self.block_store,
+            selection,
         )
         .await
     }

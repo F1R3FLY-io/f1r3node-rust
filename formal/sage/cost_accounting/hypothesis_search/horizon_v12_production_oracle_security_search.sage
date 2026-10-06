@@ -12,7 +12,7 @@ ORACLES = [
         "id": "v12_runtime_budget_reserve_accept",
         "oracle_surface": "runtime_budget",
         "oracle_kind": "runtime_budget_reserve",
-        "source_risk": "trace_slot_capacity",
+        "source_risk": "atomic_batch_admission",
         "mutation_axis": "accepted_reservation",
         "expected_disposition": "accepted",
         "event": canonical_event("source", 2, descriptor="v12/runtime/accepted", deploy=0, path=[0]),
@@ -70,11 +70,11 @@ ORACLES = [
         "initial_budget": 10,
     },
     {
-        "id": "v12_casper_replay_cost_trace_digest_mutation",
+        "id": "v12_casper_replay_authority_witness_mutation",
         "oracle_surface": "casper_replay",
         "oracle_kind": "casper_replay_payload_hash",
-        "source_risk": "replay_auth_digest_count",
-        "mutation_axis": "cost_trace_digest",
+        "source_risk": "authority_witness_replay_authentication",
+        "mutation_axis": "authority_cost_witness",
         "expected_disposition": "replay_invalid",
         "event": canonical_event("source", 1, descriptor="v12/casper/digest", deploy=0, path=[6]),
         "initial_budget": 8,
@@ -93,23 +93,23 @@ ORACLES = [
         "id": "v12_settlement_refund_bounded",
         "oracle_surface": "settlement",
         "oracle_kind": "settlement_refund_projection",
-        "source_risk": "refund_as_fuel",
+        "source_risk": "vault_refund_conservation",
         "mutation_axis": "refund",
         "expected_disposition": "settlement_bounded",
         "event": canonical_event("source", 2, descriptor="v12/settlement/refund", deploy=0, path=[8]),
         "initial_budget": 8,
-        "settlement": {"escrow": 15, "token_cost": 5, "refund": 10, "authority": "casper", "phlo_limit": 15, "phlo_price": 1},
+        "settlement": vault_settlement(15, 8, 4, 3, 3, 2),
     },
     {
         "id": "v12_settlement_overflow_rejected",
         "oracle_surface": "settlement",
         "oracle_kind": "settlement_overflow_rejected",
-        "source_risk": "refund_overflow",
-        "mutation_axis": "phlo_charge_overflow",
+        "source_risk": "checked_reservation_arithmetic",
+        "mutation_axis": "reservation_overflow",
         "expected_disposition": "rejected_before_mutation",
         "event": canonical_event("source", 1, descriptor="v12/settlement/overflow", deploy=0, path=[9]),
         "initial_budget": 8,
-        "settlement": {"escrow": 0, "token_cost": 0, "refund": 0, "authority": "casper", "phlo_limit": 9223372036854775807, "phlo_price": 2},
+        "settlement": vault_settlement(0, U64_MAX, 1, 0, 0, 0, expected_admitted=False),
     },
     {
         "id": "v12_slashing_fields_replay_authenticated",
@@ -120,7 +120,7 @@ ORACLES = [
         "expected_disposition": "replay_invalid",
         "event": canonical_event("source", 1, descriptor="v12/slashing/fields", deploy=0, path=[10]),
         "initial_budget": 8,
-        "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "slashing_scope": "post_eval"},
+        "settlement": vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval"),
     },
     {
         "id": "v12_slashing_post_eval_no_user_cost_mutation",
@@ -131,14 +131,14 @@ ORACLES = [
         "expected_disposition": "accepted",
         "event": canonical_event("source", 2, descriptor="v12/slashing/isolation", deploy=0, path=[11]),
         "initial_budget": 8,
-        "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "slashing_scope": "post_eval"},
+        "settlement": vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval"),
     },
     {
-        "id": "v12_legacy_absent_trace_quarantined",
+        "id": "v12_legacy_absent_authority_witness_quarantined",
         "oracle_surface": "legacy_quarantine",
-        "oracle_kind": "legacy_absent_trace_quarantine",
+        "oracle_kind": "legacy_absent_authority_witness_quarantine",
         "source_risk": "legacy_runtime_metering_downgrade",
-        "mutation_axis": "cost_trace_present",
+        "mutation_axis": "authority_cost_witness_present",
         "expected_disposition": "source_absent",
         "event": canonical_event("source", 1, descriptor="v12/legacy/absent", deploy=0, path=[12]),
         "initial_budget": 8,
@@ -182,25 +182,7 @@ def surface_for(surfaces, oracle):
     for surface in surfaces:
         if surface.get("cost_surface") == target_surface and surface.get("source_risk") == target_risk:
             return surface
-    for surface in surfaces:
-        if surface.get("cost_surface") == target_surface:
-            return surface
     raise SystemExit("missing source surface for oracle {} ({})".format(oracle["id"], target_surface))
-
-
-def expected_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        if weight <= 0 or weight > 2**63 - 1:
-            return (consumed, count, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
 
 
 def command_for_fixture(test_name):
@@ -219,9 +201,9 @@ def replay_mutations_for(oracle):
     surface = oracle["oracle_surface"]
     axis = oracle["mutation_axis"]
     if surface in ["casper_replay", "slashing", "legacy_quarantine"]:
-        return [axis, "cost_trace_digest", "cost_trace_event_count", "block_hash", "signature"]
+        return [axis, "processed_deploy_cost", "authority_cost_witness", "authority_byte_events", "replay_payload_hash", "block_hash", "signature"]
     if surface == "settlement":
-        return [axis, "cost", "refund"]
+        return authenticated_replay_fields([axis, "refund"])
     return []
 
 
@@ -236,7 +218,7 @@ def record_for_oracle(oracle, surface):
         events=events,
         initial_budget=oracle["initial_budget"],
         settlement=oracle.get("settlement", {}),
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]},
+        replay_fields={"fields": ["processed_deploy_cost", "authority_cost_witness", "authority_byte_events", "replay_payload_hash"]},
         replay_mutations=replay_mutations_for(oracle),
         negative_mutations=replay_mutations_for(oracle),
         source_seed={"source_surface": surface, "production_oracle": oracle},
@@ -408,7 +390,7 @@ def fixture_from_record(item):
 
 def rust_fixture_from_record(item):
     scenario = item["scenario"]
-    total, count, invalid, oop = expected_values(scenario)
+    total, count, invalid, oop = expected_fixture_values(scenario)
     return {
         "id": item["name"],
         "classification": item["classification"],

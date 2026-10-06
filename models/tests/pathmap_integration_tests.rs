@@ -1566,7 +1566,7 @@ fn test_drophead_mixed_survivability() {
 
     // Verify correct elements were dropped
     assert!(
-        list1.len() >= 1 && list2.len() >= 1,
+        !list1.is_empty() && !list2.is_empty(),
         "Surviving paths should have elements"
     );
 }

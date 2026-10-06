@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::Router;
 
-use crate::rust::web::shared_handlers::{AppError, AppState};
+use crate::rust::web::shared_handlers::{ApiErrorResponse, AppError, AppState};
 
 pub struct AdminWebApiRoutes;
 
@@ -17,8 +17,10 @@ impl AdminWebApiRoutes {
         post,
         path = "/api/propose",
         responses(
-            (status = 200, description = "Block proposed successfully", body = String),
-            (status = 403, description = "Read-only node or not authorized"),
+            (status = 200, description = "Propose result message (success block hash)", body = String),
+            (status = 400, description = "Read-only node (`readonly_node_required`)", body = ApiErrorResponse),
+            (status = 409, description = "No new deploys to propose (`no_new_deploys`)", body = ApiErrorResponse),
+            (status = 500, description = "Node-side propose failure (`unknown_error`, `replay_failure`)", body = ApiErrorResponse),
         ),
         tag = "AdminAPI"
     )]

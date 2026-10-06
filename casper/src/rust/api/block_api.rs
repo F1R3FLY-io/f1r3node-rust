@@ -2,22 +2,31 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use futures::future;
 use models::casper::{
-    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, LightBlockInfo, RejectedDeployInfo,
-    WaitingContinuationInfo,
+    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployDataProto, LightBlockInfo,
+    RejectedDeployInfo, WaitingContinuationInfo,
 };
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeRef};
+use models::rust::native_wallet_receipt::{NativeWalletReceiptLimits, NativeWalletReceiptV1};
+use models::rust::phlo_intent::{
+    PhloConversionCompositionV2, PhloFundingIntentV2Limits, PhloFundingIntentVersioned,
+};
+use models::rust::phlo_schedule::PhloGenesisPolicy;
+use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Bytes;
@@ -25,6 +34,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
 
 use crate::rust::blocks::proposer::propose_result::{
@@ -36,13 +46,153 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MIN_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::{
+    AdoptedResourcePolicy, OFFERED_PRODUCTION_READY,
+};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
 use crate::rust::ProposeFunction;
 pub struct BlockAPI;
+
+fn offered_validation_error(message: impl Into<String>) -> eyre::Report {
+    eyre::Report::new(DeployValidationError {
+        message: message.into(),
+    })
+}
+
+fn decode_offered_submission(proto: DeployDataProto, shard_id: &str) -> ApiErr<DeployEnvelope> {
+    let limits = offered_funded_v6_limits().envelope;
+    if proto.encoded_len() > limits.payload.deploy_bytes {
+        return Err(offered_validation_error(
+            "offered-funded deploy exceeds the fixed v6 syntax limit",
+        ));
+    }
+    if DeployEnvelopeFormat::from_authorization_version(
+        proto
+            .authorization_v61
+            .as_ref()
+            .map(|auth| auth.format_version),
+    )
+    .map_err(offered_validation_error)?
+        != DeployEnvelopeFormat::OfferedFunded
+    {
+        return Err(offered_validation_error(
+            "offered-funded submission requires the offered-funded authorization format",
+        ));
+    }
+    let envelope =
+        DeployEnvelope::from_proto(proto.clone(), limits).map_err(offered_validation_error)?;
+    if envelope.to_proto().map_err(offered_validation_error)? != proto {
+        return Err(offered_validation_error(
+            "offered-funded submission is not canonical",
+        ));
+    }
+    if envelope.body().shard_id != shard_id {
+        return Err(offered_validation_error(format!(
+            "Deploy shardId '{}' is not as expected network shard '{}'.",
+            envelope.body().shard_id,
+            shard_id
+        )));
+    }
+    if envelope.signers().iter().any(|signer| {
+        standard_deploys::system_public_keys()
+            .iter()
+            .any(|key| **key == signer.pk)
+    }) {
+        return Err(offered_validation_error(
+            "Deploy refused because it is signed with a forbidden private key.",
+        ));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    if envelope.body().is_expired_at(now) {
+        return Err(offered_validation_error(
+            "Offered-funded deploy has expired.",
+        ));
+    }
+    Ok(envelope)
+}
+
+fn check_offered_submission_policy(
+    envelope: &DeployEnvelope,
+    policy: &AdoptedResourcePolicy,
+) -> ApiErr<()> {
+    if !policy.offered_funded_v6_active() {
+        return Err(offered_validation_error(
+            "offered-funded deploy format is not active under the approved genesis policy",
+        ));
+    }
+    let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
+        return Err(offered_validation_error("expected offered-funded envelope"));
+    };
+    let syntax = offered_funded_v6_limits().envelope.payload.funding;
+    let v2_limits = PhloFundingIntentV2Limits {
+        wire: syntax.wire,
+        base: syntax,
+        grant_uses: syntax.wire.total_bytes / 8,
+        grant_id_bytes: syntax.wire.field_bytes,
+        quote_evidence_bytes: syntax.wire.field_bytes,
+    };
+    let intent = PhloFundingIntentVersioned::decode(offer.data.funding_intent(), v2_limits)
+        .map_err(|error| offered_validation_error(error.to_string()))?;
+    let base = match intent {
+        PhloFundingIntentVersioned::V1(_) => {
+            return Err(offered_validation_error(
+                "production offered funding requires explicit V2 composition terms",
+            ));
+        }
+        PhloFundingIntentVersioned::V2(v2) => {
+            if !matches!(v2.conversion, PhloConversionCompositionV2::NoConversion) {
+                return Err(offered_validation_error(
+                    "offered conversion requires authenticated asset custody and atomic settlement",
+                ));
+            }
+            v2.base
+        }
+    };
+    let limit = u64::try_from(offer.data.phlo_limit())
+        .map_err(|_| offered_validation_error("offered phloLimit is negative"))?;
+    let price = u64::try_from(offer.data.phlo_price())
+        .map_err(|_| offered_validation_error("offered phloPrice is negative"))?;
+    if limit > base.controls.limit || price > base.controls.price_ceiling {
+        return Err(offered_validation_error(
+            "offered phloLimit or phloPrice exceeds signed funding controls",
+        ));
+    }
+    let mut selected = false;
+    for schedule in &base.controls.permitted_schedules {
+        let encoded = schedule
+            .encode(PhloGenesisPolicy::LIMITS)
+            .map_err(|error| offered_validation_error(error.to_string()))?;
+        if schedule
+            .digest(syntax.controls.schedule(syntax.controls.total_classes))
+            .map_err(|error| offered_validation_error(error.to_string()))?
+            == base.schedule_commitment
+        {
+            if schedule.actual_price != price {
+                return Err(offered_validation_error(
+                    "offered phloPrice differs from selected signed schedule",
+                ));
+            }
+            policy
+                .check_acquisition_terms(&encoded)
+                .map_err(|error| offered_validation_error(error.to_string()))?;
+            selected = true;
+            break;
+        }
+    }
+    if !selected {
+        return Err(offered_validation_error(
+            "signed offered price schedule is absent",
+        ));
+    }
+    Ok(())
+}
 
 pub type ApiErr<T> = eyre::Result<T>;
 
@@ -50,6 +200,29 @@ pub type ApiErr<T> = eyre::Result<T>;
 #[error("Couldn't find block containing deploy with id: {deploy_id}")]
 pub struct DeployNotFoundError {
     pub deploy_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedPurseSettlement {
+    pub address: Vec<u8>,
+    pub resource_rev: u128,
+    pub fee_rev: u128,
+    pub post_balance: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedSettlementReceipt {
+    pub deploy_id: Vec<u8>,
+    pub block_hash: BlockHash,
+    pub phlo_used: u64,
+    pub fresh_phlo: u64,
+    pub retained_phlo: u64,
+    pub phlo_limit: u64,
+    pub phlo_price: u64,
+    pub fee_rev: u128,
+    pub rev_spent: u128,
+    pub rev_ceiling: u128,
+    pub purses: Vec<OfferedPurseSettlement>,
 }
 
 // Look at shared/src/main/scala/coop/rchain/shared/Base16.scala
@@ -96,6 +269,18 @@ const DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
 fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
 
 fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
+
+fn deploy_is_block_expired(
+    valid_after_block_number: i64,
+    latest_block_number: i64,
+    deploy_lifespan: i64,
+) -> Result<bool, CasperError> {
+    Ok(!crate::rust::util::deploy_window::is_open(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )?)
+}
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
@@ -158,47 +343,238 @@ lazy_static::lazy_static! {
 
 // TODO: Scala we should refactor BlockApi with applicative errors for better classification of errors and to overcome nesting when validating data.
 #[derive(Debug)]
-pub struct BlockRetrievalError {
-    pub message: String,
+pub struct BlockNotFoundError {
+    pub hash: String,
 }
 
-impl std::fmt::Display for BlockRetrievalError {
+impl std::fmt::Display for BlockNotFoundError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BlockRetrievalError: {}", self.message)
+        write!(f, "Block not found: {}", self.hash)
     }
 }
 
-impl std::error::Error for BlockRetrievalError {}
+impl std::error::Error for BlockNotFoundError {}
 
 #[derive(Debug)]
-pub struct DeployExpiredError {
-    pub message: String,
+pub struct InvalidHashError(pub String);
+
+impl std::fmt::Display for InvalidHashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) }
 }
 
-impl std::fmt::Display for DeployExpiredError {
+impl std::error::Error for InvalidHashError {}
+
+#[derive(Debug)]
+pub struct ExploratoryDeployReadOnlyError;
+
+impl std::fmt::Display for ExploratoryDeployReadOnlyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DeployExpiredError: {}", self.message)
+        write!(
+            f,
+            "Exploratory deploy can only be executed on read-only node"
+        )
     }
 }
 
-impl std::error::Error for DeployExpiredError {}
+impl std::error::Error for ExploratoryDeployReadOnlyError {}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Node exploratory query capacity is exhausted; retry in {retry_after_secs} s")]
+pub struct ExploratoryDeployBusyError {
+    /// Seconds to advertise in `Retry-After`. Derived from the configured
+    /// execution budget: capacity is held until the occupying query terminates,
+    /// so that budget is the earliest a caller can expect a slot to free.
+    pub retry_after_secs: u64,
+}
+
+impl ExploratoryDeployBusyError {
+    /// Rounds up to one second because `Retry-After` is expressed in whole
+    /// seconds — a sub-second budget cannot be advertised as zero without
+    /// telling the caller to retry immediately.
+    fn with_budget(execution_budget: Duration) -> Self {
+        Self {
+            retry_after_secs: execution_budget.as_secs().max(1),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Exploratory query cancelled after exceeding its {timeout_ms} ms execution budget; \
+     the budget bounds execution, not response time"
+)]
+pub struct ExploratoryDeployTimeoutError {
+    pub timeout_ms: u64,
+}
+
+/// An exploratory-deploy rejection that every transport can express natively —
+/// HTTP via a status code, gRPC via `tonic::Status`.
+///
+/// Classification matches the error variant and carries its data forward; it
+/// never inspects the rendered message. That is what keeps the two transport
+/// surfaces from drifting apart, and it is why the payload lives here rather
+/// than being re-derived per transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExploratoryDeployRejection {
+    Busy { retry_after_secs: u64 },
+    Timeout { timeout_ms: u64 },
+}
+
+impl ExploratoryDeployRejection {
+    /// Classify one cause in an error chain, so a caller walking the chain can
+    /// keep using that cause's own message for the response body.
+    pub fn from_cause(cause: &(dyn std::error::Error + 'static)) -> Option<Self> {
+        if let Some(busy) = cause.downcast_ref::<ExploratoryDeployBusyError>() {
+            return Some(Self::Busy {
+                retry_after_secs: busy.retry_after_secs,
+            });
+        }
+        cause
+            .downcast_ref::<ExploratoryDeployTimeoutError>()
+            .map(|timeout| Self::Timeout {
+                timeout_ms: timeout.timeout_ms,
+            })
+    }
+
+    pub fn classify(err: &eyre::Error) -> Option<Self> { err.chain().find_map(Self::from_cause) }
+}
+
+#[repr(u8)]
+enum ExploratoryDeployOutcome {
+    Failed,
+    Completed,
+    TimedOut,
+}
+
+struct ExploratoryDeployMetrics {
+    started: Instant,
+    outcome: Arc<AtomicU8>,
+}
+
+impl ExploratoryDeployMetrics {
+    fn new(outcome: Arc<AtomicU8>) -> Self {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").increment(1.0);
+        Self {
+            started: Instant::now(),
+            outcome,
+        }
+    }
+}
+
+impl Drop for ExploratoryDeployMetrics {
+    fn drop(&mut self) {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").decrement(1.0);
+        metrics::histogram!("exploratory_deploy.duration", "source" => "casper")
+            .record(self.started.elapsed().as_secs_f64());
+        match self.outcome.load(Ordering::Relaxed) {
+            value if value == ExploratoryDeployOutcome::Completed as u8 => {
+                metrics::counter!("exploratory_deploy.completed", "source" => "casper")
+                    .increment(1);
+            }
+            value if value == ExploratoryDeployOutcome::TimedOut as u8 => {
+                metrics::counter!("exploratory_deploy.timed_out", "source" => "casper")
+                    .increment(1);
+            }
+            _ => {
+                metrics::counter!("exploratory_deploy.failed", "source" => "casper").increment(1);
+            }
+        }
+        RuntimeManager::trim_allocator();
+    }
+}
+
+enum ExploratoryDeployTaskError {
+    Join(tokio::task::JoinError),
+    Timeout,
+}
+
+async fn await_exploratory_deploy_task<T>(
+    mut task: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    outcome: Arc<AtomicU8>,
+) -> Result<T, ExploratoryDeployTaskError> {
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => Err(ExploratoryDeployTaskError::Join(error)),
+        Err(_) => {
+            outcome.store(ExploratoryDeployOutcome::TimedOut as u8, Ordering::Relaxed);
+            task.abort();
+            let _ = task.await;
+            Err(ExploratoryDeployTaskError::Timeout)
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum LatestBlockMessageError {
-    ValidatorReadOnlyError,
+    NodeReadOnlyError,
     NoBlockMessageError,
 }
 
 impl std::fmt::Display for LatestBlockMessageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LatestBlockMessageError::ValidatorReadOnlyError => write!(f, "ValidatorReadOnlyError"),
-            LatestBlockMessageError::NoBlockMessageError => write!(f, "NoBlockMessageError"),
+            LatestBlockMessageError::NodeReadOnlyError => {
+                write!(
+                    f,
+                    "node is running in read-only mode; this endpoint requires a validator"
+                )
+            }
+            LatestBlockMessageError::NoBlockMessageError => {
+                write!(f, "no block is available yet")
+            }
         }
     }
 }
 
 impl std::error::Error for LatestBlockMessageError {}
+
+#[derive(Debug)]
+pub struct InvalidPublicKeyError(pub String);
+
+impl std::fmt::Display for InvalidPublicKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) }
+}
+
+impl std::error::Error for InvalidPublicKeyError {}
+
+#[derive(Debug)]
+pub struct DeployValidationError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployValidationError {}
+
+#[derive(Debug)]
+pub struct ProposeReadOnlyError;
+
+impl std::fmt::Display for ProposeReadOnlyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "propose is not available: this node is running in read-only mode"
+        )
+    }
+}
+
+impl std::error::Error for ProposeReadOnlyError {}
+
+#[derive(Debug)]
+pub struct NoNewDeploysError;
+
+impl std::fmt::Display for NoNewDeploysError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No new deploys to propose.")
+    }
+}
+
+impl std::error::Error for NoNewDeploysError {}
 
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
@@ -258,8 +634,14 @@ impl BlockAPI {
                         return Ok(Some(light_block_info));
                     }
                     Ok(false) => {}
+                    // A block the scan window names but this node does not
+                    // hold (an LFS restore horizon) is skipped, not an error.
                     Err(err) => {
-                        return Err(err);
+                        tracing::debug!(
+                            "fallback deploy scan skipping unreadable block {}: {}",
+                            PrettyPrinter::build_string_bytes(&hash),
+                            err
+                        );
                     }
                 }
             }
@@ -273,10 +655,6 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        // D3 (DR-9, D.5): retained for API/caller signature stability and as the
-        // shard's gate margin upstream; NO LONGER an admission check here (the
-        // per-deploy `validate_phlo` was removed).
-        _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -285,13 +663,9 @@ impl BlockAPI {
             deploy_data: Signed<DeployData>,
             trigger_propose: &Option<Arc<ProposeFunction>>,
         ) -> ApiErr<String> {
-            let deploy_result = casper.deploy(deploy_data)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
+            let deploy_id = match casper.deploy(deploy_data)? {
+                Either::Left(err) => return Err(err.into()),
+                Either::Right(deploy_id) => deploy_id,
             };
 
             // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
@@ -363,10 +737,7 @@ impl BlockAPI {
                                     tokio::time::sleep(retry_delay).await;
                                     continue;
                                 }
-                                tracing::error!(
-                                    "Failed to trigger propose from deploy path: {}",
-                                    err
-                                );
+                                tracing::error!(error = %err, "deploy-triggered propose failed");
                             }
                         }
                         break;
@@ -374,28 +745,32 @@ impl BlockAPI {
                 });
             }
 
-            // yield r
-            r
+            Ok(format!(
+                "Success!\nDeployId is: {}",
+                PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+            ))
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), String> = Ok(())
+        let validation_result: Result<(), DeployValidationError> = Ok(())
             .and_then(|_| {
                 if is_node_read_only {
-                    Err(
-                        "Deploy was rejected because node is running in read-only mode."
+                    Err(DeployValidationError {
+                        message: "Deploy was rejected because node is running in read-only mode."
                             .to_string(),
-                    )
+                    })
                 } else {
                     Ok(())
                 }
             })
             .and_then(|_| {
                 if d.data.shard_id != shard_id {
-                    Err(format!(
-                        "Deploy shardId '{}' is not as expected network shard '{}'.",
-                        d.data.shard_id, shard_id
-                    ))
+                    Err(DeployValidationError {
+                        message: format!(
+                            "Deploy shardId '{}' is not as expected network shard '{}'.",
+                            d.data.shard_id, shard_id
+                        ),
+                    })
                 } else {
                     Ok(())
                 }
@@ -405,40 +780,33 @@ impl BlockAPI {
                     .iter()
                     .any(|pk| **pk == d.pk);
                 if is_forbidden_key {
-                    Err(
-                        "Deploy refused because it's signed with forbidden private key."
+                    Err(DeployValidationError {
+                        message: "Deploy refused because it's signed with forbidden private key."
                             .to_string(),
-                    )
+                    })
                 } else {
                     Ok(())
                 }
             })
-            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
-            // REMOVED — there is no phlo price/limit on a deploy. `min_phlo_price`
-            // is RETAINED only as the block-assembly gate's safety margin
-            // (acceptance.rs / block_creator.rs), not an API admission check.
             .and_then(|_| {
-                // Check if deploy has already expired based on expirationTimestamp
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
                 if d.data.is_expired_at(now) {
-                    // Use DeployExpiredError for consistent error classification
-                    Err(DeployExpiredError {
+                    Err(DeployValidationError {
                         message: format!(
                             "Deploy has expired: expirationTimestamp={:?} is in the past.",
                             d.data.expiration_timestamp
                         ),
-                    }
-                    .to_string())
+                    })
                 } else {
                     Ok(())
                 }
             });
 
         // Return early if validation fails
-        validation_result.map_err(|e| eyre::eyre!(e))?;
+        validation_result.map_err(|e| eyre::Report::new(e))?;
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -452,197 +820,121 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
+            if casper.offered_funded_active() {
+                return Err(offered_validation_error(
+                    "new deploys require offered-funded cost accounting",
+                ));
+            }
+            // The floor check reads the SAME value the validity rule reads
+            // (the shard conf), never a second node-conf copy.
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            if d.data.phlo_price < min_phlo_price {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: format!(
+                        "Phlo price {} is less than minimum price {}.",
+                        d.data.phlo_price, min_phlo_price
+                    ),
+                }));
+            }
+            let dag = casper.block_dag().await?;
+            // A deploy admitted now can only ever land in a block that doesn't
+            // exist yet — the next one, at `latest_block_number + 1` — never
+            // in the current tip, which is already built. block_creator.rs's
+            // own expiry filter checks against exactly that next block's
+            // number (`earliest_block_number = block_number - deploy_lifespan`
+            // for the block being assembled). Checking admission against
+            // `latest_block_number` instead of `latest_block_number + 1` is
+            // off by one: a deploy admitted "just inside" the window at the
+            // current tip is then found expired by the very next block's
+            // filter, so it can never actually be included.
+            let next_block_number = dag.latest_block_number() + 1;
+            let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
+            if deploy_is_block_expired(
+                d.data.valid_after_block_number,
+                next_block_number,
+                deploy_lifespan,
+            )? {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: format!(
+                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        d.data.valid_after_block_number, next_block_number, deploy_lifespan
+                    ),
+                }));
+            }
             casper_deploy(casper, d, trigger_propose).await
         } else {
             log_warn(&log_error_message)
         }
     }
 
-    /// Multi-signature-aware deploy submission. Mirrors `deploy(Signed)`
-    /// but takes a `Cosigned<DeployData>` envelope so the cosigner list
-    /// survives ingest. Validation (shard_id, forbidden keys, phlo
-    /// bounds, expiration) is performed against the PRIMARY signer's
-    /// fields — the cosigners' validation already happened at envelope
-    /// construction (`Cosigned::from_signed_data` enforces all signers
-    /// signing the canonical message hash). For single-signer Cosigned
-    /// envelopes (the legacy uplift case), this routes through
-    /// `casper.deploy_cosigned` which falls back to `casper.deploy` via
-    /// the trait's default impl — preserving byte-identical observable
-    /// behavior for legacy clients.
-    #[tracing::instrument(
-        name = "deploy_cosigned",
-        target = "f1r3fly.block-api.deploy_cosigned",
-        skip_all
-    )]
-    pub async fn deploy_cosigned(
+    pub async fn deploy_offered(
         engine_cell: &EngineCell,
-        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+        proto: DeployDataProto,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        // D3 (DR-9, D.5): retained for API/caller signature stability and as the
-        // shard's gate margin upstream; NO LONGER an admission check here (the
-        // per-deploy `validate_phlo` was removed).
-        _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
-        async fn casper_deploy_cosigned(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-            trigger_propose: &Option<Arc<ProposeFunction>>,
-        ) -> ApiErr<String> {
-            let deploy_result = casper.deploy_cosigned(cosigned)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
-            };
-            // Trigger propose asynchronously (mirrors `casper_deploy`).
-            if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(casper_for_propose.clone(), true).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(
-                                    "Failed to trigger propose from deploy path: {}",
-                                    err
-                                );
-                            }
-                        }
-                        break;
-                    }
-                });
-            }
-            r
+        if is_node_read_only {
+            return Err(offered_validation_error(
+                "Deploy was rejected because node is running in read-only mode.",
+            ));
         }
-
-        // Validation against the PRIMARY signer's fields. The cosigner
-        // list is already validated by Cosigned::from_signed_data
-        // (signature verification, canonical sort, no duplicates,
-        // share-sum).
-        let primary = cosigned.primary();
-        let validation_result: Result<(), String> = Ok(())
-            .and_then(|_| {
-                if is_node_read_only {
-                    Err(
-                        "Deploy was rejected because node is running in read-only mode."
-                            .to_string(),
-                    )
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                if cosigned.data.shard_id != shard_id {
-                    Err(format!(
-                        "Deploy shardId '{}' is not as expected network shard '{}'.",
-                        cosigned.data.shard_id, shard_id
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                // Any cosigner using a forbidden system key is rejected.
-                for (i, signer) in cosigned.signers().iter().enumerate() {
-                    let is_forbidden = standard_deploys::system_public_keys()
-                        .iter()
-                        .any(|pk| **pk == signer.pk);
-                    if is_forbidden {
-                        return Err(format!(
-                            "Deploy refused because cosigner at index {} is \
-                             signed with a forbidden system private key.",
-                            i
-                        ));
-                    }
-                }
-                Ok(())
-            })
-            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
-            // REMOVED (no phlo price/limit on a deploy).
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if cosigned.data.is_expired_at(now) {
-                    Err(DeployExpiredError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            cosigned.data.expiration_timestamp
-                        ),
-                    }
-                    .to_string())
-                } else {
-                    Ok(())
+        if !OFFERED_PRODUCTION_READY {
+            return Err(offered_validation_error(
+                "offered-funded deploy admission awaits production proof and replay activation",
+            ));
+        }
+        let envelope = decode_offered_submission(proto, shard_id)?;
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| offered_validation_error("Casper instance was not available"))?;
+        let adopted = AdoptedResourcePolicy::load(
+            &casper.runtime_manager(),
+            casper.get_approved_block()?,
+            casper.casper_shard_conf(),
+        )
+        .await?;
+        check_offered_submission_policy(&envelope, &adopted)?;
+        let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
+            return Err(offered_validation_error("expected offered-funded envelope"));
+        };
+        if offer.data.phlo_price() < casper.casper_shard_conf().min_phlo_price {
+            return Err(offered_validation_error(
+                "offered phloPrice is below the adopted minimum",
+            ));
+        }
+        let dag = casper.block_dag().await?;
+        let next_block_number = dag.latest_block_number() + 1;
+        if deploy_is_block_expired(
+            envelope.body().valid_after_block_number,
+            next_block_number,
+            casper.casper_shard_conf().deploy_lifespan,
+        )? {
+            return Err(offered_validation_error(
+                "offered-funded deploy is outside the block lifespan",
+            ));
+        }
+        let deploy_id = match casper.deploy_envelope(envelope, &adopted)? {
+            Either::Left(error) => return Err(error.into()),
+            Either::Right(deploy_id) => deploy_id,
+        };
+        if let Some(trigger) = trigger_propose {
+            let trigger = Arc::clone(trigger);
+            let casper = casper.clone();
+            tokio::spawn(async move {
+                if let Err(error) = trigger(casper, true).await {
+                    tracing::error!(error = %error, "offered-funded deploy propose trigger failed");
                 }
             });
-        // Suppress unused-binding warning under the cosigned path
-        // (primary used only in the validation chain above).
-        let _ = primary;
-
-        validation_result.map_err(|e| eyre::eyre!(e))?;
-
-        let log_error_message =
-            "Error: Could not deploy, casper instance was not available yet.".to_string();
-        let eng = engine_cell.get().await;
-        let log_warn = |msg: &str| -> ApiErr<String> {
-            tracing::warn!("{}", msg);
-            Err(eyre::eyre!("{}", msg))
-        };
-        if let Some(casper) = eng.with_casper() {
-            casper_deploy_cosigned(casper, cosigned, trigger_propose).await
-        } else {
-            log_warn(&log_error_message)
         }
+        Ok(format!(
+            "Success!\nDeployId is: {}",
+            PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+        ))
     }
 
+    #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]
     pub async fn create_block(
         engine_cell: &EngineCell,
         trigger_propose_f: &Arc<ProposeFunction>,
@@ -675,9 +967,13 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(ref status, seq_number) => {
-                    log_debug(&format!("Failure: {} (seqNum {})", status, seq_number))
-                }
+                ProposerResult::Failure(ref status, seq_number) => match status {
+                    ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
+                        tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
+                        Err(eyre::Report::new(NoNewDeploysError))
+                    }
+                    _ => log_debug(&format!("Failure: {} (seqNum {})", status, seq_number)),
+                },
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
@@ -785,6 +1081,7 @@ impl BlockAPI {
                         runtime_manager.clone(),
                         &sorted_listening_name,
                         block,
+                        false,
                     )
                 }))
                 .await?;
@@ -895,10 +1192,15 @@ impl BlockAPI {
         runtime_manager: Arc<RuntimeManager>,
         sorted_listening_name: &Par,
         block: &BlockMessage,
+        use_pre_state_hash: bool,
     ) -> ApiErr<Option<DataWithBlockInfo>> {
         // TODO: Scala For Produce it doesn't make sense to have multiple names
         if BlockAPI::is_listening_name_reduced(block, &[sorted_listening_name.clone()]) {
-            let state_hash = proto_util::post_state_hash(block);
+            let state_hash = if use_pre_state_hash {
+                proto_util::pre_state_hash(block)
+            } else {
+                proto_util::post_state_hash(block)
+            };
             let data = runtime_manager
                 .get_data(state_hash, sorted_listening_name)
                 .await?;
@@ -950,7 +1252,7 @@ impl BlockAPI {
             .body
             .deploys
             .iter()
-            .flat_map(|pd| pd.deploy_log.iter())
+            .flat_map(|pd| pd.deploy_log().iter())
             .collect();
 
         let log: Vec<RspaceEvent> = serialized_log
@@ -1094,10 +1396,19 @@ impl BlockAPI {
 
             let mut block_infos_at_height_acc = Vec::new();
             for block_hashes_at_height in topo_sort_dag {
-                let blocks_at_height: Vec<_> = block_hashes_at_height
-                    .iter()
-                    .map(|block_hash| casper.block_store().get_unsafe(block_hash))
-                    .collect();
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let mut blocks_at_height: Vec<BlockMessage> =
+                    Vec::with_capacity(block_hashes_at_height.len());
+                for block_hash in block_hashes_at_height.iter() {
+                    match casper.block_store().get(block_hash)? {
+                        Some(block) => blocks_at_height.push(block),
+                        None => tracing::debug!(
+                            "get-blocks-by-heights skipping unheld block {}",
+                            PrettyPrinter::build_string_bytes(block_hash)
+                        ),
+                    }
+                }
 
                 for block in blocks_at_height {
                     let block_info =
@@ -1196,9 +1507,12 @@ impl BlockAPI {
     ) -> ApiErr<String> {
         let do_it = |(_casper, topo_sort): (&dyn MultiParentCasper, Vec<Vec<BlockHash>>)| -> ApiErr<String> {
             // case (_, topoSort) => ...
+            // An unheld block (an LFS restore horizon) renders without edges.
             let fetch_parents = |block_hash: &BlockHash| -> Vec<BlockHash> {
-                let block = _casper.block_store().get_unsafe(block_hash);
-                block.header.parents_hash_list.clone()
+                match _casper.block_store().get(block_hash) {
+                    Ok(Some(block)) => block.header.parents_hash_list.clone(),
+                    _ => Vec::new(),
+                }
             };
 
             //string will be converted to an ApiErr<String>
@@ -1241,7 +1555,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1279,7 +1601,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks-full skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1366,11 +1696,17 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
-            let maybe_block_hash = dag.lookup_by_deploy_id(deploy_id)?;
+            // The sig's most recent canonical appearance, from the
+            // lifecycle rows — a pure function of the DAG's bodies, never
+            // of node-local insertion order.
+            let maybe_block_hash = dag.deploy_canonical_appearance(deploy_id)?;
 
-            match maybe_block_hash {
-                Some(block_hash) => {
-                    let block = casper.block_store().get_unsafe(&block_hash);
+            // The canonical carrier can sit below an LFS restore horizon;
+            // fall through to the recent-blocks scan instead of erroring.
+            match maybe_block_hash
+                .and_then(|block_hash| casper.block_store().get(&block_hash).ok().flatten())
+            {
+                Some(block) => {
                     let light_block_info =
                         BlockAPI::get_light_block_info(casper.as_ref(), &block).await?;
                     Ok(light_block_info)
@@ -1393,6 +1729,78 @@ impl BlockAPI {
         }
     }
 
+    pub async fn find_offered_settlement_receipt(
+        engine_cell: &EngineCell,
+        deploy_id: &DeployId,
+    ) -> ApiErr<Option<OfferedSettlementReceipt>> {
+        let light_block = Self::find_deploy(engine_cell, deploy_id).await?;
+        let block_hash: BlockHash = hex::decode(&light_block.block_hash)?.into();
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| eyre::eyre!("Casper instance was not available"))?;
+        let block = casper.block_store().get(&block_hash)?.ok_or_else(|| {
+            eyre::eyre!("canonical deploy block is unavailable from block storage")
+        })?;
+        let processed = block
+            .body
+            .deploys
+            .iter()
+            .find(|deploy| deploy.identity_bytes() == deploy_id.as_slice())
+            .ok_or_else(|| DeployNotFoundError {
+                deploy_id: PrettyPrinter::build_string_no_limit(deploy_id),
+            })?;
+        let Some(offered) = processed.as_offered() else {
+            return Ok(None);
+        };
+        let limits = offered_funded_v6_limits();
+        let evidence = offered
+            .evidence(limits.evidence)
+            .map_err(|error| eyre::eyre!(error))?;
+        if evidence.wallet_settlement.is_empty() {
+            return Ok(None);
+        }
+        let receipt =
+            NativeWalletReceiptV1::decode(evidence.wallet_settlement, NativeWalletReceiptLimits {
+                wire: PhloWireLimits {
+                    total_bytes: limits.evidence.field_bytes,
+                    field_bytes: limits.evidence.field_bytes,
+                },
+                payers: limits.envelope.members.get(),
+            })?;
+        let resource_rev = evidence.resource_rev()?;
+        if receipt.resource_rev != resource_rev
+            || receipt.fee_rev != evidence.fee_rev
+            || receipt.rev_spent()? != evidence.rev_spent()?
+        {
+            return Err(eyre::eyre!(
+                "wallet settlement receipt differs from authenticated cost evidence"
+            ));
+        }
+        Ok(Some(OfferedSettlementReceipt {
+            deploy_id: deploy_id.to_vec(),
+            block_hash,
+            phlo_used: evidence.phlo_used,
+            fresh_phlo: evidence.fresh_phlo,
+            retained_phlo: evidence.retained_phlo,
+            phlo_limit: evidence.phlo_limit,
+            phlo_price: evidence.phlo_price,
+            fee_rev: evidence.fee_rev,
+            rev_spent: evidence.rev_spent()?,
+            rev_ceiling: evidence.rev_ceiling()?,
+            purses: receipt
+                .rows
+                .iter()
+                .map(|row| OfferedPurseSettlement {
+                    address: row.address.to_vec(),
+                    resource_rev: row.resource_rev,
+                    fee_rev: row.fee_rev,
+                    post_balance: row.post_balance,
+                })
+                .collect(),
+        }))
+    }
+
     #[tracing::instrument(name = "get-block", target = "f1r3fly.block-api.get-block", skip_all)]
     pub async fn get_block(engine_cell: &EngineCell, hash: &str) -> ApiErr<BlockInfo> {
         let error_message =
@@ -1400,16 +1808,20 @@ impl BlockAPI {
 
         async fn casper_response(casper: &dyn MultiParentCasper, hash: &str) -> ApiErr<BlockInfo> {
             if hash.len() < 6 {
-                return Err(eyre::eyre!(
-                    "Input hash value must be at least 6 characters: {}",
+                return Err(eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not a valid block hash (minimum 6 hex characters)",
                     hash
-                ));
+                ))));
             }
 
             let padded_hash = pad_hex_string(hash);
 
-            let hash_byte_string = hex::decode(&padded_hash)
-                .map_err(|_| eyre::eyre!("Input hash value is not valid hex string: {}", hash))?;
+            let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
+                eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not valid block hash",
+                    hash
+                )))
+            })?;
 
             let get_block = async {
                 let block_hash = prost::bytes::Bytes::from(hash_byte_string);
@@ -1439,8 +1851,11 @@ impl BlockAPI {
                 find_block.await
             };
 
-            let block = block_f?
-                .ok_or_else(|| eyre::eyre!("Error: Failure to find block with hash: {}", hash))?;
+            let block = block_f?.ok_or_else(|| {
+                eyre::Report::new(BlockNotFoundError {
+                    hash: hash.to_string(),
+                })
+            })?;
 
             let dag = casper.block_dag().await?;
             if dag.contains(&block.block_hash) {
@@ -1475,16 +1890,10 @@ impl BlockAPI {
             if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
                 meta.fault_tolerance_value
             } else {
-                let safety_oracle = CliqueOracleImpl;
-                safety_oracle
-                    .normalized_fault_tolerance(dag, &block.block_hash)
-                    .await?
+                Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
             }
         } else {
-            let safety_oracle = CliqueOracleImpl;
-            safety_oracle
-                .normalized_fault_tolerance(dag, &block.block_hash)
-                .await?
+            Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
         };
 
         let weights_map = proto_util::weight_map(block);
@@ -1498,6 +1907,32 @@ impl BlockAPI {
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)
+    }
+
+    /// An oracle walk that reaches history this node does not hold (an LFS
+    /// restore horizon) reads as unknown fault tolerance, never as an API
+    /// failure.
+    async fn fault_tolerance_or_unknown(
+        dag: &KeyValueDagRepresentation,
+        block_hash: &BlockHash,
+    ) -> ApiErr<f32> {
+        let safety_oracle = CliqueOracleImpl;
+        match safety_oracle
+            .normalized_fault_tolerance(dag, block_hash)
+            .await
+        {
+            Ok(ft) => Ok(ft),
+            Err(KvStoreError::MissingBlock { hash, .. }) => {
+                tracing::debug!(
+                    "fault tolerance unknown for {}: history below the restore \
+                     horizon ({})",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+                Ok(MIN_FAULT_TOLERANCE)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn get_block_info<M: MultiParentCasper + ?Sized, A: Sized + Send>(
@@ -1534,7 +1969,7 @@ impl BlockAPI {
             .body
             .deploys
             .iter()
-            .map(|processed_deploy| processed_deploy.clone().to_deploy_info())
+            .map(|processed_deploy| processed_deploy.to_deploy_info())
             .collect();
 
         BlockInfo {
@@ -1604,7 +2039,7 @@ impl BlockAPI {
         name_qty: i32,
     ) -> ApiErr<Vec<ByteString>> {
         let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
-        let safe_qty = std::cmp::min(name_qty, 1024) as usize;
+        let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
             .map(|_| rand.next().into_iter().map(|b| b as u8).collect())
             .collect();
@@ -1648,8 +2083,12 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
             let padded_hash = pad_hex_string(hash);
-            let given_block_hash =
-                hex::decode(&padded_hash).map_err(|_| eyre::eyre!("Invalid hex string"))?;
+            let given_block_hash = hex::decode(&padded_hash).map_err(|_| {
+                eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not valid block hash",
+                    hash
+                )))
+            })?;
             let result = dag.is_finalized(&given_block_hash.into());
             Ok(result)
         } else {
@@ -1667,12 +2106,17 @@ impl BlockAPI {
     ///
     /// Thin wrapper around
     /// `deploy_finalization_status::resolve` that unwraps the engine cell.
-    /// The pure resolver is reused by the catchup gate in
-    /// `compute_parents_post_state` to avoid gating buffer population on
-    /// already-finalized sigs.
     pub async fn deploy_finalization_status(
         engine_cell: &EngineCell,
         sig: &[u8],
+    ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
+        Self::deploy_finalization_status_with_known_block(engine_cell, sig, None).await
+    }
+
+    pub async fn deploy_finalization_status_with_known_block(
+        engine_cell: &EngineCell,
+        sig: &[u8],
+        known_block_hash: Option<&BlockHash>,
     ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
         let error_message =
             "Could not compute deploy finalization status, casper instance was not available yet.";
@@ -1683,19 +2127,22 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
+        // A pure LOOKUP over the deploy-lifecycle register: terminal
+        // verdicts were determined at their threshold crossings by
+        // `finality::deploy_lifecycle` and persisted write-once — no
+        // per-query parameters.
         match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
-            casper.casper_shard_conf().deploy_lifespan,
             sig,
+            known_block_hash,
         ) {
             Ok(status) => Ok(status),
             Err(err) => {
-                // Convert deploy-index inconsistency to `pending_unknown`
-                // so HTTP/gRPC callers see a tractable response. The
-                // resolver returns `Err` so the consensus path
-                // (`repeat_deploy`) conservative-fails on the same
-                // inconsistency. Genuine I/O failures keep propagating.
+                // Convert the known-block inconsistency (a caller-claimed
+                // block whose body does not list the sig) to
+                // `pending_unknown` so HTTP/gRPC callers see a tractable
+                // response. Genuine I/O failures keep propagating.
                 if err
                     .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
                     .is_some()
@@ -1706,6 +2153,66 @@ impl BlockAPI {
                 }
             }
         }
+    }
+
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag.
+    ///
+    /// When `deployer` is `Some`, only deploys signed by that public key
+    /// are returned. The result is capped at
+    /// [`pending_deploys::PENDING_DEPLOYS_MAX_RESULTS`] entries; the
+    /// `total_available` field reports the count that matched before
+    /// truncation, so callers can detect truncation by comparing
+    /// `deploys.len() < total_available`.
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Returns an error on bootstrapping nodes where Casper is not yet
+    /// initialised (`with_casper()` returns `None`).
+    pub async fn list_pending_deploys(
+        engine_cell: &EngineCell,
+        deployer: Option<&[u8]>,
+    ) -> ApiErr<crate::rust::api::pending_deploys::PendingDeploysSnapshot> {
+        use crate::rust::api::pending_deploys::{
+            PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
+        };
+
+        let error_message =
+            "Could not list pending deploys, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let mut deploys = casper.list_pending_deploys().await?;
+
+        if let Some(pk) = deployer {
+            deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);
+        }
+
+        // Deterministic ordering before cap truncation: by timestamp, then
+        // by signature bytes. Makes the truncation result reproducible
+        // across calls for the same queue state.
+        deploys.sort_by(|(a, _), (b, _)| {
+            a.data
+                .time_stamp
+                .cmp(&b.data.time_stamp)
+                .then_with(|| a.sig.as_ref().cmp(b.sig.as_ref()))
+        });
+
+        let total_available = deploys.len() as u32;
+        deploys.truncate(PENDING_DEPLOYS_MAX_RESULTS);
+
+        Ok(PendingDeploysSnapshot {
+            deploys,
+            total_available,
+        })
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
@@ -1737,6 +2244,7 @@ impl BlockAPI {
         block_hash: Option<String>,
         use_pre_state_hash: bool,
         dev_mode: bool,
+        deployer: Option<PublicKey>,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo, u64)> {
         let error_message =
             "Could not execute exploratory deploy, casper instance was not available yet.";
@@ -1745,60 +2253,30 @@ impl BlockAPI {
             let is_read_only = casper.get_validator().is_none();
             if is_read_only || dev_mode {
                 let runtime_manager = casper.runtime_manager();
+                let execution_budget = runtime_manager.exploratory_deploy_execution_timeout_value();
+                let permit = runtime_manager
+                    .try_acquire_exploratory_deploy_permit()
+                    .ok_or_else(|| {
+                        metrics::counter!(
+                            "exploratory_deploy.rejected",
+                            "source" => "casper"
+                        )
+                        .increment(1);
+                        eyre::Report::new(ExploratoryDeployBusyError::with_budget(execution_budget))
+                    })?;
 
-                // When no block specified, compute merged state from all DAG tips
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let snapshot = casper.get_snapshot().await?;
                     let lfb = casper.last_finalized_block().await?;
-                    let parents = &snapshot.parents;
-
-                    tracing::warn!(
-                        "exploratoryDeploy: parents.size={}, LFB=#{} {}",
-                        parents.len(),
-                        lfb.body.state.block_number,
-                        PrettyPrinter::build_string_bytes(&lfb.block_hash)
-                    );
-
-                    let merged_state = if parents.len() <= 1 {
-                        // Single parent or no parents: use LFB post-state directly
-                        let lfb_state = proto_util::post_state_hash(&lfb);
-                        tracing::warn!(
-                            "exploratoryDeploy: Using LFB post-state={} (single parent)",
-                            PrettyPrinter::build_string_bytes(&lfb_state)
-                        );
-                        lfb_state
-                    } else {
-                        // Multiple parents: compute merged state using DAG merger
-                        // For exploratory deploy (read-only queries), always disable
-                        // late block filtering to see the full merged state
-                        tracing::warn!(
-                            "exploratoryDeploy: Computing merged state from {} parents",
-                            parents.len()
-                        );
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
-                            crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
-                                casper.block_store(),
-                                parents.clone(),
-                                &snapshot,
-                                &runtime_manager,
-                                Some(true), // disable_late_block_filtering = true for exploratory deploy
-                                None,       // exploratory deploy: no buffer populate needed
-                            )?;
-                        merged_state_hash
-                    };
-
-                    tracing::warn!(
-                        "exploratoryDeploy: Final state={}",
-                        PrettyPrinter::build_string_bytes(&merged_state)
-                    );
-
-                    (merged_state, Some(lfb))
+                    (proto_util::post_state_hash(&lfb), Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
                     let hash_str = block_hash.as_ref().unwrap();
                     let padded_hash = pad_hex_string(hash_str);
                     let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
-                        eyre::eyre!("Input hash value is not valid hex string: {:?}", block_hash)
+                        eyre::Report::new(InvalidHashError(format!(
+                            "Input hash value is not valid hex string: {}",
+                            hash_str
+                        )))
                     })?;
                     let block_opt = casper.block_store().get(&hash_byte_string.into())?;
 
@@ -1812,26 +2290,61 @@ impl BlockAPI {
                             (state, Some(b))
                         }
                         None => {
-                            return Err(eyre::eyre!("Can not find block {:?}", block_hash));
+                            return Err(eyre::Report::new(BlockNotFoundError {
+                                hash: hash_str.to_string(),
+                            }));
                         }
                     }
                 };
 
                 match target_block {
                     Some(b) => {
-                        let (res, cost) = runtime_manager
-                            .play_exploratory_deploy(term, &state_hash)
-                            .await?;
+                        let timeout = execution_budget;
+                        let outcome =
+                            Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+                        let task_outcome = outcome.clone();
+                        let task_runtime_manager = runtime_manager.clone();
+                        let task = tokio::spawn(async move {
+                            let _permit = permit;
+                            let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
+                            let result = task_runtime_manager
+                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .await;
+                            if result.is_ok() {
+                                task_outcome.store(
+                                    ExploratoryDeployOutcome::Completed as u8,
+                                    Ordering::Relaxed,
+                                );
+                            }
+                            result
+                        });
+
+                        let (res, cost) =
+                            match await_exploratory_deploy_task(task, timeout, outcome).await {
+                                Ok(result) => result?,
+                                Err(ExploratoryDeployTaskError::Join(error)) => {
+                                    return Err(eyre::eyre!(
+                                        "Exploratory query task failed: {}",
+                                        error
+                                    ));
+                                }
+                                Err(ExploratoryDeployTaskError::Timeout) => {
+                                    return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
+                                        timeout_ms: u64::try_from(timeout.as_millis())
+                                            .unwrap_or(u64::MAX),
+                                    }));
+                                }
+                            };
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
                     }
-                    None => Err(eyre::eyre!("Can not find block {:?}", block_hash)),
+                    None => Err(eyre::eyre!(
+                        "target block unexpectedly absent from block store (internal inconsistency)"
+                    )),
                 }
             } else {
-                Err(eyre::eyre!(
-                    "Exploratory deploy can only be executed on read-only RNode."
-                ))
+                Err(eyre::Report::new(ExploratoryDeployReadOnlyError))
             }
         } else {
             tracing::warn!("{}", error_message);
@@ -1844,14 +2357,13 @@ impl BlockAPI {
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
             let validator_opt = casper.get_validator();
-            let validator = validator_opt.ok_or_else(|| {
-                eyre::eyre!("{}", LatestBlockMessageError::ValidatorReadOnlyError)
-            })?;
+            let validator = validator_opt
+                .ok_or_else(|| eyre::Report::new(LatestBlockMessageError::NodeReadOnlyError))?;
             let dag = casper.block_dag().await?;
             let latest_message_opt =
                 dag.latest_message(&validator.public_key.bytes.clone().into())?;
             let latest_message = latest_message_opt
-                .ok_or_else(|| eyre::eyre!("{}", LatestBlockMessageError::NoBlockMessageError))?;
+                .ok_or_else(|| eyre::Report::new(LatestBlockMessageError::NoBlockMessageError))?;
             Ok(latest_message)
         } else {
             tracing::warn!("{}", error_message);
@@ -1863,23 +2375,41 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         par: &Par,
         block_hash: String,
-        _use_pre_state_hash: bool,
+        use_pre_state_hash: bool,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
         async fn casper_response(
             casper: &dyn MultiParentCasper,
             par: &Par,
             block_hash: &str,
+            use_pre_state_hash: bool,
         ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
             let padded_hash = pad_hex_string(block_hash);
-            let block_hash_bytes: BlockHash = hex::decode(&padded_hash)
-                .map_err(|_| eyre::eyre!("Invalid block hash"))?
-                .into();
-            let block = casper.block_store().get_unsafe(&block_hash_bytes);
+            let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
+                eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not valid block hash",
+                    block_hash
+                )))
+            })?;
+            let block_hash_bytes: BlockHash = hash_bytes.into();
+            let block = casper
+                .block_store()
+                .get(&block_hash_bytes)
+                .map_err(|e| eyre::eyre!(e.to_string()))?
+                .ok_or_else(|| {
+                    eyre::Report::new(BlockNotFoundError {
+                        hash: block_hash.to_string(),
+                    })
+                })?;
             let sorted_par = ParSortMatcher::sort_match(par).term;
             let runtime_manager = casper.runtime_manager();
-            let data =
-                BlockAPI::get_data_with_block_info(casper, runtime_manager, &sorted_par, &block)
-                    .await?;
+            let data = BlockAPI::get_data_with_block_info(
+                casper,
+                runtime_manager,
+                &sorted_par,
+                &block,
+                use_pre_state_hash,
+            )
+            .await?;
             if let Some(data_with_block_info) = data {
                 Ok((
                     data_with_block_info.post_block_data,
@@ -1894,10 +2424,84 @@ impl BlockAPI {
         let error_message = "Could not get data at par, casper instance was not available yet.";
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
-            casper_response(casper.as_ref(), par, &block_hash).await
+            casper_response(casper.as_ref(), par, &block_hash, use_pre_state_hash).await
         } else {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::{
+        await_exploratory_deploy_task, decode_offered_submission, deploy_is_block_expired,
+        ExploratoryDeployOutcome, ExploratoryDeployTaskError,
+    };
+
+    #[test]
+    fn offered_ingress_rejects_wrong_format_and_oversized_wire_before_admission() {
+        let legacy = models::casper::DeployDataProto::default();
+        assert!(decode_offered_submission(legacy.clone(), "test")
+            .unwrap_err()
+            .to_string()
+            .contains("offered-funded authorization format"));
+        let mut oversized = legacy;
+        oversized.term = "x".repeat(
+            models::rust::cost_protocol_limits::offered_funded_v6_limits()
+                .envelope
+                .payload
+                .deploy_bytes
+                + 1,
+        );
+        assert!(decode_offered_submission(oversized, "test")
+            .unwrap_err()
+            .to_string()
+            .contains("syntax limit"));
+    }
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); }
+    }
+
+    #[tokio::test]
+    async fn exploratory_timeout_aborts_and_joins_before_releasing_capacity() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = semaphore.clone().try_acquire_owned().unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            let _permit = permit;
+            let _drop_signal = DropSignal(task_dropped);
+            pending::<()>().await;
+        });
+        let outcome = Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+
+        let result =
+            await_exploratory_deploy_task(task, Duration::from_millis(10), outcome.clone()).await;
+
+        assert!(matches!(result, Err(ExploratoryDeployTaskError::Timeout)));
+        assert!(dropped.load(Ordering::Relaxed));
+        assert_eq!(
+            outcome.load(Ordering::Relaxed),
+            ExploratoryDeployOutcome::TimedOut as u8
+        );
+        assert!(semaphore.try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn block_expiration_matches_proposer_window() {
+        assert!(deploy_is_block_expired(0, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
     }
 }

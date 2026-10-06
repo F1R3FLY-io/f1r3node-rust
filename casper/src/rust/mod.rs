@@ -31,7 +31,7 @@ pub mod util;
 pub mod validate;
 pub mod validator_identity;
 
-// Test utilities module - only available when "test-utils" feature is enabled
+// Demo and integration-test compatibility helpers shared across test binaries.
 #[cfg(feature = "test-utils")]
 pub mod test_utils;
 

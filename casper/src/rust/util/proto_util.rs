@@ -13,13 +13,15 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedSystemDeploy,
+    ProcessedUserDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
+
+use crate::rust::errors::CasperError;
 
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
@@ -161,18 +163,34 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
-    // Get block metadata
+    // On the fork-choice BFS a traversed block — or its main parent, read for
+    // the weight map — can be absent from the metadata index: a sync/prune
+    // window, or, on an LFS-restored node, a parent below the restore horizon
+    // (held as a hash only, never indexed). Absence is a statement about THIS
+    // node's history, never about the block being judged: `MissingBlock`
+    // collapses to `BlockNotHeld` and the pipeline defers the block for
+    // fetch-and-retry, where a `KeyNotFound` hard-failed admission (the #306
+    // storm on restored joiners and observers). No backtrace in the context —
+    // this is a hot path with exactly one caller (`estimator::build_scores_map`).
     let block_metadata = dag
         .lookup(block_hash)?
-        .expect("Block metadata should exist");
+        .ok_or_else(|| KvStoreError::MissingBlock {
+            hash: block_hash.clone(),
+            context: MissingBlockContext::new("weight_from_validator_by_dag: traversed block"),
+        })?;
 
     // Try to get parent's weight for this validator
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
-            let parent_metadata = dag
-                .lookup(parent_hash)?
-                .expect("Parent metadata should exist");
+            let parent_metadata =
+                dag.lookup(parent_hash)?
+                    .ok_or_else(|| KvStoreError::MissingBlock {
+                        hash: parent_hash.clone(),
+                        context: MissingBlockContext::new(
+                            "weight_from_validator_by_dag: main parent",
+                        ),
+                    })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
                 .weight_map
@@ -228,31 +246,97 @@ pub fn get_parents(block_store: &KeyValueBlockStore, block: &BlockMessage) -> Ve
         .collect()
 }
 
+/// The metadata of every parent, or [`CasperError::BlockNotHeld`] naming the
+/// first parent this node does not have.
+///
+/// A node restored from a sync anchor holds no history below it, so the walks
+/// that call this can legitimately reach a parent it will never have. That is a
+/// fact about the node, not about the block being validated, and it must stay
+/// distinguishable from a storage fault: the caller turns the latter into a
+/// slashable verdict against the block's proposer.
 pub fn get_parents_metadata(
     dag: &KeyValueDagRepresentation,
     block: &BlockMetadata,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
+) -> Result<Vec<BlockMetadata>, CasperError> {
     block
         .parents
         .iter()
-        .map(|parent| dag.lookup_unsafe(parent))
+        .map(|parent| {
+            dag.lookup(parent)
+                .map_err(CasperError::from)?
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("get_parents_metadata"),
+                    )
+                })
+        })
         .collect()
 }
 
-pub fn get_parent_metadatas_above_block_number(
+/// How a walk treats a parent this node does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnheldParent {
+    /// Verdict walks: surfaced as `BlockNotHeld` — a swallowed gap admits a
+    /// repeated deploy.
+    Surface,
+    /// Live-decision walks: settled ancestry below the restore horizon,
+    /// skipped with a warn. Under an undersized block floor the skip
+    /// under-fills the proposer's dedup window — self-harm, not a safety
+    /// hole.
+    SkipSettled,
+}
+
+pub fn parent_metadatas_above_block_number(
     block: &BlockMetadata,
     block_number: i64,
     dag: &KeyValueDagRepresentation,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
-    get_parents_metadata(dag, block).map(|parents| {
-        parents
-            .into_iter()
-            .filter(|p| p.block_number >= block_number)
-            .collect()
-    })
+    on_unheld: UnheldParent,
+) -> Result<Vec<BlockMetadata>, CasperError> {
+    let mut result = Vec::with_capacity(block.parents.len());
+    for parent in &block.parents {
+        match dag.lookup(parent).map_err(CasperError::from)? {
+            Some(meta) => {
+                if meta.block_number >= block_number {
+                    result.push(meta);
+                }
+            }
+            None => match on_unheld {
+                UnheldParent::Surface => {
+                    return Err(CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("parent_metadatas_above_block_number"),
+                    ))
+                }
+                UnheldParent::SkipSettled => {
+                    tracing::warn!(
+                        parent = %PrettyPrinter::build_string_bytes(parent),
+                        child = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        earliest_wanted = block_number,
+                        "in-scope walk skipped an unheld parent: settled ancestry below \
+                         a restore horizon, or an undersized block floor"
+                    );
+                }
+            },
+        }
+    }
+    Ok(result)
 }
 
-pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
+pub fn deploys(block: &BlockMessage) -> Vec<ProcessedUserDeploy> { block.body.deploys.clone() }
+
+/// The block's KEPT rejection records. A duplicate-flagged record states
+/// that the copy it discarded was redundant — its effect already stood in
+/// the forming merge's own post-state — so it does not dispute the sig's
+/// standing win. Every disposition reader consumes records through this
+/// one filter so the discard policy cannot drift between readers.
+pub fn kept_rejected_records(block: &BlockMessage) -> impl Iterator<Item = &RejectedDeploy> {
+    block
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|record| !record.duplicate)
+}
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()
@@ -325,7 +409,7 @@ pub fn to_latest_message_hashes(
 
 pub fn to_latest_message(
     justifications: &Vec<Justification>,
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
 ) -> Result<std::collections::HashMap<Validator, BlockMetadata>, KvStoreError> {
     let mut latest_messages = std::collections::HashMap::new();
     for justification in justifications {
@@ -347,10 +431,7 @@ pub fn to_latest_message(
 
 pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64) -> Header {
     Header {
-        parents_hash_list: parent_hashes
-            .into_iter()
-            .map(|bytes| bytes.into())
-            .collect(),
+        parents_hash_list: parent_hashes.into_iter().map(Into::into).collect(),
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
@@ -444,11 +525,12 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
 
 // Return hashes of all blocks that are yet to be seen by the passed in block
 pub fn unseen_block_hashes(
-    dag: &mut KeyValueDagRepresentation,
-    block: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+    justifications: &Vec<Justification>,
+    current_block_hash: Option<&BlockHash>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
     let dags_latest_messages = dag.latest_messages()?;
-    let blocks_latest_messages = to_latest_message(&block.justifications, dag)?;
+    let blocks_latest_messages = to_latest_message(justifications, dag)?;
 
     // From input block perspective we want to find what latest messages are not seen
     //  that are in the DAG latest messages.
@@ -486,14 +568,38 @@ pub fn unseen_block_hashes(
         all_unseen_blocks.remove(&block_metadata.block_hash);
     }
 
-    // Remove the current block hash
-    all_unseen_blocks.remove(&block.block_hash);
+    // Remove the current block hash (at block creation the block does not exist yet)
+    if let Some(h) = current_block_hash {
+        all_unseen_blocks.remove(h);
+    }
 
     Ok(all_unseen_blocks)
 }
 
+/// Deterministic invalid-blocks map (block_hash -> sender) for the PoS slash
+/// system deploys in a block: exactly the blocks this block slashes, each keyed
+/// to its immutable sender. Derived from the block's own recorded slash targets
+/// (NOT the node's DAG invalid-set view, which is node-view-dependent and so
+/// differs between the proposer and a validator), so block creation and replay
+/// produce a byte-identical map. That makes the slash deploy's
+/// `rho:casper:invalidBlocks` produce reproduce at replay (no slash
+/// ConsumeFailed). The slash contract only looks up its own target via
+/// `invalidBlocks.getOrElse(blockHash, ..)`, so this is exactly what it needs —
+/// and it makes the slash hit the block's true sender instead of falling back.
+pub fn slashed_block_senders(
+    dag: &KeyValueDagRepresentation,
+    slashed_hashes: &[BlockHash],
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    let mut map = std::collections::HashMap::with_capacity(slashed_hashes.len());
+    for h in slashed_hashes {
+        let meta = dag.lookup_unsafe(h)?;
+        map.insert(h.clone(), meta.sender.clone());
+    }
+    Ok(map)
+}
+
 fn get_creator_blocks_between(
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
     top_block: &BlockMetadata,
     bottom_block: Option<&BlockMetadata>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
@@ -522,7 +628,7 @@ fn get_creator_blocks_between(
 }
 
 fn get_creator_justification_unless_goal(
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
     block: &BlockMetadata,
     goal: &BlockMetadata,
 ) -> Result<Vec<BlockMetadata>, KvStoreError> {
@@ -554,5 +660,304 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
     JustificationInfo {
         validator: PrettyPrinter::build_string_no_limit(&justification.validator),
         latest_block_hash: PrettyPrinter::build_string_no_limit(&justification.latest_block_hash),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fork-choice FV — B1, refined by the restore-horizon walk (#306).
+//
+// `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
+// PARENT weight map on the fork-choice BFS hot path (`estimator::build_scores_map`).
+// B1 (FIXED): a traversed block whose main parent is momentarily absent from the
+// metadata index — a sync / prune window — previously panicked via
+// `.expect("Parent metadata should exist")`. The typed error is now
+// `KvStoreError::MissingBlock`, which collapses to `CasperError::BlockNotHeld`
+// so admission DEFERS the block (fetch-and-retry) instead of hard-failing —
+// on an LFS-restored node a main parent below the restore horizon is the
+// normal condition, not a fault.
+// See docs/casper/theory/fork-choice/fork-choice-verification.md (B1).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod fork_choice_b1_repro_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use parking_lot::RwLock as PlRwLock;
+    use proptest::prelude::*;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use super::*;
+
+    fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+
+    fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
+        let mut wm = BTreeMap::new();
+        wm.insert(v.clone(), 7i64);
+        BlockMetadata {
+            block_hash: hash,
+            parents,
+            sender: v.clone(),
+            justifications: vec![],
+            weight_map: wm,
+            block_number: num,
+            sequence_number: num as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
+        }
+    }
+
+    fn dag_with(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        let mut dag_set = imbl::HashSet::new();
+        let mut bnum = imbl::HashMap::new();
+        let mut mp = imbl::HashMap::new();
+        for b in &blocks {
+            dag_set.insert(b.block_hash.clone());
+            bnum.insert(b.block_hash.clone(), b.block_number);
+            if let Some(p) = b.parents.first() {
+                mp.insert(b.block_hash.clone(), p.clone());
+            }
+        }
+        for b in blocks {
+            assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
+        }
+        KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: bnum,
+            main_parent_map: mp,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
+        }
+    }
+
+    /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
+    /// block's main parent can sit below the horizon — hash-only, never
+    /// indexed. That absence is a statement about THIS node's sync, so it
+    /// must surface as `MissingBlock` (which collapses to `BlockNotHeld` and
+    /// defers the block for fetch-and-retry), never as a `KeyNotFound`
+    /// processing failure that hard-fails admission.
+    #[test]
+    fn a_main_parent_below_the_restore_horizon_is_a_missing_block() {
+        let v = h(9);
+        let child = h(1);
+        let missing = h(2); // below the horizon: referenced, never indexed
+        let mut dag = dag_with(vec![md(child.clone(), vec![missing.clone()], 1, &v)]);
+        let result = weight_from_validator_by_dag(&mut dag, &child, &v);
+        let Err(err) = result else {
+            panic!("unheld main parent must error, got {result:?}");
+        };
+        assert!(
+            matches!(&err, KvStoreError::MissingBlock { hash, .. } if *hash == missing),
+            "unheld main parent must be MissingBlock naming the parent, got {err:?}"
+        );
+        // The deferral collapse the block pipeline routes on: the typed
+        // absence becomes BlockNotHeld with the accessor tag riding along.
+        match crate::rust::errors::CasperError::from(err) {
+            crate::rust::errors::CasperError::BlockNotHeld(hash, site) => {
+                assert_eq!(hash, missing);
+                assert!(
+                    !site.accessor().is_empty(),
+                    "the accessor tag must survive the collapse, got {site:?}"
+                );
+            }
+            other => panic!("MissingBlock must collapse to BlockNotHeld, got {other:?}"),
+        }
+    }
+
+    /// The live-decision policy skips a sub-horizon parent instead of
+    /// erroring; the held sibling and the number filter are unaffected.
+    #[test]
+    fn in_scope_walk_skips_an_unheld_parent_and_keeps_the_held_window() {
+        let v = h(9);
+        let held_parent = h(4);
+        let missing_parent = h(2); // below the horizon: referenced, never indexed
+        let child = h(1);
+        let held_meta = md(held_parent.clone(), vec![], 5, &v);
+        let child_meta = md(
+            child.clone(),
+            vec![held_parent.clone(), missing_parent.clone()],
+            6,
+            &v,
+        );
+        let dag = dag_with(vec![held_meta, child_meta.clone()]);
+
+        let in_window =
+            parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert_eq!(
+            in_window.iter().map(|m| &m.block_hash).collect::<Vec<_>>(),
+            vec![&held_parent],
+            "the held parent survives; the unheld one is silently settled"
+        );
+
+        let above_window =
+            parent_metadatas_above_block_number(&child_meta, 6, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert!(
+            above_window.is_empty(),
+            "the number filter still bounds the held parent"
+        );
+
+        // The verdict policy refuses the same DAG.
+        assert!(
+            matches!(
+                parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),
+                Err(crate::rust::errors::CasperError::BlockNotHeld(ref h, _)) if *h == missing_parent
+            ),
+            "the verdict walk must surface the unheld parent"
+        );
+    }
+
+    /// The BFS twin of the case above: the traversed block itself is unheld
+    /// (its hash was queued from a held child's parent list). Same contract.
+    #[test]
+    fn an_unheld_traversed_block_is_a_missing_block() {
+        let v = h(9);
+        let missing = h(3); // never added to the index
+        let mut dag = dag_with(vec![]);
+        let result = weight_from_validator_by_dag(&mut dag, &missing, &v);
+        assert!(
+            matches!(&result, Err(KvStoreError::MissingBlock { hash, .. }) if *hash == missing),
+            "unheld traversed block must be MissingBlock naming it, got {result:?}"
+        );
+    }
+
+    // G1 (CRITICAL) — slash-replay determinism. `slashed_block_senders` builds the slash
+    // system-deploy's invalid_blocks map from the block's OWN recorded slash targets and
+    // each target's IMMUTABLE sender — NOT the node's `dag.invalid_blocks` view (which
+    // diverges proposer-vs-validator and previously caused a `ConsumeFailed` at replay →
+    // block rejection + finalization stall). This test pins that VIEW-INDEPENDENCE: two
+    // DAGs with identical block metadata but DIFFERENT invalid-block sets produce a
+    // byte-identical map, so the PLAY map (block creation) ≡ the REPLAY map (validation).
+    fn dag_with_invalid(
+        blocks: Vec<BlockMetadata>,
+        invalid: Vec<BlockMetadata>,
+    ) -> KeyValueDagRepresentation {
+        let mut dag = dag_with(blocks);
+        let mut inv = imbl::HashSet::new();
+        for b in invalid {
+            inv.insert(b);
+        }
+        dag.invalid_blocks_set = inv;
+        dag
+    }
+
+    #[test]
+    fn slashed_block_senders_is_view_independent_g1() {
+        let (va, vb, vc) = (h(50), h(51), h(52));
+        let (b1, b2, b3) = (h(1), h(2), h(3));
+        let blocks = vec![
+            md(b1.clone(), vec![], 1, &va),
+            md(b2.clone(), vec![b1.clone()], 2, &vb),
+            md(b3.clone(), vec![b2.clone()], 3, &vc),
+        ];
+        // The block slashes b1 and b3 (its own recorded targets).
+        let slashed = vec![b1.clone(), b3.clone()];
+        // Two nodes with DIVERGENT invalid-block views over identical block metadata
+        // (the proposer sees none invalid; the validator's view flags b2 and b3).
+        let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
+        let dag_validator = dag_with_invalid(blocks.clone(), vec![
+            md(b2.clone(), vec![b1.clone()], 2, &vb),
+            md(b3.clone(), vec![b2.clone()], 3, &vc),
+        ]);
+
+        let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
+        let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");
+
+        // Byte-identical map regardless of the invalid-block view (PLAY ≡ REPLAY) ...
+        assert_eq!(
+            map_play, map_replay,
+            "slash map must be node-view-independent (PLAY ≡ REPLAY)"
+        );
+        // ... and it keys each slashed block to its immutable sender.
+        let mut expected = std::collections::HashMap::new();
+        expected.insert(b1.clone(), va.clone());
+        expected.insert(b3.clone(), vc.clone());
+        assert_eq!(
+            map_play, expected,
+            "slash map must key each slashed block to its sender"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+        // G1 (∀-views property) — the standalone view-independence "lemma" for
+        // `slashed_block_senders`, mechanized as the modality that can actually catch
+        // the regression (a Rocq abstraction of the function would model it as
+        // content-only BY CONSTRUCTION and could never witness the defect). Over
+        // arbitrary block sets, arbitrary on-chain slash records, and TWO independently
+        // random — hence divergent — `invalid_blocks_set` node views, the map is
+        // (a) identical across the two views (PLAY ≡ REPLAY) and (b) equal to the
+        // content-derived ground truth (each slashed hash ↦ its immutable sender). Were
+        // the function to read `dag.invalid_blocks_set`, (a) would fail on the first
+        // view pair that disagrees on a slashed block.
+        #[test]
+        fn slashed_block_senders_is_view_independent_prop_g1(
+            senders in prop::collection::vec(0u8..5, 1..10),
+            slashed_flags in prop::collection::vec(any::<bool>(), 1..10),
+            view_a in prop::collection::vec(any::<bool>(), 1..10),
+            view_b in prop::collection::vec(any::<bool>(), 1..10),
+        ) {
+            let n = senders.len();
+            // n distinct blocks h(1..=n) in a chain; block i's immutable sender = h(100+vid).
+            let blocks: Vec<BlockMetadata> = (0..n)
+                .map(|i| {
+                    let hash = h((i + 1) as u8);
+                    let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
+                    let sender = h(100 + senders[i]);
+                    md(hash, parents, (i + 1) as i64, &sender)
+                })
+                .collect();
+            // On-chain slash record = the flagged subset (by index, within range).
+            let slashed: Vec<Bytes> = (0..n)
+                .filter(|&i| *slashed_flags.get(i).unwrap_or(&false))
+                .map(|i| h((i + 1) as u8))
+                .collect();
+            // Two nodes: identical block metadata, INDEPENDENTLY random invalid-block sets.
+            let inv_a: Vec<BlockMetadata> = (0..n)
+                .filter(|&i| *view_a.get(i).unwrap_or(&false))
+                .map(|i| blocks[i].clone())
+                .collect();
+            let inv_b: Vec<BlockMetadata> = (0..n)
+                .filter(|&i| *view_b.get(i).unwrap_or(&false))
+                .map(|i| blocks[i].clone())
+                .collect();
+            let dag_a = dag_with_invalid(blocks.clone(), inv_a);
+            let dag_b = dag_with_invalid(blocks.clone(), inv_b);
+
+            let map_a = slashed_block_senders(&dag_a, &slashed).expect("map a");
+            let map_b = slashed_block_senders(&dag_b, &slashed).expect("map b");
+            prop_assert_eq!(&map_a, &map_b);
+
+            let mut expected = std::collections::HashMap::new();
+            for i in 0..n {
+                if *slashed_flags.get(i).unwrap_or(&false) {
+                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
+                }
+            }
+            prop_assert_eq!(&map_a, &expected);
+        }
     }
 }

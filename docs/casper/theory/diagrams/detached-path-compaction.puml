@@ -1,0 +1,62 @@
+' Causal paths of one plan under the legacy and the compacted splitter
+' (DR-84, cap root cause C9). An operation of participant P at step s has the
+' path P (s, 0). The legacy splitter gives child i of a split at step s the
+' participant path P (s, 1) (i, 0); the compacted splitter gives it P (s, i + 1).
+' Both renderings sort the operation paths of the plan in the same order, so
+' the scheduler fires the same COMMs in the same order.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-84);
+'                  rholang/src/rust/interpreter/deterministic_reduction.rs
+'                  (ReductionContext::split, next_operation).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/DetachedPathCompaction.v
+'                  (render_order_isomorphism, fuse_injective,
+'                  fuse_halves_participant_depth, naive_fusion_collides).
+' Palette:  plan = control amber · legacy paths = supply blue
+'           compacted paths = pool green · naive fusion = red
+'           order result = note green
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/detached-path-compaction.puml
+'          (or: ./render.sh detached-path-compaction.puml)
+
+@startuml detached-path-compaction
+!include palette.iuml
+$ca_base_skin()
+skinparam rectangle {
+  BorderColor #333333
+  RoundCorner 12
+}
+skinparam ArrowColor $ca_neutral
+title Causal paths of one plan under the two splitters (DR-84)
+
+rectangle "**plan of the root participant**\nstep 0: operation\nstep 1: split into child 0 and child 1\n    child 0, its step 0: operation\n    child 1, its step 0: split into one grandchild\n        grandchild, its step 0: operation\nstep 2: operation (after the children rejoin)" as Plan $ca_control
+
+rectangle "**legacy operation paths, sorted**\n1. (0,0)\n2. (1,1) (0,0) (0,0)\n3. (1,1) (1,0) (0,1) (0,0) (0,0)\n4. (2,0)\nlongest path: 5 segments" as Legacy $ca_supply
+
+rectangle "**compacted operation paths, sorted**\n1. (0,0)\n2. (1,1) (0,0)\n3. (1,2) (0,1) (0,0)\n4. (2,0)\nlongest path: 3 segments" as Compact $ca_pool
+
+rectangle "**naive fusion (s, i)**\nOp 1 gives (1,0)\nChild 1 0 also gives (1,0)\n(naive_fusion_collides)" as Naive $ca_rejectfill
+
+rectangle "**same rank for every operation**\n<latex>\mathrm{cmp}(\mathrm{compact}(u), \mathrm{compact}(v)) = \mathrm{cmp}(\mathrm{legacy}(u), \mathrm{legacy}(v))</latex>\n(render_order_isomorphism)\nk nested splits: <latex>k + 1</latex> segments instead of <latex>2k + 1</latex>" as Same $ca_note_green
+
+Plan --> Legacy : legacy splitter\nchild i = (s,1) (i,0)
+Plan --> Compact : compacted splitter\nchild i = (s, i + 1)
+Plan -[$ca_debit]-> Naive : rejected fusion\nchild i = (s, i)
+Legacy --> Same
+Compact --> Same
+
+note bottom of Naive $ca_note_grey
+  A participant uses one step counter for its
+  operations and its splits, so the program never
+  makes this pair. The chosen fusion keeps the
+  order without that invariant: (s, i + 1) > (s, 0).
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_control>| one participant plan (the units of the paths) |
+  |<$ca_supply>| paths of the legacy splitter |
+  |<$ca_pool>| paths of the compacted splitter (C9) |
+  |<$ca_rejectfill>| fusion that is not injective (negative control) |
+  |<$ca_note_green>| the order result that keeps schedules unchanged |
+endlegend
+
+@enduml

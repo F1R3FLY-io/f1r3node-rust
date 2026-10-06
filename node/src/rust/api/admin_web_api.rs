@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use casper::rust::api::block_api::BlockAPI;
+use casper::rust::api::block_api::{BlockAPI, ProposeReadOnlyError};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::state::instances::proposer_state::ProposerState;
 use casper::rust::ProposeFunction;
@@ -48,7 +48,7 @@ impl AdminWebApi for AdminWebApiImpl {
             Some(trigger_propose_f) => {
                 BlockAPI::create_block(&self.engine_cell, trigger_propose_f, false).await
             }
-            None => Err(eyre::eyre!("Propose error: read-only node.")),
+            None => Err(eyre::Report::new(ProposeReadOnlyError)),
         }
     }
 

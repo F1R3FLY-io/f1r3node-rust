@@ -22,6 +22,7 @@ use lazy_static::lazy_static;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, F1r3flyState, Header,
 };
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use tempfile::TempDir;
@@ -57,7 +58,7 @@ lazy_static! {
   ];
 
   // STATIC CACHE: Shared across all GenesisBuilder instances
-  static ref GENESIS_CACHE: DashMap<GenesisParameters, GenesisContext> = DashMap::new();
+  static ref GENESIS_CACHE: DashMap<(GenesisParameters, Option<PhloGenesisPolicy>), GenesisContext> = DashMap::new();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -169,13 +170,24 @@ fn record_cache_miss() -> (u64, u64) {
 
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
+    resource_policy: Option<PhloGenesisPolicy>,
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self { Self { vaults: None } }
+    pub fn new() -> Self {
+        Self {
+            vaults: None,
+            resource_policy: None,
+        }
+    }
 
     pub fn with_vaults(mut self, vaults: Vec<Vault>) -> Self {
         self.vaults = Some(vaults);
+        self
+    }
+
+    pub fn with_resource_policy(mut self, policy: PhloGenesisPolicy) -> Self {
+        self.resource_policy = Some(policy);
         self
     }
 
@@ -217,6 +229,8 @@ impl GenesisBuilder {
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: bytes::Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: bytes::Bytes::new(),
         };
 
         let header = Header {
@@ -240,6 +254,7 @@ impl GenesisBuilder {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn build_genesis_parameters_with_defaults(
         bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>>,
         validators_num: Option<usize>,
@@ -383,13 +398,13 @@ impl GenesisBuilder {
                 epoch_length: 1000,
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
+                fault_tolerance_threshold_ppm: 0,
+                max_parent_depth: 15,
+                deploy_lifespan: 50,
+                min_phlo_price: 0,
                 validators,
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
-                max_cosigners_per_deploy:
-                    casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
             },
             vaults,
             supply: i64::MAX,
@@ -417,11 +432,12 @@ impl GenesisBuilder {
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
         record_cache_access();
 
-        if GENESIS_CACHE.contains_key(&parameters) {
-            Ok(GENESIS_CACHE.get(&parameters).unwrap().value().clone())
+        let key = (parameters.clone(), self.resource_policy.clone());
+        if GENESIS_CACHE.contains_key(&key) {
+            Ok(GENESIS_CACHE.get(&key).unwrap().value().clone())
         } else {
             let context = self.do_build_genesis(&parameters).await?;
-            GENESIS_CACHE.insert(parameters, context.clone());
+            GENESIS_CACHE.insert(key, context.clone());
             Ok(context)
         }
     }
@@ -460,7 +476,7 @@ impl GenesisBuilder {
         let genesis = {
             // Create genesis with rspace_scope_id so TestNodes can share the same RSpace stores
             let mut kvs_manager = mk_test_rnode_store_manager_shared(rspace_scope_id.clone());
-            let r_store = (&mut *kvs_manager)
+            let r_store = (*kvs_manager)
                 .r_space_stores()
                 .await
                 .expect("Failed to create RSpaceStore");
@@ -468,15 +484,19 @@ impl GenesisBuilder {
             let m_store =
                 crate::util::rholang::resources::mergeable_store_from_dyn(&mut *kvs_manager)
                     .await?;
-            let mut runtime_manager = RuntimeManager::create_with_store(
+            let runtime_manager = RuntimeManager::create_with_store(
                 r_store,
                 m_store,
-                std::sync::Arc::new(Genesis::default_mergeable_tags()),
+                Genesis::default_mergeable_tags_arc(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             );
 
-            let genesis =
-                Genesis::create_genesis_block(&mut runtime_manager, &genesis_parameters).await?;
+            let genesis = Genesis::create_genesis_block_with_policy(
+                &runtime_manager,
+                &genesis_parameters,
+                self.resource_policy.as_ref(),
+            )
+            .await?;
             let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvs_manager).await?;
             block_store.put(genesis.block_hash.clone(), &genesis)?;
 

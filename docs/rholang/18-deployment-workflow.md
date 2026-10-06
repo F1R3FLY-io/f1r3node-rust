@@ -12,51 +12,64 @@ How to deploy Rholang contracts to the F1R3FLY Rust shard.
 
 ## CLI Commands
 
+These are subcommands of the `node` binary, which talks to a **running** node
+over gRPC. (`rholang-cli` is a different tool: it evaluates a `.rho` file
+locally and takes no subcommands — see [`rholang/README.md`](../../rholang/README.md).)
+
 ### Deploy a Contract
 
 ```bash
-cargo run --bin rholang-cli -- deploy \
-  -f contract.rho \
-  --private-key $PRIVATE_KEY \
+node deploy \
   --phlo-limit 100000 \
-  --phlo-price 1
+  --phlo-price 1 \
+  --valid-after-block <N> \
+  --private-key $PRIVATE_KEY \
+  --shard-id root \
+  contract.rho
 ```
 
 Parameters:
-- `-f` / `--file`: path to `.rho` file
-- `--private-key`: deployer's private key (hex)
-- `--phlo-limit`: maximum phlogiston to spend (default varies)
+- positional: path to the `.rho` file
+- `--private-key` (or `--private-key-path`): deployer's key
+- `--phlo-limit`: maximum phlogiston to spend
 - `--phlo-price`: price per phlogiston unit (typically 1)
+- `--valid-after-block`: the deploy is valid for `deploy-lifespan` blocks after this height
+- `--shard-id`: target shard
+
+Send the deploy to a **bonded validator**. A node that cannot propose accepts
+the deploy and never includes it: the queue is node-local and deploys are not
+gossiped.
 
 ### Propose a Block
 
-Validators include pending deploys into a new block:
-
 ```bash
-cargo run --bin rholang-cli -- propose \
-  --private-key $VALIDATOR_KEY
+node propose
 ```
 
-In auto-propose mode (default for single-validator networks), blocks are proposed automatically.
+With the heartbeat proposer enabled — the default — validators propose on their
+own and this is only needed on a shard that has it switched off.
 
 ### Check Finalization
 
 ```bash
-cargo run --bin rholang-cli -- is-finalized -b $BLOCK_HASH
+node is-finalized --hash $BLOCK_HASH
 ```
 
-Returns `true` once the block has been finalized by the consensus protocol.
+Returns whether the block is finalized. To follow a single deploy rather than a
+block, prefer `GET /api/deploy-finalization-status/{sig}`, which reports the
+canonical verdict for that deploy.
 
 ### Exploratory Deploy
 
-Execute a read-only contract without creating a block. Useful for querying state.
+Execute a read-only contract without creating a block. Useful for querying
+state. Only a **read-only** node serves this; any other node answers
+`400 readonly_node_required`.
 
 ```bash
-cargo run --bin rholang-cli -- exploratory-deploy \
-  -f query.rho
+curl -X POST http://localhost:40453/api/explore-deploy \
+  -H 'Content-Type: application/json' \
+  -d '{"term": "new ret in { ret!(42) }"}'
 ```
-
-The result includes the phlogiston cost and any data sent to `rho:io:stdout`.
 
 ## HTTP API
 
@@ -64,16 +77,30 @@ The node exposes an HTTP API (default port 40403).
 
 ### Deploy
 
+The deploy must be signed, and the deploy fields are nested under `data`:
+
 ```bash
-curl -X POST http://localhost:40403/api/deploy \
+curl -X POST http://localhost:40413/api/deploy \
   -H 'Content-Type: application/json' \
   -d '{
-    "term": "new stdout(`rho:io:stdout`) in { stdout!(\"hello\") }",
-    "phloLimit": 100000,
-    "phloPrice": 1,
-    "validAfterBlockNumber": -1
+    "data": {
+      "term": "new stdout(`rho:io:stdout`) in { stdout!(\"hello\") }",
+      "timestamp": 1700000000000,
+      "phloPrice": 1,
+      "phloLimit": 100000,
+      "validAfterBlockNumber": 0,
+      "shardId": "root"
+    },
+    "deployer": "04abc...",
+    "signature": "3044...",
+    "sigAlgorithm": "secp256k1"
   }'
 ```
+
+Signing by hand is awkward; `node deploy` or a client library is the usual
+route. See [the API reference](../node/api-reference.md) for the full schema
+and status codes. Post to a bonded validator's HTTP port, not to a bootstrap or
+read-only node.
 
 ### Get Deploy Status
 
@@ -151,14 +178,15 @@ After a deploy is included in a finalized block, the result contains:
 ### Deploy and Wait for Result
 
 ```bash
-# 1. Deploy
-DEPLOY_ID=$(cargo run --bin rholang-cli -- deploy -f contract.rho --private-key $KEY)
+# 1. Deploy (to a bonded validator)
+DEPLOY_ID=$(node deploy --phlo-limit 100000 --phlo-price 1 \
+  --valid-after-block $VABN --private-key $KEY --shard-id root contract.rho)
 
-# 2. Wait for block (if not auto-propose)
-cargo run --bin rholang-cli -- propose --private-key $VALIDATOR_KEY
+# 2. Only if the heartbeat proposer is disabled on this shard
+node propose
 
 # 3. Check result
-curl http://localhost:40403/api/deploy/$DEPLOY_ID?view=detail
+curl http://localhost:40413/api/deploy/$DEPLOY_ID?view=summary
 ```
 
 ### Query State After Deploy

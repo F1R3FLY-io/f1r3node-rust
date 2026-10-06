@@ -1015,7 +1015,8 @@ mod tests {
             Arc::new(Box::new(Matcher)),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .unwrap();
 
         runtime
     }

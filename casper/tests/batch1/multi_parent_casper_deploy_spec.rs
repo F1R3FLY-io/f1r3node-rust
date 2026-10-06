@@ -1,8 +1,11 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperDeploySpec.scala
 
+use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-use casper::rust::casper::Casper;
+use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::casper::{Casper, DeployError};
 use casper::rust::util::construct_deploy;
+use casper::rust::ProposeFunction;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
@@ -38,6 +41,151 @@ async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
 }
 
 #[tokio::test]
+async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let expected_id = deploy.sig.to_vec();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
+
+    let handles = (0..32)
+        .map(|_| {
+            let casper = node.casper.clone();
+            let deploy = deploy.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                casper.deploy(deploy).unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    let accepted = results
+        .iter()
+        .filter(|result| matches!(result, Either::Right(id) if id == &expected_id))
+        .count();
+    let duplicates = results
+        .iter()
+        .filter(|result| {
+            matches!(result, Either::Left(DeployError::DuplicateDeploy(id)) if id == &expected_id)
+        })
+        .count();
+
+    assert_eq!(accepted, 1);
+    assert_eq!(duplicates, 31);
+    assert!(node
+        .deploy_storage
+        .lock()
+        .contains_sig(&expected_id)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let first = node.casper.deploy(deploy.clone()).unwrap();
+    assert!(matches!(first, Either::Right(_)));
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_trigger = calls.clone();
+    let trigger: std::sync::Arc<ProposeFunction> = std::sync::Arc::new(move |_, _| {
+        let calls = calls_for_trigger.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ProposerResult::Empty)
+        })
+    });
+
+    let expected_id = deploy.sig.to_vec();
+    let result = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy,
+        &Some(trigger),
+        false,
+        &genesis.genesis_block.shard_id,
+    )
+    .await;
+
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<DeployError>(),
+        Some(DeployError::DuplicateDeploy(id)) if id == &expected_id
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let expected_id = deploy.sig.to_vec();
+
+    node.add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .unwrap();
+    node.deploy_storage
+        .lock()
+        .remove(vec![deploy.clone()])
+        .unwrap();
+
+    assert!(node
+        .block_dag_storage
+        .deploy_canonical_appearance(&expected_id)
+        .unwrap()
+        .is_some());
+    assert!(matches!(
+        node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_reject_a_deploy_in_the_rejected_buffer() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let expected_id = deploy.sig.to_vec();
+
+    node.rejected_deploy_buffer
+        .lock()
+        .unwrap()
+        .add(vec![deploy.clone()])
+        .unwrap();
+
+    assert!(matches!(
+        node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+}
+
+#[tokio::test]
 async fn multi_parent_casper_should_not_create_a_block_with_a_repeated_deploy() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
@@ -59,14 +207,17 @@ async fn multi_parent_casper_should_not_create_a_block_with_a_repeated_deploy() 
         let node1_slice = &mut rest[0..1];
         let mut nodes_for_propagate: Vec<&mut TestNode> = node1_slice.iter_mut().collect();
         node0_slice[0]
-            .propagate_block(&[deploy.clone()], &mut nodes_for_propagate)
+            .propagate_block(std::slice::from_ref(&deploy), &mut nodes_for_propagate)
             .await
             .unwrap()
     };
 
     // Scala: node1.createBlock(deploy)
     // node1 tries to create block with the same deploy
-    let create_block_result2 = nodes[1].create_block(&[deploy.clone()]).await.unwrap();
+    let create_block_result2 = nodes[1]
+        .create_block(std::slice::from_ref(&deploy))
+        .await
+        .unwrap();
 
     // Should return NoNewDeploys since deploy was already used
     assert!(
@@ -76,11 +227,42 @@ async fn multi_parent_casper_should_not_create_a_block_with_a_repeated_deploy() 
     );
 }
 
-// D3 (DR-9, OD-1): `multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos`
-// is REMOVED — accepted deploys run UNMETERED-FOR-LIVENESS (no per-deploy
-// phlo_limit cap), so a low budget no longer aborts an accepted deploy with
-// out-of-phlogistons. Fundedness is proven by the per-signature acceptance gate
-// (covered by `funded_unfunded_boundary_at_margin` / `drained_present_pool_rejects`).
+#[tokio::test]
+async fn multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+
+    let deploy_data = construct_deploy::source_deploy_now_full(
+        "Nil".to_string(),
+        Some(1),
+        None,
+        None,
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .unwrap();
+
+    let result = node.create_block(&[deploy_data]).await.unwrap();
+
+    let block = match result {
+        BlockCreatorResult::Created(b, ..) => b,
+        other => panic!("Expected Created block, got: {:?}", other),
+    };
+
+    assert!(
+        !block.body.deploys.is_empty(),
+        "Block should have at least one deploy"
+    );
+    assert!(
+        block.body.deploys[0].is_failed(),
+        "Deploy should be marked as failed due to insufficient phlos"
+    );
+    assert_eq!(block.body.deploys[0].cost().cost, 1);
+}
 
 #[tokio::test]
 async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
@@ -114,14 +296,91 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
         "Block should have at least one deploy"
     );
     assert!(
-        !block.body.deploys[0].is_failed,
+        !block.body.deploys[0].is_failed(),
         "Deploy should succeed with sufficient phlos"
     );
+    assert_eq!(block.body.deploys[0].cost().cost, 3);
 }
 
-// D3 (DR-9, D.5): `multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min_phlo_price`
-// is REMOVED — a deploy carries no `phlo_price`, and the per-deploy
-// `validate_phlo` min-price SUBMISSION check is deleted. `min_phlo_price` is
-// RETAINED as the block-assembly acceptance gate's safety MARGIN (not an API
-// admission check); the margin boundary is covered by
-// `funded_unfunded_boundary_at_margin` (acceptance.rs).
+#[tokio::test]
+async fn legacy_matched_comm_keeps_exact_historical_cost() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy = construct_deploy::source_deploy_now_full(
+        "new x in { x!(1) | for (@n <- x) { Nil } }".to_string(),
+        Some(1_000_000),
+        None,
+        None,
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .unwrap();
+
+    let block = node.add_block_from_deploys(&[deploy]).await.unwrap();
+
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(!block.body.deploys[0].is_failed());
+    assert_eq!(block.body.deploys[0].cost().cost, 443);
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min_phlo_price() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+
+    // The API reads the floor from the running casper's shard conf (1 in the
+    // test fixture), so an underpriced deploy is one below that value.
+    let min_phlo_price = 1i64;
+    let phlo_price = 0i64;
+    let is_node_read_only = false;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let deploy_data = construct_deploy::source_deploy_now_full(
+        "Nil".to_string(),
+        None,
+        Some(phlo_price),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+
+    // Scala: BlockAPI.deploy[Effect](deployData, None, minPhloPrice = minPhloPrice, isNodeReadOnly, shardId = SHARD_ID)
+    let result = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy_data,
+        &None,
+        is_node_read_only,
+        &shard_id,
+    )
+    .await;
+
+    // Scala: err.isLeft shouldBe true
+    assert!(
+        result.is_err(),
+        "Deploy with low phloPrice should be rejected"
+    );
+
+    // Scala: ex shouldBe a[RuntimeException]
+    // Scala: ex.getMessage shouldBe s"Phlo price $phloPrice is less than minimum price $minPhloPrice."
+    let error = result.unwrap_err();
+    let error_message = format!("{:?}", error);
+    let expected_message = format!(
+        "Phlo price {} is less than minimum price {}",
+        phlo_price, min_phlo_price
+    );
+    assert!(
+        error_message.contains(&expected_message),
+        "Error message should contain: '{}'\nGot: {}",
+        expected_message,
+        error_message
+    );
+}

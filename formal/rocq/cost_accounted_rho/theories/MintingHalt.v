@@ -3,7 +3,10 @@
    ═══════════════════════════════════════════════════════════════════════════
 
    Cost-Accounted Rho Stage C halt INTERFACE (proved at Stage B; DR-3 / DR-13,
-   docs/theory/cost-accounting-impl/stageb-minting-halt-interface.md Decision 4).
+   docs/casper/theory/cost-accounting-impl/stageb-minting-halt-interface.md Decision 4).
+
+   [pb_minted] is a ghost logical history. Production uses the monotonic
+   [mintedThroughEpoch] frontier from [MintedEpochRetention.v].
 
    Slashing halts a validator's phlogiston minting via the "mintingHalted" set
    (modeled as [pb_halted] in MintingInjection.v's [pos_state]); the Stage-B
@@ -108,7 +111,7 @@ Qed.
 
 (* DR-3 / Decision 4: an epoch mint never RECORDS a halted validator in the mint
    ledger — the ledger is unchanged, so the halted validator is not minted this
-   epoch (nor does its @W_v purse fire, the Rholang-side mirror). Because the
+   epoch. Because the
    mint is the identity for a halted validator, [pb_minted] is untouched. *)
 Theorem halted_validator_not_minted : forall st v e amt,
   In v (pb_halted st) ->
@@ -142,14 +145,14 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 4: Redemption is the ONLY way a halted validator regains supply
+   Section 4: Halt blocks protocol minting until quarantine resolution
    ═══════════════════════════════════════════════════════════════════════════
 
    Combining Sections 2-3: while [v] stays in [pb_halted], NO sequence of epoch
    mints changes its balance. So if a halted validator's balance ever rises, an
-   intervening UNHALT (redemption clearing "mintingHalted") must have occurred —
-   the formal core of "redemption writes neither Σ⟦v⟧ nor @W_v directly; it
-   clears the flag and lets the normal next-epoch mint re-fund" (Decision 4).   *)
+   intervening UNHALT (quarantine resolution clearing "mintingHalted") must have
+   occurred. Quarantine resolution may separately restore canonical SystemVault
+   custody; this section proves only the mint-halt obligation.                 *)
 
 (* Two successive epoch mints of a validator that is halted in BOTH states leave
    the balance fixed — halt is sticky across mints unless cleared. *)

@@ -479,7 +479,8 @@ For node clients, see BlockMessage for actual Casper protocol Block representati
 <a name="coop.rchain.casper.protocol.DeployData"/>
 
 ### DeployData
-Note: deploys are uniquely keyed by `user`, `timestamp`.
+Legacy deploys use the `user` and `timestamp` identity. Protocol 6 uses the
+typed authenticated `DeployIdV6` envelope commitment.
 
 **TODO**: details of signatures and payment. See RHOL-781
 
@@ -660,9 +661,9 @@ Note: deploys are uniquely keyed by `user`, `timestamp`.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| user | [bytes](#bytes) |  | public key a la DeployData |
-| timestamp | [int64](#int64) |  | millisecond timestamp |
-| nameQty | [int32](#int32) |  | how many names to preview? (max: 1024) |
+| user | [bytes](#bytes) |  | legacy deploy public key |
+| timestamp | [int64](#int64) |  | legacy deploy millisecond timestamp |
+| nameQty | [int32](#int32) |  | legacy names to preview (max: 1024) |
 
 
 
@@ -811,7 +812,7 @@ To get results back, use `getDataAtName`.
 | getBlocks | [BlocksQuery](#coop.rchain.casper.protocol.BlocksQuery) | [LightBlockInfo](#coop.rchain.casper.protocol.BlocksQuery) | Get a summary of blocks on the blockchain. |
 | listenForContinuationAtName | [ContinuationAtNameQuery](#coop.rchain.casper.protocol.ContinuationAtNameQuery) | [ListeningNameContinuationResponse](#coop.rchain.casper.protocol.ContinuationAtNameQuery) | Find processes receiving on a name. |
 | findBlockWithDeploy | [FindDeployInBlockQuery](#coop.rchain.casper.protocol.FindDeployInBlockQuery) | [BlockQueryResponse](#coop.rchain.casper.protocol.FindDeployInBlockQuery) | Find block from a deploy. |
-| previewPrivateNames | [PrivateNamePreviewQuery](#coop.rchain.casper.protocol.PrivateNamePreviewQuery) | [PrivateNamePreviewResponse](#coop.rchain.casper.protocol.PrivateNamePreviewQuery) | Preview new top-level unforgeable names (for example, to compute signatures over them). |
+| previewPrivateNames | [PrivateNamePreviewQuery](#coop.rchain.casper.protocol.PrivateNamePreviewQuery) | [PrivateNamePreviewResponse](#coop.rchain.casper.protocol.PrivateNamePreviewQuery) | Preview legacy top-level unforgeable names. Protocol 6 returns an error. |
 
 
 

@@ -61,6 +61,21 @@ pub struct Options {
     #[arg(long = "profile")]
     pub profile: Option<String>,
 
+    /// Override `logging.filter` from config. Examples: "info",
+    /// "info,f1r3fly.casper=debug". `RUST_LOG`, if set, still wins.
+    #[arg(long = "log-level")]
+    pub log_level: Option<String>,
+
+    /// Override `logging.format` from config. "json" (default) or "pretty"
+    /// for human-readable terminal output.
+    #[arg(long = "log-format", value_name = "FORMAT")]
+    pub log_format: Option<String>,
+
+    /// Override `logging.sink` from config. "stdout" (default), "file"
+    /// (writes to <data-dir>/logs/node.log), or "both".
+    #[arg(long = "log-sink", value_name = "SINK")]
+    pub log_sink: Option<String>,
+
     #[command(subcommand)]
     pub subcommand: Option<OptionsSubCommand>,
 }
@@ -70,9 +85,9 @@ pub enum OptionsSubCommand {
     Run(RunOptions),
     Eval(EvalOptions),
     Repl,
-    // D3 (DR-9): the `--phlo-limit` / `--phlo-price` deploy flags are removed —
-    // a deploy carries no escrow price/limit (cost = per-COMM token count).
     Deploy {
+        phlo_limit: i64,
+        phlo_price: i64,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -196,6 +211,10 @@ pub struct RunOptions {
     #[arg(long = "discovery-heartbeat-batch-size")]
     pub discovery_heartbeat_batch_size: Option<u32>,
 
+    /// Consecutive failed heartbeats before a peer is dropped
+    #[arg(long = "discovery-heartbeat-failure-threshold")]
+    pub discovery_heartbeat_failure_threshold: Option<u32>,
+
     /// gRPC port serving F1r3fly Protocol messages
     #[arg(short = 'p', long = "protocol-port", default_value = "40400")]
     pub protocol_port: Option<u16>,
@@ -227,10 +246,6 @@ pub struct RunOptions {
     /// Path to X.509 certificate for TLS
     #[arg(long = "tls-certificate-path")]
     pub tls_certificate_path: Option<PathBuf>,
-
-    /// Use a non blocking secure random instance
-    #[arg(long = "tls-secure-random-non-blocking", action = ArgAction::SetTrue)]
-    pub tls_secure_random_non_blocking: bool,
 
     /// Address to bind API servers
     #[arg(long = "api-host")]
@@ -264,6 +279,21 @@ pub struct RunOptions {
     #[arg(long = "api-enable-reporting", action = ArgAction::SetTrue)]
     pub api_enable_reporting: bool,
 
+    /// Concurrent exploratory queries admitted before further ones are rejected
+    #[arg(long = "api-exploratory-deploy-max-concurrent")]
+    pub api_exploratory_deploy_max_concurrent: Option<usize>,
+
+    /// Maximum phlogiston available to one exploratory query
+    #[arg(long = "api-exploratory-deploy-phlo-limit")]
+    pub api_exploratory_deploy_phlo_limit: Option<i64>,
+
+    /// Best-effort deadline for one exploratory query
+    #[arg(
+        long = "api-exploratory-deploy-execution-timeout",
+        value_parser = ValueParser::new(parse_duration)
+    )]
+    pub api_exploratory_deploy_execution_timeout: Option<Duration>,
+
     /// Sets a custom keepalive time
     #[arg(long = "api-keep-alive-time", value_parser = ValueParser::new(parse_duration))]
     pub api_keep_alive_time: Option<Duration>,
@@ -272,13 +302,13 @@ pub struct RunOptions {
     #[arg(long = "api-keep-alive-timeout", value_parser = ValueParser::new(parse_duration))]
     pub api_keep_alive_timeout: Option<Duration>,
 
-    /// The most aggressive keep-alive time clients are permitted to configure
-    #[arg(long = "api-permit-keep-alive-time", value_parser = ValueParser::new(parse_duration))]
-    pub api_permit_keep_alive_time: Option<Duration>,
+    /// TCP-level SO_KEEPALIVE idle duration for accepted API sockets
+    #[arg(long = "api-tcp-keepalive-time", value_parser = ValueParser::new(parse_duration))]
+    pub api_tcp_keepalive_time: Option<Duration>,
 
-    /// Sets a custom max connection idle time
-    #[arg(long = "api-max-connection-idle", value_parser = ValueParser::new(parse_duration))]
-    pub api_max_connection_idle: Option<Duration>,
+    /// Sets the deadline applied to every request handler
+    #[arg(long = "api-request-timeout", value_parser = ValueParser::new(parse_duration))]
+    pub api_request_timeout: Option<Duration>,
 
     /// Sets a custom max connection age
     #[arg(long = "api-max-connection-age", value_parser = ValueParser::new(parse_duration))]
@@ -561,6 +591,13 @@ pub struct RunOptions {
         hide_short_help = true
     )]
     pub heartbeat_advanced_deploy_recovery_max_lag: Option<i64>,
+
+    #[arg(
+        long = "heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
+        value_parser = ValueParser::new(parse_non_negative_i64),
+        hide_short_help = true
+    )]
+    pub heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Option<i64>,
 }
 
 /// Keygen subcommand - Generates a public/private key pair
@@ -635,11 +672,16 @@ mod eval_timeout_tests {
 }
 
 /// Deploy subcommand - Deploy a Rholang source file to Casper on an existing running node
-///
-/// D3 (DR-9): the `--phlo-limit` / `--phlo-price` flags are removed — a deploy
-/// carries no escrow price/limit (cost = per-COMM token count).
 #[derive(Args, Debug, Clone)]
 pub struct DeployOptions {
+    /// The amount of phlo to use for the transaction
+    #[arg(long = "phlo-limit")]
+    pub phlo_limit: u64,
+
+    /// The price of phlo for this transaction in units dust/phlo
+    #[arg(long = "phlo-price")]
+    pub phlo_price: u64,
+
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]
     pub valid_after_block_number: Option<u64>,

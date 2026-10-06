@@ -2,51 +2,25 @@
 // See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorageTest.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Once;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::{
     block_element_gen, block_elements_with_parents_gen, block_hash_gen, block_with_new_hashes_gen,
-    get_random_block, validator_gen,
+    get_random_block, get_random_block_default, validator_gen,
 };
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Justification};
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
 use once_cell::sync::Lazy;
 use proptest::prelude::ProptestConfig;
 use proptest::proptest;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use shared::rust::store::key_value_store::KvStoreError;
 use tokio::runtime::Runtime;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
-static INIT: Once = Once::new();
-
-fn init_logger() {
-    INIT.call_once(|| {
-        let filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::DEBUG.into())
-            .parse("")
-            .unwrap();
-
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_target(false)
-                    .with_current_span(false) // logs only
-                    .with_span_list(false) // logs only
-                    .flatten_event(true), // put event fields at top level
-            )
-            .try_init()
-            .unwrap();
-    });
-}
+fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
 fn genesis_block() -> BlockMessage {
     get_random_block(
@@ -59,6 +33,25 @@ fn genesis_block() -> BlockMessage {
         None,
         Some(vec![]),
         None,
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    )
+}
+
+fn chain_block(number: i64, parents: Vec<BlockHash>) -> BlockMessage {
+    get_random_block(
+        Some(number),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(parents),
+        Some(vec![]),
         None,
         None,
         Some(vec![]),
@@ -91,22 +84,24 @@ fn proptest_config() -> ProptestConfig {
 
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().unwrap());
 
-type LookupResult = (
-    Vec<(
-        Option<BlockMetadata>,
-        Option<BlockHash>,
-        Option<BlockMetadata>,
-        Option<imbl::HashSet<BlockHash>>,
-        bool,
-    )>,
-    imbl::HashMap<Validator, BlockHash>,
-    HashMap<Validator, BlockMetadata>,
-    Vec<Vec<BlockHash>>,
-    i64,
-);
+struct BlockLookup {
+    block_metadata: Option<BlockMetadata>,
+    latest_message_hash: Option<BlockHash>,
+    latest_message: Option<BlockMetadata>,
+    children: Option<imbl::HashSet<BlockHash>>,
+    contains: bool,
+}
+
+struct LookupResult {
+    list: Vec<BlockLookup>,
+    latest_message_hashes: imbl::HashMap<Validator, BlockHash>,
+    latest_messages: HashMap<Validator, BlockMetadata>,
+    topo_sort: Vec<Vec<BlockHash>>,
+    latest_block_number: i64,
+}
 
 fn lookup_elements(
-    block_elements: &Vec<BlockMessage>,
+    block_elements: &[BlockMessage],
     dag_storage: &BlockDagKeyValueStorage,
     topo_sort_start_block_number: Option<i64>,
 ) -> LookupResult {
@@ -114,13 +109,7 @@ fn lookup_elements(
     let dag = dag_storage
         .get_representation()
         .expect("dag representation");
-    let list: Vec<(
-        Option<BlockMetadata>,
-        Option<BlockHash>,
-        Option<BlockMetadata>,
-        Option<imbl::HashSet<BlockHash>>,
-        bool,
-    )> = block_elements
+    let list: Vec<BlockLookup> = block_elements
         .iter()
         .map(|block_element| {
             let block_metadata = dag.lookup(&block_element.block_hash).unwrap();
@@ -128,13 +117,13 @@ fn lookup_elements(
             let latest_message = dag.latest_message(&block_element.sender).unwrap();
             let children = dag.children(&block_element.block_hash);
             let contains = dag.contains(&block_element.block_hash);
-            (
+            BlockLookup {
                 block_metadata,
                 latest_message_hash,
                 latest_message,
                 children,
                 contains,
-            )
+            }
         })
         .collect();
 
@@ -142,22 +131,27 @@ fn lookup_elements(
     let latest_messages = dag.latest_messages().unwrap();
     let topo_sort = dag.topo_sort(topo_sort_start_block_number, None).unwrap();
     let latest_block_number = dag.latest_block_number();
-    (
+    LookupResult {
         list,
         latest_message_hashes,
         latest_messages,
         topo_sort,
         latest_block_number,
-    )
+    }
 }
 
 fn test_lookup_elements_result(
     lookup_result: &LookupResult,
-    block_elements: &Vec<BlockMessage>,
+    block_elements: &[BlockMessage],
     genesis: &BlockMessage,
 ) {
-    let (list, latest_message_hashes, latest_messages, topo_sort, latest_block_number) =
-        lookup_result;
+    let LookupResult {
+        list,
+        latest_message_hashes,
+        latest_messages,
+        topo_sort,
+        latest_block_number,
+    } = lookup_result;
 
     let real_latest_messages =
         block_elements
@@ -166,20 +160,25 @@ fn test_lookup_elements_result(
                 if !block_element.sender.is_empty() {
                     acc.insert(
                         block_element.sender.clone(),
-                        BlockMetadata::from_block(&block_element, false, None, None),
+                        BlockMetadata::from_block(block_element, false, None, None),
                     );
                 }
                 acc
             });
 
-    list.iter().zip(block_elements.iter()).for_each(
-        |(
-            (block_metadata, latest_message_hash, latest_message, children, contains),
-            block_element,
-        )| {
+    list.iter()
+        .zip(block_elements.iter())
+        .for_each(|(block_lookup, block_element)| {
+            let BlockLookup {
+                block_metadata,
+                latest_message_hash,
+                latest_message,
+                children,
+                contains,
+            } = block_lookup;
             assert_eq!(
                 *block_metadata,
-                Some(BlockMetadata::from_block(&block_element, false, None, None))
+                Some(BlockMetadata::from_block(block_element, false, None, None))
             );
 
             assert_eq!(
@@ -191,9 +190,7 @@ fn test_lookup_elements_result(
 
             assert_eq!(
                 *latest_message,
-                real_latest_messages
-                    .get(&block_element.sender)
-                    .map(|metadata| metadata.clone())
+                real_latest_messages.get(&block_element.sender).cloned()
             );
 
             let children_set = children.as_ref().map(|dash_set| {
@@ -215,9 +212,8 @@ fn test_lookup_elements_result(
                 .collect();
 
             assert_eq!(children_set, Some(expected_children));
-            assert_eq!(*contains, true);
-        },
-    );
+            assert!(*contains);
+        });
 
     let filtered_latest_message_hashes: HashMap<_, _> = latest_message_hashes
         .iter()
@@ -307,6 +303,67 @@ fn dag_storage_should_be_able_to_lookup_a_stored_block() {
     });
 }
 
+// GAP-2 / GAP-4 (FV precondition): `is_dag_ancestor` is the trusted ancestry primitive
+// that the FORMALLY-VERIFIED finalized-floor (`casper/finality/floor.rs`) and the safety
+// clique oracle (`casper/safety/clique_oracle.rs`) both ASSUME — the Rocq
+// (`CliqueOracle.v`/`Selection.v`/`Foundation.v`) models ancestry only ABSTRACTLY as
+// `anc_of`. Its block-number prune (`block_number(current) <= stop_height => stop
+// descending`) is sound only when block numbers are strictly monotone along parent
+// edges (`wf_dag`) — a precondition BLOCK VALIDATION enforces (`block_number = 1 + max
+// parent number`, mirrored by GuardBridge's `validated_block`) and that
+// `block_elements_with_parents_gen` respects. This test discharges the trusted-primitive
+// gap: on random well-formed DAGs, `is_dag_ancestor` (WITH the prune) computes EXACTLY
+// the reflexive-transitive closure over parents — the abstract `anc_of` relation the
+// proofs reason about. (The demoted height-map contiguity `assert!` at
+// `block_metadata_store.rs:388` is a separate, stronger diagnostic — monotonicity, not
+// contiguity, is the property the prune relies on, and it is what this test exercises.)
+#[test]
+fn is_dag_ancestor_matches_reflexive_transitive_closure_over_parents() {
+    let genesis = genesis_block();
+    proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
+      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      for be in &block_elements {
+        dag_storage.insert(be, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).expect("insert block element");
+      }
+      let dag = dag_storage.get_representation().expect("dag representation");
+
+      // Ground-truth parent map from the block metadata (genesis has no parents).
+      let mut parents: std::collections::HashMap<prost::bytes::Bytes, Vec<prost::bytes::Bytes>> =
+          std::collections::HashMap::new();
+      parents.insert(genesis.block_hash.clone(), Vec::new());
+      for be in &block_elements {
+        let meta = BlockMetadata::from_block(be, false, None, None);
+        parents.insert(meta.block_hash.clone(), meta.parents.clone());
+      }
+
+      // Reference: reflexive-transitive closure over parents, with NO prune.
+      let reachable = |anc: &prost::bytes::Bytes, desc: &prost::bytes::Bytes| -> bool {
+        if anc == desc { return true; }
+        let mut stack = vec![desc.clone()];
+        let mut seen: std::collections::HashSet<prost::bytes::Bytes> = std::collections::HashSet::new();
+        while let Some(cur) = stack.pop() {
+          if !seen.insert(cur.clone()) { continue; }
+          if cur == *anc { return true; }
+          if let Some(ps) = parents.get(&cur) { for p in ps { stack.push(p.clone()); } }
+        }
+        false
+      };
+
+      let all: Vec<prost::bytes::Bytes> = std::iter::once(genesis.block_hash.clone())
+          .chain(block_elements.iter().map(|b| b.block_hash.clone()))
+          .collect();
+      for a in &all {
+        for b in &all {
+          let got = dag.is_dag_ancestor(a, b).expect("is_dag_ancestor");
+          let want = reachable(a, b);
+          assert_eq!(got, want,
+            "is_dag_ancestor mismatch (prune unsound?): a={:?} b={:?} got={} closure={}",
+            a, b, got, want);
+        }
+      }
+    });
+}
+
 #[test]
 fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_hash() {
     let genesis = genesis_block();
@@ -315,7 +372,7 @@ fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_
         .get_representation()
         .expect("dag representation");
     let contains = dag.contains(&prost::bytes::Bytes::new());
-    assert_eq!(contains, false);
+    assert!(!contains);
 }
 
 #[test]
@@ -419,9 +476,9 @@ fn dag_storage_should_be_able_to_restore_equivocations_tracker_on_startup() {
         }
 
         let equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash]));
-        dag_storage.insert_equivocation_record(equivocation_record.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
 
-        let records = dag_storage.equivocation_records().unwrap();
+        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
         assert_eq!(records, HashSet::from([equivocation_record]));
 
         let result = lookup_elements(&block_elements, &dag_storage, None);
@@ -438,12 +495,16 @@ fn dag_storage_should_be_able_to_modify_equivocation_records() {
         let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
         let equivocation_record = EquivocationRecord::new(equivocator.clone(), 0, BTreeSet::from([block_hash1.clone()]));
-        dag_storage.insert_equivocation_record(equivocation_record.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
 
-        dag_storage.update_equivocation_record(equivocation_record, block_hash2.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| {
+            let mut updated = equivocation_record.clone();
+            updated.equivocation_detected_block_hashes.insert(block_hash2.clone());
+            tracker.add(updated)
+        }).unwrap();
 
         let updated_equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash1, block_hash2]));
-        let records = dag_storage.equivocation_records().unwrap();
+        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
         assert_eq!(records, HashSet::from([updated_equivocation_record]));
     });
 }
@@ -460,7 +521,7 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 
       let dag = dag_storage.get_representation().expect("dag representation");
       let invalid_blocks = dag.invalid_blocks();
-      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().map(|item| item.clone()).collect();
+      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().cloned().collect();
       assert_eq!(invalid_blocks_set, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, true, None, None)).collect::<HashSet<_>>());
     });
 }
@@ -535,33 +596,192 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
     );
 }
 
+/// Inserting an OLDER block by a sender must not move that sender's latest
+/// message backward. Settled-history admission inserts old blocks at runtime
+/// — a straggler a joiner's restore missed, arriving while the sender's real
+/// latest message is a hundred blocks ahead — so the sequence-monotone guard
+/// on the latest-message update is what keeps admission from rewriting any
+/// validator's position. (Insertion ORDER is an optimization, not what this
+/// depends on.)
 #[test]
-fn dag_storage_should_be_able_to_restore_deploy_index_on_startup() {
+fn dag_storage_keeps_latest_message_when_an_older_block_arrives() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let newer = get_random_block(
+        Some(5),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &newer,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let older = get_random_block(
+        Some(2),
+        Some(2),
+        None,
+        None,
+        Some(newer.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &older,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(
+        dag.latest_message_hash(&newer.sender),
+        Some(newer.block_hash.clone()),
+        "an old block arriving late must not regress its sender's latest message"
+    );
+}
+
+/// A `SettledHistory` insert leaves latest messages untouched entirely: the
+/// sender's slot does not advance even for a HIGHER sequence number (the
+/// cross-shard pollution shape — a foreign block wearing a shared validator
+/// key), and the block's bond set seeds no newly-bonded slots (a sub-anchor
+/// bond set is stale testimony).
+#[test]
+fn dag_storage_settled_history_insert_never_touches_latest_messages() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let live_head = get_random_block(
+        Some(39),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &live_head,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let unseen_validator = get_random_block_default().sender;
+    let settled = get_random_block(
+        Some(6),
+        Some(live_head.seq_num + 35),
+        None,
+        None,
+        Some(live_head.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        Some(vec![Bond {
+            validator: unseen_validator.clone(),
+            stake: 100,
+        }]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &settled,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert!(
+        dag.contains(&settled.block_hash),
+        "the settled block itself must be in the DAG"
+    );
+    assert_eq!(
+        dag.latest_message_hash(&live_head.sender),
+        Some(live_head.block_hash.clone()),
+        "a settled-history insert must not advance its sender's latest message"
+    );
+    assert_eq!(
+        dag.latest_message_hash(&unseen_validator),
+        None,
+        "a settled-history insert must not seed newly-bonded latest-message slots"
+    );
+}
+
+/// Every deploy in a VALID inserted body resolves to its carrier; invalid
+/// bodies are not canonical history and resolve to nothing.
+#[test]
+fn deploy_appearance_resolves_valid_bodies_and_ignores_invalid_ones() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
-      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      for mode in [
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+      ] {
+          let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
-      for block_element in &block_elements {
-        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
-      }
-
-      let dag = dag_storage.get_representation().expect("dag representation");
-      let mut deploy_sigs = Vec::new();
-      let mut block_hashes = Vec::new();
-
-      for block in &block_elements {
-          for deploy in &block.body.deploys {
-              deploy_sigs.push(deploy.deploy.sig.clone());
-              block_hashes.push(block.block_hash.clone());
+          for block_element in &block_elements {
+            dag_storage.insert(block_element, mode).unwrap();
           }
+
+          let dag = dag_storage.get_representation().expect("dag representation");
+          let mut deploy_sigs = Vec::new();
+          let mut block_hashes = Vec::new();
+
+          for block in &block_elements {
+              for deploy in &block.body.deploys {
+                  deploy_sigs.push(deploy.identity_bytes().to_vec());
+                  block_hashes.push(block.block_hash.clone());
+              }
+          }
+
+          let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
+              .iter()
+              .map(|sig| dag.deploy_canonical_appearance(sig).unwrap())
+              .collect();
+
+          let expected: Vec<Option<BlockHash>> = match mode {
+              block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid =>
+                  vec![None; deploy_sigs.len()],
+              _ => block_hashes.iter().map(|h| Some(h.clone())).collect(),
+          };
+          assert_eq!(deploy_lookups, expected, "mode {:?}", mode);
       }
-
-      let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
-          .iter()
-          .map(|sig| dag.lookup_by_deploy_id(&sig.to_vec()).unwrap())
-          .collect();
-
-      assert_eq!(deploy_lookups, block_hashes.iter().map(|h| Some(h.clone())).collect::<Vec<_>>());
     });
 }
 
@@ -681,23 +901,20 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         )
         .unwrap();
 
-    assert_eq!(
-        dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized,
-        true
-    );
-    assert_eq!(dag.is_finalized(&genesis.block_hash), true);
+    assert!(dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized);
+    assert!(dag.is_finalized(&genesis.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b1.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b1.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b1.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b1.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b2.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b2.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b2.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b2.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b3.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b3.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b3.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b3.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b4.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b4.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b4.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b4.block_hash));
 
     let effects = std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
     let effects_clone = effects.clone();
@@ -722,26 +939,26 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         .get_representation()
         .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
-    assert_eq!(dag.is_finalized(&b1.block_hash), true);
-    assert_eq!(dag.is_finalized(&b2.block_hash), true);
-    assert_eq!(dag.is_finalized(&b3.block_hash), true);
-    assert_eq!(dag.is_finalized(&b4.block_hash), false);
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b2.block_hash));
+    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(!dag.is_finalized(&b4.block_hash));
 
     let b1_meta = dag.lookup_unsafe(&b1.block_hash).unwrap();
-    assert_eq!(b1_meta.finalized, true);
-    assert_eq!(b1_meta.directly_finalized, false);
+    assert!(b1_meta.finalized);
+    assert!(!b1_meta.directly_finalized);
 
     let b2_meta = dag.lookup_unsafe(&b2.block_hash).unwrap();
-    assert_eq!(b2_meta.finalized, true);
-    assert_eq!(b2_meta.directly_finalized, false);
+    assert!(b2_meta.finalized);
+    assert!(!b2_meta.directly_finalized);
 
     let b3_meta = dag.lookup_unsafe(&b3.block_hash).unwrap();
-    assert_eq!(b3_meta.finalized, true);
-    assert_eq!(b3_meta.directly_finalized, true);
+    assert!(b3_meta.finalized);
+    assert!(b3_meta.directly_finalized);
 
     let b4_meta = dag.lookup_unsafe(&b4.block_hash).unwrap();
-    assert_eq!(b4_meta.finalized, false);
-    assert_eq!(b4_meta.directly_finalized, false);
+    assert!(!b4_meta.finalized);
+    assert!(!b4_meta.directly_finalized);
 
     // Check that all finalized blocks were captured in the effects
     let finalized_effects = effects.lock().unwrap();
@@ -751,6 +968,116 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         b3.block_hash.clone(),
     ]);
     assert_eq!(*finalized_effects, expected_effects);
+}
+
+/// A restored (truncated) DAG holds blocks whose parent edges reach BELOW the
+/// restore horizon: the parent hash is referenced but the block is not held.
+/// Such an ancestor is settled by the restore contract — everything under the
+/// shipped window is finalized ancestry — so the finalization sweep must mark
+/// the HELD unfinalized ancestry and never descend into unheld blocks. The
+/// unguarded walk erred with MissingBlock on the first sub-horizon parent and
+/// failed the entire finalizer run, permanently: the same ancestry re-walks
+/// every run, so a restored node's LFB froze at its restore-era floor while
+/// the shard finalized on (CI lifecycle joiner3, 366 identical failures).
+#[tokio::test]
+async fn finalization_sweep_treats_unheld_parents_as_settled_ancestry() {
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    dag_storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
+
+    let b1 = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b1,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    // b2's second parent is a merge edge to a block below the restore
+    // horizon: referenced, never held.
+    let sub_horizon_parent = BlockHash::from(vec![0x5b; 32]);
+    let b2 = get_random_block(
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![b1.block_hash.clone(), sub_horizon_parent.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b2,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let b3 = get_random_block(
+        Some(3),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![b2.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b3,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    dag_storage
+        .record_directly_finalized(b3.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("the sweep must not descend into unheld sub-horizon ancestry");
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(dag.last_finalized_block(), b3.block_hash);
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b2.block_hash));
+    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(
+        !dag.contains(&sub_horizon_parent),
+        "staging: the sub-horizon parent must not be held"
+    );
 }
 
 #[test]
@@ -834,4 +1161,1229 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
             Err(e) => panic!("find() returned Err for valid hex prefix: {e:?}"),
         }
     });
+}
+
+/// A re-included sig's canonical appearance is a function of the DAG, not
+/// of node-local insertion order: whichever order the two carriers arrive
+/// in, the answer is the latest inclusion by (height, hash).
+#[test]
+fn deploy_appearance_is_insertion_order_independent() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        for reversed in [false, true] {
+            let genesis = genesis_block();
+            let dag_storage = create_dag_storage(&genesis).await;
+            let mk = |height: i64| {
+                get_random_block(
+                    Some(height),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(vec![genesis.block_hash.clone()]),
+                    None,
+                    Some(vec![deploy.clone()]),
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                )
+            };
+            let early = mk(1);
+            let late = mk(2);
+            let order = if reversed {
+                [&late, &early]
+            } else {
+                [&early, &late]
+            };
+            for b in order {
+                dag_storage
+                    .insert(
+                        b,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                    )
+                    .expect("insert carrier");
+            }
+            let dag = dag_storage
+                .get_representation()
+                .expect("dag representation");
+            assert_eq!(
+                dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                    .expect("appearance lookup"),
+                Some(late.block_hash.clone()),
+                "reversed={}: the canonical appearance is the latest \
+                 inclusion by (height, hash), independent of which carrier \
+                 this node inserted first",
+                reversed
+            );
+        }
+    });
+}
+
+/// An appearance is a block that CARRIES the deploy. A rejection record
+/// event at a greater height than the inclusion must not become the
+/// canonical appearance: the record's block does not hold the deploy, and
+/// naming it sends every consumer that fetches the block looking for a
+/// deploy that is not in its deploy list.
+#[test]
+fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let inclusion = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        let mut rejecting_merge = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![inclusion.block_hash.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        rejecting_merge.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy.deploy.sig.clone(),
+            duplicate: false,
+            carrier: inclusion.block_hash.clone(),
+        }];
+
+        for b in [&inclusion, &rejecting_merge] {
+            dag_storage
+                .insert(
+                    b,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                )
+                .expect("insert block");
+        }
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                .expect("appearance lookup"),
+            Some(inclusion.block_hash.clone()),
+            "the record event at height 2 outranks the inclusion by height, \
+             but its block does not carry the deploy — the appearance must \
+             stay on the inclusion carrier"
+        );
+    });
+}
+
+/// The ingest rides `insert`'s body pass: a valid block's executions and
+/// records project into per-sig lifecycle rows, an invalid block's body
+/// contributes no lifecycle events, and EVERY block's body sigs — valid
+/// and invalid alike — land in the repeat-deploy carrier index, which
+/// must cover the same block universe the ancestor scan reads.
+#[test]
+fn insert_projects_lifecycle_events_and_carrier_entries() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let mut runner = TestRunner::default();
+        let executed = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let rejected_sig = prost::bytes::Bytes::from(vec![0xAA; 70]);
+        let carrier = prost::bytes::Bytes::from(vec![0xBB; 32]);
+
+        let mut valid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![executed.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        valid_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: rejected_sig.clone(),
+            duplicate: true,
+            carrier: carrier.clone(),
+        }];
+        dag_storage
+            .insert(
+                &valid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .expect("insert valid block");
+
+        let invalid_deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let invalid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![invalid_deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &invalid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+            )
+            .expect("insert invalid block");
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        let included_row = dag
+            .deploy_lifecycle_events(&executed.deploy.sig)
+            .expect("read row")
+            .expect("executed deploy has a row");
+        assert_eq!(
+            included_row.valid_after,
+            Some(executed.deploy.data.valid_after_block_number),
+            "the first inclusion records the deploy's window start"
+        );
+        assert!(
+            matches!(
+                included_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 1,
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { is_failed: false },
+                    ..
+                }]
+            ),
+            "one Included event at the block's height; got {:?}",
+            included_row.events
+        );
+
+        let rejected_row = dag
+            .deploy_lifecycle_events(&rejected_sig)
+            .expect("read row")
+            .expect("rejected sig has a row");
+        assert!(
+            matches!(
+                rejected_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Rejected { duplicate: true, .. },
+                    ..
+                }]
+            ),
+            "one Rejected event carrying the record's duplicate flag; got {:?}",
+            rejected_row.events
+        );
+
+        assert!(
+            dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "an invalid block's body contributes no lifecycle events"
+        );
+        assert!(
+            dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
+                .expect("appearance")
+                .is_none(),
+            "an invalid block's body is not canonical history"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&invalid_deploy.deploy.sig)
+                .expect("probe"),
+            "an invalid carrier is in the carrier index and routes to the exact scan"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&executed.deploy.sig)
+                .expect("probe"),
+            "a valid carrier is in the carrier index"
+        );
+        assert!(
+            dag.carrier_index_proves_absence(b"never-carried-sig")
+                .expect("probe"),
+            "a fresh sig has no carrier"
+        );
+    });
+}
+
+/// The watermark is written once per database: nothing on an empty DAG, where
+/// the history root is not yet known, the next height above the current max on
+/// an existing one, and never overwritten on a later start.
+#[test]
+fn carrier_watermark_initializes_once_per_database() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            None,
+            "an empty database cannot yet know where its history is rooted"
+        );
+
+        let genesis = genesis_block();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let block = chain_block(1, vec![genesis.block_hash.clone()]);
+        dag_storage.insert(&block, InsertMode::Normal).unwrap();
+        assert_eq!(
+            dag_storage.record_carrier_coverage_from(0).unwrap(),
+            0,
+            "a genesis-rooted node is complete from 0"
+        );
+        assert_eq!(
+            dag_storage.record_carrier_coverage_from(140_343).unwrap(),
+            0,
+            "the watermark is write-once"
+        );
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            Some(0),
+            "a later start does not overwrite it"
+        );
+
+        // A database that predates the index gets max height + 1: the
+        // fast path stays off until the scan window clears the heights
+        // the index never saw.
+        let mut kvm2 = InMemoryStoreManager::new();
+        let pre_existing = BlockDagKeyValueStorage::new(&mut kvm2).await.unwrap();
+        let genesis2 = genesis_block();
+        pre_existing
+            .insert(&genesis2, InsertMode::Approved)
+            .unwrap();
+        let b1 = chain_block(1, vec![genesis2.block_hash.clone()]);
+        pre_existing.insert(&b1, InsertMode::Normal).unwrap();
+        let dag = pre_existing.get_representation().unwrap();
+        assert_eq!(dag.carrier_index_watermark().unwrap(), None);
+        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), Some(2));
+        let dag = pre_existing.get_representation().unwrap();
+        assert_eq!(dag.carrier_index_watermark().unwrap(), Some(2));
+    });
+}
+
+/// Crash-retry idempotence for the ingest-first window: the ingest half
+/// of an insert ran (lifecycle rows and carrier entries written), the
+/// metadata add was lost, and the block is redelivered — the re-run must
+/// not duplicate lifecycle events or carrier entries. The pre-crash
+/// state is staged through the public fixture handles, because the
+/// cfg-gated corruption helpers are unreachable from this crate's own
+/// integration tests (a crate cannot dev-depend on itself).
+#[test]
+fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvent, LifecycleEventKind};
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+
+        // Stage the crash: the ingest half ran, the metadata add did not.
+        let dag = dag_storage.get_representation().unwrap();
+        dag.carrier_index
+            .write()
+            .record_once(&deploy.deploy.sig, 1, block.block_hash.to_vec())
+            .unwrap();
+        dag.lifecycle
+            .write()
+            .append_event_once(
+                &deploy.deploy.sig,
+                Some(deploy.deploy.data.valid_after_block_number),
+                LifecycleEvent {
+                    height: 1,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: deploy.is_failed,
+                    },
+                },
+            )
+            .unwrap();
+
+        // Redelivery: the block arrives again and inserts normally.
+        dag_storage.insert(&block, InsertMode::Normal).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let row = dag
+            .deploy_lifecycle_events(&deploy.deploy.sig)
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(
+            row.events.len(),
+            1,
+            "the redelivery re-run must not duplicate the Included event"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&deploy.deploy.sig)
+                .unwrap(),
+            "the carrier entry stands"
+        );
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig).unwrap(),
+            Some(block.block_hash.clone()),
+            "after the successful re-insert the appearance resolves"
+        );
+    });
+}
+
+/// Orphan events from a crash inside the ingest-first window never resolve
+/// as a canonical appearance: the visibility filter drops events whose
+/// block is not in the DAG set.
+#[test]
+fn orphan_lifecycle_event_is_not_a_canonical_appearance() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvent, LifecycleEventKind};
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let phantom_block: Vec<u8> = vec![0xEE; 32];
+        dag.carrier_index
+            .write()
+            .record_once(b"orphan-sig", 1, phantom_block.clone())
+            .unwrap();
+        dag.lifecycle
+            .write()
+            .append_events(b"orphan-sig", Some(0), vec![LifecycleEvent {
+                height: 1,
+                block_hash: phantom_block,
+                kind: LifecycleEventKind::Included { is_failed: false },
+            }])
+            .unwrap();
+
+        assert!(
+            dag.deploy_canonical_appearance(b"orphan-sig")
+                .unwrap()
+                .is_none(),
+            "an event for a never-DAG-visible block must not resolve"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(b"orphan-sig").unwrap(),
+            "the orphan carrier entry still routes the sig to the exact scan"
+        );
+    });
+}
+
+// The bound has to follow blocks admitted at a LOWER value back down: tracking
+// the highest value seen instead would skip a scan those blocks still need.
+#[tokio::test]
+async fn a_lower_finalization_round_does_not_block_a_later_raise() {
+    init_logger();
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+
+    let mut chain = vec![genesis.clone()];
+    for n in 1..=3 {
+        let parent = chain.last().unwrap().block_hash.clone();
+        let block = get_random_block(
+            Some(n),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![parent]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+        chain.push(block);
+    }
+
+    let ft_of = |storage: &BlockDagKeyValueStorage, hash: &BlockHash| {
+        storage
+            .get_representation()
+            .expect("dag representation")
+            .lookup_unsafe(hash)
+            .expect("metadata")
+            .fault_tolerance_value
+    };
+
+    // Round 1: a high value. Every finalized block ends at or above it.
+    dag_storage
+        .record_directly_finalized(chain[1].block_hash.clone(), 0.9, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(ft_of(&dag_storage, &chain[1].block_hash), 0.9);
+
+    // Round 2: a lower value. It admits b2 at 0.4 and must not drag b1 down.
+    dag_storage
+        .record_directly_finalized(chain[2].block_hash.clone(), 0.4, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "a lower round must never lower an already-higher value"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[2].block_hash), 0.4);
+
+    // Round 3: above round 2 but below round 1. b2 sits at 0.4 and must be
+    // raised — this is the scan that a highest-value-seen bound would skip.
+    dag_storage
+        .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[2].block_hash),
+        0.5,
+        "the block admitted at 0.4 must be raised to 0.5"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[3].block_hash), 0.5);
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "the highest value still stands"
+    );
+}
+
+/// A restored (truncated) DAG holds a window of blocks whose deepest
+/// parent references point below the truncation boundary, and LFS
+/// populate marks only the ANCHOR finalized — the window itself, the
+/// anchor's own ancestry included, carries no finality marks. Adopting a
+/// new LFB above the anchor must therefore walk unmarked window branches,
+/// and that walk must treat an unheld parent as the horizon (everything
+/// below the boundary is below the anchor's floor, i.e. settled), never
+/// as an error: erroring aborts the adoption and wedges the finalizer
+/// forever while the chain grows past it.
+#[test]
+fn truncated_window_finalization_walk_terminates_at_the_horizon() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        // Never inserted: the parent reference below the truncation boundary.
+        let below_boundary = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+        let b3 = make(3, vec![below_boundary.block_hash.clone()]);
+        let b4 = make(4, vec![b3.block_hash.clone()]);
+        let anchor = make(5, vec![b4.block_hash.clone()]);
+        // Multi-parent: the finalized anchor plus an unmarked window block,
+        // so the marking walk cannot stop at the anchor alone.
+        let b6 = make(6, vec![anchor.block_hash.clone(), b4.block_hash.clone()]);
+
+        // LFS populate order: anchor (Approved — the only finality mark),
+        // then the window, newest to oldest, then post-restore admission.
+        let mode_approved =
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved;
+        let mode_normal = block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal;
+        dag_storage.insert(&anchor, mode_approved).unwrap();
+        dag_storage.insert(&b4, mode_normal).unwrap();
+        dag_storage.insert(&b3, mode_normal).unwrap();
+        dag_storage.insert(&b6, mode_normal).unwrap();
+
+        let result = dag_storage
+            .record_directly_finalized(b6.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await;
+        assert!(
+            result.is_ok(),
+            "adopting an LFB above a truncated window must terminate the \
+             finalized-ancestry marking walk at the horizon, not abort on the \
+             unheld parent: {:?}",
+            result.err()
+        );
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.last_finalized_block(),
+            b6.block_hash,
+            "the adoption must land: the LFB pointer moves to the new block"
+        );
+        for (name, hash) in [
+            ("b6", &b6.block_hash),
+            ("b4", &b4.block_hash),
+            ("b3", &b3.block_hash),
+        ] {
+            assert!(
+                dag.is_finalized(hash),
+                "{name} is held ancestry of the adopted LFB and must be marked finalized"
+            );
+        }
+        assert!(
+            !dag.contains(&below_boundary.block_hash),
+            "the below-boundary reference stays unheld: the walk terminates \
+             there without inventing an entry for it"
+        );
+    });
+}
+
+/// The newly-bonded latest-message placeholder must be network-uniform:
+/// every node seeds the same slot with the same value, or the joiner's
+/// first self-justifying proposal reads as an equivocation on whichever
+/// side seeded differently. Ceremony nodes derive genesis from their
+/// height-0 block; a truncated node holds no height-0 block and must use
+/// the LEARNED genesis hash — never the block that happens to be inserted
+/// at seeding time, which is right on no node.
+#[test]
+fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+
+        // Truncated window: the anchor's own parent is never inserted, and
+        // no height-0 block exists anywhere in this DAG.
+        let below_boundary = make(4, vec![]);
+        let anchor = make(5, vec![below_boundary.block_hash.clone()]);
+        dag_storage
+            .insert(
+                &anchor,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
+            .unwrap();
+
+        // The genesis hash this node learned during restore.
+        let genesis = make(0, vec![]);
+        dag_storage
+            .record_genesis_hash(genesis.block_hash.clone())
+            .unwrap();
+
+        // A bonding block: its bonds name a validator that has no latest
+        // message and appears in no justification — the newly-bonded case.
+        let new_validator = Validator::from(vec![7u8; 65]);
+        let bonding_block = get_random_block(
+            Some(6),
+            None,
+            None,
+            None,
+            Some(Validator::from(vec![9u8; 65])),
+            None,
+            None,
+            Some(vec![anchor.block_hash.clone()]),
+            Some(vec![]),
+            None,
+            None,
+            Some(vec![models::rust::casper::protocol::casper_message::Bond {
+                validator: new_validator.clone(),
+                stake: 100,
+            }]),
+            None,
+            None,
+        );
+        assert_ne!(
+            bonding_block.sender, new_validator,
+            "fixture: the joiner must not be the inserting block's sender"
+        );
+        dag_storage
+            .insert(
+                &bonding_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.latest_message_hash(&new_validator),
+            Some(genesis.block_hash.clone()),
+            "the newly-bonded slot on a truncated node must be seeded with the \
+             learned genesis hash, not with whatever block was being inserted \
+             (got {:?}, inserting block was {})",
+            dag.latest_message_hash(&new_validator)
+                .map(|h| hex::encode(&h)),
+            hex::encode(&bonding_block.block_hash),
+        );
+    });
+}
+
+#[tokio::test]
+async fn representation_exposes_navigation_and_error_paths() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    let b2 = chain_block(2, vec![b1.block_hash.clone()]);
+    let c1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    for block in [&b1, &b2, &c1] {
+        dag_storage.insert(block, InsertMode::Normal).unwrap();
+    }
+
+    let self_justifying_validator = Validator::from(vec![8u8; 65]);
+    let sj = get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        Some(self_justifying_validator.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![Justification {
+            validator: self_justifying_validator,
+            latest_block_hash: genesis.block_hash.clone(),
+        }]),
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    dag_storage.insert(&sj, InsertMode::Normal).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    let missing = BlockHash::from(vec![0x77; 32]);
+
+    assert_eq!(dag.get_max_height(), 3);
+    assert_eq!(dag.latest_block_number(), 3);
+    assert_eq!(dag.block_number(&genesis.block_hash), Some(0));
+    assert_eq!(dag.block_number(&missing), None);
+    assert!(matches!(
+        dag.block_number_unsafe(&missing),
+        Err(KvStoreError::MissingBlock { .. })
+    ));
+    assert_eq!(dag.lookup(&missing).unwrap(), None);
+    assert_eq!(dag.children(&missing), None);
+
+    assert_eq!(dag.main_parent(&b2.block_hash), Some(b1.block_hash.clone()));
+    assert_eq!(dag.parents_unsafe(&b2.block_hash).unwrap(), vec![b1
+        .block_hash
+        .clone()]);
+
+    assert!(dag
+        .is_in_main_chain(&genesis.block_hash, &b2.block_hash)
+        .unwrap());
+    assert!(!dag
+        .is_in_main_chain(&b2.block_hash, &genesis.block_hash)
+        .unwrap());
+    assert!(!dag
+        .is_in_main_chain(&c1.block_hash, &b2.block_hash)
+        .unwrap());
+
+    assert_eq!(
+        dag.main_parent_chain(b2.block_hash.clone(), 0).unwrap(),
+        vec![b1.block_hash.clone(), genesis.block_hash.clone()]
+    );
+
+    assert!(matches!(
+        dag.self_justification(&missing),
+        Err(KvStoreError::MissingBlock { .. })
+    ));
+    assert_eq!(dag.self_justification(&b1.block_hash).unwrap(), None);
+    assert_eq!(
+        dag.self_justification(&sj.block_hash).unwrap(),
+        Some(genesis.block_hash.clone())
+    );
+
+    let descendants = dag.descendants(&genesis.block_hash).unwrap();
+    for block in [&b1, &b2, &c1, &sj] {
+        assert!(descendants.contains(&block.block_hash));
+    }
+    assert!(!descendants.contains(&genesis.block_hash));
+    assert_eq!(dag.descendants(&b2.block_hash).unwrap(), HashSet::new());
+
+    assert_eq!(
+        dag.ancestors(b2.block_hash.clone(), |_| true).unwrap(),
+        HashSet::from([b1.block_hash.clone(), genesis.block_hash.clone()])
+    );
+    assert_eq!(
+        dag.with_ancestors(b2.block_hash.clone(), |_| true).unwrap(),
+        HashSet::from([
+            b2.block_hash.clone(),
+            b1.block_hash.clone(),
+            genesis.block_hash.clone()
+        ])
+    );
+
+    let non_finalized = dag.non_finalized_blocks().unwrap();
+    assert!(!non_finalized.contains(&genesis.block_hash));
+    for block in [&b1, &b2, &c1] {
+        assert!(non_finalized.contains(&block.block_hash));
+    }
+
+    assert_eq!(
+        dag.lookups_unsafe(vec![b1.block_hash.clone(), b2.block_hash.clone()])
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(dag.lookups_unsafe(vec![missing.clone()]).is_err());
+    assert!(matches!(
+        dag.latest_message_hash_unsafe(&Validator::from(vec![0xEE; 65])),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+
+    let sorted = dag.topo_sort(0, Some(1)).unwrap();
+    assert_eq!(sorted.len(), 2);
+    assert!(dag.topo_sort(5, Some(1)).is_err());
+
+    let no_invalid = dag
+        .invalid_latest_messages_from_hashes(&HashMap::from([(
+            Validator::from(vec![0xEF; 65]),
+            missing.clone(),
+        )]))
+        .unwrap();
+    assert!(no_invalid.is_empty());
+}
+
+#[tokio::test]
+async fn invalid_insert_populates_the_invalid_blocks_map() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    let invalid_block = chain_block(1, vec![genesis.block_hash.clone()]);
+    dag_storage
+        .insert(&invalid_block, InsertMode::Invalid)
+        .unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    let invalid_map = dag.invalid_blocks_map().unwrap();
+    assert_eq!(
+        invalid_map.get(&invalid_block.block_hash),
+        Some(&invalid_block.sender)
+    );
+}
+
+#[tokio::test]
+async fn insert_rejects_malformed_blocks_and_tolerates_duplicates() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+
+    let bad_sender = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        Some(Validator::from(vec![1u8; 3])),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    assert!(matches!(
+        dag_storage.insert(&bad_sender, InsertMode::Normal),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+
+    let bad_hash = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        None,
+        None,
+        Some(vec![]),
+        None,
+        Some(Box::new(|_| BlockHash::from(vec![1u8; 4]))),
+    );
+    assert!(matches!(
+        dag_storage.insert(&bad_hash, InsertMode::Normal),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+
+    let generation_before = dag_storage.current_generation();
+    dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+    assert_eq!(
+        dag_storage.current_generation(),
+        generation_before,
+        "a duplicate insert must not advance the DAG generation"
+    );
+
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    dag_storage.insert(&b1, InsertMode::Normal).unwrap();
+    assert_eq!(dag_storage.current_generation(), generation_before + 1);
+}
+
+#[tokio::test]
+async fn genesis_hash_register_is_write_once() {
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    assert_eq!(dag_storage.genesis_hash().unwrap(), None);
+
+    let learned = BlockHash::from(vec![0x11; 32]);
+    dag_storage.record_genesis_hash(learned.clone()).unwrap();
+    assert_eq!(dag_storage.genesis_hash().unwrap(), Some(learned.clone()));
+
+    dag_storage.record_genesis_hash(learned).unwrap();
+    assert!(matches!(
+        dag_storage.record_genesis_hash(BlockHash::from(vec![0x22; 32])),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+}
+
+#[tokio::test]
+async fn genesis_hash_is_derived_from_the_held_height_zero_block() {
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    assert_eq!(
+        dag_storage.genesis_hash().unwrap(),
+        Some(genesis.block_hash.clone())
+    );
+}
+
+#[tokio::test]
+async fn floor_and_frontier_caches_round_trip() {
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    let dag = dag_storage.get_representation().unwrap();
+
+    let block = BlockHash::from(vec![0x31; 32]);
+    let floor = BlockHash::from(vec![0x32; 32]);
+    assert_eq!(dag.get_cached_floor(&block).unwrap(), None);
+    dag.put_cached_floor(block.clone(), floor.clone()).unwrap();
+    assert_eq!(dag.get_cached_floor(&block).unwrap(), Some(floor));
+
+    let frontier = BlockHash::from(vec![0x33; 32]);
+    assert_eq!(dag.get_cached_frontier(&block).unwrap(), None);
+    dag.put_cached_frontier(block.clone(), frontier.clone())
+        .unwrap();
+    assert_eq!(dag.get_cached_frontier(&block).unwrap(), Some(frontier));
+}
+
+#[tokio::test]
+async fn deploy_terminal_is_write_once_and_prunes_the_open_row() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{TerminalRecord, TerminalState};
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    let deploy = processed_deploy_gen()
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+    let carrier = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        Some(vec![deploy.clone()]),
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    dag_storage.insert(&carrier, InsertMode::Normal).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    let sig = deploy.deploy.sig.clone();
+    assert_eq!(dag.deploy_terminal(&sig).unwrap(), None);
+    assert!(dag.open_lifecycle_sigs().unwrap().contains(&sig.to_vec()));
+
+    let first = TerminalRecord {
+        state: TerminalState::Finalized,
+        rejection_count: 0,
+        latest_height: 1,
+        latest_block_hash: carrier.block_hash.to_vec(),
+    };
+    let survivor = dag
+        .put_deploy_terminal_if_absent(&sig, first.clone())
+        .unwrap();
+    assert_eq!(survivor, first);
+
+    let second = TerminalRecord {
+        state: TerminalState::Expired,
+        rejection_count: 9,
+        latest_height: 5,
+        latest_block_hash: vec![],
+    };
+    let survivor = dag.put_deploy_terminal_if_absent(&sig, second).unwrap();
+    assert_eq!(survivor, first, "the first terminal write must stand");
+    assert_eq!(dag.deploy_terminal(&sig).unwrap(), Some(first));
+    assert!(!dag.open_lifecycle_sigs().unwrap().contains(&sig.to_vec()));
+    assert_eq!(
+        dag.deploy_canonical_appearance(&sig).unwrap(),
+        Some(carrier.block_hash.clone())
+    );
+}
+
+#[tokio::test]
+async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_errors() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    dag_storage.insert(&b1, InsertMode::Normal).unwrap();
+
+    let unknown = BlockHash::from(vec![0x99; 32]);
+    let result = dag_storage
+        .record_directly_finalized(unknown, 1.0, |_| async { Ok(()) })
+        .await;
+    assert!(matches!(result, Err(KvStoreError::InvalidArgument(_))));
+
+    let result = dag_storage
+        .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async {
+            Err(KvStoreError::IoError("effect failed".to_string()))
+        })
+        .await;
+    assert!(matches!(result, Err(KvStoreError::IoError(_))));
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        !dag.is_finalized(&b1.block_hash),
+        "a failed finalization effect must leave the block unfinalized"
+    );
+
+    dag_storage
+        .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert_eq!(dag.last_finalized_block(), b1.block_hash);
+}
+
+/// Genesis can reach the DAG as an ordinary block before the approved-block
+/// handshake completes. The approved insert is the only thing that marks it
+/// finalized, and it returns early on a block already stored, so the mark is
+/// skipped — while the API answers `isFinalized` from exactly that mark.
+///
+/// Nothing repairs it later: the finalization sweep gates descent on
+/// `!is_finalized`, so it stops at the first finalized ancestor and never
+/// reaches a genesis left behind under one.
+#[tokio::test]
+async fn genesis_is_finalized_even_when_it_reached_the_dag_before_the_approved_insert() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let genesis = genesis_block();
+    dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&genesis.block_hash),
+        "the approved insert marks genesis finalized however it first arrived"
+    );
+
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    let b2 = chain_block(2, vec![b1.block_hash.clone()]);
+    dag_storage.insert(&b1, InsertMode::Normal).unwrap();
+    dag_storage.insert(&b2, InsertMode::Normal).unwrap();
+    dag_storage
+        .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    dag_storage
+        .record_directly_finalized(b2.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&genesis.block_hash),
+        "the sweep stops at the first finalized ancestor, so a genesis missed \
+         at insert stays unfinalized for the life of the node"
+    );
+}
+
+/// The same race on the LFS restore path, where the approved block is the
+/// trimmed anchor rather than genesis. The anchor is the only finalized seed a
+/// restored node has, and floors derive forward from it, so an anchor that
+/// reached the DAG as settled history before the approved insert must still
+/// become the last finalized block.
+#[tokio::test]
+async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_history() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let genesis = genesis_block();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+    let anchor = chain_block(5, vec![BlockHash::from(vec![0xaa; 32])]);
+    dag_storage
+        .insert(&anchor, InsertMode::SettledHistory)
+        .unwrap();
+    dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&anchor.block_hash),
+        "the approved insert marks the restore anchor however it first arrived"
+    );
+    assert_eq!(
+        dag.last_finalized_block(),
+        anchor.block_hash,
+        "the anchor is the seed every derived floor descends from"
+    );
 }

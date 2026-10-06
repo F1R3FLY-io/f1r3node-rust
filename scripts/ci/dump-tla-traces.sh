@@ -2,7 +2,7 @@
 # scripts/ci/dump-tla-traces.sh — regenerate TLA+ trace files used by
 # the Rust trace-replay tests.
 #
-# Reference: docs/theory/slashing/design/14-test-plan.md §14.6
+# Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.6
 # (Item 4 / Track 7 of the principled-resolution session).
 #
 # The trace JSONs at `casper/tests/slashing/tla_traces/*.json` are
@@ -20,11 +20,7 @@
 #
 #   1. Add a deliberately-false invariant to the .cfg, e.g.
 #      `INVARIANT FALSE_PROPERTY` where FALSE_PROPERTY := FALSE.
-#   2. Run TLC through the memory-bounded launcher (on-disk metadir,
-#      capped heap/workers, systemd MemoryMax ceiling — NOT `-workers
-#      auto`, which is 64 threads on this host and can OOM the machine):
-#        source scripts/lib/tlc-run.sh
-#        tlc_run "$(tlc_metadir trace-<name>)" <name>.cfg <name>.tla
+#   2. Run TLC: $TLC_CMD -workers auto -config <name>.cfg <name>.tla
 #   3. TLC emits a trace; copy the action sequence into the JSON.
 #   4. Restore the .cfg.
 #   5. Re-run the Rust test to verify the trace is well-formed.

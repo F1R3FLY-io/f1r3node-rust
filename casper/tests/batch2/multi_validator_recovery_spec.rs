@@ -59,8 +59,8 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator_0: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
-    let validator_1: prost::bytes::Bytes = genesis_context.validator_pks()[1].bytes.clone().into();
+    let validator_0: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
+    let validator_1: prost::bytes::Bytes = genesis_context.validator_pks()[1].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -68,10 +68,10 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -210,23 +210,25 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r0, pd_r0, _, sys_pd_r0, bonds_r0) = compute_deploys_checkpoint(
+    let checkpoint_r0 = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&r0_raw)
             .into_iter()
-            .map(|d| d.deploy)
+            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&r0_raw),
         HashMap::new(),
+        None,
+        None,
         None,
     )
     .await
     .expect("compute R0 checkpoint");
-    for pd in &pd_r0 {
+    for pd in &checkpoint_r0.deploys {
         assert!(
             !pd.is_failed,
             "deploy in R0 must execute cleanly (sig {}): {:?}",
@@ -235,10 +237,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         );
     }
     let mut r0 = r0_raw;
-    r0.body.state.post_state_hash = post_state_r0.clone();
-    r0.body.deploys = pd_r0;
-    r0.body.system_deploys = sys_pd_r0;
-    r0.body.state.bonds = bonds_r0;
+    r0.body.state.post_state_hash = checkpoint_r0.post_state_hash.clone();
+    r0.body.deploys = checkpoint_r0.deploys.into_iter().map(Into::into).collect();
+    r0.body.system_deploys = checkpoint_r0.system_deploys;
+    r0.body.state.bonds = checkpoint_r0.bonds;
     block_store.put_block_message(&r0).expect("store R0");
     dag_storage.insert(&r0, InsertMode::Normal).expect("dag R0");
 
@@ -262,23 +264,25 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r1, pd_r1, _, sys_pd_r1, bonds_r1) = compute_deploys_checkpoint(
+    let checkpoint_r1 = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&r1_raw)
             .into_iter()
-            .map(|d| d.deploy)
+            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&r1_raw),
         HashMap::new(),
+        None,
+        None,
         None,
     )
     .await
     .expect("compute R1 checkpoint");
-    for pd in &pd_r1 {
+    for pd in &checkpoint_r1.deploys {
         assert!(
             !pd.is_failed,
             "deploy in R1 must execute cleanly (sig {}): {:?}",
@@ -287,10 +291,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         );
     }
     let mut r1 = r1_raw;
-    r1.body.state.post_state_hash = post_state_r1.clone();
-    r1.body.deploys = pd_r1;
-    r1.body.system_deploys = sys_pd_r1;
-    r1.body.state.bonds = bonds_r1;
+    r1.body.state.post_state_hash = checkpoint_r1.post_state_hash.clone();
+    r1.body.deploys = checkpoint_r1.deploys.into_iter().map(Into::into).collect();
+    r1.body.system_deploys = checkpoint_r1.system_deploys;
+    r1.body.state.bonds = checkpoint_r1.bonds;
     block_store.put_block_message(&r1).expect("store R1");
     dag_storage.insert(&r1, InsertMode::Normal).expect("dag R1");
 
@@ -311,24 +315,36 @@ for(@_v <- @"multi-validator-shared") { Nil }
     // which is unioned into `rejected_user_deploys`. The shared sig_x
     // does NOT appear there: dedup retained it via the winning chain.
     let snapshot = mk_snapshot(&genesis_hash);
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    let merged = compute_parents_post_state(
         &block_store,
         vec![r0.clone(), r1.clone()],
         &snapshot,
         &rm,
-        None,
+        &latest_messages,
         Some(&rejected_deploy_buffer),
+        None,
+        None,
     )
+    .await
     .expect("compute_parents_post_state over [R0, R1]");
 
     assert!(
-        rejected_slashes.is_empty(),
+        merged.rejected_slashes.is_empty(),
         "no system slashes are involved in this fixture; rejected_slashes \
          must be empty (got {} entries)",
-        rejected_slashes.len()
+        merged.rejected_slashes.len()
     );
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = merged
+        .rejected_user
+        .iter()
+        .map(|record| record.sig.clone())
+        .collect();
 
     // Dedup must keep the shared recovered sig out of the rejected
     // list. If it appears here, dedup did not run and conflict
@@ -338,9 +354,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
     assert!(
         !rejected_set.contains(&sig_x),
         "sig_x must NOT appear in `rejected_user_deploys`. Got: {:?}",
-        rejected_sigs
+        merged
+            .rejected_user
             .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
 
@@ -362,9 +379,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
          fire, dedup did not retain a winning chain.",
         v0_orphaned,
         v1_orphaned,
-        rejected_sigs
+        merged
+            .rejected_user
             .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
 }

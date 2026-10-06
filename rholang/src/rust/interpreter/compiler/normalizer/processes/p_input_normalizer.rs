@@ -14,9 +14,12 @@ use crate::rust::interpreter::compiler::exports::{
 };
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    InputK, InputPhase, NormKont, NormVal, NormWork, Step,
+    InputK, InputPhase, NormKont, NormVal, NormWork, SigInput, Step,
 };
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::sig::{
+    wire_signature_connective_used, wire_signature_locally_free,
+};
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
 use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_binds;
@@ -90,7 +93,7 @@ pub(crate) fn descend_p_input<'ast>(
     let head_receipt = &receipts[0][0];
 
     let receipt_contains_complex_source = match head_receipt {
-        Bind::Linear { rhs, .. } => match rhs {
+        Bind::Linear { rhs, .. } | Bind::Signed { rhs, .. } => match rhs {
             Source::Simple { .. } => false,
             _ => true,
         },
@@ -117,7 +120,11 @@ pub(crate) fn descend_p_input<'ast>(
                 ),
                 |(sends, continuation), bind| {
                     match bind {
-                        Bind::Linear { lhs, rhs } => {
+                        Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {
+                            let signature = match bind {
+                                Bind::Signed { sig, .. } => Some(sig.clone()),
+                                _ => None,
+                            };
                             let identifier = Uuid::new_v4().to_string();
                             // Create temporary variable - point to binding site
                             // TODO: Update zero span
@@ -141,12 +148,14 @@ pub(crate) fn descend_p_input<'ast>(
                                     let mut new_names = lhs.names.clone();
                                     new_names.push(temp_var.clone());
 
-                                    list_linear_bind.push(Bind::Linear {
-                                        lhs: rholang_parser::ast::Names {
-                                            names: new_names,
-                                            remainder: lhs.remainder.clone(),
-                                        },
-                                        rhs: Source::Simple { name: *name },
+                                    let lhs = rholang_parser::ast::Names {
+                                        names: new_names,
+                                        remainder: lhs.remainder.clone(),
+                                    };
+                                    let rhs = Source::Simple { name: *name };
+                                    list_linear_bind.push(match signature {
+                                        Some(sig) => Bind::Signed { lhs, rhs, sig },
+                                        None => Bind::Linear { lhs, rhs },
                                     });
 
                                     // Add send: temp!()
@@ -180,11 +189,13 @@ pub(crate) fn descend_p_input<'ast>(
                                         uri: None,
                                     });
 
-                                    list_linear_bind.push(Bind::Linear {
-                                        lhs: lhs.clone(),
-                                        rhs: Source::Simple {
-                                            name: temp_var.clone(),
-                                        },
+                                    let lhs = lhs.clone();
+                                    let rhs = Source::Simple {
+                                        name: temp_var.clone(),
+                                    };
+                                    list_linear_bind.push(match signature {
+                                        Some(sig) => Bind::Signed { lhs, rhs, sig },
+                                        None => Bind::Linear { lhs, rhs },
                                     });
 
                                     // Prepend temp variable to inputs
@@ -283,34 +294,19 @@ pub(crate) fn descend_p_input<'ast>(
                         }
                     };
 
-                    Ok(((names, remainder), source_name))
+                    Ok(((names, remainder), (source_name, None)))
                 }
                 Bind::Repeated { lhs, rhs } => {
                     let names: &'ast [Name<'ast>] = lhs.names.as_slice();
                     let remainder = lhs.remainder;
-                    Ok(((names, remainder), *rhs))
+                    Ok(((names, remainder), (*rhs, None)))
                 }
                 Bind::Peek { lhs, rhs } => {
                     let names: &'ast [Name<'ast>] = lhs.names.as_slice();
                     let remainder = lhs.remainder;
-                    Ok(((names, remainder), *rhs))
+                    Ok(((names, remainder), (*rhs, None)))
                 }
-                // Cost-accounted per-clause signed bind `{% y <- x %}[s]` (W1). The
-                // Phase-4 signed-JOIN dispatch (`normalize.rs` ForComprehension arm
-                // → `recognize_signed_join` → `strip_signed_binds`) demotes EVERY
-                // `Bind::Signed` to its linear bind BEFORE `normalize_p_input` sees
-                // it, so this arm is unreachable in normal operation (the
-                // `debug_assert` catches a dispatch regression). The release
-                // fallback treats it as its underlying LINEAR bind — identical
-                // receive shape / COMM count to the unsigned form, metered to the
-                // deploy envelope — so a dispatch bug degrades gracefully rather
-                // than miscompiling.
-                Bind::Signed { lhs, rhs, .. } => {
-                    debug_assert!(
-                        false,
-                        "Bind::Signed must be stripped by recognize_signed_join before \
-                         normalize_p_input (W1 Phase 4 dispatch)"
-                    );
+                Bind::Signed { lhs, rhs, sig } => {
                     let names: &'ast [Name<'ast>] = lhs.names.as_slice();
                     let remainder = lhs.remainder;
 
@@ -324,7 +320,7 @@ pub(crate) fn descend_p_input<'ast>(
                         }
                     };
 
-                    Ok(((names, remainder), source_name))
+                    Ok(((names, remainder), (source_name, Some(sig))))
                 }
             })
             .collect();
@@ -343,12 +339,14 @@ pub(crate) fn descend_p_input<'ast>(
         };
 
         // Extract patterns and sources
-        let (patterns, sources): (Vec<_>, Vec<_>) = processed.into_iter().unzip();
+        let (patterns, source_pairs): (Vec<_>, Vec<_>) = processed.into_iter().unzip();
+        let (sources, signatures): (Vec<_>, Vec<_>) = source_pairs.into_iter().unzip();
 
         let source_free = input.free_map.clone();
         advance_input(Box::new(InputK {
             patterns,
             sources,
+            signatures,
             guard: receipts[0].guard,
             body,
             persistent,
@@ -363,6 +361,7 @@ pub(crate) fn descend_p_input<'ast>(
             group_locally_free: Vec::new(),
             done_patterns: Vec::new(),
             source_pars: Vec::new(),
+            source_signatures: Vec::new(),
             source_free,
             source_locally_free: Vec::new(),
             source_connective_used: false,
@@ -452,12 +451,13 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
                 // duplicate channels, merge the per-bind free maps and open the
                 // body's scope — all of it verbatim from the recursive form.
                 let sources_par = std::mem::take(&mut k.source_pars);
+                let source_signatures = std::mem::take(&mut k.source_signatures);
                 let receive_binds_and_free_maps = pre_sort_binds(
                     k.done_patterns
                         .clone()
                         .into_iter()
-                        .zip(sources_par)
-                        .map(|((a, b, c, _), e)| (a, b, e, c))
+                        .zip(sources_par.into_iter().zip(source_signatures))
+                        .map(|((a, b, c, _), (e, signature))| (a, b, e, c, signature))
                         .collect(),
                 )?;
 
@@ -533,6 +533,19 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
                 } else {
                     InputPhase::Body
                 };
+            }
+
+            InputPhase::SourceSignature { idx } => {
+                let sig = k.signatures[idx].expect("signed source must have a signature");
+                let work = NormWork::WireSig {
+                    sig: SigInput::Ref(sig),
+                    bound_map_chain: k.input.bound_map_chain.clone(),
+                    free_map: k.source_free.clone(),
+                };
+                return Ok(Step::Descend {
+                    kont: NormKont::Input(k),
+                    work,
+                });
             }
 
             InputPhase::Guard => {
@@ -624,6 +637,24 @@ pub(crate) fn combine_p_input<'ast>(
                 source_locally_free,
             );
             k.source_connective_used = k.source_connective_used || source_connective_used;
+            if k.signatures[idx].is_some() {
+                k.phase = InputPhase::SourceSignature { idx };
+            } else {
+                k.source_signatures.push(None);
+                k.phase = InputPhase::Sources { idx: idx + 1 };
+            }
+            advance_input(k)
+        }
+
+        InputPhase::SourceSignature { idx } => {
+            let (signature, free_map) = value.into_wire_sig();
+            k.source_locally_free = union(
+                std::mem::take(&mut k.source_locally_free),
+                wire_signature_locally_free(&signature),
+            );
+            k.source_connective_used |= wire_signature_connective_used(&signature);
+            k.source_free = free_map;
+            k.source_signatures.push(Some(signature));
             k.phase = InputPhase::Sources { idx: idx + 1 };
             advance_input(k)
         }
@@ -788,14 +819,15 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_signature: None,
             }],
             body: Some(new_send_par(
-                new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                vec![new_boundvar_par(0, create_bit_vector(&vec![0]), false)],
+                new_boundvar_par(1, create_bit_vector(&[1]), false),
+                vec![new_boundvar_par(0, create_bit_vector(&[0]), false)],
                 false,
-                create_bit_vector(&vec![0, 1]),
+                create_bit_vector(&[0, 1]),
                 false,
-                create_bit_vector(&vec![0, 1]),
+                create_bit_vector(&[0, 1]),
                 false,
             )),
             persistent: false,
@@ -827,8 +859,8 @@ mod tests {
             !normalized.receives.is_empty(),
             "Should have at least one receive"
         );
-        assert_eq!(
-            normalized.receives[0].peek, true,
+        assert!(
+            normalized.receives[0].peek,
             "Peek should be true for <<- operator"
         );
     }
@@ -890,6 +922,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -999,6 +1032,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_signature: None,
             }],
             body: Some({
                 let mut inner_par = Par::default();
@@ -1011,35 +1045,36 @@ mod tests {
                         source: Some(new_gint_par(1, Vec::new(), false)),
                         remainder: None,
                         free_count: 2,
+                        cost_signature: None,
                     }],
                     body: Some({
                         let mut par = Par::default().with_sends(vec![
                             new_send(
-                                new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                                vec![new_boundvar_par(2, create_bit_vector(&vec![2]), false)],
+                                new_boundvar_par(1, create_bit_vector(&[1]), false),
+                                vec![new_boundvar_par(2, create_bit_vector(&[2]), false)],
                                 false,
-                                create_bit_vector(&vec![1, 2]),
+                                create_bit_vector(&[1, 2]),
                                 false,
                             ),
                             new_send(
-                                new_boundvar_par(3, create_bit_vector(&vec![3]), false),
-                                vec![new_boundvar_par(0, create_bit_vector(&vec![0]), false)],
+                                new_boundvar_par(3, create_bit_vector(&[3]), false),
+                                vec![new_boundvar_par(0, create_bit_vector(&[0]), false)],
                                 false,
-                                create_bit_vector(&vec![0, 3]),
+                                create_bit_vector(&[0, 3]),
                                 false,
                             ),
                         ]);
-                        par.locally_free = create_bit_vector(&vec![0, 1, 2, 3]);
+                        par.locally_free = create_bit_vector(&[0, 1, 2, 3]);
                         par
                     }),
                     persistent: false,
                     peek: false,
                     bind_count: 2,
-                    locally_free: create_bit_vector(&vec![0, 1]),
+                    locally_free: create_bit_vector(&[0, 1]),
                     connective_used: false,
                     condition: None,
                 });
-                inner_par.locally_free = create_bit_vector(&vec![0, 1]);
+                inner_par.locally_free = create_bit_vector(&[0, 1]);
                 inner_par
             }),
             persistent: false,

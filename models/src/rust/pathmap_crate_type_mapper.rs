@@ -86,9 +86,7 @@ pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
 /// depth-first evaluation returns the same boolean as the recursive definition.
 pub(crate) fn eval_stable_par(root: &Par) -> bool { eval_stable_par_with_policy::<false>(root) }
 
-pub fn is_closed_registry_value(root: &Par) -> bool {
-    eval_stable_par_with_policy::<true>(root)
-}
+pub fn is_closed_registry_value(root: &Par) -> bool { eval_stable_par_with_policy::<true>(root) }
 
 fn eval_stable_par_with_policy<const CLOSED_DATA: bool>(root: &Par) -> bool {
     let mut current = Some(root);
@@ -114,6 +112,8 @@ fn eval_stable_par_with_policy<const CLOSED_DATA: bool>(root: &Par) -> bool {
             || !par.bundles.is_empty()
             || !par.connectives.is_empty()
             || !par.conditionals.is_empty()
+            || !par.cost_signed_terms.is_empty()
+            || !par.cost_stacks.is_empty()
             || !par.locally_free.is_empty()
             || par.connective_used
         {
@@ -182,7 +182,11 @@ fn eval_stable_par_with_policy<const CLOSED_DATA: bool>(root: &Par) -> bool {
                 continue;
             }
             // O(1): `EntryTrie` maintains the entry fold as entries change.
-            Some(ExprInstance::EPathmapBody(inner)) if !CLOSED_DATA && eval_stable_epathmap(inner) => continue,
+            Some(ExprInstance::EPathmapBody(inner))
+                if !CLOSED_DATA && eval_stable_epathmap(inner) =>
+            {
+                continue
+            }
             _ => return false,
         };
 
@@ -301,9 +305,15 @@ pub fn eval_stable_par_for_test(par: &Par) -> bool { eval_stable_par(par) }
 #[cfg(test)]
 mod registry_value_tests {
     use super::{eval_stable_par, is_closed_registry_value};
-    use crate::rhoapi::{Bundle, Par, Send};
+    use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::g_unforgeable::UnfInstance;
+    use crate::rhoapi::{
+        Bundle, CostSignedTerm, CostStack, EMap, Expr, GPrivate, GUnforgeable, KeyValuePair, Par,
+        Receive, Send,
+    };
     use crate::rust::utils::{
-        new_elist_par, new_emap_par, new_gint_par, new_gstring_par, new_key_value_pair,
+        new_elist_par, new_emap_par, new_freevar_expr, new_gint_par, new_gstring_par,
+        new_key_value_pair,
     };
 
     #[test]
@@ -313,7 +323,10 @@ mod registry_value_tests {
             nested = new_elist_par(vec![nested], vec![], false, None, vec![], false);
         }
         let record = new_emap_par(
-            vec![new_key_value_pair(new_gstring_par("spec".into(), vec![], false), nested)],
+            vec![new_key_value_pair(
+                new_gstring_par("spec".into(), vec![], false),
+                nested,
+            )],
             vec![],
             false,
             None,
@@ -329,10 +342,78 @@ mod registry_value_tests {
         for forbidden in [
             Par::default().with_sends(vec![Send::default()]),
             Par::default().with_bundles(vec![Bundle::default()]),
+            Par::default().with_receives(vec![Receive::default()]),
+            Par {
+                cost_signed_terms: vec![CostSignedTerm::default()],
+                ..Default::default()
+            },
+            Par {
+                cost_stacks: vec![CostStack::default()],
+                ..Default::default()
+            },
         ] {
             let value = new_elist_par(vec![forbidden], vec![], false, None, vec![], false);
             assert!(!is_closed_registry_value(&value));
+            assert!(!eval_stable_par(&value));
         }
+    }
+
+    #[test]
+    fn registry_values_reject_free_unforgeable_and_malformed_data() {
+        let private = Par {
+            unforgeables: vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1] })),
+            }],
+            ..Default::default()
+        };
+        let malformed_expr = Par {
+            exprs: vec![Expr {
+                expr_instance: None,
+            }],
+            ..Default::default()
+        };
+        let malformed_map = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EMapBody(EMap {
+                    kvs: vec![KeyValuePair {
+                        key: None,
+                        value: Some(new_gint_par(1, vec![], false)),
+                    }],
+                    ..Default::default()
+                })),
+            }],
+            ..Default::default()
+        };
+        let mut malformed_map_missing_value = malformed_map.clone();
+        if let Some(ExprInstance::EMapBody(map)) =
+            &mut malformed_map_missing_value.exprs[0].expr_instance
+        {
+            map.kvs[0].key = Some(new_gint_par(1, vec![], false));
+            map.kvs[0].value = None;
+        }
+        let free = Par::default().with_exprs(vec![new_freevar_expr(0)]);
+        let locally_free = new_gint_par(1, vec![1], false);
+        for value in [
+            private,
+            malformed_expr,
+            malformed_map,
+            malformed_map_missing_value,
+            free,
+            locally_free,
+        ] {
+            assert!(!is_closed_registry_value(&value));
+        }
+        assert!(is_closed_registry_value(&Par::default()));
+        assert!(is_closed_registry_value(&new_gint_par(1, vec![], false)));
+    }
+
+    #[test]
+    fn deeply_nested_free_value_is_rejected_without_native_recursion() {
+        let mut nested = Par::default().with_exprs(vec![new_freevar_expr(0)]);
+        for _ in 0..4096 {
+            nested = new_elist_par(vec![nested], vec![], false, None, vec![], false);
+        }
+        assert!(!is_closed_registry_value(&nested));
     }
 }
 

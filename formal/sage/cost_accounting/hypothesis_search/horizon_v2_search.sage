@@ -193,15 +193,9 @@ def cross_product_records(profile, search_mode, objectives):
         events=events,
         deploy_count=max(deploys) + 1 if deploys else 1,
         initial_budget=weight_sum + 2,
-        phlo_limit=weight_sum + 3,
-        phlo_price=2,
-        token_cost=weight_sum,
-        replay_fields={
-            "fields": ["cost", "cost_trace_digest", "cost_trace_event_count", "failed", "slash_fields", "genesis"],
-            "mode": "cost_accounted",
-        },
-        replay_mutations=["cost_trace_digest", "cost_trace_event_count"],
-        settlement={"escrow": (weight_sum + 3) * 2, "token_cost": weight_sum * 2, "refund": 6, "authority": "casper"},
+        replay_fields={"fields": authenticated_replay_fields(["failed", "slash_fields", "genesis"]), "mode": "cost_accounted"},
+        replay_mutations=authenticated_replay_fields(),
+        settlement=vault_settlement((weight_sum + 3) * 2, (weight_sum + 3) * 2, 0, 0, weight_sum * 2, 0),
         concurrency={"permutation": "canonical_identity", "deploys": deploys},
         resource_bounds={"max_descriptor_bytes": 512, "max_path_entries": 16},
         rust_replay={"fixture": "generated_frontier_differential_fixtures_hold"},
@@ -209,7 +203,7 @@ def cross_product_records(profile, search_mode, objectives):
         threat_family="differential_replay",
         expected_invariants=[
             "deploy_local_budget_isolation",
-            "trace_digest_count_authenticated",
+            "authority_cost_witness_authenticated",
             "settlement_does_not_mutate_runtime_fuel",
         ],
         rust_reproducer={"test": "generated_frontier_differential_fixtures_hold"},
@@ -254,7 +248,7 @@ def lifecycle_attack_records(profile, search_mode, objectives):
         events=[canonical_event("source", 2, descriptor="rollback-boundary", path=[0])],
         lifecycle=lifecycle,
         initial_budget=4,
-        settlement={"escrow": 8, "token_cost": 4, "refund": 4, "authority": "casper"},
+        settlement=vault_settlement(8, 8, 0, 0, 4, 0),
         concurrency={"lifecycle": lifecycle},
         rust_replay={"fixture": "generated_frontier_differential_fixtures_hold"},
         attack_campaign="rollback_finalize_replay_settlement",
@@ -287,12 +281,12 @@ def exploit_campaign_records(objectives):
             "replay_cache_substitution",
             canonical_scenario(
                 "horizon_v2_replay_cache_substitution_campaign",
-                replay_fields={"fields": ["cost_trace_digest", "cost_trace_event_count", "signature", "genesis"]},
-                replay_mutations=["cost_trace_digest", "signature"],
+                replay_fields={"fields": authenticated_replay_fields(["signature", "genesis"])},
+                replay_mutations=authenticated_replay_fields(["signature"]),
                 rust_replay={"fixture": "replay_payload_cost_fields"},
                 attack_campaign="replay_cache_substitution",
                 threat_family="exploit_campaign",
-                expected_invariants=["replay_cache_key_authenticates_cost_trace_payload"],
+                expected_invariants=["replay_cache_key_authenticates_authority_cost_payload"],
                 promotion_target="rust:fuzz",
                 expected_classification="confirmed_safe",
             ),
@@ -306,7 +300,7 @@ def exploit_campaign_records(objectives):
                 "horizon_v2_refund_replenish_campaign",
                 events=[canonical_event("source", 3, descriptor="refund-attempt", path=[0])],
                 initial_budget=5,
-                settlement={"escrow": 10, "token_cost": 12, "refund": 0, "authority": "casper"},
+                settlement=vault_settlement(10, 12, 0, 0, 12, 0, expected_admitted=False),
                 attack_campaign="refund_replenish_attempt",
                 threat_family="exploit_campaign",
                 expected_invariants=["uc_ca_058_refund_cannot_replenish_runtime_fuel"],
@@ -323,7 +317,7 @@ def exploit_campaign_records(objectives):
                 "horizon_v2_slashing_refund_confusion_campaign",
                 events=[canonical_event("source", 2, descriptor="slash-cost-invalid", path=[0])],
                 initial_budget=6,
-                settlement={"escrow": 12, "token_cost": 4, "refund": 8, "kind": "slash_after_evaluation"},
+                settlement=vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation"),
                 attack_campaign="slashing_refund_confusion",
                 threat_family="exploit_campaign",
                 expected_invariants=[
@@ -372,19 +366,7 @@ def exploit_campaign_records(objectives):
 def rust_fixture_from_record(item):
     scenario = item["scenario"]
     events = scenario.get("events", [])
-    positive_events = [event for event in events if int(event.get("weight", 0)) > 0]
-    invalid_events = [event for event in events if int(event.get("weight", 0)) <= 0]
-    oversized_primitive_descriptor = any(
-        str(event.get("kind", "")) == "primitive"
-        and len(str(event.get("primitive_descriptor", event.get("descriptor", "")))) > 512
-        for event in events
-    )
-    oversized_source_path = any(len(event.get("path", [])) > 1024 for event in events)
-    weight_sum = sum(int(event.get("weight", 0)) for event in positive_events)
-    expected_event_count = len(positive_events)
-    if oversized_primitive_descriptor or oversized_source_path:
-        expected_event_count = 0
-        weight_sum = 0
+    total, count, invalid, oop = expected_fixture_values(scenario)
     return {
         "id": item["name"],
         "classification": item["classification"],
@@ -392,12 +374,10 @@ def rust_fixture_from_record(item):
         "promotion_target": scenario.get("promotion_target", "record"),
         "initial_budget": int(scenario.get("initial_budget", 0)),
         "events": events,
-        "expected_total_cost": int(min(weight_sum, int(scenario.get("initial_budget", 0))) if events else 0),
-        "expected_event_count": int(expected_event_count),
-        "expects_invalid_admission": len(invalid_events) > 0
-        or oversized_primitive_descriptor
-        or oversized_source_path,
-        "expects_oop": bool(events and weight_sum > int(scenario.get("initial_budget", 0)) and int(scenario.get("initial_budget", 0)) >= 0),
+        "expected_total_cost": int(total),
+        "expected_event_count": int(count),
+        "expects_invalid_admission": bool(invalid),
+        "expects_oop": bool(oop),
         "settlement": scenario.get("settlement", {}),
         "replay_mutations": scenario.get("replay_mutations", []),
         "coverage_features": item.get("coverage_features", []),

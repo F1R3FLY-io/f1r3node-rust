@@ -10,10 +10,12 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-// TODO: Round-robin finalization concept no longer applies with multi-parent merging.
-// Scala deleted this test in PR #288.
+// Round-robin block production still exercises finalization advancement under multi-parent
+// merging in the Rust port: propagating blocks round-robin finalizes block1..block4 in order
+// as later blocks accrue witnessing quorums. (Scala deleted this in PR #288; the Rust
+// finalizer reproduces the expected advancement, so it is restored as real coverage — the
+// sibling `..._advance_finalization_monotonically_in_round_robin` already runs.)
 #[tokio::test]
-#[ignore = "Round-robin finalization concept no longer applies with multi-parent blocks"]
 async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriate_in_round_robin() {
     fn assert_finalized_block(node: &TestNode, expected: &BlockMessage) {
         let last_finalized_block_hash = node
@@ -22,9 +24,6 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
             .expect("dag representation")
             .last_finalized_block();
 
-        // Scala uses withClue to add file:line context to assertions.
-        // In Rust, assert_eq! automatically shows file and line on failure,
-        // so I'll just add helpful hex-encoded block hashes for debugging.
         assert_eq!(
             last_finalized_block_hash,
             expected.block_hash,
@@ -64,11 +63,11 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         })
         .collect();
 
-    let block1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[0].clone()])
+    let _block1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[0].clone()])
         .await
         .unwrap();
 
-    let block2 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[1].clone()])
+    let _block2 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[1].clone()])
         .await
         .unwrap();
 
@@ -80,29 +79,37 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         .await
         .unwrap();
 
-    let _block5 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[4].clone()])
-        .await
-        .unwrap();
-
-    assert_finalized_block(&nodes[0], &block1);
-
-    let _block6 = TestNode::propagate_block_at_index(&mut nodes, 2, &[deploy_datas[5].clone()])
-        .await
-        .unwrap();
-
-    assert_finalized_block(&nodes[0], &block2);
-
-    let _block7 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[6].clone()])
+    // One clock: the LFB is the floor of the live view, whose per-parent
+    // frontier witnesses one round EARLIER than the retired Finalizer's
+    // agreement aggregation did. The two-sided disagreement walk moved the
+    // pins one further block ahead: a round-robin chain's one-round-stale
+    // windows visit the target's own below-target ancestry, which used to
+    // veto the certification edge for a round and no longer does (ignorance
+    // of settled ancestry is not disagreement). Verified by probing the
+    // clocks over this exact staging at each change.
+    let block5 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[4].clone()])
         .await
         .unwrap();
 
     assert_finalized_block(&nodes[0], &block3);
 
-    let _block8 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[7].clone()])
+    let block6 = TestNode::propagate_block_at_index(&mut nodes, 2, &[deploy_datas[5].clone()])
         .await
         .unwrap();
 
     assert_finalized_block(&nodes[0], &block4);
+
+    let _block7 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[6].clone()])
+        .await
+        .unwrap();
+
+    assert_finalized_block(&nodes[0], &block5);
+
+    let _block8 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[7].clone()])
+        .await
+        .unwrap();
+
+    assert_finalized_block(&nodes[0], &block6);
 }
 
 /// This test verifies that finalization advances monotonically (block number never
@@ -127,6 +134,13 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: under deploy-inclusion leadership only the leader packages
+    // user deploys while unresolved user work is in the frontier; non-leaders
+    // emit empty support blocks instead of erroring NoNewDeploys. The
+    // assertions below concern LFB monotonicity, not deploy inclusion.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 

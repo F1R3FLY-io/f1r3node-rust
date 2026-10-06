@@ -26,7 +26,7 @@
               the parallel `unorderedParMap` flow.
 
    Dependencies: PoSContract.v (for PoSState), Validator.v.
-   Companion doc: docs/theory/slashing/design/09-bug-fixes-and-rationale.md
+   Companion doc: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md
                   §9.13.
    ═══════════════════════════════════════════════════════════════════════════ *)
 

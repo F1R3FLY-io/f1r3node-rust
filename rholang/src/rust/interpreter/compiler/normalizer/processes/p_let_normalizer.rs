@@ -452,7 +452,7 @@ mod tests {
 
         // Should transform into a match process
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(!normalized.par.matches.is_empty());
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
 
         // Should transform into a new process with sends and receives
         let normalized = result.unwrap();
-        assert!(normalized.par.news.len() > 0); // Should have new declarations
+        assert!(!normalized.par.news.is_empty()); // Should have new declarations
     }
 
     #[test]
@@ -552,7 +552,7 @@ mod tests {
 
         // Should transform into a match process with list pattern
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(!normalized.par.matches.is_empty());
     }
 
     #[test]
@@ -591,7 +591,7 @@ mod tests {
 
         // Should just normalize the body directly
         let normalized = result.unwrap();
-        assert!(normalized.par.sends.len() > 0);
+        assert!(!normalized.par.sends.is_empty());
     }
 
     #[test]
@@ -657,6 +657,6 @@ mod tests {
 
         // Should transform into nested match processes
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(!normalized.par.matches.is_empty());
     }
 }

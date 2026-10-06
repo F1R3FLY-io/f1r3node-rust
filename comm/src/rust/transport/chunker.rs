@@ -184,7 +184,7 @@ mod tests {
         // Should have header + multiple data chunks
         // With 10KB content and 1024 max chunk size (minus 2KB buffer = -1024 bytes),
         // we actually can't create any data chunks, so let's use a larger chunk size
-        assert!(chunks.len() >= 1); // At least header chunk
+        assert!(!chunks.is_empty()); // At least header chunk
 
         // First should be header
         assert!(matches!(

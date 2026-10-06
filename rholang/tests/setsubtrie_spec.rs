@@ -99,7 +99,7 @@ async fn test_set_subtrie_requires_write_zipper() {
 
         // This should produce an error
         let result = execute(&mut runtime, rho_code).await;
-        assert!(result.is_err() || result.unwrap().errors.len() > 0);
+        assert!(result.is_err() || !result.unwrap().errors.is_empty());
     })
     .await
 }

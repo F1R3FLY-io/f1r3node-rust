@@ -1,12 +1,12 @@
 (* ═══════════════════════════════════════════════════════════════════════════
    BugFixDispatcher.v — Proof for Bug Fix #3 (T-9.3)
 
-   Bug. multi_parent_casper_impl.rs:1090-1099 only marks slashable invalid
-   blocks invalid; no EquivocationRecord is created and no slash effect
-   runs unless a future proposer happens to pick up the offender.
+   Bug (since fixed). Marking a slashable invalid block invalid without
+   minting an EquivocationRecord means no slash effect runs unless a future
+   proposer happens to pick up the offender.
 
-   Fix. Dispatch every is_slashable() = true variant through the same
-   record-creation path used by AdmissibleEquivocation.
+   Fix. validation_dispatcher.rs:502-505 (engine/multi_parent_casper) dispatches
+   every is_slashable()=true variant through record_evidence, as AdmissibleEquivocation.
 
    Theorem T-9.3 (Dispatch completeness). Under the fix, every slashable
    invalid block triggers a record in finite steps. (Liveness gap closed.)
@@ -14,7 +14,12 @@
    Companion doc: slashing-verification.md §9.3.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
-From Slashing Require Import Validator InvalidBlock EquivocationRecord.
+From Stdlib Require Import Arith.Arith.
+From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+From Slashing Require Import Validator InvalidBlock EquivocationRecord
+  Block DAGState EquivocationDetector.
+Import ListNotations.
 
 Set Implicit Arguments.
 
@@ -64,4 +69,92 @@ Theorem t_9_3_dispatch_noop_unslashable :
     dispatch_post_fix ib offender baseSeq s = s.
 Proof.
   intros. unfold dispatch_post_fix. rewrite H. reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §3 — Bug fix #1 no-corruption: the minted UnauthorizedSlashDeploy record
+        does not spuriously neglect-slash an honest validator
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Because IBUnauthorizedSlashDeploy is is_slashable (the 27th variant), the
+   dispatcher mints a record for it. That record is `mkEqRec offender baseSeq
+   nil` — the empty-witness `EquivocationRecord::new(sender, seq-1, {})`
+   (equivocation_detector.rs:280,311 context). We show two facts:
+     (1) the dispatcher indeed mints the empty-witness record for it, and
+     (2) an honest sender's view over an empty record yields
+         EquivocationOblivious — never a spurious NeglectedEquivocation. *)
+
+Definition minted_unauth_record (offender : Validator) (baseSeq : nat) : EqRec :=
+  mkEqRec offender baseSeq nil.
+
+Lemma minted_unauth_record_no_witness :
+  forall offender baseSeq, er_hashes (minted_unauth_record offender baseSeq) = nil.
+Proof. reflexivity. Qed.
+
+Lemma dispatch_unauth_mints_empty_record :
+  forall offender baseSeq s,
+    has_key s (offender, baseSeq) = false ->
+    find_by_key
+      (dispatch_post_fix IBUnauthorizedSlashDeploy offender baseSeq s)
+      (offender, baseSeq)
+    = Some (minted_unauth_record offender baseSeq).
+Proof.
+  intros offender baseSeq s Hk.
+  unfold dispatch_post_fix.
+  assert (Hslash : is_slashable IBUnauthorizedSlashDeploy = true) by reflexivity.
+  rewrite Hslash.
+  unfold minted_unauth_record.
+  set (r := mkEqRec offender baseSeq nil).
+  assert (Hek : er_key r = (offender, baseSeq)) by reflexivity.
+  rewrite <- Hek. rewrite <- Hek in Hk.
+  apply find_insert_cond_same_absent. assumption.
+Qed.
+
+(* No-corruption capstone: for a bonded (stake > 0) honest sender — whose
+   observing view carries no detected-hash marker (the minted record's witness
+   set is empty) and at most one distinct canonical child (a single self-chain)
+   — the empty UnauthorizedSlashDeploy record resolves to EquivocationOblivious,
+   so neglected-equivocation detection is NOT corrupted. *)
+Theorem unauth_record_honest_oblivious :
+  forall stake xs,
+    stake > 0 ->
+    detected_hash_seen xs = false ->
+    Nat.leb 2 (length (nodup Nat.eq_dec (child_hashes xs))) = false ->
+    discovery_status_bonded stake (fixed_detectable_view xs) = EDOblivious.
+Proof.
+  intros stake xs Hstake H1 H2.
+  apply honest_empty_record_oblivious; assumption.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §4 — Objective invalidity / local-fault separation (block_processor.rs)
+   ═══════════════════════════════════════════════════════════════════════════ *)
+
+Inductive BlockOutcome : Type :=
+  | BOValid     : BlockOutcome
+  | BOInvalid   : InvalidBlock -> BlockOutcome
+  | BOException : BlockOutcome.
+
+Definition classify_block_outcome (o : BlockOutcome) : option InvalidBlock :=
+  match o with
+  | BOValid      => None
+  | BOInvalid ib => Some ib
+  | BOException  => None
+  end.
+
+Theorem block_exception_is_not_objective_invalidity :
+  classify_block_outcome BOException = None.
+Proof. reflexivity. Qed.
+
+Theorem explicit_slashable_invalidity_dispatches :
+  forall ib offender baseSeq s,
+    is_slashable ib = true ->
+    match classify_block_outcome (BOInvalid ib) with
+    | Some classified =>
+        has_key (dispatch_post_fix classified offender baseSeq s) (offender, baseSeq) = true
+    | None => False
+    end.
+Proof.
+  intros ib offender baseSeq s Hslash. simpl.
+  apply t_9_3_dispatch_complete. exact Hslash.
 Qed.

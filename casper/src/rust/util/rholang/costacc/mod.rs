@@ -1,8 +1,19 @@
-// D3 (DR-9, OD-2): the per-deploy escrow pre-charge / refund system deploys
-// (`pre_charge_deploy`, `refund_deploy`) are REMOVED — a deploy's cost is the
-// per-COMM token count, settled once against Σ⟦s⟧ at block close by the
-// acceptance gate, with no per-deploy charge/refund round-trip.
 pub mod check_balance;
 pub mod close_block_deploy;
-pub mod redeem_deploy;
+pub mod conversion;
+pub mod direct_wallet_funding;
+pub mod genesis_resource_policy;
+pub mod monetary_cursor;
+pub mod offered_candidate;
+pub mod offered_context;
+pub mod offered_grants;
+pub mod offered_evidence;
+pub mod production_limits;
+pub mod pre_charge_deploy;
+pub mod prepaid_receipts;
+pub mod refund_deploy;
 pub mod slash_deploy;
+pub mod supply;
+pub mod supply_reader;
+pub mod vault_cost_deploy;
+pub mod vault_payer;

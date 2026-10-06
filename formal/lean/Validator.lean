@@ -7,7 +7,7 @@ import Validator.Contract
   named behavioral-contract aggregator (Workstream E, DR-12).
 
   Scope (DR-12): the validator obligation set ONLY. Submodules added by E4/E6:
-    * `Validator.SlashAuthorization` — P1 (`stale_evidence_not_authorized`, `bm_slash_lookup`).
+    * `Validator.SlashAuthorization` — P1 (`stale_generation_evidence_not_authorized`, `bm_slash_lookup`).
     * `Validator.Determinism`        — P3 (verdict-determinism wrapper over `ca_step_deterministic`).
     * `Validator.Contract`           — the aggregator: `validator_contract_built_in_*` bundling
                                        S1–S4 + P1 + P3 as named contract clauses (E6 milestone:

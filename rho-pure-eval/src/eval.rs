@@ -5,6 +5,7 @@ use models::rhoapi::{
     Par, Var,
 };
 use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
+use shared::rust::clone_backing::{self, BackingError, BackingMeter};
 
 use crate::env::Env;
 use crate::error::EvalError;
@@ -34,7 +35,36 @@ pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
 /// total and deterministic — see [`SpatialMatch`] for the contract this
 /// crate's own determinism guarantee rests on.
 pub fn eval_with(par: &Par, env: &Env<Par>, matcher: &dyn SpatialMatch) -> Result<Par, EvalError> {
-    let mut traversal = EvalTraversal { env, matcher };
+    eval_with_optional_meter(par, env, matcher, None)
+}
+
+/// Evaluate with the offered-funded backing meter. A spatial-match oracle must
+/// implement its metered method; its default refuses instead of bypassing the
+/// deploy budget.
+pub fn eval_with_metered(
+    par: &Par,
+    env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
+    meter: &dyn BackingMeter,
+) -> Result<Par, EvalError> {
+    eval_with_optional_meter(par, env, matcher, Some(meter))
+}
+
+pub fn eval_metered(par: &Par, env: &Env<Par>, meter: &dyn BackingMeter) -> Result<Par, EvalError> {
+    eval_with_metered(par, env, &NoSpatialMatch, meter)
+}
+
+fn eval_with_optional_meter(
+    par: &Par,
+    env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
+    meter: Option<&dyn BackingMeter>,
+) -> Result<Par, EvalError> {
+    let mut traversal = EvalTraversal {
+        env,
+        matcher,
+        meter,
+    };
     let mut state = ();
     drive(
         &mut traversal,
@@ -61,7 +91,18 @@ pub(crate) fn eval_with_recursive(
     env: &Env<Par>,
     matcher: &dyn SpatialMatch,
 ) -> Result<Par, EvalError> {
-    let mut acc = Par {
+    let mut acc = par_shell(par);
+
+    for expr in &par.exprs {
+        let evaled = eval_expr_to_par_recursive(expr, env, matcher)?;
+        acc = concatenate(acc, evaled);
+    }
+
+    Ok(acc)
+}
+
+fn par_shell(par: &Par) -> Par {
+    Par {
         sends: par.sends.clone(),
         receives: par.receives.clone(),
         news: par.news.clone(),
@@ -73,14 +114,9 @@ pub(crate) fn eval_with_recursive(
         exprs: Vec::new(),
         locally_free: par.locally_free.clone(),
         connective_used: par.connective_used,
-    };
-
-    for expr in &par.exprs {
-        let evaled = eval_expr_to_par_recursive(expr, env, matcher)?;
-        acc = concatenate(acc, evaled);
+        cost_signed_terms: par.cost_signed_terms.clone(),
+        cost_stacks: par.cost_stacks.clone(),
     }
-
-    Ok(acc)
 }
 
 fn concatenate(mut a: Par, mut b: Par) -> Par {
@@ -93,12 +129,28 @@ fn concatenate(mut a: Par, mut b: Par) -> Par {
     a.bundles.append(&mut b.bundles);
     a.connectives.append(&mut b.connectives);
     a.conditionals.append(&mut b.conditionals);
+    a.cost_signed_terms.append(&mut b.cost_signed_terms);
+    a.cost_stacks.append(&mut b.cost_stacks);
     a.locally_free = union_bytes(
         std::mem::take(&mut a.locally_free),
         std::mem::take(&mut b.locally_free),
     );
     a.connective_used |= b.connective_used;
     a
+}
+
+fn concatenate_metered(a: Par, b: Par, meter: Option<&dyn BackingMeter>) -> Result<Par, EvalError> {
+    if let Some(meter) = meter {
+        clone_backing::reserve_copy_and_cleanup(&a, meter)?;
+        clone_backing::reserve_copy_and_cleanup(&b, meter)?;
+        let scanned = a
+            .locally_free
+            .len()
+            .checked_add(b.locally_free.len())
+            .ok_or(BackingError::Overflow)?;
+        meter.reserve(2, scanned, 0)?;
+    }
+    Ok(concatenate(a, b))
 }
 
 fn union_bytes(mut a: Vec<u8>, b: Vec<u8>) -> Vec<u8> {
@@ -304,6 +356,23 @@ fn resolve_var(v: &Var, env: &Env<Par>) -> Result<Par, EvalError> {
     }
 }
 
+fn resolve_var_metered(
+    v: &Var,
+    env: &Env<Par>,
+    meter: Option<&dyn BackingMeter>,
+) -> Result<Par, EvalError> {
+    match meter {
+        None => resolve_var(v, env),
+        Some(meter) => match v.var_instance.as_ref() {
+            Some(VarInstance::BoundVar(idx)) => env
+                .get_metered(idx, meter)?
+                .ok_or(EvalError::UnboundVariable { index: *idx }),
+            Some(VarInstance::FreeVar(idx)) => Err(EvalError::UnboundVariable { index: *idx }),
+            Some(VarInstance::Wildcard(_)) | None => Err(EvalError::MissingExprInstance),
+        },
+    }
+}
+
 /// ⚠ ORACLE-ONLY. The production machine uses [`require_par_ref`], which
 /// borrows: this spelling `cloned()` every operand of every operator — a
 /// Θ(depth) `<Par as Clone>::clone` per operand — and the machine only reads
@@ -345,6 +414,8 @@ fn single_expr_instance(par: &Par) -> Result<ExprInstance, EvalError> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return Err(EvalError::NotASingleValue {
@@ -355,6 +426,16 @@ fn single_expr_instance(par: &Par) -> Result<ExprInstance, EvalError> {
         .expr_instance
         .clone()
         .ok_or(EvalError::MissingExprInstance)
+}
+
+fn single_expr_instance_metered(
+    par: &Par,
+    meter: Option<&dyn BackingMeter>,
+) -> Result<ExprInstance, EvalError> {
+    if let Some(meter) = meter {
+        clone_backing::reserve_copy_and_cleanup(par, meter)?;
+    }
+    single_expr_instance(par)
 }
 
 #[cfg(test)]
@@ -398,18 +479,33 @@ fn eq_binop_recursive(
 }
 
 fn par_contains_nan_double(par: &Par) -> bool {
-    use models::rhoapi::expr::ExprInstance::{EListBody, EMapBody, ESetBody, ETupleBody, GDouble};
-    par.exprs.iter().any(|e| match &e.expr_instance {
-        Some(GDouble(bits)) => f64::from_bits(*bits).is_nan(),
-        Some(EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
-        Some(ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
-        Some(ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
-        Some(EMapBody(map)) => map.kvs.iter().any(|kv| {
-            kv.key.as_ref().is_some_and(par_contains_nan_double)
-                || kv.value.as_ref().is_some_and(par_contains_nan_double)
-        }),
-        _ => false,
-    })
+    use models::rhoapi::expr::ExprInstance::{
+        EListBody, EMapBody, ESetBody, ETupleBody, GDouble, GFloat32,
+    };
+    let mut pending = vec![par];
+    while let Some(current) = pending.pop() {
+        for expr in &current.exprs {
+            match &expr.expr_instance {
+                Some(GDouble(bits)) if f64::from_bits(*bits).is_nan() => return true,
+                Some(GFloat32(bits)) if f32::from_bits(*bits).is_nan() => return true,
+                Some(EListBody(list)) => pending.extend(list.ps.iter()),
+                Some(ETupleBody(tuple)) => pending.extend(tuple.ps.iter()),
+                Some(ESetBody(set)) => pending.extend(set.ps.iter()),
+                Some(EMapBody(map)) => {
+                    for entry in &map.kvs {
+                        if let Some(key) = entry.key.as_ref() {
+                            pending.push(key);
+                        }
+                        if let Some(value) = entry.value.as_ref() {
+                            pending.push(value);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -622,6 +718,10 @@ enum EvNode<'t> {
     /// `eval_with(par)`, optionally followed immediately by
     /// `single_expr_instance` — the per-operand check the helpers interleave.
     Eval { par: &'t Par, extract: bool },
+    /// Clone the process-level shell before evaluating the first expression.
+    Shell(&'t Par),
+    /// Validate a later operand only after earlier operands have completed.
+    MaybeEval { par: Option<&'t Par>, extract: bool },
     /// `eval_expr_to_par(expr)`.
     Expr(&'t Expr),
 }
@@ -629,11 +729,9 @@ enum EvNode<'t> {
 /// Post-order continuation. Carries the borrowed shell and the operator, never
 /// a child value.
 enum EvKont<'t> {
-    /// Fold `concatenate` over `n` evaluated exprs onto the shell of `par`.
-    ParK {
-        par: &'t Par,
-        n: usize,
-    },
+    /// Fold one evaluated expression into the already-built Par shell. This
+    /// runs before the next expression, preserving the source meter schedule.
+    ParConcat,
     Not,
     Neg,
     BoolK {
@@ -661,7 +759,7 @@ enum EvKont<'t> {
     /// Apply `single_expr_instance` to the value just produced.
     ///
     /// ⚠ This is what preserves the helpers' per-operand interleaving: it is
-    /// pushed BEFORE the operand's `ParK`, so it runs immediately after that
+    /// pushed BEFORE the operand's shell-and-concatenation region, so it runs immediately after that
     /// operand finishes evaluating and strictly before the next operand is
     /// popped — which is exactly where the recursive form applies it.
     Extract,
@@ -676,6 +774,7 @@ enum EvKont<'t> {
 struct EvalTraversal<'e> {
     env: &'e Env<Par>,
     matcher: &'e dyn SpatialMatch,
+    meter: Option<&'e dyn BackingMeter>,
 }
 
 impl<'e> Traversal for EvalTraversal<'e> {
@@ -709,31 +808,50 @@ impl<'e> Traversal for EvalTraversal<'e> {
         vals: &mut Vec<EvVal>,
     ) -> Result<(), EvalError> {
         match node {
-            // `eval_with`'s own body: a `ParK` continuation over the Par's
-            // exprs. `extract` rides on the continuation's RESULT, so it is
-            // applied when this whole sub-evaluation completes — which is the
-            // point the recursive helpers apply it. `Extract` is pushed FIRST
-            // so it pops LAST, after `ParK` has produced this sub-evaluation's
-            // `Par`.
-            //
-            // ⚠ This region is why `drive.rs`'s Invariant 1 is a right-to-left
-            // scan rather than the hand-written machines' "one `Combine` then
-            // exactly `arity` children": `[Extract, ParK{n}, child × n]` NESTS
-            // two continuations, and the narrower rule rejected it.
+            // Reserve and copy the Par shell before its first child, just as
+            // the source recursive evaluator did. Each child is then folded
+            // immediately before the next child runs. Deferring all folds to
+            // a final n-ary fold would reorder backing reservations and could make
+            // rejection depend on a later child instead of the current one.
             EvNode::Eval { par, extract } => {
+                if let Some(meter) = self.meter {
+                    clone_backing::reserve_copy_and_cleanup(par, meter)?;
+                    meter.reserve(
+                        1,
+                        par.exprs.len(),
+                        std::mem::size_of::<Par>() + std::mem::size_of::<Vec<Expr>>(),
+                    )?;
+                }
                 if extract {
                     work.push(Step::Combine(EvKont::Extract));
                 }
-                work.push(Step::Combine(EvKont::ParK {
-                    par,
-                    n: par.exprs.len(),
-                }));
                 for expr in par.exprs.iter().rev() {
+                    work.push(Step::Combine(EvKont::ParConcat));
                     work.push(Step::Descend(EvNode::Expr(expr)));
                 }
+                work.push(Step::Descend(EvNode::Shell(par)));
                 Ok(())
             }
-            EvNode::Expr(expr) => descend_ev_expr(expr, self.env, self.matcher, work, vals),
+            EvNode::Shell(par) => {
+                vals.push(EvVal::Par(par_shell(par)));
+                Ok(())
+            }
+            EvNode::MaybeEval { par, extract } => {
+                let par = require_par_ref(par)?;
+                work.push(Step::Descend(EvNode::Eval { par, extract }));
+                Ok(())
+            }
+            EvNode::Expr(expr) => {
+                if let Some(meter) = self.meter {
+                    clone_backing::reserve_copy_and_cleanup(expr, meter)?;
+                    meter.reserve(
+                        4,
+                        0,
+                        std::mem::size_of::<Par>() + std::mem::size_of::<Expr>(),
+                    )?;
+                }
+                descend_ev_expr(expr, self.env, self.matcher, self.meter, work, vals)
+            }
         }
     }
 
@@ -751,14 +869,14 @@ impl<'e> Traversal for EvalTraversal<'e> {
         // there is no configuration in which a combine already holds the
         // answer. `Outcome::Done` is for the comparison traversals, where it
         // restores the short-circuit of the `&&` chain it replaces.
-        run_ev_combine(kont, self.matcher, vals).map(Outcome::Value)
+        run_ev_combine(kont, self.matcher, self.meter, vals).map(Outcome::Value)
     }
 
     /// ★ Deliberately duplicates the pop counts in [`run_ev_combine`], so the
     /// driver's deficit invariant can cross-check them. Exhaustive, no `_` arm.
     fn arity(kont: &EvKont<'_>) -> usize {
         match kont {
-            EvKont::ParK { n, .. } => *n,
+            EvKont::ParConcat => 2,
             EvKont::Not | EvKont::Neg => 1,
             EvKont::BoolK { .. } => 2,
             EvKont::EqK { .. } => 2,
@@ -789,14 +907,12 @@ fn push_binary<'t, 'e>(
     p2: Option<&'t Par>,
     extract: bool,
 ) -> Result<(), EvalError> {
-    // ⚠ Both `require_par_ref`s are evaluated BEFORE either operand runs, which
-    // is what the recursive form does too: `require_par(p1)?` sits inside the
-    // `eval_with(&require_par(p1)?)` argument, so a missing p1 raises before p2
-    // is touched. Evaluating p1's check first preserves which error surfaces.
+    // The recursive source evaluates p1 (including its extraction) before it
+    // even validates p2. Defer the latter check to a work item so a malformed
+    // p2 cannot mask a p1 error or move a meter reservation before p1's work.
     let a = require_par_ref(p1)?;
-    let b = require_par_ref(p2)?;
     work.push(Step::Combine(kont));
-    work.push(Step::Descend(EvNode::Eval { par: b, extract }));
+    work.push(Step::Descend(EvNode::MaybeEval { par: p2, extract }));
     work.push(Step::Descend(EvNode::Eval { par: a, extract }));
     Ok(())
 }
@@ -832,7 +948,16 @@ fn combine_bool(
     }
 }
 
-fn combine_eq(expect_eq: bool, lhs: Par, rhs: Par) -> Result<Par, EvalError> {
+fn combine_eq(
+    expect_eq: bool,
+    lhs: Par,
+    rhs: Par,
+    meter: Option<&dyn BackingMeter>,
+) -> Result<Par, EvalError> {
+    if let Some(meter) = meter {
+        clone_backing::inspect(&lhs, meter)?;
+        clone_backing::inspect(&rhs, meter)?;
+    }
     // IEEE 754: any comparison involving NaN is false (so == is false and
     // != is true). Mirrors `par_contains_nan_double` in the full reducer.
     let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
@@ -848,7 +973,18 @@ fn combine_cmp(
     interpret: impl Fn(i64) -> bool,
     v1: ExprInstance,
     v2: ExprInstance,
+    meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
+    if let Some(meter) = meter {
+        let scanned = match (&v1, &v2) {
+            (ExprInstance::GString(left), ExprInstance::GString(right)) => left
+                .len()
+                .checked_add(right.len())
+                .ok_or(BackingError::Overflow)?,
+            _ => 0,
+        };
+        meter.reserve(1, scanned, 0)?;
+    }
     let order: i64 = match (&v1, &v2) {
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => i64::from(i1.cmp(i2) as i8),
         (ExprInstance::GString(s1), ExprInstance::GString(s2)) => i64::from(s1.cmp(s2) as i8),
@@ -893,6 +1029,7 @@ fn descend_ev_expr<'t, 'e>(
     expr: &'t Expr,
     env: &Env<Par>,
     matcher: &dyn SpatialMatch,
+    meter: Option<&dyn BackingMeter>,
     work: &mut Vec<Step<'t, EvalTraversal<'e>>>,
     vals: &mut Vec<EvVal>,
 ) -> Result<(), EvalError> {
@@ -934,8 +1071,10 @@ fn descend_ev_expr<'t, 'e>(
         // disposition as `substitute_deep_binding`.
         ExprInstance::EVarBody(evar) => {
             let v = evar.v.as_ref().ok_or(EvalError::MissingExprInstance)?;
-            let p = resolve_var(v, env)?;
-            vals.push(EvVal::Par(eval_with(&p, env, matcher)?));
+            let p = resolve_var_metered(v, env, meter)?;
+            vals.push(EvVal::Par(eval_with_optional_meter(
+                &p, env, matcher, meter,
+            )?));
             Ok(())
         }
 
@@ -1137,33 +1276,15 @@ fn descend_ev_expr<'t, 'e>(
 fn run_ev_combine(
     kont: EvKont<'_>,
     matcher: &dyn SpatialMatch,
+    meter: Option<&dyn BackingMeter>,
     vals: &mut Vec<EvVal>,
 ) -> Result<EvVal, EvalError> {
     let pop = |vals: &mut Vec<EvVal>| vals.pop().expect("eval_drive: value stack underflow");
     match kont {
-        EvKont::ParK { par, n } => {
-            let mut evaled: Vec<Par> = Vec::with_capacity(n);
-            for _ in 0..n {
-                evaled.push(pop(vals).into_par());
-            }
-            evaled.reverse();
-            let mut acc = Par {
-                sends: par.sends.clone(),
-                receives: par.receives.clone(),
-                news: par.news.clone(),
-                matches: par.matches.clone(),
-                unforgeables: par.unforgeables.clone(),
-                bundles: par.bundles.clone(),
-                connectives: par.connectives.clone(),
-                conditionals: par.conditionals.clone(),
-                exprs: Vec::new(),
-                locally_free: par.locally_free.clone(),
-                connective_used: par.connective_used,
-            };
-            for e in evaled {
-                acc = concatenate(acc, e);
-            }
-            Ok(EvVal::Par(acc))
+        EvKont::ParConcat => {
+            let child = pop(vals).into_par();
+            let accumulator = pop(vals).into_par();
+            concatenate_metered(accumulator, child, meter).map(EvVal::Par)
         }
         EvKont::Not => combine_not(pop(vals).into_inst()).map(EvVal::Par),
         EvKont::Neg => combine_neg(pop(vals).into_inst()).map(EvVal::Par),
@@ -1175,12 +1296,12 @@ fn run_ev_combine(
         EvKont::EqK { expect_eq } => {
             let rhs = pop(vals).into_par();
             let lhs = pop(vals).into_par();
-            combine_eq(expect_eq, lhs, rhs).map(EvVal::Par)
+            combine_eq(expect_eq, lhs, rhs, meter).map(EvVal::Par)
         }
         EvKont::CmpK { op, interpret } => {
             let v2 = pop(vals).into_inst();
             let v1 = pop(vals).into_inst();
-            combine_cmp(op, interpret, v1, v2).map(EvVal::Par)
+            combine_cmp(op, interpret, v1, v2, meter).map(EvVal::Par)
         }
         EvKont::IntK { op, f } => {
             let v2 = pop(vals).into_inst();
@@ -1194,13 +1315,15 @@ fn run_ev_combine(
         }
         EvKont::MatchesK { pattern } => {
             let evaled_target = pop(vals).into_par();
-            Ok(EvVal::Par(par_with_bool(
-                matcher.matches(&evaled_target, pattern),
-            )))
+            let matched = match meter {
+                Some(meter) => matcher.matches_metered(&evaled_target, pattern, meter)?,
+                None => matcher.matches(&evaled_target, pattern),
+            };
+            Ok(EvVal::Par(par_with_bool(matched)))
         }
         EvKont::Extract => {
             let evaled = pop(vals).into_par();
-            single_expr_instance(&evaled).map(EvVal::Inst)
+            single_expr_instance_metered(&evaled, meter).map(EvVal::Inst)
         }
     }
 }
@@ -1219,7 +1342,7 @@ fn run_ev_combine(
 // One check genuinely CHANGED shape rather than moving, and it changed to
 // admit this file: the old local assertion was "`descend` pushes its `Combine`
 // first, then exactly `arity` children", which the `EvNode::Eval` arm's nested
-// `[Extract, ParK{n}, child x n]` region violates. The driver's Invariant 1 is
+// `[Extract, (child, ParConcat) x n, Shell]` region violates. The driver's Invariant 1 is
 // the right-to-left value-availability scan that accepts it and still rejects a
 // continuation pushed with fewer children than its `arity()` claims.
 // ---------------------------------------------------------------------------
@@ -1444,7 +1567,7 @@ mod differential_eval_with {
     /// Sibling count for the wide differential shapes.
     ///
     /// The width axis is a `for` loop in BOTH arms (`par.exprs` in the oracle,
-    /// the `ParK { n }` fold in the machine), so it is not stack-bounded on
+    /// the repeated `ParConcat` steps in the machine), so it is not stack-bounded on
     /// either side and can be large.
     const DIFFERENTIAL_WIDTH: usize = 256;
 
@@ -1502,8 +1625,8 @@ mod differential_eval_with {
         p
     }
 
-    /// A Par whose `exprs` slot holds `width` expressions, so the `ParK` fold
-    /// over `concatenate` runs with `n = width`.
+    /// A Par whose `exprs` slot holds `width` expressions, so the sequential
+    /// `ParConcat` fold over `concatenate` runs `width` times.
     fn wide_par(width: usize) -> Par {
         let mut exprs = Vec::with_capacity(width);
         for i in 0..width {
@@ -1532,8 +1655,8 @@ mod differential_eval_with {
                 out.push(term);
             }
         }
-        // A Par whose `exprs` slot holds SEVERAL expressions, so the `ParK`
-        // fold over `concatenate` is exercised with more than one child.
+        // A Par whose `exprs` slot holds SEVERAL expressions, so the sequential
+        // `ParConcat` fold over `concatenate` is exercised more than once.
         out.push(models::par_from_default! {
             exprs: vec![
                 Expr { expr_instance: Some(ExprInstance::GInt(1)) },
@@ -1560,7 +1683,7 @@ mod differential_eval_with {
         // first, so the error that surfaces is p1's — a deep one — not this
         // shallow one.
         out.push(eminus(deep_left(d, gbool(true), gint(1)), gbool(false)));
-        // A deep chain under `!`, so `Extract` sits above `ParK` at every level.
+        // A deep chain under `!`, so `Extract` sits above the Par fold at every level.
         out.push(enot(deep_left(d, gint(0), gint(1))));
         // A deep chain inside an `EMatches` TARGET (the pattern is never
         // evaluated, so it stays shallow).

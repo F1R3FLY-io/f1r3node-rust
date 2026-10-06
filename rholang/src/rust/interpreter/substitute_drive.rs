@@ -87,15 +87,22 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EPathMap, EVar, Expr, GUnforgeable, If, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+    Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
+    CostStack, EPathMap, EVar, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntries, OwnedEPathMapEntry};
+use models::rust::rholang::sorter::cost_accounting_sorter::{sort_signature, sort_signature_metered};
+use models::rust::rholang::sorter::metered::SorterMeter;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -169,6 +176,28 @@ impl<'e> EnvView<'e> {
             .get(&((self.root.level + self.shift(ctx)) - k - 1))
             .cloned()
     }
+
+    fn get_signature_metered(
+        &self,
+        ctx: SubCtx,
+        index: i32,
+        meter: &SorterMeter<'_>,
+    ) -> Result<Option<Par>, InterpreterError> {
+        let position = self.root.level.checked_add(self.shift(ctx))
+            .and_then(|level| level.checked_sub(index))
+            .and_then(|level| level.checked_sub(1));
+        let Some(position) = position else { return Ok(None); };
+        let probes = self.root.env_map.capacity().max(1);
+        let scanned = probes.checked_mul(std::mem::size_of::<i32>())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        meter.reserve(probes, scanned, 0).map_err(host_rejected)?;
+        let Some(name) = self.root.env_map.get(&position) else { return Ok(None); };
+        meter.inspect(name).map_err(host_rejected)?;
+        meter.reserve(probes.checked_add(3).ok_or(InterpreterError::HostWorkRejected)?, scanned, 0)
+            .map_err(host_rejected)?;
+        clone_backing::reserve_copy_and_cleanup(name, meter).map_err(host_rejected)?;
+        Ok(Some(name.clone()))
+    }
 }
 
 // ===========================================================================
@@ -187,6 +216,9 @@ pub(crate) enum SubVal {
     Bundle(Bundle),
     Bind(ReceiveBind),
     Case(MatchCase),
+    Signature(CostSignature),
+    Signed(CostSignedTerm),
+    Stack(CostStack),
 }
 
 /// A pending unit of work.
@@ -204,6 +236,9 @@ pub(crate) enum SubWork {
     Bundle(Bundle, SubCtx),
     Bind(ReceiveBind, SubCtx),
     Case(MatchCase, SubCtx),
+    Signature(Option<CostSignature>, SubCtx),
+    Signed(CostSignedTerm, SubCtx),
+    Stack(CostStack, SubCtx),
     /// Incremental EPathMap substitution. The owned cursor and rebuilt trie
     /// remain compressed between entries; only the current key/value becomes
     /// ordinary `Par` work.
@@ -258,6 +293,8 @@ pub(crate) enum SubKont {
         n_news: usize,
         n_matches: usize,
         n_conditionals: usize,
+        n_signed: usize,
+        n_stacks: usize,
         shift: i32,
     },
     SendK {
@@ -271,6 +308,7 @@ pub(crate) enum SubKont {
         remainder: Option<Var>,
         free_count: i32,
         n_patterns: usize,
+        has_signature: bool,
     },
     ReceiveK {
         persistent: bool,
@@ -306,6 +344,17 @@ pub(crate) enum SubKont {
     },
     BundleK {
         shell: Bundle,
+    },
+    SignatureParK {
+        quote: bool,
+    },
+    SignatureCompoundK {
+        n: usize,
+        prepared: Option<Vec<CostSignature>>,
+    },
+    SignedK,
+    StackK {
+        n: usize,
     },
 }
 
@@ -346,6 +395,9 @@ sub_pop!(pop_if, If, If);
 sub_pop!(pop_bundle, Bundle, Bundle);
 sub_pop!(pop_bind, Bind, ReceiveBind);
 sub_pop!(pop_case, Case, MatchCase);
+sub_pop!(pop_signature, Signature, CostSignature);
+sub_pop!(pop_signed, Signed, CostSignedTerm);
+sub_pop!(pop_stack, Stack, CostStack);
 
 macro_rules! sub_pop_n {
     ($name:ident, $one:ident, $ty:ty) => {
@@ -371,6 +423,9 @@ sub_pop_n!(pop_n_bundle, pop_bundle, Bundle);
 sub_pop_n!(pop_n_if, pop_if, If);
 sub_pop_n!(pop_n_bind, pop_bind, ReceiveBind);
 sub_pop_n!(pop_n_case, pop_case, MatchCase);
+sub_pop_n!(pop_n_signature, pop_signature, CostSignature);
+sub_pop_n!(pop_n_signed, pop_signed, CostSignedTerm);
+sub_pop_n!(pop_n_stack, pop_stack, CostStack);
 
 /// Push `items` so that they are POPPED in forward order.
 #[inline]
@@ -453,6 +508,23 @@ impl Substitute {
         root: SubWork,
         env: &Env<Par>,
     ) -> Result<SubVal, InterpreterError> {
+        self.sub_drive_with_backing(root, env, None)
+    }
+
+    pub(crate) fn sub_drive_with_backing(
+        &self,
+        root: SubWork,
+        env: &Env<Par>,
+        backing: Option<&dyn BackingMeter>,
+    ) -> Result<SubVal, InterpreterError> {
+        let cleanup = |operations: usize, scanned: usize, bytes: usize| {
+            backing.expect("metered worklist has a backing meter").reserve(
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+                scanned,
+                bytes,
+            )
+        };
+        let meter = backing.map(|_| SorterMeter::new(&cleanup));
         let view = EnvView::new(env);
         let mut work: Vec<SubWork> = Vec::with_capacity(64);
         let mut vals: Vec<SubVal> = Vec::with_capacity(64);
@@ -465,6 +537,15 @@ impl Substitute {
                         Some(p) => p,
                         None => return Err(missing_required_field::<Par>()),
                     };
+                    if let Some(meter) = meter.as_ref() {
+                        // The source's `SorterMeter::enter` reserves this frame
+                        // before the node reservation; native depth is instead
+                        // represented by the worklist and has no fixed cap.
+                        meter.reserve(1, std::mem::size_of::<usize>(), 0)
+                            .map_err(host_rejected)?;
+                        meter.reserve(1, std::mem::size_of::<Par>(), 0)
+                            .map_err(host_rejected)?;
+                    }
                     descend_par(term, ctx, view, &mut work);
                 }
                 SubWork::Expr(term, ctx) => descend_expr(term, ctx, view, &mut work)?,
@@ -476,6 +557,16 @@ impl Substitute {
                 SubWork::Bundle(term, ctx) => descend_bundle(term, ctx, &mut work),
                 SubWork::Bind(term, ctx) => descend_bind(term, ctx, &mut work),
                 SubWork::Case(term, ctx) => descend_case(term, ctx, view, &mut work),
+                SubWork::Signature(term, ctx) => descend_signature(
+                    term.ok_or_else(missing_required_field::<CostSignature>)?,
+                    ctx,
+                    view,
+                    &mut work,
+                    &mut vals,
+                    meter.as_ref(),
+                )?,
+                SubWork::Signed(term, ctx) => descend_signed(term, ctx, &mut work),
+                SubWork::Stack(term, ctx) => descend_stack(term, ctx, &mut work),
                 SubWork::PathMap(state) => step_pathmap(state, &mut work, &mut vals),
                 SubWork::SubExp { rest, acc, ctx } => {
                     step_sub_exp(rest, acc, ctx, view, &mut work, &mut vals)?
@@ -483,7 +574,7 @@ impl Substitute {
                 SubWork::SubConn { rest, acc, ctx } => {
                     step_sub_conn(rest, acc, ctx, view, &mut work, &mut vals)?
                 }
-                SubWork::Combine(k) => combine(k, view, &mut work, &mut vals),
+                SubWork::Combine(k) => combine(k, view, &mut work, &mut vals, meter.as_ref())?,
             }
         }
 
@@ -509,6 +600,8 @@ fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<Sub
     let bundles = std::mem::take(&mut term.bundles);
     let connectives = std::mem::take(&mut term.connectives);
     let conditionals = std::mem::take(&mut term.conditionals);
+    let cost_signed_terms = std::mem::take(&mut term.cost_signed_terms);
+    let cost_stacks = std::mem::take(&mut term.cost_stacks);
     let locally_free = std::mem::take(&mut term.locally_free);
     let connective_used = term.connective_used;
 
@@ -522,12 +615,16 @@ fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<Sub
         n_news: news.len(),
         n_matches: matches.len(),
         n_conditionals: conditionals.len(),
+        n_signed: cost_signed_terms.len(),
+        n_stacks: cost_stacks.len(),
         shift: view.shift(ctx),
     }));
 
     // Processing order is exprs, connectives, sends, bundles, receives, news,
-    // matches, conditionals — `SubstituteTrait<Par>::substitute_no_sort`'s
+    // matches, conditionals, signed terms, stacks — source `Par`'s
     // statement order, which decides which `?` fires first.
+    push_reversed(work, cost_stacks, |s| SubWork::Stack(s, ctx));
+    push_reversed(work, cost_signed_terms, |s| SubWork::Signed(s, ctx));
     push_reversed(work, conditionals, |i| SubWork::If(i, ctx));
     push_reversed(work, matches, |m| SubWork::Match(m, ctx));
     push_reversed(work, news, |n| SubWork::New(n, ctx));
@@ -550,6 +647,95 @@ fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<Sub
         acc: Par::default(),
         ctx,
     });
+}
+
+fn descend_signature(
+    mut term: CostSignature,
+    ctx: SubCtx,
+    view: EnvView<'_>,
+    work: &mut Vec<SubWork>,
+    vals: &mut Vec<SubVal>,
+    meter: Option<&SorterMeter<'_>>,
+) -> Result<(), InterpreterError> {
+    if let Some(meter) = meter {
+        meter.reserve(1, std::mem::size_of::<usize>(), 0)
+            .map_err(host_rejected)?;
+        meter.reserve(1, std::mem::size_of::<CostSignature>(), 0)
+            .map_err(host_rejected)?;
+    }
+    let value = term.value.take().ok_or_else(|| {
+        InterpreterError::UndefinedRequiredProtobufFieldError("CostSignature.value".to_string())
+    })?;
+    match value {
+        CostSignatureValue::Quote(par) => {
+            work.push(SubWork::Combine(SubKont::SignatureParK { quote: true }));
+            work.push(SubWork::Par(Some(par), ctx));
+        }
+        CostSignatureValue::Name(par) => {
+            work.push(SubWork::Combine(SubKont::SignatureParK { quote: false }));
+            work.push(SubWork::Par(Some(par), ctx));
+        }
+        CostSignatureValue::Compound(compound) => {
+            let prepared = meter
+                .map(|meter| meter.vec::<CostSignature>(compound.elements.len()))
+                .transpose()
+                .map_err(host_rejected)?;
+            work.push(SubWork::Combine(SubKont::SignatureCompoundK {
+                n: compound.elements.len(),
+                prepared,
+            }));
+            push_reversed(work, compound.elements, |child| {
+                SubWork::Signature(Some(child), ctx)
+            });
+        }
+        CostSignatureValue::BoundLevel(index) if ctx.depth == 0 => {
+            let replacement = match meter {
+                Some(meter) => view.get_signature_metered(ctx, index, meter)?,
+                None => view.get(ctx, index),
+            };
+            let value = match replacement {
+                Some(name) => CostSignatureValue::Name(match meter {
+                    Some(meter) => ParSortMatcher::sort_match_metered(&name, meter)
+                        .map_err(host_rejected)?.term,
+                    None => ParSortMatcher::sort_match(&name).term,
+                }),
+                None => CostSignatureValue::BoundLevel(index),
+            };
+            vals.push(SubVal::Signature(finish_signature(value, meter)?));
+        }
+        value => vals.push(SubVal::Signature(finish_signature(value, meter)?)),
+    }
+    Ok(())
+}
+
+fn host_rejected(_: BackingError) -> InterpreterError { InterpreterError::HostWorkRejected }
+
+fn finish_signature(
+    value: CostSignatureValue,
+    meter: Option<&SorterMeter<'_>>,
+) -> Result<CostSignature, InterpreterError> {
+    let signature = CostSignature { value: Some(value) };
+    match meter {
+        Some(meter) => {
+            meter.inspect(&signature).map_err(host_rejected)?;
+            Ok(sort_signature_metered(&signature, meter)
+                .map_err(host_rejected)?.term)
+        }
+        None => Ok(sort_signature(&signature).term),
+    }
+}
+
+fn descend_signed(term: CostSignedTerm, ctx: SubCtx, work: &mut Vec<SubWork>) {
+    work.push(SubWork::Combine(SubKont::SignedK));
+    work.push(SubWork::Signature(term.signature, ctx));
+    work.push(SubWork::Par(term.body, ctx));
+}
+
+fn descend_stack(term: CostStack, ctx: SubCtx, work: &mut Vec<SubWork>) {
+    work.push(SubWork::Combine(SubKont::StackK {
+        n: term.cells.len(),
+    }));
+    push_reversed(work, term.cells, |cell| SubWork::Signature(Some(cell), ctx));
 }
 
 fn descend_expr(
@@ -654,13 +840,19 @@ fn descend_bind(term: ReceiveBind, ctx: SubCtx, work: &mut Vec<SubWork>) {
         source,
         remainder,
         free_count,
+        cost_signature,
     } = term;
+    let has_signature = cost_signature.is_some();
     work.push(SubWork::Combine(SubKont::BindK {
         remainder,
         free_count,
         n_patterns: patterns.len(),
+        has_signature,
     }));
     // Patterns are substituted at `depth + 1`; the source channel is not.
+    if has_signature {
+        work.push(SubWork::Signature(cost_signature, ctx));
+    }
     let deeper = ctx.deeper();
     push_reversed(work, patterns, move |p| SubWork::Par(Some(p), deeper));
     work.push(SubWork::Par(source, ctx));
@@ -939,7 +1131,13 @@ fn push_conn_children(
 // combine — the post-order bodies, every one delegating to `substitute_combine`
 // ---------------------------------------------------------------------------
 
-fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut Vec<SubVal>) {
+fn combine(
+    k: SubKont,
+    _view: EnvView<'_>,
+    work: &mut Vec<SubWork>,
+    vals: &mut Vec<SubVal>,
+    meter: Option<&SorterMeter<'_>>,
+) -> Result<(), InterpreterError> {
     match k {
         SubKont::SubExpResume { rest, acc, ctx } => {
             let e = pop_expr(vals);
@@ -987,9 +1185,13 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             n_news,
             n_matches,
             n_conditionals,
+            n_signed,
+            n_stacks,
             shift,
         } => {
             // Popped in reverse push order.
+            let cost_stacks = pop_n_stack(vals, n_stacks);
+            let cost_signed_terms = pop_n_signed(vals, n_signed);
             let conditionals = pop_n_if(vals, n_conditionals);
             let matches = pop_n_match(vals, n_matches);
             let news = pop_n_new(vals, n_news);
@@ -1007,6 +1209,8 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
                 matches,
                 bundles,
                 conditionals,
+                cost_signed_terms,
+                cost_stacks,
                 unforgeables,
                 locally_free,
                 connective_used,
@@ -1035,11 +1239,17 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             remainder,
             free_count,
             n_patterns,
+            has_signature,
         } => {
+            let cost_signature = has_signature.then(|| pop_signature(vals));
             let patterns = pop_n_par(vals, n_patterns);
             let source = pop_par(vals);
             vals.push(SubVal::Bind(rebuild_receive_bind(
-                source, patterns, remainder, free_count,
+                source,
+                patterns,
+                remainder,
+                free_count,
+                cost_signature,
             )));
         }
         SubKont::ReceiveK {
@@ -1136,7 +1346,47 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             let sub_bundle = pop_par(vals);
             vals.push(SubVal::Bundle(rebuild_bundle(shell, sub_bundle)));
         }
+        SubKont::SignatureParK { quote } => {
+            let par = pop_par(vals);
+            let par = match meter {
+                Some(meter) => ParSortMatcher::sort_match_metered(&par, meter)
+                    .map_err(host_rejected)?.term,
+                None => ParSortMatcher::sort_match(&par).term,
+            };
+            let value = if quote {
+                CostSignatureValue::Quote(par)
+            } else {
+                CostSignatureValue::Name(par)
+            };
+            vals.push(SubVal::Signature(finish_signature(value, meter)?));
+        }
+        SubKont::SignatureCompoundK { n, prepared } => {
+            let elements = if let Some(mut prepared) = prepared {
+                for _ in 0..n { prepared.push(pop_signature(vals)); }
+                prepared.reverse();
+                prepared
+            } else {
+                pop_n_signature(vals, n)
+            };
+            vals.push(SubVal::Signature(finish_signature(
+                CostSignatureValue::Compound(CostSignatureCompound { elements }),
+                meter,
+            )?));
+        }
+        SubKont::SignedK => {
+            let signature = pop_signature(vals);
+            let body = pop_par(vals);
+            vals.push(SubVal::Signed(CostSignedTerm {
+                body: Some(body),
+                signature: Some(signature),
+            }));
+        }
+        SubKont::StackK { n } => {
+            let cells = pop_n_signature(vals, n);
+            vals.push(SubVal::Stack(CostStack { cells }));
+        }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

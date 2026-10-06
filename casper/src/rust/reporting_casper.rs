@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
@@ -14,22 +13,25 @@ use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
+use rspace_plus_plus::rspace::reporting_rspace::{ReportBatch, ReportingRspace};
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use shared::rust::ByteString;
+
+/// Reporting events for one phase-segment of a deploy's replay.
+type DeployReportEvents = Vec<ReportBatch<Par, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// Deploy details + reporting events
 #[derive(Clone, Debug)]
 pub struct DeployReportResult {
     pub processed_deploy: ProcessedDeploy,
-    pub events: Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    pub events: DeployReportEvents,
 }
 
 /// System deploy details + reporting events
 #[derive(Clone, Debug)]
 pub struct SystemDeployReportResult {
     pub processed_system_deploy: SystemDeployData,
-    pub events: Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    pub events: DeployReportEvents,
 }
 
 /// Aggregated replay results
@@ -65,8 +67,8 @@ impl ReportingCasper for NoopReportingCasper {
 /// Real implementation using RhoReporter
 pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
-    block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
+    replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 }
 
@@ -76,10 +78,26 @@ impl ReportingCasper for RhoReporterCasper {
         use crate::rust::genesis::genesis::Genesis;
         use crate::rust::util::proto_util;
 
+        let legacy_deploys = block
+            .body
+            .deploys
+            .iter()
+            .map(|deploy| {
+                deploy.as_legacy().cloned().ok_or_else(|| {
+                    "offered-funded reporting requires independent native replay".to_string()
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let _replay_permit = self
+            .replay_lock
+            .acquire_reporting()
+            .await
+            .map_err(|error| format!("Replay semaphore closed: {}", error))?;
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
-        let mergeable_tags = std::sync::Arc::new(Genesis::default_mergeable_tags());
+        let mergeable_tags = Genesis::default_mergeable_tags_arc();
         let mut extra_system_processes = Vec::new();
         let mut reporting_runtime = ReportingRuntime::create_reporting_runtime(
             reporting_rspace,
@@ -90,20 +108,10 @@ impl ReportingCasper for RhoReporterCasper {
         .await
         .map_err(|e| format!("Failed to create reporting runtime: {}", e))?;
 
-        let mut dag = self
+        let dag = self
             .block_dag_storage
             .get_representation()
             .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
-
-        let genesis = self
-            .block_store
-            .get_approved_block()
-            .map_err(|e| format!("Failed to get approved block: {}", e))?;
-
-        let is_genesis = genesis
-            .as_ref()
-            .map(|g| block.block_hash == g.candidate.block.block_hash)
-            .unwrap_or(false);
 
         let invalid_blocks_set = dag.invalid_blocks();
 
@@ -112,8 +120,9 @@ impl ReportingCasper for RhoReporterCasper {
 
         let block_data = BlockData::from_block(block);
 
-        let unseen_blocks_set = proto_util::unseen_block_hashes(&mut dag, block)
-            .map_err(|e| format!("Failed to get unseen block hashes: {}", e))?;
+        let unseen_blocks_set =
+            proto_util::unseen_block_hashes(&dag, &block.justifications, Some(&block.block_hash))
+                .map_err(|e| format!("Failed to get unseen block hashes: {}", e))?;
 
         let seen_invalid_blocks: HashMap<
             models::rust::block_hash::BlockHash,
@@ -132,9 +141,9 @@ impl ReportingCasper for RhoReporterCasper {
         Self::replay_deploys(
             &mut reporting_runtime,
             &pre_state_hash,
-            &block.body.deploys,
+            &legacy_deploys,
             &block.body.system_deploys,
-            !is_genesis,
+            with_cost_accounting(&block.header.parents_hash_list),
             &block_data,
             seen_invalid_blocks,
         )
@@ -164,24 +173,6 @@ impl RhoReporterCasper {
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
 
-        // WD-D2: the REPORTING path (block-explorer event tracing) is a
-        // non-consensus diagnostics replay — it collects per-deploy reduction
-        // events and does NOT validate the post-state root. The close-block
-        // settlement-debit produce is a bare supply write with no reduction
-        // events to report, so reporting passes an EMPTY debit map (the
-        // settlement debit is faithfully applied + verified only on the
-        // consensus replay path, `ReplayRuntimeOps::replay_deploys`). This keeps
-        // the reporting runtime free of the gate-recompute machinery (which needs
-        // a `RuntimeOps` handle the reporting wrapper does not expose) while
-        // losing no consensus-relevant information.
-        let settlement_debits: std::collections::BTreeMap<
-            crate::rust::util::rholang::acceptance::SigKey,
-            crate::rust::util::rholang::acceptance::SettlementDebit,
-        > = std::collections::BTreeMap::new();
-        // Stage D: likewise no fee carve on the reporting path (the FeeExtract
-        // carve is a bare supply write with no reduction events to report).
-        let fee_carve: Option<crate::rust::util::rholang::acceptance::FeeCarve> = None;
-
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
             tracing::debug!(
@@ -191,20 +182,33 @@ impl RhoReporterCasper {
                 "Replaying deploy for report"
             );
 
-            let replay_result = runtime.replay_deploy_e(with_cost_accounting, term).await;
-
-            let events = match replay_result {
-                Ok(_) => runtime.get_report().unwrap_or_default(),
-                Err(e) => {
+            runtime
+                .replay_deploy_e(with_cost_accounting, term)
+                .await
+                .map_err(|error| {
+                    // Logged where it is raised: the failure now aborts the whole report, and
+                    // several callers of the block-report API discard the error, so this is the
+                    // only record that survives regardless of which one asked.
                     tracing::warn!(
                         target: "f1r3fly.casper.reporting",
                         deploy_index = idx,
-                        error = %e,
-                        "Deploy replay failed, returning empty events"
+                        deploy_sig = %hex::encode(&term.deploy.sig),
+                        error = %error,
+                        "Deploy replay failed; aborting block report"
                     );
-                    Vec::new()
-                }
-            };
+                    format!(
+                        "Deploy replay failed at index {} for {}: {}",
+                        idx,
+                        hex::encode(&term.deploy.sig),
+                        error
+                    )
+                })?;
+            let events = runtime.get_report().map_err(|error| {
+                format!(
+                    "Failed to collect deploy report at index {}: {}",
+                    idx, error
+                )
+            })?;
 
             deploy_results.push(DeployReportResult {
                 processed_deploy: term.clone(),
@@ -221,25 +225,24 @@ impl RhoReporterCasper {
                 "Replaying system deploy for report"
             );
 
-            let replay_result = runtime
-                // Task #13b: this is the reporting-LOCAL wrapper (4 args); it
-                // forwards to the `ReplayRuntimeOps` method below, which passes
-                // empty client allocations (a bare supply write, no report events).
-                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits, &fee_carve)
-                .await;
-
-            let events = match replay_result {
-                Ok(_) => runtime.get_report().unwrap_or_default(),
-                Err(e) => {
+            runtime
+                .replay_block_system_deploy(block_data, system_deploy)
+                .await
+                .map_err(|error| {
                     tracing::warn!(
                         target: "f1r3fly.casper.reporting",
                         system_deploy_index = idx,
-                        error = %e,
-                        "System deploy replay failed, returning empty events"
+                        error = %error,
+                        "System deploy replay failed; aborting block report"
                     );
-                    Vec::new()
-                }
-            };
+                    format!("System deploy replay failed at index {}: {}", idx, error)
+                })?;
+            let events = runtime.get_report().map_err(|error| {
+                format!(
+                    "Failed to collect system deploy report at index {}: {}",
+                    idx, error
+                )
+            })?;
 
             let system_deploy_data = match system_deploy {
                 ProcessedSystemDeploy::Succeeded { system_deploy, .. } => system_deploy.clone(),
@@ -269,17 +272,21 @@ pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
     rspace_store: &RSpaceStore,
-    block_store: &KeyValueBlockStore,
     block_dag_storage: &BlockDagKeyValueStorage,
+    replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
-        block_store: block_store.clone(),
         block_dag_storage: block_dag_storage.clone(),
+        replay_lock,
         external_services,
     })
 }
+
+/// Genesis is the only block without parents, and it replays without cost
+/// accounting because no precharge or refund system deploy is wrapped around it.
+fn with_cost_accounting(parent_hashes: &[prost::bytes::Bytes]) -> bool { !parent_hashes.is_empty() }
 
 /// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
@@ -288,15 +295,9 @@ pub struct ReportingRuntime {
 }
 
 impl ReportingRuntime {
-    /// Get reporting events from the space
-    pub fn get_report(
-        &self,
-    ) -> Result<
-        Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
-        RSpaceError,
-    > {
-        self.space.get_report()
-    }
+    /// Get reporting events from the space, segmented and tagged with
+    /// the phase that was in force when each segment was flushed.
+    pub fn get_report(&self) -> Result<DeployReportEvents, RSpaceError> { self.space.get_report() }
 
     /// Reset the runtime to a specific state hash
     pub async fn reset(
@@ -351,29 +352,15 @@ impl ReportingRuntime {
         &mut self,
         block_data: &BlockData,
         processed_system_deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy,
-        settlement_debits: &std::collections::BTreeMap<
-            crate::rust::util::rholang::acceptance::SigKey,
-            crate::rust::util::rholang::acceptance::SettlementDebit,
-        >,
-        fee_carve: &Option<crate::rust::util::rholang::acceptance::FeeCarve>,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
         // Create ReplayRuntimeOps from the runtime
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
-        // Replay the system deploy, threading the WD-D2 settlement debits so the
-        // reported events include the close-block settlement debit produce. The
-        // Stage-D fee credit / fee-convert mirror is likewise threaded (reporting
-        // passes `None`, mirroring the EMPTY settlement-debit map above — both are
-        // bare supply writes with no reduction events to report; they are
-        // faithfully applied + verified only on the consensus replay path).
+        // Replay the system deploy
         replay_ops
-            // Task #13b: the client funding-slot credit is a bare supply write
-            // with no reduction events (faithfully applied + verified only on the
-            // consensus replay path), so the reporting path passes empty
-            // allocations — same rationale as the threaded debit/fee above.
-            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_carve, &[])
+            .replay_block_system_deploy(block_data, processed_system_deploy)
             .await?;
 
         // Update the runtime from replay_ops
@@ -421,7 +408,8 @@ impl ReportingRuntime {
             extra_system_processes,
             external_services,
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
 
         rholang::rust::interpreter::rho_runtime::bootstrap_registry(&runtime).await;
 
@@ -429,5 +417,18 @@ impl ReportingRuntime {
             runtime,
             space: reporting_space,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn genesis_deploys_are_not_cost_accounted() {
+        assert!(!with_cost_accounting(&[]));
+        assert!(with_cost_accounting(&[prost::bytes::Bytes::from_static(
+            b"parent",
+        )]));
     }
 }

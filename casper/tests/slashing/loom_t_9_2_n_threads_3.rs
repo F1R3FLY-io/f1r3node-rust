@@ -1,7 +1,7 @@
 // T-9.2 — 3-thread atomic-RMW interleaving model check.
 //
 // Theorem: T-9.2 (atomic record insert).
-// Reference: docs/theory/slashing/slashing-specification.md §10.2,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §10.2,
 // design/14-test-plan.md §14.8.6 (concurrency coverage runs over
 // thread counts 2, 4, 8).
 //

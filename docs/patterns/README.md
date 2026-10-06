@@ -66,11 +66,4 @@ Hardcoded values for reference:
 | Adaptive deploy cap backlog min | 2 | Block creation |
 | Adaptive deploy cap backlog max | 8 | Block creation |
 
-### FFI Boundary (Scala Interop)
-- C ABI via `extern "C"` functions in `rholang/src/lib.rs` and `rspace_rhotypes`
-- Protobuf serialization across the FFI boundary
-- 4-byte little-endian length prefix on returned buffers
-- Manual memory management: Rust allocates (`Box::leak`), Scala must free
-- `ALLOCATED_BYTES` atomic counter for leak tracking
-
 [<- Back to overview](./README.md)

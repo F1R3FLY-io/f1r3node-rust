@@ -172,7 +172,7 @@ impl StreamObservable {
                 self.update_stream_cache_metrics();
             }
             Err(e) => {
-                tracing::error!("Failed to store blob packet: {}", e);
+                tracing::error!(error = %e, "blob packet cache store failed");
                 self.update_stream_cache_metrics();
             }
         }

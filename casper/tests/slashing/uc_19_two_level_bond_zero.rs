@@ -1,6 +1,6 @@
 // UC-19 — Two-level slash where the neglecter has zero bond.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-19.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-19.
 // Theorems: T-11, T-9.5.
 // Reference: design/08-two-level-and-collusion.md, §9.6.
 //

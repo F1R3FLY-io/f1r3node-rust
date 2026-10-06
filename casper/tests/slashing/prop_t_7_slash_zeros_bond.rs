@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-7 (slash zeros the offender's bond) +
@@ -9,7 +9,7 @@
 // Theorems: T-7 (`t_7_slash_zeroes_bond`,
 // formal/rocq/slashing/theories/PoSContract.v) and T-8
 // (`t_8_forfeited_to_coop_vault`, same file).
-// Reference: docs/theory/slashing/slashing-specification.md §5.2,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §5.2,
 // design/06-proposing-and-effect.md §6.3.
 //
 // Properties:

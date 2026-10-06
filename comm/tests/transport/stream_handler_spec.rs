@@ -16,6 +16,7 @@ use tokio_stream::Stream;
 const NETWORK_ID: &str = "test";
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod stream_handler_spec {
     use super::*;
 

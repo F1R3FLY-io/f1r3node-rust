@@ -91,9 +91,10 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
  * only when hashes are synchronized precisely as in the test - otherwise it will see 2 parents of h1
  *
  */
-// TODO reenable when merging of REV balances is done
+// A node asks peers for blocks it is missing (via block-request gossip) and adds them, including
+// blocks carrying REV transfers. REV-balance merging is implemented, so this now passes (the
+// "reenable when merging of REV balances is done" / "Scala ignore" labels were stale).
 #[tokio::test]
-#[ignore = "Scala ignore"]
 async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing_and_add_them() {
     fn make_deploy(i: usize, shard_id: &str) -> Signed<DeployData> {
         let term = if i == 0 { "@2!(2)" } else { "@1!(1)" };
@@ -215,9 +216,10 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing_and_add_t
 
 // Scala comments:
 // TODO: investigate this test - it doesn't make much sense in the presence of hashes (see RCHAIN-3819)
-// and why on earth does it test logs?
+// A node handles a long chain of block requests appropriately (requesting and adding a deep
+// missing-block backlog). Passes against the current Rust gossip path (the "Scala ignore" label
+// was stale).
 #[tokio::test]
-#[ignore = "Scala ignore"]
 async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_appropriately() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)

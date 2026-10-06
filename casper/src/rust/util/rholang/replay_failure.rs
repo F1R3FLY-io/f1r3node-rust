@@ -20,36 +20,6 @@ pub enum ReplayFailure {
         replay_cost: u64,
     },
 
-    /// Cost-Accounted Rho Stage B (Decision 6.3): the per-validator supply
-    /// balance `Σ⟦v⟧` written by `CloseBlockDeploy::post_eval` on replay did not
-    /// match the expected `new_n` (write-readback integrity). A divergence here
-    /// signals a non-deterministic supply mint between play and replay — a
-    /// consensus fork — and is a sibling of [`ReplayFailure::ReplayCostMismatch`].
-    ReplaySupplyMismatch {
-        validator: String,
-        expected_balance: i64,
-        replay_balance: i64,
-    },
-
-    /// Cost-Accounted Rho WD-D2 (acceptance gate): the per-signature acceptance
-    /// gate RECOMPUTED on replay (over `block.body.deploys` against the block's
-    /// start state) disagreed with what the block actually committed. A
-    /// divergence here means a proposer admitted a deploy the funding gate would
-    /// reject (a double-spend / oversubscription — TM-CA-153), or the recomputed
-    /// settlement-debit total differs from what the block applied — either of
-    /// which is a CONSENSUS FORK. Sibling of [`ReplayFailure::ReplayCostMismatch`]
-    /// / [`ReplayFailure::ReplaySupplyMismatch`]; the three guard the three views
-    /// of the supply quantity (pre-state read, in-pass residual, post-state
-    /// balance). `detail` carries a human-readable cause; the counts pin the
-    /// admitted/rejected set sizes for diagnosis.
-    ReplayAdmissionMismatch {
-        expected_admitted: usize,
-        replay_admitted: usize,
-        expected_rejected: usize,
-        replay_rejected: usize,
-        detail: String,
-    },
-
     SystemDeployErrorMismatch {
         play_error: String,
         replay_error: String,
@@ -72,34 +42,6 @@ impl ReplayFailure {
         ReplayFailure::ReplayCostMismatch {
             initial_cost,
             replay_cost,
-        }
-    }
-
-    pub fn replay_supply_mismatch(
-        validator: String,
-        expected_balance: i64,
-        replay_balance: i64,
-    ) -> Self {
-        ReplayFailure::ReplaySupplyMismatch {
-            validator,
-            expected_balance,
-            replay_balance,
-        }
-    }
-
-    pub fn replay_admission_mismatch(
-        expected_admitted: usize,
-        replay_admitted: usize,
-        expected_rejected: usize,
-        replay_rejected: usize,
-        detail: String,
-    ) -> Self {
-        ReplayFailure::ReplayAdmissionMismatch {
-            expected_admitted,
-            replay_admitted,
-            expected_rejected,
-            replay_rejected,
-            detail,
         }
     }
 
@@ -138,31 +80,6 @@ impl std::fmt::Display for ReplayFailure {
                     f,
                     "Replay cost mismatch: initial_cost={}, replay_cost={}",
                     initial_cost, replay_cost
-                )
-            }
-            ReplayFailure::ReplaySupplyMismatch {
-                validator,
-                expected_balance,
-                replay_balance,
-            } => {
-                write!(
-                    f,
-                    "Replay supply mismatch for validator {}: expected_balance={}, replay_balance={}",
-                    validator, expected_balance, replay_balance
-                )
-            }
-            ReplayFailure::ReplayAdmissionMismatch {
-                expected_admitted,
-                replay_admitted,
-                expected_rejected,
-                replay_rejected,
-                detail,
-            } => {
-                write!(
-                    f,
-                    "Replay admission mismatch: expected_admitted={}, replay_admitted={}, \
-                     expected_rejected={}, replay_rejected={}; {}",
-                    expected_admitted, replay_admitted, expected_rejected, replay_rejected, detail
                 )
             }
             ReplayFailure::SystemDeployErrorMismatch {

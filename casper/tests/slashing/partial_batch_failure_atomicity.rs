@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-71 — Partial batch slash failure atomicity.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-71.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-71.
 // Theorem: T-IdemMany boundary (`bm_slash_many_order_independent`,
 // formal/rocq/slashing/theories/PoSContract.v).
 // Reference: formal/sage/slashing/FINDINGS.md row 12 + 23 — "batch
@@ -33,7 +33,7 @@ fn uc_71_batch_slash_order_independent_under_idempotence() {
     // T-IdemMany: slashing all 4 validators in any order yields
     // the same post-state. This is the Sage witness from row 12
     // (24 permutations all produce the same result).
-    let bonds = vec![100i64, 100, 100, 100];
+    let bonds = [100i64, 100, 100, 100];
     let total = bonds.iter().sum::<i64>();
 
     let h_a = run_in_order(vec!["v0", "v1", "v2", "v3"]);

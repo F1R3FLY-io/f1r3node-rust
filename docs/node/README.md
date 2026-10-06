@@ -10,10 +10,10 @@ Main binary. Manages node lifecycle, configuration, gRPC/HTTP servers, CLI, and 
 
 ```
 main()
-  -> init_json_logging()
   -> Options::try_parse() (clap CLI)
   -> IF "run" subcommand:
        configuration::builder::build()  (HOCON + CLI merge)
+       init_logging(&cfg.logging, Some(&data_dir))
        check_host(), check_ports(), load_private_key_from_file()
        initialize_diagnostics()  (Prometheus, InfluxDB, Zipkin, Sigar)
        node_runtime::start()
@@ -58,15 +58,21 @@ main()
 - `storage` -- Data directory (default `~/.rnode`)
 - `casper` -- Validator key, parents, finalization, heartbeat, genesis block data (bonds, wallets, native token metadata)
 - `metrics` -- Prometheus, InfluxDB, Zipkin, Sigar toggles
+- `logging` -- Format, sink, file rotation/retention (see [Logging](#logging))
 - `dev` -- Dev mode, deployer private key
 - `openai` -- LLM integration settings
 
+`peers-discovery.heartbeat-failure-threshold` controls consecutive failed heartbeats and failed outbound connection attempts. The default is 3. A successful heartbeat or connection attempt resets its respective failure count. Heartbeats use `cleanup-interval`. Connection attempts use `lookup-interval`.
+
 ### CLI Flag Overrides
 
-The following boolean flags override HOCON configuration at startup. CLI flags always take precedence.
+The following flags override HOCON configuration at startup. CLI flags always take precedence.
 
 | Flag | HOCON Target | Description |
 |------|-------------|-------------|
+| `--log-level <EXPR>` | `logging.filter` | EnvFilter expression. `RUST_LOG` still wins if set. |
+| `--log-format <FORMAT>` | `logging.format` | `json` (default) or `pretty` for human-readable terminal output. |
+| `--log-sink <SINK>` | `logging.sink` | `stdout` (default), `file`, or `both`. File is written to `<data-dir>/logs/node.log`. |
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
@@ -141,6 +147,16 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
 - `epochLength` — blocks per epoch, from genesis configuration
+
+### `GET /api/ready`
+
+Readiness probe for orchestration.
+
+- Returns HTTP 200 `{"ready": true}` once Casper is Running and the node can serve deploys.
+- Returns HTTP 503 `{"ready": false}` while Casper is still initializing.
+- The container `HEALTHCHECK` and `docker/standalone.yml` use this endpoint, so `docker compose up --wait` and `depends_on: condition: service_healthy` block until the node is deploy-ready.
+- A node running the genesis ceremony reports `unhealthy` for the whole window (minutes to hours); raise `--wait-timeout` / probe `failureThreshold` accordingly.
+- The container `HEALTHCHECK` probes only the HTTP API. It no longer probes the gRPC API (port 40401) directly, so a failure isolated to the gRPC server does not fail the health check. `/api/ready` reflects Casper engine state shared by both servers, so this is expected to cover the common failure modes.
 
 ## View Parameters
 
@@ -229,6 +245,7 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 | Bytes | `ExprBytes` | `{"ExprBytes": {"data": "0a1b2c"}}` |
 | **Extended numerics** | | |
 | Float (f64) | `ExprFloat` | `{"ExprFloat": {"data": 3.14}}` |
+| Float32 (f32) | `ExprFloat32` | `{"ExprFloat32": {"data": 2.5}}` |
 | BigInt | `ExprBigInt` | `{"ExprBigInt": {"data": "12345678901234567890"}}` |
 | BigRational | `ExprBigRat` | `{"ExprBigRat": {"numerator": "1", "denominator": "3"}}` |
 | FixedPoint | `ExprFixedPoint` | `{"ExprFixedPoint": {"value": "31415", "scale": 4}}` |
@@ -284,6 +301,7 @@ Events published during startup are buffered and replayed to clients that connec
 - Config validation failures (empty token name, invalid decimals)
 - Genesis ceremony failures (required signatures not met)
 - Token metadata verification mismatch (joiner config disagrees with on-chain state)
+- Mergeable-channel cache replay failures at bootstrap: a block missing from the block store, a replay error, or a post-state hash mismatch while repopulating the mergeable-channel cache. A corrupt or partial block store now **fails startup loudly** rather than logging a warning and continuing with a silently incomplete cache — an incomplete cache is a consensus hazard once the node reaches the Running state, so a store that previously appeared to bootstrap successfully can now fail here.
 - Any runtime panic or unrecoverable error
 
 The error chain propagates cleanly: `verify_token_metadata_matches_config → Err(CasperError) → ? in casper_launch.launch() → ? in NodeRuntime::main() → handle_unrecoverable_errors → process::exit(1)`. Destructors fire in order; no mid-async process::exit calls.
@@ -292,7 +310,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 `bind_tcp_listener_with_retry()` in `servers_instances.rs` handles `AddrInUse` resilience for HTTP/Admin servers: 60 attempts with 500ms delay between retries.
 
-`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, min-phlo-price, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
+`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads; `min-phlo-price` is the exception, read from the running casper's chain-adopted shard conf per request so `/api/status` advertises the floor admission actually enforces. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
 
 ## Transfer Extraction
 
@@ -350,25 +368,87 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
 
+### Block-processing bounds (compiled constants)
+
+The former `F1R3_*` block-processing env vars are gone — every bound is a
+named constant with a single definition. Current values:
+
+| Constant | Value | Purpose |
+|----------|------:|---------|
+| `MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks (one shared set; all admission gates use this one constant). **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later). |
+| `MALLOC_TRIM_INTERVAL_BLOCKS` | `64` | Linux/glibc only: `malloc_trim(0)` after every 64 processed blocks to return freed arena memory to the OS. |
+| `MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. |
+| `VALIDATION_ERROR_QUARANTINE_MS` | `120000` | Pacing of hard-validation-failure retries; a separate constant from the missing-dependency quarantine (they no longer alias). |
+| `VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. |
+
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 
 **`HeartbeatProposer`** -- Periodic proposals for network liveness. All heartbeat settings live in `defaults.conf` under the `casper.heartbeat` section and accept CLI overrides. Stable knobs are at the top level; experimental tuning knobs are nested under `advanced.*` and may change shape in a future release.
 
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
-| `heartbeat.enabled` | `false` | Enable the heartbeat proposer |
+| `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
 | `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
 | `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
-| `heartbeat.self-propose-cooldown` | 15s | Min interval between self-proposals |
-| `heartbeat.stale-recovery-min-interval` | 12s | Min LFB/frontier age before stale/leader/backstop recovery may fire |
-| `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; relaxes lag caps |
-| `heartbeat.advanced.frontier-chase-max-lag` | 0 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB |
+| `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
+| `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
+| `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |
+| `heartbeat.advanced.frontier-chase-max-lag` | 20 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB (0 stops validators contributing under load) |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
 | `heartbeat.advanced.deploy-recovery-max-lag` | 64 | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window. Must be >= `pending-deploy-max-lag` to take effect (else collapses to that floor). |
+| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 12 | Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). Must satisfy hard finality-lag backpressure (8) < cap <= max-parent-depth (warned at startup on the local depth; re-judged against the chain-adopted depth at runtime). |
 
 **Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
 
-**Stale LFB leader-only recovery**: Deterministic leader selection allows one validator to propose when LFB is stale but regular recovery is throttled (`lag in [1, threshold)`).
+**Stale LFB recovery**: Open to every bonded validator — once the LFB and the validator's own last proposal are both older than `stale-recovery-min-interval`, it proposes one recovery block per interval. Certification needs mutual witnessing, so recovery is never gated on a leader or on height relations; a temporally idle validator also passes the empty-frontier width cap once per interval (the cap bounds churn to the recovery cadence, never to zero). Deterministic leader selection survives only for the one-shot multi-parent convergence proposal.
+
+## Logging
+
+Structured logging uses the `tracing` crate. The subscriber is initialised from `NodeConf.logging` after config is built, so operators can control it from `rnode.conf`.
+
+### Configuration (`logging { }` in HOCON)
+
+| Key | Default | Values |
+|---|---|---|
+| `filter` | `"info"` | Any `EnvFilter` expression, e.g. `"info,f1r3fly.casper=debug"` |
+| `format` | `"json"` | `"json"` (structured, for aggregators) · `"pretty"` (human-readable, for terminals) |
+| `sink` | `"stdout"` | `"stdout"` · `"file"` · `"both"` |
+| `file.rotation` | `"daily"` | `"never"` · `"hourly"` · `"daily"` |
+| `file.retention` | `14` | Number of rotated files to keep; `0` = unlimited |
+
+When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log`. The `logs/` subdirectory is created automatically. In Docker the data dir is `/var/lib/rnode`, so log files land at `/var/lib/rnode/logs/node.log`.
+
+### Precedence (highest wins)
+
+1. `RUST_LOG` environment variable
+2. `--log-level` / `--log-format` / `--log-sink` CLI flags
+3. `logging.*` from `rnode.conf` or `defaults.conf`
+
+### Target taxonomy
+
+All explicit `target:` values in the codebase follow the convention `f1r3fly.<area>.<concern>` with underscores. Examples:
+
+```
+f1r3fly.casper                       # general consensus events
+f1r3fly.casper.compute_parents_post_state.timing
+f1r3fly.casper.mem_profile           # RSS memory samples (debug level)
+f1r3fly.rspace                       # tuple-space events
+f1r3fly.merge.dag_merger.state_changes
+f1r3fly.node.transaction
+```
+
+To enable mem profiling:
+```bash
+RUST_LOG="warn,f1r3fly.casper.mem_profile=debug" ./node run ...
+```
+
+### JSON output
+
+The JSON layer emits one object per event with `span` and `spans` fields for trace correlation with the OpenTelemetry/Zipkin integration. Example:
+
+```json
+{"timestamp":"2026-05-28T12:00:00Z","level":"INFO","target":"f1r3fly.casper","message":"compute-state-started","span":{"name":"run"},"spans":[]}
+```
 
 ## Diagnostics
 
@@ -401,6 +481,6 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 Integration tests in `tests/`: `rho_trie_traverser_test.rs`. Inline tests in `block_info_enricher.rs` (2 unit tests for transfer extraction logic).
 
-**See also:** [node/ crate README](../../node/README.md) | [Docker Setup](../../docker/README.md)
+**See also:** [Joining an Existing Network](joining-a-network.md) | [node/ crate README](../../node/README.md) | [Docker Setup](../../docker/README.md)
 
 [← Back to docs index](../README.md)

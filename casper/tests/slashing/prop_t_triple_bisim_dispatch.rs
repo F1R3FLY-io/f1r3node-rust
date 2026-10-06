@@ -1,6 +1,6 @@
 // T-15 generalized — Triple bisimilarity over the dispatch event.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.5,
 // design/14a-tier-architecture.md §3 (triple-bisim diagnostic table).
 //
 // Property: for any sequence of equivocation events applied
@@ -32,9 +32,9 @@ proptest! {
         // Single equivocation event. Multi-event sequences require
         // record propagation across TestNode peers (each
         // equivocation lands on a different processor node) which
-        // is out of scope for the per-event driver loop. (Sequence-
-        // scale coverage previously lived in the now-removed
-        // Rust<->Scala bisimilarity suite.)
+        // is out of scope for the per-event driver loop. Coverage
+        // for sequences is provided by the harness-tier sequential
+        // bisim (prop_t_15_bisim_under_workload.rs) at scale.
         equivocator_idx in 0usize..3,
     ) {
         block_on(async {

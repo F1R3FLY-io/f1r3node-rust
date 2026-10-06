@@ -50,13 +50,17 @@
 //! charge.
 
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive,
-    ReceiveBind, Send,
+    Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
+    CostStack, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
+use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::env::Env;
@@ -77,6 +81,52 @@ use super::unwrap_option_safe;
 // the recursive twin
 // ===========================================================================
 
+fn signature_recursive(
+    mut signature: CostSignature,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<CostSignature, InterpreterError> {
+    let value = signature.value.take().ok_or_else(|| {
+        InterpreterError::UndefinedRequiredProtobufFieldError("CostSignature.value".to_string())
+    })?;
+    let value = match value {
+        CostSignatureValue::BoundLevel(index) if ctx.depth == 0 => match env.get(ctx, index) {
+            Some(name) => CostSignatureValue::Name(ParSortMatcher::sort_match(&name).term),
+            None => CostSignatureValue::BoundLevel(index),
+        },
+        CostSignatureValue::Quote(par) => {
+            CostSignatureValue::Quote(ParSortMatcher::sort_match(&par_recursive(par, ctx, env)?).term)
+        }
+        CostSignatureValue::Name(par) => {
+            CostSignatureValue::Name(ParSortMatcher::sort_match(&par_recursive(par, ctx, env)?).term)
+        }
+        CostSignatureValue::Compound(compound) => {
+            let elements = compound.elements.into_iter()
+                .map(|child| signature_recursive(child, ctx, env))
+                .collect::<Result<Vec<_>, _>>()?;
+            CostSignatureValue::Compound(CostSignatureCompound { elements })
+        }
+        other => other,
+    };
+    Ok(sort_signature(&CostSignature { value: Some(value) }).term)
+}
+
+fn signed_recursive(
+    term: CostSignedTerm,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<CostSignedTerm, InterpreterError> {
+    let body = par_recursive(unwrap_option_safe(term.body)?, ctx, env)?;
+    let signature = signature_recursive(unwrap_option_safe(term.signature)?, ctx, env)?;
+    Ok(CostSignedTerm { body: Some(body), signature: Some(signature) })
+}
+
+fn stack_recursive(term: CostStack, ctx: SubCtx, env: EnvView<'_>) -> Result<CostStack, InterpreterError> {
+    Ok(CostStack { cells: term.cells.into_iter()
+        .map(|cell| signature_recursive(cell, ctx, env))
+        .collect::<Result<Vec<_>, _>>()? })
+}
+
 pub(crate) fn par_recursive(
     mut term: Par,
     ctx: SubCtx,
@@ -91,6 +141,8 @@ pub(crate) fn par_recursive(
     let bundles = std::mem::take(&mut term.bundles);
     let connectives = std::mem::take(&mut term.connectives);
     let conditionals = std::mem::take(&mut term.conditionals);
+    let cost_signed_terms = std::mem::take(&mut term.cost_signed_terms);
+    let cost_stacks = std::mem::take(&mut term.cost_stacks);
     let locally_free = std::mem::take(&mut term.locally_free);
     let connective_used = term.connective_used;
 
@@ -121,6 +173,14 @@ pub(crate) fn par_recursive(
         .into_iter()
         .map(|i| if_recursive(i, ctx, env))
         .collect::<Result<Vec<If>, InterpreterError>>()?;
+    let cost_signed_terms = cost_signed_terms
+        .into_iter()
+        .map(|term| signed_recursive(term, ctx, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cost_stacks = cost_stacks
+        .into_iter()
+        .map(|term| stack_recursive(term, ctx, env))
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(rebuild_par(
         exprs_par,
@@ -131,6 +191,8 @@ pub(crate) fn par_recursive(
         matches,
         bundles,
         conditionals,
+        cost_signed_terms,
+        cost_stacks,
         unforgeables,
         locally_free,
         connective_used,
@@ -343,14 +405,19 @@ fn bind_recursive(
         source,
         remainder,
         free_count,
+        cost_signature,
     } = term;
     let source_sub = required_par_recursive(source, ctx, env)?;
     let patterns_sub = map_pars_recursive(patterns, ctx.deeper(), env)?;
+    let cost_signature_sub = cost_signature
+        .map(|signature| signature_recursive(signature, ctx, env))
+        .transpose()?;
     Ok(rebuild_receive_bind(
         source_sub,
         patterns_sub,
         remainder,
         free_count,
+        cost_signature_sub,
     ))
 }
 

@@ -55,11 +55,9 @@ impl TestContext {
 
     // Scala: val br = BlockRequest.from(convert[PacketTypeTag.BlockRequest.type](toPacket(msg).right.get).get)
     fn to_block_request(protocol: &Protocol) -> BlockRequest {
-        if let Some(message) = &protocol.message {
-            if let Packet(packet_data) = message {
-                if let Ok(br) = BlockRequestProto::decode(packet_data.content.as_ref()) {
-                    return BlockRequest::from_proto(br);
-                }
+        if let Some(Packet(packet_data)) = &protocol.message {
+            if let Ok(br) = BlockRequestProto::decode(packet_data.content.as_ref()) {
+                return BlockRequest::from_proto(br);
             }
         }
         panic!("Could not convert protocol to BlockRequest");
@@ -109,6 +107,7 @@ async fn block_retriever_should_store_on_a_waiting_list_and_dont_request_if_requ
             in_casper_buffer: false,
             waiting_list: vec![other_peer],
             peer_requery_cursor: 0,
+            requested_as_dependency: false,
         });
         map
     };
@@ -167,6 +166,7 @@ async fn block_retriever_should_request_block_and_add_peer_to_waiting_list_if_pe
             in_casper_buffer: false,
             waiting_list: vec![],
             peer_requery_cursor: 0,
+            requested_as_dependency: false,
         });
         map
     };

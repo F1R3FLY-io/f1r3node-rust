@@ -1,6 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/Genesis.scala
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
@@ -50,6 +51,10 @@ impl Genesis {
         mergeable_tags::default_mergeable_tags()
     }
 
+    pub fn default_mergeable_tags_arc() -> Arc<HashMap<Par, MergeType>> {
+        Arc::new(Self::default_mergeable_tags())
+    }
+
     pub fn default_blessed_terms_with_timestamp(
         timestamp: i64,
         pos_params: &ProofOfStake,
@@ -59,6 +64,30 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+    ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_timestamp_policy(
+            timestamp,
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_timestamp_policy(
+        timestamp: i64,
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -95,35 +124,26 @@ impl Genesis {
         let either = standard_deploys::either(shard_id);
         let non_negative_number = standard_deploys::non_negative_number(shard_id);
         let make_mint = standard_deploys::make_mint(shard_id);
-        // Cost-Accounted Rho Stage D: the blessed `Exchange` (rho:lang:exchange)
-        // — the spec's conserving 1:1 token swap (tex:3061-3084). Like
-        // `make_mint` it depends on nothing beyond Registry, so it is deployed
-        // right after the mint; the closeBlock per-epoch fee→v conversion
-        // (PoS.rhox) and #13 clients resolve it via its `rho:lang:exchange`
-        // shorthand.
-        let exchange = standard_deploys::exchange(shard_id);
         let auth_key = standard_deploys::auth_key(shard_id);
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
-        let token_metadata = standard_deploys::token_metadata(
+        let token_metadata = standard_deploys::token_metadata_with_policy(
             native_token_name,
             native_token_symbol,
             native_token_decimals,
             shard_id,
+            resource_policy,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
-        let capabilities_registry = standard_deploys::capabilities_registry(shard_id);
 
-        let mut all_deploys = Vec::with_capacity(14 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(versioned_registry);
         all_deploys.push(list_ops);
         all_deploys.push(either);
         all_deploys.push(non_negative_number);
         all_deploys.push(make_mint);
-        // Stage D blessed Exchange, immediately after the mint (see binding above).
-        all_deploys.push(exchange);
         all_deploys.push(auth_key);
         all_deploys.push(system_vault);
         all_deploys.push(multi_sig_system_vault);
@@ -131,10 +151,6 @@ impl Genesis {
         all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
-        // Phase 3 LL-rich algebra: capability registry for Bang/Lolly.
-        // Deployed last among system contracts because it has no
-        // dependencies on any other genesis deploy.
-        all_deploys.push(capabilities_registry);
 
         all_deploys
     }
@@ -148,9 +164,31 @@ impl Genesis {
         native_token_symbol: &str,
         native_token_decimals: u32,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_policy(
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_policy(
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
-        Self::default_blessed_terms_with_timestamp(
+        Self::default_blessed_terms_with_timestamp_policy(
             BASE_TIMESTAMP,
             pos_params,
             vaults,
@@ -159,6 +197,7 @@ impl Genesis {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            resource_policy,
         )
     }
 
@@ -166,7 +205,24 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        let blessed_terms = Self::default_blessed_terms(
+        Self::create_genesis_block_with_policy(runtime_manager, genesis, None).await
+    }
+
+    pub async fn create_genesis_block_with_policy(
+        runtime_manager: &RuntimeManager,
+        genesis: &Genesis,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+    ) -> Result<BlockMessage, CasperError> {
+        if let Some(policy) = resource_policy {
+            policy
+                .validate_context(
+                    genesis.version,
+                    &genesis.shard_id,
+                    genesis.native_token_decimals,
+                )
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        }
+        let blessed_terms = Self::default_blessed_terms_with_policy(
             &genesis.proof_of_stake,
             &genesis.vaults,
             genesis.supply,
@@ -174,6 +230,7 @@ impl Genesis {
             &genesis.native_token_name,
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
+            resource_policy,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
@@ -244,7 +301,7 @@ impl Genesis {
         // [`crate::rust::util::event_log_canonical`] for the derivation and
         // `casper/tests/deploy_log_canonicalization_and_replay.rs` for both halves as
         // executable claims.
-        let sorted_deploys = processed_deploys
+        let sorted_deploys: Vec<_> = processed_deploys
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
             .map(|mut deploy| {
@@ -257,10 +314,12 @@ impl Genesis {
 
         let body = Body {
             state,
-            deploys: sorted_deploys,
+            deploys: sorted_deploys.into_iter().map(Into::into).collect(),
             rejected_deploys: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         };
 
         let header = proto_util::block_header(Vec::new(), genesis.version, genesis.timestamp);

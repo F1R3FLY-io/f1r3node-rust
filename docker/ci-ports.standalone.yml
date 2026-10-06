@@ -1,0 +1,35 @@
+# CI-only host port remap for docker/standalone.yml.
+#
+# 40400-40405 sit inside the kernel ephemeral range (32768-60999). On a
+# GitHub-hosted runner the Actions agent opens its control connections to
+# GitHub before the job exists and can source them from that range, e.g.
+#
+#   ESTAB 10.1.0.32:40422 -> 140.82.112.24:443  users:(("hosted-compute-",pid=2034))
+#
+# Those sockets are ESTAB for the life of the job, so they never drain and the
+# bind fails. sysctl ip_local_reserved_ports cannot help: it only blocks new
+# allocations and cannot reclaim a socket that already exists. Re-running the
+# job "fixes" it only because a fresh runner's agent picked different source
+# ports -- which is why this presented as an intermittent flake for so long.
+#
+# 14400-14405 is below the ephemeral floor, so the kernel will never assign it
+# to anything automatically. Container ports are unchanged, so nothing inside
+# the node or on the compose network moves; this is purely the host side.
+#
+# Used only by _integration-pipeline.yml. Local development keeps 40400-40405
+# via docker/standalone.yml on its own, where no runner agent competes.
+# `ports: !override` is load-bearing. Compose MERGES list-valued keys, so a
+# plain `ports:` here would ADD 14400-1445x while leaving 40400-4045x bound --
+# the ephemeral-range collision this file exists to avoid would still happen,
+# silently, and the smoke tests would still fail intermittently. Verified with
+# `docker compose config`: without !override the merged service lists both
+# ranges; with it, only ours. Requires Compose v2.24+ (runner has v5.1.1).
+services:
+  standalone:
+    ports: !override
+      - "14400:40400"
+      - "14401:40401"
+      - "14402:40402"
+      - "14403:40403"
+      - "14404:40404"
+      - "14405:40405"

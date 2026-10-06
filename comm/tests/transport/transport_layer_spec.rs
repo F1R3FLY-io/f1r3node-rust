@@ -1,43 +1,17 @@
 // See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerSpec.scala
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 use crate::transport::transport_layer_runtime::{
     broadcast_heartbeat, send_heartbeat, TestProtocolDispatcher, TestStreamDispatcher,
     TransportLayerTestRuntime,
 };
 
-static INIT: Once = Once::new();
-
-fn init_logger() {
-    INIT.call_once(|| {
-        let filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::DEBUG.into())
-            .parse("")
-            .unwrap();
-
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_target(false)
-                    .with_current_span(false) // logs only
-                    .with_span_list(false) // logs only
-                    .flatten_event(true), // put event fields at top level
-            )
-            .try_init()
-            .unwrap();
-    });
-}
+fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
 /// Create big content for streaming tests
 pub fn create_big_content(max_message_size: i32) -> Bytes {
@@ -136,7 +110,7 @@ async fn broadcasting_a_message_should_send_the_message_to_all_peers() {
     }
 
     // Verify receivers are the two remote nodes (order may vary)
-    let receivers = vec![receiver1, receiver2];
+    let receivers = [receiver1, receiver2];
     assert!(receivers.contains(&&result.remote_node1));
     assert!(receivers.contains(&&result.remote_node2));
 
@@ -231,7 +205,7 @@ async fn stream_blob_should_send_a_blob_and_receive_by_multiple_remote_side() {
     }
 
     // Verify receivers are the two remote nodes (order may vary)
-    let receivers = vec![receiver1, receiver2];
+    let receivers = [receiver1, receiver2];
     assert!(receivers.contains(&&result.remote_node1));
     assert!(receivers.contains(&&result.remote_node2));
 
@@ -497,7 +471,7 @@ async fn concurrent_streams_to_same_peer_should_all_succeed() {
                             };
 
                             transport
-                                .stream(&remote, &blob)
+                                .stream(remote, &blob)
                                 .await
                                 .map_err(|e| format!("Concurrent stream {} failed: {}", i, e))
                         }
@@ -560,7 +534,7 @@ async fn concurrent_streams_to_same_peer_should_all_succeed() {
         );
         let first_byte = blob.packet.content[0];
         assert!(
-            first_byte >= 100 && first_byte <= 102,
+            (100..=102).contains(&first_byte),
             "First byte should indicate stream number (100-102)"
         );
     }

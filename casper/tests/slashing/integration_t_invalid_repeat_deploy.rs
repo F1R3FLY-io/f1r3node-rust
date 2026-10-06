@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Integration test — Tier 1 production-path verification of the
 // `InvalidRepeatDeploy` arm of the dispatcher's `is_slashable()`
 // catch-all (Bug #3 fix).
 //
-// UC-32 from docs/theory/slashing/slashing-specification.md §12.
+// UC-32 from docs/casper/theory/slashing/slashing-specification.md §12.
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
@@ -80,11 +80,9 @@ async fn integration_t_invalid_repeat_deploy() {
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
     };
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
-        b.body.deploys = vec![d1_processed];
+        b.body.deploys = vec![d1_processed.into()];
     })
     .await
     .expect("propose_with_block_mutation");
@@ -110,8 +108,8 @@ async fn integration_t_invalid_repeat_deploy() {
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(
-        has_v0,
-        "post-fix #3 catch-all: dispatcher mints record for v0 \
-         on InvalidRepeatDeploy"
+        !has_v0,
+        "demoted: InvalidRepeatDeploy is judged against local state and \
+         mints no slash evidence"
     );
 }

@@ -1,10 +1,18 @@
+pub mod clone_backing;
 pub mod block;
 pub mod block_hash;
 pub mod block_implicits;
 pub mod block_metadata;
 pub mod bundle_ops;
 pub mod casper;
+pub mod cost_deploy_data;
+pub mod cost_protocol_limits;
+pub mod deploy_id;
+pub mod deploy_envelope;
+pub mod native_cost_evidence;
+pub mod native_wallet_receipt;
 pub mod equivocation_record;
+pub mod host_work;
 pub mod normalizer_env;
 pub mod par_ext;
 pub mod par_map;
@@ -26,6 +34,16 @@ pub mod pathmap_zipper;
 // The hand-maintained `.rhoapi.EPathMap` extern type (homogeneous PathMap
 // storage plus canonical EPM1 caches); re-exported from `crate::rhoapi` in lib.rs.
 pub mod rhoapi_ext;
+pub mod phlo_wire;
+pub mod phlo_schedule;
+pub mod phlo_resource;
+pub mod phlo_obligation;
+pub mod phlo_source;
+pub mod phlo_controls;
+pub mod phlo_grant_creation;
+pub mod phlo_intent;
+pub mod phlo_quote_v2;
+pub mod signed_phlo_deploy;
 pub mod rholang;
 pub mod sorted_par_hash_set;
 pub mod sorted_par_map;

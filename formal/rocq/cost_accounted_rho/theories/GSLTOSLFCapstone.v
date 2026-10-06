@@ -16,11 +16,10 @@
    of claims §6.1/§7.7 that were previously only asserted in prose.
 
    GSLT and OSLF are framework-general; this realizes them directly in Rocq.
-   The literal embedding into MeTTaIL (and an actual OSLF *functor* that
-   auto-generates the logic) belong to the MeTTaIL/OSLF framework and are
-   outside this development's scope — not required for the calculus to BE a
-   well-formed GSLT, nor for its funding judgment to BE a sound, decidable
-   linear-resource proof-checking judgment.
+   The native finite located spatial/modal fragment is realized directly and
+   connected to the funding judgment below.  Only the literal embedding into
+   MeTTaIL and replacement of this reference realization by generated artifacts
+   belong to the still-developing MeTTaIL/OSLF integration.
 
    No `Axiom`, no `Admitted`: all proofs `Qed`-closed.                          *)
 
@@ -33,6 +32,8 @@ From CostAccountedRho Require Import CostAccountedReduction.
 From CostAccountedRho Require Import SystemStructEquiv.
 From CostAccountedRho Require Import Confluence.
 From CostAccountedRho Require Import LinearLogicResources.
+From CostAccountedRho Require Import CALocatedPurses.
+From CostAccountedRho Require Import CAOSLFSpatialModal.
 
 (* ════════════════════ §6.1 — the calculus is a well-formed GSLT ═══════════
    Types: the four sorts [proc] / [system] / [sig] / [token] (present by
@@ -125,17 +126,82 @@ Proof.
   exact ll_linear_no_contraction.
 Qed.
 
+(* ═══════════════ §9.2/§10 — finite located spatial/modal logic ════════════
+   Exact observations decide linear use and graded post-state claims.  Static
+   upper bounds prove only safety properties.  Spatial composition factors the
+   proof by disjoint surfaces, so local purse sufficiency composes globally. *)
+
+Definition OSLF_Spatial_Modal_Logic_Sound : Prop :=
+  (forall supply demand surface,
+      linear_check (mk_oslf_observation supply demand true) surface = OSatisfied
+      <-> 1 <= supply surface /\ demand surface = 1)
+  /\ (forall observation surface amount,
+      observed_supply (after_spend observation surface amount) surface =
+        observed_supply observation surface - amount
+      /\ observed_demand (after_spend observation surface amount) surface =
+        observed_demand observation surface - amount)
+  /\ (forall left right left_verdict right_verdict,
+      spatial_check left right left_verdict right_verdict =
+      spatial_check right left right_verdict left_verdict)
+  /\ (forall supply demand locations,
+      (forall surface, In surface locations ->
+        sufficient_check
+          (mk_oslf_observation supply demand false) surface = OSatisfied) ->
+      total demand locations <= total supply locations)
+  /\ (forall supply upper actual surface,
+      actual surface <= upper surface ->
+      sufficient_check
+        (mk_oslf_observation supply upper false) surface = OSatisfied ->
+      actual surface <= supply surface)
+  /\ (forall supply upper surface,
+      1 <= supply surface -> 1 <= upper surface ->
+      spend_check (mk_oslf_observation supply upper false) surface 1 =
+        OIndeterminate)
+  /\ (forall supply upper surface amount,
+      supply surface < amount ->
+      spend_check (mk_oslf_observation supply upper false) surface amount =
+        OUnsatisfied).
+
+Theorem oslf_spatial_modal_logic_sound : OSLF_Spatial_Modal_Logic_Sound.
+Proof.
+  unfold OSLF_Spatial_Modal_Logic_Sound.
+  split.
+  - intros supply demand surface. split.
+    + intro H. apply exact_linear_check_sound. exact H.
+    + intros [Hs Hd]. apply exact_linear_check_complete; assumption.
+  - split.
+    + exact modal_poststate_is_exact.
+    + split.
+      * exact spatial_is_commutative.
+      * split.
+        -- exact spatial_local_sufficiency_composes.
+        -- split.
+           ++ exact conservative_sufficiency_is_sound.
+           ++ split.
+              ** exact upper_bound_cannot_assert_modal_spend.
+              ** exact upper_bound_insufficient_supply_rejects.
+Qed.
+
 (* ═══════════════════════════════ Capstone ════════════════════════════════
    The cost-accounted rho calculus is a well-formed GSLT, and its funding
    judgment is the sound, decidable, linear OSLF resource logic.              *)
 
 Theorem cost_accounted_calculus_is_gslt_with_oslf_logic :
-  GSLT_Equations_WellFormed /\ GSLT_Rewrites_WellFormed /\ OSLF_Funding_Logic_Sound.
+  GSLT_Equations_WellFormed
+  /\ GSLT_Rewrites_WellFormed
+  /\ OSLF_Funding_Logic_Sound
+  /\ OSLF_Spatial_Modal_Logic_Sound.
 Proof.
-  split; [ exact gslt_equations_wellformed
-         | split; [ exact gslt_rewrites_wellformed | exact oslf_funding_logic_sound ] ].
+  split.
+  - exact gslt_equations_wellformed.
+  - split.
+    + exact gslt_rewrites_wellformed.
+    + split.
+      * exact oslf_funding_logic_sound.
+      * exact oslf_spatial_modal_logic_sound.
 Qed.
 
 (* Axiom-freedom witnesses (printed during compilation; must report
    "Closed under the global context"). *)
 Print Assumptions cost_accounted_calculus_is_gslt_with_oslf_logic.
+Print Assumptions oslf_spatial_modal_logic_sound.

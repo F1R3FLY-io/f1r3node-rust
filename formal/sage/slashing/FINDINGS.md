@@ -2,7 +2,7 @@
 
 These findings are finite Sage model outputs. They are not proof authority. Each item below is a witness or theorem candidate to promote into Rocq, TLA+, implementation tests, or the slashing documents after review.
 
-Status: findings 1 through 23 have been promoted into Rocq theorem targets, `TwoLevelSlashing.tla` invariants where finite checking applies, and `docs/theory/slashing/` documentation/test-plan entries. Findings 24 through 32 are tracked deterministic scenario-corpus findings. Findings 33 and later are Hypothesis-backed, deep-threat, DAG, and objective-frontier findings that have been reduced to deterministic Sage witnesses before promotion. Sage remains the witness generator, not the proof authority.
+Status: findings 1 through 23 have been promoted into Rocq theorem targets, `TwoLevelSlashing.tla` invariants where finite checking applies, and `docs/casper/theory/slashing/` documentation/test-plan entries. Findings 24 through 32 are tracked deterministic scenario-corpus findings. Findings 33 and later are Hypothesis-backed, deep-threat, DAG, and objective-frontier findings that have been reduced to deterministic Sage witnesses before promotion. Sage remains the witness generator, not the proof authority.
 
 ## Confirmed model findings
 
@@ -502,7 +502,7 @@ assumptions concrete.
 Traceability status: represented by
 `sage_evidence_denial_min_cut_search` and
 `hypothesis_frontier_adaptive_evidence_denial`, classified as
-`model_boundary` in `docs/theory/slashing/slashing-traceability.md`, and
+`model_boundary` in `docs/casper/theory/slashing/slashing-traceability.md`, and
 covered by the TLA+ visibility/fairness classes plus Rust UC-83, UC-90,
 UC-95, and UC-109. No production Rust bug is confirmed by this witness.
 
@@ -1046,16 +1046,19 @@ weighted-bound, reachability, epoch-identity, and divergence families.
 
 ## Finding 118 - Parent-pre-state slash authorization is distinct from ambient and execution state
 
-`parent_prestate_authorization_model.sage` checks the current recovered-slash
-boundary introduced by the latest `dev` merge. Receive-side authorization
-depends on the block's actual parent-pre-state bond view, not on the receiver's
-ambient snapshot. PoS execution remains idempotent when the execution state has
-already zeroed the offender's bond. Recovered rejected slashes must still point
-at known invalid evidence in the target block's current epoch; stale recovered
-evidence is dropped before the proposer emits a new Slash deploy.
+`parent_prestate_authorization_model.sage` checks canonical slash-candidate
+reconstruction. Receive-side authorization depends on the block's actual
+parent-pre-state bond view, not on the receiver's ambient snapshot. PoS
+execution remains idempotent when the execution state has already zeroed the
+offender's bond, but that fallback does not authorize a new deploy. The
+proposer scans complete current-epoch invalid evidence, ignores merge-rejection
+hints as authority, selects one canonical hash per `(offender, epoch)`, and
+excludes targets whose canonical bond is non-positive.
 
 Promotion status: represented by `Inv_AuthorizationUsesParentPreState`,
 `Inv_AmbientZeroDoesNotBlockParentPositiveAuth`,
 `Inv_ParentZeroRejectsEvenAmbientPositive`, Rocq
-`parent_pre_state_authorizes_when_ambient_zero`, and Rust tests for
-`filter_recoverable_with_evidence`.
+`parent_pre_state_authorizes_when_ambient_zero`,
+`merge_rejected_hint_subsumed_by_authorized_scan`,
+`zero_bond_candidate_not_selected`, `selected_target_keys_nodup`, and Rust
+canonical merged-pre-state candidate tests.

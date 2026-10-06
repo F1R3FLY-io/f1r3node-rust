@@ -1,8 +1,15 @@
-# Cost-Accounted Rho Threat Model
+# Historical D3 COMM-Only Threat Model
 
-**Status:** D3-aligned living security and thread-safety model with historical evidence retained
-**Scope:** COMM-token accounting, pre-COMM ingress bounds, supply-gated admission,
+**Status:** Superseded historical D3 analysis; not the current offered-funded consensus contract.
+**Scope:** Former COMM-token accounting, pre-COMM ingress bounds, supply-gated admission,
 Casper replay/settlement integration, and slashing composition.
+
+The [current offered-funded threat model](../casper/theory/cost-accounting-threat-model.md)
+governs the signed deploy offer, client-supplied `phlo_price` and `phlo_limit`,
+SystemVault-backed prepaid authority, metered execution, and failure-atomic
+settlement/refund. The D3-only rules below deliberately remain as a record of
+the earlier design and its tests; they must not be used to remove offer fields,
+their signature binding, or refund behavior from the current protocol.
 
 This document applies the slashing threat-model style to the
 cost-accounted rho migration. It records the adversary model, the
@@ -10,10 +17,9 @@ security and concurrency vectors that matter for cost accounting, the
 formal theorem that protects each vector, and the Rust/TLA+ tests that
 exercise the production boundary.
 
-The publication draft is not the source of implementation authority for
-this document. The authority chain is: repo-local Rocq/TLA+ formal
-models, this design and threat model, then the `f1r3node-rust`
-implementation.
+The authority chain stated in the historical D3 record below described that
+earlier design only. For the current offered-funded contract, consult the
+linked current threat model and the deployed protocol implementation.
 
 ## 1. Terms
 
@@ -25,16 +31,16 @@ implementation.
 | Diagnostic log | Bounded observability data that is not consensus evidence. Clearing it cannot affect cost or replay. |
 | Cost-invalid evidence | Replay-visible evidence that a block's cost accounting fields are invalid and may feed slashing only through the current evidence epoch, current target activation epoch, and parent pre-state bond boundary. |
 | Ingress byte bound | The maximum decoded protobuf message size enforced by tonic before prost allocates/decodes the body or dispatches the service handler. |
-| Historical budget row | A matrix row about deleted `phlo_limit`, price, precharge/refund, OOP, or consensus trace-digest behavior. Such rows preserve the experiment history but are superseded by D3/DR-9 and are not current runtime claims. |
+| Historical budget row | A matrix row D3 classified as superseded, concerning `phlo_limit`, price, precharge/refund, OOP, or consensus trace-digest behavior. That D3 classification is itself historical and does not supersede the current offered-funded contract. |
 | Thread vector | A concurrency vector in which evaluator workers race on event queues, canonical reconciliation, or trace finalization. |
 
-### 1.1 Current-model interpretation rule
+### 1.1 Historical D3 interpretation rule
 
 This is a longitudinal threat ledger: removing an old row would erase why a design changed. Read it
-under the following precedence rule. D3 / DR-9 / OD-1 / OD-3 is the current contract; rows naming
-deleted escrow fields, finite accepted-user budgets, precharge/refund, OOP replay, or a consensus
-cost-trace digest are historical evidence. They remain searchable, but they do not override the
-current model:
+as a record of the D3 / DR-9 / OD-1 / OD-3 proposal. Its former precedence rule marked rows naming
+escrow fields, finite accepted-user budgets, precharge/refund, OOP replay, or a consensus
+cost-trace digest as historical evidence. That rule and the following five claims describe the
+superseded D3 model, not the current offered-funded protocol:
 
 1. consensus cost is one token per committed `BillableKind::Comm`;
 2. block assembly admits against the per-signature supply pool and replay recomputes the decision;

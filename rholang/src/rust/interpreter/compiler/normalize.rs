@@ -449,35 +449,7 @@ pub(crate) fn descend_proc<'ast>(
         Proc::ForComprehension {
             receipts,
             proc: continuation,
-        } => {
-            // W1 Phase 4: a `for` carrying any per-clause SIGNED bind
-            // `{% y <- x %}[s]` routes to signed-join recognition (validate each
-            // clause sig, recover the natural-arity plain join). Greg 2026-06-15:
-            // fuel is provisioned on `Σ⟦s⟧` and acquired by SEQUENTIAL per-atom
-            // gates — a fuel token is structurally incapable of entering the data
-            // join's `ReceiveBind` set, so fuel is NEVER folded into the join
-            // (recognition-only: no gate node; the reducer meters per-COMM by
-            // lane). An unsigned `for` lowers ordinarily.
-            use rholang_parser::ast::Bind;
-            let has_signed_bind = receipts.iter().any(|receipt| {
-                receipt
-                    .binds
-                    .iter()
-                    .any(|bind| matches!(bind, Bind::Signed { .. }))
-            });
-            if has_signed_bind {
-                use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::descend_signed_join;
-                Ok(descend_signed_join(
-                    receipts,
-                    *continuation,
-                    proc.span,
-                    input,
-                    parser,
-                ))
-            } else {
-                p::p_input_normalizer::descend_p_input(receipts, *continuation, input, parser)
-            }
-        }
+        } => p::p_input_normalizer::descend_p_input(receipts, *continuation, input, parser),
 
         // Let - handle let bindings
         Proc::Let {
@@ -1068,11 +1040,11 @@ mod tests {
                     p2: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::EMultBody(EMult {
-                                p1: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
-                                p2: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                                p1: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
+                                p2: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                             })),
                         }],
-                        locally_free: create_bit_vector(&vec![0, 1]),
+                        locally_free: create_bit_vector(&[0, 1]),
                         connective_used: false,
                         ..Par::default()
                     }),

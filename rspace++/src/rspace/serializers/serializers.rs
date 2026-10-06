@@ -1,6 +1,7 @@
 // See rspace/src/main/scala/coop/rchain/rspace/serializers/ScodecSerialize.
 // scala
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -12,6 +13,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::rspace::errors::RSpaceError;
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError, cold_decode_vec_prefix, legacy_tail,
@@ -141,12 +145,28 @@ fn continuation_ser<'a, P: Clone, K: Clone>(
 /// through the same twins as the cold-store encoding (one layout, one pin).
 pub trait CandidateOrderingBytes {
     fn candidate_ordering_bytes(&self) -> Vec<u8>;
+
+    /// Hash the same borrowed wire layout while reserving each serializer
+    /// write before it reads or allocates. Native replay uses this for ties.
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError>;
 }
 
 impl<A: Clone + Serialize> CandidateOrderingBytes for Datum<A> {
     fn candidate_ordering_bytes(&self) -> Vec<u8> {
         bincode::serialize(&datum_ser(self))
             .expect("Serializers: Unable to serialize datum for candidate ordering")
+    }
+
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        native_source::hash(&datum_ser(self), &|operations, scanned, backing| {
+            meter.reserve(operations, scanned, backing)
+        })
     }
 }
 
@@ -156,6 +176,35 @@ impl<P: Clone + Serialize, K: Clone + Serialize> CandidateOrderingBytes
     fn candidate_ordering_bytes(&self) -> Vec<u8> {
         bincode::serialize(&continuation_ser(self))
             .expect("Serializers: Unable to serialize continuation for candidate ordering")
+    }
+
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        native_source::hash(&continuation_ser(self), &|operations, scanned, backing| {
+            meter.reserve(operations, scanned, backing)
+        })
+    }
+}
+
+impl<T: CandidateOrderingBytes + ?Sized> CandidateOrderingBytes for Arc<T> {
+    fn candidate_ordering_bytes(&self) -> Vec<u8> { (**self).candidate_ordering_bytes() }
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        (**self).metered_candidate_hash(meter)
+    }
+}
+
+impl<T: CandidateOrderingBytes + Clone> CandidateOrderingBytes for Cow<'_, T> {
+    fn candidate_ordering_bytes(&self) -> Vec<u8> { self.as_ref().candidate_ordering_bytes() }
+    fn metered_candidate_hash(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        self.as_ref().metered_candidate_hash(meter)
     }
 }
 

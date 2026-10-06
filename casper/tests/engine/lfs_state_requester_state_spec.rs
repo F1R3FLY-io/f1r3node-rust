@@ -73,12 +73,12 @@ mod tests {
         // Received requested item
         let (_, is_received_true) = st1.received(10);
 
-        assert_eq!(is_received_true, true);
+        assert!(is_received_true);
 
         // Received unknown item
         let (_, is_received_false) = st1.received(100);
 
-        assert_eq!(is_received_false, false);
+        assert!(!is_received_false);
     }
 
     #[test]
@@ -88,7 +88,7 @@ mod tests {
         // If item is not received, it should stay unfinished
         let st1 = st.done(10);
 
-        assert_eq!(st1.is_finished(), false);
+        assert!(!st1.is_finished());
 
         // Mark next as requested ...
         let (st2, _) = st1.get_next(false);
@@ -98,7 +98,7 @@ mod tests {
 
         let st4 = st3.done(10);
 
-        assert_eq!(st4.is_finished(), true);
+        assert!(st4.is_finished());
     }
 
     #[test]
@@ -116,16 +116,16 @@ mod tests {
         assert_eq!(ids2, Vec::<i32>::new());
 
         // It should not be finished until all items are Done
-        assert_eq!(st2.is_finished(), false);
+        assert!(!st2.is_finished());
 
         // Received first item
         let (st3, is_received) = st2.received(10);
 
-        assert_eq!(is_received, true);
+        assert!(is_received);
 
         let st4 = st3.done(10);
 
         // Return finished when all items as Done
-        assert_eq!(st4.is_finished(), true);
+        assert!(st4.is_finished());
     }
 }

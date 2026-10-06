@@ -8,7 +8,7 @@
 //! most complex real program.
 //!
 //! NATIVE SEMANTICS (MAJOR-4 re-scope). Native recognition emits NO fuel gates
-//! (recognition-only — the normalized `Par` has the same COMM count as the
+//! (recognition-only — the normalized `Par` is identical to the
 //! unsigned program), so IN-PROGRAM PARKING does not occur: the `eve` / `Zed` /
 //! free-`diSig` "thief" processes RUN rather than blocking on an unfunded gate.
 //! The native model replaces in-program parking with DEPLOY-LEVEL

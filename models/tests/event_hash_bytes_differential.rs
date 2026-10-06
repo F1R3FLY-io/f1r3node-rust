@@ -205,6 +205,7 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                     source: Some(map_par()),
                     remainder: Some(free_var),
                     free_count: 1,
+                    cost_signature: None,
                 }],
                 body: Some(map_par()),
                 persistent: false,

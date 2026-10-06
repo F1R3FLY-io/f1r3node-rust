@@ -10,8 +10,10 @@ use rholang::rust::interpreter::accounting::{
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::Log;
 
 fn repo_path(relative: impl AsRef<Path>) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -85,13 +87,11 @@ fn concurrent_event(path: u32, weight: u64) -> BillableTokenEvent {
 
 #[test]
 fn concurrent_rspace_architecture_repro_atomic_runtime_budget_must_not_overspend() {
-    // D3 (DR-9): a COMM costs exactly ONE token; the per-op `weight` (60/50
-    // below) is diagnostic and does NOT gate liveness. A one-token budget
-    // therefore admits exactly one of the two concurrent COMMs: the canonical
-    // reconciliation commits the first event in canonical order and marks the
-    // other out-of-phlogiston, so the budget is never overspent regardless of
-    // how the two reservation threads race.
-    let budget = RuntimeBudget::new(Cost::create(1, "atomic reserve repro"));
+    // The two weighted reservations total 110 against a fixed 100-token
+    // ceiling. Exactly one may pass the live CAS gate, and canonical
+    // reconciliation must clamp the exhausted trace to the ceiling regardless
+    // of which reservation thread wins.
+    let budget = RuntimeBudget::new(Cost::create(100, "atomic reserve repro"));
     let accepted = Arc::new(AtomicI64::new(0));
     let rejected = Arc::new(AtomicI64::new(0));
     let both_ready = Arc::new(Barrier::new(2));
@@ -118,10 +118,7 @@ fn concurrent_rspace_architecture_repro_atomic_runtime_budget_must_not_overspend
 
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     assert_eq!(rejected.load(Ordering::SeqCst), 1);
-    // One COMM committed (1 token) against a 1-token budget: consumed == 1,
-    // remaining == 0. Both attempts are recorded in the canonical cost trace
-    // (1 committed + 1 out-of-phlogiston).
-    assert_eq!(budget.total_cost().value, 1);
+    assert_eq!(budget.total_cost().value, 100);
     assert_eq!(budget.remaining().value, 0);
     assert_eq!(budget.cost_trace_event_count(), 2);
 }
@@ -178,6 +175,7 @@ async fn concurrent_rspace_architecture_repro_play_replay_costs_must_match_for_i
         create_runtimes(stores, false, &mut Vec::new()).await;
     let initial_phlo = Cost::create(100_000, "concurrent rspace repro");
     let rand = Blake2b512Random::create_from_bytes(&[]);
+    let pre_state_root = runtime.get_root().await;
 
     let play = runtime
         .evaluate(term, initial_phlo.clone(), Default::default(), rand.clone())
@@ -185,17 +183,22 @@ async fn concurrent_rspace_architecture_repro_play_replay_costs_must_match_for_i
         .expect("play evaluation failed");
     let checkpoint = runtime.create_checkpoint().await;
     replay_runtime
-        .reset(&checkpoint.root)
+        .reset(&pre_state_root)
         .await
         .expect("replay reset failed");
     replay_runtime
-        .rig(checkpoint.log)
+        .rig(checkpoint.log.clone())
         .await
         .expect("replay rig failed");
     let replay = replay_runtime
         .evaluate(term, initial_phlo, Default::default(), rand)
         .await
         .expect("replay evaluation failed");
+    replay_runtime
+        .check_replay_data()
+        .await
+        .expect("replay left unconsumed COMM events");
+    let replay_root = replay_runtime.get_root().await;
 
     assert!(
         play.errors.is_empty(),
@@ -211,4 +214,99 @@ async fn concurrent_rspace_architecture_repro_play_replay_costs_must_match_for_i
         play.cost.value, replay.cost.value,
         "play/replay body interleavings must not change charged phlo"
     );
+    assert_eq!(
+        replay_root, checkpoint.root,
+        "play/replay body interleavings must produce the same tuplespace root"
+    );
+}
+
+async fn deterministic_checkpoint(term: &str) -> (Blake2b256Hash, Log) {
+    let mut store_manager = InMemoryStoreManager::new();
+    let stores = store_manager
+        .r_space_stores()
+        .await
+        .expect("failed to create in-memory stores");
+    let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+    let result = runtime
+        .evaluate(
+            term,
+            Cost::create(100_000, "deterministic reduction frontier"),
+            Default::default(),
+            Blake2b512Random::create_from_bytes(&[]),
+        )
+        .await
+        .expect("evaluation failed");
+    assert!(
+        result.errors.is_empty(),
+        "evaluation errors: {:?}",
+        result.errors
+    );
+    let checkpoint = runtime.create_checkpoint().await;
+    (checkpoint.root, checkpoint.log)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn competing_parallel_produces_have_one_canonical_comm_and_residual_state() {
+    let term = r#"@"x"!(1) | @"x"!(2) | for (@y <- @"x") { @"out"!(y) }"#;
+    let expected = deterministic_checkpoint(term).await;
+    for _ in 0..16 {
+        let observed = deterministic_checkpoint(term).await;
+        assert_eq!(observed.0, expected.0);
+        assert_eq!(observed.1, expected.1);
+    }
+}
+
+async fn assert_canonical_permutations(terms: &[&str]) {
+    let expected = deterministic_checkpoint(terms[0]).await;
+    for _ in 0..4 {
+        for term in terms {
+            let observed = deterministic_checkpoint(term).await;
+            assert_eq!(observed.0, expected.0, "root diverged for {term}");
+            assert_eq!(observed.1, expected.1, "event log diverged for {term}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn competing_consumers_are_canonical_across_parallel_permutations() {
+    assert_canonical_permutations(&[
+        r#"for (@a <- @"x") { @"left"!(a) } | for (@b <- @"x") { @"right"!(b) } | @"x"!(1)"#,
+        r#"@"x"!(1) | for (@b <- @"x") { @"right"!(b) } | for (@a <- @"x") { @"left"!(a) }"#,
+        r#"for (@b <- @"x") { @"right"!(b) } | @"x"!(1) | for (@a <- @"x") { @"left"!(a) }"#,
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_join_and_single_channel_consume_are_one_canonical_component() {
+    assert_canonical_permutations(&[
+        r#"@"x"!(1) | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | for (@c <- @"x") { @"single"!(c) }"#,
+        r#"for (@c <- @"x") { @"single"!(c) } | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1)"#,
+        r#"for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1) | for (@c <- @"x") { @"single"!(c) } | @"y"!(2)"#,
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn persistent_peek_and_guarded_matches_are_canonical() {
+    assert_canonical_permutations(&[
+        r#"@"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) } | for (@b <- @"x") { @"take"!(b) }"#,
+        r#"for (@b <- @"x") { @"take"!(b) } | @"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) }"#,
+    ])
+    .await;
+    assert_canonical_permutations(&[
+        r#"@"x"!(1) | @"x"!(2) | for (@a <- @"x" where a > 1) { @"out"!(a) }"#,
+        r#"for (@a <- @"x" where a > 1) { @"out"!(a) } | @"x"!(2) | @"x"!(1)"#,
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn persistent_receive_matches_multiple_parallel_produces_canonically() {
+    assert_canonical_permutations(&[
+        r#"for (@a <= @"x") { @"out"!(a) } | @"x"!(1) | @"x"!(2)"#,
+        r#"@"x"!(2) | for (@a <= @"x") { @"out"!(a) } | @"x"!(1)"#,
+        r#"@"x"!(1) | @"x"!(2) | for (@a <= @"x") { @"out"!(a) }"#,
+    ])
+    .await;
 }

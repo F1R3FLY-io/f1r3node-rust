@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -14,13 +14,15 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
+    BindPattern, Bundle, CostAuthority, CostRegion, CostSignedTerm, CostStack, EAnd, EDiv, EEq,
+    EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
     EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
     ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
     Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -35,30 +37,42 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::logging::ReductionKind;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use smallvec::SmallVec;
+use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 use tokio::sync::RwLock;
 use typed_arena::Arena;
 
+use super::accounting::authority::{
+    cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
+    extend_authority, funding_sig_channel_metered, merge_authorities_metered,
+    sig_to_cost_signature, sig_to_cost_signature_metered, AuthorityError,
+};
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
-    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
-    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
-    var_eval_cost,
+    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost,
+    equality_check_cost_legacy, list_append_cost, method_call_cost, modulo_cost,
+    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+    string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
+use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{
     decode_non_deterministic_output, DispatchType, RhoDispatch, RholangAndScalaDispatcher,
 };
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::execution_space::ExecutionSpace;
 use super::fused_pathmap_chain::{FusedAction, FusedEval};
+use super::host_work::HostWorkBudget;
+use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
     REDUCER_EVAL_MATCH_CALLS_METRIC, REDUCER_EVAL_MATCH_TIME_NS_METRIC,
@@ -67,10 +81,11 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
-use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
-use super::util::GeneratedMessage;
+use super::util::{
+    allocate_new_bindings, evaluation_random, owned_evaluation_terms, GeneratedMessage,
+};
 use crate::rust::interpreter::accounting::costs::{
     add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
     length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
@@ -92,6 +107,43 @@ include!("../../../tests/support/reduce_expression_oracle.rs");
 // call chain: the detached-spawn + atomic-counter driver below breaks the recursion into independent
 // O(1)-stack tokio tasks, so the interpreter is heap-bounded WITHOUT growing the native stack. See
 // issues #305 / #306 (both resolved by the driver, not by stack growth).
+const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
+
+fn reserve_reducer_random_bytes(
+    rand: &Blake2b512Random,
+    backing: &dyn BackingMeter,
+) -> Result<(), InterpreterError> {
+    let count_bytes = rand.count_view.len().checked_mul(8).ok_or(InterpreterError::HostWorkRejected)?;
+    let output_bytes = 168usize
+        .checked_add(rand.last_block.len())
+        .and_then(|size| size.checked_add(rand.path_view.len()))
+        .and_then(|size| size.checked_add(count_bytes))
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let allocation = output_bytes
+        .checked_mul(4)
+        .and_then(|size| size.checked_add(144))
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    backing.reserve(output_bytes, output_bytes, allocation)
+        .map_err(|_| InterpreterError::HostWorkRejected)
+}
+
+fn reserve_matcher_host_work(
+    host: &HostWorkBudget,
+    operations: usize,
+    scanned: usize,
+    backing: usize,
+) -> Result<(), RSpaceError> {
+    for (dimension, amount) in [
+        (HostWorkDimension::VerificationOperations, operations),
+        (HostWorkDimension::VerificationBytes, scanned),
+        (HostWorkDimension::SearchStateBytes, backing),
+    ] {
+        let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
+        host.reserve(dimension, HostWorkUnits::new(amount))
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+    }
+    Ok(())
+}
 
 // ============================================================================
 // Detached-spawn + atomic-counter REDUCTION DRIVER.
@@ -349,10 +401,11 @@ fn spawn_detached<T: std::marker::Send + 'static>(
     drive: &Arc<DriveState>,
     child_path: SmallVec<[u32; 8]>,
     fut: Pin<Box<dyn Future<Output = Result<T, InterpreterError>> + std::marker::Send>>,
+    context: deterministic_reduction::ReductionContext,
 ) {
     drive.live.fetch_add(1, Ordering::AcqRel); // INCREMENT BEFORE SPAWN
     let drive = drive.clone();
-    tokio::spawn(async move {
+    deterministic_reduction::spawn_detached_in_context(context, async move {
         // `_guard` drops LAST (after the push below), so the decrement happens AFTER the error lands
         // in the sink — the sink is therefore complete when `done` fires.
         let _guard = LiveGuard(drive.clone());
@@ -378,6 +431,7 @@ fn spawn_detached<T: std::marker::Send + 'static>(
                     )),
                 }),
         }
+        Ok(())
     });
 }
 
@@ -393,15 +447,38 @@ fn located_path(e: &InterpreterError) -> &[u32] {
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalWorkStats {
+    pub single_term_evaluations: u64,
+    pub yielded_single_term_evaluations: u64,
+    pub spawned_eval_tasks: u64,
+}
+
 #[derive(Clone)]
 pub struct DebruijnInterpreter {
     pub space: RhoISpace,
+    pub(crate) core: Arc<ReducerCore>,
+}
+
+impl std::ops::Deref for DebruijnInterpreter {
+    type Target = ReducerCore;
+
+    fn deref(&self) -> &Self::Target { &self.core }
+}
+
+#[derive(Clone)]
+pub struct ReducerCore {
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
     pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
     pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub metering: MeteredMachine,
     pub substitute: Substitute,
+    pub(crate) reduction_coordinator: ReductionCoordinator,
+    pub(crate) single_term_evaluations: Arc<AtomicU64>,
+    pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
+    pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
     /// Async completion driver cell. Shared across every `#[derive(Clone)]` metering-child clone
     /// (the outer `Arc`) and replaceable per deploy (`RwLock`): `inj` stores a fresh `DriveState`
     /// before evaluating and the five join sites snapshot it via `load_drive`. Internal machinery
@@ -856,7 +933,38 @@ pub(crate) fn cursor_kind_of(zipper: &EZipper) -> Result<CursorKind, Interpreter
     })
 }
 
-impl DebruijnInterpreter {
+impl ReducerCore {
+    pub fn eval_work_stats(&self) -> EvalWorkStats {
+        EvalWorkStats {
+            single_term_evaluations: self.single_term_evaluations.load(Ordering::Relaxed),
+            yielded_single_term_evaluations: self.yielded_single_term_evaluations.load(Ordering::Relaxed),
+            spawned_eval_tasks: self.spawned_eval_tasks.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn reset_eval_work_stats(&self) {
+        self.single_term_evaluations.store(0, Ordering::Relaxed);
+        self.yielded_single_term_evaluations.store(0, Ordering::Relaxed);
+        self.spawned_eval_tasks.store(0, Ordering::Relaxed);
+    }
+
+    fn reserve_host_primitive<M: Message>(&self, input: &M) -> Result<(), InterpreterError> {
+        let input_bytes = u64::try_from(input.encoded_len()).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "primitive input byte count does not fit in u64".to_string(),
+            )
+        })?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::PrimitiveCalls,
+            HostWorkUnits::new(1),
+        )?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::PrimitiveInputBytes,
+            HostWorkUnits::new(input_bytes),
+        )?;
+        Ok(())
+    }
+
     fn with_metering_child(&self, component: usize) -> Self {
         let metering = self.metering.child(component.min(u32::MAX as usize) as u32);
         let mut child = self.clone();
@@ -878,46 +986,73 @@ impl DebruijnInterpreter {
         par: Par,
         env: &'a Env<Par>,
         rand: Blake2b512Random,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + Send + 'a>> {
         Box::pin(async move {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let drive = Arc::new(DriveState {
-                live: AtomicUsize::new(1),
-                sink: Mutex::new(Vec::new()),
-                done: Mutex::new(Some(tx)),
-            });
-            *self.drive.write().expect("drive cell poisoned") = drive.clone();
-
-            // Root eval task at coordinate []. Its OWN (synchronous) error is recorded directly; detached
-            // children record theirs through `spawn_detached`.
-            let root = LiveGuard(drive.clone());
-            if let Err(e) = self.eval_with_path(par, env, rand, SmallVec::new()).await {
-                drive
-                    .sink
-                    .lock()
-                    .expect("DriveState.sink mutex poisoned")
-                    .push(InterpreterError::Located {
-                        path: Vec::new(),
-                        source: Box::new(e),
-                    });
-            }
-            drop(root); // may fire `done` immediately if every detached child already finished
-            let _ = rx.await; // wake once live -> 0 (root + every detached task complete)
-
-            // Deterministic DISPLAY order (by coordinate). NOT consensus — `aggregate_evaluator_errors`
-            // classifies on `root_cause()` (Located-unwrapping), preserving the exact cost discriminant.
-            let mut errors =
-                std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
-            errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
-            match self.aggregate_evaluator_errors(errors) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
+            let (result, _, errors) = deterministic_reduction::root_with_observation(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                None,
+                self.eval_drive_root(par, env, rand, CostAuthority::default()),
+            ).await;
+            self.finish_detached_errors(result, errors)
         })
+    }
+
+    pub fn eval_with_host_work<'a>(
+        &'a self,
+        par: Par,
+        env: &'a Env<Par>,
+        rand: Blake2b512Random,
+        host_work: HostWorkBudget,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + Send + 'a>> {
+        Box::pin(async move {
+            let (result, _, errors) = deterministic_reduction::root_with_observation(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                Some(host_work),
+                self.eval_drive_root(par, env, rand, CostAuthority::default()),
+            ).await;
+            self.finish_detached_errors(result, errors)
+        })
+    }
+
+    fn finish_detached_errors(
+        &self,
+        result: Result<(), InterpreterError>,
+        mut errors: Vec<InterpreterError>,
+    ) -> Result<(), InterpreterError> {
+        if errors.is_empty() { return result; }
+        if let Err(error) = result { errors.insert(0, error); }
+        self.aggregate_evaluator_errors(errors).map(|_| ())
+    }
+
+    async fn eval_drive_root(
+        &self,
+        par: Par,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+        authority: CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let drive = Arc::new(DriveState {
+            live: AtomicUsize::new(1),
+            sink: Mutex::new(Vec::new()),
+            done: Mutex::new(Some(tx)),
+        });
+        *self.drive.write().expect("drive cell poisoned") = drive.clone();
+        let root = LiveGuard(drive.clone());
+        if let Err(error) = self.eval_with_path_authority(par, env, rand, SmallVec::new(), authority).await {
+            drive.sink.lock().expect("DriveState.sink mutex poisoned").push(
+                InterpreterError::Located { path: Vec::new(), source: Box::new(error) }
+            );
+        }
+        drop(root);
+        let _ = rx.await;
+        let mut errors = std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
+        errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
+        self.aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     /// Coordinate-threaded reduction entry (async counter driver). `path` is this eval task's position
@@ -933,133 +1068,120 @@ impl DebruijnInterpreter {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
-        Box::pin(self.eval_inner(par, env, rand, path))
+        self.eval_with_path_authority(par, env, rand, path, CostAuthority::default())
+    }
+
+    pub(crate) async fn eval_continuation(
+        self: &Arc<Self>,
+        par: Par,
+        env: Env<Par>,
+        rand: Blake2b512Random,
+        authority: CostAuthority,
+        path: SmallVec<[u32; 8]>,
+    ) -> Result<(), InterpreterError> {
+        let Some(parent) = deterministic_reduction::current() else {
+            let (result, _, errors) = deterministic_reduction::root_with_observation(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                None,
+                self.eval_drive_root(par, &env, rand, authority),
+            ).await;
+            return self.finish_detached_errors(result, errors);
+        };
+        let context = parent.split(1).pop().expect("one continuation context");
+        let drive = self.drive.read().expect("drive cell poisoned").clone();
+        let reducer = self.clone();
+        let child_path = path.clone();
+        spawn_detached(&drive, child_path, Box::pin(async move {
+            reducer.eval_inner(par, &env, rand, authority, path).await
+        }), context);
+        Ok(())
+    }
+
+    fn eval_with_path_authority<'a>(
+        &'a self,
+        par: Par,
+        env: &'a Env<Par>,
+        rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
+        authority: CostAuthority,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + Send + 'a>> {
+        Box::pin(self.eval_inner(par, env, rand, authority, path))
     }
 
     async fn eval_inner(
         &self,
-        mut par: Par,
+        par: Par,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: CostAuthority,
         // Coordinate of THIS eval task in the parallel-reduction tree. Each of the width-N parallel
         // terms below is evaluated at `path + [i]` (the term index i also seeds the rand split), so a
         // detached branch's error is localizable. Display-only (NOT consensus).
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let terms: Vec<GeneratedMessage> = vec![
-            std::mem::take(&mut par.sends)
-                .into_iter()
-                .map(GeneratedMessage::Send)
-                .collect::<Vec<_>>(),
-            std::mem::take(&mut par.receives)
-                .into_iter()
-                .map(GeneratedMessage::Receive)
-                .collect(),
-            std::mem::take(&mut par.news)
-                .into_iter()
-                .map(GeneratedMessage::New)
-                .collect(),
-            std::mem::take(&mut par.matches)
-                .into_iter()
-                .map(GeneratedMessage::Match)
-                .collect(),
-            std::mem::take(&mut par.conditionals)
-                .into_iter()
-                .map(GeneratedMessage::If)
-                .collect(),
-            std::mem::take(&mut par.bundles)
-                .into_iter()
-                .map(GeneratedMessage::Bundle)
-                .collect(),
-            std::mem::take(&mut par.exprs)
-                .into_iter()
-                .filter(|expr| match &expr.expr_instance {
-                    Some(expr_instance) => match expr_instance {
-                        ExprInstance::EVarBody(_) => true,
-                        ExprInstance::EMethodBody(_) => true,
-                        _ => false,
-                    },
-                    None => false,
-                })
-                .collect::<Vec<Expr>>()
-                .into_iter()
-                .map(GeneratedMessage::Expr)
-                .collect(),
-        ]
-        .into_iter()
-        .filter(|vec| !vec.is_empty())
-        .flatten()
-        .collect();
+        let terms = owned_evaluation_terms(par);
         let term_split_limit = i16::MAX;
         if terms.len() > term_split_limit.try_into().unwrap() {
             Err(InterpreterError::ReduceError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
                 terms.len(),
-                term_split_limit
+                i16::MAX
             )))
         } else {
-            // Collect errors from all parallel execution paths (pars)
-            // parTraverseSafe
-            let futures: Vec<
-                Pin<
-                    Box<
-                        dyn futures::Future<Output = Result<(), InterpreterError>>
-                            + std::marker::Send
-                            + 'static,
-                    >,
-                >,
-            > = {
-                // ★ LEG-1 DE-CLONE AT THE TASK-SPAWN BOUNDARY.
-                //
-                // This was `terms.iter() … let term_clone = term.clone();`. The
-                // spawned future is `'static`, so the branch term must be
-                // OWNED — but it does not have to be COPIED: `terms` is not
-                // used after this map, and the only in-closure use of it was
-                // `split(index, &terms, …)`, whose body reads nothing but
-                // `terms.len()`. Hoisting the count therefore lets the terms be
-                // MOVED, which deletes a `<GeneratedMessage as Clone>::clone`
-                // per parallel branch — and that clone is a
-                // `<Par as Clone>::clone`, the derived Θ(depth) traversal
-                // measured at 15,914 B/level (debug) / 2,867 (release). At that
-                // constant it is `D_max ≈ 130` on the 2 MiB stack a tokio
-                // worker gets, which made it the binding WORKER-side member of
-                // the family — not a residual.
-                //
-                // This is the "move where not reused" case; no `Arc` is needed
-                // because nothing else holds the terms.
-                let term_count = terms.len();
-                terms
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, term)| {
-                        let self_clone = self.with_metering_child(index);
-                        let env_clone = env.clone();
-                        let rand_split =
-                            eval_par_split(index.try_into().unwrap(), term_count, rand.clone());
-                        // Child coordinate for parallel term `index` (matches the rand split index).
-                        let mut child = path.clone();
-                        child.push(index as u32);
-                        Box::pin(async move {
-                            // ★ The term is MOVED, not lent. This closure already
-                            // owns it — that is what the de-clone above achieved —
-                            // and `generated_message_eval` now takes it by value, so
-                            // the ownership runs all the way down to the metered
-                            // substitution wrappers instead of stopping here and
-                            // being re-copied per arm.
-                            self_clone
-                                .generated_message_eval(term, &env_clone, rand_split, child)
-                                .await
-                        })
-                            as Pin<
-                                Box<
-                                    dyn futures::Future<Output = Result<(), InterpreterError>>
-                                        + std::marker::Send
-                                        + 'static,
-                                >,
-                            >
-                    })
-                    .collect()
-            };
+            let term_count = terms.len();
+            let (stack_terms, reduction_terms): (Vec<_>, Vec<_>) = terms
+                .into_iter()
+                .enumerate()
+                .partition(|(_, term)| matches!(term, GeneratedMessage::CostStack(_)));
+
+            let mut declaration_errors = Vec::new();
+            for (index, term) in stack_terms {
+                let reducer = self.with_metering_child(index);
+                let rand_split = evaluation_random(&rand, index, term_count)
+                    .expect("term count and index were validated");
+                let mut child = path.clone();
+                child.push(index as u32);
+                if let Err(error) = reducer
+                    .generated_message_eval(term, env, rand_split, authority.clone(), child)
+                    .await
+                {
+                    declaration_errors.push(error);
+                }
+            }
+            self.aggregate_evaluator_errors(declaration_errors)?;
+
+            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
+            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
+                .increment(term_count as u64);
+
+            if reduction_terms.len() == 1 {
+                let (index, term) = reduction_terms.into_iter().next().expect("one term");
+                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                    self.yielded_single_term_evaluations.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+                let reducer = self.with_metering_child(index);
+                let rand_split = evaluation_random(&rand, index, term_count)?;
+                return reducer.generated_message_eval(term, env, rand_split, authority, path).await;
+            }
+
+            let futures: Vec<Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + Send + 'static>>> =
+                reduction_terms.into_iter().map(|(index, term)| {
+                    let reducer = self.with_metering_child(index);
+                    let env = env.clone();
+                    let authority = authority.clone();
+                    let rand_split = evaluation_random(&rand, index, term_count)
+                        .expect("term count and index were validated");
+                    let mut child = path.clone();
+                    child.push(index as u32);
+                    Box::pin(async move {
+                        reducer.generated_message_eval(term, &env, rand_split, authority, child).await
+                    }) as Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + Send + 'static>>
+                }).collect();
+            self.spawned_eval_tasks.fetch_add(futures.len() as u64, Ordering::Relaxed);
 
             metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
@@ -1072,10 +1194,13 @@ impl DebruijnInterpreter {
             // => no consensus divergence (proven by the differential harness). The parent returns
             // immediately with Ok(()).
             let drive = self.drive.read().expect("drive cell poisoned").clone();
-            for (index, fut) in futures.into_iter().enumerate() {
+            let parent_context = deterministic_reduction::current()
+                .expect("parallel evaluation requires a reduction context");
+            let contexts = parent_context.split(futures.len());
+            for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
                 let mut child = path.clone();
                 child.push(index as u32);
-                spawn_detached(&drive, child, fut);
+                spawn_detached(&drive, child, fut, context);
             }
             Ok(())
         }
@@ -1086,6 +1211,36 @@ impl DebruijnInterpreter {
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
         let env = Env::new();
         self.eval(par, &env, rand).await
+    }
+
+    pub(crate) async fn inj_with_observation(
+        &self,
+        par: Par,
+        rand: Blake2b512Random,
+        host_work: Option<HostWorkBudget>,
+    ) -> (
+        Result<(), InterpreterError>,
+        super::accounting::economic_failure::EvaluationFailureSummary,
+    ) {
+        let env = Env::new();
+        let (result, summary, errors) = deterministic_reduction::root_with_observation(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                host_work,
+                self.eval_drive_root(par, &env, rand, CostAuthority::default()),
+            ).await;
+        (self.finish_detached_errors(result, errors), summary)
+    }
+
+    pub async fn inj_with_host_work(
+        &self,
+        par: Par,
+        rand: Blake2b512Random,
+        host_work: HostWorkBudget,
+    ) -> Result<(), InterpreterError> {
+        self.eval_with_host_work(par, &Env::new(), rand, host_work)
+            .await
     }
 
     /**
@@ -1100,6 +1255,7 @@ impl DebruijnInterpreter {
         chan: Par,
         data: ListParWithRandom,
         persistent: bool,
+        introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Pin<
         Box<
@@ -1108,7 +1264,7 @@ impl DebruijnInterpreter {
                 + 'a,
         >,
     > {
-        Box::pin(self.produce_inner(chan, data, persistent, path))
+        Box::pin(self.produce_inner(chan, data, persistent, introduction_authority, path))
     }
 
     /// Reactive single-step per-reduction seam (MeTTaIL OSLF stepper): emit `redex` to the installed
@@ -1135,9 +1291,16 @@ impl DebruijnInterpreter {
         chan: Par,
         data: ListParWithRandom,
         persistent: bool,
+        introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
+        let source = Produce::create(&chan, &data, persistent);
+        self.metering.budget().register_introduction_authority(
+            super::accounting::byte_accounting::produce_introduction_identity(&source),
+            super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+            &introduction_authority,
+        )?;
         // The space consumes the channel and
         // payload — the only post-call consumer is the persistent-produce
         // re-fire in `continue_produce_process`, so only a persistent send
@@ -1172,21 +1335,26 @@ impl DebruijnInterpreter {
                         is_replay,
                         produce_event.clone().output_value,
                         produce_event.failed,
+                        introduction_authority,
                         path,
                     )
                     .await?;
 
                 match dispatch_type {
                     DispatchType::NonDeterministicCall(ref output) => {
-                        let produce1 = produce_event.mark_as_non_deterministic(output.clone());
-                        self.space.update_produce(produce1).await;
+                        let produce1 = produce_event
+                            .clone()
+                            .mark_as_non_deterministic(output.clone());
+                        self.space.update_produce(&produce_event, produce1).await?;
                         Ok(dispatch_type)
                     }
 
                     DispatchType::FailedNonDeterministicCall(error) => {
                         // Mark the produce as failed for replay safety
                         let failed_produce = produce_event.with_error();
-                        self.space.update_produce(failed_produce).await;
+                        self.space
+                            .update_produce(&produce_event, failed_produce)
+                            .await?;
                         // Re-raise known error types as-is to preserve output_not_produced;
                         // wrap unknown errors in NonDeterministicProcessFailure.
                         match error {
@@ -1219,6 +1387,8 @@ impl DebruijnInterpreter {
         persistent: bool,
         peek: bool,
         guard: Option<Par>,
+        authority: CostAuthority,
+        introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Pin<
         Box<
@@ -1227,7 +1397,7 @@ impl DebruijnInterpreter {
                 + 'a,
         >,
     > {
-        Box::pin(self.consume_inner(binds, body, persistent, peek, guard, path))
+        Box::pin(self.consume_inner(binds, body, persistent, peek, guard, authority, introduction_authority, path))
     }
 
     async fn consume_inner(
@@ -1237,6 +1407,8 @@ impl DebruijnInterpreter {
         persistent: bool,
         peek: bool,
         guard: Option<Par>,
+        authority: CostAuthority,
+        introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
@@ -1246,15 +1418,23 @@ impl DebruijnInterpreter {
             self.update_mergeable_channels(source).await;
         }
 
+        let continuation = TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+            guard: guard.clone(),
+            cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
+        };
+        let source = Consume::create(&sources, &patterns, &continuation, persistent);
+        self.metering.budget().register_introduction_authority(
+            super::accounting::byte_accounting::consume_introduction_identity(&source),
+            super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+            &introduction_authority,
+        )?;
         let consume_result = self
             .space
             .consume(
                 sources.clone(),
                 patterns.clone(),
-                TaggedContinuation {
-                    tagged_cont: Some(TaggedCont::ParBody(body.clone())),
-                    guard: guard.clone(),
-                },
+                continuation,
                 persistent,
                 if peek {
                     BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())
@@ -1285,6 +1465,8 @@ impl DebruijnInterpreter {
             is_replay,
             Vec::new(),
             guard,
+            authority,
+            introduction_authority,
             path,
         )
         .await
@@ -1301,6 +1483,7 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
+        introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         // During replay, if the trace shows a failed non-deterministic process,
@@ -1344,6 +1527,7 @@ impl DebruijnInterpreter {
                     // path (run_parallel_dispatches adds the fan-out index at the detached spawn).
                     let path_dispatch = path.clone();
                     let path_refire = path.clone();
+                    let introduction_authority_refire = introduction_authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1376,7 +1560,7 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .produce(chan_refire, data_refire, persistent_flag, path_refire)
+                            .produce(chan_refire, data_refire, persistent_flag, introduction_authority_refire, path_refire)
                             .await
                     })
                         as Pin<
@@ -1450,6 +1634,8 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         guard: Option<Par>,
+        authority: CostAuthority,
+        introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         // The SAME read as `continue_produce_process` — literally, now: both go
@@ -1484,6 +1670,8 @@ impl DebruijnInterpreter {
                     // Coordinate continuity: dispatch + re-install continuations carry the consume's path.
                     let path_dispatch = path.clone();
                     let path_reconsume = path.clone();
+                    let authority_reconsume = authority.clone();
+                    let introduction_authority_reconsume = introduction_authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1522,6 +1710,8 @@ impl DebruijnInterpreter {
                                 persistent_flag,
                                 peek_flag,
                                 guard_clone,
+                                authority_reconsume,
+                                introduction_authority_reconsume,
                                 path_reconsume,
                             )
                             .await
@@ -1637,9 +1827,10 @@ impl DebruijnInterpreter {
             .map(|(index, (chan, _, removed_data, _))| {
                 let self_clone = self.with_metering_child(start_component + index);
                 let path_peek = path.clone();
+                let introduction_authority = removed_data.cost_authority.clone().unwrap_or_default();
                 Box::pin(async move {
                     self_clone
-                        .produce(chan, removed_data, false, path_peek)
+                        .produce(chan, removed_data, false, introduction_authority, path_peek)
                         .await
                 })
                     as Pin<
@@ -1677,10 +1868,13 @@ impl DebruijnInterpreter {
         // collapses the parked-parent chain while preserving concurrency (same spawns) => COMM order
         // unchanged => no consensus divergence.
         let drive = self.drive.read().expect("drive cell poisoned").clone();
-        for (index, fut) in futures.into_iter().enumerate() {
+        let parent_context = deterministic_reduction::current()
+            .expect("parallel dispatch requires a reduction context");
+        let contexts = parent_context.split(futures.len());
+        for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
             let mut child = path.clone();
             child.push(index as u32);
-            spawn_detached(&drive, child, fut);
+            spawn_detached(&drive, child, fut, context);
         }
         Ok(DispatchType::Skip)
     }
@@ -1707,6 +1901,10 @@ impl DebruijnInterpreter {
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
 
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
+
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
         // (b) tuple channels with a head that ISN'T in the tag registry
@@ -1715,7 +1913,7 @@ impl DebruijnInterpreter {
         if let Some(head_par) = head {
             match result {
                 Some(mt) => tracing::trace!(
-                    target: "f1r3fly.merge.tag_check",
+                    target: "f1r3fly.merge.tag_check.validation",
                     "mergeable channel detected: merge_type={:?}",
                     mt,
                 ),
@@ -1733,7 +1931,7 @@ impl DebruijnInterpreter {
                         })
                         .collect();
                     tracing::trace!(
-                        target: "f1r3fly.merge.tag_check",
+                        target: "f1r3fly.merge.tag_check.validation",
                         "tuple channel with non-tag head: head_hex={}, registered_tag_hexes={:?}",
                         head_hex,
                         tag_hexes,
@@ -1749,6 +1947,7 @@ impl DebruijnInterpreter {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
+        deterministic_reduction::record_evaluator_failures(&errors);
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
@@ -1814,14 +2013,28 @@ impl DebruijnInterpreter {
         term: GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::ReductionSteps,
+            HostWorkUnits::new(1),
+        )?;
+        let term_bytes = u64::try_from(term.encoded_len()).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "reduction term byte count does not fit in u64".to_string(),
+            )
+        })?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::ReductionTermBytes,
+            HostWorkUnits::new(term_bytes),
+        )?;
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_send(term, env, rand, path).await;
+                let result = self.eval_send(term, env, rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_SEND_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -1830,7 +2043,7 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_RECEIVE_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_receive(term, env, rand, path).await;
+                let result = self.eval_receive(term, env, rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_RECEIVE_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -1839,7 +2052,7 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_NEW_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_new(term, env.clone(), rand, path).await;
+                let result = self.eval_new(term, env.clone(), rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_NEW_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -1848,13 +2061,15 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_MATCH_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_match(term, env, rand, path).await;
+                let result = self.eval_match(term, env, rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_MATCH_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
             }
-            GeneratedMessage::If(term) => self.eval_if(term, env, rand, path).await,
-            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, path).await,
+            GeneratedMessage::If(term) => self.eval_if(term, env, rand, &authority, path).await,
+            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, &authority, path).await,
+            GeneratedMessage::CostSignedTerm(term) => self.eval_cost_signed_term(&term, env, rand, &authority, path).await,
+            GeneratedMessage::CostStack(term) => self.eval_cost_stack(&term, env, rand, &authority, path).await,
             GeneratedMessage::Expr(term) => match term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
@@ -1863,7 +2078,7 @@ impl DebruijnInterpreter {
                         // Reactive per-reduction seam: dereference `*N` — `res` is the resolved quoted
                         // process about to be evaluated. Two `is_none` checks, no alloc in production.
                         self.observe_and_pause(&res, ReductionKind::Deref).await?;
-                        self.eval_with_path(res, env, rand, path).await
+                        self.eval_with_path_authority(res, env, rand, path, authority).await
                     }
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
@@ -1874,7 +2089,7 @@ impl DebruijnInterpreter {
                         )?;
                         // Reactive per-reduction seam: method call re-eval. None-op in production.
                         self.observe_and_pause(&res, ReductionKind::Method).await?;
-                        self.eval_with_path(res, env, rand, path).await
+                        self.eval_with_path_authority(res, env, rand, path, authority).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -1905,6 +2120,7 @@ impl DebruijnInterpreter {
         send: Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // Destructured ONCE, by move. `chan` was `send.chan.clone()` — a
@@ -1917,10 +2133,19 @@ impl DebruijnInterpreter {
             ..
         } = send;
 
-        // D3 (DR-9, OD-3): a send is a token-consuming COMM — the consensus
-        // cost unit (one token per COMM). `send_eval_cost` is the diagnostic
-        // weight; only the COMM count gates consensus.
-        self.metering.reserve_comm(send_eval_cost())?;
+        self.metering.reserve_primitive(send_eval_cost())?;
+        let authority = if authority.regions.is_empty()
+            && self.metering.budget().has_comm_accounting_scope()
+        {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &rand.to_bytes(), 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
         let eval_chan = self.eval_expr(&unwrap_option_safe(chan)?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
@@ -1936,12 +2161,6 @@ impl DebruijnInterpreter {
             None => sub_chan,
         };
 
-        // W1 Phase 3: per-redex located-stack attribution. The COMM was already
-        // charged (scalar, to the envelope) above; this records the per-lane VIEW
-        // if the resolved channel is a signer supply channel `Σ⟦sᵢ⟧`. No-op on the
-        // single-signer fast path (gated by `any_signed_regions`).
-        self.metering.note_channel_lane(&unbundled);
-
         let subst_data = data
             .iter()
             .map(|expr| {
@@ -1955,8 +2174,11 @@ impl DebruijnInterpreter {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
+                cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
+                cost_stack: None,
             },
             persistent,
+            authority,
             path,
         )
         .await?;
@@ -1968,6 +2190,7 @@ impl DebruijnInterpreter {
         receive: Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // ★ DESTRUCTURED ONCE, BY MOVE — and once is the point.
@@ -1993,10 +2216,42 @@ impl DebruijnInterpreter {
             ..
         } = receive;
 
-        // D3 (DR-9, OD-3): a receive is a token-consuming COMM — the consensus
-        // cost unit (one token per COMM). `receive_eval_cost` is the diagnostic
-        // weight; only the COMM count gates consensus.
-        self.metering.reserve_comm(receive_eval_cost())?;
+        self.metering.reserve_primitive(receive_eval_cost())?;
+        let entropy = rand.to_bytes();
+        let signed_binds = binds.iter().filter(|bind| bind.cost_signature.is_some()).count();
+        if signed_binds != 0 && signed_binds != binds.len() {
+            return Err(InterpreterError::ReduceError(
+                "cost-accounting: a join must sign either every receive clause or none".to_string(),
+            ));
+        }
+        let introduction_authority = if authority.regions.is_empty()
+            && self.metering.budget().has_comm_accounting_scope()
+        {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &entropy, 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
+        let base_authority = if signed_binds == 0 {
+            introduction_authority.clone()
+        } else {
+            authority.clone()
+        };
+        let receive_authority = binds.iter().enumerate().try_fold(
+            base_authority,
+            |authority, (index, bind)| -> Result<CostAuthority, InterpreterError> {
+                let Some(signature) = bind.cost_signature.as_ref() else { return Ok(authority); };
+                let signature = self.substitute.substitute_cost_signature(signature.clone(), 0, env)?;
+                let region = cost_region(&signature, &entropy, (index + 1) as u32)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                extend_authority(&authority, region)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))
+            },
+        )?;
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
@@ -2072,15 +2327,6 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        // W1 Phase 3: per-redex located-stack attribution. A receive is ONE COMM
-        // (already charged scalar to the envelope above); record the per-lane VIEW
-        // keyed on the FIRST bind's resolved source channel — the SAME bind
-        // `delta_sigma::demand_by_sig` attributes on, so the static dual and the
-        // runtime agree COMM-for-COMM. No-op on the single-signer fast path.
-        if let Some((_, first_channel)) = binds.first() {
-            self.metering.note_channel_lane(first_channel);
-        }
-
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         //
         // ★ The continuation BODY is MOVED into the substitution. This was the
@@ -2102,6 +2348,8 @@ impl DebruijnInterpreter {
             persistent,
             peek,
             subst_guard,
+            receive_authority,
+            introduction_authority,
             path,
         )
         .await?;
@@ -2119,6 +2367,7 @@ impl DebruijnInterpreter {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        self.reserve_host_primitive(valproc)?;
         self.metering.reserve_primitive(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
@@ -2146,6 +2395,7 @@ impl DebruijnInterpreter {
         mat: Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
@@ -2191,13 +2441,39 @@ impl DebruijnInterpreter {
                         env,
                     )?;
 
-                    let mut spatial_matcher = SpatialMatcherContext::new();
+                    let host = deterministic_reduction::current()
+                        .and_then(|context| context.host_work_budget());
+                    let meter = |operations, scanned, backing| {
+                        reserve_matcher_host_work(
+                            host.as_ref().expect("metered matcher has a host budget"),
+                            operations,
+                            scanned,
+                            backing,
+                        )
+                    };
+                    let mut spatial_matcher = if host.is_some() {
+                        SpatialMatcherContext::with_meter(&meter)
+                            .map_err(|_| InterpreterError::HostWorkRejected)?
+                    } else {
+                        SpatialMatcherContext::new()
+                    };
+                    if let Some(host) = host.as_ref() {
+                        let backing = |operations, scanned, bytes| {
+                            reserve_matcher_host_work(host, operations, scanned, bytes)
+                                .map_err(|_| BackingError::Rejected)
+                        };
+                        clone_backing::reserve_copy_and_cleanup(&target, &backing)
+                            .map_err(|_| InterpreterError::HostWorkRejected)?;
+                    }
                     // ⚠ The target IS still copied per case attempted:
                     // `spatial_match_result` consumes it and the next case needs
                     // it again. That copy is inherent to trying n patterns
                     // against one target, and is out of this change's scope.
                     let match_result =
                         spatial_matcher.spatial_match_result(target.clone(), pattern);
+                    if spatial_matcher.take_error().is_some() {
+                        return Err(InterpreterError::HostWorkRejected);
+                    }
 
                     match match_result {
                         None => {
@@ -2248,6 +2524,7 @@ impl DebruijnInterpreter {
                                         }
                                         other => other.commits(),
                                     }
+
                                 }
                                 _ => true,
                             };
@@ -2262,7 +2539,7 @@ impl DebruijnInterpreter {
                             // None-op in production.
                             self.observe_and_pause(&case_body, ReductionKind::Match)
                                 .await?;
-                            self.eval_with_path(case_body, &case_env, rand, path.clone())
+                            self.eval_with_path_authority(case_body, &case_env, rand, path.clone(), authority.clone())
                                 .await?;
 
                             return Ok(());
@@ -2278,10 +2555,9 @@ impl DebruijnInterpreter {
         // case, and `mat.target` was only ever borrowed to be evaluated.
         let Match { target, cases, .. } = mat;
 
-        // D3 (DR-9, OD-3): `match` is a non-COMM structural reduction —
-        // DIAGNOSTIC only (it is metered for fidelity but contributes 0 to the
-        // consensus consumed cost).
-        self.metering.reserve_reduction(match_eval_cost())?;
+        // Source cost-accounting semantics: structural reductions consume their
+        // primitive cost even when they do not commit a COMM.
+        self.metering.reserve_primitive(match_eval_cost())?;
         let target = target.expect("Match.target: normalizer post-condition");
         let evaled_target = self.eval_expr(&target, env)?;
         let subst_target = self
@@ -2296,6 +2572,7 @@ impl DebruijnInterpreter {
         conditional: If,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // Destructured by move. Both branch clones were deep copies of a whole
@@ -2308,9 +2585,9 @@ impl DebruijnInterpreter {
             ..
         } = conditional;
 
-        // D3 (DR-9, OD-3): `if` is a non-COMM structural reduction —
-        // DIAGNOSTIC only (metered for fidelity, 0 toward consensus cost).
-        self.metering.reserve_reduction(match_eval_cost())?;
+        // The source branch charges this structural step before evaluating its
+        // condition, independently of whether either branch later commits.
+        self.metering.reserve_primitive(match_eval_cost())?;
         let condition = condition.expect("If.condition: normalizer post-condition");
         let evaled_cond = self.eval_expr(&condition, env)?;
         let subst_cond = self.substitute.substitute_and_charge(evaled_cond, 0, env)?;
@@ -2320,13 +2597,13 @@ impl DebruijnInterpreter {
                 let branch = if_true.expect("If.if_true: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` true-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
-                self.eval_with_path(branch, env, rand, path).await
+                self.eval_with_path_authority(branch, env, rand, path, authority.clone()).await
             }
             Some(false) => {
                 let branch = if_false.expect("If.if_false: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` false-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
-                self.eval_with_path(branch, env, rand, path).await
+                self.eval_with_path_authority(branch, env, rand, path, authority.clone()).await
             }
             None => Err(InterpreterError::IfConditionTypeError {
                 actual_type: describe_par_type(&subst_cond),
@@ -2341,119 +2618,17 @@ impl DebruijnInterpreter {
     // TODO: Eliminate variable shadowing - OLD
     async fn eval_new(
         &self,
-        new: New,
+        mut new: New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
+        authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        // Destructured by move: `new.uri.clone()` copied the URI list on every
-        // `new`, and `new.p.clone()` deep-copied the entire scope BODY. Only
-        // `injections` is read through a borrow, by the `add_urn` closure.
-        let New {
-            bind_count,
-            p,
-            uri,
-            injections,
-            ..
-        } = new;
-
-        let mut alloc = |count: usize, urns: Vec<String>| {
-            let simple_news =
-                (0..(count - urns.len()))
-                    .into_iter()
-                    .fold(env.clone(), |mut _env: Env<Par>, _| {
-                        let addr: Par = Par::default().with_unforgeables(vec![GUnforgeable {
-                            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                                id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                            })),
-                        }]);
-                        _env.put(addr)
-                    });
-
-            let add_urn = |new_env: &mut Env<Par>, urn: String| {
-                if !self.urn_map.contains_key(&urn) {
-                    // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
-                    // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
-                    match injections.get(&urn) {
-                        Some(p) => {
-                            if let Some(gunf) = RhoUnforgeable::unapply(p) {
-                                if let Some(instance) = gunf.unf_instance {
-                                    Ok(new_env.put(Par::default().with_unforgeables(vec![
-                                        GUnforgeable {
-                                            unf_instance: Some(instance),
-                                        },
-                                    ])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "unf_instance field is None".to_string(),
-                                    ))
-                                }
-                            } else if let Some(expr) = RhoExpression::unapply(p) {
-                                if let Some(instance) = expr.expr_instance {
-                                    Ok(new_env.put(Par::default().with_exprs(vec![Expr {
-                                        expr_instance: Some(instance),
-                                    }])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "expr_instance field is None".to_string(),
-                                    ))
-                                }
-                            } else {
-                                Err(InterpreterError::BugFoundError(
-                                    "invalid injection".to_string(),
-                                ))
-                            }
-                        }
-                        None => Err(InterpreterError::BugFoundError(format!(
-                            "No value set for {}. This is a bug in the normalizer or on the path from it.",
-                            urn
-                        ))),
-                    }
-                } else {
-                    match self.urn_map.get(&urn) {
-                        Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag" {
-                                use prost::Message;
-                                let bytes = p.encode_to_vec();
-                                let hex: String =
-                                    bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::info!(
-                                    target: "f1r3fly.merge.tag_check",
-                                    "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
-                                    hex,
-                                );
-                            }
-                            Ok(new_env.put(p.clone()))
-                        }
-                        None => Err(InterpreterError::ReduceError(format!(
-                            "Unknown urn for new: {}",
-                            urn
-                        ))),
-                    }
-                }
-            };
-
-            urns.iter().try_fold(simple_news, |mut acc, urn| {
-                add_urn(&mut acc, urn.to_string())
-            })
-        };
-
-        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural
-        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the
-        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the
-        // `new` no longer counts toward the per-COMM consensus cost.
-        self.metering
-            .reserve_reduction(new_bindings_cost(bind_count as i64))?;
-        match alloc(bind_count as usize, uri) {
-            Ok(env) => {
-                let body = unwrap_option_safe(p)?;
-                // Reactive per-reduction seam: a `new` scope body, after fresh-name allocation.
-                // None-op in production.
-                self.observe_and_pause(&body, ReductionKind::New).await?;
-                self.eval_with_path(body, &env, rand, path).await
-            }
-            Err(e) => Err(e),
-        }
+        self.metering.reserve_primitive(new_bindings_cost(new.bind_count as i64))?;
+        let new_env = allocate_new_bindings(&new, &env, &mut rand, &self.urn_map)?;
+        let body = unwrap_option_safe(new.p.take())?;
+        self.observe_and_pause(&body, ReductionKind::New).await?;
+        self.eval_with_path_authority(body, &new_env, rand, path, authority.clone()).await
     }
 
     /// Resolve a bind's source channel: evaluate it, substitute it, and strip a
@@ -2493,6 +2668,7 @@ impl DebruijnInterpreter {
         bundle: Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // `bundle.body.clone()` deep-copied the bundled process; `bundle` is
@@ -2500,7 +2676,263 @@ impl DebruijnInterpreter {
         let body = unwrap_option_safe(bundle.body)?;
         // Reactive per-reduction seam: a `bundle` body, after unwrapping. None-op in production.
         self.observe_and_pause(&body, ReductionKind::Bundle).await?;
-        self.eval_with_path(body, env, rand, path).await
+        self.eval_with_path_authority(body, env, rand, path, authority.clone()).await
+    }
+
+    async fn eval_cost_signed_term(
+        &self,
+        term: &CostSignedTerm,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+        authority: &CostAuthority,
+        path: SmallVec<[u32; 8]>,
+    ) -> Result<(), InterpreterError> {
+        let host =
+            deterministic_reduction::current().and_then(|context| context.host_work_budget());
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            let Some(host) = host.as_ref() else {
+                return Ok(());
+            };
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+                host.reserve(dimension, HostWorkUnits::new(amount))
+                    .map_err(|_| BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
+            backing(
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+                scanned,
+                bytes,
+            )
+        };
+        let native_error = |error: AuthorityError| match error {
+            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
+            other => InterpreterError::ReduceError(other.to_string()),
+        };
+        if host.is_some() {
+            clone_backing::inspect(&term.signature, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&term.signature, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let signature = unwrap_option_safe(term.signature.clone())?;
+        let signature = if host.is_some() {
+            self.substitute
+                .substitute_cost_signature_metered(signature, 0, env, &backing)?
+        } else {
+            self.substitute
+                .substitute_cost_signature(signature, 0, env)?
+        };
+        let authority = if host.is_some() {
+            reserve_reducer_random_bytes(&rand, &owned_backing)?;
+            let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
+                .map_err(native_error)?;
+            backing(1, 0, std::mem::size_of::<CostRegion>())
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            let singleton = CostAuthority {
+                regions: vec![region],
+            };
+            merge_authorities_metered([authority, &singleton], &owned_backing)
+                .map_err(native_error)?
+        } else {
+            let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            extend_authority(authority, region).map_err(native_error)?
+        };
+        if host.is_some() {
+            clone_backing::inspect(&term.body, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&term.body, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let body = unwrap_option_safe(term.body.clone())?;
+        let context = deterministic_reduction::current()
+            .expect("signed reduction requires a reduction context")
+            .split(1)
+            .pop()
+            .expect("one signed child context");
+        let drive = self.drive.read().expect("drive cell poisoned").clone();
+        let reducer = self.clone();
+        let env = env.clone();
+        let child_path = path.clone();
+        spawn_detached(&drive, child_path, Box::pin(async move {
+            reducer.eval_inner(body, &env, rand, authority, path).await
+        }), context);
+        Ok(())
+    }
+
+    async fn eval_cost_stack(
+        &self,
+        stack: &CostStack,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+        authority: &CostAuthority,
+        path: SmallVec<[u32; 8]>,
+    ) -> Result<(), InterpreterError> {
+        let host =
+            deterministic_reduction::current().and_then(|context| context.host_work_budget());
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            let Some(host) = host.as_ref() else {
+                return Ok(());
+            };
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+                host.reserve(dimension, HostWorkUnits::new(amount))
+                    .map_err(|_| BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
+            backing(
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+                scanned,
+                bytes,
+            )
+        };
+        let source_meter = |operations: usize, scanned: usize, bytes: usize| {
+            let Some(host) = host.as_ref() else {
+                return Ok(());
+            };
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
+                host.reserve(dimension, HostWorkUnits::new(amount))
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+            }
+            Ok(())
+        };
+        let native_error = |error: AuthorityError| match error {
+            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
+            other => InterpreterError::ReduceError(other.to_string()),
+        };
+        if host.is_some() {
+            clone_backing::inspect(&stack.cells, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&stack.cells, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let stack = CostStack {
+            cells: stack
+                .cells
+                .iter()
+                .cloned()
+                .map(|signature| {
+                    if host.is_some() {
+                        self.substitute
+                            .substitute_cost_signature_metered(signature, 0, env, &backing)
+                    } else {
+                        self.substitute.substitute_cost_signature(signature, 0, env)
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let head = stack.cells.first().ok_or_else(|| {
+            InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
+        })?;
+        for cell in &stack.cells {
+            let cell_signature = if host.is_some() {
+                cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
+            } else {
+                cost_signature_to_sig(cell).map_err(native_error)?
+            };
+            if cell_signature == super::accounting::Sig::Unit {
+                return Err(InterpreterError::ReduceError(
+                    "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
+                ));
+            }
+        }
+        let signature = if host.is_some() {
+            cost_signature_to_sig_metered(head, &backing).map_err(native_error)?
+        } else {
+            cost_signature_to_sig(head).map_err(native_error)?
+        };
+        let authority = if authority.regions.is_empty()
+            && self.metering.budget().has_comm_accounting_scope()
+        {
+            let payer = if let Some(host) = host.as_ref() {
+                self.metering.budget().signature_with_host_work(host)?
+            } else {
+                self.metering.budget().signature()
+            };
+            if host.is_some() {
+                let signature =
+                    sig_to_cost_signature_metered(&payer, &backing).map_err(native_error)?;
+                reserve_reducer_random_bytes(&rand, &owned_backing)?;
+                let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
+                    .map_err(native_error)?;
+                backing(1, 0, std::mem::size_of::<CostRegion>())
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+                let singleton = CostAuthority {
+                    regions: vec![region],
+                };
+                merge_authorities_metered([authority, &singleton], &owned_backing)
+                    .map_err(native_error)?
+            } else {
+                let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
+                let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+                extend_authority(authority, region).map_err(native_error)?
+            }
+        } else {
+            if host.is_some() {
+                clone_backing::inspect(authority, &backing)
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+                clone_backing::reserve(authority, &owned_backing)
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+            }
+            authority.clone()
+        };
+        let channel = if host.is_some() {
+            funding_sig_channel_metered(&signature, &owned_backing).map_err(native_error)?
+        } else {
+            super::accounting::SignatureChannel::from_sig(&signature).par
+        };
+        if host.is_some() {
+            reserve_reducer_random_bytes(&rand, &owned_backing)?;
+        }
+        let datum = ListParWithRandom {
+            pars: Vec::new(),
+            random_state: rand.to_bytes(),
+            cost_authority: None,
+            cost_stack: Some(stack),
+        };
+        let datum_cells = &datum.cost_stack.as_ref().expect("cost stack").cells;
+        if host.is_some() {
+            clone_backing::inspect(datum_cells, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(datum_cells, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let cells = datum_cells.clone();
+        let source = if host.is_some() {
+            Produce::create_metered(&channel, &datum, false, &source_meter)?
+        } else {
+            Produce::create(&channel, &datum, false)
+        };
+        let produce_hash: [u8; 32] = source
+            .hash
+            .bytes()
+            .try_into()
+            .expect("RSpace produce hash length");
+        let reservation = self.metering.budget().prepare_authority_stack_transfer(
+            produce_hash,
+            cells,
+            &authority,
+        )?;
+        self.produce(channel, datum, false, authority, path).await?;
+        reservation.commit();
+        Ok(())
     }
 
     // Public here for testing purposes
@@ -2628,6 +3060,8 @@ impl DebruijnInterpreter {
             bundles: par.bundles.clone(),
             connectives: par.connectives.clone(),
             conditionals: par.conditionals.clone(),
+            cost_signed_terms: par.cost_signed_terms.clone(),
+            cost_stacks: par.cost_stacks.clone(),
             locally_free: par.locally_free.clone(),
             connective_used: par.connective_used,
         }
@@ -2666,6 +3100,9 @@ impl DebruijnInterpreter {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
+        if matches!(expr.expr_instance.as_ref(), Some(ExprInstance::EMethodBody(_))) {
+            self.reserve_host_primitive(expr)?;
+        }
         if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
             if let Some(action) = self.begin_fused_method_chain(emethod, env)? {
                 Self::continue_fused_action(action, FusedOutput::Par, decoded_entries, work, vals);
@@ -2973,6 +3410,39 @@ impl DebruijnInterpreter {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
+        if matches!(
+            expr.expr_instance.as_ref(),
+            Some(
+                ExprInstance::ENotBody(_)
+                    | ExprInstance::ENegBody(_)
+                    | ExprInstance::EMultBody(_)
+                    | ExprInstance::EDivBody(_)
+                    | ExprInstance::EPlusBody(_)
+                    | ExprInstance::EMinusBody(_)
+                    | ExprInstance::ELtBody(_)
+                    | ExprInstance::ELteBody(_)
+                    | ExprInstance::EGtBody(_)
+                    | ExprInstance::EGteBody(_)
+                    | ExprInstance::EEqBody(_)
+                    | ExprInstance::ENeqBody(_)
+                    | ExprInstance::EAndBody(_)
+                    | ExprInstance::EOrBody(_)
+                    | ExprInstance::EListBody(_)
+                    | ExprInstance::ETupleBody(_)
+                    | ExprInstance::ESetBody(_)
+                    | ExprInstance::EMapBody(_)
+                    | ExprInstance::EMethodBody(_)
+                    | ExprInstance::EPathmapBody(_)
+                    | ExprInstance::EZipperBody(_)
+                    | ExprInstance::EMatchesBody(_)
+                    | ExprInstance::EPercentPercentBody(_)
+                    | ExprInstance::EPlusPlusBody(_)
+                    | ExprInstance::EMinusMinusBody(_)
+                    | ExprInstance::EModBody(_)
+            )
+        ) {
+            self.reserve_host_primitive(expr)?;
+        }
         let expr_instance = match &expr.expr_instance {
             Some(ei) => ei,
             None => {
@@ -3017,6 +3487,12 @@ impl DebruijnInterpreter {
             ExprInstance::GDouble(x) => {
                 vals.push(EvVal::Expr(Expr {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
+                }));
+                Ok(())
+            }
+            ExprInstance::GFloat32(x) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(*x)),
                 }));
                 Ok(())
             }
@@ -4361,6 +4837,16 @@ impl DebruijnInterpreter {
         let subst_target = self
             .substitute
             .substitute_and_charge(evaled_target, 0, env)?;
+        let host = deterministic_reduction::current()
+            .and_then(|context| context.host_work_budget());
+        if let Some(host) = host.as_ref() {
+            let backing = |operations, scanned, bytes| {
+                reserve_matcher_host_work(host, operations, scanned, bytes)
+                    .map_err(|_| BackingError::Rejected)
+            };
+            clone_backing::reserve_copy_and_cleanup(pattern, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
         // ★ A VISIBLE, ATTRIBUTABLE COPY. `pattern` is a borrowed `&Par` — see
         // this function's own signature comment — so substituting it requires a
         // copy. It is written here rather than hidden inside the wrapper.
@@ -4368,8 +4854,24 @@ impl DebruijnInterpreter {
             .substitute
             .substitute_and_charge(pattern.clone(), 1, env)?;
 
-        let mut spatial_matcher = SpatialMatcherContext::new();
+        let meter = |operations, scanned, backing| {
+            reserve_matcher_host_work(
+                host.as_ref().expect("metered matcher has a host budget"),
+                operations,
+                scanned,
+                backing,
+            )
+        };
+        let mut spatial_matcher = if host.is_some() {
+            SpatialMatcherContext::with_meter(&meter)
+                .map_err(|_| InterpreterError::HostWorkRejected)?
+        } else {
+            SpatialMatcherContext::new()
+        };
         let match_result = spatial_matcher.spatial_match_result(subst_target, subst_pattern);
+        if spatial_matcher.take_error().is_some() {
+            return Err(InterpreterError::HostWorkRejected);
+        }
 
         Ok(Expr {
             expr_instance: Some(ExprInstance::GBool(match_result.is_some())),
@@ -4984,7 +5486,7 @@ impl DebruijnInterpreter {
 
     fn to_byte_array_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToByteArrayMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToByteArrayMethod<'a> {
@@ -5032,7 +5534,7 @@ impl DebruijnInterpreter {
 
     fn hex_to_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct HexToBytesMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> Method for HexToBytesMethod<'a> {
@@ -5082,7 +5584,7 @@ impl DebruijnInterpreter {
 
     fn bytes_to_hex_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct BytesToHexMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> Method for BytesToHexMethod<'a> {
@@ -5132,7 +5634,7 @@ impl DebruijnInterpreter {
 
     fn to_utf8_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToUtf8BytesMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> Method for ToUtf8BytesMethod<'a> {
@@ -5183,7 +5685,7 @@ impl DebruijnInterpreter {
 
     fn union_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct UnionMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> UnionMethod<'a> {
@@ -5316,7 +5818,7 @@ impl DebruijnInterpreter {
 
     fn diff_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DiffMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DiffMethod<'a> {
@@ -5443,7 +5945,7 @@ impl DebruijnInterpreter {
 
     fn intersection_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct IntersectionMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> IntersectionMethod<'a> {
@@ -5525,7 +6027,7 @@ impl DebruijnInterpreter {
 
     fn restriction_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RestrictionMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RestrictionMethod<'a> {
@@ -5602,7 +6104,7 @@ impl DebruijnInterpreter {
 
     fn drop_head_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DropHeadMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DropHeadMethod<'a> {
@@ -5663,7 +6165,7 @@ impl DebruijnInterpreter {
 
     fn run_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RunMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RunMethod<'a> {
@@ -5748,7 +6250,7 @@ impl DebruijnInterpreter {
 
     fn read_zipper_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ReadZipperMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ReadZipperMethod<'a> {
@@ -5809,7 +6311,7 @@ impl DebruijnInterpreter {
 
     fn read_zipper_at_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ReadZipperAtMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ReadZipperAtMethod<'a> {
@@ -5896,7 +6398,7 @@ impl DebruijnInterpreter {
 
     fn write_zipper_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct WriteZipperMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> WriteZipperMethod<'a> {
@@ -5954,7 +6456,7 @@ impl DebruijnInterpreter {
 
     fn write_zipper_at_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct WriteZipperAtMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> WriteZipperAtMethod<'a> {
@@ -6026,7 +6528,7 @@ impl DebruijnInterpreter {
 
     fn descend_to_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DescendToMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DescendToMethod<'a> {
@@ -6104,7 +6606,7 @@ impl DebruijnInterpreter {
 
     fn get_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetLeafMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetLeafMethod<'a> {
@@ -6154,7 +6656,7 @@ impl DebruijnInterpreter {
 
     fn get_subtrie_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetSubtrieMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetSubtrieMethod<'a> {
@@ -6210,7 +6712,7 @@ impl DebruijnInterpreter {
 
     fn set_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SetLeafMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SetLeafMethod<'a> {
@@ -6287,7 +6789,7 @@ impl DebruijnInterpreter {
 
     fn set_subtrie_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SetSubtrieMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SetSubtrieMethod<'a> {
@@ -6365,7 +6867,7 @@ impl DebruijnInterpreter {
 
     fn remove_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RemoveLeafMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RemoveLeafMethod<'a> {
@@ -6443,7 +6945,7 @@ impl DebruijnInterpreter {
 
     fn remove_branches_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RemoveBranchesMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RemoveBranchesMethod<'a> {
@@ -6509,7 +7011,7 @@ impl DebruijnInterpreter {
 
     fn graft_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GraftMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GraftMethod<'a> {
@@ -6604,7 +7106,7 @@ impl DebruijnInterpreter {
 
     fn join_into_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct JoinIntoMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> JoinIntoMethod<'a> {
@@ -6704,7 +7206,7 @@ impl DebruijnInterpreter {
 
     fn at_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AtPathMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AtPathMethod<'a> {
@@ -6757,7 +7259,7 @@ impl DebruijnInterpreter {
 
     fn path_exists_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct PathExistsMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> PathExistsMethod<'a> {
@@ -6818,7 +7320,7 @@ impl DebruijnInterpreter {
 
     fn create_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct CreatePathMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> CreatePathMethod<'a> {
@@ -6881,7 +7383,7 @@ impl DebruijnInterpreter {
 
     fn prune_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct PrunePathMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> PrunePathMethod<'a> {
@@ -6936,7 +7438,7 @@ impl DebruijnInterpreter {
 
     fn reset_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ResetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ResetMethod<'a> {
@@ -6989,7 +7491,7 @@ impl DebruijnInterpreter {
 
     fn ascend_one_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AscendOneMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AscendOneMethod<'a> {
@@ -7053,7 +7555,7 @@ impl DebruijnInterpreter {
 
     fn ascend_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AscendMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AscendMethod<'a> {
@@ -7140,7 +7642,7 @@ impl DebruijnInterpreter {
 
     fn child_count_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ChildCountMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ChildCountMethod<'a> {
@@ -7199,7 +7701,7 @@ impl DebruijnInterpreter {
 
     fn descend_first_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DescendFirstMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DescendFirstMethod<'a> {
@@ -7266,7 +7768,7 @@ impl DebruijnInterpreter {
 
     fn descend_indexed_branch_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DescendIndexedBranchMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DescendIndexedBranchMethod<'a> {
@@ -7368,7 +7870,7 @@ impl DebruijnInterpreter {
 
     fn to_next_sibling_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToNextSiblingMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToNextSiblingMethod<'a> {
@@ -7458,7 +7960,7 @@ impl DebruijnInterpreter {
 
     fn to_prev_sibling_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToPrevSiblingMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToPrevSiblingMethod<'a> {
@@ -7814,7 +8316,7 @@ impl DebruijnInterpreter {
 
     fn add_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AddMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AddMethod<'a> {
@@ -7884,7 +8386,7 @@ impl DebruijnInterpreter {
 
     fn delete_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DeleteMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DeleteMethod<'a> {
@@ -7983,7 +8485,7 @@ impl DebruijnInterpreter {
 
     fn contains_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ContainsMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ContainsMethod<'a> {
@@ -8056,7 +8558,7 @@ impl DebruijnInterpreter {
 
     fn get_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetMethod<'a> {
@@ -8117,7 +8619,7 @@ impl DebruijnInterpreter {
 
     fn get_or_else_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetOrElseMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetOrElseMethod<'a> {
@@ -8184,7 +8686,7 @@ impl DebruijnInterpreter {
 
     fn set_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SetMethod<'a> {
@@ -8258,7 +8760,7 @@ impl DebruijnInterpreter {
 
     fn keys_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct KeysMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> KeysMethod<'a> {
@@ -8353,7 +8855,7 @@ impl DebruijnInterpreter {
 
     fn size_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SizeMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SizeMethod<'a> {
@@ -8424,7 +8926,7 @@ impl DebruijnInterpreter {
 
     fn length_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct LengthMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> LengthMethod<'a> {
@@ -8482,7 +8984,7 @@ impl DebruijnInterpreter {
 
     fn slice_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SliceMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SliceMethod<'a> {
@@ -8578,7 +9080,7 @@ impl DebruijnInterpreter {
 
     fn take_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct TakeMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> TakeMethod<'a> {
@@ -8641,7 +9143,7 @@ impl DebruijnInterpreter {
 
     fn to_list_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToListMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToListMethod<'a> {
@@ -8954,7 +9456,7 @@ impl DebruijnInterpreter {
 
     fn to_string_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToStringMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToStringMethod<'a> {
@@ -9179,19 +9681,41 @@ impl DebruijnInterpreter {
         etuple
     }
 
-    /**
-     * Evaluate any top level expressions in @param Par .
-     *
-     * Public here to be used in tests / Scala code has it as private but still able to use in tests?
-     */
-    // (eval_expr moved: now a thin wrapper over eval_drive, above.)
+}
 
+impl DebruijnInterpreter {
     pub fn new(
         space: RhoISpace,
         urn_map: Arc<HashMap<String, Par>>,
         merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
         mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: RuntimeBudget,
+    ) -> Arc<Self> {
+        let reduction_coordinator = ReductionCoordinator::default();
+        let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+            space,
+            reduction_coordinator.clone(),
+        )));
+        let core = ReducerCore::new(
+            space.clone().into(),
+            urn_map,
+            merge_chs,
+            mergeable_tags,
+            cost,
+            reduction_coordinator,
+        );
+        Arc::new(Self { space, core })
+    }
+}
+
+impl ReducerCore {
+    pub fn new(
+        space: ExecutionSpace,
+        urn_map: Arc<HashMap<String, Par>>,
+        merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+        mergeable_tags: Arc<HashMap<Par, MergeType>>,
+        cost: RuntimeBudget,
+        reduction_coordinator: ReductionCoordinator,
     ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
         let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -9200,7 +9724,7 @@ impl DebruijnInterpreter {
         });
 
         let metering = MeteredMachine::new(cost.clone());
-        let reducer = Arc::new(DebruijnInterpreter {
+        let core = Arc::new(ReducerCore {
             space,
             dispatcher: dispatcher.clone(),
             urn_map,
@@ -9209,10 +9733,14 @@ impl DebruijnInterpreter {
             metering: metering.clone(),
             substitute: Substitute { metering },
             drive: idle_drive_cell(),
+            reduction_coordinator,
+            single_term_evaluations: Arc::new(AtomicU64::new(0)),
+            yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
+            spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         });
 
-        reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
-        reducer
+        reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
+        core
     }
 }
 
@@ -9241,6 +9769,7 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
         ExprInstance::GDouble(_) => String::from("float"),
+        ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),
         ExprInstance::GFixedPoint(_) => String::from("fixedpoint"),
@@ -9282,6 +9811,8 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
         UnfInstance::GPrivateBody(_) => String::from("PrivateBody"),
         UnfInstance::GDeployIdBody(_) => String::from("DeployId"),
         UnfInstance::GDeployerIdBody(_) => String::from("DeployerId"),
+        UnfInstance::GAuthorityIdBody(_) => String::from("AuthorityId"),
+        UnfInstance::GPrincipalIdBody(_) => String::from("PrincipalId"),
         UnfInstance::GSysAuthTokenBody(_) => String::from("SysAuthToken"),
     }
 }
@@ -9289,6 +9820,7 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 fn par_contains_nan_double(par: &Par) -> bool {
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(ExprInstance::GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
@@ -9454,10 +9986,7 @@ fn multiply_fixed_points(
     a: &models::rhoapi::GFixedPoint,
     b: &models::rhoapi::GFixedPoint,
 ) -> models::rhoapi::GFixedPoint {
-    debug_assert_eq!(
-        a.scale, b.scale,
-        "multiply_fixed_points called with mismatched scales"
-    );
+    // Caller-checked: the interpreter rejects mismatched scales typed.
     // Scale-preserving: (ua * ub) / 10^scale, using floor division
     let ua = bytes_to_bigint(&a.unscaled);
     let ub = bytes_to_bigint(&b.unscaled);
@@ -9482,10 +10011,7 @@ fn divide_fixed_points(
     a: &models::rhoapi::GFixedPoint,
     b: &models::rhoapi::GFixedPoint,
 ) -> models::rhoapi::GFixedPoint {
-    debug_assert_eq!(
-        a.scale, b.scale,
-        "divide_fixed_points called with mismatched scales"
-    );
+    // Caller-checked: the interpreter rejects mismatched scales typed.
     let ten = num_bigint::BigInt::from(10);
     let factor = num_traits::pow::pow(ten, b.scale as usize);
     let scaled = bytes_to_bigint(&a.unscaled) * factor;

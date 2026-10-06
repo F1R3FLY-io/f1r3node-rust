@@ -61,7 +61,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -69,10 +69,10 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -214,23 +214,25 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let checkpoint_a = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_a_raw)
             .into_iter()
-            .map(|d| d.deploy)
+            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
+        None,
+        None,
         None,
     )
     .await
     .expect("compute block_a checkpoint");
-    for pd in &pd_a {
+    for pd in &checkpoint_a.deploys {
         assert!(
             !pd.is_failed,
             "deploy in block_a must execute cleanly (sig {}): {:?}",
@@ -239,10 +241,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         );
     }
     let mut block_a = block_a_raw;
-    block_a.body.state.post_state_hash = post_state_a.clone();
-    block_a.body.deploys = pd_a;
-    block_a.body.system_deploys = sys_pd_a;
-    block_a.body.state.bonds = bonds_a;
+    block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
+    block_a.body.deploys = checkpoint_a.deploys.into_iter().map(Into::into).collect();
+    block_a.body.system_deploys = checkpoint_a.system_deploys;
+    block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
     dag_storage
         .insert(&block_a, InsertMode::Normal)
@@ -268,23 +270,25 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let checkpoint_b = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_b_raw)
             .into_iter()
-            .map(|d| d.deploy)
+            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        None,
+        None,
         None,
     )
     .await
     .expect("compute block_b checkpoint");
-    for pd in &pd_b {
+    for pd in &checkpoint_b.deploys {
         assert!(
             !pd.is_failed,
             "deploy in block_b must execute cleanly (sig {}): {:?}",
@@ -293,10 +297,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         );
     }
     let mut block_b = block_b_raw;
-    block_b.body.state.post_state_hash = post_state_b.clone();
-    block_b.body.deploys = pd_b;
-    block_b.body.system_deploys = sys_pd_b;
-    block_b.body.state.bonds = bonds_b;
+    block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
+    block_b.body.deploys = checkpoint_b.deploys.into_iter().map(Into::into).collect();
+    block_b.body.system_deploys = checkpoint_b.system_deploys;
+    block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
     dag_storage
         .insert(&block_b, InsertMode::Normal)
@@ -316,24 +320,38 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     // `collateral_lost_pairs`, which is unioned into the merge's
     // rejected-user output and admitted to the buffer.
     let snapshot = mk_snapshot(&genesis_hash);
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    let merged = compute_parents_post_state(
         &block_store,
         vec![block_a.clone(), block_b.clone()],
         &snapshot,
         &rm,
-        None,
+        &latest_messages,
         Some(&rejected_deploy_buffer),
+        None,
+        // The buffer populate is owner-scoped: this test models the node of
+        // the carriers' sender, the deploy's recovery owner.
+        Some(&validator),
     )
+    .await
     .expect("compute_parents_post_state over [block_a, block_b]");
 
     assert!(
-        rejected_slashes.is_empty(),
+        merged.rejected_slashes.is_empty(),
         "no system slashes are involved in this fixture; rejected_slashes \
          must be empty (got {} entries)",
-        rejected_slashes.len()
+        merged.rejected_slashes.len()
     );
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = merged
+        .rejected_user
+        .iter()
+        .map(|record| record.sig.clone())
+        .collect();
     let v_orphaned = rejected_set.contains(&sig_v);
     let w_orphaned = rejected_set.contains(&sig_w);
     assert!(
@@ -346,9 +364,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
          lines ~563-573) is not reaching the merge output",
         v_orphaned,
         w_orphaned,
-        rejected_sigs
+        merged
+            .rejected_user
             .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
     assert!(

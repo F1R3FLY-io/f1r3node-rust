@@ -13,17 +13,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use serde::Serialize;
-use tracing::{Level, event};
+use serde::de::DeserializeOwned;
+use shared::rust::clone_backing::CloneBacking;
 
 use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hashing::native_source::{SourceMeter, hash};
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
+use super::history::native_reader::{
+    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
+    decode_record,
+};
 use super::logging::{BasicLogger, RSpaceLogger};
 use super::r#match::Match;
 use super::metrics_constants::{
@@ -35,16 +40,23 @@ use super::metrics_constants::{
 };
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
-    ProduceCommitGuard, RSpaceResult,
+    ProduceCommitGuard, RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource,
+    RSpaceResult,
 };
+use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::trace::event::{COMM, Consume, Event, IOEvent, Produce, recorded_removal};
 use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
 use crate::rspace::space_matcher::SpaceMatcher;
+
+mod native_directive;
+mod native_candidate;
+pub mod native_epoch;
+pub mod native_session;
 
 #[repr(C)]
 #[derive(Clone)]
@@ -56,11 +68,29 @@ pub struct ReplayRSpace<C, P, A, K> {
     event_log: Arc<Mutex<Log>>,
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
+    accounting_observer:
+        Arc<std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>>,
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
+    // Secondary index over `replay_data`: consume.hash -> produce.hash ->
+    // recorded COMMs containing both. A persistent contract's single consume
+    // key can hold one recorded COMM PER FIRE (100k+ for a hot loop), and
+    // `locked_consume` previously cloned that entire multiset on every
+    // replayed fire — O(n^2) COMM clones across a deploy's replay, which
+    // turned seconds of execution into hours of validation (the PR #280
+    // convergence stall). The index narrows each fire to the COMMs whose
+    // produce is actually present in the hot store (almost always exactly
+    // one). Kept strictly in sync with `replay_data` (rig populates, clears
+    // clear, remove_bindings_for prunes); on any miss the caller falls back
+    // to the full multiset scan, so behavior is unchanged in edge cases.
+    consume_replay_index: Arc<Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
-    phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
-    phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
+    // ReplayRSpace still had the pre-#72 growing DashMap<u64, Arc<Mutex>>
+    // (unbounded, `entry()` shard contention on insert), which #72 never
+    // ported here — see #43. See striped_locks.rs for the shared scheme.
+    phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -106,67 +136,29 @@ where
             .clone()
     }
 
-    fn channel_hash(channel: &C) -> u64 {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        channel.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    async fn acquire_locks(
-        lock_map: &DashMap<u64, Arc<tokio::sync::Mutex<()>>>,
-        keys: &[u64],
-    ) -> ChannelLockGuard {
-        let mut sorted_keys: Vec<u64> = keys.to_vec();
-        sorted_keys.sort();
-        sorted_keys.dedup();
-
-        let mut held: Vec<HeldLock> = Vec::with_capacity(sorted_keys.len());
-        for k in &sorted_keys {
-            let lock = lock_map
-                .entry(*k)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone();
-            let guard = lock.clone().lock_owned().await;
-            held.push(HeldLock {
-                _guard: guard,
-                _lock: lock,
-            });
-        }
-
-        ChannelLockGuard { _held: held }
-    }
-
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, channel_hashes).await;
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, channel_hashes).await;
-        (phase_a, phase_b)
+        striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
     }
 
     async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
-        let channel_hash = Self::channel_hash(channel);
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
+        let channel_hash = striped_locks::channel_hash(channel);
+        let phase_a = striped_locks::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
 
         let store = self.get_store();
         let join_hashes: Vec<u64> = store
             .get_joins(channel)
             .into_iter()
             .flatten()
-            .map(|ch| Self::channel_hash(&ch))
+            .map(|ch| striped_locks::channel_hash(&ch))
             .collect();
 
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
         (phase_a, phase_b)
     }
-}
 
-struct HeldLock {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-    _lock: Arc<tokio::sync::Mutex<()>>,
-}
-
-struct ChannelLockGuard {
-    _held: Vec<HeldLock>,
+    fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
+        striped_locks::new_striped_locks()
+    }
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for ReplayRSpace<C, P, A, K>
@@ -204,16 +196,23 @@ where
     A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+        *self
+            .accounting_observer
+            .write()
+            .expect("accounting observer write lock") = observer;
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         self.check_replay_data().await?;
 
         let changes = self.get_store().changes();
         let next_history = self.get_history_repository().checkpoint(changes);
+        let history_reader = next_history.get_history_reader(&next_history.root())?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
-
-        let history_reader = self
-            .get_history_repository()
-            .get_history_reader(&self.get_history_repository().root())?;
 
         self.create_new_hot_store(history_reader);
         self.restore_installs();
@@ -230,8 +229,9 @@ where
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
         *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
-        self.phase_a_locks.clear();
-        self.phase_b_locks.clear();
+
+        // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
+        // clear on reset — they are reused across checkpoints.
 
         let history_reader = self.get_history_repository().get_history_reader(root)?;
         self.create_new_hot_store(history_reader);
@@ -260,6 +260,89 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
 
+    async fn get_data_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned,
+    {
+        struct ReadMeter<'a>(&'a dyn SourceMeter);
+
+        impl NativeReadMeter for ReadMeter<'_> {
+            type Error = RSpaceError;
+
+            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
+                self.0
+                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
+            }
+        }
+
+        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
+            match error {
+                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+                NativeReadError::Store(error) => error.into(),
+                NativeReadError::Invalid(
+                    NativeReadFault::Depth |
+                    NativeReadFault::Allocation |
+                    NativeReadFault::Overflow,
+                ) => RSpaceError::HostWorkRejected,
+                NativeReadError::Invalid(error) => {
+                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
+                }
+            }
+        }
+
+        let history = self.get_history_repository();
+        let root: [u8; 32] = history
+            .root()
+            .0
+            .as_slice()
+            .try_into()
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        self.get_store().get_data_with_reader(
+            channel,
+            &|| {
+                let projection = hash(channel, &|operations, scanned, backing| {
+                    meter.reserve(operations, scanned, backing)
+                })?;
+                let projection: [u8; 32] = projection
+                    .0
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+                let reader = history.native_history_reader(root);
+                let read_meter = ReadMeter(meter);
+                reader
+                    .with_records(NativeLeafKind::Data, &projection, &read_meter, |rows| {
+                        meter.reserve(
+                            rows.len()
+                                .checked_mul(2)
+                                .and_then(|n| n.checked_add(1))
+                                .ok_or(RSpaceError::HostWorkRejected)?,
+                            0,
+                            rows.len()
+                                .checked_mul(std::mem::size_of::<Datum<A>>())
+                                .ok_or(RSpaceError::HostWorkRejected)?,
+                        )?;
+                        let mut values = Vec::new();
+                        values
+                            .try_reserve_exact(rows.len())
+                            .map_err(|_| RSpaceError::HostWorkRejected)?;
+                        for row in rows.iter() {
+                            values.push(decode_record(row, &read_meter).map_err(read_error)?);
+                        }
+                        Ok(values)
+                    })
+                    .map_err(read_error)
+                    .map(Option::unwrap_or_default)
+            },
+            meter,
+        )
+    }
+
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
     }
@@ -271,6 +354,49 @@ where
         for index in (0..len).rev() {
             self.get_store().remove_datum(channel, index as i32)?;
         }
+        Ok(())
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.get_store().remove_datum(channel, index)
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        let channel_lock = striped_locks::channel_hash(channel);
+        let _guard = self.consume_lock(&[channel_lock]).await;
+        let datum = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "recorded replay removal references a missing datum".to_string(),
+                )
+            })?;
+        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        let available = self
+            .replay_data
+            .lock()
+            .expect("replay data lock")
+            .map
+            .get(&IOEvent::Consume(consume.clone()))
+            .is_some_and(|bindings| bindings.iter().any(|binding| binding.0 == &comm));
+        if !available {
+            return Err(RSpaceError::BugFoundError(
+                "recorded replay removal is absent from the proposer trace".to_string(),
+            ));
+        }
+        self.get_store().remove_datum(channel, index)?;
+        {
+            let mut event_log = self.event_log.lock().expect("event log lock");
+            event_log.push(Event::IoEvent(IOEvent::Consume(consume)));
+            event_log.push(Event::Comm(comm.clone()));
+        }
+        self.remove_bindings_for(comm);
         Ok(())
     }
 
@@ -286,6 +412,10 @@ where
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.replay_data.lock().expect("replay data lock").clear();
+        self.consume_replay_index
+            .lock()
+            .expect("consume replay index lock")
+            .clear();
         self.reset(&RadixHistory::empty_root_node_hash()).await
     }
 
@@ -360,8 +490,10 @@ where
             ))
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> = channels
+                .iter()
+                .map(|ch| striped_locks::channel_hash(ch))
+                .collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
 
             metrics::counter!("replay_rspace.consume.calls", "source" => "rspace").increment(1);
@@ -400,7 +532,7 @@ where
         patterns: Vec<P>,
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        self.locked_install_internal(channels, patterns, continuation, true)
+        self.locked_install_internal(channels, patterns, continuation)
     }
 
     async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError> {
@@ -422,10 +554,23 @@ where
         // Create and prepare the ReplayData table
         let replay_data = self.replay_data.lock().expect("replay data lock");
         replay_data.clear();
+        let mut consume_index = self
+            .consume_replay_index
+            .lock()
+            .expect("consume replay index lock");
+        consume_index.clear();
 
         for event in comm_events {
             match event {
                 Event::Comm(comm) => {
+                    for produce in &comm.produces {
+                        consume_index
+                            .entry(comm.consume.hash.clone())
+                            .or_default()
+                            .entry(produce.hash.clone())
+                            .or_default()
+                            .push(comm.clone());
+                    }
                     let comm_cloned = comm.clone();
                     let (consume, produces) = (comm_cloned.consume, comm_cloned.produces);
                     let produce_io_events: Vec<IOEvent> = produces
@@ -462,10 +607,16 @@ where
         if replay_data.is_empty() {
             Ok(())
         } else {
-            Err(RSpaceError::BugFoundError(format!(
-                "Unused COMM event: replayData multimap has {} elements left",
-                replay_data.map.len()
-            )))
+            let leftover: Vec<String> = replay_data
+                .map
+                .iter()
+                .take(8)
+                .map(|e| format!("{:?}", e.key()))
+                .collect();
+            Err(RSpaceError::UnusedCommEvent {
+                leftover_count: replay_data.map.len(),
+                leftover,
+            })
         }
     }
 
@@ -541,19 +692,75 @@ where
         A: Clone + Debug,
         K: Clone + Debug,
     {
+        Self::apply_with_shards(history_repository, store, matcher, None)
+    }
+
+    pub(crate) fn apply_native(
+        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        cache_shards: usize,
+    ) -> ReplayRSpace<C, P, A, K> {
+        Self::apply_with_shards(history_repository, store, matcher, Some(cache_shards))
+    }
+
+    fn apply_with_shards(
+        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        cache_shards: Option<usize>,
+    ) -> ReplayRSpace<C, P, A, K> {
+        let replay_data = match cache_shards {
+            Some(shards) => MultisetMultiMap::empty_with_shard_amount(shards),
+            None => MultisetMultiMap::empty(),
+        };
         ReplayRSpace {
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
             matcher,
+            accounting_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
-            replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
+            replay_data: Arc::new(Mutex::new(replay_data)),
+            consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
-            phase_a_locks: Arc::new(DashMap::new()),
-            phase_b_locks: Arc::new(DashMap::new()),
+            phase_a_locks: Self::new_striped_locks(),
+            phase_b_locks: Self::new_striped_locks(),
         }
+    }
+
+    pub(crate) fn native_constructor_layout(cache_shards: usize) -> Option<(usize, usize)> {
+        use super::native_backing::{arc_allocation_bytes, dashmap_shard_bytes};
+
+        let arc_bytes = [
+            arc_allocation_bytes::<
+                std::sync::RwLock<
+                    Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+                >,
+            >()?,
+            arc_allocation_bytes::<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>()?,
+            arc_allocation_bytes::<
+                std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>,
+            >()?,
+            arc_allocation_bytes::<Mutex<HashMap<Vec<C>, Install<P, K>>>>()?,
+            arc_allocation_bytes::<Mutex<Log>>()?,
+            arc_allocation_bytes::<Mutex<BTreeMap<Produce, i32>>>()?,
+            arc_allocation_bytes::<Mutex<MultisetMultiMap<IOEvent, COMM>>>()?,
+            arc_allocation_bytes::<
+                Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>,
+            >()?,
+            arc_allocation_bytes::<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>()?,
+            arc_allocation_bytes::<AtomicI64>()?,
+        ]
+        .into_iter()
+        .try_fold(0usize, |sum, bytes| sum.checked_add(bytes))?;
+        let replay_index_bytes =
+            cache_shards.checked_mul(dashmap_shard_bytes::<IOEvent, counter::Counter<COMM>>())?;
+        let bytes = arc_bytes.checked_add(replay_index_bytes)?;
+        let operations = cache_shards.checked_add(10)?;
+        Some((operations, bytes))
     }
 
     pub fn apply_with_logger(
@@ -572,18 +779,25 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
             matcher,
+            accounting_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
+            consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             logger: Arc::new(Mutex::new(logger)),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
-            phase_a_locks: Arc::new(DashMap::new()),
-            phase_b_locks: Arc::new(DashMap::new()),
+            phase_a_locks: Self::new_striped_locks(),
+            phase_b_locks: Self::new_striped_locks(),
         }
     }
 
     fn inc_replay_waiting_continuations(&self, channels: &[C]) {
+        let depth = self.get_store().get_continuations(channels).len();
+        self.inc_replay_waiting_continuations_depth(depth);
+    }
+
+    fn inc_replay_waiting_continuations_depth(&self, depth: usize) {
         metrics::counter!(
             REPLAY_WAITING_CONTINUATIONS_STORED_TOTAL_METRIC,
             "source" => REPLAY_RSPACE_METRICS_SOURCE
@@ -598,12 +812,11 @@ where
             "source" => REPLAY_RSPACE_METRICS_SOURCE
         )
         .set(estimate as f64);
-        let channel_depth = self.get_store().get_continuations(channels).len();
         metrics::histogram!(
             REPLAY_WAITING_CONTINUATIONS_CHANNEL_DEPTH_METRIC,
             "source" => REPLAY_RSPACE_METRICS_SOURCE
         )
-        .record(channel_depth as f64);
+        .record(depth as f64);
     }
 
     fn dec_replay_waiting_continuations(&self) {
@@ -695,7 +908,65 @@ where
         // Span[F].traceI("locked-consume") from Scala - works because this is
         // NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-consume").entered();
-        event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
+
+        tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
+
+        let source = RSpaceOperationSource::Consume(&consume_ref);
+        let observer = self.start_accounting_operation(source, &channels, &[])?;
+        let result = self.locked_consume_observed(
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+            consume_ref.clone(),
+            observer.as_deref(),
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
+
+    fn locked_consume_observed(
+        &self,
+        channels: Vec<C>,
+        patterns: Vec<P>,
+        continuation: K,
+        persist: bool,
+        peeks: BTreeSet<i32>,
+        consume_ref: Consume,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
+        if let Some(directive) = observer
+            .map(|observer| {
+                observer.replay_operation_directive(RSpaceOperationSource::Consume(&consume_ref))
+            })
+            .transpose()?
+            .flatten()
+        {
+            return self.replay_native_consume(
+                channels,
+                patterns,
+                continuation,
+                persist,
+                peeks,
+                consume_ref,
+                observer,
+                directive,
+            );
+        }
+        Self::observe_consume(
+            observer,
+            &consume_ref,
+            &channels,
+            &patterns,
+            &continuation,
+            persist,
+            &peeks,
+        )?;
 
         let wk = WaitingContinuation {
             patterns: Arc::new(patterns.clone()),
@@ -705,13 +976,78 @@ where
             source: consume_ref.clone(),
         };
 
-        let comms_option = self
-            .replay_data
-            .lock()
-            .unwrap()
-            .get_distinct_values_sorted(&IOEvent::Consume(consume_ref.clone()));
+        // Fast path: a persistent contract's consume key can hold one
+        // recorded COMM per fire (100k+ for a hot loop), and the replayed
+        // re-consume of such a contract runs BEFORE its next produce exists,
+        // so the hot store holds no data for its channels. The old path
+        // cloned the whole COMM multiset and ran the matcher over every
+        // candidate against that empty data — deterministically None, at
+        // O(n) clones per fire, O(n^2) per replay (the PR #280 convergence
+        // stall). With zero store data the outcome is always
+        // store_waiting_continuation, so take it directly. When data IS
+        // present, narrow candidates through the consume/produce index;
+        // any miss falls back to the full clone, preserving behavior.
+        let present_produce_hashes: HashSet<Blake2b256Hash> = channels
+            .iter()
+            .flat_map(|c| self.get_store().get_data(c))
+            .map(|d| d.source.hash)
+            .collect();
+        if present_produce_hashes.is_empty() {
+            let recorded = self
+                .replay_data
+                .lock()
+                .unwrap()
+                .map
+                .contains_key(&IOEvent::Consume(consume_ref.clone()));
+            if recorded {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-B: recorded COMM exists but no data in store yet (matcher would find no candidate)");
+            } else {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
+            }
+            self.log_consume(consume_ref, &channels, &patterns, &wk.continuation, persist, &peeks);
+            return Ok(self.store_waiting_continuation(channels, wk));
+        }
+        let comms_option = {
+            let full = || {
+                self.replay_data
+                    .lock()
+                    .unwrap()
+                    .map
+                    .get(&IOEvent::Consume(consume_ref.clone()))
+                    .map(|comms| {
+                        comms
+                            .iter()
+                            .map(|tuple| tuple.0.clone())
+                            .collect::<Vec<_>>()
+                    })
+            };
+            let narrowed: Option<Vec<COMM>> = {
+                let index = self
+                    .consume_replay_index
+                    .lock()
+                    .expect("consume replay index lock");
+                index.get(&consume_ref.hash).map(|by_produce| {
+                    let mut out: Vec<COMM> = Vec::new();
+                    for hash in &present_produce_hashes {
+                        if let Some(comms) = by_produce.get(hash) {
+                            for comm in comms {
+                                if !out.contains(comm) {
+                                    out.push(comm.clone());
+                                }
+                            }
+                        }
+                    }
+                    out
+                })
+            };
+            match narrowed {
+                Some(comms) if !comms.is_empty() => Some(comms),
+                _ => full(),
+            }
+        };
         match comms_option {
             None => {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
                 self.log_consume(
                     consume_ref.clone(),
                     &channels,
@@ -732,6 +1068,7 @@ where
                     comms_list.clone(),
                 ) {
                     None => {
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, n_recorded_comms = comms_list.len(), "replay.consume STALL-B: recorded COMM exists but matching produce data not present (produce diverged / missing in merged pre-state)");
                         self.log_consume(
                             consume_ref.clone(),
                             &channels,
@@ -762,26 +1099,35 @@ where
                             )
                         );
 
-                        permit.commit(|| {
-                            let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
-                            self.remove_bindings_for(comm_ref.clone());
-                        })?;
-                        self.log_consume(
-                            consume_ref.clone(),
-                            &channels,
-                            &wk.patterns,
+                        Self::observe_comm(
+                            observer,
+                            &comm_ref,
                             &wk.continuation,
-                            persist,
-                            &peeks,
-                        );
-                        self.log_comm(
+                            wk.persist,
                             &data_candidates,
-                            &channels,
-                            wk.clone(),
-                            comm_ref,
-                            "comm.consume",
-                        );
-                        Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
+                        )?;
+                        let result = permit.commit(|| {
+                            self.log_consume(
+                                consume_ref.clone(),
+                                &channels,
+                                &wk.patterns,
+                                &wk.continuation,
+                                persist,
+                                &peeks,
+                            );
+                            self.log_comm(
+                                &data_candidates,
+                                &channels,
+                                wk.clone(),
+                                comm_ref.clone(),
+                                "comm.consume",
+                            );
+                            self.store_persistent_data(&data_candidates);
+                            self.remove_bindings_for(comm_ref);
+                            self.wrap_result(channels, wk, consume_ref.clone(), data_candidates)
+                        })?;
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume OK: COMM reproduced");
+                        Ok(result)
                     }
                 }
             }
@@ -890,7 +1236,7 @@ where
         metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
         let start = Instant::now();
         let data = Arc::new(data);
-        let prepared = self.locked_produce(
+        let result = self.locked_produce(
             channel.clone(),
             Arc::clone(&data),
             persist,
@@ -900,30 +1246,9 @@ where
         metrics::histogram!("replay_produce_time_seconds", "source" => "rspace")
             .record(start.elapsed().as_secs_f64());
         drop(lock_guard);
-        let notification = prepared?;
+        let result = result?;
         self.notify_produce(produce_ref, &channel, &data, persist);
-        drop(data);
-        match notification {
-            Some((candidate, comm, source)) => {
-                self.log_comm(
-                    &candidate.data_candidates,
-                    &candidate.channels,
-                    candidate.continuation.clone(),
-                    comm,
-                    "comm.produce",
-                );
-                let consume = candidate.continuation.source.clone();
-                Ok(self
-                    .wrap_result(
-                        candidate.channels,
-                        candidate.continuation,
-                        consume,
-                        candidate.data_candidates,
-                    )
-                    .map(|(continuation, data)| (continuation, data, source)))
-            }
-            None => Ok(None),
-        }
+        Ok(result)
     }
 
     fn locked_produce(
@@ -933,14 +1258,66 @@ where
         persist: bool,
         produce_ref: Produce,
         guard: Option<&dyn ProduceCommitGuard>,
-    ) -> Result<Option<(ProduceCandidate<C, P, A, K>, COMM, Produce)>, RSpaceError> {
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-produce") from Scala - works because this is
         // NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
-        event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-produce", "locked_produce");
 
         let grouped_channels = self.get_store().get_joins(&channel);
+        let source = RSpaceOperationSource::Produce(&produce_ref);
+        let observer = self.start_accounting_operation(
+            source,
+            std::slice::from_ref(&channel),
+            &grouped_channels,
+        )?;
+        let result = self.locked_produce_observed(
+            channel,
+            data,
+            persist,
+            produce_ref.clone(),
+            grouped_channels,
+            observer.as_deref(),
+            guard,
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
 
+    fn locked_produce_observed(
+        &self,
+        channel: C,
+        data: Arc<A>,
+        persist: bool,
+        produce_ref: Produce,
+        grouped_channels: Vec<Vec<C>>,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        guard: Option<&dyn ProduceCommitGuard>,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        if let Some(directive) = observer
+            .map(|observer| {
+                observer.replay_operation_directive(RSpaceOperationSource::Produce(&produce_ref))
+            })
+            .transpose()?
+            .flatten()
+        {
+            return self.replay_native_produce(
+                channel,
+                (*data).clone(),
+                persist,
+                produce_ref,
+                grouped_channels,
+                observer,
+                directive,
+                guard,
+            );
+        }
+        Self::observe_produce(observer, &produce_ref, &channel, &data, persist)?;
+
+        tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, persist, "replay.produce ENTER");
         // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
         // manual impls hash/compare on `self.hash` only — the metadata
         // fields (`is_deterministic`, `output_value`, `failed`) are
@@ -950,57 +1327,71 @@ where
             .replay_data
             .lock()
             .unwrap()
-            .get_distinct_values_sorted(&IOEvent::Produce(produce_ref.clone()));
-        let prepared = comms_option.and_then(|comms| {
-            self.get_comm_or_produce_candidate(
-                channel.clone(),
-                Arc::clone(&data),
-                persist,
-                comms.clone(),
-                produce_ref.clone(),
-                grouped_channels,
-            )
-            .map(|(comm, pc)| (comm, pc, comms))
-        });
-        let permit = prepared
-            .as_ref()
-            .and_then(|(_, pc, _)| pc.commit.clone())
-            .unwrap_or_default();
-        permit.commit_with(guard, || {
-            self.increment_produce_counter(&produce_ref, persist);
-            match prepared {
-                Some((comm, pc, comms)) => {
-                    // ★ Produced-datum totality, mirroring the play space's
-                    // `locked_produce`: the datum rides in its own pool at
-                    // index `-1`, so the COMM consumed it exactly when a
-                    // candidate carries that index; otherwise it must be
-                    // STORED rather than dropped, or replay's post-state
-                    // diverges from play's. Stored after `handle_match`,
-                    // which addresses the store by index.
-                    let comm_consumed_the_produced_datum = pc
-                        .data_candidates
-                        .iter()
-                        .any(|candidate| candidate.datum_index < 0);
-
-                    let notification = self.handle_match(&pc, comms);
-                    let source = comm
-                        .produces
-                        .into_iter()
-                        .find(|p| p.hash == produce_ref.hash)
-                        .unwrap_or(produce_ref.clone());
-
-                    if !comm_consumed_the_produced_datum {
-                        let _ = self.store_data(channel, data, persist, produce_ref);
+            .map
+            .get(&IOEvent::Produce(produce_ref.clone()))
+            .map(|comms| {
+                comms
+                    .iter()
+                    .map(|tuple| tuple.0.clone())
+                    .collect::<Vec<_>>()
+            });
+        match comms_option {
+            None => {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (no recorded COMM for this produce)");
+                super::rspace_interface::commit_produce(guard, || {
+                    self.increment_produce_counter(&produce_ref, persist);
+                    self.log_produce(produce_ref.clone(), &channel, &data, persist);
+                    self.store_data(channel, data, persist, produce_ref)
+                })
+            }
+            Some(comms) => {
+                match self.get_comm_or_produce_candidate(
+                    channel.clone(),
+                    data.clone(),
+                    persist,
+                    comms.clone(),
+                    produce_ref.clone(),
+                    grouped_channels,
+                ) {
+                    Some((comm, pc)) => {
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce OK: matched a recorded COMM (fired a waiting consume)");
+                        let result = self
+                            .handle_match(
+                                pc,
+                                comms,
+                                &channel,
+                                &data,
+                                persist,
+                                &produce_ref,
+                                observer,
+                                guard,
+                            )
+                            .map(|matched| {
+                                matched.map(|consume_result| {
+                                    let p = comm
+                                        .produces
+                                        .into_iter()
+                                        .find(|p| p.hash == produce_ref.hash);
+                                    (
+                                        consume_result.0,
+                                        consume_result.1,
+                                        p.unwrap_or_else(|| produce_ref.clone()),
+                                    )
+                                })
+                            });
+                        result
                     }
-
-                    Some((pc, notification, source))
-                }
-                None => {
-                    self.store_data(channel, data, persist, produce_ref);
-                    None
+                    None => {
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (recorded COMM exists but no matching consume waiting yet)");
+                        super::rspace_interface::commit_produce(guard, || {
+                            self.increment_produce_counter(&produce_ref, persist);
+                            self.log_produce(produce_ref.clone(), &channel, &data, persist);
+                            self.store_data(channel, data, persist, produce_ref)
+                        })
+                    }
                 }
             }
-        })
+        }
     }
 
     fn get_comm_or_produce_candidate(
@@ -1042,7 +1433,7 @@ where
                 // `extract_first_match` this feeds now makes a guard-aware
                 // selection, so the two sides must enumerate alike (see
                 // `run_matcher_consume`).
-                let continuations = self.get_store().get_continuations(&channels);
+                let continuations = self.get_store().get_continuations_arc(&channels);
                 order_candidates_with_index(continuations)
                     .into_iter()
                     .filter(|(wc, _)| comm.consume == wc.source)
@@ -1108,13 +1499,23 @@ where
         self.get_produce_count(source) + i32::from(!persist && source == pending)
     }
 
-    fn handle_match(&self, pc: &ProduceCandidate<C, P, A, K>, comms: Vec<COMM>) -> COMM {
+    fn handle_match(
+        &self,
+        pc: ProduceCandidate<C, P, A, K>,
+        comms: Vec<COMM>,
+        channel: &C,
+        data: &A,
+        produced_persistently: bool,
+        produce_ref: &Produce,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        guard: Option<&dyn ProduceCommitGuard>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
             continuation_index,
             data_candidates,
-            ..
+            commit,
         } = pc;
 
         let WaitingContinuation {
@@ -1125,9 +1526,15 @@ where
             source: consume_ref,
         } = &continuation;
 
-        let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
+        let produce_counters_closure = |produces: &[Produce]| {
+            let mut counters = self.produce_counters(produces);
+            if !produced_persistently && produces.contains(produce_ref) {
+                *counters.entry(produce_ref.clone()).or_insert(0) += 1;
+            }
+            counters
+        };
         let comm_ref = COMM::new(
-            data_candidates,
+            &data_candidates,
             consume_ref.clone(),
             peeks.clone(),
             produce_counters_closure,
@@ -1140,20 +1547,122 @@ where
             comms
         );
 
-        if !persist {
-            self.get_store()
-                .remove_continuation(channels, *continuation_index);
+        Self::observe_comm(observer, &comm_ref, _cont, *persist, &data_candidates)?;
+        let permit = commit.unwrap_or_default();
+        permit.commit_with(guard, || {
+            self.increment_produce_counter(produce_ref, produced_persistently);
+            self.log_produce(produce_ref.clone(), channel, data, produced_persistently);
+            self.log_comm(
+                &data_candidates,
+                &channels,
+                continuation.clone(),
+                comm_ref.clone(),
+                "comm.produce",
+            );
+            if !persist {
+                self.get_store()
+                    .remove_continuation(&channels, continuation_index);
+            }
             self.mark_replay_waiting_continuation_match();
-        } else {
-            self.mark_replay_waiting_continuation_match();
-        }
+            self.remove_matched_datum_and_join(&channels, &data_candidates);
+            self.remove_bindings_for(comm_ref);
+            self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
+        })
+    }
 
-        let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
-        self.remove_bindings_for(comm_ref.clone());
-        comm_ref
+    fn start_accounting_operation(
+        &self,
+        source: RSpaceOperationSource<'_>,
+        channels: &[C],
+        joins: &[Vec<C>],
+    ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, RSpaceError> {
+        let observer = self
+            .accounting_observer
+            .read()
+            .expect("accounting observer read lock")
+            .clone();
+        if let Some(observer) = &observer {
+            observer.observe_operation_start(source, channels, joins)?;
+        }
+        Ok(observer)
+    }
+
+    fn observe_comm(
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
+        match observer {
+            Some(observer) => {
+                let data = data_candidates
+                    .iter()
+                    .map(|candidate| (candidate.datum.a.as_ref(), candidate.datum.persist))
+                    .collect::<Vec<_>>();
+                observer.observe_comm(comm, continuation, continuation_persistent, &data)
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn observe_produce(
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        source: &Produce,
+        channel: &C,
+        data: &A,
+        persistent: bool,
+    ) -> Result<(), RSpaceError> {
+        match observer {
+            Some(observer) => observer.observe_produce(source, channel, data, persistent),
+            None => Ok(()),
+        }
+    }
+
+    fn observe_consume(
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        source: &Consume,
+        channels: &[C],
+        patterns: &[P],
+        continuation: &K,
+        persistent: bool,
+        peeks: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        match observer {
+            Some(observer) => observer.observe_consume(
+                source,
+                channels,
+                patterns,
+                continuation,
+                persistent,
+                peeks,
+            ),
+            None => Ok(()),
+        }
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
+        {
+            let mut index = self
+                .consume_replay_index
+                .lock()
+                .expect("consume replay index lock");
+            if let Some(by_produce) = index.get_mut(&comm_ref.consume.hash) {
+                for produce in &comm_ref.produces {
+                    if let Some(comms) = by_produce.get_mut(&produce.hash) {
+                        if let Some(pos) = comms.iter().position(|c| c == &comm_ref) {
+                            comms.remove(pos);
+                        }
+                        if comms.is_empty() {
+                            by_produce.remove(&produce.hash);
+                        }
+                    }
+                }
+                if by_produce.is_empty() {
+                    index.remove(&comm_ref.consume.hash);
+                }
+            }
+        }
         let replay_data = self.replay_data.lock().expect("replay data lock");
         replay_data.remove_binding_in_place(&IOEvent::Consume(comm_ref.consume.clone()), &comm_ref);
 
@@ -1226,6 +1735,21 @@ where
         }
     }
 
+    fn rollback_produce_counter(&self, produce_ref: &Produce, persist: bool) {
+        if !persist {
+            let mut counter = self.produce_counter.lock().expect("produce counter lock");
+            match counter.get(produce_ref).copied().unwrap_or(0) {
+                0 => {}
+                1 => {
+                    counter.remove(produce_ref);
+                }
+                count => {
+                    counter.insert(produce_ref.clone(), count - 1);
+                }
+            }
+        }
+    }
+
     fn get_comm_or_candidate<Candidate>(
         &self,
         comms: Vec<COMM>,
@@ -1261,7 +1785,7 @@ where
         // Span[F].withMarks("spawn") from Scala - works because this is NOT
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "spawn").entered();
-        event!(Level::DEBUG, mark = "started-spawn", "spawn");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-spawn", "spawn");
 
         let history_repo = self.get_history_repository();
         let next_history = history_repo.reset(&history_repo.root())?;
@@ -1271,7 +1795,7 @@ where
         rspace.restore_installs();
 
         // Mark the completion of spawn operation
-        event!(Level::DEBUG, mark = "finished-spawn", "spawn");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-spawn", "spawn");
         Ok(rspace)
     }
 
@@ -1311,55 +1835,26 @@ where
         None
     }
 
-    fn store_persistent_data(
-        &self,
-        mut data_candidates: Vec<ConsumeCandidate<C, A>>,
-        _peeks: &BTreeSet<i32>,
-    ) -> Option<Vec<()>> {
-        // ★ HIGHEST index FIRST — the play space's `store_persistent_data`
-        // carries the full rationale. Positional removal from the front shifts
-        // the indices still to be removed, which silently left one datum of a
-        // same-channel pair resting after it had been delivered.
-        data_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = data_candidates
-            .into_iter()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    datum_index,
-                } = consume_candidate;
-
-                if !persist {
-                    self.get_store().remove_datum(&channel, datum_index).ok()
-                } else {
-                    Some(())
-                }
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
+    fn store_persistent_data(&self, data_candidates: &[ConsumeCandidate<C, A>]) {
+        // Highest index first: removing an earlier same-channel datum would
+        // shift the indices of the remaining candidates.
+        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
+        let store = self.get_store();
+        for consume_candidate in sorted_candidates {
+            if !consume_candidate.datum.persist {
+                let _ =
+                    store.remove_datum(&consume_candidate.channel, consume_candidate.datum_index);
+            }
         }
     }
 
     fn restore_installs(&self) {
         // Move out the install map to avoid cloning the whole structure on each
         // restore.
-        let installs = {
-            let mut installs_lock = self.installs.lock().unwrap();
-            std::mem::take(&mut *installs_lock)
-        };
-        {
-            let mut installs_lock = self.installs.lock().unwrap();
-            installs_lock.reserve(installs.len());
-        }
-
+        let installs = std::mem::take(&mut *self.installs.lock().unwrap());
         for (channels, install) in installs {
-            self.locked_install_internal(channels, install.patterns, install.continuation, true)
+            self.locked_install_internal(channels, install.patterns, install.continuation)
                 .unwrap();
         }
     }
@@ -1369,7 +1864,6 @@ where
         channels: Vec<C>,
         patterns: Vec<P>,
         continuation: K,
-        record_install: bool,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
         if channels.len() != patterns.len() {
             Err(RSpaceError::BugFoundError(
@@ -1387,27 +1881,25 @@ where
 
             match options {
                 None => {
-                    if record_install {
-                        self.installs
-                            .lock()
-                            .unwrap()
-                            .insert(channels.clone(), Install {
-                                patterns: patterns.clone(),
-                                continuation: continuation.clone(),
-                            });
-                    }
-
-                    self.get_store()
-                        .install_continuation(&channels, WaitingContinuation {
-                            patterns: Arc::new(patterns),
-                            continuation: Arc::new(continuation),
-                            persist: true,
-                            peeks: BTreeSet::default(),
-                            source: consume_ref,
+                    self.installs
+                        .lock()
+                        .unwrap()
+                        .insert(channels.clone(), Install {
+                            patterns: patterns.clone(),
+                            continuation: continuation.clone(),
                         });
 
+                    let store = self.get_store();
+                    store.install_continuation(&channels, WaitingContinuation {
+                        patterns: Arc::new(patterns),
+                        continuation: Arc::new(continuation),
+                        persist: true,
+                        peeks: BTreeSet::default(),
+                        source: consume_ref,
+                    });
+
                     for channel in channels.iter() {
-                        self.get_store().install_join(channel, &channels);
+                        store.install_join(channel, &channels);
                     }
                     Ok(None)
                 }
@@ -1460,47 +1952,34 @@ where
 
     fn remove_matched_datum_and_join(
         &self,
-        channels: Vec<C>,
-        mut data_candidates: Vec<ConsumeCandidate<C, A>>,
-    ) -> Option<Vec<()>> {
-        // ★ HIGHEST index FIRST — see the play space's `store_persistent_data`.
-        data_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = data_candidates
-            .into_iter()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    datum_index,
-                } = consume_candidate;
+        channels: &[C],
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) {
+        // Preserve the same-channel candidate indices until each removal.
+        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
+        let store = self.get_store();
+        for consume_candidate in sorted_candidates {
+            let channel = &consume_candidate.channel;
+            let datum_index = consume_candidate.datum_index;
 
-                let channels_clone = channels.clone();
-                if datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
-                        .remove_datum(&channel, datum_index)
-                        .is_err()
-                {
-                    return None;
-                }
-                self.get_store().remove_join(&channel, &channels_clone);
-
-                Some(())
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
+            if datum_index >= 0 &&
+                !consume_candidate.datum.persist &&
+                store.remove_datum(channel, datum_index).is_err()
+            {
+                continue;
+            }
+            store.remove_join(channel, channels);
         }
     }
 
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
+        fetch_matching_continuations: impl Fn(
+            Vec<C>,
+        )
+            -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;
@@ -1531,5 +2010,104 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Regression guard for the phase_a_locks/phase_b_locks fix ported from
+    // RSpace (PR #72 "Per-channel locks → fixed striped locks") — see
+    // f1r3node-rust#43. Before this fix, ReplayRSpace still used a growing
+    // DashMap<u64, Arc<Mutex>> (the pre-#72 pattern RSpace moved away from),
+    // which PR #72 explicitly flagged as an untouched residual: "Replay path
+    // still times out at forks >= 16". Mirrors
+    // `par_branch_event_log_does_not_contend_at_rholang_par_scale` in
+    // rspace.rs, but drives ReplayRSpace::produce() so it exercises
+    // produce_lock/phase_a_locks/phase_b_locks instead of the event log.
+
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::rspace::r#match::Match;
+    use crate::rspace::rspace::RSpace;
+    use crate::rspace::rspace_interface::ISpace;
+    use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+    struct Wildcard;
+
+    struct AlwaysMatch;
+
+    impl Match<Wildcard, String, String> for AlwaysMatch {
+        fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
+    }
+
+    async fn make_replay_rspace() -> ReplayRSpace<String, Wildcard, String, String> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let (_play, replay) = RSpace::<String, Wildcard, String, String>::create_with_replay(
+            store,
+            Arc::new(Box::new(AlwaysMatch)),
+        )
+        .unwrap();
+        replay
+    }
+
+    // 32 par-branches, each calling produce() on its own private channels —
+    // mirrors the rholang-par benchmark's replay side. Regression guard for
+    // the documented symptom "replay path still times out at forks >= 16"
+    // (PR #72's own follow-up list, f1r3node-rust#43): before this fix,
+    // ReplayRSpace acquired phase locks through an unbounded
+    // DashMap<u64, Arc<Mutex>> (the pre-#72 pattern RSpace already moved
+    // away from). A solo-vs-concurrent speedup ratio isn't a reliable
+    // assertion here — on the in-memory test store a single produce() is
+    // low-single-digit microseconds, so tokio task-spawn/scheduling
+    // overhead dominates the timing at that scale and swamps any lock
+    // signal. What's actually being guarded is forward progress: this
+    // bound (30s for 16,000 ops) is generous by roughly two orders of
+    // magnitude relative to observed run time, so it fails on a hang or
+    // reintroduced serialization, not on ordinary timing noise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn par_branch_replay_produce_completes_at_rholang_par_scale() {
+        const PAR_BRANCHES: usize = 32;
+        const OPS_PER_BRANCH: usize = 500;
+        const MAX_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(30);
+
+        let rspace = make_replay_rspace().await;
+
+        let t0 = std::time::Instant::now();
+        let handles: Vec<_> = (0..PAR_BRANCHES)
+            .map(|i| {
+                let s = rspace.clone();
+                tokio::spawn(async move {
+                    for j in 0..OPS_PER_BRANCH {
+                        s.produce(format!("branch_{}_{}", i, j), "datum".to_string(), false)
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await.unwrap();
+        }
+        let elapsed = t0.elapsed();
+
+        eprintln!(
+            "replay_par_branch_scaling: branches={PAR_BRANCHES}  ops_per_branch={OPS_PER_BRANCH}  \
+             elapsed={:.3}s  (bound {:.0}s)",
+            elapsed.as_secs_f64(),
+            MAX_WALL_CLOCK.as_secs_f64(),
+        );
+
+        assert!(
+            elapsed < MAX_WALL_CLOCK,
+            "ReplayRSpace produce() at {PAR_BRANCHES} par-branches took {:.2}s (bound {:.0}s) — \
+             regression back to unbounded per-channel locking, the pre-#72 pattern that made \
+             replay time out at forks >= 16.",
+            elapsed.as_secs_f64(),
+            MAX_WALL_CLOCK.as_secs_f64(),
+        );
     }
 }

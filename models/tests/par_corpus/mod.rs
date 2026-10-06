@@ -58,10 +58,10 @@ use models::rhoapi::var::{VarInstance, WildcardMsg};
 use models::rhoapi::{
     BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
     EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GDeployId,
-    GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair,
-    ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
-    ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
+    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
+    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
+    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 use models::rust::rhoapi_ext::EPathMap;
 
@@ -279,6 +279,7 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
                 scale: u32::MAX,
             }),
         ),
+        ("GFloat32", ExprInstance::GFloat32(0x7FC0_DEAD)),
     ]
 }
 
@@ -332,6 +333,15 @@ pub fn every_unforgeable() -> Vec<GUnforgeable> {
         GUnforgeable {
             unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
         },
+        GUnforgeable {
+            unf_instance: Some(UnfInstance::GAuthorityIdBody(GAuthorityId { id: vec![4] })),
+        },
+        GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 2,
+                public_key: vec![5],
+            })),
+        },
         GUnforgeable { unf_instance: None },
     ]
 }
@@ -384,12 +394,14 @@ pub fn all_par_fields() -> Par {
                     source: Some(gint(6)),
                     remainder: some_var(),
                     free_count: -7,
+                    cost_signature: None,
                 },
                 ReceiveBind {
                     patterns: vec![],
                     source: None,
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 },
             ],
             body: Some(gint(7)),
@@ -489,6 +501,8 @@ pub fn all_par_fields() -> Par {
         }],
         locally_free: vec![0xE1, 0xE2, 0xE3],
         connective_used: true,
+        cost_signed_terms: vec![],
+        cost_stacks: vec![],
     }
 }
 
@@ -533,6 +547,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                         source: None,
                         remainder: None,
                         free_count: 1,
+                        cost_signature: None,
                     }],
                     body: None,
                     persistent: false,

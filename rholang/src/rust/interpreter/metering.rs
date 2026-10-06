@@ -2,10 +2,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use models::rhoapi::Par;
-
 use super::accounting::costs::Cost;
-use super::accounting::delta_sigma::match_channel_to_lane;
 use super::accounting::{
     BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, SourcePath,
 };
@@ -71,6 +68,9 @@ impl MeteredMachine {
     pub fn budget(&self) -> RuntimeBudget { self.budget.clone() }
 
     pub fn child(&self, component: u32) -> Self {
+        if self.budget.is_unmetered() {
+            return self.clone();
+        }
         let mut source_path = self.source_path.0.clone();
         source_path.push(component);
         Self {
@@ -88,39 +88,11 @@ impl MeteredMachine {
         }
     }
 
-    /// Charge a token-consuming COMM reduction (send / receive). D3 (DR-9,
-    /// OD-3): this is THE consensus cost unit — `reconcile_lane` counts each
-    /// committed `Comm` as 1. `amount` is the per-op diagnostic weight (still
-    /// recorded in the event log/digest), but only the COMM COUNT gates
-    /// consensus.
+    /// Reserve one synthetic atomic-COMM event. Production evaluation records
+    /// these through the RSpace match observer; this method remains for focused
+    /// budget and attribution tests, whose synthetic COMM amount is one unit.
     pub fn reserve_comm(&self, amount: Cost) -> Result<(), InterpreterError> {
         self.reserve_cost(BillableKind::Comm, amount)
-    }
-
-    /// W1 Phase 3 — per-redex located-stack attribution. AFTER a COMM's channel is
-    /// resolved, match it against the installed signer channels: a COMM on a
-    /// NON-envelope signer channel (`Σ⟦sᵢ⟧`) is tallied to that signer's lane for
-    /// the diagnostic per-lane projection ([`RuntimeBudget::per_lane_demand`]). The
-    /// COMM itself was ALREADY charged (scalar, to the envelope) by `reserve_comm`,
-    /// so this records only the per-lane VIEW — it never re-charges and never
-    /// touches the consensus reconciliation (`reconcile`/`total_cost`/the supply
-    /// pools). Cheap on the single-signer fast path: the `any_signed_regions` gate
-    /// short-circuits before any channel encode / snapshot.
-    ///
-    /// Under the s₀ collapse every COMM is on a DATA channel (never a `Σ⟦s⟧` supply
-    /// channel — the §5 no-alias audit), so the match never fires and the
-    /// projection stays the singleton envelope lane. The shared decision is
-    /// [`match_channel_to_lane`] — the SAME one the static dual
-    /// [`demand_by_sig`](super::accounting::delta_sigma::demand_by_sig) uses, so the
-    /// two cannot drift (the consensus bridge).
-    pub fn note_channel_lane(&self, channel: &Par) {
-        if !self.budget.any_signed_regions() {
-            return;
-        }
-        let signer_channels = self.budget.signer_channels_snapshot();
-        if let Some(lane) = match_channel_to_lane(channel, &signer_channels) {
-            self.budget.note_lane_comm(lane);
-        }
     }
 
     /// Charge a non-COMM structural reduction (new / match / if). D3 (DR-9,
@@ -136,6 +108,9 @@ impl MeteredMachine {
     }
 
     pub fn reserve_incremental_primitive(&self, amount: Cost) -> Result<(), InterpreterError> {
+        if self.budget.is_legacy() {
+            return self.budget.charge_legacy(amount);
+        }
         if amount.value < 0 {
             return Err(InterpreterError::BugFoundError(format!(
                 "Incremental billable primitive cost must be non-negative for {}",
@@ -155,6 +130,9 @@ impl MeteredMachine {
     }
 
     fn reserve_cost(&self, kind: BillableKind, amount: Cost) -> Result<(), InterpreterError> {
+        if self.budget.is_legacy() {
+            return self.budget.charge_legacy(amount);
+        }
         // Live (production) charging path. Each charge records exactly one
         // attempt, lock-free, into the budget's `SegQueue` via
         // `reserve_canonical_with_cost` (→ `attempt_one`), then consults the
@@ -170,6 +148,9 @@ impl MeteredMachine {
                 "Billable metering cost must be positive for {}",
                 amount.operation
             )));
+        }
+        if self.budget.is_unmetered() {
+            return Ok(());
         }
 
         let local_index = self.next_local_index.fetch_add(1, Ordering::AcqRel);
@@ -328,12 +309,10 @@ mod tests {
         let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        // D3 (DR-9, OD-3): a single COMM costs ONE token (its `Cost` weight is
-        // diagnostic), so it fits the 1-token budget and commits.
         machine
             .child(0)
-            .reserve_comm(Cost::create(11, "send eval"))
-            .ok();
+            .reserve_comm(Cost::create(1, "send eval"))
+            .unwrap();
         assert_eq!(budget.total_cost().value, 1);
     }
 
@@ -349,6 +328,54 @@ mod tests {
         assert!(budget.get_event_log().is_empty());
         assert_eq!(budget.total_cost().value, 0);
         assert_eq!(budget.cost_trace_event_count(), 0);
+    }
+
+    #[test]
+    fn unmetered_reservations_preserve_the_next_metered_identity() {
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
+        let machine = MeteredMachine::new(budget.clone());
+
+        {
+            let _scope = budget.enter_unmetered_scope();
+            machine
+                .reserve_comm(Cost::create(1, "system execution"))
+                .unwrap();
+        }
+        machine
+            .reserve_comm(Cost::create(1, "user execution"))
+            .unwrap();
+
+        let events = budget.get_canonical_event_log();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].local_index, 0);
+        assert_eq!(events[0].source_path, SourcePath(vec![0]));
+    }
+
+    #[test]
+    fn unmetered_children_preserve_the_parent_identity_state() {
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
+        let machine = MeteredMachine::new(budget.clone());
+
+        {
+            let _scope = budget.enter_unmetered_scope();
+            let mut descendant = machine.clone();
+            for component in 0..32_768 {
+                descendant = descendant.child(component);
+            }
+            assert_eq!(descendant.source_path, SourcePath(Vec::new()));
+            assert!(Arc::ptr_eq(
+                &descendant.next_local_index,
+                &machine.next_local_index
+            ));
+        }
+
+        machine
+            .reserve_comm(Cost::create(1, "user execution"))
+            .unwrap();
+        let events = budget.get_canonical_event_log();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].local_index, 0);
+        assert_eq!(events[0].source_path, SourcePath(vec![0]));
     }
 
     #[test]
@@ -370,11 +397,11 @@ mod tests {
 
         machine
             .child(1)
-            .reserve_comm(Cost::create(11, "right branch"))
+            .reserve_comm(Cost::create(1, "right branch"))
             .unwrap();
         machine
             .child(0)
-            .reserve_comm(Cost::create(11, "left branch"))
+            .reserve_comm(Cost::create(1, "left branch"))
             .unwrap();
 
         let canonical = budget.get_canonical_event_log();
@@ -392,9 +419,9 @@ mod tests {
         let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::Comm, 11);
+        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::Comm, 1);
         machine.enqueue_billable(SourcePath(vec![3]), BillableKind::Substitution, 3);
-        machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Comm, 11);
+        machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Comm, 1);
 
         assert_eq!(
             machine.drain_canonical(),

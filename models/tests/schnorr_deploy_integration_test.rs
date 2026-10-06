@@ -4,17 +4,17 @@ use crypto::rust::signatures::frost_secp256k1::FrostSecp256k1;
 use crypto::rust::signatures::schnorr_secp256k1::SchnorrSecp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::cost_deploy_data::DeployData;
 
 fn sample_deploy() -> DeployData {
     DeployData {
         term: "@\"rho:io:stdout\"!(\"schnorr-deploy\")".to_string(),
+        language: "rholang".to_string(),
         time_stamp: 1_773_865_000_000,
-        phlo_price: 1,
-        phlo_limit: 1_000_000,
         valid_after_block_number: 1,
         shard_id: "root".to_string(),
         expiration_timestamp: Some(1_773_865_060_000),
+        authority_presentations: Vec::new(),
     }
 }
 

@@ -1,7 +1,7 @@
 // UC-01 — Single admissible equivocation by one validator is detected,
 // recorded, and slashed.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-01.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-01.
 // This is the canonical happy-path scenario that exercises the
 // entire pipeline: detection → record-mint → slash. Pre-fix this
 // already worked for AdmissibleEquivocation (the variant the original

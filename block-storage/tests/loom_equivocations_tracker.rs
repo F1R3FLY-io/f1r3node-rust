@@ -49,7 +49,7 @@ use loom::thread;
 fn shadow_critical_section<F>(lock: &Arc<RwLock<u64>>, f: F)
 where F: FnOnce(&mut u64) {
     let mut guard = lock.write().unwrap();
-    f(&mut *guard);
+    f(&mut guard);
 }
 
 /// Disciplined RMW: each invocation acquires the lock exactly once,

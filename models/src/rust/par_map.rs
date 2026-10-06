@@ -1,6 +1,7 @@
 // See models/src/main/scala/coop/rchain/models/ParMap.scala
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use shared::rust::clone_backing::{BackingError, BackingMeter};
 
 use super::sorted_par_map::SortedParMap;
 use super::utils::union;
@@ -27,6 +28,21 @@ impl ParMap {
             locally_free,
             remainder,
         }
+    }
+
+    pub fn new_metered(
+        vec: Vec<(Par, Par)>,
+        connective_used: bool,
+        locally_free: Vec<u8>,
+        remainder: Option<Var>,
+        meter: &dyn BackingMeter,
+    ) -> Result<ParMap, BackingError> {
+        Ok(ParMap {
+            ps: SortedParMap::create_from_vec_metered(vec, meter)?,
+            connective_used,
+            locally_free,
+            remainder,
+        })
     }
 
     pub fn create_from_vec(vec: Vec<(Par, Par)>) -> Self {

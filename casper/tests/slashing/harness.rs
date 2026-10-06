@@ -1,6 +1,6 @@
 // SlashingTestHarness — state-machine projection of the slashing LTS.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.2.1.
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.1.
 //
 // The harness keeps three pieces of state in memory:
 //   • DagState     — blocks and the invalid-block index (`D`, `I`)

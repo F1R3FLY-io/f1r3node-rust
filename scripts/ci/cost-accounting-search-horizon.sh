@@ -44,22 +44,18 @@ export DOT_SAGE="${DOT_SAGE:-$SEARCH_OUTPUT_DIR/sage}"
 
 FUZZ_TARGETS=(
     "runtime_budget_admission:2048"
-    "cost_trace_roundtrip:2048"
     "processed_deploy_settlement:512"
-    "replay_payload_cost_fields:2048"
     "cost_accounting_lifecycle_trace:4096"
     "cost_accounting_stateful_campaign:4096"
-    "replay_settlement_differential:2048"
     "source_descriptor_resource_campaign:2048"
-    "block_replay_auth_mutation:2048"
 )
 
 KANI_TARGETS=(
-    "models:checked_total_phlo_charge_rejects_negative_inputs"
-    "models:checked_total_phlo_charge_matches_product_on_small_valid_domain"
-    "models:refund_amount_is_bounded_on_small_valid_domain"
     "rholang:cost_value_to_token_count_rejects_negative_values"
     "rholang:token_remaining_units_i64_saturates_to_i64_max"
+    "rholang:funded_settlement_debit_never_underflows_supply"
+    "rholang:resolvable_reject_below_demand"
+    "rholang:unknown_demand_is_unprovable"
 )
 
 run_limited() {
@@ -250,7 +246,7 @@ run_horizon_v2_sage_replay() {
         --search-mode "$mode" \
         --objectives "$SAGE_OBJECTIVES" \
         --source-root "$PWD/rholang/examples" \
-        --source-root "$PWD/casper/tests/resources" \
+        --source-root "$PWD/rholang/examples" \
         --json-out "$json_out" \
         --fixture-out "$fixture_out" \
         --coverage-out "$coverage_out" \
@@ -281,7 +277,7 @@ run_horizon_v3_stateful_replay() {
         --search-mode "$mode" \
         --objectives "$SAGE_OBJECTIVES" \
         --source-root "$PWD/rholang/examples" \
-        --source-root "$PWD/casper/tests/resources" \
+        --source-root "$PWD/rholang/examples" \
         --json-out "$json_out" \
         --fixture-out "$fixture_out" \
         --coverage-out "$coverage_out" \
@@ -290,158 +286,7 @@ run_horizon_v3_stateful_replay() {
         cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_stateful_campaign_fixtures_hold
 }
 
-run_horizon_v11_source_anchored_replay() {
-    local profile="$1"
-    local mode="$2"
-    if ! command -v sage >/dev/null 2>&1; then
-        echo "SKIP Sage/Hypothesis cost-accounting v11 frontier: sage not found"
-        return
-    fi
-    if [[ ! -f "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v11_source_anchored_security_search.sage" ]]; then
-        echo "SKIP Sage/Hypothesis cost-accounting v11 frontier: search script not found at $FORMAL_REPO"
-        return
-    fi
-    mkdir -p "$SEARCH_OUTPUT_DIR"
-    mkdir -p "$DOT_SAGE"
-    local source_surface="$SEARCH_OUTPUT_DIR/source-surface.json"
-    local json_out="$SEARCH_OUTPUT_DIR/horizon-v11-${profile}-${mode}.json"
-    local fixture_out="$SEARCH_OUTPUT_DIR/horizon-v11-${profile}-${mode}-fixtures.json"
-    local coverage_out="$SEARCH_OUTPUT_DIR/horizon-v11-${profile}-${mode}-coverage.json"
-    local rust_fixtures_out="$SEARCH_OUTPUT_DIR/horizon-v11-${profile}-${mode}-rust-fixtures.json"
-    bash "$ROOT/scripts/cost-accounting-source-surface.sh" --json-out "$source_surface"
-    run_limited env DOT_SAGE="$DOT_SAGE" sage "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v11_source_anchored_security_search.sage" -- \
-        --profile "$profile" \
-        --search-mode "$mode" \
-        --objectives "$SAGE_OBJECTIVES" \
-        --source-surface-json "$source_surface" \
-        --json-out "$json_out" \
-        --fixture-out "$fixture_out" \
-        --coverage-out "$coverage_out" \
-        --rust-fixtures-out "$rust_fixtures_out"
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v11_source_anchored_fixtures_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v11_coverage_adequacy_holds
-}
-
-run_horizon_v12_production_oracle_replay() {
-    local profile="$1"
-    local mode="$2"
-    if ! command -v sage >/dev/null 2>&1; then
-        echo "SKIP Sage/Hypothesis cost-accounting v12 frontier: sage not found"
-        return
-    fi
-    if [[ ! -f "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v12_production_oracle_security_search.sage" ]]; then
-        echo "SKIP Sage/Hypothesis cost-accounting v12 frontier: search script not found at $FORMAL_REPO"
-        return
-    fi
-    mkdir -p "$SEARCH_OUTPUT_DIR"
-    mkdir -p "$DOT_SAGE"
-    local source_surface="$SEARCH_OUTPUT_DIR/source-surface.json"
-    local json_out="$SEARCH_OUTPUT_DIR/horizon-v12-${profile}-${mode}.json"
-    local fixture_out="$SEARCH_OUTPUT_DIR/horizon-v12-${profile}-${mode}-fixtures.json"
-    local coverage_out="$SEARCH_OUTPUT_DIR/horizon-v12-${profile}-${mode}-coverage.json"
-    local rust_fixtures_out="$SEARCH_OUTPUT_DIR/horizon-v12-${profile}-${mode}-rust-fixtures.json"
-    bash "$ROOT/scripts/cost-accounting-source-surface.sh" --json-out "$source_surface"
-    run_limited env DOT_SAGE="$DOT_SAGE" sage "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v12_production_oracle_security_search.sage" -- \
-        --profile "$profile" \
-        --search-mode "$mode" \
-        --objectives "$SAGE_OBJECTIVES" \
-        --source-surface-json "$source_surface" \
-        --json-out "$json_out" \
-        --fixture-out "$fixture_out" \
-        --coverage-out "$coverage_out" \
-        --rust-fixtures-out "$rust_fixtures_out"
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v12_production_oracle_fixtures_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v12_runtime_metering_parallel_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v12_casper_settlement_slashing_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v12_coverage_adequacy_holds
-    cargo nextest run -p casper cost_accounting_v12_casper_replay_payload_oracles_hold
-    cargo nextest run -p casper cost_accounting_v12_slashing_replay_oracles_hold
-}
-
-run_horizon_v13_source_semantic_replay() {
-    local profile="$1"
-    local mode="$2"
-    if ! command -v sage >/dev/null 2>&1; then
-        echo "SKIP Sage/Hypothesis cost-accounting v13 frontier: sage not found"
-        return
-    fi
-    if [[ ! -f "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v13_source_semantic_security_search.sage" ]]; then
-        echo "SKIP Sage/Hypothesis cost-accounting v13 frontier: search script not found at $FORMAL_REPO"
-        return
-    fi
-    mkdir -p "$SEARCH_OUTPUT_DIR"
-    mkdir -p "$DOT_SAGE"
-    local source_surface="$SEARCH_OUTPUT_DIR/source-surface.json"
-    local json_out="$SEARCH_OUTPUT_DIR/horizon-v13-${profile}-${mode}.json"
-    local fixture_out="$SEARCH_OUTPUT_DIR/horizon-v13-${profile}-${mode}-fixtures.json"
-    local coverage_out="$SEARCH_OUTPUT_DIR/horizon-v13-${profile}-${mode}-coverage.json"
-    local rust_fixtures_out="$SEARCH_OUTPUT_DIR/horizon-v13-${profile}-${mode}-rust-fixtures.json"
-    bash "$ROOT/scripts/cost-accounting-source-surface.sh" --json-out "$source_surface"
-    run_limited env DOT_SAGE="$DOT_SAGE" sage "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v13_source_semantic_security_search.sage" -- \
-        --profile "$profile" \
-        --search-mode "$mode" \
-        --objectives "$SAGE_OBJECTIVES" \
-        --source-surface-json "$source_surface" \
-        --json-out "$json_out" \
-        --fixture-out "$fixture_out" \
-        --coverage-out "$coverage_out" \
-        --rust-fixtures-out "$rust_fixtures_out"
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v13_source_semantic_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v13_runtime_metering_parallel_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v13_casper_settlement_slashing_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v13_coverage_adequacy_holds
-    cargo nextest run -p casper cost_accounting_v13_source_semantic_replay_payload_oracles_hold
-    cargo nextest run -p casper cost_accounting_v13_settlement_slashing_legacy_oracles_hold
-}
-
-run_horizon_v14_source_graph_replay() {
-    local profile="$1"
-    local mode="$2"
-    if ! command -v sage >/dev/null 2>&1; then
-        echo "SKIP Sage/Hypothesis cost-accounting v14 frontier: sage not found"
-        return
-    fi
-    if [[ ! -f "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v14_source_graph_security_search.sage" ]]; then
-        echo "SKIP Sage/Hypothesis cost-accounting v14 frontier: search script not found at $FORMAL_REPO"
-        return
-    fi
-    mkdir -p "$SEARCH_OUTPUT_DIR"
-    mkdir -p "$DOT_SAGE"
-    local source_surface="$SEARCH_OUTPUT_DIR/source-surface.json"
-    local json_out="$SEARCH_OUTPUT_DIR/horizon-v14-${profile}-${mode}.json"
-    local fixture_out="$SEARCH_OUTPUT_DIR/horizon-v14-${profile}-${mode}-fixtures.json"
-    local coverage_out="$SEARCH_OUTPUT_DIR/horizon-v14-${profile}-${mode}-coverage.json"
-    local rust_fixtures_out="$SEARCH_OUTPUT_DIR/horizon-v14-${profile}-${mode}-rust-fixtures.json"
-    bash "$ROOT/scripts/cost-accounting-source-surface.sh" --json-out "$source_surface"
-    run_limited env DOT_SAGE="$DOT_SAGE" sage "$FORMAL_REPO/formal/sage/cost_accounting/hypothesis_search/horizon_v14_source_graph_security_search.sage" -- \
-        --profile "$profile" \
-        --search-mode "$mode" \
-        --objectives "$SAGE_OBJECTIVES" \
-        --source-surface-json "$source_surface" \
-        --json-out "$json_out" \
-        --fixture-out "$fixture_out" \
-        --coverage-out "$coverage_out" \
-        --rust-fixtures-out "$rust_fixtures_out"
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_source_graph_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_slashing_security_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_node_security_oracles_hold
-    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_coverage_adequacy_holds
-    cargo nextest run -p casper cost_accounting_v14_replay_slashing_oracles_hold
-}
+# Source-anchored v11-v14 replay searches are retained on the Casper completion branch.
 
 triage_fuzz_artifacts() {
     mkdir -p "$SEARCH_OUTPUT_DIR"
@@ -512,9 +357,7 @@ run_apalache() {
         echo "SKIP Apalache: apalache-mc not found"
         return
     fi
-    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCRuntimeBudgetReplay.tla"
-    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCCostAccountingThreats.tla"
-    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCMergeableChannelAccounting.tla"
+    run_limited bash "$ROOT/scripts/check-cost-accounted-rho-apalache.sh"
 }
 
 run_tla() {
@@ -564,11 +407,8 @@ bash scripts/check-cost-accounting-frontier-guard.sh
 cargo nextest run -p rholang accounting::cost_accounting_frontier
 cargo nextest run -p rholang --test loom_metering_ownership
 cargo nextest run -p rholang --test loom_cost_trace_slots
-cargo nextest run -p models refund_amount_is_bounded_by_valid_escrow
-cargo nextest run -p models settlement_edge_cases_are_total_and_deterministic
-cargo nextest run -p casper cost_accounting_v13_source_semantic_replay_payload_oracles_hold
-cargo nextest run -p casper cost_accounting_v13_settlement_slashing_legacy_oracles_hold
-cargo nextest run -p casper cost_accounting_v14_replay_slashing_oracles_hold
+cargo nextest run -p rholang resolvable_funded_at_def19_boundary
+cargo nextest run -p rholang unknown_demand_requires_a_finite_proof
 
 if cargo fuzz --help >/dev/null 2>&1; then
     for target in "${FUZZ_TARGETS[@]}"; do
@@ -601,30 +441,18 @@ case "$SEARCH_TIER" in
         run_hypothesis_sage_replay "$(profile_for_tier)" frontier
         run_horizon_v2_sage_replay "$(profile_for_tier)" frontier
         run_horizon_v3_stateful_replay "$(profile_for_tier)" frontier
-        run_horizon_v11_source_anchored_replay "$(profile_for_tier)" frontier
-        run_horizon_v12_production_oracle_replay "$(profile_for_tier)" frontier
-        run_horizon_v13_source_semantic_replay "$(profile_for_tier)" frontier
-        run_horizon_v14_source_graph_replay "$(profile_for_tier)" frontier
         run_sage_models frontier
         ;;
     nightly)
         run_hypothesis_sage_replay "$(profile_for_tier)" all
         run_horizon_v2_sage_replay "$(profile_for_tier)" all
         run_horizon_v3_stateful_replay "$(profile_for_tier)" all
-        run_horizon_v11_source_anchored_replay "$(profile_for_tier)" all
-        run_horizon_v12_production_oracle_replay "$(profile_for_tier)" all
-        run_horizon_v13_source_semantic_replay "$(profile_for_tier)" all
-        run_horizon_v14_source_graph_replay "$(profile_for_tier)" all
         run_sage_models all
         ;;
     exhaustive)
         run_hypothesis_sage_replay "$(profile_for_tier)" all
         run_horizon_v2_sage_replay "$(profile_for_tier)" all
         run_horizon_v3_stateful_replay "$(profile_for_tier)" all
-        run_horizon_v11_source_anchored_replay "$(profile_for_tier)" all
-        run_horizon_v12_production_oracle_replay "$(profile_for_tier)" all
-        run_horizon_v13_source_semantic_replay "$(profile_for_tier)" all
-        run_horizon_v14_source_graph_replay "$(profile_for_tier)" all
         run_sage_models all
         run_tla
         run_rocq

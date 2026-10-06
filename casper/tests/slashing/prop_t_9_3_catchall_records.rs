@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.3 (catch-all dispatcher records every
@@ -8,7 +8,7 @@
 //
 // Theorem: T-9.3 (`t_9_3_catchall_mints_record`,
 // formal/rocq/slashing/theories/BugFixDispatcher.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
 //
 // Property: regardless of which slashable status the upstream
 // validator assigns, the post-fix dispatcher mints exactly one

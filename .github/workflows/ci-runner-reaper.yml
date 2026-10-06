@@ -1,0 +1,202 @@
+name: CI Runner Reaper
+
+# Terminates leaked ephemeral CI runner VMs (ci-eph-*) in the OCI ci-runner
+# compartment. An ephemeral runner self-terminates only after completing a
+# job; a runner that registers but never picks up a job idles forever. In
+# June 2026 ~209 such zombies burned ~$1,084/day for 9 days (~$6k excess)
+# before anyone noticed. No pipeline job runs longer than 60 minutes
+# (_integration-pipeline.yml timeout-minutes), so any ci-eph instance older
+# than MAX_AGE_HOURS is a leak, busy or not — with one exception: soak
+# runners (merge-recovery-soak.yml) run 22h (daily) or 60h (weekend) and
+# carry a soak-deadline-epoch freeform tag naming the second after which
+# they may be reaped. The tag is an exemption with an expiry, not a bypass:
+# a leaked soak VM still dies, at most a grace period after its window.
+#
+# NOTE: the schedule trigger only fires from the default branch (master).
+# Until this file reaches master, run it manually via workflow_dispatch.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List leaked instances without terminating them
+        type: boolean
+        default: false
+      max_age_hours:
+        description: Terminate ci-eph-* instances older than this many hours
+        default: "2"
+
+concurrency:
+  group: ci-runner-reaper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # OCI compartment "ci-runner" — where the ephemeral launcher creates VMs.
+  # Not a secret; pinned here so the reaper can never touch other compartments.
+  # That guarantee is why this is a literal and not an Actions variable, which
+  # anyone with repo admin could repoint. The same literal appears in
+  # merge-recovery-soak.yml, which tags the instance this job must not
+  # terminate; if the two ever name different compartments the exemption tag
+  # is written where this job never looks, and the soak dies at the 2h mark
+  # with a tag that exists but is invisible. check-workflow-invariants.sh
+  # asserts they match, so that divergence fails CI rather than a 60h soak.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
+  # Pinned OCI CLI installer (release tag + sha256) and CLI version. Keep
+  # identical to _integration-pipeline.yml and oci-validation.yml — this job
+  # holds OCI_* secrets. Bump all three together in all three files.
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_VERSION: "3.89.1"
+
+jobs:
+  reap:
+    name: Reap leaked ephemeral runners
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION"
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<CFG
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/key.pem
+          CFG
+          chmod 600 ~/.oci/config
+
+      - name: Terminate ci-eph-* instances past max age
+        shell: bash -e {0}
+        env:
+          # `== true` guards against string-typed inputs (e.g. via
+          # github.event.inputs), where the string "false" is truthy.
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '2' }}
+        run: |
+          case "$MAX_AGE_HOURS" in
+            ''|*[!0-9]*) echo "max_age_hours must be a positive integer"; exit 1 ;;
+          esac
+          cutoff=$(date -u -d "-${MAX_AGE_HOURS} hours" +%Y-%m-%dT%H:%M:%S)
+          echo "Reaping ci-eph-* instances created before ${cutoff}Z (max age ${MAX_AGE_HOURS}h)"
+
+          now_epoch=$(date -u +%s)
+          oci compute instance list \
+            --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json \
+            | jq -r --arg cutoff "$cutoff" --argjson now "$now_epoch" '
+                .data[]
+                | select(."lifecycle-state" == "RUNNING" or ."lifecycle-state" == "STOPPED")
+                | select(."display-name" | startswith("ci-eph-"))
+                | select(."time-created" < $cutoff)
+                # Soak runners outlive any CI age bound (22h daily, 60h
+                # weekend). merge-recovery-soak.yml tags its instance with the
+                # epoch second after which reaping is allowed (window end +
+                # grace); skip until then. Untagged instances — every normal
+                # CI runner — keep the age rule, and an expired or unparseable
+                # tag is reaped like any other leak.
+                #
+                # Every rejection below fails toward cleanup, deliberately: a
+                # bad tag must never buy immunity, because unbounded immunity
+                # is the shape of the June 2026 leak (~209 zombies, ~$6k).
+                # Note this is the opposite direction from the tagger in
+                # merge-recovery-soak.yml, which fails CLOSED and refuses to
+                # launch. That asymmetry is intentional and composed: an
+                # untagged soak runner never starts, and any untagged instance
+                # that does exist gets cleaned up. Do not harmonise them.
+                #
+                # isinfinite/isnan are load-bearing, not defensive noise. The
+                # jq tonumber builtin accepts "Infinity", "inf" and overflowing
+                # literals like "1e309", each of which yields a value no
+                # "< $now" can ever be true for — a permanent exemption from one
+                # typo. Verified empirically; the equivalent hole was found in
+                # the system-integration reaper by its own review (PR #70).
+                #
+                # NOTE: this whole jq program is a single-quoted shell string.
+                # An apostrophe anywhere in it — including in these comments —
+                # closes that quote and turns the rest into shell code. Two
+                # possessive forms did exactly that in 4330a24f: the step died
+                # with "syntax error near unexpected token |" on every run and
+                # reaped nothing for hours, silently removing the guard against
+                # the June 2026 leak. Invariant 8 in
+                # check-workflow-invariants.sh now runs bash -n over every
+                # run: block, so this cannot merge again. Use no apostrophes
+                # below this line.
+                # The horizon cap catches the finite-but-absurd case the same
+                # way: the longest legitimate deadline is a 60h weekend plus a
+                # 2h grace, so anything past 7 days is not a soak.
+                | ((."freeform-tags"["soak-deadline-epoch"] // "0") | tonumber? // 0) as $deadline
+                | select($deadline < $now
+                         or ($deadline | isinfinite)
+                         or ($deadline | isnan)
+                         or $deadline > ($now + 604800))
+                | "\(.id) \(."display-name") \(."time-created")"' \
+            > /tmp/zombies.txt
+
+          count=$(wc -l < /tmp/zombies.txt)
+          if [ "$count" -eq 0 ]; then
+            echo "No leaked instances found."
+            exit 0
+          fi
+
+          echo "Found $count leaked instance(s):"
+          awk '{print "  " $2 " (created " $3 ")"}' /tmp/zombies.txt
+
+          if [ -n "$DRY_RUN" ]; then
+            echo "Dry run — nothing terminated."
+            exit 0
+          fi
+
+          failed=0
+          while read -r id name created; do
+            # Defense in depth: never terminate anything not matching the
+            # ephemeral naming scheme, even if the jq filter changes.
+            case "$name" in
+              ci-eph-*) ;;
+              *) echo "SKIP unexpected name: $name"; continue ;;
+            esac
+            if oci compute instance terminate --instance-id "$id" --force >/dev/null; then
+              echo "Terminated $name (created $created)"
+            else
+              echo "FAILED to terminate $name"
+              failed=1
+            fi
+          done < /tmp/zombies.txt
+
+          echo "reaped=$count" >> "$GITHUB_STEP_SUMMARY"
+          exit $failed
+
+      - name: Shred OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          if [ -d ~/.oci ]; then
+            find ~/.oci -type f -exec shred -u {} + 2>/dev/null || rm -rf ~/.oci
+            rm -rf ~/.oci
+          fi

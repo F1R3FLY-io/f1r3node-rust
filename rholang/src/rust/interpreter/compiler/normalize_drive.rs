@@ -173,7 +173,7 @@
 
 use std::collections::HashMap;
 
-use models::rhoapi::{Par, Var as ModelsVar};
+use models::rhoapi::{CostSignature, Par, Var as ModelsVar};
 use models::rust::rholang::par_children::dismantle_all;
 use rholang_parser::ast::{
     AnnProc, BundleType, Case, KeyValuePair, Name, Names, ProcList, Signature, Var,
@@ -207,6 +207,7 @@ pub(crate) enum NormVal {
     Bytes(Vec<u8>),
     /// From `signature_to_ir`.
     Sig(Sig),
+    WireSig(CostSignature, FreeMap<VarSort>),
 }
 
 impl NormVal {
@@ -238,12 +239,19 @@ impl NormVal {
         }
     }
 
+    pub(crate) fn into_wire_sig(self) -> (CostSignature, FreeMap<VarSort>) {
+        match self {
+            NormVal::WireSig(signature, free_map) => (signature, free_map),
+            _ => unreachable!("norm_drive: expected a WireSig value on the value stack"),
+        }
+    }
+
     /// Every `Par` this value owns, for iterative teardown on the error path.
     fn into_pars(self) -> Vec<Par> {
         match self {
             NormVal::Proc(p) => vec![p.par],
             NormVal::Name(n) => vec![n.par],
-            NormVal::Bytes(_) | NormVal::Sig(_) => Vec::new(),
+            NormVal::Bytes(_) | NormVal::Sig(_) | NormVal::WireSig(_, _) => Vec::new(),
         }
     }
 }
@@ -287,6 +295,11 @@ pub(crate) enum NormWork<'ast> {
         sig: SigInput<'ast>,
         bound_map_chain: BoundMapChain<VarSort>,
     },
+    WireSig {
+        sig: SigInput<'ast>,
+        bound_map_chain: BoundMapChain<VarSort>,
+        free_map: FreeMap<VarSort>,
+    },
     /// Run a continuation against the value on top of the value stack.
     Combine(NormKont<'ast>),
 }
@@ -297,9 +310,10 @@ impl NormWork<'_> {
     fn into_pars(self) -> Vec<Par> {
         match self {
             NormWork::Proc { input, .. } => vec![input.par],
-            NormWork::Name { .. } | NormWork::CanonQuote { .. } | NormWork::Sig { .. } => {
-                Vec::new()
-            }
+            NormWork::Name { .. }
+            | NormWork::CanonQuote { .. }
+            | NormWork::Sig { .. }
+            | NormWork::WireSig { .. } => Vec::new(),
             NormWork::Combine(k) => k.into_pars(),
         }
     }
@@ -340,9 +354,17 @@ pub(crate) enum MatchPhase {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum InputPhase {
     /// Name `name_idx` of pattern group `group_idx`.
-    Patterns { group_idx: usize, name_idx: usize },
+    Patterns {
+        group_idx: usize,
+        name_idx: usize,
+    },
     /// Source name `idx`.
-    Sources { idx: usize },
+    Sources {
+        idx: usize,
+    },
+    SourceSignature {
+        idx: usize,
+    },
     /// The `where` guard.
     Guard,
     /// The continuation body.
@@ -371,6 +393,7 @@ pub(crate) struct InputK<'ast> {
     pub patterns: Vec<(&'ast [Name<'ast>], Option<Var<'ast>>)>,
     /// One channel per receive bind, in the same order as `patterns`.
     pub sources: Vec<Name<'ast>>,
+    pub signatures: Vec<Option<&'ast rholang_parser::ast::Signature<'ast>>>,
     pub guard: Option<AnnProc<'ast>>,
     pub body: AnnProc<'ast>,
     pub persistent: bool,
@@ -389,6 +412,7 @@ pub(crate) struct InputK<'ast> {
 
     // ---- source accumulators --------------------------------------------
     pub source_pars: Vec<Par>,
+    pub source_signatures: Vec<Option<CostSignature>>,
     pub source_free: FreeMap<VarSort>,
     pub source_locally_free: Vec<u8>,
     pub source_connective_used: bool,
@@ -583,7 +607,9 @@ pub(crate) enum NormKont<'ast> {
         span: SourceSpan,
     },
     /// `normalize_p_eval`.
-    Eval { input_par: Par },
+    Eval {
+        input_par: Par,
+    },
     /// `normalize_p_send`.
     Send(Box<SendK<'ast>>),
     /// `normalize_p_method`.
@@ -636,18 +662,19 @@ pub(crate) enum NormKont<'ast> {
         bound_map_chain: BoundMapChain<VarSort>,
         left: Option<Sig>,
     },
+    WireSigHash,
+    WireSigCompound {
+        right: Option<SigInput<'ast>>,
+        bound_map_chain: BoundMapChain<VarSort>,
+        left: Option<CostSignature>,
+    },
     /// `recognize_signed_term` — validate `s`, then lower `P` ordinarily.
-    SignedTerm {
+    SignedTermSignature {
         core_inner: AnnProc<'ast>,
         input: ProcVisitInputs,
     },
-    /// `recognize_signed_join` — validate every clause signature, then lower the
-    /// recovered plain join.
-    SignedJoin {
-        plain_for: AnnProc<'ast>,
-        clause_sigs: Vec<Signature<'ast>>,
-        idx: usize,
-        bound_map_chain: BoundMapChain<VarSort>,
+    SignedTermBody {
+        signature: CostSignature,
         input: ProcVisitInputs,
     },
     /// `recognize_token_stack` — validate every layer, then lower to the input
@@ -656,6 +683,7 @@ pub(crate) enum NormKont<'ast> {
         layers: &'ast [Signature<'ast>],
         idx: usize,
         input: ProcVisitInputs,
+        cells: Vec<CostSignature>,
     },
 }
 
@@ -682,7 +710,8 @@ impl NormKont<'_> {
             NormKont::NameQuote => 1,
             NormKont::CanonQuote => 1,
             NormKont::SigHash => 1,
-            NormKont::SignedTerm { .. } => 1,
+            NormKont::WireSigHash => 1,
+            NormKont::SignedTermSignature { .. } | NormKont::SignedTermBody { .. } => 1,
 
             // two operands
             NormKont::Binary { .. } => 2,
@@ -690,6 +719,7 @@ impl NormKont<'_> {
             NormKont::Disjunction { .. } => 2,
             NormKont::Matches { .. } => 2,
             NormKont::SigCompound { .. } => 2,
+            NormKont::WireSigCompound { .. } => 2,
 
             // `condition`, `if_true`, `if_false`-or-`Nil`
             NormKont::If { .. } => 3,
@@ -725,13 +755,11 @@ impl NormKont<'_> {
                     .map(|(names, _)| names.len())
                     .sum::<usize>()
                     + k.sources.len()
+                    + k.signatures.iter().filter(|sig| sig.is_some()).count()
                     + usize::from(k.guard.is_some())
                     + 1
             }
 
-            // one signature per clause / per layer; the lowering itself is a
-            // TAIL and consumes no value
-            NormKont::SignedJoin { clause_sigs, .. } => clause_sigs.len(),
             NormKont::TokenStack { layers, .. } => layers.len(),
         }
     }
@@ -753,13 +781,16 @@ impl NormKont<'_> {
             | NormKont::NameQuote
             | NormKont::CanonQuote
             | NormKont::SigHash
-            | NormKont::SignedTerm { .. } => 0,
+            | NormKont::WireSigHash
+            | NormKont::SignedTermSignature { .. }
+            | NormKont::SignedTermBody { .. } => 0,
 
             NormKont::Binary { left_par, .. } => usize::from(left_par.is_some()),
             NormKont::Conjunction { left_par, .. } => usize::from(left_par.is_some()),
             NormKont::Disjunction { left_par, .. } => usize::from(left_par.is_some()),
             NormKont::Matches { left, .. } => usize::from(left.is_some()),
             NormKont::SigCompound { left, .. } => usize::from(left.is_some()),
+            NormKont::WireSigCompound { left, .. } => usize::from(left.is_some()),
 
             NormKont::If { phase, .. } => match phase {
                 IfPhase::Condition => 0,
@@ -793,6 +824,12 @@ impl NormKont<'_> {
 
             NormKont::Input(k) => {
                 let all_names: usize = k.patterns.iter().map(|(n, _)| n.len()).sum();
+                let signed_before = |idx: usize| {
+                    k.signatures[..idx]
+                        .iter()
+                        .filter(|sig| sig.is_some())
+                        .count()
+                };
                 match k.phase {
                     InputPhase::Patterns {
                         group_idx,
@@ -804,15 +841,20 @@ impl NormKont<'_> {
                             .sum::<usize>()
                             + name_idx
                     }
-                    InputPhase::Sources { idx } => all_names + idx,
-                    InputPhase::Guard => all_names + k.sources.len(),
+                    InputPhase::Sources { idx } => all_names + idx + signed_before(idx),
+                    InputPhase::SourceSignature { idx } => all_names + idx + 1 + signed_before(idx),
+                    InputPhase::Guard => {
+                        all_names + k.sources.len() + signed_before(k.sources.len())
+                    }
                     InputPhase::Body => {
-                        all_names + k.sources.len() + usize::from(k.guard.is_some())
+                        all_names
+                            + k.sources.len()
+                            + signed_before(k.sources.len())
+                            + usize::from(k.guard.is_some())
                     }
                 }
             }
 
-            NormKont::SignedJoin { idx, .. } => *idx,
             NormKont::TokenStack { idx, .. } => *idx,
         }
     }
@@ -958,10 +1000,13 @@ impl NormKont<'_> {
                 }
                 out.extend(guard_out.map(|g| g.par));
             }
-            NormKont::NameQuote | NormKont::CanonQuote | NormKont::SigHash => {}
-            NormKont::SigCompound { .. } => {}
-            NormKont::SignedTerm { input, .. }
-            | NormKont::SignedJoin { input, .. }
+            NormKont::NameQuote
+            | NormKont::CanonQuote
+            | NormKont::SigHash
+            | NormKont::WireSigHash => {}
+            NormKont::SigCompound { .. } | NormKont::WireSigCompound { .. } => {}
+            NormKont::SignedTermSignature { input, .. }
+            | NormKont::SignedTermBody { input, .. }
             | NormKont::TokenStack { input, .. } => out.push(input.par),
         }
         out
@@ -1189,6 +1234,15 @@ fn run_descend<'ast>(
             sig,
             bound_map_chain,
         } => super::normalizer::cost_accounting::sig::descend_sig(sig, bound_map_chain, env),
+        NormWork::WireSig {
+            sig,
+            bound_map_chain,
+            free_map,
+        } => super::normalizer::cost_accounting::sig::descend_wire_sig(
+            sig,
+            bound_map_chain,
+            free_map,
+        ),
         NormWork::Combine(_) => unreachable!("norm_drive: handled by the Combine arm"),
     }
 }
@@ -1353,30 +1407,28 @@ fn run_combine<'ast>(
         NormKont::NameQuote => name::combine_name_quote(value),
         NormKont::CanonQuote => sig::combine_canon_quote(value),
         NormKont::SigHash => sig::combine_sig_hash(value),
+        NormKont::WireSigHash => sig::combine_wire_sig_hash(value),
         NormKont::SigCompound {
             right,
             bound_map_chain,
             left,
         } => sig::combine_sig_compound(right, bound_map_chain, left, value),
-        NormKont::SignedTerm { core_inner, input } => {
+        NormKont::WireSigCompound {
+            right,
+            bound_map_chain,
+            left,
+        } => sig::combine_wire_sig_compound(right, bound_map_chain, left, value),
+        NormKont::SignedTermSignature { core_inner, input } => {
             recognize::combine_signed_term(core_inner, input, value)
         }
-        NormKont::SignedJoin {
-            plain_for,
-            clause_sigs,
-            idx,
-            bound_map_chain,
-            input,
-        } => recognize::combine_signed_join(
-            plain_for,
-            clause_sigs,
-            idx,
-            bound_map_chain,
-            input,
-            value,
-        ),
-        NormKont::TokenStack { layers, idx, input } => {
-            recognize::combine_token_stack(layers, idx, input, value)
+        NormKont::SignedTermBody { signature, input } => {
+            recognize::combine_signed_term_body(signature, input, value)
         }
+        NormKont::TokenStack {
+            layers,
+            idx,
+            input,
+            cells,
+        } => recognize::combine_token_stack(layers, idx, input, cells, value),
     }
 }

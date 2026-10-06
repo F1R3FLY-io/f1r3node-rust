@@ -9,7 +9,7 @@ By default, F1r3fly will not build with ChromaDB support. This is because Chroma
 
 To compile F1r3fly with ChromaDB support, you can use cargo's `feature` flag: `cargo run --package rholang --release --features "chromadb"`. In order to use ChromaDB, you must have a running ChromaDB instance. You can start one by invoking `docker compose -f docker/shard.yml --profile chromadb up`.
 
-Additionally, when starting F1r3fly for the first time with ChromaDB support, the SBERT embeddings used for vector search will be downloaded, which will take about 80MB. This only happens once.
+Additionally, when starting F1r3fly for the first time with ChromaDB support, the ONNX representation of `sentence-transformers/all-MiniLM-L6-v2` and its tokenizer are downloaded from Hugging Face over Rustls and cached locally. Subsequent starts load the model from that cache and do not require network access. Set `FASTEMBED_CACHE_DIR` to place the cache on durable storage; otherwise it is stored in `.fastembed_cache` relative to the node working directory. `HF_HOME` takes precedence when it is set, and `HF_ENDPOINT` selects an approved Hugging Face mirror.
 
 If, for whatever reason, the F1r3fly node is unable to interact with the ChromaDB service, a log message is recorded with `info!` and all subsequent `rho:chroma:*` calls will behave as NoOps. 
 
@@ -21,6 +21,9 @@ The `chroma` crate uses environment variables to identify how to communicate wit
 | `CHROMA_ENDPOINT` | `http://localhost:8000` |
 | `CHROMA_TENANT`   | `"default_tenant"`      |
 | `CHROMA_DATABASE` | `"default_database"`    |
+| `FASTEMBED_CACHE_DIR` | `.fastembed_cache` |
+| `HF_HOME` | unset |
+| `HF_ENDPOINT` | Hugging Face public endpoint |
 
 
 ## Design Assumptions and Consensus Semantics
@@ -165,4 +168,3 @@ new deleteEntries(`rho:chroma:collection:entries:delete`), stdout(`rho:io:stdout
   }
 }
 ```
-

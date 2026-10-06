@@ -124,6 +124,10 @@ impl ApproveBlockProtocolFactory {
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
         shard_id: String,
         deploy_timestamp: Option<i64>,
         required_sigs: i32,
@@ -132,12 +136,10 @@ impl ApproveBlockProtocolFactory {
         block_number: i64,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
-        max_cosigners_per_deploy: u32,
-        initial_phlogiston: i64,
-        epoch_phlogiston: i64,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -172,6 +174,18 @@ impl ApproveBlockProtocolFactory {
             })
             .collect();
 
+        let genesis_version = if let Some(policy) = resource_policy.as_ref() {
+            let version = policy
+                .schedule()
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+                .protocol_version;
+            i64::try_from(version).map_err(|_| {
+                CasperError::RuntimeError("genesis protocol version exceeds i64".to_string())
+            })?
+        } else {
+            1
+        };
+
         let genesis = Genesis {
             shard_id,
             timestamp,
@@ -183,21 +197,31 @@ impl ApproveBlockProtocolFactory {
                 epoch_length,
                 quarantine_length,
                 number_of_active_validators,
+                // Consensus values baked into the PoS contract at genesis and
+                // read back by every node at startup: the finality threshold
+                // the finalized-floor oracle runs on, and the parameters the
+                // validity rules fork on.
+                fault_tolerance_threshold_ppm,
+                max_parent_depth,
+                deploy_lifespan,
+                min_phlo_price,
                 pos_multi_sig_public_keys,
                 pos_multi_sig_quorum,
-                max_cosigners_per_deploy,
-                initial_phlogiston,
-                epoch_phlogiston,
             },
             vaults,
             supply: i64::MAX,
-            version: 1,
+            version: genesis_version,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
         };
 
-        let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
+        let genesis_block = Genesis::create_genesis_block_with_policy(
+            runtime_manager,
+            &genesis,
+            resource_policy.as_ref(),
+        )
+        .await?;
         let sigs = Arc::new(Mutex::new(HashSet::new()));
 
         Ok(ApproveBlockProtocolImpl::new(
@@ -385,9 +409,11 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         &self,
         signatures: HashSet<SignatureWrapper>,
     ) -> Result<(), CasperError> {
+        // No seed: this block IS genesis, whose floor is itself.
         let approved_block = ApprovedBlock {
             candidate: self.candidate.clone(),
             sigs: signatures.into_iter().map(|s| s.0).collect(),
+            floor_seed: None,
         };
 
         // Set LastApprovedBlock

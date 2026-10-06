@@ -48,7 +48,7 @@ echo "Building Lean validator obligations (offline; core Init only)..."
 # determinism) mirror of StepDeterminism.v + LinearLogicResources.v:481.
 # E4 added the P1 (slash-authorization soundness) mirror of the Rocq slashing
 # Validator.v BondMap slash taxonomy + ValidatorLifetime.v
-# (`stale_evidence_not_authorized`), and the P3 (verdict determinism) thin lift
+# (`stale_generation_evidence_not_authorized`), and the P3 (verdict determinism) thin lift
 # of `ca_step_deterministic` to the validator-verdict level. P1 and P3 are
 # PLATFORM obligations that custom validators INHERIT (DR-12), proven here for
 # the built-in once (`Validator.*`, resolving after `import Validator`).
@@ -104,8 +104,10 @@ CONTRACT_THEOREMS=(
   Validator.bm_lookup_slash_many_notin
   Validator.bm_slash_many_order_independent
   Validator.bm_slash_many_order_independent_seteq
-  Validator.stale_evidence_not_authorized
-  Validator.matching_lifetime_authorized
+  Validator.same_key_different_generation_distinct
+  Validator.same_generation_different_epoch_same_lifetime
+  Validator.stale_generation_evidence_not_authorized
+  Validator.matching_generation_authorized
   Validator.bm_slash_changes_lookup_example
   # P3 — verdict determinism (validator-contract lift of
   #      CostAccountedRho.ca_step_deterministic; Rocq StepDeterminism.v 156-222)
@@ -121,6 +123,7 @@ CONTRACT_THEOREMS=(
   Validator.validator_contract_built_in_P1
   Validator.validator_contract_built_in_P1_order_independent
   Validator.validator_contract_built_in_P1_stale_evidence
+  Validator.validator_contract_built_in_P1_epoch_advance
   Validator.validator_contract_built_in_P3
   # The simulation-bicategory FULL coherence (continued-gslt-cost-v2 §6/§9, Prop 9.3):
   #   the interchange/pentagon/triangle equalities the axiom-free Rocq layer leaves as

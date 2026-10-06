@@ -13,17 +13,19 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::secp256k1_eth::Secp256k1Eth;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::{Cosigned, CosignedError, Cosigner, Signed, ToMessage};
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::cost_deploy_data::DeployData;
 use prost::bytes::Bytes;
 use prost::Message;
 
 fn payload(time_stamp: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
+        language: "rholang".to_string(),
         time_stamp,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     }
 }
 

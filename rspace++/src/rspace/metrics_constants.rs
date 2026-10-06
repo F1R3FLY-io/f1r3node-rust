@@ -117,6 +117,22 @@ pub const RSPACE_MATCHER_SPATIAL_BACKTRACK_METRIC: &str = "rspace.matcher.spatia
 pub const RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC: &str =
     "rspace.produce.unconsumed_datum_stored";
 
+// HistoryRepositoryImpl's own locks — `current_history` and `roots_repository`
+// are plain blocking `std::sync::Mutex`es guarding the whole history/root
+// state (issue-146/147: testing whether these serialize concurrent
+// PRECHARGE/REFUND system-deploy execution the way the now-removed
+// LmdbKeyValueStore mutex used to serialize history reads — see
+// shared/src/rust/store/lmdb_key_value_store.rs). ns counters accumulate;
+// divide by the paired `_calls` counter for an average wait per acquire.
+pub const HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC: &str =
+    "history.repository.current_history.lock_wait_ns";
+pub const HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC: &str =
+    "history.repository.current_history.lock_calls";
+pub const HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC: &str =
+    "history.repository.roots_repository.lock_wait_ns";
+pub const HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC: &str =
+    "history.repository.roots_repository.lock_calls";
+
 // Cold-path history reader — bottleneck #2 backing-store instrumentation.
 pub const HISTORY_FETCH_DATA_CALLS_METRIC: &str = "history.fetch_data.calls";
 pub const HISTORY_FETCH_DATA_TIME_NS_METRIC: &str = "history.fetch_data.time_ns";

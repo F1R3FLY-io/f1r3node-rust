@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Slashing-subsystem test suite.
 //
 // This module hosts the test catalogue prescribed by
-// docs/theory/slashing/design/14-test-plan.md:
+// docs/casper/theory/slashing/design/14-test-plan.md:
 //   • example-based use-case tests (uc_<NN>_*.rs and integration_t_*.rs)
 //   • frontier/threat-model fixtures from Sage and Hypothesis search
 //   • property-based theorem tests (prop_t_*.rs)
@@ -72,6 +72,11 @@ mod pre_fix_bug_11;
 mod prop_t_1_detection_sound;
 mod prop_t_11_neglect_closure;
 mod prop_t_12_quorum_preservation;
+mod prop_t_13a_bonds_bisim;
+mod prop_t_13b_records_bisim;
+mod prop_t_13c_forkchoice_bisim;
+mod prop_t_14_weak_barbed_equiv;
+mod prop_t_15_bisim_under_workload;
 mod prop_t_2_detection_complete;
 mod prop_t_3_slashable_taxonomy;
 mod prop_t_4_record_uniqueness;
@@ -93,9 +98,9 @@ mod prop_t_9_9_self_correcting;
 mod prop_t_auth_check;
 mod prop_t_idem_slash_idempotence;
 mod prop_t_invariants_under_workload;
+mod prop_t_triple_bisim_dispatch;
 mod prop_t_triple_bisim_forkchoice;
 mod prop_t_triple_bisim_records;
-mod prop_t_triple_bisim_dispatch;
 mod uc_01_admissible_single;
 mod uc_02_concurrent_admissible;
 mod uc_03_ignorable_unrequested;
@@ -158,7 +163,7 @@ mod bounded_arithmetic_projection;
 mod closure_fixed_point_certificate;
 mod disconnected_neglect_cycle;
 mod detector_totality_helpers;
-mod dispatch_catchall_mints_record_for_each_slashable_variant;
+mod dispatch_routes_demoted_variants_to_the_drop_arm;
 mod divergence_class;
 mod duplicate_neglect_edges;
 mod epoch_evidence_rollover;
@@ -212,4 +217,5 @@ mod evidence_visibility_gap;
 mod stale_evidence_filtered;
 mod weighted_neglect_chain;
 mod threat_vector_ranking_priorities;
+mod unbonded_window_pollution_determinism;
 mod zero_stake_direct_offender;

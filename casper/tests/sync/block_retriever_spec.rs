@@ -21,8 +21,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     struct TestReason;
-    impl Into<AdmitHashReason> for TestReason {
-        fn into(self) -> AdmitHashReason { AdmitHashReason::HasBlockMessageReceived }
+    impl From<TestReason> for AdmitHashReason {
+        fn from(_val: TestReason) -> Self { AdmitHashReason::HasBlockMessageReceived }
     }
 
     struct TestFixture {
@@ -365,6 +365,63 @@ mod tests {
                     assert_eq!(request_count, 1);
                 }
             }
+        }
+    }
+
+    /// A hash requested to satisfy a MISSING DEPENDENCY must be distinguishable
+    /// from one merely announced by gossip.
+    ///
+    /// `check_if_of_interest` drops any block whose height is below the approved
+    /// block's. For a joiner that is exactly the history it lacks, so a solicited
+    /// dependency was requested, received, and dropped — the dependent block then
+    /// retried forever (23,643 attempts on shard 62752dbf) and the joiner's idle
+    /// stake stalled the shard's finality. The height filter must yield to a block
+    /// this node asked for, and ONLY to that: unsolicited gossip stays droppable,
+    /// or the filter stops guarding against stale traffic at all.
+    mod requested_as_dependency {
+        use super::*;
+
+        #[tokio::test]
+        async fn missing_dependency_marks_the_request_and_gossip_does_not() {
+            let fixture = TestFixture::new();
+            let dep_hash = fixture.hash.clone();
+
+            fixture
+                .block_retriever
+                .admit_hash(
+                    dep_hash.clone(),
+                    None,
+                    AdmitHashReason::MissingDependencyRequested,
+                )
+                .await
+                .expect("admit dependency");
+            assert!(
+                fixture
+                    .block_retriever
+                    .was_requested_as_dependency(&dep_hash)
+                    .expect("read flag"),
+                "a hash admitted as MissingDependencyRequested must be marked, or \
+                 check_if_of_interest drops the very block that satisfies it"
+            );
+
+            let gossip_hash = BlockHash::from(b"gossipOnlyHash".to_vec());
+            fixture
+                .block_retriever
+                .admit_hash(
+                    gossip_hash.clone(),
+                    None,
+                    AdmitHashReason::HashBroadcastReceived,
+                )
+                .await
+                .expect("admit gossip");
+            assert!(
+                !fixture
+                    .block_retriever
+                    .was_requested_as_dependency(&gossip_hash)
+                    .expect("read flag"),
+                "an unsolicited gossip announcement must NOT be marked — the height \
+                 filter has to keep dropping stale broadcast traffic"
+            );
         }
     }
 }

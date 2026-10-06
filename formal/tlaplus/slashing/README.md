@@ -44,7 +44,7 @@ tlc -workers 12 MC_WithdrawFlow.tla
 |---|---|---|
 | EquivocationDetector | `Inv_DetectionSound` | Every emitted Admissible/Ignorable/Neglected status corresponds to a real equivocation in the trace. |
 | EquivocationDetector | `Inv_DetectionComplete` | Every real equivocation is eventually emitted. |
-| EquivocationDetector | `Inv_TaxonomyCorrect` | `is_slashable(s) = TRUE` iff `s ∈ {17 slashable variants}`. |
+| EquivocationDetector | `Inv_TaxonomyCorrect` | Ranges over the real **27**-variant `InvalidBlock` enum and pins the **19**-element `is_slashable` set (`SlashableVariants ⊆ InvalidBlockVariants`, `\|InvalidBlockVariants\| = 27`, `\|SlashableVariants\| = 19`); the detector's status set is closed and every non-valid status (admissible/ignorable/neglected) maps to a slashable variant. (Authoritative slashable-taxonomy proof is Rocq `InvalidBlock.v` T-3, 19/27; TLC only checks the detector's 5-status range plus this pinning.) |
 | EquivocationDetector | `Inv_NeglectedHasDetectableView` | Every Neglected status has a Rust latest-message detectability witness. |
 | EquivocationDetector | `Inv_FixedDetectorTotal` / `Inv_MissingPointerNonContributing` | Missing latest-message pointers are non-contributing, not fatal. |
 | EquivocationDetector | `Inv_DuplicateChildNeedsDistinctChildren` / `Inv_TwoDistinctChildrenDetect` | Duplicate paths to one child do not count as two children; two distinct children detect. |

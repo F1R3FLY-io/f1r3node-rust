@@ -1,95 +1,97 @@
-// Exercises the TokenMetadata contract deployed at genesis.
-// All four methods must return the values baked into the contract at
-// genesis via the `native-token-*` config fields.
+// RhoSpec suite for the TokenMetadata contract deployed at genesis under
+// `rho:system:tokenMetadata`. Its four methods (name / symbol / decimals / all)
+// must return the values baked into genesis from the `native-token-*` config.
 //
-// ⚠ THIS FILE USED TO ASSERT NOTHING. It sent its one result to `test!((…))` on a channel it had
-// `new`'d itself and that nothing ever received, so `RhoSpec` never learned of a test, the
-// collector recorded no assertion, and `token_metadata_spec` passed having checked nothing. The
-// non-vacuity floor in `casper/tests/helper/rho_spec.rs` now refuses that shape:
+// The test genesis builder (casper/tests/util/genesis_builder.rs) fixes these to
+// name = "F1R3CAP", symbol = "F1R3", decimals = 8 (see also the startup
+// consistency check in casper/src/rust/util/token_metadata_check.rs, which reads
+// the same registry entry via an exploratory deploy).
 //
-//   ★★ NON-VACUITY FLOOR — TokenMetadataTest.rho registers NO tests with RhoSpec, so running it
-//   can verify nothing and passing it would mean nothing.
-//
-// The rewrite below registers four tests through the RhoSpec protocol, one per method, so each
-// getter is checked BY NAME and a getter that stops answering makes the suite fail instead of
-// going quiet.
-//
-// ★ The three expected values are the genesis DEFAULTS — `casper/tests/util/genesis_builder.rs:243`
-// pins `native_token_name: "F1R3CAP"`, `native_token_symbol: "F1R3"`, `native_token_decimals: 8`,
-// and those are what `RhoSpec::new` builds genesis with. Pinning them is deliberate: the default
-// native-token identity is baked into the genesis post-state, so a change to it should have to be
-// acknowledged here rather than pass unremarked. The fourth test is parameter-INDEPENDENT — it
-// asserts only that "all" agrees with the three getters — so it keeps its meaning whatever the
-// configured values are.
-
+// NOTE: This file previously contained a bare smoke test that looked the
+// contract up, printed the four values to stdout, and sent a tuple to an
+// unconsumed `test` channel. It installed no RhoSpec `testSuite`, so it
+// collected zero assertions and never signalled `rho:test:testSuiteCompleted`
+// — vacuously "passing" only because the old harness ran suites against an empty
+// scope. With the harness now running against genesis state and enforcing
+// non-vacuity, it is expressed as a real RhoSpec suite below.
 new
-  rl(`rho:registry:lookup`),
-  RhoSpecCh,
-  tokenMetadataCh,
-  test_name, test_symbol, test_decimals, test_all_agrees_with_the_getters
+  rl(`rho:registry:lookup`), RhoSpecCh,
+  stdlog(`rho:io:stdlog`),
+  test_name,
+  test_symbol,
+  test_decimals,
+  test_all,
+  test_all_consistent_with_getters
 in {
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
   for(@(_, RhoSpec) <- RhoSpecCh) {
     @RhoSpec!("testSuite",
       [
-        ("TokenMetadata.name is the genesis native token name", *test_name),
-        ("TokenMetadata.symbol is the genesis native token symbol", *test_symbol),
-        ("TokenMetadata.decimals is the genesis native token decimals", *test_decimals),
-        ("TokenMetadata.all agrees with the individual getters", *test_all_agrees_with_the_getters)
+        ("name returns the genesis-configured native token name", *test_name),
+        ("symbol returns the genesis-configured native token symbol", *test_symbol),
+        ("decimals returns the genesis-configured native token decimals", *test_decimals),
+        ("all returns the (name, symbol, decimals) tuple", *test_all),
+        ("all is consistent with the individual getters", *test_all_consistent_with_getters)
       ])
   } |
 
-  rl!(`rho:system:tokenMetadata`, *tokenMetadataCh) |
-  for (@(_, TokenMetadata) <- tokenMetadataCh) {
+  new TokenMetadataCh in {
+    rl!(`rho:system:tokenMetadata`, *TokenMetadataCh) |
+    for(@(_, TokenMetadata) <- TokenMetadataCh) {
+      contract test_name(rhoSpec, _, ackCh) = {
+        new ch in {
+          @TokenMetadata!("name", *ch) |
+          rhoSpec!("assert", ("F1R3CAP", "== <-", *ch),
+            "name equals the configured native-token-name", *ackCh)
+        }
+      } |
 
-    contract test_name(rhoSpec, _, ackCh) = {
-      new nameCh in {
-        @TokenMetadata!("name", *nameCh) |
-        rhoSpec!("assert", ("F1R3CAP", "== <-", *nameCh),
-          "name is the genesis native-token-name", *ackCh)
-      }
-    } |
+      contract test_symbol(rhoSpec, _, ackCh) = {
+        new ch in {
+          @TokenMetadata!("symbol", *ch) |
+          rhoSpec!("assert", ("F1R3", "== <-", *ch),
+            "symbol equals the configured native-token-symbol", *ackCh)
+        }
+      } |
 
-    contract test_symbol(rhoSpec, _, ackCh) = {
-      new symbolCh in {
-        @TokenMetadata!("symbol", *symbolCh) |
-        rhoSpec!("assert", ("F1R3", "== <-", *symbolCh),
-          "symbol is the genesis native-token-symbol", *ackCh)
-      }
-    } |
+      contract test_decimals(rhoSpec, _, ackCh) = {
+        new ch in {
+          @TokenMetadata!("decimals", *ch) |
+          rhoSpec!("assert", (8, "== <-", *ch),
+            "decimals equals the configured native-token-decimals", *ackCh)
+        }
+      } |
 
-    contract test_decimals(rhoSpec, _, ackCh) = {
-      new decimalsCh in {
-        @TokenMetadata!("decimals", *decimalsCh) |
-        rhoSpec!("assert", (8, "== <-", *decimalsCh),
-          "decimals is the genesis native-token-decimals", *ackCh)
-      }
-    } |
+      contract test_all(rhoSpec, _, ackCh) = {
+        new ch in {
+          @TokenMetadata!("all", *ch) |
+          rhoSpec!("assert", (("F1R3CAP", "F1R3", 8), "== <-", *ch),
+            "all returns the (name, symbol, decimals) tuple", *ackCh)
+        }
+      } |
 
-    // Parameter-independent: whatever the three configured values are, the single-round-trip
-    // getter must return exactly what the three individual getters return.
-    contract test_all_agrees_with_the_getters(rhoSpec, _, ackCh) = {
-      new nameCh, symbolCh, decimalsCh, allCh,
-          allNameCh, allSymbolCh, allDecimalsCh
-      in {
-        @TokenMetadata!("name", *nameCh) |
-        @TokenMetadata!("symbol", *symbolCh) |
-        @TokenMetadata!("decimals", *decimalsCh) |
-        @TokenMetadata!("all", *allCh) |
-        for (@name <- nameCh &
-             @symbol <- symbolCh &
-             @decimals <- decimalsCh &
-             @(allName, allSymbol, allDecimals) <- allCh) {
-          allNameCh!(allName) |
-          allSymbolCh!(allSymbol) |
-          allDecimalsCh!(allDecimals) |
-          rhoSpec!("assertMany",
-            [
-              ((name, "== <-", *allNameCh), "all's name matches the name getter"),
-              ((symbol, "== <-", *allSymbolCh), "all's symbol matches the symbol getter"),
-              ((decimals, "== <-", *allDecimalsCh), "all's decimals matches the decimals getter")
-            ],
-            *ackCh)
+      // Consistency: the tuple returned by "all" must agree component-for-
+      // component with the individual getters (guards against the four methods
+      // drifting apart if the contract is regenerated).
+      contract test_all_consistent_with_getters(rhoSpec, _, ackCh) = {
+        new nameCh, symbolCh, decimalsCh, allCh in {
+          @TokenMetadata!("name", *nameCh) |
+          @TokenMetadata!("symbol", *symbolCh) |
+          @TokenMetadata!("decimals", *decimalsCh) |
+          @TokenMetadata!("all", *allCh) |
+          for (
+            @name <- nameCh &
+            @symbol <- symbolCh &
+            @decimals <- decimalsCh &
+            @(allName, allSymbol, allDecimals) <- allCh
+          ) {
+            rhoSpec!("assertMany",
+              [
+                ((allName, "==", name), "all's name component matches the name getter"),
+                ((allSymbol, "==", symbol), "all's symbol component matches the symbol getter"),
+                ((allDecimals, "==", decimals), "all's decimals component matches the decimals getter")
+              ], *ackCh)
+          }
         }
       }
     }

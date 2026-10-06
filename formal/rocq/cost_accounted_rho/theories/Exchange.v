@@ -9,9 +9,10 @@
 
    — it consumes ONE datum from each of two carrier channels [n_c], [n_v] and
    re-emits one on each, SWAPPED, implementing a 1:1 peg. This module mechanizes
-   its core economic guarantees at the carrier-count layer (the layer the
-   realization operates on: ordinary count-datum carrier channels, with the
-   `Σ⟦v⟧` credit being the Rust `supply::produce_balance` mirror):
+   its core economic guarantees at both the carrier-count layer and the
+   first-class resource-stack layer. Ordinary carriers can transport integers
+   or exact stack terms; native `Σ` balance-datum writes remain a distinct,
+   authenticated Rust transition:
 
      1. [exchange_conserves_per_channel] — the swap consumes exactly ONE datum
         from each carrier and produces exactly ONE on each, so each carrier's
@@ -27,6 +28,13 @@
         [user_ca_step_does_not_mint] a step cannot raise the total token count,
         so a swap that conserves the count is not realizable as a mint of a
         non-empty stack.
+     5. [exchange_preserves_stack_identity_and_order] — exact stack payloads
+        cross carriers without retagging or reordering.
+     6. [exchange_preserves_resource_multiset] and
+        [exchange_preserves_resource_cell_count] — the combined resource is
+        conserved, including cell identity and multiplicity.
+     7. [exchange_resource_join_requires_both] — the exact-stack join has no
+        one-sided release path.
 
    Everything is concrete (no Axiom, no Admitted, no Section hypotheses), so the
    headline lemmas are Closed under the global context.
@@ -41,6 +49,12 @@
    exchange_total_conserved           │ no mint / no burn across the swap
    exchange_requires_both_inputs      │ DR-4 join requires both inputs
    exchange_is_ca_step_not_amint      │ Exchange ⊆ ca_step, ⊄ AMint
+   exchange_preserves_stack_identity_ │ exact stack identity and order
+     and_order                         │ cross the two carriers unchanged
+   exchange_preserves_resource_       │ exact combined resource multiset
+     multiset                          │ is invariant
+   exchange_resource_join_requires_   │ stack exchange needs both inputs
+     both                              │
    ─────────────────────────────────────────────────────────────────────────
 
    Dependencies: Rocq stdlib, RhoSyntax, CostAccountedSyntax,
@@ -50,6 +64,7 @@
 From Stdlib Require Import Lia.
 From Stdlib Require Import Arith.PeanoNat.
 From Stdlib Require Import Lists.List.
+From Stdlib Require Import Sorting.Permutation.
 Import ListNotations.
 
 From CostAccountedRho Require Import RhoSyntax.
@@ -144,7 +159,7 @@ Definition exchange_fires (a : carrier_avail) : bool :=
 (* [exchange_requires_both_inputs] (DR-4): the Exchange join FIRES iff both
    carriers carry a datum. In particular, if EITHER carrier is empty the join
    does NOT fire — so a one-sided carrier can never trigger a swap/credit (no
-   one-sided mint; the empty-F_v validator gets only the epoch mint). *)
+   one-sided mint). *)
 Theorem exchange_requires_both_inputs : forall a,
   exchange_fires a = true <-> (avail_c a = true /\ avail_v a = true).
 Proof.
@@ -194,10 +209,72 @@ Qed.
 (* The count-layer counterpart, tying Section 1 to the no-mint property: a swap
    conserves the carriers' total, so — unlike an [AMint], which adds exactly the
    injected stack size — it adds ZERO to the total. Exchange is therefore not a
-   producer of tokens; it is a conservative re-router (the basis of
-   `fee_convert_credit_is_backed`: the Σ⟦v⟧ credit is matched by the F_v debit). *)
+   producer of tokens; it is a conservative re-router. This blessed market
+   operation is optional and is not part of native fee settlement. *)
 Theorem exchange_mints_nothing : forall cs,
   carriers_total (exchange_swap cs) = carriers_total cs + 0.
 Proof.
   intros cs. rewrite exchange_total_conserved. lia.
+Qed.
+
+Definition resource_stack := list nat.
+
+Record resource_carriers : Type := {
+  resource_c : resource_stack;
+  resource_v : resource_stack
+}.
+
+Definition exchange_resource_swap (cs : resource_carriers) : resource_carriers :=
+  {| resource_c := resource_v cs;
+     resource_v := resource_c cs |}.
+
+Theorem exchange_preserves_stack_identity_and_order : forall cs,
+  resource_c (exchange_resource_swap cs) = resource_v cs
+  /\ resource_v (exchange_resource_swap cs) = resource_c cs.
+Proof.
+  intros cs. split; reflexivity.
+Qed.
+
+Theorem exchange_preserves_resource_multiset : forall cs,
+  Permutation
+    (resource_c (exchange_resource_swap cs) ++
+     resource_v (exchange_resource_swap cs))
+    (resource_c cs ++ resource_v cs).
+Proof.
+  intros cs. simpl. apply Permutation_app_comm.
+Qed.
+
+Theorem exchange_preserves_resource_cell_count : forall cs,
+  length (resource_c (exchange_resource_swap cs)) +
+  length (resource_v (exchange_resource_swap cs)) =
+  length (resource_c cs) + length (resource_v cs).
+Proof.
+  intros cs. simpl. lia.
+Qed.
+
+Definition exchange_resource_join
+  (c v : option resource_stack) : option (resource_stack * resource_stack) :=
+  match c, v with
+  | Some c_stack, Some v_stack => Some (v_stack, c_stack)
+  | _, _ => None
+  end.
+
+Theorem exchange_resource_join_requires_both : forall c v output,
+  exchange_resource_join c v = Some output ->
+  exists c_stack v_stack,
+    c = Some c_stack /\
+    v = Some v_stack /\
+    output = (v_stack, c_stack).
+Proof.
+  intros [c_stack|] [v_stack|] output H;
+    simpl in H; try discriminate.
+  inversion H. subst.
+  exists c_stack, v_stack. repeat split; reflexivity.
+Qed.
+
+Theorem exchange_resource_join_one_sided_is_inert : forall stack,
+  exchange_resource_join (Some stack) None = None
+  /\ exchange_resource_join None (Some stack) = None.
+Proof.
+  intros stack. split; reflexivity.
 Qed.

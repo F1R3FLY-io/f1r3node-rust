@@ -37,6 +37,7 @@ impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
 // Default-body impls for the rspace++ test-double instantiations (no
 // blanket impl: coherence must leave room for models' overriding impls).
 impl StableHashSerialize for String {}
+impl StableHashSerialize for u8 {}
 impl StableHashSerialize for i32 {}
 impl StableHashSerialize for u64 {}
 impl StableHashSerialize for bool {}

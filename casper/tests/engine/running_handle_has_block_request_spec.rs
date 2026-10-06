@@ -47,11 +47,9 @@ impl TestContext {
     }
 
     fn to_has_block(protocol: &Protocol) -> HasBlock {
-        if let Some(message) = &protocol.message {
-            if let Packet(packet_data) = message {
-                if let Ok(hb) = HasBlockProto::decode(packet_data.content.as_ref()) {
-                    return HasBlock::from_proto(hb);
-                }
+        if let Some(Packet(packet_data)) = &protocol.message {
+            if let Ok(hb) = HasBlockProto::decode(packet_data.content.as_ref()) {
+                return HasBlock::from_proto(hb);
             }
         }
         panic!("Could not convert protocol to HasBlock");
