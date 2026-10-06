@@ -48,7 +48,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 262 modules and 96,218 lines of development, and
+in **Rocq 9.1.1** across 263 modules and 96,713 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -70,7 +70,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 5,044 `Qed.`/`Defined.` proof terms belong to the current source inventory.
+All 5,073 `Qed.`/`Defined.` proof terms belong to the current source inventory.
 Source counts alone do not establish that an aggregate verification run passed.
 The [economic failure observation](cost-accounting-impl/economic-failure-observation.md) connects failure-summary proofs to concurrent recorder tests and preserves the legacy public error contract.
 The [observed outcome matcher](cost-accounting-impl/observed-funding-outcome.md) binds complete execution evidence to one equivalent prepared settlement and rejects ambiguous captures.
@@ -555,7 +555,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 262 modules and 96,218 lines, with 5,044 `Qed.` or
+   development spans 263 modules and 96,713 lines, with 5,073 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -720,9 +720,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 262 modules                                                |
-| Total lines of Rocq                              | 96,218                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,044                                                      |
+| Rocq source files                                | 263 modules                                                |
+| Total lines of Rocq                              | 96,713                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,073                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -744,7 +744,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 262-module formalization
+The foundational 32-module subgraph of the 263-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -754,7 +754,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 262-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 263-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/casper/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/casper/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 

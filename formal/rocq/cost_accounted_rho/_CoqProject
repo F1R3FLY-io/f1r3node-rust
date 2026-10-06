@@ -630,6 +630,7 @@ theories/FreeMapExtraction.v
 theories/WalkerBlockCharge.v
 theories/NestedEncodeCost.v
 theories/NativeDecodeBacking.v
+theories/NativeDigestIndex.v
 theories/IncrementalTreeBacking.v
 theories/OrderedLookupBound.v
 theories/NativeSharedReads.v

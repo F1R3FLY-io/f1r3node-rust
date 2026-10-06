@@ -6911,7 +6911,7 @@ spread is up to 40 MB of hot-store write charges.
 ## DR-96 — Digest-keyed ordered index for the native session store
 
 **Status.** In progress for Phase D item D-C2 of epic 8946 (D-S1 of the
-Phase D plan). Part 1 (D-C2a) implemented 2026-10-06.
+Phase D plan). Part 1 (D-C2a) and part 2 (D-C2b) implemented 2026-10-06.
 
 **Context.** The native replay session keeps its data, continuations and
 joins in the hot store of the replay space: 256 `imbl::HashMap` shards keyed
@@ -6978,6 +6978,102 @@ encodings. Part 5 (D-C2e) handles a digest collision.
 - `group_key_preserves_order`: a reordered or repeated group has a different
   key, the group key equals a reference Blake2b computation, and join groups
   keep their positions.
+
+**Decision (part 2, D-C2b).** The index
+(`rspace++/src/rspace/hot_store/native_index.rs`) has 256 shards. Each shard
+is an imbl 7.0.2 `OrdMap` from a `StoreKey` to a shared entry, and the shard
+of a key is its first byte. An entry holds the key value, the value and a
+dirty flag. Part 5 uses the key value for its collision check. D-C3 reads
+the dirty flag.
+
+1. The charges depend only on the level bound $`L`$ of the store's key
+   limit $`N = 2^{20}`$, where
+
+   ```math
+   L = 1 + \#\{\, h \ge 0 : 10 \cdot 8^{h} \le N \,\} = 7 .
+   ```
+
+   No charge reads the population of a shard, another key or the sharing
+   state.
+2. In the table, $`B = 704`$ bytes is one node allocation, the larger of a
+   leaf (672 bytes) and a branch (704 bytes). $`T = B + 17 \cdot 16`$ bytes
+   is what copying or releasing a node reads: the node and one
+   shared-pointer header for each of its at most 17 entries or children.
+   $`E`$ is the allocation of one entry `Arc`.
+
+   | Charge | Operations | Scanned bytes | Backing bytes |
+   |--------|-----------:|--------------:|--------------:|
+   | Search | $`5L`$ | $`(5 \cdot 64 + 24) L`$ | 0 |
+   | Path copy | $`33L`$ | $`T L`$ | 0 |
+   | $`n`$ nodes | $`34n`$ | $`n (B + T)`$ | $`n B`$ |
+   | Entry | 2 | $`E`$ | $`E`$ |
+   | View of an entry | 2 | $`8 + 2 \cdot 16`$ | 0 |
+
+   - A replace is a search, a path copy, $`L`$ nodes and an entry: 506
+     operations, 21,056 scanned bytes and 4,984 backing bytes for a data
+     entry ($`E = 56`$).
+   - An insert is a search, a path copy, $`2L + 2`$ nodes and an entry: 812
+     operations, 36,176 scanned bytes and 11,320 backing bytes.
+3. The plan's constants change in two places, and both changes make the
+   charge cover more work.
+   - An insert allocates at most $`2L + 2`$ nodes, not $`2L + 1`$. A root
+     split first puts an empty default leaf in the root (imbl
+     `ord/map.rs`, `insert_key_value`, `mem::take`) and then the new root,
+     so it allocates two nodes beyond the path.
+   - The release of a node is prepaid when the node is allocated, not when
+     a later write supersedes it. A restore and the end of the session
+     drop nodes without a charge, so a node that no write supersedes must
+     already be paid for.
+4. The level bound rests on how inserts build the tree. A split leaves 8
+   entries or 8 keys in each half, and a root branch has at least 2
+   children. The store has no removal, so every node is built by inserts.
+   The model uses weaker minima (5 entries per leaf, 8 children per
+   branch), which every insert-only shape satisfies.
+5. This part changes no production path. Part 3 (D-C2c) moves the native
+   session to the index.
+
+**Verification (part 2).** `NativeDigestIndex.v` proves without axioms:
+
+- `ord_size_lower_bound`, `ord_root_lower_bound`: a non-root subtree of
+  height $`h`$ holds at least $`5 \cdot 8^{h}`$ entries, and a root branch of
+  height $`h + 1`$ holds at least $`10 \cdot 8^{h}`$.
+- `bsearch_le_5`: imbl's binary search makes at most 5 comparisons in a
+  node.
+- `ord_search_comparisons`, `ord_levels_within_bound`,
+  `ord_search_within_bound`, `ord_levels_bound_monotone`,
+  `key_bound_levels`: a search in a tree with at most $`n`$ entries makes at
+  most $`5 L(n)`$ comparisons, and $`L(2^{20}) = 7`$.
+- `ord_insert_allocations_le`, `ord_replace_allocations_le`: the node
+  allocations of an insert and of a replace.
+- `per_key_schedule_total_invariant`: charges that depend only on a key's
+  own history give every schedule that keeps the order of each key's
+  operations the same total.
+- Negative control `population_charge_schedule_dependent` and contrast
+  `legacy_insert_nodes_example` (398 legacy nodes against at most 16).
+
+`NativeDigestIndexCharge.tla` checks the same schedule independence with
+TLC: 145 states, 64 of them distinct, and no error. Its population mutation
+(`NativeDigestIndexChargePopulationUnsafe.cfg`) is refuted, as expected.
+
+Tests in `rspace++/src/rspace/hot_store/native_index/tests.rs`:
+
+- `ord_lookup_comparisons_within_bound`: counted comparisons for random,
+  ascending and bulk construction up to $`2^{16}`$ keys, for present and
+  absent keys, and after removals with the weaker bound of removal shapes.
+- `ord_write_allocations_within_bound`: with a live snapshot that shares
+  every node, the measured bytes of 20,000 inserts and replaces stay within
+  the bounds.
+- `ord_node_bytes_match_allocator`: a replace in a leaf copies 672 bytes, the
+  17th insert into a full leaf allocates three leaves and one branch, and a
+  replace in a two-level tree copies one leaf and one branch.
+- `native_store_charges_are_schedule_independent`: all 20 interleavings of
+  two keys in one shard have equal totals.
+  `random_schedules_have_the_sequential_total` (128 cases) extends this to
+  up to five keys.
+- `ord_levels_bound_values_and_monotone`, `index_charges_are_fixed`.
+- `legacy_population_charges_depend_on_schedule`
+  (`hot_store/native/tests.rs`): the legacy store gives two such schedules
+  different totals.
 
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,

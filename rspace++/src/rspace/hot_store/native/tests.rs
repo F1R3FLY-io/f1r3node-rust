@@ -1334,3 +1334,31 @@ fn legacy_duplicate_check_formatted_every_stored_continuation() {
     };
     assert!(formatted(4_096) > formatted(1) + 4 * 4_000);
 }
+
+/// D-S1 (D-C2b, DR-96), negative control: the legacy native charges read the
+/// population of a shard. Two schedules that keep the order of each key's
+/// operations, [insert a, read a, insert b] and [insert a, insert b, read a],
+/// therefore have different totals. The digest index gives them equal totals
+/// (native_index::tests::native_store_charges_are_schedule_independent).
+#[test]
+fn legacy_population_charges_depend_on_schedule() {
+    let run = |schedule: &[(&str, bool)]| {
+        let map: ShardedMap<CollisionKey, Vec<String>> = map();
+        let meter = Meter::new(usize::MAX);
+        for (name, insert) in schedule {
+            let key = CollisionKey(name.len(), (*name).to_owned());
+            if *insert {
+                map.native_insert_new(&key, vec!["value".to_owned()], &meter)
+                    .expect("an absent key");
+            } else {
+                map.native_get(&key, &meter)
+                    .expect("an unlimited meter")
+                    .expect("a present key");
+            }
+        }
+        (meter.operations.get(), meter.scanned.get(), meter.backing.get())
+    };
+    let first = run(&[("a", true), ("a", false), ("b", true)]);
+    let second = run(&[("a", true), ("b", true), ("a", false)]);
+    assert_ne!(first, second);
+}

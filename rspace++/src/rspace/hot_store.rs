@@ -16,6 +16,7 @@ use tracing::warn;
 use super::hashing::native_source::SourceMeter;
 
 mod native;
+pub mod native_index;
 
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
