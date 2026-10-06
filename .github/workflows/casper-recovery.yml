@@ -1,0 +1,54 @@
+name: Casper recovery and custody profile
+on:
+  pull_request:
+    paths:
+      - scripts/casper-soak/**
+      - formal/tlaplus/casper_soak/**
+      - docs/claims/casper-soak-recovery.md
+      - .github/workflows/casper-recovery.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/config.toml
+  push:
+    branches: [dev]
+  schedule:
+    - cron: '55 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: casper-recovery-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - name: Install the verifier
+        env:
+          TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-jre
+          mkdir -p "$RUNNER_TEMP/casper-recovery-tools"
+          curl --fail --location --retry 3 "$TLA_TOOLS_URL" -o "$RUNNER_TEMP/casper-recovery-tools/tla2tools.jar"
+          printf '%s  %s\n' 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88 "$RUNNER_TEMP/casper-recovery-tools/tla2tools.jar" | sha256sum --check -
+      - name: Check the profile fixtures and model controls
+        env:
+          TLA_TOOLS_JAR: ${{ runner.temp }}/casper-recovery-tools/tla2tools.jar
+        run: bash scripts/casper-soak/check-recovery.sh target/casper-recovery-ci
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: casper-recovery
+          path: target/casper-recovery-ci
+          if-no-files-found: error
+          retention-days: 30

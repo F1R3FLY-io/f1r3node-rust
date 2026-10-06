@@ -780,6 +780,153 @@ impl LockRegistry {
         Ok(id)
     }
 
+    /// Wait-policy variant of [`try_acquire_range`]: on conflict,
+    /// park in the per-`(dev, inode)` FIFO waiter queue and return
+    /// an [`AcquireOutcome::Parked`] carrying the minted `LockId`
+    /// plus a `oneshot::Receiver<Result<LockId, LockError>>` the
+    /// caller awaits for admission or cancel.
+    ///
+    /// On an admissible acquire, promotes directly into
+    /// `state.ranges` and returns [`AcquireOutcome::Immediate`] —
+    /// behaviorally identical to [`try_acquire_range`] in that
+    /// path.
+    ///
+    /// # Error ordering (consensus-observable)
+    ///
+    ///   1. [`LockError::BadArg`] on zero-length.
+    ///   2. [`LockError::QuotaExceeded`] on
+    ///      [`MAX_RANGES_PER_FILE`] held-range cap.  Applies
+    ///      universally — even a Wait acquire can't park if the
+    ///      file is already at the range cap, because
+    ///      [`wake_waiters`] would never admit it (admission
+    ///      requires `ranges.len() < MAX_RANGES_PER_FILE`).
+    ///      Rejecting at park time is strictly better than
+    ///      parking a waiter that cannot be admitted.
+    ///   3. Admissibility check via [`range_conflicts`].  If
+    ///      admissible → direct-promote (same as
+    ///      [`try_acquire_range`]).
+    ///   4. (non-admissible park path only)
+    ///      [`LockError::QuotaExceeded`] on
+    ///      [`MAX_WAITERS_PER_FILE`] waiter-queue cap.  Fires
+    ///      BEFORE the deadlock check per the ordering fixed in
+    ///      [`LockError::Deadlock`]'s docstring (O(1) cost first).
+    ///   5. (park path) [`LockError::Deadlock`] on
+    ///      [`would_close_cycle`] — cross-deploy mutual-wait
+    ///      cycle detection.  Refused EAGERLY at enqueue time: no
+    ///      `Waiter` struct is allocated, no `oneshot` channel is
+    ///      opened, so a deadlock-refused call leaks no state.
+    ///   6. [`LockError::QuotaExceeded`] on [`LOCK_ID_CEILING`]
+    ///      minted id.  Fires for both branches (direct-promote
+    ///      and park) since both mint.
+    ///
+    /// Never returns [`LockError::Busy`] — conflict parks, it
+    /// doesn't fail.  The Fail-only [`try_acquire_range`] remains
+    /// the entry point for callers that want immediate failure.
+    ///
+    /// # Empty-state leak defense
+    ///
+    /// Same check-before-insert discipline as [`try_acquire_range`]
+    /// (slice 7) and [`try_acquire_sequential`] (slice 8):
+    /// admissibility + cycle + waiter-cap checks all read via
+    /// `guard.get(&dev_inode)`; the `entry().or_default()` call
+    /// fires only once we KNOW we're going to mutate.  Mint
+    /// happens before map mutation so a ceiling failure doesn't
+    /// leak either.  Pinned by
+    /// `try_acquire_range_wait_failed_park_does_not_leak_empty_state`
+    /// and `try_acquire_range_wait_deadlock_does_not_leak_empty_state`.
+    ///
+    /// # Same-holder re-entrant acquire
+    ///
+    /// Uses [`range_conflicts`]'s same-holder skip — a cap
+    /// re-acquiring its own range gets [`AcquireOutcome::Immediate`]
+    /// (POSIX fcntl semantics).  A cap NEVER parks on its own
+    /// held range.
+    ///
+    /// # Cycle check timing (consensus determinism)
+    ///
+    /// [`would_close_cycle`] is a pure set predicate on the wait-
+    /// for graph; its answer is order-independent w.r.t. HashMap
+    /// iteration order of the registry.  Two validators with
+    /// byte-identical [`LockRegistry`] state compute the same
+    /// cycle answer and therefore the same
+    /// `AcquireOutcome::Parked` vs. `Err(Deadlock)` branch — see
+    /// the determinism note on [`would_close_cycle`].
+    pub fn try_acquire_range_wait(
+        &self,
+        dev_inode: DevInode,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<AcquireOutcome, LockError> {
+        if length == 0 {
+            return Err(LockError::BadArg);
+        }
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        // Admissibility check against the EXISTING state (if any)
+        // BEFORE any mutation.  Mirrors try_acquire_range's
+        // check-before-insert discipline: an absent dev_inode
+        // has no held locks + no waiters + no quota pressure, so
+        // vacuously admissible.
+        let admissible = match guard.get(&dev_inode) {
+            Some(state) => {
+                if state.ranges.len() >= MAX_RANGES_PER_FILE {
+                    return Err(LockError::QuotaExceeded);
+                }
+                !range_conflicts(state, offset, length, mode, &holder)
+            }
+            None => true,
+        };
+        if admissible {
+            // Direct promote — identical to try_acquire_range's
+            // success path, but returns Immediate(id).
+            let id = self.mint_next_lock_id()?;
+            let state = guard.entry(dev_inode).or_default();
+            state.ranges.push(RangeEntry {
+                id,
+                offset,
+                length,
+                mode,
+                holder,
+                deploy,
+            });
+            return Ok(AcquireOutcome::Immediate(id));
+        }
+        // Park branch: non-admissible.  Check park-time quotas
+        // and deadlock BEFORE allocating a Waiter or oneshot
+        // channel.
+        if let Some(state) = guard.get(&dev_inode) {
+            if state.waiters.len() >= MAX_WAITERS_PER_FILE {
+                return Err(LockError::QuotaExceeded);
+            }
+        }
+        // NB-7 cycle check.  Must fire BEFORE Waiter allocation
+        // and BEFORE mint — a cycle-refused call must leave the
+        // registry unchanged.
+        if would_close_cycle(&guard, deploy, dev_inode) {
+            return Err(LockError::Deadlock);
+        }
+        // All park-side admissibility passed → mint LockId +
+        // enqueue Waiter.  Mint fallibility (LOCK_ID_CEILING)
+        // propagates before any mutation.
+        let lock_id = self.mint_next_lock_id()?;
+        let (tx, rx) = oneshot::channel();
+        let state = guard.entry(dev_inode).or_default();
+        state.waiters.push_back(Waiter {
+            lock_id,
+            kind: WaitKind::Range {
+                offset,
+                length,
+                mode,
+            },
+            holder,
+            deploy,
+            admit: tx,
+        });
+        Ok(AcquireOutcome::Parked { lock_id, admit: rx })
+    }
+
     /// Release the lock identified by `lock_id` iff `holder`
     /// matches the recorded owner via [`HolderId::ct_eq`].
     ///
@@ -1047,6 +1194,50 @@ impl LockRegistry {
             .any(|e| ranges_overlap((e.offset, e.length), range))
     }
 
+    /// Count of distinct HELD lock entries on `(dev_inode)`:
+    /// every held range, plus `1` if a sequential_holder is
+    /// present.  PARKED waiters are NOT counted.
+    ///
+    /// Returns `0` if `(dev_inode)` has no entry in the registry
+    /// (vacuously no holders).
+    ///
+    /// # Oracular unlink diagnostic
+    ///
+    /// Called from the Oracular-mode `fs_remove_file` /
+    /// `fs_remove_dir` paths (yet-to-land) to log how many
+    /// holders would have blocked the unlink under consensus
+    /// mode.  Oracular callers DO NOT gate the unlink on this
+    /// result — they log-warn with the count and proceed —
+    /// which is why this method exists alongside [`is_locked`]
+    /// (the gating boolean) rather than replacing it: consensus-
+    /// mode uses the boolean short-circuit, Oracular-mode uses
+    /// the diagnostic count.
+    ///
+    /// # Why PARKED waiters don't count
+    ///
+    /// A parked waiter is a wish, not a hold.  The unlink
+    /// diagnostic measures how many entities would observe the
+    /// unlink as a visible change — a parked waiter does not
+    /// yet own anything on the file, so from the unlink's
+    /// perspective the waiter is just a bystander.  (If the
+    /// unlink proceeds while a waiter is parked, the waiter's
+    /// `oneshot` sender stays alive in `state.waiters` until
+    /// its deploy-end sweep or an explicit `cancel_wait` fires.
+    /// `state_is_empty` continues to see the waiter and refuses
+    /// to evict the state — correct for the waiter's lifetime.)
+    ///
+    /// # Read-side hot path
+    ///
+    /// Uses the `read` guard (contention-free concurrent
+    /// readers).  O(1) — just a vec-len + option-is-some.
+    pub fn n_holders(&self, dev_inode: DevInode) -> usize {
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
+        let Some(state) = guard.get(&dev_inode) else {
+            return 0;
+        };
+        state.ranges.len() + usize::from(state.sequential_holder.is_some())
+    }
+
     /// Try to acquire the whole-file sequential lock on
     /// `(dev_inode)` for `holder`.
     ///
@@ -1102,6 +1293,361 @@ impl LockRegistry {
         state.sequential_holder = Some(SequentialEntry { id, holder, deploy });
         Ok(id)
     }
+
+    /// Wait-policy variant of [`try_acquire_sequential`]: on
+    /// conflict (any held range OR an existing sequential_holder),
+    /// park in the per-`(dev, inode)` FIFO waiter queue and
+    /// return an [`AcquireOutcome::Parked`] carrying the minted
+    /// `LockId` plus a `oneshot::Receiver` the caller awaits for
+    /// admission / cancel.
+    ///
+    /// On admissible acquire (state entirely empty — no held
+    /// ranges, no existing sequential_holder), promotes directly
+    /// into `state.sequential_holder` and returns
+    /// [`AcquireOutcome::Immediate`] — behaviorally identical to
+    /// [`try_acquire_sequential`] in that path.
+    ///
+    /// # Coexistence rules — no same-holder skip
+    ///
+    /// Per [`sequential_conflicts`]: sequential requires the
+    /// state entirely empty.  Does NOT use the same-holder skip
+    /// that the Range path uses — a cap holding ANY range (even
+    /// a tiny Read it owns) MUST release its ranges before
+    /// upgrading to a sequential lock.  A same-holder Wait
+    /// acquire on a state with the holder's own held range
+    /// therefore parks (does NOT direct-promote).  Pinned by
+    /// `try_acquire_sequential_wait_same_holder_range_still_parks`.
+    ///
+    /// # Error ordering (consensus-observable)
+    ///
+    ///   1. Admissibility check via [`sequential_conflicts`].
+    ///      If admissible → direct-promote (same as
+    ///      [`try_acquire_sequential`]).
+    ///   2. (non-admissible park path only)
+    ///      [`LockError::QuotaExceeded`] on
+    ///      [`MAX_WAITERS_PER_FILE`] waiter-queue cap.  Fires
+    ///      BEFORE the deadlock check per
+    ///      [`LockError::Deadlock`]'s docstring (O(1) cost first).
+    ///   3. (park path) [`LockError::Deadlock`] on
+    ///      [`would_close_cycle`] — cross-deploy mutual-wait
+    ///      cycle detection.  Refused EAGERLY at enqueue time:
+    ///      no `Waiter` struct is allocated, no `oneshot`
+    ///      channel is opened.
+    ///   4. [`LockError::QuotaExceeded`] on [`LOCK_ID_CEILING`]
+    ///      minted id (both branches).
+    ///
+    /// No `MAX_RANGES_PER_FILE`-equivalent cap on sequential —
+    /// there's at most one sequential_holder per file by
+    /// construction.
+    ///
+    /// Never returns [`LockError::Busy`] — the Fail-only
+    /// [`try_acquire_sequential`] remains the entry point for
+    /// callers that want immediate failure.
+    ///
+    /// # Empty-state leak defense
+    ///
+    /// Same check-before-insert discipline as the Range path
+    /// (PR #536): every admissibility / cap / cycle check reads
+    /// via `guard.get(&dev_inode)`; `entry().or_default()` fires
+    /// only once the acquire / park is known to succeed; mint
+    /// happens before map mutation.  Pinned by
+    /// `try_acquire_sequential_wait_failed_park_does_not_leak_empty_state`
+    /// and
+    /// `try_acquire_sequential_wait_deadlock_does_not_leak_empty_state`.
+    pub fn try_acquire_sequential_wait(
+        &self,
+        dev_inode: DevInode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<AcquireOutcome, LockError> {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        // Admissibility examines holders (ranges +
+        // sequential_holder) via `sequential_conflicts`, NOT
+        // waiters.  Correctness of this "direct-promote on no
+        // holders even when waiters is non-empty" relies on an
+        // invariant: a "waiters non-empty AND no holders" state
+        // is unreachable at any quiescent point.  Every release
+        // path calls `wake_waiters` BEFORE `state_is_empty`
+        // eviction, and `wake_waiters` drains admissible heads
+        // (Sequential and empty-holder-state Range both admit
+        // on `sequential_conflicts(empty) == false` /
+        // `range_conflicts(empty) == false`).  So between any
+        // two outside calls, either (a) a holder exists and
+        // `sequential_conflicts` returns true → park, or (b) no
+        // holders AND no waiters remain → direct-promote.  A
+        // future refactor that adds a direct-promote-with-
+        // parked-waiters path would break FIFO — pin against
+        // that regression.
+        let admissible = match guard.get(&dev_inode) {
+            Some(state) => !sequential_conflicts(state),
+            None => true,
+        };
+        if admissible {
+            let id = self.mint_next_lock_id()?;
+            let state = guard.entry(dev_inode).or_default();
+            state.sequential_holder = Some(SequentialEntry { id, holder, deploy });
+            return Ok(AcquireOutcome::Immediate(id));
+        }
+        // Park branch: non-admissible.  Check park-time quotas
+        // and deadlock BEFORE allocating a Waiter or oneshot.
+        if let Some(state) = guard.get(&dev_inode) {
+            if state.waiters.len() >= MAX_WAITERS_PER_FILE {
+                return Err(LockError::QuotaExceeded);
+            }
+        }
+        if would_close_cycle(&guard, deploy, dev_inode) {
+            return Err(LockError::Deadlock);
+        }
+        let lock_id = self.mint_next_lock_id()?;
+        let (tx, rx) = oneshot::channel();
+        let state = guard.entry(dev_inode).or_default();
+        state.waiters.push_back(Waiter {
+            lock_id,
+            kind: WaitKind::Sequential,
+            holder,
+            deploy,
+            admit: tx,
+        });
+        Ok(AcquireOutcome::Parked { lock_id, admit: rx })
+    }
+
+    /// Cancel a currently-parked waiter identified by `lock_id`
+    /// iff `holder` matches the recorded owner via
+    /// [`HolderId::ct_eq`].
+    ///
+    /// Removes the waiter from its per-`(dev, inode)` FIFO queue
+    /// and signals its admit sender with
+    /// `Err(LockError::Cancelled)`.  The caller's `oneshot`
+    /// receiver resolves to `Ok(Err(LockError::Cancelled))` in
+    /// the happy path.  (The `RecvError` branch of
+    /// [`AcquireOutcome::Parked`]'s receiver fires only when
+    /// the sender is dropped WITHOUT a send — that happens on
+    /// `wake_waiters` rollback or registry drop, not on this
+    /// path: `cancel_wait` always sends before releasing the
+    /// sender.)
+    ///
+    /// After successful cancel, the touched state is evicted
+    /// from the map if [`state_is_empty`] holds (no held locks,
+    /// no remaining waiters).  No `wake_waiters` call is needed:
+    /// cancelling a waiter cannot ADD any holder, so no
+    /// downstream waiter's admissibility changes.
+    ///
+    /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
+    ///
+    /// The holder match uses [`HolderId::ct_eq`], mirroring the
+    /// release-path discipline.  Same rationale: an attacker
+    /// observing latency on failed `cancel_wait` calls could
+    /// otherwise narrow a correct holder byte-by-byte.
+    ///
+    /// # Returns
+    ///
+    ///   - `Ok(())` on successful cancel.
+    ///   - [`LockError::Closed`] if `lock_id` isn't parked
+    ///     anywhere OR the holder doesn't match.  The ERROR
+    ///     VALUE is indistinguishable per the release-path
+    ///     convention — attackers can't tell "wrong id" from
+    ///     "wrong holder" by the return.  Timing IS
+    ///     distinguishable (unknown-id scans all queues
+    ///     short-circuiting on `==`; known-id-wrong-holder
+    ///     reaches one `ct_eq` evaluation), but the practical
+    ///     impact is bounded: LockId has ~51 bits of entropy
+    ///     from `LOCK_ID_CEILING` so blind-probing to reach a
+    ///     known-id branch is infeasible, and once in that
+    ///     branch `ct_eq` is branchless-constant so holder
+    ///     bytes still can't be narrowed byte-by-byte.
+    ///
+    /// # Lifetime posture
+    ///
+    /// Pairs with the yet-to-land `cancel_all_waiters_for_holder`
+    /// / `_for_deploy` sweeps: those are the bulk-cancel
+    /// counterparts to the bulk-release methods PR #530 shipped.
+    /// `cancel_wait` is the targeted-by-LockId version a caller
+    /// invokes when they want to abandon a specific parked
+    /// acquire (e.g., async-cancellation on a user-visible
+    /// timeout in a future handler layer).
+    pub fn cancel_wait(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut touched_key: Option<DevInode> = None;
+        let mut admit: Option<oneshot::Sender<Result<LockId, LockError>>> = None;
+        for (dev_inode, state) in guard.iter_mut() {
+            // SEC-Mi-01: ct_eq, NOT `==`.  Do not regress.
+            if let Some(pos) = state
+                .waiters
+                .iter()
+                .position(|w| w.lock_id == lock_id && w.holder.ct_eq(holder))
+            {
+                let waiter = state.waiters.remove(pos).expect("position just observed");
+                admit = Some(waiter.admit);
+                touched_key = Some(*dev_inode);
+                // Early-exit assumes LockId global uniqueness
+                // (same monotone-counter invariant as `release`).
+                break;
+            }
+        }
+        let Some(tx) = admit else {
+            return Err(LockError::Closed);
+        };
+        // Send the cancel BEFORE eviction so the receiver always
+        // observes Cancelled (vs. RecvError on sender drop) in
+        // the happy path.  If the receiver was already dropped,
+        // the send fails silently — caller already walked away,
+        // same semantics as a Cancelled they never read.
+        let _ = tx.send(Err(LockError::Cancelled));
+        if let Some(k) = touched_key {
+            if let Some(state) = guard.get(&k) {
+                if state_is_empty(state) {
+                    guard.remove(&k);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancel every parked waiter owned by `holder` across every
+    /// file in the registry.  Pairs with
+    /// [`release_all_for_holder`] (PR #530) — the release-side
+    /// sweeps HELD locks for the holder; this sweeps PARKED
+    /// waiters for the holder.  Called from the same
+    /// `fs_release_all_for_holder` (File.close) path when a cap
+    /// goes away: a cap's parked `wait: true` acquires MUST NOT
+    /// resolve to the dead cap, so they're cancelled before the
+    /// cap vanishes.
+    ///
+    /// Signals every cancelled waiter's admit sender with
+    /// `Err(LockError::Cancelled)` (dropped-receiver sends fail
+    /// silently per the per-waiter cancel discipline).  Returns
+    /// the count cancelled for diagnostics.
+    ///
+    /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
+    ///
+    /// Uses [`HolderId::ct_eq`] uniformly, matching
+    /// [`release_all_for_holder`]'s rationale: a destructive
+    /// sweep is one-shot and less actionable than enumeration,
+    /// but a future dry-run / per-entry-return refactor would
+    /// retroactively create an enumeration surface.  Using
+    /// `ct_eq` uniformly keeps the "all release / cancel paths
+    /// use constant-time holder comparison" invariant true-by-
+    /// construction.
+    ///
+    /// # No `wake_waiters` call after sweep
+    ///
+    /// Cancelling waiters cannot ADD any holder, so no
+    /// downstream waiter's admissibility changes.  Mirrors
+    /// [`cancel_wait`]'s discipline.
+    pub fn cancel_all_waiters_for_holder(&self, holder: &HolderId) -> usize {
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut cancelled = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        // Collect senders during the sweep, then drop(guard)
+        // before firing sends — see the drop-then-signal pattern
+        // below.  `oneshot::send` is non-blocking so holding the
+        // guard across sends is correct, but it briefly blocks
+        // any concurrent reader; dropping first minimizes guard
+        // hold time.  Matches per-waiter `cancel_wait` discipline.
+        let mut to_signal: Vec<oneshot::Sender<Result<LockId, LockError>>> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            // Drain-filter equivalent: scan from the front,
+            // removing matches.  Using `drain_filter` would be
+            // cleaner but it's unstable; the manual loop keeps
+            // the function nightly-feature-free.
+            let mut i = 0;
+            while i < state.waiters.len() {
+                // SEC-Mi-01: ct_eq, NOT `==`.
+                if state.waiters[i].holder.ct_eq(holder) {
+                    let waiter = state
+                        .waiters
+                        .remove(i)
+                        .expect("index just observed in bounds");
+                    to_signal.push(waiter.admit);
+                    cancelled += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        drop(guard);
+        for tx in to_signal {
+            let _ = tx.send(Err(LockError::Cancelled));
+        }
+        cancelled
+    }
+
+    /// Cancel every parked waiter owned by `deploy` across every
+    /// file in the registry.  Pairs with
+    /// [`release_all_for_deploy`] (PR #530) on the deploy-abort
+    /// path: the release-side sweeps HELD locks for the deploy;
+    /// this sweeps PARKED waiters.
+    ///
+    /// Called from the yet-to-land `WalDeployScope::drop` hook
+    /// as the FIRST step of the X-2 / G-02 defense-in-depth
+    /// chain (see [`wake_waiters`] docstring).  The ordering is
+    /// consensus-observable:
+    ///
+    ///   1. `cancel_all_waiters_for_deploy(D)` — drains D's
+    ///      PARKED waiters so none are promoted mid-abort.
+    ///   2. `release_all_for_deploy(D)` — sweeps D's HELD locks
+    ///      including anything the step 1 sweep raced against.
+    ///   3. `wake_waiters` runs inside step 2 to admit OTHER
+    ///      deploys that were blocked.
+    ///
+    /// Panics on the `[0; 32]` sentinel, same discipline as
+    /// [`release_all_for_deploy`]: the all-zeros `DeployScope`
+    /// is a pre-wiring placeholder and a bulk sweep keyed on it
+    /// would wipe every sentinel-scoped waiter on the registry.
+    ///
+    /// Returns the count cancelled.
+    ///
+    /// # No `wake_waiters` call after sweep
+    ///
+    /// Mirrors [`cancel_all_waiters_for_holder`]: cancellation
+    /// removes waiters, which doesn't change the holder set, so
+    /// no downstream admissibility changes.
+    pub fn cancel_all_waiters_for_deploy(&self, deploy: &DeployScope) -> usize {
+        assert!(
+            deploy != &[0u8; 32],
+            "cancel_all_waiters_for_deploy called with the [0; 32] sentinel — \
+             the all-zeros DeployScope is reserved as a pre-wiring \
+             placeholder; a production deploy under a live WalDeployScope \
+             derives a non-sentinel scope via Blake2b256.  Calling with \
+             the sentinel would sweep every stray sentinel-scoped waiter."
+        );
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
+        let mut cancelled = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        let mut to_signal: Vec<oneshot::Sender<Result<LockId, LockError>>> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            let mut i = 0;
+            while i < state.waiters.len() {
+                if &state.waiters[i].deploy == deploy {
+                    let waiter = state
+                        .waiters
+                        .remove(i)
+                        .expect("index just observed in bounds");
+                    to_signal.push(waiter.admit);
+                    cancelled += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        drop(guard);
+        for tx in to_signal {
+            let _ = tx.send(Err(LockError::Cancelled));
+        }
+        cancelled
+    }
 }
 
 // Compile-time witness that `LockRegistry: Send + Sync` —
@@ -1112,6 +1658,202 @@ impl LockRegistry {
 const _LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<LockRegistry>();
+};
+
+// ===========================================================
+// SharedLockRegistry — manager-broadcast slot (slice 46)
+// ===========================================================
+
+/// Two-layer-indirection wrapper over [`LockRegistry`] designed
+/// for the `RuntimeManager` → runtime → reducer broadcast chain.
+/// Pairs with [`SharedLockRegistry::share_from`] the same way
+/// [`super::path::identity::RootIdentityRegistry::share_from`]
+/// pairs with its own slot — see that type's docstring for the
+/// load-bearing PB-M-14 reducer-clone-visibility rationale.
+///
+/// # Shape
+///
+///   - Outer `Arc<RwLock<LockRegistry>>` — shared across clones.
+///     `#[derive(Clone)]` copies the outer `Arc` so every clone
+///     observes the SAME slot.
+///   - Inner [`LockRegistry`] (whose fields are already
+///     `Arc<...>`) — the actual backing.  Cloning a
+///     [`LockRegistry`] shares its backing; swapping the slot's
+///     contents atomically re-points EVERY outer-clone's view at
+///     a new backing in a single `write()` operation.
+///
+/// # Why not refactor `LockRegistry` directly
+///
+/// [`LockRegistry`]'s existing `Arc<...>` fields already provide
+/// clone-sharing between TWO clones that were created from the
+/// same source.  The missing property is "re-point an existing
+/// clone's backing to a DIFFERENT source without touching every
+/// clone individually" — the SLOT provides that.  Wrapping
+/// [`LockRegistry`] in a slot keeps all 144 existing lock tests
+/// untouched; refactoring [`LockRegistry`]'s internals would
+/// have broken every `reg.inner.read()` test peek.
+///
+/// # Delegating methods
+///
+/// Every public [`LockRegistry`] method has a thin delegation
+/// here: `fn X(&self, ...) { self.snapshot_registry().X(...) }`.
+/// Future [`LockRegistry`] additions MUST add a delegation here
+/// too — the handle-table ergonomics assume
+/// [`SharedLockRegistry`] mirrors [`LockRegistry`]'s surface
+/// fully.
+///
+/// # Serialize `share_from` with concurrent lock ops at boot
+///
+/// Same discipline as [`RootIdentityRegistry::share_from`]: a
+/// concurrent lock operation that snapshotted the current
+/// backing (via `snapshot_registry()`) BEFORE `share_from` swapped
+/// the slot will complete against the ORPHANED backing.  Boot
+/// must serialize: broadcast the shared registry via
+/// `share_from` BEFORE handler dispatch begins.  Production
+/// honors this by construction (boot is single-threaded).
+#[derive(Debug, Clone, Default)]
+pub struct SharedLockRegistry {
+    slot: Arc<RwLock<LockRegistry>>,
+}
+
+impl SharedLockRegistry {
+    /// Fresh wrapper over a brand-new empty [`LockRegistry`].
+    pub fn new() -> Self { Self::default() }
+
+    /// Wrap an existing [`LockRegistry`] in a fresh slot.  Used
+    /// at the `RuntimeManager` end of the broadcast — the manager
+    /// constructs its own [`LockRegistry`], wraps it here, then
+    /// `share_from`-broadcasts it to every spawned runtime.
+    pub fn with_registry(reg: LockRegistry) -> Self {
+        Self {
+            slot: Arc::new(RwLock::new(reg)),
+        }
+    }
+
+    /// Atomically re-point `self`'s backing at `other`'s backing
+    /// so subsequent reads AND writes through `self` (and every
+    /// clone of `self` that shares the outer slot Arc) route
+    /// through `other`'s inner [`LockRegistry`] state.
+    ///
+    /// Load-bearing for the reducer-clone pattern: a
+    /// `FileHandleTable` cloned BEFORE `share_lock_registry`
+    /// still observes the swap because the clone shares `self`'s
+    /// outer slot Arc.  Mirrors
+    /// [`RootIdentityRegistry::share_from`] exactly.
+    pub fn share_from(&self, other: &SharedLockRegistry) {
+        let src = poison_abort(other.slot.read(), "SharedLockRegistry.slot").clone();
+        *poison_abort(self.slot.write(), "SharedLockRegistry.slot") = src;
+    }
+
+    /// Snapshot the current [`LockRegistry`] backing.  After
+    /// [`share_from`], returns the shared backing.  The
+    /// snapshot's Arc fields keep the backing alive across the
+    /// returned reference even if a concurrent `share_from`
+    /// swaps the slot — any guard taken through the snapshot
+    /// continues to operate on the ORPHANED backing, which is
+    /// correct for the boot-serialize discipline (see type
+    /// docstring).
+    fn snapshot_registry(&self) -> LockRegistry {
+        poison_abort(self.slot.read(), "SharedLockRegistry.slot").clone()
+    }
+
+    // --- Delegating methods ---------------------------------------
+    //
+    // Thin wrappers over every public `LockRegistry` method.  Keep
+    // this surface in sync with `LockRegistry`'s surface — a new
+    // method on `LockRegistry` SHOULD get a mirror here or the
+    // handle-table-side ergonomics regress.
+
+    pub fn mint_next_lock_id(&self) -> Result<LockId, LockError> {
+        self.snapshot_registry().mint_next_lock_id()
+    }
+
+    pub fn try_acquire_range(
+        &self,
+        dev_inode: DevInode,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<LockId, LockError> {
+        self.snapshot_registry()
+            .try_acquire_range(dev_inode, offset, length, mode, holder, deploy)
+    }
+
+    pub fn try_acquire_range_wait(
+        &self,
+        dev_inode: DevInode,
+        offset: u64,
+        length: u64,
+        mode: LockMode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<AcquireOutcome, LockError> {
+        self.snapshot_registry()
+            .try_acquire_range_wait(dev_inode, offset, length, mode, holder, deploy)
+    }
+
+    pub fn try_acquire_sequential(
+        &self,
+        dev_inode: DevInode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<LockId, LockError> {
+        self.snapshot_registry()
+            .try_acquire_sequential(dev_inode, holder, deploy)
+    }
+
+    pub fn try_acquire_sequential_wait(
+        &self,
+        dev_inode: DevInode,
+        holder: HolderId,
+        deploy: DeployScope,
+    ) -> Result<AcquireOutcome, LockError> {
+        self.snapshot_registry()
+            .try_acquire_sequential_wait(dev_inode, holder, deploy)
+    }
+
+    pub fn release(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        self.snapshot_registry().release(lock_id, holder)
+    }
+
+    pub fn release_all_for_holder(&self, holder: &HolderId) -> usize {
+        self.snapshot_registry().release_all_for_holder(holder)
+    }
+
+    pub fn release_all_for_deploy(&self, deploy: &DeployScope) -> usize {
+        self.snapshot_registry().release_all_for_deploy(deploy)
+    }
+
+    pub fn cancel_wait(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        self.snapshot_registry().cancel_wait(lock_id, holder)
+    }
+
+    pub fn cancel_all_waiters_for_holder(&self, holder: &HolderId) -> usize {
+        self.snapshot_registry()
+            .cancel_all_waiters_for_holder(holder)
+    }
+
+    pub fn cancel_all_waiters_for_deploy(&self, deploy: &DeployScope) -> usize {
+        self.snapshot_registry()
+            .cancel_all_waiters_for_deploy(deploy)
+    }
+
+    pub fn is_locked(&self, dev_inode: DevInode, range: (u64, u64)) -> bool {
+        self.snapshot_registry().is_locked(dev_inode, range)
+    }
+
+    pub fn n_holders(&self, dev_inode: DevInode) -> usize {
+        self.snapshot_registry().n_holders(dev_inode)
+    }
+}
+
+// Compile-time witness that `SharedLockRegistry: Send + Sync` —
+// required for sharing across runtime clones.
+const _SHARED_LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SharedLockRegistry>();
 };
 
 // ===========================================================
@@ -1399,7 +2141,6 @@ fn wake_waiters(state: &mut FileLockState) {
 /// ever debug-print it.  The reachability answer itself is
 /// iteration-order-independent, so swapping to `HashSet` is
 /// a safe optimization if debug-printing is dropped.
-#[allow(dead_code)]
 fn would_close_cycle(
     guard: &HashMap<DevInode, FileLockState>,
     waiter_deploy: DeployScope,
@@ -3518,5 +4259,1975 @@ mod tests {
         assert_eq!(state.ranges[0].id.as_u64(), 2);
         assert!(state.waiters.is_empty());
         assert_eq!(rx2.try_recv(), Ok(Ok(LockId::try_from(2).unwrap())));
+    }
+
+    // --- try_acquire_range_wait -----------------------------------
+    //
+    // End-to-end park / admit / cancel coverage.  Pairs with the
+    // `wake_waiters` isolation tests above — a parked waiter now
+    // reaches the queue via the production acquire path, and a
+    // subsequent `release` call drives `wake_waiters` which admits
+    // it.
+
+    /// Zero-length → BadArg BEFORE any state check.  Mirrors the
+    /// Fail-only variant's error ordering so the two paths behave
+    /// identically on the pre-check boundary.
+    #[test]
+    fn try_acquire_range_wait_zero_length_returns_bad_arg() {
+        let reg = LockRegistry::new();
+        let out = reg.try_acquire_range_wait(
+            (1, 1),
+            0,
+            0,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        );
+        assert_eq!(out.unwrap_err(), LockError::BadArg);
+    }
+
+    /// Empty state → Immediate(id) via the direct-promote branch.
+    #[test]
+    fn try_acquire_range_wait_empty_state_returns_immediate() {
+        let reg = LockRegistry::new();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        match out {
+            AcquireOutcome::Immediate(id) => assert_eq!(id.as_u64(), 1),
+            AcquireOutcome::Parked { .. } => panic!("empty state must direct-promote"),
+        }
+    }
+
+    /// Conflicting acquire by a different holder parks with a
+    /// minted LockId.  Pins the park path's return shape AND the
+    /// state-side invariant that the Waiter was actually enqueued
+    /// (via `is_locked` which short-circuits on parked state's
+    /// held range).
+    #[test]
+    fn try_acquire_range_wait_conflict_returns_parked() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                50,
+                50,
+                LockMode::Write,
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            )
+            .unwrap();
+        let (lock_id, _admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("conflicting acquire must park"),
+        };
+        assert_eq!(lock_id.as_u64(), 2, "parked waiter gets the next LockId");
+    }
+
+    /// Same-holder re-entrant acquire → Immediate (uses
+    /// `range_conflicts`'s same-holder skip, matches
+    /// `try_acquire_range`).  A cap MUST NOT park on its own held
+    /// range — would self-deadlock.
+    #[test]
+    fn try_acquire_range_wait_same_holder_reentrant_is_immediate() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait((1, 1), 50, 50, LockMode::Write, holder, deploy_scope(0x11))
+            .unwrap();
+        assert!(matches!(out, AcquireOutcome::Immediate(_)));
+    }
+
+    /// INTEGRATION: park → release → admit.  Pins the full
+    /// release→wake_waiters→admit path end-to-end via the
+    /// production acquire API.  Also pins the anti-eviction
+    /// invariant from PR #527 — the state does NOT get evicted
+    /// between park and admit (a waiter is parked, so
+    /// `state_is_empty` returns false).
+    #[test]
+    fn try_acquire_range_wait_release_admits_parked_waiter() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (parked_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park on conflict"),
+        };
+        // Not admitted yet.
+        assert!(matches!(
+            admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // Release A → wake_waiters → B gets admitted with its
+        // parked LockId.
+        reg.release(id_a, &holder_a).unwrap();
+        let admitted = admit.try_recv().expect("admit must fire after release");
+        assert_eq!(admitted, Ok(parked_id));
+    }
+
+    /// INTEGRATION: strict FIFO on wake with asymmetric waiter
+    /// kinds.  B parks as Write, C parks as Read; on release of
+    /// A's Write, only B admits (strict head-of-line — C is
+    /// Read-admissible against the empty state but FIFO parks
+    /// C behind B).  Pins that `wake_waiters` promotes the head
+    /// in order even when a later waiter could ALSO have
+    /// admitted alone — the strong FIFO property anti-starvation
+    /// relies on.
+    #[test]
+    fn try_acquire_range_wait_fifo_admission_across_multiple_waiters() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        // B parks as Write (head).
+        let b_outcome = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xBB; 32]),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        // C parks as Read (behind B).  C's Read is admissible
+        // against empty-state alone, but FIFO must keep C behind
+        // B's Write.
+        let c_outcome = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Read,
+                HolderId::from_bytes([0xCC; 32]),
+                deploy_scope(0xCC),
+            )
+            .unwrap();
+        let (b_id, mut b_admit) = match b_outcome {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("B must park"),
+        };
+        let (_c_id, mut c_admit) = match c_outcome {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("C must park"),
+        };
+        reg.release(id_a, &holder_a).unwrap();
+        // B admits.
+        assert_eq!(b_admit.try_recv(), Ok(Ok(b_id)));
+        // C stays parked — B's Write now blocks C's Read, AND
+        // even if B hadn't blocked, strict FIFO would have kept
+        // C behind B.
+        assert!(matches!(
+            c_admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// LOAD-BEARING: cycle check prevents cross-deploy deadlock.
+    /// Set up a two-cycle: D1 holds file F1 and parks on F2; D2
+    /// holds F2.  Then D2's wait on F1 would close the cycle →
+    /// Deadlock.
+    #[test]
+    fn try_acquire_range_wait_deadlock_detects_two_cycle() {
+        let reg = LockRegistry::new();
+        let h_d1 = HolderId::from_bytes([0x01; 32]);
+        let h_d2 = HolderId::from_bytes([0x02; 32]);
+        // D1 holds F1.
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            h_d1.clone(),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        // D2 holds F2.
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            h_d2.clone(),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        // D1 parks on F2 → waits on D2.
+        let _d1_parked = reg
+            .try_acquire_range_wait((2, 2), 0, 100, LockMode::Write, h_d1, deploy_scope(0x01))
+            .unwrap();
+        // D2 parks on F1 → would wait on D1 → closes the cycle.
+        let out =
+            reg.try_acquire_range_wait((1, 1), 0, 100, LockMode::Write, h_d2, deploy_scope(0x02));
+        assert_eq!(out.unwrap_err(), LockError::Deadlock);
+    }
+
+    /// LOAD-BEARING empty-state leak defense (deadlock path):
+    /// a Deadlock-refused call MUST NOT leave an empty
+    /// `FileLockState` in the map (nor mutate an existing one).
+    /// Pins the check-before-insert discipline for the park
+    /// branch's deadlock refusal.
+    #[test]
+    fn try_acquire_range_wait_deadlock_does_not_leak_empty_state() {
+        let reg = LockRegistry::new();
+        let h_d1 = HolderId::from_bytes([0x01; 32]);
+        let h_d2 = HolderId::from_bytes([0x02; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            h_d1.clone(),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            h_d2.clone(),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        // D1 parks on F2.
+        let _d1_parked = reg
+            .try_acquire_range_wait((2, 2), 0, 100, LockMode::Write, h_d1, deploy_scope(0x01))
+            .unwrap();
+        // Snapshot state BEFORE the deadlock-refused call.
+        let before_len = reg.inner.read().unwrap().len();
+        let before_waiters: Vec<usize> = reg
+            .inner
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| s.waiters.len())
+            .collect();
+        // D2's wait on F1 closes the cycle.
+        let dead =
+            reg.try_acquire_range_wait((1, 1), 0, 100, LockMode::Write, h_d2, deploy_scope(0x02));
+        assert_eq!(dead.unwrap_err(), LockError::Deadlock);
+        let after_len = reg.inner.read().unwrap().len();
+        let after_waiters: Vec<usize> = reg
+            .inner
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| s.waiters.len())
+            .collect();
+        assert_eq!(before_len, after_len, "no new registry entries");
+        assert_eq!(
+            before_waiters, after_waiters,
+            "no mutation of existing waiter queues"
+        );
+    }
+
+    /// MAX_RANGES_PER_FILE cap applies universally — even Wait
+    /// callers can't park if the file is at the range cap,
+    /// because wake_waiters would never admit them.  Mirrors
+    /// the Fail-only variant's cap pin.
+    #[test]
+    fn try_acquire_range_wait_range_cap_rejects_with_quota() {
+        let reg = LockRegistry::new();
+        // Fill the file to MAX_RANGES_PER_FILE with distinct
+        // non-overlapping Read ranges by a single holder (so
+        // range_conflicts stays silent; the cap is the only
+        // thing in the way).
+        let holder = HolderId::from_bytes([0x11; 32]);
+        for i in 0..MAX_RANGES_PER_FILE {
+            reg.try_acquire_range(
+                (1, 1),
+                (i as u64) * 10,
+                1,
+                LockMode::Read,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        }
+        // One more acquire — regardless of policy — must hit
+        // the cap BEFORE the admissibility check.
+        let out = reg.try_acquire_range_wait(
+            (1, 1),
+            999_999,
+            1,
+            LockMode::Read,
+            HolderId::from_bytes([0x22; 32]),
+            deploy_scope(0x22),
+        );
+        assert_eq!(out.unwrap_err(), LockError::QuotaExceeded);
+    }
+
+    /// LOAD-BEARING empty-state leak defense (direct-promote
+    /// path): a mint failure (if we could ever hit the ceiling)
+    /// must not leak an empty slot on a fresh key.  Harder to
+    /// trigger realistically — this test exercises the park
+    /// branch's QuotaExceeded on MAX_WAITERS_PER_FILE instead,
+    /// which has the same check-before-insert discipline.
+    ///
+    /// Fill the waiter queue on an EXISTING conflicting file,
+    /// then issue one more Wait acquire — must fire
+    /// QuotaExceeded without touching an UNRELATED fresh key.
+    #[test]
+    fn try_acquire_range_wait_failed_park_does_not_leak_empty_state() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        // Park MAX_WAITERS_PER_FILE waiters.  Must keep the
+        // oneshot receivers alive so wake_waiters would still see
+        // them as live waiters if a release intervened — but no
+        // release occurs here, so the queue stays at MAX.
+        let mut keep_alive = Vec::with_capacity(MAX_WAITERS_PER_FILE);
+        for i in 0..MAX_WAITERS_PER_FILE {
+            // Cycle byte through [1, 100] so no waiter collides
+            // with A's 0xAA (= 170) → every waiter conflicts
+            // via range_conflicts and MUST park (no same-holder
+            // skip, no self-cycle through NB-7).
+            let byte = ((i % 100) + 1) as u8;
+            let out = reg
+                .try_acquire_range_wait(
+                    (1, 1),
+                    0,
+                    100,
+                    LockMode::Write,
+                    HolderId::from_bytes([byte; 32]),
+                    [byte; 32],
+                )
+                .unwrap();
+            match out {
+                AcquireOutcome::Parked { admit, .. } => keep_alive.push(admit),
+                AcquireOutcome::Immediate(_) => panic!("every waiter must park"),
+            }
+        }
+        let before = reg.inner.read().unwrap().len();
+        // One more → MAX_WAITERS cap fires.
+        let fresh_byte = 0xEE;
+        let out = reg.try_acquire_range_wait(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([fresh_byte; 32]),
+            [fresh_byte; 32],
+        );
+        assert_eq!(out.unwrap_err(), LockError::QuotaExceeded);
+        let after = reg.inner.read().unwrap().len();
+        assert_eq!(before, after, "waiter-cap refusal must not add entries");
+    }
+
+    /// Dropped admit receiver on parked waiter → wake_waiters
+    /// rolls back on the subsequent release.  Pins the full
+    /// park → drop → release → rollback chain via the production
+    /// acquire path.  Also pins the X-2 / G-02 third-layer
+    /// defense (receiver-drop rollback) in integration.
+    #[test]
+    fn try_acquire_range_wait_dropped_receiver_rolls_back_on_release() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let admit = match out {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        drop(admit);
+        // Release A → wake_waiters tries to admit B → send fails
+        // → rollback.  State becomes empty.  Registry entry
+        // evicted (parked waiter rolled back, no held locks).
+        reg.release(id_a, &holder_a).unwrap();
+        assert_eq!(
+            reg.inner.read().unwrap().len(),
+            0,
+            "state must evict after waiter rollback and A's release"
+        );
+    }
+
+    // --- try_acquire_sequential_wait ------------------------------
+    //
+    // Symmetric to try_acquire_range_wait but for whole-file
+    // sequential acquires: no range-cap pre-check (one holder per
+    // file by construction), no same-holder skip, state must be
+    // entirely empty for direct-promote.
+
+    /// Empty state → Immediate(id) via direct-promote.
+    #[test]
+    fn try_acquire_sequential_wait_empty_state_returns_immediate() {
+        let reg = LockRegistry::new();
+        let out = reg
+            .try_acquire_sequential_wait(
+                (1, 1),
+                HolderId::from_bytes([0x11; 32]),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        match out {
+            AcquireOutcome::Immediate(id) => assert_eq!(id.as_u64(), 1),
+            AcquireOutcome::Parked { .. } => panic!("empty state must direct-promote"),
+        }
+    }
+
+    /// Existing sequential_holder → Parked.
+    #[test]
+    fn try_acquire_sequential_wait_existing_sequential_parks() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 1), HolderId::from_bytes([0x11; 32]), deploy_scope(0x11))
+            .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait(
+                (1, 1),
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            )
+            .unwrap();
+        let (lock_id, _admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("conflicting acquire must park"),
+        };
+        assert_eq!(lock_id.as_u64(), 2);
+    }
+
+    /// Existing held RANGE → Parked (even by the same holder —
+    /// no same-holder skip for sequential).
+    #[test]
+    fn try_acquire_sequential_wait_existing_range_parks() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Read,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait(
+                (1, 1),
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            )
+            .unwrap();
+        assert!(matches!(out, AcquireOutcome::Parked { .. }));
+    }
+
+    /// LOAD-BEARING no-same-holder-skip: a cap holding its OWN
+    /// range on the file still parks when it tries a Wait
+    /// sequential acquire.  Pins the sequential_conflicts rule
+    /// at the Wait-API boundary.
+    #[test]
+    fn try_acquire_sequential_wait_same_holder_range_still_parks() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Read,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait((1, 1), holder, deploy_scope(0x11))
+            .unwrap();
+        assert!(
+            matches!(out, AcquireOutcome::Parked { .. }),
+            "same-holder sequential acquire on own held range must park, not promote"
+        );
+    }
+
+    /// INTEGRATION: park on existing sequential → release of the
+    /// held sequential → wake_waiters admits the parked waiter.
+    #[test]
+    fn try_acquire_sequential_wait_release_admits_parked_waiter() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let id_a = reg
+            .try_acquire_sequential((1, 1), holder_a.clone(), deploy_scope(0xAA))
+            .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait((1, 1), holder_b, deploy_scope(0xBB))
+            .unwrap();
+        let (parked_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        assert!(matches!(
+            admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        reg.release(id_a, &holder_a).unwrap();
+        assert_eq!(admit.try_recv(), Ok(Ok(parked_id)));
+    }
+
+    /// INTEGRATION: park on held range → release of the held
+    /// range → wake_waiters admits the parked sequential waiter.
+    /// Pins the cross-kind release→admit path.
+    #[test]
+    fn try_acquire_sequential_wait_range_release_admits_sequential_waiter() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait((1, 1), holder_b, deploy_scope(0xBB))
+            .unwrap();
+        let (parked_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        reg.release(id_a, &holder_a).unwrap();
+        assert_eq!(admit.try_recv(), Ok(Ok(parked_id)));
+    }
+
+    /// LOAD-BEARING: NB-7 cycle detection fires on cross-deploy
+    /// mutual-wait where the target waiter is sequential.
+    #[test]
+    fn try_acquire_sequential_wait_deadlock_detects_two_cycle() {
+        let reg = LockRegistry::new();
+        let h_d1 = HolderId::from_bytes([0x01; 32]);
+        let h_d2 = HolderId::from_bytes([0x02; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            h_d1.clone(),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            h_d2.clone(),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        // D1 parks (sequential) on F2 → waits on D2.
+        let _d1_parked = reg
+            .try_acquire_sequential_wait((2, 2), h_d1, deploy_scope(0x01))
+            .unwrap();
+        // D2 parks (sequential) on F1 → closes the cycle.
+        let out = reg.try_acquire_sequential_wait((1, 1), h_d2, deploy_scope(0x02));
+        assert_eq!(out.unwrap_err(), LockError::Deadlock);
+    }
+
+    /// LOAD-BEARING empty-state leak defense (deadlock path):
+    /// a Deadlock-refused call MUST NOT mutate the registry.
+    #[test]
+    fn try_acquire_sequential_wait_deadlock_does_not_leak_empty_state() {
+        let reg = LockRegistry::new();
+        let h_d1 = HolderId::from_bytes([0x01; 32]);
+        let h_d2 = HolderId::from_bytes([0x02; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            h_d1.clone(),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            h_d2.clone(),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        let _d1_parked = reg
+            .try_acquire_sequential_wait((2, 2), h_d1, deploy_scope(0x01))
+            .unwrap();
+        let before_len = reg.inner.read().unwrap().len();
+        let before_waiters: Vec<usize> = reg
+            .inner
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| s.waiters.len())
+            .collect();
+        let dead = reg.try_acquire_sequential_wait((1, 1), h_d2, deploy_scope(0x02));
+        assert_eq!(dead.unwrap_err(), LockError::Deadlock);
+        let after_len = reg.inner.read().unwrap().len();
+        let after_waiters: Vec<usize> = reg
+            .inner
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| s.waiters.len())
+            .collect();
+        assert_eq!(before_len, after_len);
+        assert_eq!(before_waiters, after_waiters);
+    }
+
+    /// LOAD-BEARING empty-state leak defense (waiter-cap path):
+    /// a MAX_WAITERS-refused sequential park MUST NOT mutate.
+    #[test]
+    fn try_acquire_sequential_wait_failed_park_does_not_leak_empty_state() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        reg.try_acquire_sequential((1, 1), holder_a, deploy_scope(0xAA))
+            .unwrap();
+        // Fill the waiter queue (via Range Wait acquires — any
+        // park on this file bumps the single shared waiters
+        // queue regardless of WaitKind).
+        let mut keep_alive = Vec::with_capacity(MAX_WAITERS_PER_FILE);
+        for i in 0..MAX_WAITERS_PER_FILE {
+            let byte = ((i % 100) + 1) as u8;
+            let out = reg
+                .try_acquire_range_wait(
+                    (1, 1),
+                    0,
+                    100,
+                    LockMode::Write,
+                    HolderId::from_bytes([byte; 32]),
+                    [byte; 32],
+                )
+                .unwrap();
+            match out {
+                AcquireOutcome::Parked { admit, .. } => keep_alive.push(admit),
+                AcquireOutcome::Immediate(_) => panic!("every waiter must park"),
+            }
+        }
+        let before = reg.inner.read().unwrap().len();
+        let out =
+            reg.try_acquire_sequential_wait((1, 1), HolderId::from_bytes([0xEE; 32]), [0xEE; 32]);
+        assert_eq!(out.unwrap_err(), LockError::QuotaExceeded);
+        let after = reg.inner.read().unwrap().len();
+        assert_eq!(before, after);
+    }
+
+    /// Dropped admit receiver → wake_waiters rolls back the
+    /// sequential_holder promotion.  Integration pin for the
+    /// X-2 / G-02 third-layer defense via the production
+    /// sequential park API.
+    #[test]
+    fn try_acquire_sequential_wait_dropped_receiver_rolls_back_on_release() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let id_a = reg
+            .try_acquire_sequential((1, 1), holder_a.clone(), deploy_scope(0xAA))
+            .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait((1, 1), holder_b, deploy_scope(0xBB))
+            .unwrap();
+        let admit = match out {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        drop(admit);
+        reg.release(id_a, &holder_a).unwrap();
+        assert_eq!(
+            reg.inner.read().unwrap().len(),
+            0,
+            "state must evict after sequential waiter rollback and A's release"
+        );
+    }
+
+    /// Quota-before-deadlock error-order pin: when BOTH the
+    /// MAX_WAITERS cap AND NB-7 would fire on the same acquire,
+    /// quota wins.  Consensus-observable fixed order per
+    /// [`LockError::Deadlock`]'s docstring (O(1) quota check
+    /// first).  Setup:
+    ///
+    ///   - D1 holds F1 (deploy 0x01, holder 0x01).
+    ///   - D2 holds F2 (deploy 0x02, holder 0x02).
+    ///   - D1 parks on F2 → one waiter on F2 (edge D1 → D2).
+    ///   - Fill F1's waiter queue to MAX_WAITERS with distinct
+    ///     deploys all ≠ D1, D2 (so NB-7 seeds on F1 don't
+    ///     recognize them as cycle candidates).
+    ///   - D2 tries sequential_wait on F1 → would close cycle
+    ///     D2 → D1 → D2, AND the F1 waiter queue is full.
+    ///
+    /// Both conditions fire; the quota check runs first →
+    /// expect `QuotaExceeded`, NOT `Deadlock`.
+    #[test]
+    fn try_acquire_sequential_wait_quota_fires_before_deadlock() {
+        let reg = LockRegistry::new();
+        let h_d1 = HolderId::from_bytes([0x01; 32]);
+        let h_d2 = HolderId::from_bytes([0x02; 32]);
+        // D1 holds F1, D2 holds F2.
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            h_d1.clone(),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            h_d2.clone(),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        // D1 parks on F2 (edge D1 → D2).
+        let _d1_parked = reg
+            .try_acquire_range_wait((2, 2), 0, 100, LockMode::Write, h_d1, deploy_scope(0x01))
+            .unwrap();
+        // Fill F1's waiter queue to MAX_WAITERS_PER_FILE with
+        // bystanders — distinct bytes in [50, 149] (none are
+        // 0x01 or 0x02).  Keep admits alive so no wake fires.
+        let mut keep_alive = Vec::with_capacity(MAX_WAITERS_PER_FILE);
+        for i in 0..MAX_WAITERS_PER_FILE {
+            let byte = ((i % 100) + 50) as u8;
+            let out = reg
+                .try_acquire_range_wait(
+                    (1, 1),
+                    0,
+                    100,
+                    LockMode::Write,
+                    HolderId::from_bytes([byte; 32]),
+                    [byte; 32],
+                )
+                .unwrap();
+            match out {
+                AcquireOutcome::Parked { admit, .. } => keep_alive.push(admit),
+                AcquireOutcome::Immediate(_) => panic!("every bystander must park"),
+            }
+        }
+        // D2's sequential_wait on F1 would both (a) hit the
+        // quota cap AND (b) close the D2 → D1 → D2 cycle.
+        let out = reg.try_acquire_sequential_wait((1, 1), h_d2, deploy_scope(0x02));
+        assert_eq!(
+            out.unwrap_err(),
+            LockError::QuotaExceeded,
+            "quota must fire before deadlock on the shared boundary"
+        );
+    }
+
+    // --- cancel_wait ----------------------------------------------
+    //
+    // Targeted-by-LockId cancel of a parked waiter.  Pairs with
+    // the yet-to-land bulk-cancel sweeps.
+
+    /// Happy path: cancel a parked Range waiter → the admit
+    /// receiver resolves to `Err(LockError::Cancelled)`, and the
+    /// waiter is removed from the queue.
+    #[test]
+    fn cancel_wait_range_waiter_signals_cancelled() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (lock_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        reg.cancel_wait(lock_id, &holder_b).unwrap();
+        assert_eq!(admit.try_recv(), Ok(Err(LockError::Cancelled)));
+    }
+
+    /// Happy path (Sequential variant): same discipline.
+    #[test]
+    fn cancel_wait_sequential_waiter_signals_cancelled() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_sequential((1, 1), holder_a, deploy_scope(0xAA))
+            .unwrap();
+        let out = reg
+            .try_acquire_sequential_wait((1, 1), holder_b.clone(), deploy_scope(0xBB))
+            .unwrap();
+        let (lock_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        reg.cancel_wait(lock_id, &holder_b).unwrap();
+        assert_eq!(admit.try_recv(), Ok(Err(LockError::Cancelled)));
+    }
+
+    /// Unknown `lock_id` → Closed.  Pins that cancel_wait doesn't
+    /// quietly succeed on a stale / never-minted id.
+    #[test]
+    fn cancel_wait_unknown_lock_id_returns_closed() {
+        let reg = LockRegistry::new();
+        let out = reg.cancel_wait(
+            LockId::try_from(999_999).unwrap(),
+            &HolderId::from_bytes([0x11; 32]),
+        );
+        assert_eq!(out.unwrap_err(), LockError::Closed);
+    }
+
+    /// LOAD-BEARING: wrong-holder cancel → Closed (indistinguishable
+    /// from unknown-id per release-path convention).  Attacker
+    /// enumerating holder bytes gets no diagnostic from the error
+    /// value AND the ct_eq comparison is branchless.
+    #[test]
+    fn cancel_wait_wrong_holder_returns_closed_and_leaves_waiter() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b,
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (lock_id, mut admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            AcquireOutcome::Immediate(_) => panic!("must park"),
+        };
+        // Wrong holder.
+        let imposter = HolderId::from_bytes([0xCC; 32]);
+        let err = reg.cancel_wait(lock_id, &imposter);
+        assert_eq!(err.unwrap_err(), LockError::Closed);
+        // Waiter still parked (not cancelled, not admitted).
+        assert!(matches!(
+            admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // Queue still has 1 waiter.
+        let guard = reg.inner.read().unwrap();
+        assert_eq!(guard.get(&(1, 1)).unwrap().waiters.len(), 1);
+    }
+
+    /// Isolated eviction pin: a parked waiter with NO held locks
+    /// on the file (state constructed hand-populated) → cancel
+    /// evicts the state entirely.  Covers the pure eviction
+    /// branch without the admit-first-then-cancel-second race.
+    #[test]
+    fn cancel_wait_waiter_only_state_evicts_on_cancel() {
+        let reg = LockRegistry::new();
+        // Build a state with ONLY a parked waiter by hand.
+        {
+            let mut guard = reg.inner.write().unwrap();
+            let (tx, _rx) = oneshot::channel();
+            let state = guard.entry((1, 1)).or_default();
+            state.waiters.push_back(Waiter {
+                lock_id: LockId::try_from(42).unwrap(),
+                kind: WaitKind::Sequential,
+                holder: HolderId::from_bytes([0x11; 32]),
+                deploy: [0x11; 32],
+                admit: tx,
+            });
+        }
+        assert_eq!(reg.inner.read().unwrap().len(), 1);
+        reg.cancel_wait(
+            LockId::try_from(42).unwrap(),
+            &HolderId::from_bytes([0x11; 32]),
+        )
+        .unwrap();
+        assert_eq!(
+            reg.inner.read().unwrap().len(),
+            0,
+            "waiter-only state must evict after its sole waiter is cancelled"
+        );
+    }
+
+    /// Cancel one of multiple parked waiters → the targeted
+    /// waiter signals Cancelled, the others stay queued and
+    /// un-signalled.
+    #[test]
+    fn cancel_wait_only_targets_the_named_lock_id() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_c = HolderId::from_bytes([0xCC; 32]);
+        let (b_id, mut b_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("B must park"),
+        };
+        let (_c_id, mut c_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_c,
+                deploy_scope(0xCC),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("C must park"),
+        };
+        reg.cancel_wait(b_id, &holder_b).unwrap();
+        assert_eq!(b_admit.try_recv(), Ok(Err(LockError::Cancelled)));
+        // C is still parked.
+        assert!(matches!(
+            c_admit.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            reg.inner
+                .read()
+                .unwrap()
+                .get(&(1, 1))
+                .unwrap()
+                .waiters
+                .len(),
+            1
+        );
+    }
+
+    /// After cancelling the head of the FIFO queue, the next
+    /// release's wake_waiters promotes the NEW head.  Pins the
+    /// cancel + wake interaction (cancel removes a waiter →
+    /// next waiter becomes head → next wake admits it if
+    /// admissible).
+    #[test]
+    fn cancel_wait_head_promotes_next_waiter_on_subsequent_release() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_c = HolderId::from_bytes([0xCC; 32]);
+        let (b_id, _b_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("B must park"),
+        };
+        let (c_id, mut c_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_c,
+                deploy_scope(0xCC),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("C must park"),
+        };
+        // Cancel the head (B).
+        reg.cancel_wait(b_id, &holder_b).unwrap();
+        // Release A → wake_waiters admits new head (C).
+        reg.release(id_a, &holder_a).unwrap();
+        assert_eq!(c_admit.try_recv(), Ok(Ok(c_id)));
+    }
+
+    /// Dropped admit receiver → cancel still succeeds (send
+    /// fails silently; caller already walked away).  Pins the
+    /// no-panic-on-dead-receiver property.
+    #[test]
+    fn cancel_wait_dropped_receiver_still_succeeds() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let (lock_id, admit) = match out {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("must park"),
+        };
+        drop(admit);
+        reg.cancel_wait(lock_id, &holder_b).unwrap();
+        // Waiter removed from queue.
+        assert_eq!(
+            reg.inner
+                .read()
+                .unwrap()
+                .get(&(1, 1))
+                .unwrap()
+                .waiters
+                .len(),
+            0
+        );
+    }
+
+    /// Already-admitted LockId → Closed on cancel.  Pins that
+    /// cancel ONLY targets the waiter queue, not held locks (a
+    /// post-promote lock_id must be released via `release`,
+    /// not cancelled).
+    #[test]
+    fn cancel_wait_on_promoted_waiter_returns_closed() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let id_a = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let (b_id, _b_admit) = match reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap()
+        {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("must park"),
+        };
+        // Release A → wake promotes B.
+        reg.release(id_a, &holder_a).unwrap();
+        // Now B is a HELD lock.  Cancel on its id is Closed.
+        let err = reg.cancel_wait(b_id, &holder_b);
+        assert_eq!(err.unwrap_err(), LockError::Closed);
+    }
+
+    // --- cancel_all_waiters_for_holder ----------------------------
+
+    /// Sweeps every waiter whose holder matches, across every
+    /// file.  B's unrelated waiter on a different file survives.
+    #[test]
+    fn cancel_all_waiters_for_holder_sweeps_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_x = HolderId::from_bytes([0x01; 32]);
+        let holder_y = HolderId::from_bytes([0x02; 32]);
+        // Put holders X and Y on files F1 and F2 (so A/B can park).
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_x,
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            holder_y,
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        // A parks on F1 and F2.
+        let a1 = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        let a2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        // B parks on F2 only.
+        let b2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                holder_b,
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let n = reg.cancel_all_waiters_for_holder(&holder_a);
+        assert_eq!(n, 2, "both of A's waiters cancelled");
+        // A's admits fire with Cancelled.
+        let mut a1_rx = match a1 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a1 must park"),
+        };
+        let mut a2_rx = match a2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a2 must park"),
+        };
+        assert_eq!(a1_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        assert_eq!(a2_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        // B's admit stays empty.
+        let mut b2_rx = match b2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("b2 must park"),
+        };
+        assert!(matches!(
+            b2_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // F2 still has B's waiter + Y's held range.
+        let guard = reg.inner.read().unwrap();
+        assert_eq!(guard.get(&(2, 2)).unwrap().waiters.len(), 1);
+        assert_eq!(guard.get(&(1, 1)).unwrap().waiters.len(), 0);
+    }
+
+    /// No matching holder → zero cancelled, no mutation.
+    #[test]
+    fn cancel_all_waiters_for_holder_no_matches_returns_zero() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        reg.try_acquire_range((1, 1), 0, 100, LockMode::Write, holder, deploy_scope(0x11))
+            .unwrap();
+        let _ = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x22; 32]),
+                deploy_scope(0x22),
+            )
+            .unwrap();
+        let n = reg.cancel_all_waiters_for_holder(&HolderId::from_bytes([0xFF; 32]));
+        assert_eq!(n, 0);
+        // Waiter still queued.
+        assert_eq!(
+            reg.inner
+                .read()
+                .unwrap()
+                .get(&(1, 1))
+                .unwrap()
+                .waiters
+                .len(),
+            1
+        );
+    }
+
+    /// LOAD-BEARING: cancel + no-held-locks → state eviction.
+    /// If a sweep cancels every waiter on a file that also has
+    /// no held locks, the state must evict.  Pins the integration
+    /// with state_is_empty.
+    #[test]
+    fn cancel_all_waiters_for_holder_evicts_waiter_only_states() {
+        let reg = LockRegistry::new();
+        // Hand-populate a waiter-only state (no held locks).
+        {
+            let mut guard = reg.inner.write().unwrap();
+            let (tx, _rx) = oneshot::channel();
+            let state = guard.entry((1, 1)).or_default();
+            state.waiters.push_back(Waiter {
+                lock_id: LockId::try_from(42).unwrap(),
+                kind: WaitKind::Sequential,
+                holder: HolderId::from_bytes([0x11; 32]),
+                deploy: [0x11; 32],
+                admit: tx,
+            });
+        }
+        assert_eq!(reg.inner.read().unwrap().len(), 1);
+        reg.cancel_all_waiters_for_holder(&HolderId::from_bytes([0x11; 32]));
+        assert_eq!(
+            reg.inner.read().unwrap().len(),
+            0,
+            "waiter-only state must evict after bulk cancel"
+        );
+    }
+
+    /// Dropped-receiver waiters are still removed from the queue
+    /// (send fails silently, same as cancel_wait).
+    #[test]
+    fn cancel_all_waiters_for_holder_handles_dropped_receivers() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder_a,
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        match out {
+            AcquireOutcome::Parked { admit, .. } => drop(admit),
+            _ => panic!("must park"),
+        };
+        let n = reg.cancel_all_waiters_for_holder(&holder);
+        assert_eq!(n, 1);
+    }
+
+    // --- cancel_all_waiters_for_deploy ----------------------------
+
+    /// Mirrors the holder sweep but keyed on deploy.
+    #[test]
+    fn cancel_all_waiters_for_deploy_sweeps_across_distinct_files() {
+        let reg = LockRegistry::new();
+        let d_a = deploy_scope(0xAA);
+        let d_b = deploy_scope(0xBB);
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x01; 32]),
+            deploy_scope(0x01),
+        )
+        .unwrap();
+        reg.try_acquire_range(
+            (2, 2),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x02; 32]),
+            deploy_scope(0x02),
+        )
+        .unwrap();
+        let a1 = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                d_a,
+            )
+            .unwrap();
+        let a2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                d_a,
+            )
+            .unwrap();
+        let b2 = reg
+            .try_acquire_range_wait(
+                (2, 2),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xBB; 32]),
+                d_b,
+            )
+            .unwrap();
+        let n = reg.cancel_all_waiters_for_deploy(&d_a);
+        assert_eq!(n, 2);
+        let mut a1_rx = match a1 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a1 must park"),
+        };
+        let mut a2_rx = match a2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("a2 must park"),
+        };
+        assert_eq!(a1_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        assert_eq!(a2_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        let mut b2_rx = match b2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("b2 must park"),
+        };
+        assert!(matches!(
+            b2_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// LOAD-BEARING sentinel guard: `[0; 32]` sweep is refused
+    /// at the API boundary.  Same discipline as
+    /// `release_all_for_deploy`.
+    #[test]
+    #[should_panic(expected = "sentinel")]
+    fn cancel_all_waiters_for_deploy_panics_on_zero_sentinel() {
+        let reg = LockRegistry::new();
+        let _ = reg.cancel_all_waiters_for_deploy(&[0u8; 32]);
+    }
+
+    /// No matching deploy → zero cancelled.
+    #[test]
+    fn cancel_all_waiters_for_deploy_no_matches_returns_zero() {
+        let reg = LockRegistry::new();
+        assert_eq!(reg.cancel_all_waiters_for_deploy(&deploy_scope(0xFF)), 0);
+    }
+
+    /// Symmetry with the holder variant: dropped-receiver sends
+    /// fail silently and don't abort the sweep.
+    #[test]
+    fn cancel_all_waiters_for_deploy_handles_dropped_receivers() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0xAA; 32]),
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        let d = deploy_scope(0x11);
+        let out = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                d,
+            )
+            .unwrap();
+        match out {
+            AcquireOutcome::Parked { admit, .. } => drop(admit),
+            _ => panic!("must park"),
+        };
+        let n = reg.cancel_all_waiters_for_deploy(&d);
+        assert_eq!(n, 1);
+    }
+
+    /// INTEGRATION: the X-2 / G-02 defense chain operates in
+    /// order — cancel_all_waiters_for_deploy drains PARKED
+    /// waiters, release_all_for_deploy sweeps HELD locks and
+    /// its wake_waiters admits OTHER deploys that were blocked.
+    ///
+    /// Setup (no cycle — would_close_cycle would otherwise
+    /// refuse the second park):
+    ///   - D1 holds F1 (held range).
+    ///   - D3 holds F2 (held range).
+    ///   - D1 parks on F2 (edge D1 → D3).
+    ///   - D2 parks on F1 (edge D2 → D1).  No cycle because D1
+    ///     waits on D3 (not D2).
+    ///
+    /// Deploy-abort for D1:
+    ///   1. `cancel_all_waiters_for_deploy(D1)` → D1's wait on
+    ///      F2 cancelled.
+    ///   2. `release_all_for_deploy(D1)` → D1's held range on
+    ///      F1 released; wake_waiters admits D2's wait on F1.
+    #[test]
+    fn deploy_abort_chain_cancels_waiters_then_releases_holds_then_admits() {
+        let reg = LockRegistry::new();
+        let d1 = deploy_scope(0x01);
+        let d2 = deploy_scope(0x02);
+        let d3 = deploy_scope(0x03);
+        let h1 = HolderId::from_bytes([0x01; 32]);
+        let h2 = HolderId::from_bytes([0x02; 32]);
+        let h3 = HolderId::from_bytes([0x03; 32]);
+        reg.try_acquire_range((1, 1), 0, 100, LockMode::Write, h1.clone(), d1)
+            .unwrap();
+        reg.try_acquire_range((2, 2), 0, 100, LockMode::Write, h3, d3)
+            .unwrap();
+        let d1_waits_f2 = reg
+            .try_acquire_range_wait((2, 2), 0, 100, LockMode::Write, h1, d1)
+            .unwrap();
+        let d2_waits_f1 = reg
+            .try_acquire_range_wait((1, 1), 0, 100, LockMode::Write, h2, d2)
+            .unwrap();
+        let mut d1_rx = match d1_waits_f2 {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            _ => panic!("must park"),
+        };
+        let (d2_lock_id, mut d2_rx) = match d2_waits_f1 {
+            AcquireOutcome::Parked { lock_id, admit } => (lock_id, admit),
+            _ => panic!("must park"),
+        };
+        // Step 1: cancel D1's PARKED waiters.
+        let cancelled = reg.cancel_all_waiters_for_deploy(&d1);
+        assert_eq!(cancelled, 1);
+        assert_eq!(d1_rx.try_recv(), Ok(Err(LockError::Cancelled)));
+        // D2's waiter untouched.
+        assert!(matches!(
+            d2_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // Step 2: release D1's HELD locks → wake_waiters admits
+        // D2's waiter on F1.
+        let released = reg.release_all_for_deploy(&d1);
+        assert_eq!(released, 1);
+        assert_eq!(d2_rx.try_recv(), Ok(Ok(d2_lock_id)));
+    }
+
+    // --- n_holders ------------------------------------------------
+
+    /// Absent key → 0.
+    #[test]
+    fn n_holders_absent_key_is_zero() {
+        let reg = LockRegistry::new();
+        assert_eq!(reg.n_holders((42, 42)), 0);
+    }
+
+    /// One held range → 1.
+    #[test]
+    fn n_holders_counts_single_range() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// Multiple held ranges on the same file (reader-reader) → N.
+    #[test]
+    fn n_holders_counts_multiple_ranges() {
+        let reg = LockRegistry::new();
+        for i in 0..5u8 {
+            reg.try_acquire_range(
+                (1, 1),
+                (i as u64) * 100,
+                50,
+                LockMode::Read,
+                HolderId::from_bytes([i; 32]),
+                [i; 32],
+            )
+            .unwrap();
+        }
+        assert_eq!(reg.n_holders((1, 1)), 5);
+    }
+
+    /// Only a sequential_holder → 1.
+    #[test]
+    fn n_holders_counts_sequential_as_one() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 1), HolderId::from_bytes([0x11; 32]), deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// LOAD-BEARING: PARKED waiters are NOT counted.  A waiter
+    /// is a wish, not a hold — the Oracular diagnostic measures
+    /// what the unlink would displace, not who was watching.
+    #[test]
+    fn n_holders_does_not_count_parked_waiters() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0xAA; 32]),
+            deploy_scope(0xAA),
+        )
+        .unwrap();
+        // Park two waiters.
+        let _b = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xBB; 32]),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        let _c = reg
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xCC; 32]),
+                deploy_scope(0xCC),
+            )
+            .unwrap();
+        // Only A's held range counts.
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// Mixed: sequential_holder forbids coexistence with ranges
+    /// by construction, so the "ranges + sequential" scenario
+    /// doesn't arise in production.  But n_holders's addition is
+    /// well-defined regardless; pin via a hand-populated state
+    /// that bypasses the admissibility check.
+    #[test]
+    fn n_holders_sums_ranges_and_sequential_if_both_present() {
+        let reg = LockRegistry::new();
+        {
+            let mut guard = reg.inner.write().unwrap();
+            let state = guard.entry((1, 1)).or_default();
+            state.ranges.push(RangeEntry {
+                id: LockId::try_from(1).unwrap(),
+                offset: 0,
+                length: 10,
+                mode: LockMode::Read,
+                holder: HolderId::from_bytes([0x11; 32]),
+                deploy: [0x11; 32],
+            });
+            state.sequential_holder = Some(SequentialEntry {
+                id: LockId::try_from(2).unwrap(),
+                holder: HolderId::from_bytes([0x22; 32]),
+                deploy: [0x22; 32],
+            });
+        }
+        assert_eq!(reg.n_holders((1, 1)), 2);
+    }
+
+    /// After release of every held lock, n_holders returns 0.
+    /// (State may stay in the map if a waiter is parked —
+    /// that's `is_locked` / `state_is_empty`'s concern; this
+    /// pins n_holders's definition.)
+    #[test]
+    fn n_holders_zero_after_all_held_released() {
+        let reg = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = reg
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 1);
+        reg.release(id, &holder).unwrap();
+        assert_eq!(reg.n_holders((1, 1)), 0);
+    }
+
+    // --- SharedLockRegistry ---------------------------------------
+    //
+    // Mirrors the test shape of RootIdentityRegistry::share_from —
+    // the load-bearing property is that a prior clone sees the
+    // swap, so each test either (a) creates a clone BEFORE the
+    // share_from call or (b) exercises bidirectional
+    // propagation.
+
+    /// Basic delegation: operations on SharedLockRegistry behave
+    /// identically to operations on the inner LockRegistry.
+    #[test]
+    fn shared_registry_delegates_basic_operations() {
+        let shared = SharedLockRegistry::new();
+        let holder = HolderId::from_bytes([0x11; 32]);
+        let id = shared
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder.clone(),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        assert_eq!(shared.n_holders((1, 1)), 1);
+        shared.release(id, &holder).unwrap();
+        assert_eq!(shared.n_holders((1, 1)), 0);
+    }
+
+    /// LOAD-BEARING: a clone of `SharedLockRegistry` captured
+    /// BEFORE `share_from` sees the swap afterwards.  Pins the
+    /// reducer-clone-visibility property that justifies the
+    /// slot indirection (equivalent to RootIdentityRegistry's
+    /// PB-M-14 canary regression pin).
+    #[test]
+    fn shared_registry_share_from_visible_through_prior_clone() {
+        let runtime_side = SharedLockRegistry::new();
+        // Reducer takes its clone of the FileHandleTable-side
+        // SharedLockRegistry BEFORE share_from is called.
+        let reducer_clone = runtime_side.clone();
+        // Manager constructs a fresh backing and broadcasts.
+        let manager_side = SharedLockRegistry::new();
+        let holder = HolderId::from_bytes([0xAA; 32]);
+        manager_side
+            .try_acquire_range((1, 1), 0, 100, LockMode::Write, holder, deploy_scope(0xAA))
+            .unwrap();
+        // Broadcast.
+        runtime_side.share_from(&manager_side);
+        // The reducer's PRIOR clone sees the swap.
+        assert_eq!(
+            reducer_clone.n_holders((1, 1)),
+            1,
+            "reducer-side clone must observe the shared backing after share_from"
+        );
+    }
+
+    /// LOAD-BEARING: after `share_from`, writes through EITHER
+    /// side land on the same shared backing — bidirectional
+    /// propagation.
+    #[test]
+    fn shared_registry_share_from_bidirectional_after_swap() {
+        let a = SharedLockRegistry::new();
+        let b = SharedLockRegistry::new();
+        b.share_from(&a);
+        // Writes via `a` show on `b` and vice versa.
+        let holder = HolderId::from_bytes([0x11; 32]);
+        a.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            holder.clone(),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        assert_eq!(b.n_holders((1, 1)), 1);
+        b.try_acquire_sequential((2, 2), holder, deploy_scope(0x11))
+            .unwrap();
+        assert_eq!(a.n_holders((2, 2)), 1);
+    }
+
+    /// A second `share_from` with a different source atomically
+    /// swaps to the new inner.
+    #[test]
+    fn shared_registry_share_from_replaces_prior_backing() {
+        let receiver = SharedLockRegistry::new();
+        let source_a = SharedLockRegistry::new();
+        source_a
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0xAA; 32]),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+        receiver.share_from(&source_a);
+        assert_eq!(receiver.n_holders((1, 1)), 1);
+        // Second share_from to a different source.
+        let source_b = SharedLockRegistry::new();
+        receiver.share_from(&source_b);
+        assert_eq!(
+            receiver.n_holders((1, 1)),
+            0,
+            "second share_from must swap to the new (empty) backing"
+        );
+    }
+
+    /// Self-`share_from` is a no-op (self-reference boot phase).
+    #[test]
+    fn shared_registry_share_from_self_is_noop() {
+        let reg = SharedLockRegistry::new();
+        reg.try_acquire_range(
+            (1, 1),
+            0,
+            100,
+            LockMode::Write,
+            HolderId::from_bytes([0x11; 32]),
+            deploy_scope(0x11),
+        )
+        .unwrap();
+        reg.share_from(&reg);
+        assert_eq!(reg.n_holders((1, 1)), 1);
+    }
+
+    /// LOAD-BEARING: late write by manager AFTER `share_from`
+    /// propagates to runtime-side reads.  The write happens
+    /// through `manager_side` after the broadcast; the
+    /// `runtime_side` and any prior clone of it see the write.
+    #[test]
+    fn shared_registry_late_mutation_propagates_to_prior_clones() {
+        let runtime_side = SharedLockRegistry::new();
+        let reducer_clone = runtime_side.clone();
+        let manager_side = SharedLockRegistry::new();
+        runtime_side.share_from(&manager_side);
+        // AFTER share_from: manager writes.
+        manager_side
+            .try_acquire_range(
+                (7, 7),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x77; 32]),
+                deploy_scope(0x77),
+            )
+            .unwrap();
+        assert_eq!(reducer_clone.n_holders((7, 7)), 1);
+        assert_eq!(runtime_side.n_holders((7, 7)), 1);
+    }
+
+    /// `SharedLockRegistry::with_registry` wraps an existing
+    /// `LockRegistry` so its state is accessible through the
+    /// shared surface.
+    #[test]
+    fn shared_registry_with_registry_wraps_existing_state() {
+        let inner = LockRegistry::new();
+        inner
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                HolderId::from_bytes([0x11; 32]),
+                deploy_scope(0x11),
+            )
+            .unwrap();
+        let shared = SharedLockRegistry::with_registry(inner);
+        assert_eq!(shared.n_holders((1, 1)), 1);
+    }
+
+    /// Delegation surface coverage: each `SharedLockRegistry`
+    /// public method is called at least once.  The docstring on
+    /// `SharedLockRegistry` warns that future `LockRegistry`
+    /// additions MUST get a delegation here; this test is the
+    /// gate that catches drift (new `LockRegistry` method
+    /// without a matching delegate → unused private method
+    /// here would warn, but a missed delegate on the type
+    /// surface is only caught by exercising every one).
+    ///
+    /// NOT about correctness of each delegate's semantics —
+    /// that's covered by the underlying `LockRegistry` tests.
+    /// This test only pins that each delegate exists AND
+    /// forwards to its intended `LockRegistry` method (not a
+    /// typo'd sibling).
+    #[test]
+    fn shared_registry_exercises_every_delegate_once() {
+        let shared = SharedLockRegistry::new();
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0xBB; 32]);
+        let holder_c = HolderId::from_bytes([0xCC; 32]);
+
+        // mint_next_lock_id — returns a monotone id.
+        let id1 = shared.mint_next_lock_id().unwrap();
+        let id2 = shared.mint_next_lock_id().unwrap();
+        assert!(id2.as_u64() > id1.as_u64());
+
+        // try_acquire_range on F1.
+        let r_id = shared
+            .try_acquire_range(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_a.clone(),
+                deploy_scope(0xAA),
+            )
+            .unwrap();
+
+        // is_locked — F1 is locked.
+        assert!(shared.is_locked((1, 1), (0, 100)));
+        // n_holders — F1 has 1 holder.
+        assert_eq!(shared.n_holders((1, 1)), 1);
+
+        // try_acquire_range_wait on F1 by B → park.
+        let b_wait = shared
+            .try_acquire_range_wait(
+                (1, 1),
+                0,
+                100,
+                LockMode::Write,
+                holder_b.clone(),
+                deploy_scope(0xBB),
+            )
+            .unwrap();
+        assert!(matches!(b_wait, AcquireOutcome::Parked { .. }));
+
+        // cancel_wait on B's parked waiter.
+        let b_wait_id = match b_wait {
+            AcquireOutcome::Parked { lock_id, .. } => lock_id,
+            _ => unreachable!(),
+        };
+        shared.cancel_wait(b_wait_id, &holder_b).unwrap();
+
+        // release of A's held range.
+        shared.release(r_id, &holder_a).unwrap();
+
+        // try_acquire_sequential on F2 by A.
+        let _s_id = shared
+            .try_acquire_sequential((2, 2), holder_a.clone(), deploy_scope(0xAA))
+            .unwrap();
+
+        // try_acquire_sequential_wait by C → park.
+        let c_wait = shared
+            .try_acquire_sequential_wait((2, 2), holder_c.clone(), deploy_scope(0xCC))
+            .unwrap();
+        assert!(matches!(c_wait, AcquireOutcome::Parked { .. }));
+
+        // cancel_all_waiters_for_holder clears C's waiter.
+        assert_eq!(shared.cancel_all_waiters_for_holder(&holder_c), 1);
+
+        // cancel_all_waiters_for_deploy no-op (nothing left).
+        assert_eq!(shared.cancel_all_waiters_for_deploy(&deploy_scope(0xCC)), 0);
+
+        // release_all_for_holder sweeps A's sequential.
+        assert_eq!(shared.release_all_for_holder(&holder_a), 1);
+
+        // release_all_for_deploy — no match left.
+        assert_eq!(shared.release_all_for_deploy(&deploy_scope(0xAA)), 0);
     }
 }

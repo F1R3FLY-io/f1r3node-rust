@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-authority-client-20260928-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-authority-client-20260928-01.metadata.tar.gz",
+   "sha256": "ada6a59b257bb2843edcb3fd7a26c43449bed03634ef88800e537c354c85c5f3",
+   "bytes": 587,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}
