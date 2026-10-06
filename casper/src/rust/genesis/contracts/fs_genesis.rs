@@ -2195,4 +2195,172 @@ mod tests {
         let src = "new Foo, bar";
         assert!(extract_outer_new_names(src).is_err());
     }
+
+    /// F-2 helper-binding drift regression.  Every top-level
+    /// `contract <name>` definition in a .rho library MUST be bound
+    /// in the composed FsGenesis outer `new` scope — otherwise
+    /// callers referencing the helper by name silently bind to a
+    /// fresh unforgeable and hang forever.
+    ///
+    /// Exempt from the composed-outer-new requirement: helpers that
+    /// are already bound in the lib's OWN inner `new` clause (cross-
+    /// references within the same lib body are visible without a
+    /// composed-outer binding).
+    #[test]
+    fn every_lib_top_level_helper_is_bound_in_composed_outer_new() {
+        let libs: &[(&str, &str)] = &[
+            ("File.rho", include_str!("../../../main/resources/File.rho")),
+            ("Dir.rho", include_str!("../../../main/resources/Dir.rho")),
+            (
+                "Stream.rho",
+                include_str!("../../../main/resources/Stream.rho"),
+            ),
+            (
+                "Buffer.rho",
+                include_str!("../../../main/resources/Buffer.rho"),
+            ),
+            ("Fs.rho", include_str!("../../../main/resources/Fs.rho")),
+        ];
+        let composed = compose_fs_genesis_source("00", "00", &[], None);
+
+        let Some(new_block_end) = composed.find("in {") else {
+            panic!("composed source missing `in {{` — structure changed");
+        };
+        let outer_new_block = &composed[..new_block_end];
+
+        let mut missing: Vec<(String, String)> = Vec::new();
+        for (lib_path, src) in libs {
+            // Collect this lib's own `new ..., <name>, ... in {`
+            // bindings so cross-references within the same lib body
+            // don't require composed-outer coverage.
+            let mut own_new_bindings: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for line in src.lines() {
+                let trimmed = line.trim_start();
+                let Some(rest) = trimmed.strip_prefix("new ") else {
+                    continue;
+                };
+                let names_end = rest.find(" in ").unwrap_or(rest.len());
+                let names_chunk = &rest[..names_end];
+                for tok in names_chunk.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !tok.is_empty() {
+                        own_new_bindings.insert(tok);
+                    }
+                }
+            }
+
+            // Each top-level `contract <name>` must be bound either
+            // in this lib's own `new` OR in the composed outer `new`.
+            for line in src.lines() {
+                let Some(rest) = line.strip_prefix("  contract ") else {
+                    continue;
+                };
+                if line.starts_with("   contract ") {
+                    continue;
+                }
+                let name_end = rest
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                let name = &rest[..name_end];
+                if name.is_empty() {
+                    continue;
+                }
+                if own_new_bindings.contains(name) {
+                    continue;
+                }
+                let bound = outer_new_block
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|tok| tok == name);
+                if !bound {
+                    missing.push((lib_path.to_string(), name.to_string()));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "F-2 helper-binding drift regression: the following top-level \
+             `contract <name>` definitions in .rho libs are NOT bound in the \
+             composed FsGenesis outer `new` scope: {missing:?}.  Add each \
+             missing name to the outer `new` binding list in \
+             compose_fs_genesis_source; otherwise callers referencing the \
+             helper by name silently bind to a fresh unforgeable and hang."
+        );
+    }
+
+    /// A-1 / RH-1 module-cell drift regression.  Every name bound in
+    /// a lib's OWN outer `new` clause MUST also be bound in the
+    /// composed FsGenesis outer `new` — because `lib_body` strips
+    /// each lib's own outer `new` at composition time, so a reference
+    /// to any such name inside the lib body becomes a free variable
+    /// that Rholang silently binds to a fresh unforgeable at parse
+    /// (every `<<-` peek then hangs forever).
+    ///
+    /// Exemptions:
+    ///   - URN bindings — lib-local registry caps.
+    ///   - Uppercase-leading names (agent classes / module types) —
+    ///     covered by the sister pin above; module-cell drift is the
+    ///     lowercase-leading state-channel-alias surface.
+    #[test]
+    fn every_lib_outer_new_module_cell_is_bound_in_composed_outer_new() {
+        let libs: &[(&str, &str)] = &[
+            ("File.rho", include_str!("../../../main/resources/File.rho")),
+            ("Dir.rho", include_str!("../../../main/resources/Dir.rho")),
+            (
+                "Stream.rho",
+                include_str!("../../../main/resources/Stream.rho"),
+            ),
+            (
+                "Buffer.rho",
+                include_str!("../../../main/resources/Buffer.rho"),
+            ),
+            ("Fs.rho", include_str!("../../../main/resources/Fs.rho")),
+        ];
+        let composed = compose_fs_genesis_source("00", "00", &[], None);
+
+        // Use the comment-aware scanner (slice 5.24) rather than a
+        // naive tokenize so names that only appear inside `//`
+        // comments above the actual binding don't mask the drift.
+        let composer_names_vec = extract_outer_new_names(&composed).unwrap_or_else(|reason| {
+            panic!("composed source: could not parse outer `new` clause: {reason}");
+        });
+        let outer_new_names: std::collections::HashSet<String> =
+            composer_names_vec.into_iter().map(|n| n.ident).collect();
+
+        let mut missing: Vec<(String, String)> = Vec::new();
+        for (lib_path, src) in libs {
+            let names = extract_outer_new_names(src).unwrap_or_else(|reason| {
+                panic!("{lib_path}: could not parse outer `new` clause: {reason}");
+            });
+            for name in names {
+                if name.is_urn_binding {
+                    continue;
+                }
+                if name
+                    .ident
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if !outer_new_names.contains(&name.ident) {
+                    missing.push((lib_path.to_string(), name.ident));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "A-1 / RH-1 module-cell drift regression: the following names are \
+             bound in a lib's OWN outer `new` clause but NOT bound in the \
+             composed FsGenesis outer `new` scope: {missing:?}.  `lib_body` \
+             strips each lib's own outer `new` at composition time, so a \
+             reference inside the lib body becomes a free variable that \
+             Rholang silently binds to a fresh unforgeable — every `<<-` peek \
+             hangs forever.  Add each missing name to the outer `new` binding \
+             list in compose_fs_genesis_source."
+        );
+    }
 }
