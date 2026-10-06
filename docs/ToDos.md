@@ -2465,7 +2465,9 @@ tasks:
 ---
 epic_id: EPIC-014
 title: "Test Net (Continuously Running Shards)"
-status: pending
+status: in_progress
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-06T16:14:22Z
 priority: p2
 user_story: US-010
 blocked_by: [EPIC-013]
@@ -2481,9 +2483,12 @@ design_intent:
 tasks:
   - id: TASK-014-1
     title: "Design the test net (topology, lifecycle, upgrade path)"
-    status: pending
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-06T16:14:22Z
+    design_doc: docs/plans/test-net.md
     acceptance:
-      - "A design record under docs/designs/ covers mixed-release shards, the one-model-per-test-net rule, the new-shard path for an incompatible release, and shard retirement"
+      - "A design record at docs/plans/test-net.md covers mixed-release shards, the one-model-per-test-net rule, the new-shard path for an incompatible release, and shard retirement"
       - "The design proposes values for the six Section 12.1 deferred parameters"
       - "The design defines the compatibility check that decides between joining a shard and starting a new shard"
   - id: TASK-014-2
