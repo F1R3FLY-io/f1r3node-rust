@@ -6376,3 +6376,120 @@ Tests elsewhere:
 **Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
 releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
 `ofp-2-cap-d-b3-worklist-charge`.
+
+## DR-93 — Nested prost encodes charged by depth
+
+**Status.** Implemented 2026-10-05 for Phase D item D-B2 of epic 8946
+(D-O6 of the Phase D plan). This item is a soundness prerequisite of the
+walker block mode (DR-92) at encode sites.
+
+**Context.** Prost computes the length of a nested message again at every
+enclosing level. In prost 0.14.4, `encoding::message::encode` calls
+`encoded_len` on the nested message before it encodes it, and
+`Message::encode` computes the top-level length once more. Thus an encode of
+a message of height `h` reads the value up to `1 + h` times. A site that
+computes the length to size its buffer and then encodes reads the value up
+to `2 + h` times.
+
+The encode sites that a walker inspection prepays reserved one linear
+traversal. The legacy walker's per-level charge covered the recomputation
+with its slack, but the block mode of DR-92 removes that slack. A charge of
+`d * encoded_len` is not an upper bound either, because a length
+computation reads in-memory fields, including empty fields that encode to
+0 bytes.
+
+**Decision.**
+
+1. A depth walk, `inspect_blocks_depth`, is a block-mode inspection that
+   records the nesting depth of every worklist entry. It returns the depth
+   `d` of the deepest entry, with depth 1 for the root entry, and the
+   scanned bytes `C` that it reserved. It keeps 24-byte entries (a value and
+   its depth) in the chunked worklist. Its entry constants are
+   `BLOCK_DEPTH_ENTRY_SCANNED` = 2 × 24 + 3 × 8 = 72 and
+   `BLOCK_DEPTH_ENTRY_BACKING` = 4 × 24 = 96.
+2. `reserve_nested_encode(value, encoded_len, meter)` runs the depth walk.
+   Then it reserves `d * C + encoded_len` VerificationBytes: `d` more
+   traversals and the output writes. `SorterMeter::nested_encode` wraps it.
+3. Each prost encode of a nested message that a walker inspection prepays
+   calls the reservation after the length computation and before the
+   encode. The existing inspections stay. D-B4 decides whether each
+   inspection is still necessary for the other reads at its site.
+
+**Inventory.** A read-only inventory of every production prost
+`encoded_len`, `encode` and `encode_to_vec` call in the Rholang
+interpreter and accounting, RSpace++, the Casper cost-accounting modules
+and the models helpers found these sites that a walker inspection prepays:
+
+| Site | Encoded value | Depth | Prepaid before | Change |
+|------|---------------|-------|----------------|--------|
+| `authority.rs`, `cost_atom_to_sig_metered`, Quote | quoted `Par` | data-dependent | `meter.inspect(&par)` | `nested_encode` |
+| `authority.rs`, `cost_atom_to_sig_metered`, Name | named `Par` | data-dependent | `meter.inspect(&par)` | `nested_encode` |
+| `authority.rs`, `cost_signature_lane_metered`, atom | quoted or named `Par` | data-dependent | `meter.inspect(par)` | `nested_encode` |
+| `authority.rs`, `cost_signature_lane_metered`, channel | sorted signature-channel `Par` | constant | `meter.inspect(&channel)` | `nested_encode` |
+| `authority/fallback_metered.rs`, `cost_region_metered` | canonical `CostSignature` | data-dependent | inspections in `canonical_cost_signature_metered` | `nested_encode` |
+| `byte_accounting.rs`, `message_bytes` | `Par`, `ListParWithRandom`, `BindPattern`, `TaggedContinuation` | data-dependent | inspections in `observation_construction.rs` | none: a length computation is one traversal |
+
+RSpace++ has no prost encodes. Its native sources use bincode through a
+metered writer that charges each write.
+
+The inventory also found sites outside this item. A walker inspection does
+not prepay them, so this item does not change them. They are recorded for a
+later decision:
+
+- These sites reserve a linear charge, derived from the encoded length, for
+  a nested encode: `write_observation` and `read_observation` in
+  `native_runtime/wire.rs`, `bounded_legacy_events` in
+  `native_runtime/replay_authority/result.rs`,
+  `capture_retained_birth_stacks` in `prepaid_receipts/births.rs`, and
+  `ToByteArrayMethod::serialize` in `reduce.rs`.
+- These sites encode in a metered path without a reservation:
+  - `observation_comparison_bytes` in `budget_trace.rs` (length only);
+  - the flat channel encodes in `supply.rs` and `stack_pops.rs`;
+  - the unmetered `cost_signature_to_sig` and `cost_region`, which metered
+    callers reach;
+  - `Sig::lane_hash` for each billable event (flat and bounded);
+  - `private_name_payer` in `direct_wallet_funding.rs`, which decodes and
+    re-encodes a deploy-supplied `Par` before its flatness checks, under a
+    fixed protocol-maximum preflight reservation;
+  - `insert_channel` in `deterministic_reduction.rs`.
+
+**Soundness.** The depth walk prepays one traversal of the value, as any
+block inspection does, so `C` is at least the bytes of one traversal. Every
+nested message is a worklist entry at least one level below its parent's
+entry, so `d >= 1 + h`. Then the depth walk and `d * C` cover the length
+computation and the encode, `2 + h` traversals, and `encoded_len` covers
+the output writes. The charge depends only on the value's shape and on
+compile-time sizes.
+
+**Scope.** Cost-accounting work: the change adds host-work reservations at
+the five encode sites and changes no encoding, root or event. The Phase D
+plan expects about 1 to 2 MB more VerificationBytes per budget in the
+gateway flow, where signature `Par` values are shallow.
+
+**Verification.** `NestedEncodeCost.v` proves without axioms
+`encode_work_le_height`, `nested_encode_work_le_depth_times_visited_blocks`
+and `depth_weighted_charge_covers_encode`. The negative control
+`linear_charge_undercounts_deep_chain`, with `deep_chain_example`, shows
+that two traversals do not cover a deep chain. `WalkerBlockCharge.v` adds
+`worklist_charge_covers_peak_for_slot` and
+`rust_depth_entry_constant_covers_header_moves` for the 24-byte entries.
+
+Tests:
+
+- `depth_walk_matches_block_walk_with_depth_entries` and
+  `depth_walk_allocations_within_charge` (256 cases each), and
+  `nested_encode_reservation_adds_depth_traversals_and_output`, in
+  `shared/src/rust/clone_backing/tests.rs`. The first checks the walk depth
+  against an independent recursion.
+- `nested_encode_charge_covers_counted_reads` (128 random `Par` terms) and
+  `deep_chain_charge_grows_with_depth`, in
+  `rholang/src/rust/interpreter/accounting/native_runtime/clone_backing/tests.rs`.
+  They count the length recomputations with an independent model of prost.
+  They check `d > h` and that the charge covers the counted reads. The
+  negative control shows that one legacy inspection does not cover the
+  encode of a depth-64 chain.
+- `nested_encode_sites_charge_quadratically_in_depth` in `authority.rs`:
+  the three metered paths charge quadratically in the depth, and their
+  results equal the unmetered conversions.
+
+**Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.

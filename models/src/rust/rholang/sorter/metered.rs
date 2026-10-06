@@ -72,6 +72,16 @@ impl<'a> SorterMeter<'a> {
         clone_backing::inspect_blocks(value, self.backing)
     }
 
+    /// D-O6 (DR-93): prepays `encoded_len()` and the prost encode of a nested
+    /// message that writes `encoded_len` bytes.
+    pub fn nested_encode<T: CloneBacking>(
+        &self,
+        value: &T,
+        encoded_len: usize,
+    ) -> Result<(), BackingError> {
+        clone_backing::reserve_nested_encode(value, encoded_len, self.backing)
+    }
+
     pub fn clone_slice<T: Clone + CloneBacking>(
         &self,
         values: &[T],

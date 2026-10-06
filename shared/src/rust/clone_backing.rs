@@ -1,4 +1,5 @@
 use std::alloc::Layout;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, BuildHasherDefault, RandomState};
 use std::mem::size_of;
@@ -89,6 +90,24 @@ pub const BLOCK_SHARED_HEADER_SCANNED: usize = 2 * size_of::<usize>();
 const _: () = assert!(size_of::<&dyn CloneBacking>() == 16);
 const _: () = assert!(size_of::<Vec<&dyn CloneBacking>>() == 24);
 
+/// D-O6 (DR-93): a worklist entry of a depth walk: the value and its nesting
+/// depth (the root entry has depth 1).
+struct DepthEntry<'a> {
+    value: &'a dyn CloneBacking,
+    depth: usize,
+}
+
+// D-O6 (DR-93): `WalkerBlockCharge.v` proves the worklist bounds for entries
+// of at least 16 bytes; a depth entry has 24.
+const _: () = assert!(size_of::<DepthEntry<'static>>() == 24);
+const _: () = assert!(size_of::<Vec<DepthEntry<'static>>>() == 24);
+
+/// D-O6 (DR-93): the entry constants of a depth walk: the block-mode constants
+/// for a 24-byte entry (one write, one read, three words).
+pub const BLOCK_DEPTH_ENTRY_SCANNED: usize =
+    2 * size_of::<DepthEntry<'static>>() + 3 * size_of::<u64>();
+pub const BLOCK_DEPTH_ENTRY_BACKING: usize = 4 * size_of::<DepthEntry<'static>>();
+
 const FIRST_CHUNK_SLOTS: usize = 4;
 
 /// D-B3 (DR-92): the block-mode worklist, a stack of chunks. Chunk 0 holds
@@ -98,14 +117,14 @@ const FIRST_CHUNK_SLOTS: usize = 4;
 /// full chunk is never reallocated: a push writes one entry and a pop reads
 /// one entry. The chunks below the active one are full and the chunks above
 /// it are empty.
-struct ChunkedWorklist<'a> {
-    first: Vec<&'a dyn CloneBacking>,
-    rest: Vec<Vec<&'a dyn CloneBacking>>,
+struct ChunkedWorklist<T> {
+    first: Vec<T>,
+    rest: Vec<Vec<T>>,
     /// The chunk that holds the top entry: 0 for `first`, j for `rest[j - 1]`.
     active: usize,
 }
 
-impl<'a> ChunkedWorklist<'a> {
+impl<T> ChunkedWorklist<T> {
     const fn new() -> Self {
         Self {
             first: Vec::new(),
@@ -122,14 +141,14 @@ impl<'a> ChunkedWorklist<'a> {
             .ok_or(BackingError::Overflow)
     }
 
-    fn chunk(&mut self, chunk: usize) -> &mut Vec<&'a dyn CloneBacking> {
+    fn chunk(&mut self, chunk: usize) -> &mut Vec<T> {
         match chunk {
             0 => &mut self.first,
             index => &mut self.rest[index - 1],
         }
     }
 
-    fn push(&mut self, value: &'a dyn CloneBacking) -> Result<(), BackingError> {
+    fn push(&mut self, value: T) -> Result<(), BackingError> {
         loop {
             let slots = Self::slots(self.active)?;
             let chunk = self.chunk(self.active);
@@ -153,7 +172,7 @@ impl<'a> ChunkedWorklist<'a> {
         }
     }
 
-    fn pop(&mut self) -> Option<&'a dyn CloneBacking> {
+    fn pop(&mut self) -> Option<T> {
         loop {
             if let Some(value) = self.chunk(self.active).pop() {
                 return Some(value);
@@ -175,7 +194,13 @@ pub struct Walker<'a> {
     /// a push charges only the worklist or field constants.
     blocks: bool,
     /// D-B3 (DR-92): the worklist of block mode.
-    chunked: ChunkedWorklist<'a>,
+    chunked: ChunkedWorklist<&'a dyn CloneBacking>,
+    /// D-O6 (DR-93): a block-mode walk that also records the nesting depth
+    /// of every entry, with its own worklist of depth entries.
+    depths: bool,
+    deep: ChunkedWorklist<DepthEntry<'a>>,
+    current_depth: usize,
+    max_depth: usize,
 }
 
 impl<'a> Walker<'a> {
@@ -302,6 +327,16 @@ impl<'a> Walker<'a> {
                 0,
             );
         }
+        if self.depths {
+            self.meter
+                .reserve(3, BLOCK_DEPTH_ENTRY_SCANNED, BLOCK_DEPTH_ENTRY_BACKING)?;
+            let depth = self
+                .current_depth
+                .checked_add(1)
+                .ok_or(BackingError::Overflow)?;
+            self.max_depth = self.max_depth.max(depth);
+            return self.deep.push(DepthEntry { value, depth });
+        }
         self.meter
             .reserve(3, BLOCK_ENTRY_SCANNED, BLOCK_ENTRY_BACKING)?;
         self.chunked.push(value)
@@ -335,6 +370,13 @@ impl<'a> Walker<'a> {
     }
 
     fn drain(&mut self) -> Result<(), BackingError> {
+        if self.depths {
+            while let Some(DepthEntry { value, depth }) = self.deep.pop() {
+                self.current_depth = depth;
+                value.children(self)?;
+            }
+            return Ok(());
+        }
         if self.blocks {
             while let Some(value) = self.chunked.pop() {
                 value.children(self)?;
@@ -361,6 +403,10 @@ fn walk<T: CloneBacking>(
         shared_pointers: false,
         blocks: false,
         chunked: ChunkedWorklist::new(),
+        depths: false,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
     };
     walker.push(value)?;
     walker.drain()
@@ -379,6 +425,10 @@ fn walk_slice<T: CloneBacking>(
         shared_pointers: false,
         blocks: false,
         chunked: ChunkedWorklist::new(),
+        depths: false,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
     };
     walker.slice(values)?;
     walker.drain()
@@ -401,6 +451,10 @@ fn walk_blocks<T: CloneBacking>(
         shared_pointers,
         blocks: true,
         chunked: ChunkedWorklist::new(),
+        depths: false,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
     };
     walker.referent_block::<T>()?;
     walker.push(value)?;
@@ -421,6 +475,10 @@ fn walk_slice_blocks<T: CloneBacking>(
         shared_pointers,
         blocks: true,
         chunked: ChunkedWorklist::new(),
+        depths: false,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
     };
     walker.slice(values)?;
     walker.drain()
@@ -483,6 +541,76 @@ pub fn inspect_shared_pointer_slice_blocks<T: CloneBacking>(
     walk_slice_blocks(values, meter, false, true)
 }
 
+/// D-O6 (DR-93): the result of a depth walk: the deepest entry's nesting
+/// depth (the root entry has depth 1; an inline root has none) and the
+/// scanned bytes that the walk reserved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockWalk {
+    pub depth: usize,
+    pub scanned: usize,
+}
+
+/// D-O6 (DR-93): a block-mode inspection that also returns the nesting
+/// depth of `value`. It prepays one linear traversal of `value`, like
+/// `inspect_blocks`, with the depth-entry constants.
+pub fn inspect_blocks_depth<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<BlockWalk, BackingError> {
+    let scanned = Cell::new(0_usize);
+    let counting = |operations: usize, bytes: usize, backing: usize| {
+        scanned.set(
+            scanned
+                .get()
+                .checked_add(bytes)
+                .ok_or(BackingError::Overflow)?,
+        );
+        meter.reserve(operations, bytes, backing)
+    };
+    let mut walker = Walker {
+        pending: Vec::new(),
+        capacity: 0,
+        meter: &counting,
+        copy_payload: false,
+        shared_pointers: false,
+        blocks: true,
+        chunked: ChunkedWorklist::new(),
+        depths: true,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
+    };
+    walker.referent_block::<T>()?;
+    walker.push(value)?;
+    walker.drain()?;
+    let depth = walker.max_depth;
+    Ok(BlockWalk {
+        depth,
+        scanned: scanned.get(),
+    })
+}
+
+/// D-O6 (DR-93): prepays `encoded_len()` and a prost encode of `value` that
+/// writes `encoded_len` bytes. Prost computes the length of every nested
+/// message again at each enclosing level, so a site that computes the length
+/// and then encodes reads the value at most `2 + h` times, where `h` is the
+/// message height. The depth walk prepays one traversal, and the walk depth
+/// `d` is at least `1 + h`, so `d` more traversals of the walk's charge and
+/// the output bytes cover the rest (`NestedEncodeCost.v`).
+pub fn reserve_nested_encode<T: CloneBacking>(
+    value: &T,
+    encoded_len: usize,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    let walk = inspect_blocks_depth(value, meter)?;
+    let traversals = walk
+        .depth
+        .checked_mul(walk.scanned)
+        .and_then(|bytes| bytes.checked_add(encoded_len))
+        .ok_or(BackingError::Overflow)?;
+    meter.reserve(0, traversals, 0)
+}
+
 pub fn reserve<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
     walk(value, meter, true)
 }
@@ -525,6 +653,10 @@ pub fn inspect_shared_pointers<T: CloneBacking>(
         shared_pointers: true,
         blocks: false,
         chunked: ChunkedWorklist::new(),
+        depths: false,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
     };
     walker.push(value)?;
     walker.drain()
@@ -545,6 +677,10 @@ pub fn inspect_shared_pointer_slice<T: CloneBacking>(
         shared_pointers: true,
         blocks: false,
         chunked: ChunkedWorklist::new(),
+        depths: false,
+        deep: ChunkedWorklist::new(),
+        current_depth: 0,
+        max_depth: 0,
     };
     walker.slice(values)?;
     walker.drain()

@@ -361,7 +361,7 @@ fn worklist_chunks_follow_the_chunk_model() {
 #[test]
 fn chunked_worklist_reuses_chunks_and_pops_in_order() {
     let values: Vec<u64> = (0..64).collect();
-    let mut worklist = ChunkedWorklist::new();
+    let mut worklist: ChunkedWorklist<&dyn CloneBacking> = ChunkedWorklist::new();
     let ((), grown) = measured(|| {
         for value in &values[..29] {
             worklist.push(value).expect("push");
@@ -406,4 +406,79 @@ fn shared_pointer_blocks_charge_header_and_payload() {
     assert!(inspect[1] >= 2 * size_of::<Big>());
     let pointers = usage(|meter| inspect_shared_pointers_blocks(&shared, meter));
     assert!(pointers[1] < size_of::<Big>());
+}
+
+/// D-O6 (DR-93): the nesting depth of the deepest entry when `tree` is an
+/// entry at depth 1, by an independent recursion.
+fn entry_depth(tree: &Tree) -> usize {
+    match tree {
+        Tree::Leaf(_) => 1,
+        Tree::Bytes(_) | Tree::Text(_) => 2,
+        Tree::Node(children) => children
+            .iter()
+            .map(|child| 2 + entry_depth(child))
+            .max()
+            .unwrap_or(2),
+        Tree::Boxed(child) => 2 + entry_depth(child),
+    }
+}
+
+/// The usage and the result of a depth walk.
+fn depth_walk(tree: &Tree) -> ([usize; 3], BlockWalk) {
+    let walked = Cell::new(None);
+    let charged = usage(|meter| {
+        walked.set(Some(inspect_blocks_depth(tree, meter)?));
+        Ok(())
+    });
+    (charged, walked.get().expect("walk"))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-O6 (DR-93): a depth walk charges the block charge with the depth
+    /// entry constants, reports the scanned bytes it reserved, and finds the
+    /// depth of an independent recursion.
+    #[test]
+    fn depth_walk_matches_block_walk_with_depth_entries(tree in tree_strategy()) {
+        let block = usage(|meter| inspect_blocks(&tree, meter));
+        let (charged, walk) = depth_walk(&tree);
+        prop_assert_eq!(walk.depth, entry_depth(&tree));
+        prop_assert_eq!(walk.scanned, charged[1]);
+        prop_assert_eq!(charged[0], block[0]);
+        let entries = block[2] / BLOCK_ENTRY_BACKING;
+        prop_assert_eq!(block[2], entries * BLOCK_ENTRY_BACKING);
+        prop_assert_eq!(charged[2], entries * BLOCK_DEPTH_ENTRY_BACKING);
+        prop_assert_eq!(
+            charged[1],
+            block[1] + entries * (BLOCK_DEPTH_ENTRY_SCANNED - BLOCK_ENTRY_SCANNED)
+        );
+    }
+
+    /// D-O6 (DR-93): the depth walk's worklist allocates at most the backing
+    /// that it charges.
+    #[test]
+    fn depth_walk_allocations_within_charge(tree in tree_strategy()) {
+        let (charged, allocated) = measured(|| depth_walk(&tree).0);
+        prop_assert!(allocated <= charged[2], "allocated {} charged {}", allocated, charged[2]);
+    }
+}
+
+/// D-O6 (DR-93): the nested-encode reservation is the depth walk, then
+/// `depth` more traversals of the walk's scanned charge and the output bytes.
+#[test]
+fn nested_encode_reservation_adds_depth_traversals_and_output() {
+    let tree = Tree::Boxed(Box::new(Tree::Node(vec![
+        Tree::Leaf(3),
+        Tree::Text("abc".to_owned()),
+        Tree::Boxed(Box::new(Tree::Bytes(vec![1; 9]))),
+    ])));
+    let (walk_usage, walk) = depth_walk(&tree);
+    assert_eq!(walk.depth, entry_depth(&tree));
+    let encode = usage(|meter| reserve_nested_encode(&tree, 100, meter));
+    assert_eq!(encode, [
+        walk_usage[0],
+        walk_usage[1] + walk.depth * walk.scanned + 100,
+        walk_usage[2],
+    ]);
 }

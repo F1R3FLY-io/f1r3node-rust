@@ -83,6 +83,9 @@ pub fn cost_region_metered(
     let mut signature_bytes = meter
         .vec::<u8>(encoded_len)
         .map_err(authority_backing_error)?;
+    meter
+        .nested_encode(&signature, encoded_len)
+        .map_err(authority_backing_error)?;
     signature
         .encode(&mut signature_bytes)
         .map_err(|_| AuthorityError::HostWorkRejected)?;

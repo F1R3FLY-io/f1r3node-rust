@@ -811,3 +811,152 @@ proptest! {
         }
     }
 }
+
+/// D-O6 (DR-93): the prost work of `encoded_len()` and `encode()` by an
+/// independent recursion over the messages of the shapes that `term()`
+/// generates (`NestedEncodeCost.v`). A message's own bytes are its struct and
+/// the payloads of its byte and string fields; a map entry is a message whose
+/// own bytes are its key.
+#[derive(Clone, Copy, Default)]
+struct ProstWork {
+    /// One traversal: what `encoded_len()` reads.
+    length: usize,
+    /// What `encode()` reads: its own bytes, then each nested message's
+    /// length again and its encode.
+    encode: usize,
+    /// The message height (0 for a message without nested messages).
+    height: usize,
+}
+
+impl ProstWork {
+    fn message(own: usize, children: impl IntoIterator<Item = ProstWork>) -> Self {
+        let mut work = Self {
+            length: own,
+            encode: own,
+            height: 0,
+        };
+        for child in children {
+            work.length += child.length;
+            work.encode += child.length + child.encode;
+            work.height = work.height.max(1 + child.height);
+        }
+        work
+    }
+
+    fn par(par: &Par) -> Self {
+        let own = size_of::<Par>() + par.locally_free.len();
+        let children = par
+            .sends
+            .iter()
+            .map(Self::send)
+            .chain(par.news.iter().map(Self::new_name))
+            .chain(par.exprs.iter().map(Self::expr));
+        Self::message(own, children.collect::<Vec<_>>())
+    }
+
+    fn send(send: &Send) -> Self {
+        let own = size_of::<Send>() + send.locally_free.len();
+        let children = send.chan.iter().chain(send.data.iter()).map(Self::par);
+        Self::message(own, children.collect::<Vec<_>>())
+    }
+
+    fn new_name(new: &New) -> Self {
+        let own = size_of::<New>()
+            + new.locally_free.len()
+            + new.uri.iter().map(String::len).sum::<usize>();
+        let entries = new
+            .injections
+            .iter()
+            .map(|(key, value)| Self::message(size_of::<String>() + key.len(), [Self::par(value)]));
+        let children = new.p.iter().map(Self::par).chain(entries);
+        Self::message(own, children.collect::<Vec<_>>())
+    }
+
+    fn expr(expr: &Expr) -> Self {
+        let payload = match &expr.expr_instance {
+            Some(expr::ExprInstance::GByteArray(bytes)) => bytes.len(),
+            _ => 0,
+        };
+        Self::message(size_of::<Expr>() + payload, [])
+    }
+}
+
+/// The depth walk of `par` and the nested-encode charge (the depth walk plus
+/// `depth` more traversals) without the output bytes.
+fn nested_encode_charge(par: &Par) -> (backing::BlockWalk, usize) {
+    let walked = Cell::new(None);
+    let charged = block_usage(|meter| {
+        walked.set(Some(backing::inspect_blocks_depth(par, meter)?));
+        Ok(())
+    });
+    let walk = walked.get().expect("walk");
+    (walk, charged[1] + walk.depth * walk.scanned)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// D-O6 (DR-93): on generated terms the walk depth is at least one more
+    /// than the message height, and the nested-encode charge covers one
+    /// length computation and the encode with its length recomputations.
+    #[test]
+    fn nested_encode_charge_covers_counted_reads(par in term()) {
+        let work = ProstWork::par(&par);
+        let (walk, charge) = nested_encode_charge(&par);
+        prop_assert!(walk.depth > work.height, "depth {} height {}", walk.depth, work.height);
+        prop_assert!(work.length <= walk.scanned, "length {} scanned {}", work.length, walk.scanned);
+        prop_assert!(
+            work.length + work.encode <= charge,
+            "site work {} charge {}",
+            work.length + work.encode,
+            charge
+        );
+    }
+}
+
+/// A term nested `depth` levels deep through sends.
+fn send_chain(depth: usize) -> Par {
+    let mut par = Par::default();
+    for _ in 0..depth {
+        par = Par {
+            sends: vec![Send {
+                chan: Some(Par::default()),
+                data: vec![par],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+    }
+    par
+}
+
+/// D-O6 (DR-93): on a chain the nested-encode charge grows quadratically
+/// with the depth and covers the encode; negative control: one legacy
+/// inspection does not cover the encode of a deep chain.
+#[test]
+fn deep_chain_charge_grows_with_depth() {
+    let charges: Vec<usize> = [8, 16, 32]
+        .into_iter()
+        .map(|depth| nested_encode_charge(&send_chain(depth)).1)
+        .collect();
+    assert!(
+        charges[2] - charges[1] > 3 * (charges[1] - charges[0]),
+        "{charges:?}"
+    );
+    for depth in [1, 4, 16, 64] {
+        let par = send_chain(depth);
+        let work = ProstWork::par(&par);
+        let (walk, charge) = nested_encode_charge(&par);
+        assert!(walk.depth > work.height, "depth {depth}");
+        assert!(work.length + work.encode <= charge, "depth {depth}");
+    }
+    let deep = send_chain(64);
+    let work = ProstWork::par(&deep);
+    let legacy = block_usage(|meter| backing::inspect(&deep, meter));
+    assert!(
+        legacy[1] < work.length + work.encode,
+        "legacy {} site work {}",
+        legacy[1],
+        work.length + work.encode
+    );
+}

@@ -63,7 +63,10 @@
      vector (one read and one write of 24 bytes each) take at most 8 bytes
      per entry;
    - rust_entry_constant_covers_header_moves: the Rust constant meets the
-     hypothesis on E and its slack pays the header moves.
+     hypothesis on E and its slack pays the header moves;
+   - worklist_charge_covers_peak_for_slot and
+     rust_depth_entry_constant_covers_header_moves (D-O6, DR-93): the same
+     bounds for the 24-byte entries of a depth walk.
 
    Rust correspondence: shared/src/rust/clone_backing.rs (Walker in block
    mode: push_block_entry, block, referent_block, ChunkedWorklist; the
@@ -614,6 +617,56 @@ Proof.
   destruct (worklist_charge_covers_entries fuel k peak entry_count reach bounded). lia.
 Qed.
 
+(* D-O6 (DR-93): the depth walk keeps 24-byte entries (a value and its
+   depth) in the same chunked worklist. The allocation bound holds for every
+   entry size of at least 16 bytes; the header moves do not depend on it. *)
+Definition worklist_allocated_bytes_for (slot fuel k : nat) : nat :=
+  slot * chunk_slots k
+  + (if k =? 0 then 0 else 24 * fold_right Nat.add 0 (doubling_capacities fuel 4 k)).
+
+Theorem worklist_charge_covers_peak_for_slot : forall slot fuel k peak,
+  16 <= slot ->
+  (k = 0 /\ 1 <= peak) \/ (1 <= k /\ 4 * (2 ^ k - 1) < peak) ->
+  worklist_allocated_bytes_for slot fuel k <= 4 * slot * peak.
+Proof.
+  intros slot fuel k peak wide [[zero positive] | [positive reached]];
+    unfold worklist_allocated_bytes_for.
+  - subst k. cbn [chunk_slots Nat.eqb]. nia.
+  - destruct (Nat.eqb_spec k 0) as [zero | nonzero]; [lia |].
+    pose proof (chunk_slots_closed k) as slots.
+    pose proof (doubling_sum_bound fuel 4 k) as headers.
+    pose proof (exponential_dominates k positive) as dominates.
+    assert (power : 2 <= 2 ^ k).
+    { replace 2 with (2 ^ 1) at 1 by reflexivity. apply Nat.pow_le_mono_r; lia. }
+    remember (2 ^ k) as x eqn:x_def.
+    remember (chunk_slots k) as slots_k eqn:slots_def.
+    remember (fold_right Nat.add 0 (doubling_capacities fuel 4 k)) as header_sum eqn:header_def.
+    assert (header_bound : header_sum <= 4 * k) by lia.
+    assert (chunk_bytes : slot * slots_k + 4 * slot = 8 * (slot * x)).
+    { assert (scaled : slot * (slots_k + 4) = slot * (8 * x)) by (rewrite slots; reflexivity).
+      rewrite Nat.mul_add_distr_l in scaled. lia. }
+    assert (peak_bytes : 16 * (slot * x) <= 4 * (slot * peak) + 12 * slot).
+    { assert (4 * x <= peak + 3) by lia.
+      replace (16 * (slot * x)) with (4 * (slot * (4 * x))) by lia.
+      replace (4 * (slot * peak) + 12 * slot) with (4 * (slot * (peak + 3))) by lia.
+      apply Nat.mul_le_mono_l, Nat.mul_le_mono_l. assumption. }
+    assert (wide_bytes : 16 * x + slot <= slot * x + 16) by nia.
+    lia.
+Qed.
+
+(* The Rust constant of a depth entry: E = 2p + 3w with p = 24 and w = 8. *)
+Corollary rust_depth_entry_constant_covers_header_moves : forall fuel k peak entry_count,
+  (k = 0 /\ 1 <= peak) \/ (1 <= k /\ 4 * (2 ^ k - 1) < peak) ->
+  peak <= entry_count ->
+  2 * 24 + 2 * 8 <= 2 * 24 + 3 * 8 /\
+  (2 * 24 + 2 * 8) * entry_count + worklist_moved_bytes fuel k <= (2 * 24 + 3 * 8) * entry_count /\
+  worklist_allocated_bytes_for 24 fuel k <= 4 * 24 * entry_count.
+Proof.
+  intros fuel k peak entry_count reach bounded.
+  destruct (worklist_charge_covers_entries fuel k peak entry_count reach bounded) as [_ moves].
+  pose proof (worklist_charge_covers_peak_for_slot 24 fuel k peak ltac:(lia) reach). nia.
+Qed.
+
 (* Negative control: a chain of d entries of size s, each nested inline in
    the previous one. The legacy per-push charge 3 * size counts the same
    bytes at every level; the block charge counts them once (in the root's
@@ -667,6 +720,8 @@ Print Assumptions worklist_charge_independent_of_traversal_order.
 Print Assumptions worklist_charge_covers_peak.
 Print Assumptions worklist_charge_covers_entries.
 Print Assumptions rust_entry_constant_covers_header_moves.
+Print Assumptions worklist_charge_covers_peak_for_slot.
+Print Assumptions rust_depth_entry_constant_covers_header_moves.
 Print Assumptions level_charge_counts_inline_bytes_per_level.
 Print Assumptions nested_chain_well_formed.
 Print Assumptions level_charge_example.

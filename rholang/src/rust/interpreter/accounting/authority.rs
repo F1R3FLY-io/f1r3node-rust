@@ -293,8 +293,12 @@ fn cost_atom_to_sig_metered(
         Some(CostSignatureValue::Unit(true)) => Ok(Sig::Unit),
         Some(CostSignatureValue::Quote(par)) => {
             meter.inspect(&par).map_err(authority_backing_error)?;
+            let encoded_len = par.encoded_len();
             let mut bytes = meter
-                .vec::<u8>(par.encoded_len())
+                .vec::<u8>(encoded_len)
+                .map_err(authority_backing_error)?;
+            meter
+                .nested_encode(&par, encoded_len)
                 .map_err(authority_backing_error)?;
             par.encode(&mut bytes)
                 .map_err(|_| AuthorityError::HostWorkRejected)?;
@@ -302,8 +306,12 @@ fn cost_atom_to_sig_metered(
         }
         Some(CostSignatureValue::Name(par)) => {
             meter.inspect(&par).map_err(authority_backing_error)?;
+            let encoded_len = par.encoded_len();
             let mut bytes = meter
-                .vec::<u8>(par.encoded_len())
+                .vec::<u8>(encoded_len)
+                .map_err(authority_backing_error)?;
+            meter
+                .nested_encode(&par, encoded_len)
                 .map_err(authority_backing_error)?;
             par.encode(&mut bytes)
                 .map_err(|_| AuthorityError::HostWorkRejected)?;
@@ -585,8 +593,12 @@ fn cost_signature_lane_metered(
             }
             Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
                 meter.inspect(par).map_err(authority_backing_error)?;
+                let encoded_len = par.encoded_len();
                 let mut bytes = meter
-                    .vec::<u8>(par.encoded_len())
+                    .vec::<u8>(encoded_len)
+                    .map_err(authority_backing_error)?;
+                meter
+                    .nested_encode(par, encoded_len)
                     .map_err(authority_backing_error)?;
                 par.encode(&mut bytes)
                     .map_err(|_| AuthorityError::HostWorkRejected)?;
@@ -618,8 +630,12 @@ fn cost_signature_lane_metered(
         .map_err(authority_backing_error)?
         .term;
     meter.inspect(&channel).map_err(authority_backing_error)?;
+    let encoded_len = channel.encoded_len();
     let mut encoded = meter
-        .vec::<u8>(channel.encoded_len())
+        .vec::<u8>(encoded_len)
+        .map_err(authority_backing_error)?;
+    meter
+        .nested_encode(&channel, encoded_len)
         .map_err(authority_backing_error)?;
     channel
         .encode(&mut encoded)
@@ -5488,6 +5504,78 @@ mod tests {
             prop_assert_eq!(debit.get(&outer_key), outer_amount);
             prop_assert_eq!(debit.get(&continuation_key), continuation_amount);
             prop_assert!(available.dominates(&debit));
+        }
+    }
+
+    /// A Par nested `depth` levels deep through sends.
+    fn send_chain(depth: usize) -> Par {
+        let mut par = Par::default();
+        for _ in 0..depth {
+            par = Par {
+                sends: vec![models::rhoapi::Send {
+                    chan: Some(Par::default()),
+                    data: vec![par],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+        }
+        par
+    }
+
+    fn quoted_chain(depth: usize) -> CostSignature {
+        CostSignature {
+            value: Some(CostSignatureValue::Quote(send_chain(depth))),
+        }
+    }
+
+    fn scanned_by(charge: impl FnOnce(&dyn BackingMeter) -> Result<(), AuthorityError>) -> usize {
+        let scanned = std::cell::Cell::new(0_usize);
+        let meter = |_: usize, bytes: usize, _: usize| {
+            scanned.set(scanned.get() + bytes);
+            Ok(())
+        };
+        charge(&meter).expect("charge");
+        scanned.get()
+    }
+
+    /// D-O6 (DR-93): the sites that encode a quoted Par reserve
+    /// depth-weighted traversals, so their charge grows quadratically with
+    /// the nesting depth; the results are unchanged.
+    #[test]
+    fn nested_encode_sites_charge_quadratically_in_depth() {
+        let conversion = |depth: usize| {
+            scanned_by(|meter| cost_signature_to_sig_metered(&quoted_chain(depth), meter).map(drop))
+        };
+        let lane = |depth: usize| {
+            scanned_by(|meter| {
+                cost_signature_lane_metered(&quoted_chain(depth), &SorterMeter::new(meter))
+                    .map(drop)
+            })
+        };
+        let region = |depth: usize| {
+            scanned_by(|meter| {
+                cost_region_metered(&quoted_chain(depth), b"identity", 0, meter).map(drop)
+            })
+        };
+        let sites: [&dyn Fn(usize) -> usize; 3] = [&conversion, &lane, &region];
+        for charge in sites {
+            let (small, medium, large) = (charge(8), charge(16), charge(32));
+            assert!(
+                large - medium > 3 * (medium - small),
+                "{small} {medium} {large}"
+            );
+        }
+        for depth in [0, 3, 9] {
+            let signature = quoted_chain(depth);
+            assert_eq!(
+                cost_signature_to_sig_metered(&signature, &|_, _, _| Ok(())).unwrap(),
+                cost_signature_to_sig(&signature).unwrap()
+            );
+            assert_eq!(
+                cost_region_metered(&signature, b"identity", 0, &|_, _, _| Ok(())).unwrap(),
+                cost_region(&signature, b"identity", 0).unwrap()
+            );
         }
     }
 }
