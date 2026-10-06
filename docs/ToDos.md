@@ -2357,7 +2357,7 @@ epic_id: EPIC-013
 title: "Release Process and Deployment Trains"
 status: in_progress
 priority: p1
-user_story: null
+user_story: US-010
 blocked_by: []
 created_at: 2026-08-19
 claimed_by: claude-session-838e6241

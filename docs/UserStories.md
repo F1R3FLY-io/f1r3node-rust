@@ -63,7 +63,7 @@ This document captures user stories that drive feature development. User stories
 
 > As a **release maintainer**, I want **CI to deploy each test net candidate to continuously running test net shards on OCI** so that **releases soak on long-lived state beside earlier releases before stable promotion, and partners can test against a running network**.
 
-**Implemented in:** EPIC-014
+**Implemented in:** EPIC-014, EPIC-013
 
 **Status:** In Progress
 
