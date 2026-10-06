@@ -34,6 +34,7 @@ use serde::Serialize;
 use shared::rust::clone_backing::{
     self, BackingError, BackingMeter, CloneBacking, BLOCK_SHARED_HEADER_SCANNED,
 };
+use shared::rust::collection_backing::{tree_growth, tree_search_bound};
 
 use crate::rust::interpreter::host_work::HostWorkBudget;
 
@@ -162,6 +163,28 @@ impl ScanMeter {
             .checked_add(right)
             .ok_or(RSpaceError::HostWorkRejected)?;
         self.charge(1, scanned, 0)
+    }
+
+    /// Reserves one lookup in an ordered map of `entries` keys of `key_bytes` bytes: at most
+    /// `tree_search_bound(entries)` comparisons, each of which reads two keys. It restates
+    /// `reserve_ordered_lookup` of the branch (C3, DR-78), for the class and member lookups of
+    /// the set discipline (P5a).
+    pub fn ordered_lookup(&self, entries: usize, key_bytes: usize) -> Result<(), RSpaceError> {
+        let comparisons = tree_search_bound(entries);
+        let scanned = key_bytes
+            .checked_mul(2)
+            .and_then(|pair| pair.checked_mul(comparisons))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        self.charge(comparisons, scanned, 0)
+    }
+
+    /// Reserves the growth of an ordered map of `K` keys and `V` values from `entries` to
+    /// `entries + additional` entries: the node allocations of
+    /// `collection_backing::tree_growth`, as the branch reserves them for its trees.
+    pub fn tree_growth<K, V>(&self, entries: usize, additional: usize) -> Result<(), RSpaceError> {
+        let (operations, bytes) =
+            tree_growth::<K, V>(entries, additional).ok_or(RSpaceError::HostWorkRejected)?;
+        self.charge(operations, 0, bytes)
     }
 
     /// Reserves one move of a slot of `bytes` bytes, as the bound values of the branch's
@@ -352,6 +375,54 @@ mod tests {
                     "{dimension}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn scan_meter_ordered_lookup_and_tree_growth_restate_the_branch() {
+        // A lookup among 9 keys of 40 bytes reserves `tree_search_bound(9)` comparisons, each
+        // of which reads two keys, as `reserve_ordered_lookup` of the branch does.
+        let host_work = budget(1_000_000);
+        let meter = ScanMeter::new(Some(host_work.clone()));
+        meter.ordered_lookup(9, 40).expect("the lookup fits the budget");
+        let comparisons = tree_search_bound(9);
+        assert!(comparisons > 0);
+        assert_eq!(
+            host_work.usage(HostWorkDimension::VerificationOperations),
+            HostWorkUsage::new(comparisons as u64)
+        );
+        assert_eq!(
+            host_work.usage(HostWorkDimension::VerificationBytes),
+            HostWorkUsage::new((comparisons * 80) as u64)
+        );
+        // The growth of a tree of 5 entries by one entry allocates a new node.
+        let grown = budget(1_000_000);
+        let meter = ScanMeter::new(Some(grown.clone()));
+        meter
+            .tree_growth::<Vec<u8>, ()>(5, 1)
+            .expect("the growth fits the budget");
+        let (operations, bytes) = tree_growth::<Vec<u8>, ()>(5, 1).expect("a small growth");
+        assert!(operations > 0 && bytes > 0);
+        assert_eq!(
+            grown.usage(HostWorkDimension::VerificationOperations),
+            HostWorkUsage::new(operations as u64)
+        );
+        assert_eq!(
+            grown.usage(HostWorkDimension::SearchStateBytes),
+            HostWorkUsage::new(bytes as u64)
+        );
+        // Without a budget, both accept and charge nothing.
+        let free = ScanMeter::new(None);
+        free.ordered_lookup(1_000_000, 64)
+            .expect("an unmetered lookup accepts");
+        free.tree_growth::<Vec<u8>, ()>(1_000_000, 64)
+            .expect("an unmetered growth accepts");
+        // An overflow of the bytes is a rejection, never a wrap, as for `compare`.
+        for meter in [ScanMeter::new(None), ScanMeter::new(Some(budget(u64::MAX)))] {
+            assert_eq!(
+                meter.ordered_lookup(9, usize::MAX),
+                Err(RSpaceError::HostWorkRejected)
+            );
         }
     }
 

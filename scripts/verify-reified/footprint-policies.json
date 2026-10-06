@@ -1410,7 +1410,14 @@
       "allowed_new_files": [
         "rholang/tests/reified_queue_parity.rs",
         "scripts/verify-reified/merge-queue-parity-capture.py",
-        "test-vectors/reified-queue-parity-v1.json"
+        "test-vectors/reified-queue-parity-v1.json",
+        "rholang/src/rust/interpreter/spaces/families.rs",
+        "rholang/tests/reified_p5_harness.rs",
+        "rholang/tests/support/agent.rs",
+        "rholang/tests/support/legacy.rs",
+        "rholang/tests/support/mod.rs",
+        "rholang/tests/support/props.rs",
+        "rholang/tests/support/session.rs"
       ]
     }
   }

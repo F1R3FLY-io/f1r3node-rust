@@ -24,7 +24,8 @@ use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::spaces::agent::{
-    self, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
+    self, AllocOp, Allocation, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
+    SpaceOutcome,
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{self, NativeSpace};
@@ -166,6 +167,44 @@ impl ReifiedRuntime {
         .await
     }
 
+    /// Allocates the index names of `op` with `agent` as an `Intent::Space` job (P5d, F11): the
+    /// names of a `new` inside a `use` block of an Array or Vector space, or of its handle
+    /// method `gensym`. An outer store without an allocator answers [`Allocation::Baseline`]:
+    /// the job commits nothing, and the result is `None`, so the reducer draws the names as it
+    /// does for every `new`. Native play and native replay fail before any space work
+    /// (decision 46), as every space entry does.
+    pub async fn allocate(
+        &self,
+        agent: Arc<dyn SpaceAgent>,
+        op: AllocOp,
+    ) -> Result<Option<Vec<u64>>, InterpreterError> {
+        let (store, budget) = self.host()?;
+        let sid = op.space.sid;
+        let authority = match op.authority.regions.is_empty() {
+            true => None,
+            false => Some(op.authority.clone()),
+        };
+        submit_space(SpaceRequest {
+            sid,
+            authority,
+            channels: Vec::new(),
+            job: Box::new(move |host_work| {
+                Box::pin(async move {
+                    let env = SpaceEnv {
+                        store,
+                        budget,
+                        meter: ScanMeter::new(host_work),
+                    };
+                    match agent.allocate(&env, op).await? {
+                        Allocation::Baseline => Ok(None),
+                        Allocation::Indices(prepared) => Ok(Some(prepared.commit().await?)),
+                    }
+                })
+            }),
+        })
+        .await
+    }
+
     /// Reads the config map of `space` with `agent` as an `Intent::Space` job. The job
     /// commits nothing (readiness review S3). `authority` is the authority of the footprint:
     /// the cost authority of the call.
@@ -228,6 +267,7 @@ mod tests {
     use models::rust::host_work::{
         HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
     };
+    use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -242,7 +282,9 @@ mod tests {
     use crate::rust::interpreter::deterministic_reduction::{root, ReductionCoordinator};
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::rho_runtime::RhoISpace;
-    use crate::rust::interpreter::spaces::agent::{ConsumeOp, Prepared, ProduceOp};
+    use std::collections::BTreeMap;
+
+    use crate::rust::interpreter::spaces::agent::{ConsumeOp, Prepared, ProduceOp, SettleOp};
     use crate::rust::interpreter::spaces::namespace::{
         CollectionKey, Durability, NameTail, SID_LEN,
     };
@@ -283,6 +325,7 @@ mod tests {
             channel: new_gint_par(1, Vec::new(), false),
             data: datum(par),
             persistent: false,
+            params: BTreeMap::new(),
             authority: CostAuthority::default(),
             reissued_ord: None,
         })
@@ -330,6 +373,18 @@ mod tests {
             Err(SpaceError::Inconsistent("the test agent does not consume"))
         }
 
+        async fn prepare_settle(
+            &self,
+            _env: &SpaceEnv,
+            _op: SettleOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            Err(SpaceError::Inconsistent("the test agent does not settle"))
+        }
+
+        async fn allocate(&self, _env: &SpaceEnv, _op: AllocOp) -> Result<Allocation, SpaceError> {
+            Ok(Allocation::Baseline)
+        }
+
         async fn prepare_create(
             &self,
             env: &SpaceEnv,
@@ -364,6 +419,15 @@ mod tests {
         }
     }
 
+    fn alloc_op() -> AllocOp {
+        AllocOp {
+            space: space(),
+            count: 2,
+            random_state: vec![1],
+            authority: CostAuthority::default(),
+        }
+    }
+
     fn creation(config: Par, authority: CostAuthority) -> SpaceCreation {
         SpaceCreation {
             space: space(),
@@ -372,6 +436,7 @@ mod tests {
             handle_continuation: TaggedContinuation::default(),
             random: Blake2b512Random::create_from_bytes(b"factory call"),
             authority,
+            family: SpaceFactoryUrn::HASHMAP_QUEUE,
         }
     }
 
@@ -397,6 +462,10 @@ mod tests {
                 .await,
             runtime
                 .read_config(Arc::clone(&agent), space(), None)
+                .await
+                .map(|_| ()),
+            runtime
+                .allocate(Arc::clone(&agent), alloc_op())
                 .await
                 .map(|_| ()),
         ] {
@@ -500,11 +569,13 @@ mod tests {
                     produce_op(new_gint_par(5, Vec::new(), false)),
                 )
                 .await?;
-            Ok::<_, InterpreterError>((read, outcome))
+            // An agent without an allocator answers the baseline, and the job commits nothing.
+            let allocated = runtime.allocate(Arc::clone(&agent), alloc_op()).await?;
+            Ok::<_, InterpreterError>((read, outcome, allocated))
         })
         .await
         .expect("the space jobs run");
-        assert_eq!(outcome, (config, SpaceOutcome::default()));
+        assert_eq!(outcome, (config, SpaceOutcome::default(), None));
         let missing = NativeSpace {
             sid: [2; SID_LEN],
             durability: Durability::Durable,

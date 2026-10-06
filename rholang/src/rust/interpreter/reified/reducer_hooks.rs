@@ -21,6 +21,7 @@
 //! that the canonical encoder derives from the children (I-20). The decoder still accepts only
 //! the canonical image of the encoder.
 
+use std::collections::BTreeMap;
 use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
@@ -260,6 +261,7 @@ impl ReducerCore {
                     channel: chan,
                     data,
                     persistent,
+                    params: BTreeMap::new(),
                     authority,
                     reissued_ord: None,
                 })),
@@ -337,6 +339,7 @@ impl ReducerCore {
                     persistent,
                     peek,
                     guard,
+                    query: None,
                     authority,
                     introduction_authority,
                     reissued_ord: None,
@@ -1044,6 +1047,7 @@ mod tests {
         new_space, push_process_expr, query_spec, send_params, use_block,
     };
     use models::rust::reified::params::SendParam;
+    use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{
         new_boundvar_par, new_bundle_par, new_emap_par, new_etuple_par, new_freevar_par,
         new_gint_par, new_gstring_par,
@@ -1293,6 +1297,7 @@ mod tests {
             },
             random: rand(&space.sid),
             authority: authority(),
+            family: SpaceFactoryUrn::HASHMAP_QUEUE,
         };
         reducer.reified.create_space(native_agent(), creation).await
     }
@@ -2640,6 +2645,7 @@ mod tests {
                 channel: name,
                 data: datum(vec![int(6)]),
                 persistent: true,
+                params: BTreeMap::new(),
                 authority: authority(),
                 reissued_ord: Some(0),
             }),

@@ -32,7 +32,9 @@ pub struct QueueDiscipline;
 impl Discipline for QueueDiscipline {
     const NAME: &'static str = "queue";
     const USES_COUNTER: bool = true;
-    const JOINS: bool = false;
+    // Disabled by decision 29: same-space joins into ordered collections arrive in P5c, so the
+    // discipline trait no longer has the flag.
+    // const JOINS: bool = false;
     const SEND_PARAMS: &'static [&'static str] = &[];
 
     /// The entry with the least `(ord, bincode bytes)`, on both sides.
@@ -238,7 +240,9 @@ mod tests {
     fn space_queue_discipline_uses_a_counter_without_joins_or_params() {
         assert_eq!(QueueDiscipline::NAME, "queue");
         assert!(QueueDiscipline::USES_COUNTER);
-        assert!(!QueueDiscipline::JOINS);
+        // Disabled by decision 29: the discipline trait no longer has the JOINS flag, because
+        // same-space joins into ordered collections arrive in P5c.
+        // assert!(!QueueDiscipline::JOINS);
         assert!(QueueDiscipline::SEND_PARAMS.is_empty());
     }
 }

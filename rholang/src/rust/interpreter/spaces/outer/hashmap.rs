@@ -5,6 +5,10 @@
 //! order of a list stays significant. The records and the waiting continuations of the
 //! collection `key` live on `D(sid,key)`, and its counter on `S(sid,key)`. A name that `gensym`
 //! makes has a random tail, so it routes to the space by its own bytes (I-3).
+//!
+//! The store keeps the defaults of the outer-store hooks of P5 (P5 design v3, A.3.3). It
+//! accepts every routed key, it stages no records at a creation, and it has no allocator, so
+//! every allocation in a HashMap space is `Allocation::Baseline`.
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;

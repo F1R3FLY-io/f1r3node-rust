@@ -6,15 +6,15 @@
 //! the call is equivalent to, from its inputs and its result, and they compare the charges of
 //! `legacy_charges` with the entries that the call added to the legacy log, value and label.
 
+#[path = "support/mod.rs"]
+mod support;
+
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{
-    BindPattern, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
-};
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, ParWithRandom, TaggedContinuation};
 use models::rust::utils::{new_freevar_par, new_gint_par, new_gstring_par};
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -25,9 +25,7 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::legacy_charges::{
     consume_charges, produce_charges, LegacyChain, LegacyCharges, ParSpaceConsume, ParSpaceProduce,
 };
-use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -38,6 +36,7 @@ use rspace_plus_plus::rspace::space_store_handle::{
     ConsumeOutcome, ProduceOutcome, SpaceStoreHandle, SpaceTxnError,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, Produce};
+use support::legacy::{charging_host, host_consume, host_produce, number, split};
 
 type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
@@ -162,86 +161,6 @@ fn continuation(salt: u64) -> TaggedContinuation {
         guard: None,
         cost_authority: None,
     }
-}
-
-/// The candidates of a fire from the host results, in channel order. The datum index plays no
-/// part in the charges.
-fn candidates(
-    results: &[RSpaceResult<Par, ListParWithRandom>],
-) -> Vec<ConsumeCandidate<Par, ListParWithRandom>> {
-    results
-        .iter()
-        .map(|result| ConsumeCandidate {
-            channel: result.channel.clone(),
-            datum: Datum {
-                a: result.matched_datum.clone(),
-                persist: result.persistent,
-                source: Produce::create(&result.channel, &result.removed_datum, result.persistent),
-            },
-            removed_datum: result.removed_datum.clone(),
-            datum_index: 0,
-        })
-        .collect()
-}
-
-fn peeks_of(peek: bool, binds: usize) -> BTreeSet<i32> {
-    match peek {
-        true => (0..i32::try_from(binds).expect("few binds")).collect(),
-        false => BTreeSet::new(),
-    }
-}
-
-/// The waiting continuation that a host fire bound, from its `ContResult`.
-fn waiter(
-    cont: &ContResult<Par, BindPattern, TaggedContinuation>,
-) -> WaitingContinuation<BindPattern, TaggedContinuation> {
-    WaitingContinuation {
-        source: Consume::create(
-            &cont.channels,
-            &cont.patterns,
-            &cont.continuation,
-            cont.persistent,
-        ),
-        patterns: cont.patterns.clone(),
-        continuation: cont.continuation.clone(),
-        persist: cont.persistent,
-        peeks: peeks_of(cont.peek, cont.channels.len()),
-    }
-}
-
-/// The new legacy log entries of one host call.
-fn new_entries(budget: &RuntimeBudget, before: usize) -> Vec<Cost> {
-    budget.get_log()[before..].to_vec()
-}
-
-fn split(charges: LegacyCharges) -> Vec<Cost> {
-    std::iter::once(charges.pre).chain(charges.post).collect()
-}
-
-/// A sent value of a host result, or `None` when it is not one number.
-fn number(data: &ListParWithRandom) -> Option<i64> {
-    match data.pars.as_slice() {
-        [Par { exprs, .. }] => match exprs.as_slice() {
-            [Expr {
-                expr_instance: Some(ExprInstance::GInt(value)),
-            }] => Some(*value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-async fn charging_host(
-    budget: &RuntimeBudget,
-) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
-    let mut stores = InMemoryStoreManager::new();
-    let space = ParRSpace::create(
-        stores.r_space_stores().await.expect("in-memory stores"),
-        Arc::new(Box::new(Matcher)),
-    )
-    .expect("an in-memory space");
-    let host: RhoISpace = Arc::new(Box::new(space));
-    ChargingRSpace::charging_rspace(host, budget.clone())
 }
 
 /// `legacy_charges_equal_charging_rspace`: for every host call of a generated program, the
@@ -369,23 +288,15 @@ enum HostCall {
     },
 }
 
-/// The re-produces of a fire whose continuation peeks: every result that is not persistent, in
-/// result order, as `produce_peeks` sends them.
-fn peek_reproduces(
-    cont: &ContResult<Par, BindPattern, TaggedContinuation>,
-    results: &[RSpaceResult<Par, ListParWithRandom>],
-) -> Vec<HostCall> {
-    match cont.peek {
-        true => results
-            .iter()
-            .filter(|result| !result.persistent)
-            .map(|result| HostCall::Reproduce {
-                channel: Box::new(result.channel.clone()),
-                data: result.removed_datum.clone(),
-            })
-            .collect(),
-        false => Vec::new(),
-    }
+/// The host calls of the re-produces that the host reducer makes after a peek fire.
+fn reproduce_calls(reproduced: Vec<(Par, ListParWithRandom)>) -> Vec<HostCall> {
+    reproduced
+        .into_iter()
+        .map(|(channel, data)| HostCall::Reproduce {
+            channel: Box::new(channel),
+            data,
+        })
+        .collect()
 }
 
 /// Runs one produce on the host and checks its legacy log entries against the charges of the
@@ -397,49 +308,26 @@ async fn check_produce(
     data: ListParWithRandom,
     persist: bool,
 ) -> Result<Vec<HostCall>, TestCaseError> {
-    let before = budget.get_log().len();
-    let result = host
-        .produce(channel.clone(), data.clone(), persist)
-        .await
-        .expect("the host produce runs");
-    let entries = new_entries(budget, before);
-    let (outcome, reproduced) = match &result {
-        None => {
-            met(Shape::Store);
-            (ProduceOutcome::Store, Vec::new())
-        }
-        Some((cont, results, _)) => {
+    let run = host_produce(host, budget, channel, data, persist).await;
+    match &run.fired {
+        None => met(Shape::Store),
+        Some((cont, results)) => {
             met(Shape::ProduceFire);
             met_fire(cont, results);
-            (
-                ProduceOutcome::Fire {
-                    channels: cont.channels.clone(),
-                    continuation: waiter(cont),
-                    data: candidates(results),
-                },
-                peek_reproduces(cont, results),
-            )
         }
-    };
-    let staged = ParSpaceProduce {
-        channel,
-        data,
-        persist,
-        outcome,
-        before_observe: None,
-    };
-    let charges = produce_charges(&staged).expect("the produce charges");
+    }
+    let charges = produce_charges(&run.staged).expect("the produce charges");
     prop_assert_eq!(
         split(charges),
-        entries,
+        run.entries,
         "produce, persist {}, bound values {:?}",
         persist,
-        result.as_ref().map(|(_, results, _)| results
+        run.fired.as_ref().map(|(_, results)| results
             .iter()
             .map(|r| number(&r.matched_datum))
             .collect::<Vec<_>>())
     );
-    Ok(reproduced)
+    Ok(reproduce_calls(run.reproduced))
 }
 
 /// Runs one consume on the host and checks its legacy log entries against the charges of the
@@ -453,53 +341,23 @@ async fn check_consume(
     persist: bool,
     peek: bool,
 ) -> Result<Vec<HostCall>, TestCaseError> {
-    let peeks = peeks_of(peek, channels.len());
-    let before = budget.get_log().len();
-    let result = host
-        .consume(
-            channels.clone(),
-            patterns.clone(),
-            continuation.clone(),
-            persist,
-            peeks.clone(),
-        )
-        .await
-        .expect("the host consume runs");
-    let entries = new_entries(budget, before);
-    let (outcome, reproduced) = match &result {
-        None => {
-            met(Shape::Park);
-            (ConsumeOutcome::Park, Vec::new())
-        }
+    let run = host_consume(host, budget, channels, patterns, continuation, persist, peek).await;
+    match &run.fired {
+        None => met(Shape::Park),
         Some((cont, results)) => {
             met(Shape::ConsumeFire);
             met_fire(cont, results);
-            (
-                ConsumeOutcome::Fire {
-                    data: candidates(results),
-                },
-                peek_reproduces(cont, results),
-            )
         }
-    };
-    let staged = ParSpaceConsume {
-        channels,
-        patterns,
-        continuation,
-        persist,
-        peeks,
-        outcome,
-        before_observe: None,
-    };
-    let charges = consume_charges(&staged).expect("the consume charges");
+    }
+    let charges = consume_charges(&run.staged).expect("the consume charges");
     prop_assert_eq!(
         split(charges),
-        entries,
+        run.entries,
         "consume, persist {}, peek {}",
         persist,
         peek
     );
-    Ok(reproduced)
+    Ok(reproduce_calls(run.reproduced))
 }
 
 // ─── The chain of one transaction (Q79 and Q80 of the P4 map) ────────────────────────────────

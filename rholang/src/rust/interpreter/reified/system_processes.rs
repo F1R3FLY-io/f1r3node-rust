@@ -40,22 +40,18 @@ use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
 };
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::spaces::agent::SpaceAgent;
-use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
 use crate::rust::interpreter::spaces::factory::urn::{factory_capability, REGISTERED_FAMILIES};
-use crate::rust::interpreter::spaces::generic::GenericSpace;
+use crate::rust::interpreter::spaces::families::FamilyAgent;
 use crate::rust::interpreter::spaces::namespace::NativeSpace;
-use crate::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 use crate::rust::interpreter::system_processes::{Definition, ProcessContext};
 
-/// The native agent of the families of this phase: `GenericSpace<HashMapOuter,
-/// QueueDiscipline>`. Every config record has one format, so the agent also reads the config
-/// of any space.
-pub fn native_agent() -> Arc<dyn SpaceAgent> {
-    Arc::new(GenericSpace::<HashMapOuter, QueueDiscipline>::default())
-}
+/// The native agent of every wired family: the family agent (P5 design v3, A.3.4). It reads the
+/// config of a space once and runs the agent of the family that the config names. Every config
+/// record has one format, so the agent also reads the config of any space.
+pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 
 /// The definitions of the Reified system processes of `runtime`: the factory of each registered
 /// family, `getSpaceAgent`, `assertEqual` and the handle process.

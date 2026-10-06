@@ -12,7 +12,7 @@
 //! The backend does not unbundle a channel and does not pack a factory call. Consumes, joins,
 //! the replay flag and produce updates go to the wrapped space unchanged.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
@@ -79,6 +79,7 @@ impl RoutingExecution {
                     channel,
                     data,
                     persistent,
+                    params: BTreeMap::new(),
                     authority,
                     reissued_ord: None,
                 }),
@@ -149,6 +150,7 @@ mod tests {
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::tagged_continuation::TaggedCont;
     use models::rhoapi::{CostAuthority, ParWithRandom, Send as SendProcess};
+    use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{
         new_boundvar_par, new_bundle_par, new_etuple_par, new_freevar_par, new_gint_par,
         new_gstring_par,
@@ -325,6 +327,7 @@ mod tests {
             handle_continuation: continuation(Par::default()),
             random: Blake2b512Random::create_from_bytes(&space.sid),
             authority: CostAuthority::default(),
+            family: SpaceFactoryUrn::HASHMAP_QUEUE,
         };
         reducer.reified.create_space(native_agent(), creation).await
     }

@@ -121,6 +121,12 @@ mod tests {
         .map(SpaceError::code)
         .collect();
         assert!(codes.is_disjoint(&space_codes));
+        // The one shared code: an agent rejects a receive query with the code of the hook, so a
+        // program sees one code wherever the query is rejected (decision 22, P5 design v3 S1a).
+        assert_eq!(
+            SpaceError::QuerySpecUnsupported.code(),
+            ReifiedReduceError::QuerySpecUnsupported.code()
+        );
         for error in errors {
             let code = error.code();
             assert_eq!(

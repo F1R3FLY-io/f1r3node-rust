@@ -116,30 +116,30 @@
 (* must refute HeadIndInv in its HeadBlocks conjunct (negative control).   *)
 (*                                                                         *)
 (* Code (under rholang/src/rust/interpreter):                              *)
-(*   head, precedes,      spaces/disciplines/queue.rs:39-57, 63-72, 60     *)
+(*   head, precedes,      spaces/disciplines/queue.rs:41-59, 65-74, 62     *)
 (*   reaches_head         (QueueDiscipline::head_metered,                  *)
 (*                        QueueDiscipline::precedes: ord < head,           *)
 (*                        QueueDiscipline::reaches_head)                   *)
-(*   OperationOrd         spaces/generic.rs:865-877 (operation_ord keeps   *)
+(*   OperationOrd         spaces/generic.rs:1321-1349 (operation_ord keeps *)
 (*                        reissued_ord after the check 0 <= reissued_ord   *)
 (*                        < bump.ord)                                      *)
-(*   AtHead               spaces/generic.rs:672-697, 647-664               *)
-(*                        (GenericSpace::at_head: a fresh element needs    *)
-(*                        an empty side, a re-entry compares with          *)
-(*                        GenericSpace::head_ord through                   *)
+(*   AtHead               spaces/generic.rs:735-756, 700-718               *)
+(*                        (Cx::at_head: a fresh element needs an empty     *)
+(*                        side, a re-entry compares with                   *)
+(*                        Cx::head_ord through                             *)
 (*                        Discipline::precedes)                            *)
-(*   DataRound            spaces/generic.rs:705-768 (GenericSpace::offer)  *)
-(*   ContRound            spaces/generic.rs:776-847 (GenericSpace::receive)*)
-(*   Reissued             spaces/generic.rs:760, 839 (the re-issue sets    *)
+(*   DataRound            spaces/generic.rs:1134-1199 (offer_head)         *)
+(*   ContRound            spaces/generic.rs:1208-1290 (receive_head)       *)
+(*   Reissued             spaces/generic.rs:1191, 1282 (the re-issue sets  *)
 (*                        reissued_ord: op.persistent.then_some(ord)) and  *)
-(*                        spaces/agent.rs:92, 122 (ProduceOp::reissued_ord *)
+(*                        spaces/agent.rs:107, 150 (ProduceOp::reissued_ord *)
 (*                        and ConsumeOp::reissued_ord)                     *)
-(*   the fire-round cap   reified/costs.rs:43, 299-310 (FIRE_ROUND_CAP,    *)
+(*   the fire-round cap   reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,    *)
 (*                        FireRounds::after_fire)                          *)
 (*   the counter bump     spaces/counter.rs:165-245                        *)
-(*   Produce, Consume,    spaces/generic.rs:989-1030, 1032-1073              *)
-(*   Reenter              (prepare_produce and prepare_consume: the bump,  *)
-(*                        operation_ord, then the plan)                    *)
+(*   Produce, Consume,    spaces/generic.rs:1733-1840 (run_with of         *)
+(*   Reenter              FamilySpace: the bump, operation_ord, then the   *)
+(*                        plan)                                            *)
 (* The Rocq module HeadOnlyDisciplines.v proves the same properties for    *)
 (* every matcher and every fire-round cap.                                 *)
 (*                                                                         *)
@@ -279,7 +279,7 @@ FirstOrd(x) == IF x.first # NoOrd THEN x.first ELSE counter
 Introduce(x, o) ==
     IF x.pers /\ o = counter THEN [intro EXCEPT ![FirstOrd(x)] = @ + 1] ELSE intro
 
-\* GenericSpace::at_head for the element x with the round ord o. own holds
+\* Cx::at_head for the element x with the round ord o. own holds
 \* the ords of its side. A fresh element (it carries no ord) reaches the
 \* head only of an empty side (reaches_head). A re-entering element is at
 \* the head when its ord precedes every ord of its side (head_ord and
@@ -313,7 +313,7 @@ DataPartners(v) ==
     THEN {w \in waiters : Matches(w.pat, v) /\ \A u \in waiters : Matches(u.pat, v) => w.ord <= u.ord}
     ELSE {w \in waiters : IsHeadW(w, waiters) /\ Matches(w.pat, v)}
 
-\* One round of GenericSpace::offer for the datum x. rest is the set of the
+\* One round of offer_head for the datum x. rest is the set of the
 \* other elements in flight. The fire spends x when x is not persistent and
 \* the waiter does not peek, and the waiter stays when it is persistent.
 \* Else x re-issues: a divergent pair when the waiter stays, and the cap
@@ -341,7 +341,7 @@ DataRound(x, rest) ==
             /\ inflight' = rest
             /\ UNCHANGED <<waiters, lastLeft, partnersAtHead, firersAtHead, leavesInOrder>>
 
-\* One round of GenericSpace::receive for the continuation x. The fire
+\* One round of receive_head for the continuation x. The fire
 \* spends x when x is not persistent, and the record stays when it is
 \* persistent or x peeks. Else x re-issues as in DataRound.
 \* @type: ($elt, Set($elt)) => Bool;
@@ -377,7 +377,7 @@ Init ==
     /\ firersAtHead = TRUE
     /\ leavesInOrder = TRUE
 
-\* GenericSpace::offer of a fresh send with the value v (persistent: !!).
+\* offer_head of a fresh send with the value v (persistent: !!).
 \* @type: (Str, Bool) => Bool;
 Produce(v, pers) ==
     /\ counter < MaxOps
@@ -385,7 +385,7 @@ Produce(v, pers) ==
     /\ DataRound([side |-> "produce", ord |-> NoOrd, first |-> NoOrd,
                   term |-> v, pers |-> pers, peek |-> FALSE], inflight)
 
-\* GenericSpace::receive of a fresh receive with the pattern p (persistent:
+\* receive_head of a fresh receive with the pattern p (persistent:
 \* <=). A persistent receive never peeks.
 \* @type: (Str, Bool, Bool) => Bool;
 Consume(p, pers, peek) ==

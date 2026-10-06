@@ -278,10 +278,10 @@
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub trait Discipline: Default + Send + Sync + 'static {"},
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {"},
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn operation_ord("},
-        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn at_head("},
-        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn head_ord("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub fn at_head<D: Discipline>("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub fn head_ord<D: Discipline>("},
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn restore("},
-        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn restore_peeked("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn restore_peeked<D: Discipline>("},
         {"file": "rholang/src/rust/interpreter/spaces/record.rs", "pattern": "pub fn for_record("},
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs", "pattern": "fn precedes("},
         {"file": "rholang/src/rust/interpreter/spaces/agent.rs", "pattern": "pub reissued_ord: Option<i64>,"},
@@ -315,16 +315,46 @@
       ]
     },
     "p5": {
-      "description": "P5, the other disciplines, the outer stores and the joins (decision 48 and the P5 design v3). W0 adds the queue parity golden, which pins the queue at the commit of decision 45. The spine and the batches add their sources, entry points, tests and property files.",
-      "sources": [],
+      "description": "P5, the other disciplines, the outer stores and the joins (decision 48 and the P5 design v3). W0 adds the queue parity golden, which pins the queue at the commit of decision 45. S1 adds the engine spine: the family agent, Discipline v2 with the head driver, the Cx primitives, the outer-store hooks, the DR-75 order of the substrate, and the shared harness of the P5 suites. The batches add their sources, entry points, tests and property files.",
+      "sources": [
+        "rholang/src/rust/interpreter/spaces/families.rs"
+      ],
       "entry_points": [
         {"file": "rholang/tests/reified_queue_parity.rs", "pattern": "const CORPUS: &str = \"test-vectors/reified-queue-parity-v1.json\";"},
-        {"file": "scripts/verify-reified/merge-queue-parity-capture.py", "pattern": "CORPUS_NAME = \"reified_queue_parity_v1\""}
+        {"file": "scripts/verify-reified/merge-queue-parity-capture.py", "pattern": "CORPUS_NAME = \"reified_queue_parity_v1\""},
+        {"file": "rholang/src/rust/interpreter/spaces/mod.rs", "pattern": "pub mod families;"},
+        {"file": "rholang/src/rust/interpreter/spaces/families.rs", "pattern": "pub struct FamilyAgent;"},
+        {"file": "rholang/src/rust/interpreter/spaces/families.rs", "pattern": "pub fn of_config(config: &SpaceConfig, meter: &ScanMeter) -> Result<Option<Family>, SpaceError> {"},
+        {"file": "rholang/src/rust/interpreter/reified/system_processes.rs", "pattern": "pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }"},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub trait FamilySpace: SpaceAgent {"},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {"},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub struct Cx<'c, 'p> {"},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub fn offer_head<D: Discipline>("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub fn receive_head<D: Discipline>("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub fn fire_receive_group("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "pub struct AllocCx<'c> {"},
+        {"file": "rholang/src/rust/interpreter/spaces/agent.rs", "pattern": "pub struct SettleOp {"},
+        {"file": "rholang/src/rust/interpreter/spaces/agent.rs", "pattern": "pub struct AllocOp {"},
+        {"file": "rholang/src/rust/interpreter/spaces/agent.rs", "pattern": "pub enum Allocation {"},
+        {"file": "rholang/src/rust/interpreter/spaces/agent.rs", "pattern": "pub struct QueryParams {"},
+        {"file": "rholang/src/rust/interpreter/reified/runtime.rs", "pattern": "    pub async fn allocate("},
+        {"file": "rholang/src/rust/interpreter/reified/costs.rs", "pattern": "pub fn ordered_lookup(&self, entries: usize, key_bytes: usize) -> Result<(), RSpaceError> {"},
+        {"file": "rholang/src/rust/interpreter/spaces/namespace.rs", "pattern": "pub fn allocator_channel(space: NativeSpace) -> Vec<u8> {"},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub fn canonical_data_order<A>("},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub fn canonical_continuation_order<P, K>("},
+        {"file": "rholang/tests/support/mod.rs", "pattern": "pub mod session;"}
       ],
       "tests": [
-        "rholang/tests/reified_queue_parity.rs"
+        "rholang/tests/reified_queue_parity.rs",
+        "rholang/tests/reified_p5_harness.rs",
+        "rholang/tests/support/agent.rs",
+        "rholang/tests/support/legacy.rs",
+        "rholang/tests/support/props.rs",
+        "rholang/tests/support/session.rs"
       ],
-      "property_files": []
+      "property_files": [
+        "rholang/tests/support/props.rs"
+      ]
     }
   }
 }

@@ -51,14 +51,14 @@
    space_scoped_id          spaces/namespace.rs:223-230
    config_channel, space_counter, collection_counter, data_channel,
    handle_channel, name_id  spaces/namespace.rs:233, 236, 239-241, 244-246,
-                            249 and 252-257 (the constructors)
-   op_channel               spaces/namespace.rs:260
+                            249 and 270-275 (the constructors)
+   op_channel               spaces/namespace.rs:278
    op ids                   spaces/namespace.rs:53-77 (FACTORY_LAST to
                             AGENT_TAG), models/src/rust/reified/encoding.rs:
                             34-45 (Marker 0xD0 to 0xD4)
-   reified_id               spaces/namespace.rs:264-279 (ReifiedId)
-   decode_name_tail         spaces/namespace.rs:281-289 (fn name_tail)
-   decode_reified_id        spaces/namespace.rs:294-324
+   reified_id               spaces/namespace.rs:282-297 (ReifiedId)
+   decode_name_tail         spaces/namespace.rs:299-307 (fn name_tail)
+   decode_reified_id        spaces/namespace.rs:312-342
    canon, key_of            spaces/namespace.rs:200-206, 180-191
                             (canonical_inner_channel_bytes, then
                             CollectionKey::of_channel and from_bytes)

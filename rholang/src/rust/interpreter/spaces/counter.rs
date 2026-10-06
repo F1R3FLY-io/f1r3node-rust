@@ -244,9 +244,11 @@ pub fn bump(
     }
 }
 
-// Consumes the only counter record of `channel`, at index 0 of its staged list. The record is
-// the bump's own copy, so it moves into the fire.
-fn take(
+/// Consumes the only counter record of `channel`, at index 0 of its staged list. The record is
+/// the bump's own copy, so it moves into the fire. The random states derive from `purpose`:
+/// `split_byte(0)` for the continuation. The allocator of an Array or Vector space and the token
+/// of a PathMap space take their records with it too (P5d, P5e).
+pub(crate) fn take(
     txn: &mut ParSpaceTxn,
     channel: &Par,
     stored: Datum<ListParWithRandom>,
@@ -306,8 +308,9 @@ fn take(
     legacy.consume(txn, op)
 }
 
-// Stores the counter record `value` on `channel`.
-fn put(
+/// Stores the counter record `value` on `channel`, with the random state
+/// `purpose.derive(..).split_byte(1)`. The allocator and the PathMap token use it too.
+pub(crate) fn put(
     txn: &mut ParSpaceTxn,
     channel: &Par,
     value: i64,

@@ -56,68 +56,68 @@
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    precedes, head_from, head
-                            spaces/disciplines/queue.rs:39-57, 86-121
+                            spaces/disciplines/queue.rs:41-59, 88-123
                             (head_metered: the least (ord, bytes), the
                             earlier index on a tie, and Best::challenge)
-   reaches_head             spaces/disciplines/queue.rs:60 (queued == 0)
+   reaches_head             spaces/disciplines/queue.rs:62 (queued == 0)
    fire_round_cap, after_fire
-                            reified/costs.rs:43, 299-310 (FIRE_ROUND_CAP =
+                            reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:705-768 (GenericSpace::offer)
-   receive, receive_loop    spaces/generic.rs:776-847 (GenericSpace::receive.
-                            The row of code_ops covers its re-store of
-                            decision 45.)
-   head_waiter, head_record spaces/generic.rs:595-611, 615-627, 631-643
-                            (scan_head, head_waiter, head_datum)
+   offer, offer_loop        spaces/generic.rs:1134-1199 (offer_head, the
+                            head driver of Discipline::offer)
+   receive, receive_loop    spaces/generic.rs:1208-1290 (receive_head, the
+                            head driver of Discipline::receive. The row of
+                            code_ops covers its re-store of decision 45.)
+   head_waiter, head_record spaces/generic.rs:648-664, 668-681, 685-696
+                            (Cx::scan_head, Cx::head_waiter, Cx::head_datum)
    bump                     spaces/counter.rs:165-245 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:989-1073 (prepare_produce and
-                            prepare_consume: bump, then plan)
+   produce, consume         spaces/generic.rs:1733-1840 (run_with of
+                            FamilySpace: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
                             similarity scans every waiter, commit ff479042)
-   in_flight, flight_ord    spaces/agent.rs:92, 122
+   in_flight, flight_ord    spaces/agent.rs:107, 150
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
-   operation_ord            spaces/generic.rs:865-877 (the check
+   operation_ord            spaces/generic.rs:1321-1349 (the check
                             0 <= reissued_ord < bump.ord, else
                             Inconsistent, and the bump value for a fresh
                             operation)
-   ord_precedes             spaces/disciplines/queue.rs:63-72
+   ord_precedes             spaces/disciplines/queue.rs:65-74
                             (QueueDiscipline::precedes: ord < head)
-   reentry_at_head          spaces/generic.rs:672-697, 647-664
-                            (GenericSpace::at_head and
-                            GenericSpace::head_ord: an empty side, or an
-                            ord that precedes the head, and Inconsistent on
-                            an equal ord)
+   reentry_at_head          spaces/generic.rs:735-756, 700-718
+                            (Cx::at_head and Cx::head_ord: an empty side,
+                            or an ord that precedes the head, and
+                            Inconsistent on an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:705-768, 776-847
-                            (GenericSpace::offer and GenericSpace::receive:
-                            store or park at its place when not at the
-                            head, else the loop)
+                            spaces/generic.rs:1134-1199, 1208-1290
+                            (offer_head and receive_head: store or park at
+                            its place when not at the head, else the loop)
    reenter_produce, reenter_consume
-                            spaces/generic.rs:989-1030, 1032-1073
-                            (prepare_produce and prepare_consume with a
-                            reissued_ord: bump, then operation_ord, then the
-                            plan)
+                            spaces/generic.rs:1733-1840 (run_with of
+                            FamilySpace with a reissued_ord: bump, then
+                            operation_ord, then the plan)
    reissued_ord, flight_after
-                            spaces/generic.rs:760, 839 (GenericSpace::offer
-                            and GenericSpace::receive: the re-issue sets
+                            spaces/generic.rs:1191, 1282 (offer_head and
+                            receive_head: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
-   round, run_rounds        reified/reducer_hooks.rs:458-508
+   round, run_rounds        reified/reducer_hooks.rs:461-511
                             (dispatch_space_outcome: a re-issue is a new
                             Intent::Space, the last dispatch branch of the
                             same deploy)
    code_staged, code_of, code_ops
-                            spaces/generic.rs:353-387, 812-817 and 823-845
-                            (Plan::restore and Plan::restore_peeked stage a
-                            Store of the same record bytes with persist =
-                            false. GenericSpace::receive copies the record
-                            of a peek fire when the record is not
-                            persistent. Each FireStep branch calls
-                            fire_receive, then restore_peeked.)
+                            spaces/generic.rs:869-880, 1293-1302, 1249-1254
+                            and 1260-1288 (Cx::restore and Cx::restore_on
+                            stage a Store of the same record bytes with
+                            persist = false, and restore_peeked calls
+                            Discipline::restore, whose default is
+                            Cx::restore. receive_head copies the record of
+                            a peek fire when the record is not persistent.
+                            Each FireStep branch calls fire_receive, then
+                            restore_peeked.)
    remove_key, sub_step, sub_records
                             rspace/space_play.rs:136, 196, 294, 369-386,
                             389-413 and 456-472,
@@ -152,7 +152,7 @@
      fire removes the fired partner at its view index unless it stays.
    - A peek fire of a non-persistent record removes the record in the
      substrate, and the code stores the same record again right after the
-     fire (decision 45, Rule E: Plan::restore). o_ops is the logical plan.
+     fire (decision 45, Rule E: Cx::restore). o_ops is the logical plan.
      It keeps the peeked record in o_state, and it has no re-store.
      code_ops adds the re-store after each such fire. sub_records applies
      the Rule E effects of code_ops to the records of the view. The
@@ -465,7 +465,7 @@ Section Queue.
           end
     end.
 
-  (* GenericSpace::offer: a datum joins the tail when a record is queued. *)
+  (* offer_head: a datum joins the tail when a record is queued. *)
   Definition offer (st : qstate) (r : record) : outcome :=
     match q_records st with
     | _ :: _ => mkOutcome [SStore r] (store_record st r) None
@@ -497,7 +497,7 @@ Section Queue.
           end
     end.
 
-  (* GenericSpace::receive: a continuation joins the tail when a waiter is
+  (* receive_head: a continuation joins the tail when a waiter is
      queued. *)
   Definition receive (st : qstate) (k : waiter) : outcome :=
     match q_waiters st with
@@ -505,8 +505,8 @@ Section Queue.
     | [] => receive_loop fire_round_cap 0 st k
     end.
 
-  (* prepare_produce and prepare_consume: bump the counter, then plan with
-     the ord of the bump. rank is the byte rank of the new entry. *)
+  (* run_with: bump the counter, then plan with the ord of the bump. rank is
+     the byte rank of the new entry. *)
   Definition bumped (st : qstate) : qstate := mkQ (q_records st) (q_waiters st) (bump_next (q_counter st)).
 
   Definition produce (st : qstate) (rank : nat) (v : V) (pers : bool) : outcome :=
@@ -1637,7 +1637,7 @@ Section Queue.
   (* QueueDiscipline::precedes: the lesser ord interacts first. *)
   Definition ord_precedes (o head : nat) : bool := o <? head.
 
-  (* GenericSpace::at_head for a re-entered element (QD-9). The element is
+  (* Cx::at_head for a re-entered element (QD-9). The element is
      at the head when its side is empty or when its ord precedes the ord of
      the head. A stored entry with the ord of the element is Inconsistent
      (None). *)
@@ -1647,7 +1647,7 @@ Section Queue.
     | Some h => if o =? h then None else Some (ord_precedes o h)
     end.
 
-  (* The plan of a re-entered datum r (GenericSpace::offer): the offer loop
+  (* The plan of a re-entered datum r (offer_head): the offer loop
      from the head, or a store at its place. *)
   Definition reenter_offer (st : qstate) (r : record) : option outcome :=
     match reentry_at_head (r_ord r) (option_map r_ord (record_head (q_records st))) with
@@ -1656,7 +1656,7 @@ Section Queue.
     | Some false => Some (mkOutcome [SStore r] (store_record st r) None)
     end.
 
-  (* The plan of a re-entered continuation k (GenericSpace::receive): the
+  (* The plan of a re-entered continuation k (receive_head): the
      receive loop from the head, or a park at its place. *)
   Definition reenter_receive (st : qstate) (k : waiter) : option outcome :=
     match reentry_at_head (w_ord k) (option_map w_ord (waiter_head (q_waiters st))) with
@@ -3204,7 +3204,7 @@ Section Queue.
      and sub_records applies their substrate effects to the records. *)
 
   (* A staged operation of the code is an operation of the plan or the
-     re-store of a peeked record (Plan::restore). *)
+     re-store of a peeked record (Cx::restore). *)
   Inductive code_staged : Type :=
   | CStaged : staged -> code_staged
   | CRestore : record -> code_staged.
@@ -3212,8 +3212,8 @@ Section Queue.
   (* code_of gives the code operations of one plan operation. The re-store
      of a record comes right after each consume fire that peeks at the
      record, when the record is not persistent. This is
-     Plan::restore_peeked after Plan::fire_receive, in each FireStep branch
-     of GenericSpace::receive. *)
+     restore_peeked after Cx::fire_receive, in each FireStep branch of
+     receive_head. *)
   Definition code_of (s : staged) : list code_staged :=
     match s with
     | SFireConsume k h =>

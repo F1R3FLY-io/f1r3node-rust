@@ -2634,6 +2634,7 @@ impl AgentRig {
             handle_continuation: handle_continuation(RIG_SPACE, &call),
             random: call,
             authority: CostAuthority::default(),
+            family: SpaceFactoryUrn::HASHMAP_QUEUE,
         };
         QueueAgent::default()
             .prepare_create(&env, creation)
@@ -2758,6 +2759,7 @@ impl AgentRig {
                     cost_stack: None,
                 },
                 persistent: persist,
+                params: BTreeMap::new(),
                 authority: CostAuthority::default(),
                 reissued_ord: None,
             }),
@@ -2778,6 +2780,7 @@ impl AgentRig {
                 persistent: persist,
                 peek,
                 guard: guard.map(gbool),
+                query: None,
                 authority: CostAuthority::default(),
                 introduction_authority: CostAuthority::default(),
                 reissued_ord: None,
@@ -3527,6 +3530,7 @@ fn kept_place(reissue: &SpaceReissue) -> Option<(Side, i64)> {
     match &reissue.op {
         SpaceOp::Produce(op) => op.reissued_ord.map(|ord| (Side::Data, ord)),
         SpaceOp::Consume(op) => op.reissued_ord.map(|ord| (Side::Waiters, ord)),
+        SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
     }
 }
 
@@ -3751,6 +3755,7 @@ fn step_ord(record: &RunRecord) -> i64 {
     let kept = match &record.op {
         SpaceOp::Produce(op) => op.reissued_ord,
         SpaceOp::Consume(op) => op.reissued_ord,
+        SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
     };
     kept.unwrap_or(record.bumped)
 }
@@ -3760,6 +3765,7 @@ fn persistent_op(op: &SpaceOp) -> bool {
     match op {
         SpaceOp::Produce(op) => op.persistent,
         SpaceOp::Consume(op) => op.persistent,
+        SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
     }
 }
 
@@ -3803,6 +3809,7 @@ async fn queue_reissue_keeps_first_round_ord_case(
             let stored = match &record.op {
                 SpaceOp::Produce(_) => record.after.records.iter().any(|entry| entry.ord == ord),
                 SpaceOp::Consume(_) => record.after.waiters.iter().any(|entry| entry.ord == ord),
+                SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
             };
             prop_assert!(stored, "the element of order {} is not at its place", ord);
         }
@@ -4134,6 +4141,7 @@ async fn queue_reentry_head_blocks_case(
         let kept = match &record.op {
             SpaceOp::Produce(op) => op.reissued_ord,
             SpaceOp::Consume(op) => op.reissued_ord,
+            SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
         };
         let Some(ord) = kept else {
             continue;
@@ -4235,6 +4243,7 @@ async fn queue_reentry_permutation_invariant_case(
             reissued_ord: Some(kept),
             ..consume
         }),
+        SpaceOp::Settle(_) => unreachable!("the queue discipline never issues a settle"),
     };
     let first_outcome = first.run_space_op(reentry(&first)).await;
     let second_outcome = second.run_space_op(reentry(&second)).await;
@@ -8661,6 +8670,7 @@ async fn prepare_commit_atomic_case(state: QueueState, op: QueueOp) -> Result<()
                 SpaceOp::Consume(consume) => {
                     QueueAgent::default().prepare_consume(&env, consume).await
                 }
+                SpaceOp::Settle(settle) => QueueAgent::default().prepare_settle(&env, settle).await,
             }
         }
     };

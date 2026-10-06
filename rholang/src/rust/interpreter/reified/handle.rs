@@ -56,7 +56,8 @@ use crate::rust::interpreter::reduce::ReducerCore;
 use crate::rust::interpreter::spaces::agent::{ProduceOp, SpaceAgent, SpaceOp};
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
-use crate::rust::interpreter::spaces::factory::defaults::{send_schema, suggestion};
+use crate::rust::interpreter::spaces::factory::defaults::suggestion;
+use crate::rust::interpreter::spaces::families::send_params;
 use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NativeSpace, ReifiedId};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 
@@ -329,7 +330,7 @@ fn param_schema(
     match method {
         HandleMethod::Produce => {
             let family = family_of(config)?;
-            let discipline = send_schema(family).ok_or_else(|| SpaceError::FamilyUnavailable {
+            let discipline = send_params(family).ok_or_else(|| SpaceError::FamilyUnavailable {
                 outer: family.outer.as_str().to_string(),
                 inner: family.inner.as_str().to_string(),
             })?;
@@ -380,6 +381,7 @@ fn produce_method(
             cost_stack: None,
         },
         persistent,
+        params: BTreeMap::new(),
         authority: call.cost_authority.clone().unwrap_or_default(),
         reissued_ord: None,
     };

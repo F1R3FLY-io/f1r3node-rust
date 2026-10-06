@@ -892,6 +892,8 @@ pub fn register_introduction(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
     use models::rhoapi::{BindPattern, CostRegion, CostSignature, Var};
     use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gstring_par};
@@ -1316,6 +1318,7 @@ mod tests {
             channel: int(1),
             data: datum(vec![int(1)]),
             persistent: false,
+            params: BTreeMap::new(),
             authority: region(5),
             reissued_ord: None,
         };
@@ -1332,6 +1335,7 @@ mod tests {
             persistent: false,
             peek: false,
             guard: None,
+            query: None,
             authority: region(6),
             introduction_authority: region(8),
             reissued_ord: None,

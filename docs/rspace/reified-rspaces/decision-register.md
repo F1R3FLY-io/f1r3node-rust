@@ -1846,7 +1846,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 
 **Statement.**
 
-- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:43`).
+- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:44`).
 - At the cap, the agent commits the staged prefix and re-issues the rest of the operation as a new `Intent::Space`. This is the re-issue path of A10.
 - A re-issued persistent operation keeps the `ord` of its first round, and it re-enters at its place ([decision 43](#decision-43)).
 

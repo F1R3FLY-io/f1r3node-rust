@@ -2,8 +2,10 @@
 //! and C.8, as the readiness review corrects them). This interface is frozen for the P4
 //! batches.
 //!
-//! * Batch 4B implements [`SpaceAgent`]. The P4 agent is `GenericSpace<HashMapOuter,
-//!   QueueDiscipline>` (P4 design B.4), and a caller makes it with `Default::default()`.
+//! * Batch 4B implements [`SpaceAgent`]. The agent of the native spaces is the family agent
+//!   `families::FamilyAgent` (P5 design v3, A.3.4). It reads the config of a space once and runs
+//!   `GenericSpace<S, D>` of the family that the config names (P4 design B.4). A caller makes it
+//!   with `Default::default()`.
 //! * Batch 4C makes a [`SpaceOp`] in the reducer hooks and in the R7 backend, runs it with
 //!   `ReifiedRuntime::run_op`, and dispatches the [`SpaceOutcome`].
 //! * Batch 4D creates a space with `ReifiedRuntime::create_space`, reads its config with
@@ -28,12 +30,21 @@
 //! * A collection operation fires in at most `costs::FIRE_ROUND_CAP` rounds. It re-issues the
 //!   rest with the A10 rule of `costs::FireRounds`. A re-issued persistent operation keeps the
 //!   `ord` of its first round (decision 43).
+//!
+//! The spine S1 of P5 (P5 design v3, A.3.1) freezes this interface for the batches of P5: the
+//! named params of a send ([`ProduceOp::params`]), the query of a receive
+//! ([`ConsumeOp::query`]), the settle of a collection after a fire ([`SettleOp`],
+//! [`SpaceAgent::prepare_settle`]), and the allocation of index names ([`AllocOp`],
+//! [`SpaceAgent::allocate`]). Joins add `JoinOp` in P5c.
+
+use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{
     BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
+use models::rust::space_factory_urn::SpaceFactoryUrn;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceResult;
 use rspace_plus_plus::rspace::space_store_handle::{
     BoxedSpaceTxn, SpaceStoreHandle, SpaceTxnReceipt,
@@ -83,6 +94,10 @@ pub struct ProduceOp {
     pub data: ListParWithRandom,
     /// True for `!!`.
     pub persistent: bool,
+    /// The named params of the send, by key (decision 21): for example `priority` on a priority
+    /// queue (P5b). A send without params has none. The agent checks the keys against the
+    /// schema of its discipline before the bump, and then their values.
+    pub params: BTreeMap<String, Par>,
     /// The introduction authority of the send (P4 design B.7).
     pub authority: CostAuthority,
     /// The `ord` of the first round of a re-issued persistent send, or `None` (decision 43).
@@ -90,6 +105,16 @@ pub struct ProduceOp {
     /// place in the collection. A send of the program and a re-issued send that is not
     /// persistent take the `ord` of their bump.
     pub reissued_ord: Option<i64>,
+}
+
+/// The query of a receive (decision 21): `ch ~ (q…; k=v…)` or the bare `ch ~ e`. The
+/// payload holds the positional parts and `named` the named params, by key.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QueryParams {
+    /// The positional parts of the query.
+    pub payload: Vec<Par>,
+    /// The named params of the query, by key: for example `priority` on a priority queue.
+    pub named: BTreeMap<String, Par>,
 }
 
 /// A single-bind receive on a collection of a native space (P4 design C.3).
@@ -113,6 +138,9 @@ pub struct ConsumeOp {
     pub peek: bool,
     /// The substituted `where` guard.
     pub guard: Option<Par>,
+    /// The query of the receive, or `None`. A discipline that takes no query params rejects a
+    /// query with `QuerySpecUnsupported` before the bump.
+    pub query: Option<QueryParams>,
     /// The cost authority of the continuation: the receive authority of `eval_receive`.
     pub authority: CostAuthority,
     /// The introduction authority of the receive (P4 design B.7).
@@ -122,11 +150,54 @@ pub struct ConsumeOp {
     pub reissued_ord: Option<i64>,
 }
 
+/// The settle of a collection: the fires that a discipline with a settle rule still owes after
+/// an operation (P5b, F2). A stack or a priority queue issues it as the re-issue of a settle
+/// that reached `FIRE_ROUND_CAP`. A program never issues it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettleOp {
+    /// The space.
+    pub space: NativeSpace,
+    /// The collection.
+    pub key: CollectionKey,
+    /// The inner channel of the operation that started the settle.
+    pub channel: Par,
+    /// The random state of the operation that started the settle.
+    pub random_state: Vec<u8>,
+    /// The cost authority of the operation that started the settle.
+    pub authority: CostAuthority,
+    /// The introduction authority of the operation that started the settle.
+    pub introduction_authority: CostAuthority,
+}
+
+/// The allocation of `count` index names of an Array or Vector space (P5d, F11): the names of
+/// a `new` inside a `use` block of the space, or of the handle method `gensym`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AllocOp {
+    /// The space.
+    pub space: NativeSpace,
+    /// The number of names.
+    pub count: u64,
+    /// The random state of the operation.
+    pub random_state: Vec<u8>,
+    /// The cost authority of the operation.
+    pub authority: CostAuthority,
+}
+
+/// The result of [`SpaceAgent::allocate`].
+pub enum Allocation {
+    /// The outer store has no allocator: the reducer draws the names as it does for every
+    /// `new`. Nothing is staged, so nothing is committed.
+    Baseline,
+    /// The staged allocation of the index names, in order. The job commits it once.
+    Indices(Prepared<Vec<u64>>),
+}
+
 /// One operation on a collection of a native space. It runs in one `Intent::Space` job.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpaceOp {
     Produce(ProduceOp),
     Consume(ConsumeOp),
+    Settle(SettleOp),
 }
 
 impl SpaceOp {
@@ -135,15 +206,20 @@ impl SpaceOp {
         match self {
             SpaceOp::Produce(op) => op.space,
             SpaceOp::Consume(op) => op.space,
+            SpaceOp::Settle(op) => op.space,
         }
     }
 
     /// The authority of the scheduler footprint, as `prepare` takes it for a host intent: the
-    /// cost authority of the datum, or the cost authority of the continuation.
+    /// cost authority of the datum, or the cost authority of the continuation or of the settle.
     pub fn footprint_authority(&self) -> Option<CostAuthority> {
         match self {
             SpaceOp::Produce(op) => op.data.cost_authority.clone(),
             SpaceOp::Consume(op) => match op.authority.regions.is_empty() {
+                true => None,
+                false => Some(op.authority.clone()),
+            },
+            SpaceOp::Settle(op) => match op.authority.regions.is_empty() {
                 true => None,
                 false => Some(op.authority.clone()),
             },
@@ -201,6 +277,9 @@ pub struct SpaceCreation {
     pub random: Blake2b512Random,
     /// The cost authority of the caller (P4 design B.7).
     pub authority: CostAuthority,
+    /// The family of the factory (P5 design v3, A.3.4). The family agent sends the creation to
+    /// the agent of this family, and that agent checks that the config names the same family.
+    pub family: SpaceFactoryUrn,
 }
 
 type Finish<T> = Box<dyn FnOnce(ParSpaceReceipt) -> Result<T, SpaceError> + Send>;
@@ -251,6 +330,18 @@ pub trait SpaceAgent: Send + Sync {
         op: ConsumeOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
 
+    /// Stages the settle of a collection (P5b). A discipline without a settle rule fails with
+    /// `Inconsistent`, because no operation of it issues a settle.
+    async fn prepare_settle(
+        &self,
+        env: &SpaceEnv,
+        op: SettleOp,
+    ) -> Result<Prepared<SpaceOutcome>, SpaceError>;
+
+    /// Allocates the index names of `op` (P5d). An outer store without an allocator returns
+    /// [`Allocation::Baseline`] and stages nothing.
+    async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError>;
+
     /// Stages the records of a new space: the config datum on `C(sid)`, the space counter
     /// `S(sid) = 0`, and the handle continuation on `H(sid)`. A config record on `C(sid)`
     /// fails with `SpaceAlreadyExists`.
@@ -278,6 +369,7 @@ pub async fn run_op(
     let prepared = match op {
         SpaceOp::Produce(op) => agent.prepare_produce(env, op).await?,
         SpaceOp::Consume(op) => agent.prepare_consume(env, op).await?,
+        SpaceOp::Settle(op) => agent.prepare_settle(env, op).await?,
     };
     prepared.commit().await
 }
@@ -334,6 +426,7 @@ mod tests {
                 cost_stack: None,
             },
             persistent: false,
+            params: BTreeMap::new(),
             authority: CostAuthority::default(),
             reissued_ord: None,
         }
@@ -390,6 +483,18 @@ mod tests {
             _op: ConsumeOp,
         ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
             Err(SpaceError::Inconsistent("the test agent does not consume"))
+        }
+
+        async fn prepare_settle(
+            &self,
+            _env: &SpaceEnv,
+            _op: SettleOp,
+        ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
+            Err(SpaceError::Inconsistent("the test agent does not settle"))
+        }
+
+        async fn allocate(&self, _env: &SpaceEnv, _op: AllocOp) -> Result<Allocation, SpaceError> {
+            Ok(Allocation::Baseline)
         }
 
         async fn prepare_create(
@@ -474,6 +579,7 @@ mod tests {
                 persistent: false,
                 peek: false,
                 guard: None,
+                query: None,
                 authority: CostAuthority::default(),
                 introduction_authority: CostAuthority::default(),
                 reissued_ord: None,
@@ -508,6 +614,7 @@ mod tests {
             persistent: true,
             peek: false,
             guard: None,
+            query: None,
             authority: CostAuthority::default(),
             introduction_authority: region(5),
             reissued_ord: None,

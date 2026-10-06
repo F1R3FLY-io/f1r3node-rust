@@ -61,6 +61,34 @@ pub enum SpaceError {
     /// The `ord` counter of a collection reached `i64::MAX`.
     #[error("a space counter reached its maximum")]
     CounterOverflow,
+    /// A store or a park on a full collection: a cell holds one record and one waiter (F15).
+    /// The check runs before the staging, so the operation stages nothing.
+    #[error("the cell is occupied")]
+    CellOccupied,
+    /// A named param whose value the schema of its channel does not accept, for example a
+    /// priority outside `0..priorities` (P5b).
+    #[error("the value of the param {key:?} is not accepted")]
+    InvalidParam { key: String },
+    /// A named param that the schema of a factory requires, for example the `size` of an Array
+    /// space (F7).
+    #[error("the param {key:?} is required")]
+    MissingParam { key: String },
+    /// A fixed Array space that has no free index name (P5d).
+    #[error("the space has no free name")]
+    OutOfNames,
+    /// A channel of an Array or Vector space that is not an index name of that space (F8).
+    #[error("the channel is not an index name of this space")]
+    NotAnIndexName,
+    /// A path element of a PathMap space that holds a PathMap or a zipper (P5e).
+    #[error("the path holds a PathMap or a zipper")]
+    UnsupportedPathElement,
+    /// A path of a PathMap space that is deeper than its depth limit (F9).
+    #[error("the path is deeper than the depth limit of a PathMap space")]
+    PathTooDeep,
+    /// A receive query on a collection whose discipline takes no query params. The hook of a
+    /// default-space receive reports the same code (decision 22), so a program sees one code.
+    #[error("a receive from this channel takes no query")]
+    QuerySpecUnsupported,
     /// A space record or the staged view that the agent reads is not well formed.
     #[error("a space record is inconsistent: {0}")]
     Inconsistent(&'static str),
@@ -99,6 +127,14 @@ impl SpaceError {
             SpaceError::DanglingHandle => "DanglingHandle",
             SpaceError::DanglingName => "DanglingName",
             SpaceError::CounterOverflow => "CounterOverflow",
+            SpaceError::CellOccupied => "CellOccupied",
+            SpaceError::InvalidParam { .. } => "InvalidParam",
+            SpaceError::MissingParam { .. } => "MissingParam",
+            SpaceError::OutOfNames => "OutOfNames",
+            SpaceError::NotAnIndexName => "NotAnIndexName",
+            SpaceError::UnsupportedPathElement => "UnsupportedPathElement",
+            SpaceError::PathTooDeep => "PathTooDeep",
+            SpaceError::QuerySpecUnsupported => "QuerySpecUnsupported",
             SpaceError::Inconsistent(_) => "Inconsistent",
             SpaceError::ReplayDivergence(_) => "ReplayDivergence",
             SpaceError::Substrate(_) => "Substrate",
@@ -213,6 +249,18 @@ mod tests {
             SpaceError::DanglingHandle,
             SpaceError::DanglingName,
             SpaceError::CounterOverflow,
+            SpaceError::CellOccupied,
+            SpaceError::InvalidParam {
+                key: "priority".to_string(),
+            },
+            SpaceError::MissingParam {
+                key: "size".to_string(),
+            },
+            SpaceError::OutOfNames,
+            SpaceError::NotAnIndexName,
+            SpaceError::UnsupportedPathElement,
+            SpaceError::PathTooDeep,
+            SpaceError::QuerySpecUnsupported,
             SpaceError::Inconsistent("two counter records"),
             SpaceError::ReplayDivergence(Box::new(COMM {
                 consume: Default::default(),

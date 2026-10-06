@@ -248,6 +248,24 @@ pub fn data_channel(space: NativeSpace, key: &CollectionKey) -> Vec<u8> {
 /// `E0‖H‖sid`: the handle `this` of the space.
 pub fn handle_channel(space: NativeSpace) -> Vec<u8> { space_scoped_id(Kind::Handle, space, &[]) }
 
+/// `E0‖A‖sid`: the allocator of the index names of an Array or Vector space (P5d).
+pub fn allocator_channel(space: NativeSpace) -> Vec<u8> {
+    space_scoped_id(Kind::Allocator, space, &[])
+}
+
+/// `E0‖D‖sid‖path_key`: the data channel of the path with the key `path_key` in a PathMap space
+/// (P5e). A path key ends with its terminator, so it is never empty.
+pub fn path_data_channel(space: NativeSpace, path_key: &[u8]) -> Vec<u8> {
+    space_scoped_id(Kind::Data, space, path_key)
+}
+
+/// `E0‖I‖sid‖prefix_key`: the index channel of the prefix with the key `prefix_key` in a PathMap
+/// space (P5e). It holds the markers of the stored data under the prefix and the waiters on the
+/// prefix. The key of the empty prefix is empty.
+pub fn path_index_channel(space: NativeSpace, prefix_key: &[u8]) -> Vec<u8> {
+    space_scoped_id(Kind::PathIndex, space, prefix_key)
+}
+
 /// `E0‖N‖sid‖tail`: a name of the space.
 pub fn name_id(space: NativeSpace, tail: NameTail) -> Vec<u8> {
     match tail {
@@ -394,6 +412,13 @@ pub enum RandomPurpose {
     /// A collection counter: `.split_byte(0)` for its continuation, `.split_byte(1)` for its
     /// datum.
     Counter = 0x08,
+    /// The consume that retires a stored member of a set class (P5a, F3).
+    Retire = 0x09,
+    /// The consume that lifts a stored record out of a collection during a settle (P5b, F2).
+    Lift = 0x0A,
+    /// The allocator of an Array or Vector space: `.split_byte(0)` for its continuation,
+    /// `.split_byte(1)` for its datum (P5d).
+    Allocator = 0x0B,
 }
 
 impl RandomPurpose {
@@ -532,6 +557,21 @@ mod tests {
                     Some(ReifiedId::Name(space, tail))
                 );
             }
+            assert_eq!(
+                decode_reified_id(&allocator_channel(space)),
+                Some(ReifiedId::Allocator(space))
+            );
+            let path_key = [0x01, 0x07, 0x00];
+            assert_eq!(
+                decode_reified_id(&path_data_channel(space, &path_key)),
+                Some(ReifiedId::Data(space, &path_key[..]))
+            );
+            for prefix_key in [&[][..], &[0x01, 0x07][..]] {
+                assert_eq!(
+                    decode_reified_id(&path_index_channel(space, prefix_key)),
+                    Some(ReifiedId::PathIndex(space, prefix_key))
+                );
+            }
         }
         for op in 0..=u8::MAX {
             assert_eq!(decode_reified_id(&op_channel(op)), Some(ReifiedId::Op(op)));
@@ -650,6 +690,9 @@ mod tests {
             RandomPurpose::Handle,
             RandomPurpose::SpaceCounter,
             RandomPurpose::Counter,
+            RandomPurpose::Retire,
+            RandomPurpose::Lift,
+            RandomPurpose::Allocator,
         ];
         let mut outputs = std::collections::BTreeSet::new();
         for (index, purpose) in purposes.into_iter().enumerate() {

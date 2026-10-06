@@ -975,7 +975,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "name_id",
-      "line": 252,
+      "line": 270,
       "role": "N(sid‖tail).",
       "rocq": [
         "name_id"
@@ -991,7 +991,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "op_channel",
-      "line": 260,
+      "line": 278,
       "role": "[E0, op].",
       "rocq": [
         "op_channel"
@@ -1006,7 +1006,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "struct",
       "name": "ReifiedId",
-      "line": 264,
+      "line": 282,
       "role": "A decoded Reified id.",
       "rocq": [
         "reified_id"
@@ -1021,7 +1021,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "name_tail",
-      "line": 281,
+      "line": 299,
       "role": "The tail of a name id by its length.",
       "rocq": [
         "decode_name_tail"
@@ -1036,7 +1036,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "decode_reified_id",
-      "line": 294,
+      "line": 312,
       "role": "The total decoder of GPrivate ids.",
       "rocq": [
         "decode_reified_id",
@@ -1055,7 +1055,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "sole_unforgeable",
-      "line": 328,
+      "line": 346,
       "role": "The unforgeable of a Par that holds only it.",
       "rocq": [
         "sole_unforgeable"
@@ -1071,7 +1071,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "sole_gprivate_id",
-      "line": 361,
+      "line": 379,
       "role": "The id of a Par that is exactly one GPrivate.",
       "rocq": [
         "sole_gprivate_id"
@@ -1086,7 +1086,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "reified_id_of",
-      "line": 371,
+      "line": 389,
       "role": "The decoded id of a Par that is exactly one GPrivate.",
       "rocq": [
         "reified_id_of"
@@ -1102,7 +1102,7 @@
       "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "struct",
       "name": "RandomPurpose",
-      "line": 379,
+      "line": 397,
       "role": "The purpose bytes of the derived random states.",
       "rocq": [
         "purpose_state"
@@ -1118,7 +1118,7 @@
       "scope": "RandomPurpose",
       "kind": "fn",
       "name": "derive",
-      "line": 401,
+      "line": 426,
       "role": "random.split_byte(0xE0).split_byte(purpose).",
       "rocq": [
         "purpose_state"
@@ -1524,7 +1524,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "take",
-      "line": 249,
+      "line": 251,
       "role": "Consumes the only counter record. The COMM has no peeks.",
       "rocq": [
         "exec",
@@ -1546,7 +1546,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "put",
-      "line": 310,
+      "line": 313,
       "role": "Stores the next counter record, which the next operation consumes.",
       "rocq": [
         "exec",
@@ -1601,7 +1601,7 @@
       "scope": "QueueDiscipline",
       "kind": "fn",
       "name": "head_metered",
-      "line": 39,
+      "line": 41,
       "role": "The least (ord, bincode bytes), on both sides. Each comparison and each tie-break encode is reserved first (decision 42).",
       "rocq": [
         "head",
@@ -1626,7 +1626,7 @@
       "scope": "QueueDiscipline",
       "kind": "fn",
       "name": "reaches_head",
-      "line": 60,
+      "line": 62,
       "role": "An incoming element joins the tail.",
       "rocq": [
         "offer",
@@ -1647,7 +1647,7 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
       "kind": "fn",
       "name": "challenge",
-      "line": 86,
+      "line": 88,
       "role": "A lesser ord, or an equal ord and lesser bytes. The comparison of the orders is reserved first, and a tie encodes each entry at most once.",
       "rocq": [
         "precedes",
@@ -1661,13 +1661,13 @@
       "scope": "Best"
     },
     {
-      "item": "GenericSpace::head_waiter",
+      "item": "Cx::head_waiter",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
+      "scope": "Cx",
       "kind": "fn",
       "name": "head_waiter",
-      "line": 615,
+      "line": 668,
       "role": "The head of the waiting continuations.",
       "rocq": [
         "waiter_head",
@@ -1686,13 +1686,13 @@
       ]
     },
     {
-      "item": "GenericSpace::head_datum",
+      "item": "Cx::head_datum",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
+      "scope": "Cx",
       "kind": "fn",
       "name": "head_datum",
-      "line": 631,
+      "line": 685,
       "role": "The head of the records.",
       "rocq": [
         "record_head",
@@ -1711,14 +1711,13 @@
       ]
     },
     {
-      "item": "GenericSpace::offer",
+      "item": "offer_head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
       "kind": "fn",
-      "name": "offer",
-      "line": 705,
-      "role": "The produce plan: a fresh datum joins the tail and a re-issued persistent datum re-enters at its place (decision 43), head-only fires, re-offer, the round cap.",
+      "name": "offer_head",
+      "line": 1134,
+      "role": "The head driver of the produce plan, the default of Discipline::offer (S1): a fresh datum joins the tail and a re-issued persistent datum re-enters at its place (decision 43), head-only fires, re-offer, the round cap.",
       "rocq": [
         "offer",
         "offer_loop",
@@ -1755,14 +1754,13 @@
       ]
     },
     {
-      "item": "GenericSpace::receive",
+      "item": "receive_head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
       "kind": "fn",
-      "name": "receive",
-      "line": 776,
-      "role": "The consume plan: a fresh waiter joins the tail and a re-issued persistent waiter re-enters at its place (decision 43). After a peek fire of a non-persistent head record it stages the re-store (decision 45).",
+      "name": "receive_head",
+      "line": 1208,
+      "role": "The head driver of the consume plan, the default of Discipline::receive (S1): a fresh waiter joins the tail and a re-issued persistent waiter re-enters at its place (decision 43). After a peek fire of a non-persistent head record it calls Discipline::restore, whose default stages the re-store (decision 45).",
       "rocq": [
         "receive",
         "receive_loop",
@@ -1805,7 +1803,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "operation_ord",
-      "line": 865,
+      "line": 1321,
       "role": "Decision 43: the kept first-round ord of a re-issued persistent operation, checked against the counter, or the bump value.",
       "rocq": [
         "operation_ord"
@@ -1821,13 +1819,13 @@
       ]
     },
     {
-      "item": "GenericSpace::scan_head",
+      "item": "Cx::scan_head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
+      "scope": "Cx",
       "kind": "fn",
       "name": "scan_head",
-      "line": 595,
+      "line": 648,
       "role": "The head of one side and its ord: the buffer and one envelope decode for each entry are reserved first, and nothing is copied.",
       "rocq": [
         "record_head",
@@ -1845,13 +1843,13 @@
       ]
     },
     {
-      "item": "GenericSpace::head_ord",
+      "item": "Cx::head_ord",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
+      "scope": "Cx",
       "kind": "fn",
       "name": "head_ord",
-      "line": 647,
+      "line": 700,
       "role": "Decision 43: the ord of the head of one side, with no copy.",
       "rocq": [
         "reentry_at_head"
@@ -1865,13 +1863,13 @@
       ]
     },
     {
-      "item": "GenericSpace::at_head",
+      "item": "Cx::at_head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "GenericSpace",
+      "scope": "Cx",
       "kind": "fn",
       "name": "at_head",
-      "line": 672,
+      "line": 735,
       "role": "Decision 43: a fresh element reaches the head only of an empty side; a re-issued persistent element re-enters at the head when its side is empty or its ord precedes the head; an equal ord is Inconsistent.",
       "rocq": [
         "reentry_at_head"
@@ -1893,7 +1891,7 @@
       "scope": "QueueDiscipline",
       "kind": "fn",
       "name": "precedes",
-      "line": 63,
+      "line": 65,
       "role": "Decision 43: the least ord interacts first; the comparison is reserved first.",
       "rocq": [
         "ord_precedes"
@@ -1913,7 +1911,7 @@
       "file": "rholang/src/rust/interpreter/spaces/agent.rs",
       "kind": "struct",
       "name": "ProduceOp",
-      "line": 72,
+      "line": 83,
       "role": "A produce on a collection; reissued_ord carries the first-round ord of a re-issued persistent send (decision 43).",
       "rocq": [
         "in_flight",
@@ -1936,7 +1934,7 @@
       "file": "rholang/src/rust/interpreter/spaces/agent.rs",
       "kind": "struct",
       "name": "ConsumeOp",
-      "line": 97,
+      "line": 122,
       "role": "A receive on a collection; reissued_ord carries the first-round ord of a re-issued persistent receive (decision 43).",
       "rocq": [
         "in_flight",
@@ -1960,8 +1958,8 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_produce",
-      "line": 989,
-      "role": "Bump, then the produce plan.",
+      "line": 1954,
+      "role": "Steps 1 and 2 (begin_collection), the family check, then run_with: bump, then the produce plan.",
       "rocq": [
         "produce",
         "bumped",
@@ -1994,8 +1992,8 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_consume",
-      "line": 1032,
-      "role": "Bump, then the consume plan. A peek bumps too (A2).",
+      "line": 1964,
+      "role": "Steps 1 and 2 (begin_collection), the family check, then run_with: bump, then the consume plan. A peek bumps too (A2).",
       "rocq": [
         "consume",
         "bumped",
@@ -2025,12 +2023,53 @@
       ]
     },
     {
+      "item": "GenericSpace::run_with",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "run_with",
+      "line": 1733,
+      "role": "Steps 3 to 8 of every collection operation (S1, RUN-WITH): the join check, the key, param and query checks before the bump, the bump (decision 31), the plan of the discipline, the prepay of the outcome and the commit closure with the chain tail (decision 45).",
+      "rocq": [
+        "produce",
+        "bumped",
+        "operation_trace",
+        "reenter_produce",
+        "finish",
+        "consume",
+        "reenter_consume"
+      ],
+      "tla": [
+        "Produce",
+        "OperationOrd",
+        "ChainTail",
+        "Consume",
+        "Exec"
+      ],
+      "covers": [
+        "Q30",
+        "Q35",
+        "Q59",
+        "Q61",
+        "Q63",
+        "Q69",
+        "Q75",
+        "Q79",
+        "Q80",
+        "U13",
+        "Q28",
+        "Q31",
+        "U4"
+      ]
+    },
+    {
       "item": "FIRE_ROUND_CAP",
       "required": true,
       "file": "rholang/src/rust/interpreter/reified/costs.rs",
       "kind": "const",
       "name": "FIRE_ROUND_CAP",
-      "line": 43,
+      "line": 44,
       "role": "64 fires per transaction (I-21).",
       "rocq": [
         "fire_round_cap"
@@ -2046,7 +2085,7 @@
       "scope": "FireRounds",
       "kind": "fn",
       "name": "after_fire",
-      "line": 299,
+      "line": 322,
       "role": "Done, continue, divergent re-issue (A10) or the round cap.",
       "rocq": [
         "after_fire"
@@ -2062,7 +2101,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_create",
-      "line": 1075,
+      "line": 1994,
       "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
       "rocq": [
         "prepare_create",
@@ -2088,7 +2127,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "read_config",
-      "line": 1162,
+      "line": 2111,
       "role": "A missing config record is DanglingHandle.",
       "tla": [
         "Call"
@@ -2350,7 +2389,7 @@
       "scope": "RoutingExecution",
       "kind": "fn",
       "name": "produce",
-      "line": 111,
+      "line": 112,
       "role": "route(&None, channel): no context.",
       "rocq": [
         "r7_produce",
@@ -2367,7 +2406,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "eval_marker",
-      "line": 107,
+      "line": 108,
       "role": "H2: refresh, strict decode, then USE or NEWSPACE.",
       "rocq": [
         "fire_step",
@@ -2387,7 +2426,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "eval_use",
-      "line": 126,
+      "line": 127,
       "role": "use s { P }: P under the context of s.",
       "rocq": [
         "enter_use"
@@ -2403,7 +2442,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "native_space_ref",
-      "line": 176,
+      "line": 177,
       "role": "Evaluate, substitute and classify a space reference.",
       "rocq": [
         "enter_use"
@@ -2420,7 +2459,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "reified_produce",
-      "line": 205,
+      "line": 206,
       "role": "H3: params, route, the persistent-send rule.",
       "rocq": [
         "route",
@@ -2440,7 +2479,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "reified_consume",
-      "line": 283,
+      "line": 285,
       "role": "H4/H5: the fast path, the USE wrapper, the route.",
       "rocq": [
         "routes_to_default_without_context",
@@ -2457,7 +2496,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "routes_to_default_without_context",
-      "line": 539,
+      "line": 542,
       "role": "Every class but a space name and an agent name.",
       "rocq": [
         "routes_to_default_without_context"
@@ -2547,7 +2586,7 @@
       "file": "rholang/src/rust/interpreter/reified/handle.rs",
       "kind": "struct",
       "name": "HandleMethod",
-      "line": 74,
+      "line": 75,
       "role": "The five methods of a handle.",
       "rocq": [
         "method"
@@ -2563,7 +2602,7 @@
       "scope": "HandleMethod",
       "kind": "fn",
       "name": "parse",
-      "line": 84,
+      "line": 85,
       "role": "The method of a name.",
       "rocq": [
         "method_of"
@@ -2579,7 +2618,7 @@
       "scope": "HandleMethod",
       "kind": "fn",
       "name": "arity",
-      "line": 96,
+      "line": 97,
       "role": "The argument count of a method.",
       "rocq": [
         "arity"
@@ -2594,7 +2633,7 @@
       "file": "rholang/src/rust/interpreter/reified/handle.rs",
       "kind": "struct",
       "name": "ParsedMessage",
-      "line": 120,
+      "line": 121,
       "role": "Dropped, Malformed or a message.",
       "rocq": [
         "parsed"
@@ -2610,7 +2649,7 @@
       "scope": "ParsedMessage",
       "kind": "fn",
       "name": "parse",
-      "line": 131,
+      "line": 132,
       "role": "[ret, method, …, (PARAMS)?] (A23).",
       "rocq": [
         "parse_message"
@@ -2625,7 +2664,7 @@
       "file": "rholang/src/rust/interpreter/reified/handle.rs",
       "kind": "fn",
       "name": "is_reply_name",
-      "line": 174,
+      "line": 175,
       "role": "One unforgeable, or one bundle with the write flag.",
       "rocq": [
         "is_reply_name"
@@ -2641,7 +2680,7 @@
       "scope": "HandleProcess",
       "kind": "fn",
       "name": "call",
-      "line": 213,
+      "line": 214,
       "role": "A6, DanglingHandle, the parse, the reply.",
       "rocq": [
         "call"
@@ -2662,7 +2701,7 @@
       "scope": "HandleProcess",
       "kind": "fn",
       "name": "run",
-      "line": 270,
+      "line": 271,
       "role": "Positional params, method, arity, named params, then the body.",
       "rocq": [
         "run"
@@ -3035,7 +3074,7 @@
       "file": "rholang/src/rust/interpreter/reified/factory.rs",
       "kind": "fn",
       "name": "handle_pattern",
-      "line": 116,
+      "line": 117,
       "role": "[...@args]: one channel, so the join of H is [[H]].",
       "tla": [
         "TouchesBaseJoin"
@@ -3050,7 +3089,7 @@
       "file": "rholang/src/rust/interpreter/reified/factory.rs",
       "kind": "fn",
       "name": "handle_continuation",
-      "line": 126,
+      "line": 127,
       "role": "The persistent forwarder to HANDLE_OP.",
       "tla": [
         "NonPersistentConsumes",
@@ -3066,7 +3105,7 @@
       "file": "rholang/src/rust/interpreter/reified/factory.rs",
       "kind": "fn",
       "name": "handle_capability",
-      "line": 153,
+      "line": 154,
       "role": "bundle+{H(sid)}.",
       "rocq": [
         "handle_channel"
@@ -3081,7 +3120,7 @@
       "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
       "kind": "fn",
       "name": "get_space_agent",
-      "line": 151,
+      "line": 147,
       "role": "The capability of the family of a native space.",
       "rocq": [
         "family_of_names",
@@ -3099,7 +3138,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "create_space",
-      "line": 139,
+      "line": 140,
       "role": "One Intent::Space job for a creation.",
       "rocq": [
         "prepare_create",
@@ -3120,7 +3159,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "read_config",
-      "line": 172,
+      "line": 211,
       "role": "The read-only config job of a handle call.",
       "tla": [
         "Call"
@@ -3139,7 +3178,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "struct",
       "name": "Field",
-      "line": 712,
+      "line": 715,
       "role": "Value, List, Map, Annotations, NewBody.",
       "rocq": [
         "field_flags"
@@ -3154,7 +3193,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "marker_fields",
-      "line": 726,
+      "line": 729,
       "role": "The fields of each marker.",
       "rocq": [
         "derived_flags"
@@ -3169,7 +3208,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "derived_flag",
-      "line": 819,
+      "line": 822,
       "role": "The flag that the encoder derives for a field.",
       "rocq": [
         "derived_flags"
@@ -3185,7 +3224,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_field",
-      "line": 885,
+      "line": 888,
       "role": "Recompute the derived flags of a field.",
       "rocq": [
         "refresh"
@@ -3200,7 +3239,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple",
-      "line": 956,
+      "line": 959,
       "role": "Recompute the derived flags of a marker tuple.",
       "rocq": [
         "refresh"
@@ -3215,7 +3254,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_tuple",
-      "line": 967,
+      "line": 970,
       "role": "A current tuple is not copied.",
       "rocq": [
         "refresh",
@@ -3232,7 +3271,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple_par",
-      "line": 988,
+      "line": 991,
       "role": "The tuple and its holder Par.",
       "rocq": [
         "refresh"
@@ -3247,7 +3286,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_marker_par",
-      "line": 1014,
+      "line": 1017,
       "role": "H4: the QUERY source before it fails closed.",
       "rocq": [
         "refresh"
@@ -3263,7 +3302,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "trailing_params",
-      "line": 1027,
+      "line": 1030,
       "role": "H3: refresh, then split_trailing_params.",
       "rocq": [
         "sdecode"
@@ -3350,7 +3389,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "charge",
-      "line": 74,
+      "line": 75,
       "role": "Reserves operations, scanned bytes and backing bytes on VerificationOperations, VerificationBytes and SearchStateBytes, the mapping of DR-88.",
       "rocq": [
         "step"
@@ -3366,7 +3405,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "inspect",
-      "line": 97,
+      "line": 98,
       "role": "Reserves a read walk before the read.",
       "rocq": [
         "step"
@@ -3382,7 +3421,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "copy",
-      "line": 123,
+      "line": 124,
       "role": "Reserves a copy and its cleanup, then copies.",
       "rocq": [
         "step"
@@ -3398,7 +3437,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "buffer",
-      "line": 149,
+      "line": 150,
       "role": "Reserves a buffer of n slots, then allocates it.",
       "rocq": [
         "step",
@@ -3415,7 +3454,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "compare",
-      "line": 160,
+      "line": 161,
       "role": "Reserves one comparison of two orders or of two tie-break encodes.",
       "rocq": [
         "scan"
@@ -3431,7 +3470,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "moved",
-      "line": 169,
+      "line": 192,
       "role": "Reserves the move of one slot (DR-91).",
       "rocq": [
         "round_after_commit"
@@ -3447,7 +3486,7 @@
       "scope": "ScanMeter",
       "kind": "fn",
       "name": "encode",
-      "line": 205,
+      "line": 228,
       "role": "A bincode encode that reserves each write with the writer of the host.",
       "rocq": [
         "step"
@@ -3601,7 +3640,7 @@
       "scope": "CollectionChannels",
       "kind": "fn",
       "name": "new_metered",
-      "line": 232,
+      "line": 432,
       "role": "The channels of an operation, with their ids reserved first.",
       "rocq": [
         "step"
@@ -3616,7 +3655,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "prepay_outcome",
-      "line": 914,
+      "line": 1389,
       "role": "Prepays the buffer of the fires of the outcome before the commit.",
       "rocq": [
         "staged_trace"
@@ -3632,7 +3671,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "outcome",
-      "line": 920,
+      "line": 1397,
       "role": "Step 7 after the commit: moves only, prepaid at staging.",
       "rocq": [
         "round_after_commit"
@@ -3642,14 +3681,14 @@
       ]
     },
     {
-      "item": "Plan::fire_offer",
+      "item": "Cx::fire_offer",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "Plan",
+      "scope": "Cx",
       "kind": "fn",
       "name": "fire_offer",
-      "line": 407,
-      "role": "Stages a produce-side fire with reserved copies, and moves the record on the last round.",
+      "line": 885,
+      "role": "Stages a produce-side fire with reserved copies (Cx::fire_offer_on), and moves the record on the last round.",
       "rocq": [
         "round_staged",
         "stage"
@@ -3660,14 +3699,14 @@
       ]
     },
     {
-      "item": "Plan::fire_receive",
+      "item": "Cx::fire_receive",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "Plan",
+      "scope": "Cx",
       "kind": "fn",
       "name": "fire_receive",
-      "line": 444,
-      "role": "Stages a consume-side fire with reserved copies, and moves the head copy into the candidate.",
+      "line": 936,
+      "role": "Stages a consume-side fire of one record with reserved copies (Cx::fire_receive_group with one bind), and moves the head copy into the candidate.",
       "rocq": [
         "round_staged",
         "stage"
@@ -3678,14 +3717,14 @@
       ]
     },
     {
-      "item": "Plan::restore",
+      "item": "Cx::restore",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "Plan",
+      "scope": "Cx",
       "kind": "fn",
       "name": "restore",
-      "line": 358,
-      "role": "Decision 45 (Rule E): stages the re-store of a record that a consume-side peek removed: the same record bytes and so the same identity, the outcome Store, persist false, the record's own cost authority, and no counter bump. Its channel copy and its introduction are reserved.",
+      "line": 869,
+      "role": "Decision 45 (Rule E): stages the re-store of a record that a consume-side peek removed (Cx::restore_on): the same record bytes and so the same identity, the outcome Store, persist false, the record's own cost authority, and no counter bump. Its channel copy and its introduction are reserved.",
       "rocq": [
         "code_of",
         "sub_step",
@@ -3700,14 +3739,13 @@
       ]
     },
     {
-      "item": "Plan::restore_peeked",
+      "item": "restore_peeked",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "Plan",
       "kind": "fn",
       "name": "restore_peeked",
-      "line": 378,
-      "role": "Decision 45 (Rule E): stages the re-store of the record that a peek fire removed, when there is one.",
+      "line": 1293,
+      "role": "Decision 45 (Rule E): calls Discipline::restore for the record that a peek fire removed, when there is one.",
       "rocq": [
         "code_of",
         "code_ops"
@@ -3786,7 +3824,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "host",
-      "line": 83,
+      "line": 84,
       "role": "The availability check of every space entry: a detached runtime, native play and native replay fail before any space work (decision 46).",
       "rocq": [
         "ensure_available",
@@ -3803,7 +3841,7 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "ensure_available",
-      "line": 96,
+      "line": 97,
       "role": "The availability check of getSpaceAgent, which reads the config without a job of its own.",
       "rocq": [
         "ensure_available"
@@ -4028,14 +4066,14 @@
       ]
     },
     {
-      "item": "Plan::store",
+      "item": "Cx::store",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "Plan",
+      "scope": "Cx",
       "kind": "fn",
       "name": "store",
-      "line": 312,
-      "role": "Stages the store of a record through the legacy chain.",
+      "line": 799,
+      "role": "Stages the store of a record through the legacy chain (Cx::store_on).",
       "rocq": [
         "stage"
       ],
@@ -4044,14 +4082,14 @@
       ]
     },
     {
-      "item": "Plan::park",
+      "item": "Cx::park",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "Plan",
+      "scope": "Cx",
       "kind": "fn",
       "name": "park",
-      "line": 331,
-      "role": "Stages the park of a waiter through the legacy chain.",
+      "line": 829,
+      "role": "Stages the park of a waiter through the legacy chain (Cx::park_on).",
       "rocq": [
         "stage"
       ],

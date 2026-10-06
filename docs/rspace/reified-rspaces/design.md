@@ -1078,7 +1078,7 @@ So it has the produce identity of the first send, and the record keeps its envel
 Its `before_observe` callback registers the cost authority of the record, because `produce_peeks` sends each result with its own authority.
 The re-store steps the produce counter by one, as the second send of the host does, and it bumps no collection counter.
 
-The P4 plan of a head-only queue stages the re-store right after the fire of a peek receive (`Plan::restore`, `Plan::restore_peeked`):
+The P4 plan of a head-only queue stages the re-store right after the fire of a peek receive (`Cx::restore`, `restore_peeked`):
 
 ```text
 RECEIVE-ROUND(op, h):                          ▷ one round of the consume plan of a queue, P4
@@ -1506,7 +1506,7 @@ One space operation takes this path:
 
 Every Reified name is a `GPrivate` whose id starts with the [namespace tag](glossary.md#namespace-tag) `0xE0` ([decision 7](decision-register.md#decision-7)).
 A program cannot write a `GPrivate` id, so only the Reified machinery makes these names.
-Table N2.1 lists the ids that P4 constructs in `spaces/namespace.rs:223-260`.
+Table N2.1 lists the ids that P4 constructs in `spaces/namespace.rs:223-278`.
 Here ‖ is byte concatenation, `sid` is the 32-byte [space id](glossary.md#space-id), and `k` is the [collection key](glossary.md#collection-key).
 [Figure 02](diagrams/02-namespace-bytes.svg) shows every id layout of the namespace.
 
@@ -1522,7 +1522,7 @@ Here ‖ is byte concatenation, `sid` is the 32-byte [space id](glossary.md#spac
 | `E0‖H‖sid` | 34 | `handle_channel` | the channel `this`, $`H(\mathit{sid})`$ |
 | `E0‖N‖sid‖tail` | 66 or 42 | `name_id` | a [space name](glossary.md#space-name) |
 
-The decoder `decode_reified_id` (`spaces/namespace.rs:294-324`) is total, and it accepts only the image of a constructor:
+The decoder `decode_reified_id` (`spaces/namespace.rs:312-342`) is total, and it accepts only the image of a constructor:
 
 - An id without the tag, or with fewer than 2 bytes, is not a Reified id.
 - An id of exactly 2 bytes is an op.
@@ -1556,7 +1556,7 @@ The bincode bytes have one key for both, and the headline `canon_respects_par_eq
 r_{\mathit{purpose}} = \mathrm{split}_{\mathit{purpose}}\bigl(\mathrm{split}_{\mathtt{0xE0}}(r)\bigr)
 ```
 
-*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:379-397`).*
+*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:397-422`).*
 
 | Purpose | Byte | Use |
 |---|---|---|
@@ -1733,28 +1733,34 @@ Figure N3 shows the merge flow of the counter conflict.
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:197-200`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
-P4 instantiates it once, as `GenericSpace<HashMapOuter, QueueDiscipline>`, and `native_agent` returns it (`reified/system_processes.rs:56-58`).
+`GenericSpace<S, D>` (`spaces/generic.rs:392-395`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:54`).
+The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:69-76`, `121-200`).
 Two traits separate the parts of a family:
 
-- `OuterStore` (`spaces/generic.rs:109-125`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
-- `Discipline` (`spaces/generic.rs:146-193`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
+- `OuterStore` (`spaces/generic.rs:129-190`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`. Its P5 hooks check a routed key, stage the records of a creation, and allocate index names. The defaults of the hooks do no work.
+- `Discipline` (`spaces/generic.rs:216-365`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, which send and query params it takes, and how many entries a side can hold. It holds the plans of the operations, and the default plans are the head driver of this section.
 
-`HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:22-52`).
-`QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:32-73`).
-In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:534-552`).
+`HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:26-56`).
+It keeps the default hooks.
+`QueueDiscipline` uses a counter, takes no send or query params, and keeps every default plan (`spaces/disciplines/queue.rs:32-75`).
+The family agent runs only the wired families, and a config that names another family fails with `FamilyUnavailable` (`spaces/generic.rs:1514-1525`).
+[Decision 29](decision-register.md#decision-29) removes the P4 gate that ran only counter disciplines without joins, because joins into ordered collections arrive in P5c.
+Until then, a collection that is part of a join fails with `Inconsistent`.
 
-**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:989-1073`) stage one operation in one transaction.
-The job then commits the transaction exactly once (`spaces/agent.rs:273-283`).
+**A collection operation.** `begin_collection` (`spaces/generic.rs:1488-1510`) opens the transaction and reads the config once.
+`run_with` (`spaces/generic.rs:1733-1840`) then stages the operation in that transaction.
+The job commits the transaction exactly once (`spaces/agent.rs:364-375`).
 
 ```text
-COLLECTION-OP(op):                             ▷ GenericSpace::prepare_produce, prepare_consume, run_op
+COLLECTION-OP(op):                             ▷ FamilyAgent, begin_collection, run_with, run_op
     ch ← CollectionChannels(op.space, op.key)          ▷ C(sid), S(sid), S(sid, k), D(sid, k)
     txn ← begin([C(sid), S(sid), S(sid, k), D(sid, k)])  ▷ every channel that the operation can touch
     ⟨Check the collection⟩
-    bump ← BUMP(txn, S(sid), S(sid, k), ctx)            ▷ N3
-    ord ← OPERATION-ORD(op.reissued_ord, bump.ord)      ▷ decision 43
-    reissue ← OFFER(op, ord) for a produce, RECEIVE(op, ord) for a consume
+    ⟨Check the key, the params and the query⟩          ▷ before the bump: a failure leaves the counter
+    bump ← BUMP(txn, S(sid), S(sid, k), ctx)            ▷ N3, only when D uses a counter
+    ord ← OPERATION-ORD(op.reissued_ord, bump.ord)      ▷ decision 43, and 0 without a counter
+    reissue ← D.offer(op, ord) for a produce, D.receive(op, ord) for a consume   ▷ defaults: OFFER, RECEIVE
     receipt ← txn.commit()                              ▷ exactly once, prefix-atomic
     return OUTCOME(receipt, reissue)
 ```
@@ -1770,8 +1776,20 @@ A missing config record fails with `DanglingName` when the channel is a space na
     require txn.joins(D(sid, k)) ∈ {[], [[D(sid, k)]]}  ▷ Inconsistent
 ```
 
+⟨Check the key, the params and the query⟩.
+The checks stage nothing, so a failed operation commits nothing and leaves the counter unchanged.
+An operation without params and without a query does no work here.
+
+```text
+    S.check_key(config, op.channel, op.key)              ▷ NotAnIndexName for Array and Vector (P5d)
+    require each send param key ∈ D.SEND_PARAMS          ▷ UnknownParam, with the closest key
+    require no query, or D.QUERY_PARAMS ≠ []              ▷ QuerySpecUnsupported
+    require each query param key ∈ D.QUERY_PARAMS        ▷ UnknownParam, with the closest key
+    D.check_values(config, params, query)                ▷ InvalidParam
+```
+
 The lock keys hold the space counter too, because the first operation on a collection consumes it. The agent knows that only after a read (readiness review S2).
-Every operation stages its bump, so no commit is empty.
+A produce and a consume stage at least a store, a park or a fire, so no commit is empty.
 
 **The head of a side.** The head of a side of a queue is the entry with the least order. The bincode bytes decide between two entries with one order:
 
@@ -1781,7 +1799,7 @@ Every operation stages its bump, so no commit is empty.
 
 The minimum is lexicographic, and it depends only on the set $`E`$, not on the list order of the hot store.
 The hot store inserts at the front, and a restart can load a list in another order, so the list order cannot decide.
-`QueueDiscipline` implements the rule (`spaces/disciplines/queue.rs:39-72`):
+`QueueDiscipline` implements the rule (`spaces/disciplines/queue.rs:41-74`):
 
 ```rust
     /// The entry with the least `(ord, bincode bytes)`, on both sides.
@@ -1832,7 +1850,7 @@ OPERATION-ORD(kept, bumped):                   ▷ operation_ord
     require 0 ≤ kept < bumped                           ▷ Inconsistent
     return kept
 
-AT-HEAD(side, kept, ord):                      ▷ GenericSpace::at_head
+AT-HEAD(side, kept, ord):                      ▷ Cx::at_head
     if kept = none: return the side holds no entry       ▷ a fresh element joins the tail
     h ← the order of the head of the side, or return true   ▷ head_ord: decodes, no copy
     require h ≠ ord                                     ▷ an element in flight is stored nowhere
@@ -1844,11 +1862,11 @@ A re-issued persistent element re-enters at its place.
 It meets the other side only when it precedes the head of its own side.
 Otherwise it is stored or parked behind the head, and it fires nothing.
 
-**The produce plan.** `offer` (`spaces/generic.rs:705-768`) is the plan of a send.
+**The produce plan.** `offer_head` (`spaces/generic.rs:1134-1199`) is the plan of a send, as the default of `Discipline::offer`.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
-OFFER(op, ord):                                ▷ GenericSpace::offer
+OFFER(op, ord):                                ▷ offer_head
     rec ← WRAP-DATUM(ord, op.data)
     if not AT-HEAD(Data, op.reissued_ord, ord): STORE(rec) and return no re-issue   ▷ its place
     src ← Produce::create(D, rec, op.persistent)
@@ -1871,10 +1889,10 @@ A head waiter that does not match blocks every waiter behind it, and the datum i
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive` (`spaces/generic.rs:776-847`) is the plan of a receive, and it mirrors OFFER.
+**The consume plan.** `receive_head` (`spaces/generic.rs:1208-1290`) is the plan of a receive, as the default of `Discipline::receive`, and it mirrors OFFER.
 
 ```text
-RECEIVE(op, ord):                              ▷ GenericSpace::receive
+RECEIVE(op, ord):                              ▷ receive_head
     K ← WRAP-CONTINUATION(ord, op.body, op.guard, the cost authority of op)
     peeks ← {0} for a peek, ∅ otherwise
     if not AT-HEAD(Waiters, op.reissued_ord, ord): PARK(K, peeks) and return no re-issue
@@ -1894,7 +1912,7 @@ RECEIVE(op, ord):                              ▷ GenericSpace::receive
 
 A peek `<<-` keeps the head record by a [re-store](glossary.md#re-store) ([decision 45](decision-register.md#decision-45), Rule E).
 Its COMM removes a non-persistent head record, as the host COMM does.
-`RE-STORE` then stages a produce of the same record bytes with the outcome Store, right after the fire (`Plan::restore`).
+`RE-STORE` then stages a produce of the same record bytes with the outcome Store, right after the fire (`Cx::restore`).
 So the record keeps its identity, its envelope and its order, and it stays the head.
 The re-store registers the cost authority of the record (`Introduction::for_record`), and it bumps no counter.
 A peek of a persistent record removes nothing, so it stages no re-store.
@@ -1902,7 +1920,7 @@ A peek of a persistent record removes nothing, so it stages no re-store.
 A persistent receive `<=` drains the head records one after another and parks when no head record matches.
 This drain is the persistent drain of the queue.
 
-**The fire rounds.** `FireRounds::after_fire` (`reified/costs.rs:299-310`) decides the next step after each fire:
+**The fire rounds.** `FireRounds::after_fire` (`reified/costs.rs:322-333`) decides the next step after each fire:
 
 ```rust
     /// Records one fire and returns the next step (A10, readiness review S5).
@@ -1976,9 +1994,11 @@ Then the matching heads would stay with nothing in flight.
 
 The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1135`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) prove the order of delivery and the blocking of a head.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:920-955`) turns the receipts into a `SpaceOutcome`.
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:1397-1465`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
+It also drops a retirement and a lift, which P5 stages and never dispatches.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
+A fire over `[D; n]` that binds one result keeps only the first result of its receipt (P5a, F3).
 
 A replay of the same operation reads the same staged view, so it stages the same operations.
 There, `verify` pairs each fire that play committed ([S5.3](#s53-verify-fr-3)).
@@ -2049,7 +2069,7 @@ pub fn route(ctx: &SpaceCtx, channel: &Par) -> Result<Route, SpaceError> {
 Two more rules complete the routing:
 
 - **R6.** A space operation builds its produce and consume identities on the data channel $`D(\mathit{sid}, k)`$. So the identities equal what reaches storage.
-- **R7.** `RoutingExecution` (`reified/execution.rs:111-128`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
+- **R7.** `RoutingExecution` (`reified/execution.rs:112-129`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
 
 A channel of an ordinary program routes to the default space, and the hooks then make the baseline call with identical arguments.
 The headline `ordinary_channels_route_default` (`SpaceRefs.v:710`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
@@ -2098,10 +2118,10 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:392-402`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:395-405`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:205-223`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:206-224`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
@@ -2124,7 +2144,7 @@ REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_pr
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:283-348`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:285-351`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2144,7 +2164,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:956-976`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:959-979`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2205,14 +2225,14 @@ A read, such as the config read of `getSpaceAgent`, stages nothing and drops its
 An empty commit would claim the parent order, and a later commit under the same order would fail with `ParentOrderReused`.
 The job never awaits between `begin` and `commit`, except inside `begin`, and matching is synchronous.
 
-**The evaluation scope.** `inj`, `inj_with_observation`, and `inj_with_host_work` call `begin_evaluation_scope` at their entry (`reified/runtime.rs:72-77`).
+**The evaluation scope.** `inj`, `inj_with_observation`, and `inj_with_host_work` call `begin_evaluation_scope` at their entry (`reified/runtime.rs:73-78`).
 The three interpreter entries `inj_attempt`, `inj_attempt_with_native_phlo`, and `inj_attempt_with_host_work` reach the reducer through `inj_with_observation`.
 The test `reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope` runs one term twice through `inj_with_host_work` under the same operation orders.
 In the host mode, the call resets the tracker of committed parent orders, so a deploy that runs again commits under the same orders (FR-5').
 It makes no event, no charge, and no random draw.
 
 **Host work.** The job gets the host-work budget that `submit_space` captured, because `reserve_host_work` charges nothing inside the task of a job.
-`ScanMeter` (`reified/costs.rs:47-239`) applies the rule of DR-88 of `feature/cost-accounted-rho` ([decision 42](decision-register.md#decision-42)).
+`ScanMeter` (`reified/costs.rs:48-262`) applies the rule of DR-88 of `feature/cost-accounted-rho` ([decision 42](decision-register.md#decision-42)).
 A reservation has three amounts, and each amount charges one host-work dimension:
 
 - The operations charge VerificationOperations.
@@ -2229,7 +2249,7 @@ The agent prepays at staging the work of the outcome after the commit.
 So a host-work rejection always happens before the commit, and the operation has no effect (`AgentReadCoverage.v`, `cut_rejects_before_commit`).
 Without a budget, the meter accepts every charge and skips every walk, as `reserve_host_work` does ([decision I-12](decision-register.md#i-12)).
 
-**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:54-56`) has three modes, and only the host mode runs space jobs.
+**The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:55-57`) has three modes, and only the host mode runs space jobs.
 
 *Table N6.1. The modes of the runtime.*
 
@@ -2239,14 +2259,14 @@ Without a budget, the meter accepts every charge and skips every walk, as `reser
 | `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
 | `NativeReplay` | `native_replay`, in the native replay environment | fails with `SpacesUnsupportedInNativeExecution` ([decision I-13](decision-register.md#i-13)) |
 
-Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:83-92, 96`).
+Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:84-93, 97`).
 `run_op`, `create_space`, and `read_config` check it before `submit_space`, so a failing check takes no operation order and makes no observer call.
 So native play and native replay reject a space deploy at one point.
 Native replay then reproduces the failure of play (`SpaceRefs.v`, `native_execution_fails_closed`).
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:458-508`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:461-511`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2277,7 +2297,7 @@ Without the branch, that operation fails with the panic `reduction participant m
 
 ### N7. Factories and handles
 
-**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:73-111`).
+**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:73-112`).
 The send hook packs the arguments of the program after `ret` into the constructor list `ctor`.
 
 ```text
@@ -2318,14 +2338,14 @@ A second creation of one id fails with `SpaceAlreadyExists` in play and in repla
 | 6 | The params are named. | `PositionalParamsUnsupported` |
 | 7 | Each named param is in the schema of the family, in bytewise order of the keys. The schema of `hashmap:queue` is empty. | `UnknownParam`, with a suggestion |
 
-The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:44-53`). A tie goes to the bytewise least candidate.
+The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:48-57`). A tie goes to the bytewise least candidate.
 
-**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:116-150`).
+**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:117-151`).
 Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP`.
 It has no guard and no cost authority, so each call is paid by its caller.
 It is a single-channel receive, so it adds no pre-state join, and handle calls merge like contract calls (consensus checklist item 18, [decision I-16](decision-register.md#i-16)).
 
-**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:213-320`).
+**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:214-321`).
 
 ```text
 HANDLE-OP(this, message):                      ▷ reified/handle.rs, HandleProcess::call and run
@@ -2376,7 +2396,7 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
 
 The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x23` and `0x30` to `0x32` (`reified/system_channels.rs:101`, `105`).
 
-**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:151-187`).
+**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:147-183`).
 For a native space, it reads the config record in a read-only space intent. It then replies with the capability of the factory of the family ([decision 9.4](decision-register.md#decision-9-4)).
 That capability equals the value that the URN of the factory binds, so the FIPS check `getSpaceAgent(space_1) == HMB` holds.
 `assertEqual!(ret, a, b)` replies `true` when the sorted values of `a` and `b` are equal, and `false` otherwise ([decision 33](decision-register.md#decision-33)).
@@ -2391,10 +2411,10 @@ Figure N7 shows the lifecycle of a native handle, from the factory call to a rep
 
 A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
 An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
-A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:127-134`).
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:163-170`).
 The message text is not consensus state, but the code names the failure for tests and for users.
 
-The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:113-121`):
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:149-157`):
 
 - `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
@@ -2416,20 +2436,25 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `OrderedJoinUnsupported` | A join whose binds route to one queue space, until P5. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
 
-*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-76`).*
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-104`).*
 
 | Code | Trigger |
 |---|---|
 | `SpaceAlreadyExists` | The creation finds a config record on $`C(\mathit{sid})`$. |
 | `BadConstructorArgument` | The constructor is not canonical, or the family does not take the qualifier. |
-| `UnknownParam` | A named param outside the schema: on a factory, or on a send to a queue. |
+| `UnknownParam` | A named param outside the schema: on a factory, on a send, or in the query of a receive. |
+| `InvalidParam`, `MissingParam` | A param value that the schema does not accept, or a required param that is missing (from P5). |
+| `QuerySpecUnsupported` | A receive with a query on a discipline that takes no query params. |
+| `CellOccupied` | A store or a park on a side that already holds the capacity of its discipline (F15, from P5). |
+| `OutOfNames`, `NotAnIndexName` | An allocation past the size of a fixed Array space, or a channel of an Array or Vector space that is not its own index name (P5d). |
+| `UnsupportedPathElement`, `PathTooDeep` | A path element that holds a PathMap or a zipper, or a path of more than 64 elements (P5e). |
 | `PositionalParamsUnsupported` | Positional params on a factory, on a handle call, or on a space channel. |
 | `QualifierUnavailable`, `TheoryUnavailable` | A `temp` or `seq` qualifier, or a theory, until P7. |
 | `FamilyUnavailable` | A family that this phase does not register or run. |
 | `RuntimeUnavailable`, `SpacesUnsupportedInNativeExecution` | A space operation in a detached runtime, or in native play or native replay ([decision 46](decision-register.md#decision-46)). |
 | `DanglingHandle`, `DanglingName` | A space without its config record, reached through a handle or through a space name. |
 | `CounterOverflow` | An `ord` counter at `i64::MAX`. |
-| `Inconsistent` | A malformed record, a second counter or config record, a persistent counter record, a collection in a join, or a receipt that differs from its staged operation. |
+| `Inconsistent` | A malformed record, a second counter or config record, a persistent counter record, a collection in a join, a fire group that does not line up, or a receipt that differs from its staged operation. |
 | `ReplayDivergence` | A fire without a free recorded occurrence of its COMM in replay. |
 | `Substrate` | Every other failure of the substrate. |
 
@@ -2536,7 +2561,7 @@ The callback of operation $`i`$ wraps the registration of the introduction (`rho
 
 Every staged operation of a space job goes through the chain.
 This covers the counter bump (`counter::bump`), the plans of the queue, the [re-store](glossary.md#re-store), and the operations that create a space.
-The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:1027`, `1070`, `1150`).
+The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:1837`, `1882`, `2092`).
 
 **Out of phlo.** A charge that runs out of phlo stops the run where the host program stops.
 A carried post-charge or a pre-charge fails inside the callback of its operation.

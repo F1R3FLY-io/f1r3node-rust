@@ -2,9 +2,10 @@
 //! C.7, step 2, and C.8).
 //!
 //! A schema lists the named params that a family accepts. The factory checks the params of its
-//! constructor against the constructor schema, and the handle method `produce` checks its
-//! params against the send schema. P4 registers only `hashmap:queue`, and both of its schemas
-//! are empty. A family without a schema is not available.
+//! constructor against the constructor schema. The handle method `produce` checks its params
+//! against the send schema, which the family dispatch gives (`families::send_params`), so the
+//! wired families have one source of truth. P4 registers only `hashmap:queue`, and both of its
+//! schemas are empty. A family without a schema is not available.
 //!
 //! The suggestion for an unknown name is the candidate with the least Levenshtein distance,
 //! when that distance is at most [`SUGGESTION_DISTANCE`]. A tie goes to the bytewise least
@@ -27,17 +28,20 @@ pub fn constructor_schema(family: SpaceFactoryUrn) -> Option<&'static [&'static 
     }
 }
 
-/// The named params of a send to a collection of `family`: the schema of its discipline. The
-/// queue discipline takes none, so `priority` is an unknown param of a queue.
-pub fn send_schema(family: SpaceFactoryUrn) -> Option<&'static [&'static str]> {
-    match (family.outer, family.inner) {
-        (SpaceOuter::HashMap, SpaceInner::Queue) => Some(&[]),
-        (SpaceOuter::HashMap, _)
-        | (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector | SpaceOuter::HashSet, _) => {
-            None
-        }
-    }
-}
+// Disabled by P5 S1 (P5 design v3, A.3.4): the send schema of a family is the schema of its
+// discipline, and the family dispatch gives it (`families::send_params`). A second table here
+// could drift from the dispatch.
+// /// The named params of a send to a collection of `family`: the schema of its discipline. The
+// /// queue discipline takes none, so `priority` is an unknown param of a queue.
+// pub fn send_schema(family: SpaceFactoryUrn) -> Option<&'static [&'static str]> {
+//     match (family.outer, family.inner) {
+//         (SpaceOuter::HashMap, SpaceInner::Queue) => Some(&[]),
+//         (SpaceOuter::HashMap, _)
+//         | (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector | SpaceOuter::HashSet, _) => {
+//             None
+//         }
+//     }
+// }
 
 /// The candidate that is closest to `word`, at a Levenshtein distance of at most
 /// [`SUGGESTION_DISTANCE`]. A tie goes to the bytewise least candidate.
@@ -87,19 +91,20 @@ fn distance_within(word: &str, candidate: &str, bound: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rust::interpreter::spaces::families::send_params;
 
     #[test]
     fn space_factory_schemas_cover_only_the_registered_family() {
         for family in SpaceFactoryUrn::all() {
             let registered = family == SpaceFactoryUrn::HASHMAP_QUEUE;
             assert_eq!(constructor_schema(family).is_some(), registered, "{family}");
-            assert_eq!(send_schema(family).is_some(), registered, "{family}");
+            assert_eq!(send_params(family).is_some(), registered, "{family}");
         }
         assert_eq!(
             constructor_schema(SpaceFactoryUrn::HASHMAP_QUEUE),
             Some(&[][..])
         );
-        assert_eq!(send_schema(SpaceFactoryUrn::HASHMAP_QUEUE), Some(&[][..]));
+        assert_eq!(send_params(SpaceFactoryUrn::HASHMAP_QUEUE), Some(&[][..]));
     }
 
     #[test]

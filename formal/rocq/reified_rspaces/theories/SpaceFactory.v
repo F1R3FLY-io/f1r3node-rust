@@ -54,12 +54,12 @@
                             qualifier_of)
    derive_space_id          rholang/src/rust/interpreter/spaces/types/id.rs:
                             13-22, rholang/src/rust/interpreter/spaces/
-                            namespace.rs:379-397, 401-403 (RandomPurpose and
+                            namespace.rs:397-422, 426-428 (RandomPurpose and
                             derive)
    check_persistent_send    rholang/src/rust/interpreter/reified/
                             system_channels.rs:101, 105, 110-122
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            1075-1160
+                            1994-2109
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

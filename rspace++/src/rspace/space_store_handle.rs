@@ -29,17 +29,21 @@
 //                                    `ReportingRspace` (replay, reporting)
 
 use std::any::Any;
-use std::borrow::Borrow;
-use std::cmp::Reverse;
+use std::borrow::{Borrow, Cow};
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::hash::Hash;
+use std::mem::size_of;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::ThreadId;
 
 use async_trait::async_trait;
 use serde::Serialize;
 
+use shared::rust::clone_backing::CloneBacking;
+
+use crate::rspace::candidate_order::{self, CandidateSource, OrderWork};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::{self, SourceMeter};
@@ -293,6 +297,152 @@ pub fn metered_encode<T: Serialize + ?Sized>(
     meter: &impl SourceMeter,
 ) -> Result<Vec<u8>, RSpaceError> {
     native_source::encode(value, meter)
+}
+
+/// The blake2b-256 hash of the bincode bytes of `value`, hashed by the
+/// metered writer of the host (`native_source::hash`): each write is reserved
+/// on `meter` before it happens. A set agent hashes its class keys with it
+/// (P5a, decision 41).
+pub fn metered_hash<T: Serialize + ?Sized>(
+    value: &T,
+    meter: &impl SourceMeter,
+) -> Result<Blake2b256Hash, RSpaceError> {
+    native_source::hash(value, meter)
+}
+
+/// The canonical order of the stored records `data` of one collection
+/// (DR-75, decision 41): by the hash of the source produce of each record,
+/// then by its full digest inside a run of equal source hashes, then by its
+/// index. It returns the indices of `data` in that order, which is the order
+/// of `candidate_order::canonical_candidates`. The work is reserved on
+/// `meter` as metered native replay reserves it for the same order
+/// (`MeteredOrder` of `native_candidate/metered.rs`, restated in
+/// [`SpaceOrder`]), so a bag or a set agent charges for its order what the
+/// branch charges. The records are ordered as borrowed views, and the agent
+/// copies only the records that it binds.
+pub fn canonical_data_order<A>(
+    data: &[Datum<A>],
+    meter: &dyn SourceMeter,
+) -> Result<Vec<usize>, RSpaceError>
+where
+    A: Clone + Serialize + CloneBacking,
+{
+    canonical_view_order(data, meter)
+}
+
+/// [`canonical_data_order`] for the waiting continuations of one collection:
+/// by the hash of the source consume of each continuation, then by its
+/// digest, then by its index.
+pub fn canonical_continuation_order<P, K>(
+    waiters: &[WaitingContinuation<P, K>],
+    meter: &dyn SourceMeter,
+) -> Result<Vec<usize>, RSpaceError>
+where
+    P: Clone + Serialize + CloneBacking,
+    K: Clone + Serialize + CloneBacking,
+{
+    canonical_view_order(waiters, meter)
+}
+
+fn canonical_view_order<T>(entries: &[T], meter: &dyn SourceMeter) -> Result<Vec<usize>, RSpaceError>
+where
+    T: CandidateSource + Clone + Serialize + CloneBacking,
+{
+    let mut views = space_order_buffer(entries.len(), meter)?;
+    views.extend(entries.iter().map(Cow::Borrowed));
+    let ordered = candidate_order::canonical_order(views, &SpaceOrder(meter))?;
+    let mut indices = space_order_buffer(ordered.len(), meter)?;
+    for (_, index) in ordered {
+        indices.push(usize::try_from(index).map_err(|_| RSpaceError::HostWorkRejected)?);
+    }
+    Ok(indices)
+}
+
+/// The order work of a space agent over borrowed views. It restates the
+/// reservations of `MeteredOrder` and of its helpers `buffer` and `sort` in
+/// `native_candidate/metered.rs`, a file of `feature/cost-accounted-rho` that
+/// the campaign does not edit (M-3).
+struct SpaceOrder<'m>(&'m dyn SourceMeter);
+
+impl<'v, T> OrderWork<Cow<'v, T>> for SpaceOrder<'_>
+where
+    T: Clone + Serialize + CloneBacking,
+{
+    type Error = RSpaceError;
+
+    fn index_bound(&self, length: usize) -> Result<i32, RSpaceError> {
+        i32::try_from(length).map_err(|_| RSpaceError::HostWorkRejected)
+    }
+
+    fn buffer<U>(&self, length: usize) -> Result<Vec<U>, RSpaceError> {
+        space_order_buffer(length, self.0)
+    }
+
+    fn sort<U>(
+        &self,
+        values: &mut [U],
+        compare: impl Fn(&U, &U) -> Ordering,
+        scanned: impl Fn(&U) -> usize,
+    ) -> Result<(), RSpaceError> {
+        let moves = size_of::<U>()
+            .checked_mul(2)
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        self.0.reserve(
+            values.len(),
+            values
+                .len()
+                .checked_mul(moves)
+                .ok_or(RSpaceError::HostWorkRejected)?,
+            0,
+        )?;
+        shared::rust::fallible_sort::sort(values, |a, b| {
+            self.0.reserve(
+                1,
+                moves
+                    .checked_add(scanned(a))
+                    .and_then(|bytes| bytes.checked_add(scanned(b)))
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+                0,
+            )?;
+            Ok(compare(a, b))
+        })
+    }
+
+    fn scan(&self, left: &Blake2b256Hash, right: &Blake2b256Hash) -> Result<(), RSpaceError> {
+        self.0.reserve(
+            1,
+            left.0
+                .len()
+                .checked_add(right.0.len())
+                .ok_or(RSpaceError::HostWorkRejected)?,
+            0,
+        )
+    }
+
+    fn digest(&self, value: &Cow<'v, T>) -> Result<Blake2b256Hash, RSpaceError> {
+        crate::rspace::native_backing::inspect(value, self.0)?;
+        native_source::hash(value, &|operations, scanned, backing| {
+            self.0.reserve(operations, scanned, backing)
+        })
+    }
+}
+
+/// An empty buffer for `length` values, reserved as the `buffer` helper of
+/// `native_candidate/metered.rs` reserves it.
+fn space_order_buffer<U>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<U>, RSpaceError> {
+    let bytes = length
+        .checked_mul(size_of::<U>())
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(
+        length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?,
+        bytes,
+        bytes,
+    )?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(length)
+        .map_err(|_| RSpaceError::HostWorkRejected)?;
+    Ok(values)
 }
 
 /// Candidate that binds the stored record `stored` (at `view_index` in the
@@ -2969,6 +3119,154 @@ mod tests {
         let mut channels = names(values);
         channels.sort_by_key(hash);
         channels
+    }
+
+    // A meter that counts the reserved operations, scanned bytes and backing
+    // bytes, and that rejects once the operations pass `limit`.
+    fn counting_meter(
+        counts: &std::cell::Cell<(usize, usize, usize)>,
+        limit: usize,
+    ) -> impl Fn(usize, usize, usize) -> Result<(), RSpaceError> + '_ {
+        move |operations, scanned, backing| {
+            let (o, s, b) = counts.get();
+            let next = (o + operations, s + scanned, b + backing);
+            if next.0 > limit {
+                return Err(RSpaceError::HostWorkRejected);
+            }
+            counts.set(next);
+            Ok(())
+        }
+    }
+
+    fn play_indices<D: CandidateSource + Serialize>(values: Vec<D>) -> Vec<usize> {
+        candidate_order::canonical_candidates(values)
+            .into_iter()
+            .map(|(_, index)| index as usize)
+            .collect()
+    }
+
+    proptest::proptest! {
+        // DR-75 (decision 41): the metered order of a space agent is the
+        // order of play, also with tie runs of equal source hashes.
+        #[test]
+        fn canonical_data_order_is_the_order_of_play(
+            data in candidate_order::candidate_strategy()
+        ) {
+            let counts = std::cell::Cell::new((0, 0, 0));
+            let order = canonical_data_order(&data, &counting_meter(&counts, usize::MAX))
+                .expect("an unlimited meter accepts");
+            proptest::prop_assert_eq!(order, play_indices(data.clone()));
+            // A cut one operation below the usage rejects, and the exact usage
+            // accepts, so every reservation precedes the result.
+            let used = counts.get().0;
+            let exact = std::cell::Cell::new((0, 0, 0));
+            proptest::prop_assert!(
+                canonical_data_order(&data, &counting_meter(&exact, used)).is_ok()
+            );
+            proptest::prop_assert_eq!(exact.get(), counts.get());
+            if used > 0 {
+                let cut = std::cell::Cell::new((0, 0, 0));
+                proptest::prop_assert_eq!(
+                    canonical_data_order(&data, &counting_meter(&cut, used - 1)),
+                    Err(RSpaceError::HostWorkRejected)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_continuation_order_is_the_order_of_play() {
+        let waiters = vec![
+            wk(&["a"], "k3", BTreeSet::new()),
+            wk(&["a"], "k1", BTreeSet::new()),
+            wk(&["a"], "k2", BTreeSet::from([0])),
+        ];
+        let counts = std::cell::Cell::new((0, 0, 0));
+        let order = canonical_continuation_order(&waiters, &counting_meter(&counts, usize::MAX))
+            .expect("an unlimited meter accepts");
+        assert_eq!(order, play_indices(waiters.clone()));
+        assert!(counts.get().0 > 0, "the order reserves its buffers and its sort");
+        assert_eq!(
+            canonical_continuation_order(&[] as &[WaitingContinuation<String, String>], &|_, _, _| {
+                Ok(())
+            }),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn metered_hash_is_the_hash_of_the_bincode_bytes() {
+        let value = (String::from("rrs-set-key"), vec![1u8, 2, 3], 7i64);
+        let counts = std::cell::Cell::new((0, 0, 0));
+        let hashed = metered_hash(&value, &counting_meter(&counts, usize::MAX))
+            .expect("an unlimited meter accepts");
+        let bytes = bincode::serialize(&value).expect("the value encodes");
+        assert_eq!(hashed, Blake2b256Hash::new(&bytes));
+        assert!(counts.get().1 >= bytes.len(), "the hash reserves the bytes that it reads");
+    }
+
+    // DR-75 (decision 41): each primitive of the space order reserves what the
+    // branch's `MeteredOrder` and its helpers `buffer` and `sort` reserve
+    // (`native_candidate/metered.rs`). Both implement the one `OrderWork` of
+    // `candidate_order::canonical_order`, so the order of a space agent costs
+    // what the order of metered native replay costs.
+    #[test]
+    fn space_order_primitives_reserve_the_restated_formula() {
+        type View<'v> = Cow<'v, Datum<String>>;
+        let recorded = std::cell::RefCell::new(Vec::new());
+        let recorder = |operations: usize, scanned: usize, backing: usize| {
+            recorded.borrow_mut().push((operations, scanned, backing));
+            Ok(())
+        };
+        let order = SpaceOrder(&recorder);
+        // A buffer of `length` values: `length + 1` operations and
+        // `length * size` bytes, scanned and backed.
+        let buffered: Vec<(u64, u32)> =
+            <SpaceOrder<'_> as OrderWork<View<'_>>>::buffer(&order, 5).expect("a buffer");
+        assert!(buffered.capacity() >= 5);
+        let bytes = 5 * size_of::<(u64, u32)>();
+        assert_eq!(recorded.take(), vec![(6, bytes, bytes)]);
+        // A sort: one reservation of the moves of every value, then one for
+        // each comparison, which reads the moves of two values and the bytes
+        // that `scanned` gives for each.
+        let mut values = vec![5_u64, 3, 9, 1, 7];
+        let comparisons = std::cell::Cell::new(0_usize);
+        <SpaceOrder<'_> as OrderWork<View<'_>>>::sort(
+            &order,
+            &mut values,
+            |left, right| {
+                comparisons.set(comparisons.get() + 1);
+                left.cmp(right)
+            },
+            |_| 32,
+        )
+        .expect("a sort");
+        assert_eq!(values, vec![1, 3, 5, 7, 9]);
+        let moves = 2 * size_of::<u64>();
+        let mut expected = vec![(5, 5 * moves, 0)];
+        expected.extend(std::iter::repeat_n((1, moves + 64, 0), comparisons.get()));
+        assert!(comparisons.get() > 0);
+        assert_eq!(recorded.take(), expected);
+        // A scan: one comparison of two hashes.
+        let (left, right) = (Blake2b256Hash::new(b"left"), Blake2b256Hash::new(b"right"));
+        <SpaceOrder<'_> as OrderWork<View<'_>>>::scan(&order, &left, &right).expect("a scan");
+        assert_eq!(recorded.take(), vec![(1, left.0.len() + right.0.len(), 0)]);
+        // A digest: the inspect of the value, then the metered hash of its
+        // bincode bytes.
+        let datum: View<'_> = Cow::Owned(Datum::create(&"channel".to_string(), "payload".to_string(), false));
+        let digest = order.digest(&datum).expect("a digest");
+        let digested = recorded.take();
+        let reference = std::cell::RefCell::new(Vec::new());
+        let reference_meter = |operations: usize, scanned: usize, backing: usize| {
+            reference.borrow_mut().push((operations, scanned, backing));
+            Ok(())
+        };
+        crate::rspace::native_backing::inspect(&datum, &reference_meter).expect("an inspect");
+        let expected_digest =
+            native_source::hash(&datum, &reference_meter).expect("a metered hash");
+        assert_eq!(digest, expected_digest);
+        assert_eq!(digested, reference.take());
+        assert!(!digested.is_empty());
     }
 
     // A sub-order sorts after its parent operation and before the parent's

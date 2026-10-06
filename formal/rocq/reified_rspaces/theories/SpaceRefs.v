@@ -28,16 +28,16 @@
    ─────────────────────────────────────────────────────────────────────────
    kind_of_byte, decode_reified_id
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            294-324, 281-289 (decode_reified_id and
+                            312-342, 299-307 (decode_reified_id and
                             name_tail, copied from Namespace.v, which
                             proves their properties)
    space_scoped_id, handle_channel, name_id, op_channel
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            223-230, 249, 252-257, 260
+                            223-230, 249, 270-275, 278
    is_empty                 rholang/src/rust/interpreter/reified/scope.rs:68-95
    sole_unforgeable, sole_gprivate_id, reified_id_of
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            328-358, 361-368, 371-373
+                            346-376, 379-386, 389-391
    single_bundle            models/src/rust/rholang/implicits.rs:65-81
    sole_expr                rholang/src/rust/interpreter/reified/route.rs:52-87
    is_agent_tagged          rholang/src/rust/interpreter/reified/route.rs:89-99
@@ -49,29 +49,29 @@
    route                    rholang/src/rust/interpreter/reified/route.rs:
                             149-169, 174-176 (R1 to R5, and route_channel)
    r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
-                            111-128 (produce routes with no context)
+                            112-129 (produce routes with no context)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:539-544
+     without_context        reducer_hooks.rs:542-547
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             106-129
    wrap_body                rholang/src/rust/interpreter/reified/scope.rs:
                             134-142
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:107-122, 126-140, 176-188
+                            reducer_hooks.rs:108-123, 127-141, 177-189
                             (eval_marker, eval_use, native_space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer)
    handle_of                rholang/src/rust/interpreter/reified/
                             system_channels.rs:93-98
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
-                            131-160, 174-183, 534-570, 572-577, 579-584,
-                            586-595, 604-609 (ParsedMessage::parse,
+                            132-161, 175-184, 536-572, 574-579, 581-586,
+                            588-597, 606-611 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
-                            84-93, 96-102
+                            85-94, 97-103
    call, run                rholang/src/rust/interpreter/reified/handle.rs:
-                            213-268, 270-320
+                            214-269, 271-321
    ensure_available, space_entry
                             rholang/src/rust/interpreter/reified/runtime.rs
                             (ReifiedRuntime::host, ensure_available, and
@@ -657,7 +657,7 @@ Section Routing.
       rewrite Hl. reflexivity.
   Qed.
 
-  (* The R7 backend (rholang/src/rust/interpreter/reified/execution.rs:117):
+  (* The R7 backend (rholang/src/rust/interpreter/reified/execution.rs:118):
      the produce of a system process routes with no context. *)
   Inductive r7_action : Type :=
   | R7Inner

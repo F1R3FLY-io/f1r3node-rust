@@ -101,6 +101,7 @@ impl FactoryProcess {
             handle_continuation: handle_continuation(space, &random),
             random,
             authority,
+            family: self.family,
         };
         self.runtime
             .create_space(Arc::clone(&self.agent), creation)
