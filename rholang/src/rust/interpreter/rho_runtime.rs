@@ -1241,6 +1241,7 @@ async fn setup_reducer(
         single_term_evaluations: Arc::new(AtomicU64::new(0)),
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+        filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
