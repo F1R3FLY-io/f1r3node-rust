@@ -19,7 +19,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_delegation_succeeds,
       test_undelegation_succeeds,
       test_delegator_rewards_claim_succeeds,
-      test_withdraw_fails_with_active_delegations,
+      test_withdraw_converts_active_delegations_to_pending,
       test_withdraw_succeeds,
       test_validator_is_paid_after_withdraw,
       test_multiple_bonding_succeeds,
@@ -39,7 +39,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_slash_only_affects_target_validator_across_multiple_delegators,
       test_slash_one_validator_preserves_other_validator_delegation,
       test_delegate_rejects_when_effective_bond_would_exceed_maximum,
-      test_active_set_tracks_effective_bonds_on_close_block,
+      test_close_block_excludes_pending_undelegations_from_effective_bonds,
       getPosBalance, getCoopBalance,
       closeBlock
     in {
@@ -66,9 +66,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("delegation success", *test_delegation_succeeds),
               ("undelegation success", *test_undelegation_succeeds),
               ("delegator rewards can be claimed", *test_delegator_rewards_claim_succeeds),
-              ("withdraw fails when validator has active delegations", *test_withdraw_fails_with_active_delegations),
               ("withdraw succeeds", *test_withdraw_succeeds),
               ("validator is paid after withdraw", *test_validator_is_paid_after_withdraw),
+              ("withdraw converts active delegations to pending undelegations", *test_withdraw_converts_active_delegations_to_pending),
               ("bonding fails if deposit fails", *test_bonding_fails_if_deposit_fails),
               ("multiple bondings work", *test_multiple_bonding_succeeds),
               ("payment works", *test_pay_succeeds),
@@ -86,7 +86,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("slash only affects target validator across multiple delegators", *test_slash_only_affects_target_validator_across_multiple_delegators),
               ("slash one validator preserves delegation to another", *test_slash_one_validator_preserves_other_validator_delegation),
               ("delegate enforces maximum effective bond cap", *test_delegate_rejects_when_effective_bond_would_exceed_maximum),
-              ("active set tracks effective bonds on closeBlock", *test_active_set_tracks_effective_bonds_on_close_block)
+              ("closeBlock excludes pending undelegations from effective bonds", *test_close_block_excludes_pending_undelegations_from_effective_bonds)
             ]
           ) |
 
@@ -412,31 +412,50 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               }
             }
           } |
-          // Tests that validator withdrawal is blocked while delegated stake is still attached.
-          contract test_withdraw_fails_with_active_delegations(rhoSpec, _, ackCh) = {
-            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh, withdrawCh, pendingWithdrawersCh
+          // Tests that validator withdrawal moves delegated stake to pending undelegation.
+          contract test_withdraw_converts_active_delegations_to_pending(rhoSpec, _, ackCh) = {
+            new setBlockData(`rho:test:block:data:set`), blockDataCh,
+                validatorSetupCh, delegatorSetupCh, bondCh, delegateCh, withdrawCh,
+                pendingWithdrawersCh, delegationsCh, delegatedTotalsCh, pendingUndelegationsCh, effectiveBondsCh,
+                epochCh
             in {
               prepareUser!("aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae", *validatorSetupCh) |
               prepareUser!("bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf", *delegatorSetupCh) |
+              @PoS!("getEpochLength", *epochCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
-                   _, _, _, @delegatorDeployerId <- delegatorSetupCh) {
-                match (100, 30) {
-                  (validatorBond, delegationAmt) => {
+                   @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
+                   @epochLength <- epochCh) {
+                match (100, 30, 40) {
+                  (validatorBond, delegationAmt, requestBlock) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
                     for (@(true, _) <- bondCh) {
                       @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
                       for (@(true, _) <- delegateCh) {
-                        @PoS!("withdraw", validatorDeployerId, *withdrawCh) |
-                        for (@(false, errorMsg) <- withdrawCh) {
-                          @PoS!("getPendingWithdrawer", *pendingWithdrawersCh) |
-                          for (@pendingWithdrawers <- pendingWithdrawersCh) {
-                            rhoSpec!("assertMany",
-                              [
-                                (("Validator has active delegations.", "==", errorMsg), "withdraw is rejected while delegation is active"),
-                                ((false, "==", pendingWithdrawers.contains(validatorPubKey)), "validator is not added to pending withdrawers")
-                              ],
-                              *ackCh
-                            )
+                        setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                        for (_ <- blockDataCh) {
+                          @PoS!("withdraw", validatorDeployerId, *withdrawCh) |
+                          for (@(true, _) <- withdrawCh) {
+                            @PoS!("getPendingWithdrawer", *pendingWithdrawersCh) |
+                            @PoS!("getDelegations", *delegationsCh) |
+                            @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                            @PoS!("getPendingUndelegations", *pendingUndelegationsCh) |
+                            @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                            for (@pendingWithdrawers <- pendingWithdrawersCh &
+                                 @delegations <- delegationsCh &
+                                 @delegatedTotals <- delegatedTotalsCh &
+                                 @pendingUndelegations <- pendingUndelegationsCh &
+                                 @effectiveBonds <- effectiveBondsCh) {
+                              rhoSpec!("assertMany",
+                                [
+                                  ((true, "==", pendingWithdrawers.contains(validatorPubKey)), "validator is added to pending withdrawers"),
+                                  ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "active delegation entry is removed"),
+                                  ((false, "==", delegatedTotals.contains(validatorPubKey)), "delegated total is cleared"),
+                                  (((delegationAmt, requestBlock + epochLength), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "delegated stake becomes pending undelegation"),
+                                  ((validatorBond, "==", effectiveBonds.get(validatorPubKey)), "pending undelegation no longer contributes to effective stake")
+                                ],
+                                *ackCh
+                              )
+                            }
                           }
                         }
                       }
@@ -1474,12 +1493,12 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               }
             }
           } |
-          // closeBlock active-set update should use effective bonds; pending undelegations are excluded.
-          contract test_active_set_tracks_effective_bonds_on_close_block(rhoSpec, _, ackCh) = {
+          // closeBlock effective-bond update should exclude pending undelegations.
+          contract test_close_block_excludes_pending_undelegations_from_effective_bonds(rhoSpec, _, ackCh) = {
             new setBlockData(`rho:test:block:data:set`), blockDataCh,
                 validatorSetupCh, delegatorSetupCh,
                 bondCh, delegateCh, undelegateCh, closeBlockCh,
-                epochCh, activeLimitCh, effectiveBondsCh, activeValidatorsCh
+                epochCh, effectiveBondsCh
             in {
               prepareUser!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", *validatorSetupCh) |
               prepareUser!("c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", *delegatorSetupCh) |
@@ -1494,22 +1513,17 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                       @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 40, *undelegateCh) |
                       for (@(true, _) <- undelegateCh) {
                         @PoS!("getEpochLength", *epochCh) |
-                        @PoS!("getNumberOfActiveValidators", *activeLimitCh) |
-                        for (@epochLength <- epochCh &
-                             @activeLimit <- activeLimitCh) {
+                        for (@epochLength <- epochCh) {
                           setBlockData!("blockNumber", epochLength, *blockDataCh) |
                           for (_ <- blockDataCh) {
                             closeBlock!(*closeBlockCh) |
                             for (@(true, _) <- closeBlockCh) {
                               @PoS!("getEffectiveBonds", *effectiveBondsCh) |
-                              @PoS!("getActiveValidators", *activeValidatorsCh) |
-                              for (@effectiveBonds <- effectiveBondsCh &
-                                   @activeValidators <- activeValidatorsCh) {
+                              for (@effectiveBonds <- effectiveBondsCh) {
                                 rhoSpec!("assertMany",
                                   [
                                     ((100, "==", effectiveBonds.get(validatorPubKey)), "pending undelegation is excluded from future effective stake"),
-                                    ((true, "==", effectiveBonds.contains(validatorPubKey)), "validator remains represented in effective bonds by self-bond"),
-                                    ((true, "==", activeValidators.size() <= activeLimit), "active validator set respects configured size bound")
+                                    ((true, "==", effectiveBonds.contains(validatorPubKey)), "validator remains represented in effective bonds by self-bond")
                                   ],
                                   *ackCh
                                 )

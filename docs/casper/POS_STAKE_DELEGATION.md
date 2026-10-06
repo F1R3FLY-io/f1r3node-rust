@@ -7,8 +7,6 @@ This document describes the delegation extension in:
 - `casper/src/main/resources/PoS.rhox`
 - `casper/src/test/resources/PoSTest.rho`
 
-Validation notes below are from runs on **April 20, 2026 (UTC)**.
-
 This revision includes:
 
 - on-chain delegator reward accrual + claiming
@@ -100,6 +98,15 @@ Effective stake is computed as:
   - Effects:
     - transfers accumulated delegator rewards to delegator vault
     - clears delegator reward entry
+
+- `PoS("withdraw", deployerId, returnCh)`
+  - Preconditions:
+    - deployer is a bonded validator
+  - Effects:
+    - converts every active delegation to this validator into pending undelegation with unlock block `blockNumber + epochLength`
+    - merges with an existing pending undelegation for the same `(delegator, validator)` by adding the amount and keeping the later unlock block
+    - clears `delegatedTotals[validatorPk]`
+    - records the validator in `pendingWithdrawers`
 
 ## Wallet SDK Integration (Reference)
 
@@ -265,7 +272,6 @@ Map these contract errors to stable SDK/user-facing codes:
 - `Undelegation cooldown not finished.`
 - `No delegator rewards available.`
 - `Delegation would exceed validator maximum effective bond.`
-- `Validator has active delegations.` (withdraw path)
 
 ## Behavior Changes in Core Flows
 
@@ -296,10 +302,11 @@ Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus st
 
 ### Withdraw
 
-`PoS("withdraw", ...)` now rejects when validator has active delegated stake:
+`PoS("withdraw", ...)` no longer rejects only because delegated stake exists:
 
-- condition: `delegatedTotals.getOrElse(validatorPk, 0) > 0`
-- error: `"Validator has active delegations."`
+- active delegations to the withdrawing validator are converted to pending undelegations
+- pending undelegations use the same `epochLength` cooldown as delegator-requested undelegation
+- validator self-bond still follows the existing pending-withdrawer and quarantine flow
 
 ### Slash
 
@@ -317,41 +324,14 @@ Expected invariants for valid state transitions:
 
 1. `delegatedTotals[v] == sum(delegations[d].getOrElse(v, 0) for all d)`
 2. Delegation can only target validators with active self-bond (`allBonds[v] > 0`).
-3. Delegation amount is at least `minimumBond`, preventing one-unit delegator-map spam.
-4. Validator with positive delegated total cannot enter pending withdrawal.
+3. Delegation amount is at least `minimumBond`. If `minimumBond == 1`, this does not by itself prevent one-unit delegator-map growth.
+4. Validator withdrawal converts positive delegated totals into pending undelegations instead of permanently blocking validator exit.
 5. A validator cannot increase self-bond through `bond` after it is already bonded; effective stake cap growth is only admitted through `delegate` and checked against `maximumBond`.
 6. On slash, validator self-bond, active delegated stake, and pending undelegation principal tied to that validator are slashed.
-7. Reward weighting and active-set selection use effective stake (`self + active delegated`), excluding pending undelegations.
+7. Reward weighting uses effective stake (`self + active delegated`), excluding pending undelegations. Active-validator selection currently caps the bonded-key list and is not stake-ranked by effective amount.
 8. Undelegation request removes stake from effective bonds immediately and records unlocking principal in `pendingUndelegations`.
 9. Pending undelegation principal remains slashable until `completeUndelegate` transfers it out.
 10. Delegator rewards are persisted on-chain in `delegatorRewards` until claimed.
-
-## Operational Validation (April 20, 2026 UTC)
-
-### Passed
-
-- Rust node compile check:
-  - `cargo check -p node`
-  - Result: **PASS**.
-
-- Container shard startup and PoS init SLA:
-  - `./scripts/ci/check-casper-init-sla.sh docker/shard.yml 240`
-  - Result: **PASS**.
-
-### Blocked / Inconclusive
-
-- Targeted PoS Scala test execution:
-  - `sbt "casper/testOnly coop.rchain.casper.genesis.contracts.PoSSpec"`
-  - Blocked by unrelated compile errors in `rspace/ReplayRSpace.scala` (`MaybeConsumeResult`, `MaybeProduceResult` missing).
-
-- Rust-client smoke and deploy finalization waits:
-  - `/home/purplezky/work/asi/rust-client/scripts/smoke_test.sh localhost 40412 40413 40452`
-  - `deploy` step passes, but `deploy-and-wait` hangs waiting for finalization in this environment.
-
-- Direct `deploy-and-wait` with validator observer also timed out waiting for finalization:
-  - `target/release/node_cli deploy-and-wait ... --observer-port 40413`
-
-Observed last-finalized heights during this run were non-uniform across nodes (e.g. 43/41/38), indicating a current environment finalization issue unrelated to contract syntax/bootstrap.
 
 ## Current Limitations
 
@@ -359,22 +339,10 @@ Observed last-finalized heights during this run were non-uniform across nodes (e
 2. Only one pending undelegation per `(delegator, validator)` pair is allowed at a time.
 3. Delegator rewards are tracked per delegator total (not bucketed per validator).
 4. `maximumBond` is enforced as an effective stake cap (`self + active delegated`), not just self-bond.
-5. Delegation and undelegation change effective stake immediately. A future protocol revision should move delegation activation/deactivation to an epoch snapshot if consensus requires epoch-fixed validator weights.
-6. Epoch reward distribution still scans the delegation maps. `minimumBond` raises the cost of state-growth attacks, but high-scale delegation should move to reward-per-share or equivalent lazy accounting before broad production use.
+5. Delegation and undelegation change effective stake immediately. TestNet v1 should either accept this immediate-activation economic model explicitly or gate delegation rollout on an epoch-snapshot design.
+6. Epoch reward distribution still scans the delegation maps. TestNet v1 should define a measured maximum `(delegator, validator)` pair count for this implementation or gate delegation rollout on reward-per-share or equivalent lazy accounting.
 7. Pending undelegation slashability is explicit current behavior. Operators and wallets must show that unlocking stake is still slashable until completion.
 8. Concurrent delegation deploys contend on the single PoS state cell. Merge-rejected delegation deploys are expected to recover through canonical deploy recovery and finalize without double application, but a deploy that loses the merge can see additional inclusion latency.
-
-## PR Review Risk Register
-
-| Review topic | Status in this branch |
-|---|---|
-| Validator/peer `InvalidBondsCache` after delegation | Fixed by using `getEffectiveBonds` for runtime consensus bond-cache reads while preserving `getBonds` raw self-bond semantics. |
-| Dust delegation creates unbounded recurring work | Mitigated by rejecting delegation amounts below `minimumBond`; full reward-per-share accounting remains follow-up protocol work. |
-| Effective-bond cap across self-bond changes | Covered by `bond` refusing already bonded validators and regression-tested after delegation; delegation remains the only public effective-stake growth path and checks `maximumBond`. |
-| Pending undelegations during slash | Current semantics intentionally slash pending undelegation escrow; docs and UI guide call this out explicitly. |
-| Repeated undelegation lifecycle | One pending undelegation per `(delegator, validator)` remains enforced and is regression-tested. |
-| Immediate epoch reward / consensus-weight activation | Still current semantics; must be decided with an epoch-snapshot design before production delegation rollout. |
-| Concurrent delegation contention | Known limitation: all PoS writes share one state cell, so parallel delegation deploys can be merge-rejected and recovered later. Testbed retesting on the PR head confirmed recovered deploys finalized, `delegatedTotals` matched expectations, and no duplicate application occurred. |
 
 ## Minimal Usage Example (Rholang)
 

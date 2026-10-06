@@ -185,9 +185,9 @@ influence.
 
 | Theorem      | Statement                                                                                 | File:line                    |
 |--------------|-------------------------------------------------------------------------------------------|------------------------------|
-| T-7          | `slash_zeros_bond`: after slash, the offender bond is zero.                               | `PoSContract.v:75`           |
-| T-8          | `slash_transfers_stake`: positive pre-slash stake is transferred to the Coop vault.       | `PoSContract.v:95`           |
-| T-Idem (T-9) | `slash_idempotent`: a second slash on the same validator is a no-op.                      | `PoSContract.v:128`          |
+| T-7          | `slash_zeros_bond`: after slash, the offender bond is zero.                               | `PoSContract.v:87`           |
+| T-8          | `slash_transfers_stake`: positive pre-slash slash exposure is transferred to the Coop vault. | `PoSContract.v:107`          |
+| T-Idem (T-9) | `slash_idempotent`: a second slash on the same validator is a no-op.                      | `PoSContract.v:140`          |
 | T-10         | `fork_choice_exclusion`: slashed validators are removed from latest-message input.        | `ForkChoice.v:60`            |
 | T-9.5        | `t_9_5_slash_preserves_invariant`: slash preserves active-implies-bonded.                 | `BugFixStakeZero.v:36`       |
 | T-9.4        | `t_9_4_transfer_failure_safety`: slash either succeeds with bond-zero or fails no-op.     | `BugFixTransferFailure.v:40` |

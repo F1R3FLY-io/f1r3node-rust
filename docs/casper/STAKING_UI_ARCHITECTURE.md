@@ -124,22 +124,23 @@ Implication for UI:
 - unlocking does not mean risk-free
 - display explicit warning: "Unlocking until block X, still slashable"
 
-### 4) Validator withdrawal constraint
+### 4) Validator withdrawal with delegated stake
 
-Validator `withdraw` is rejected while validator has active delegations.
+Validator `withdraw` is allowed while validator has active delegations. The PoS contract converts outstanding active delegations to that validator into pending undelegations using the same cooldown as a direct delegator undelegation request.
 
 Implication for UI:
 
-- validator exit action must be disabled/blocked when delegated total > 0
-- display reason and required action path
+- do not block validator exit only because delegated total is positive
+- show affected delegators that their active delegation moved to pending undelegation
+- display the pending undelegation unlock block and slashability warning
 
 ### 5) Active-set semantics
 
-Active-set refresh on epoch close uses effective bonds as input and excludes pending undelegations (because they are removed from delegated totals).
+Reward and consensus bond reads use effective bonds and exclude pending undelegations because they are removed from delegated totals. Active-validator selection itself currently caps the bonded-validator key list and is not stake-ranked by effective amount.
 
 Implication for UI:
 
-- show that validator influence tracks effective stake, not pending undelegations
+- show effective stake as the value used for reward and consensus bond reads
 - refresh active status on epoch boundaries
 
 ## End-User Journeys and UX Requirements
@@ -309,7 +310,6 @@ Use stable message mapping for:
 - `Undelegation cooldown not finished.`
 - `No pending undelegation for validator.`
 - `No delegator rewards available.`
-- `Validator has active delegations.`
 
 ## Design Checklist
 

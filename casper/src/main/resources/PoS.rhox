@@ -175,7 +175,8 @@ in {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
                 accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, computeEffectiveBonds,
                 removeDelegationsForValidator, updateDelegationEntry, updateDelegatedTotalEntry,
-                sumPendingUndelegations, stripPendingUndelegationsForValidator, computeDelegatorRewardDeltas in {
+                sumPendingUndelegations, stripPendingUndelegationsForValidator,
+                moveDelegationsToPendingUndelegations, computeDelegatorRewardDeltas in {
               // Initializes PoS state structure.
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
@@ -359,6 +360,63 @@ in {
                       }
                     } else {
                       resultCh!((accPending.set(delegatorPk, validatorMap), accAmount))
+                    }
+                  }
+                }
+              }|
+              contract moveDelegationsToPendingUndelegations(@state, @validatorPk, @unlockBlock, returnCh) = {
+                new moveOne in {
+                  @ListOps!("fold", state.get("delegations").toList(), ({}, state.get("pendingUndelegations"), 0), *moveOne, *returnCh) |
+                  contract moveOne(@(delegatorPk, validatorMap), @(accDelegations, accPending, accAmount), resultCh) = {
+                    match validatorMap.getOrElse(validatorPk, 0) {
+                      activeAmount => {
+                        if (activeAmount > 0) {
+                          match validatorMap.delete(validatorPk) {
+                            updatedValidatorMap => {
+                              new updatedDelegationsCh, updatedPendingCh in {
+                                if (updatedValidatorMap.size() == 0) {
+                                  updatedDelegationsCh!(accDelegations.delete(delegatorPk))
+                                } else {
+                                  updatedDelegationsCh!(accDelegations.set(delegatorPk, updatedValidatorMap))
+                                } |
+                                match accPending.getOrElse(delegatorPk, {}).getOrElse(validatorPk, Nil) {
+                                  Nil => {
+                                    updatedPendingCh!(
+                                      accPending.set(
+                                        delegatorPk,
+                                        accPending.getOrElse(delegatorPk, {}).set(validatorPk, (activeAmount, unlockBlock))
+                                      )
+                                    )
+                                  }
+                                  (pendingAmount, pendingUnlockBlock) => {
+                                    if (pendingUnlockBlock > unlockBlock) {
+                                      updatedPendingCh!(
+                                        accPending.set(
+                                          delegatorPk,
+                                          accPending.getOrElse(delegatorPk, {}).set(validatorPk, (pendingAmount + activeAmount, pendingUnlockBlock))
+                                        )
+                                      )
+                                    } else {
+                                      updatedPendingCh!(
+                                        accPending.set(
+                                          delegatorPk,
+                                          accPending.getOrElse(delegatorPk, {}).set(validatorPk, (pendingAmount + activeAmount, unlockBlock))
+                                        )
+                                      )
+                                    }
+                                  }
+                                } |
+                                for (@updatedDelegations <- updatedDelegationsCh &
+                                     @updatedPending     <- updatedPendingCh) {
+                                  resultCh!((updatedDelegations, updatedPending, accAmount + activeAmount))
+                                }
+                              }
+                            }
+                          }
+                        } else {
+                          resultCh!((accDelegations.set(delegatorPk, validatorMap), accPending, accAmount))
+                        }
+                      }
                     }
                   }
                 }
@@ -817,16 +875,21 @@ in {
                        @userPk            <- userCh &
                        @blockNumber, _, _ <- blockDataCh) {
                     if (state.get("allBonds").contains(userPk)) {
-                      if (state.get("delegatedTotals").getOrElse(userPk, 0) > 0) {
-                        resultCh!(state, (false, "Validator has active delegations."))
-                      } else {
-                        // The withdrawal goes into effect at the start of the next epoch.
-                        resultCh!(
-                          state.set("pendingWithdrawers",
+                      new movedDelegationsCh in {
+                        moveDelegationsToPendingUndelegations!(state, userPk, blockNumber + $$epochLength$$, *movedDelegationsCh) |
+                        for (@(updatedDelegations, updatedPendingUndelegations, _) <- movedDelegationsCh) {
+                          // The withdrawal goes into effect at the start of the next epoch.
+                          resultCh!(
+                            state
+                              .set("delegations", updatedDelegations)
+                              .set("delegatedTotals", state.get("delegatedTotals").delete(userPk))
+                              .set("pendingUndelegations", updatedPendingUndelegations)
+                              .set("pendingWithdrawers",
                                     state.get("pendingWithdrawers")
                                          .set(userPk,
                                            $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
-                          (true, Nil))
+                            (true, Nil))
+                        }
                       }
                     } else {
                       resultCh!(state, (false, "User is not bonded"))

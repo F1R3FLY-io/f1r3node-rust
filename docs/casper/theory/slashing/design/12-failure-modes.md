@@ -154,7 +154,7 @@ reachable, the coercion needs a determinism guard (design separately).
 | **Invalid block hash not in `invalidBlocks`**      | Slash evidence is rejected without mutation.                                                        | Current PoS returns `(false, "invalid slash evidence")`; receive-side validation also rejects unknown hashes. |
 | **Coop-vault slash transfer fails**                | Pre-fix: hangs forever. **Bug #4.**                                                                 | Post-fix #4: deterministic `(false, "transfer failed: ...")` return.                  |
 | **Withdrawal `posVault.transfer` fails**           | Pre-fix: validator removed from `withdrawers` without payout — funds silently lost. **Bug #10.**    | Post-fix #10: validator stays in `withdrawers` for retry; `total_funds` invariant preserved. |
-| **Slash twice on same validator**                  | Second slash is a no-op (T-Idem).                                                                   | Designed-in idempotence; T-Idem at `PoSContract.v:117`.                               |
+| **Slash twice on same validator**                  | Second slash is a no-op (T-Idem).                                                                   | Designed-in idempotence; T-Idem at `PoSContract.v:140`.                               |
 
 ### 12.2.5 Fork-choice layer
 
