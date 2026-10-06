@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/PoSSpec.scala
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use casper::rust::genesis::contracts::vault::Vault;
@@ -33,9 +33,9 @@ const POS_SPEC_SHARDS: &[PosSpecShard] = &[
         name: "delegation-withdraw",
         tests: &[
             "delegator rewards can be claimed",
-            "withdraw fails when validator has active delegations",
             "withdraw succeeds",
             "validator is paid after withdraw",
+            "withdraw converts active delegations to pending undelegations",
         ],
     },
     PosSpecShard {
@@ -73,10 +73,51 @@ const POS_SPEC_SHARDS: &[PosSpecShard] = &[
             "slash only affects target validator across multiple delegators",
             "slash one validator preserves delegation to another",
             "delegate enforces maximum effective bond cap",
-            "active set tracks effective bonds on closeBlock",
+            "closeBlock excludes pending undelegations from effective bonds",
         ],
     },
 ];
+
+const POS_SPEC_ALL_TESTS: &[&str] = &[
+    "PoS is created with empty rewards",
+    "closeBlock finishes successfully",
+    "bonding success",
+    "delegation success",
+    "undelegation success",
+    "delegator rewards can be claimed",
+    "withdraw converts active delegations to pending undelegations",
+    "withdraw succeeds",
+    "validator is paid after withdraw",
+    "bonding fails if deposit fails",
+    "multiple bondings work",
+    "payment works",
+    "payment refund works",
+    "bonding fails if already bonded",
+    "bonding fails if bond is too small",
+    "bonding fails if bond is not positive",
+    "bonding fails if bond is too large",
+    "payment is not distributed to inactive validators",
+    "commited random matches its image",
+    "Slashing transfers funds appropriately",
+    "pending undelegation is slashed before completion",
+    "slash handles active and pending delegated exposure",
+    "slash only affects target validator across multiple delegators",
+    "slash one validator preserves delegation to another",
+    "delegate enforces maximum effective bond cap",
+    "closeBlock excludes pending undelegations from effective bonds",
+];
+
+fn assert_pos_spec_shards_cover_all_tests() {
+    let expected = POS_SPEC_ALL_TESTS.iter().copied().collect::<BTreeSet<_>>();
+    let covered = POS_SPEC_SHARDS
+        .iter()
+        .flat_map(|shard| shard.tests.iter().copied())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        covered, expected,
+        "POS_SPEC_SHARDS must cover every PoSTest.rho test"
+    );
+}
 
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
     let (hex_string, balance) = vault_data;
@@ -183,6 +224,8 @@ fn run_pos_spec_shard_once(shard: PosSpecShard) -> Result<(), InterpreterError> 
 /// not hide a regression behind the retry.
 #[test]
 fn pos_spec() {
+    assert_pos_spec_shards_cover_all_tests();
+
     for shard in POS_SPEC_SHARDS {
         match run_pos_spec_shard_once(*shard) {
             Err(err)
