@@ -1,7 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockReportAPI.scala
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::casper::{
@@ -51,13 +50,6 @@ enum ReportPermit {
     /// Explicit report requests and pre-caching. Queue until the permit frees.
     Wait,
 }
-
-/// Bound on a read's best-effort enrichment. The wait for the replay lock happens
-/// inside the report replay, so this has to wrap the whole inner call: a deadline
-/// around the replay alone would leave that wait unbounded. Ordinary uncached
-/// replays finish well inside it, and anything slower degrades to
-/// transfers-unavailable instead of holding the read open.
-const ENRICHMENT_REPLAY_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
@@ -214,27 +206,7 @@ impl BlockReportAPI {
             }
         };
 
-        match permit_policy {
-            ReportPermit::RejectIfHeld => {
-                match tokio::time::timeout(
-                    ENRICHMENT_REPLAY_DEADLINE,
-                    self.block_report_inner(force_replay, block, casper),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        metrics::counter!(
-                            "block_report.enrichment_deadline_exceeded",
-                            "source" => "casper"
-                        )
-                        .increment(1);
-                        Err(BlockReportError::Busy)
-                    }
-                }
-            }
-            ReportPermit::Wait => self.block_report_inner(force_replay, block, casper).await,
-        }
+        self.block_report_inner(force_replay, block, casper).await
     }
 
     /// Inner block report logic, run while holding the permit.
