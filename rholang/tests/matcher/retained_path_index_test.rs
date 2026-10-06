@@ -217,6 +217,19 @@ fn nonlinear_ordered_bindings_fall_back_before_a_query_can_change_legacy_semanti
         "the legacy matcher accumulates nonlinear free-variable occurrences; the derived query must not reinterpret them as equality constraints"
     );
 
+    let repeated_method = BindPattern {
+        patterns: vec![method(
+            new_freevar_par(0, Vec::new()),
+            new_freevar_par(0, Vec::new()),
+            true,
+        )],
+        remainder: None,
+        free_count: 1,
+    };
+    let conflicting_method = datum(method(integer(11), integer(12), false));
+    assert!(matcher.rho_path_query(&repeated_method).is_none());
+    assert!(matcher.get(&repeated_method, &conflicting_method).is_some());
+
     let repeated_whole_terms = BindPattern {
         patterns: vec![
             new_freevar_par(0, Vec::new()),
@@ -226,6 +239,13 @@ fn nonlinear_ordered_bindings_fall_back_before_a_query_can_change_legacy_semanti
         free_count: 1,
     };
     assert!(matcher.rho_path_query(&repeated_whole_terms).is_none());
+    let conflicting_whole_terms = ListParWithRandom {
+        pars: vec![integer(11), integer(12)],
+        ..ListParWithRandom::default()
+    };
+    assert!(matcher
+        .get(&repeated_whole_terms, &conflicting_whole_terms)
+        .is_some());
 
     let repeated_across_atoms = BindPattern {
         patterns: vec![
@@ -236,6 +256,13 @@ fn nonlinear_ordered_bindings_fall_back_before_a_query_can_change_legacy_semanti
         free_count: 1,
     };
     assert!(matcher.rho_path_query(&repeated_across_atoms).is_none());
+    let conflicting_across_atoms = ListParWithRandom {
+        pars: vec![integer(11), method(integer(12), integer(7), false)],
+        ..ListParWithRandom::default()
+    };
+    assert!(matcher
+        .get(&repeated_across_atoms, &conflicting_across_atoms)
+        .is_some());
 }
 
 #[test]
