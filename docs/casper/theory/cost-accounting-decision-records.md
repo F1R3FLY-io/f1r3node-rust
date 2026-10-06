@@ -6911,7 +6911,8 @@ spread is up to 40 MB of hot-store write charges.
 ## DR-96 — Digest-keyed ordered index for the native session store
 
 **Status.** In progress for Phase D item D-C2 of epic 8946 (D-S1 of the
-Phase D plan). Part 1 (D-C2a) and part 2 (D-C2b) implemented 2026-10-06.
+Phase D plan). Parts 1 to 3 (D-C2a, D-C2b and D-C2c) implemented
+2026-10-06.
 
 **Context.** The native replay session keeps its data, continuations and
 joins in the hot store of the replay space: 256 `imbl::HashMap` shards keyed
@@ -7074,6 +7075,110 @@ Tests in `rspace++/src/rspace/hot_store/native_index/tests.rs`:
 - `legacy_population_charges_depend_on_schedule`
   (`hot_store/native/tests.rs`): the legacy store gives two such schedules
   different totals.
+
+**Decision (part 3, D-C2c).** The native replay session keeps its state in
+its own digest-keyed store (`rspace++/src/rspace/hot_store/native_store.rs`).
+
+1. `NativeHotStore` holds five digest-indexed maps: data, continuations,
+   installed continuations, joins and installed joins. `NativeStoreState`
+   is a checkpoint of the five maps.
+2. Each method ports the legacy native method of the same name. The work on
+   the key's own value keeps its legacy charge, and the index charges of
+   part 2 replace the shard walks:
+   - a search replaces `lookup`;
+   - a replace replaces `reserve_replace_with`;
+   - an insert replaces `native_insert_new_with`.
+
+   Two keys are compared as two 32-byte digests, so a key comparison reads
+   64 bytes instead of inspecting two channels.
+3. The keys flow through the session as follows:
+   - A produce keys its channel by the channel digest of its source.
+   - A consume keys its channels by the digests that its source computes.
+   - The joins of an operation get one `OperationKeys` memo. The session
+     builds it after the operation is granted, so a denied operation
+     computes no join digest.
+   - The candidate readers receive the keys. The produce candidate returns
+     the index of its join group, and the retirement uses that group's
+     keys.
+4. A data view of the store holds the shared entry. A view of the legacy
+   store keeps its shard snapshot, so `NativeDataView` has a constructor for
+   each store. Installed continuations are stored as `Arc` values, so a view
+   of one is a pointer copy instead of a deep copy.
+5. A new entry stores its key value as an `Arc`. The charge covers the copy,
+   the release and the allocation. The export reads the key value. An
+   insert returns the stored entry, so the insert charge of part 2 now also
+   includes one view of an entry: 814 operations and 36,216 scanned bytes.
+6. The session takes its locks in this order: data shards, then the
+   installed continuations (read and released), then the continuations,
+   then the join shards in ascending order.
+7. The legacy `InMemHotStore` native methods stay for the play path and as
+   the test oracle. The replay space still builds its legacy store, which
+   the session no longer uses.
+
+**Verification (part 3).** Tests:
+
+- `digest_store_matches_legacy_store` (256 cases): random sequences of
+  reads, views, stored consumes, publications, retirements and
+  installations. The digest store returns what the legacy store returns,
+  including duplicate decisions, depths and errors, and the two exports are
+  the same multiset.
+- `every_native_store_cut_preserves_state`: for each of 13 calls of the
+  store methods and each reservation cut, the call returns the host error,
+  allocates at most the backing that it reserved, and leaves the store
+  unchanged.
+- `views_are_stable_entry_snapshots`: a view keeps its values after a later
+  publication.
+- `store_charges_are_schedule_independent`: two channels whose keys share a
+  shard have equal totals in every tested interleaving.
+- The session tests fill the store through its own methods, and their
+  emptiness checks inspect the store. The candidate tests pass keys
+  computed outside the metered work.
+
+**Measurement (part 3).** The gateway funding probe
+(`offered_gateway_call_draws_funded_private_purses_across_validators`, with
+the provisional caps) ran four times on 2026-10-06. Arm A is the parent
+commit `1f9c62288`, and arm B adds this part. Each arm ran twice. The table
+gives the exact header usages, in bytes, of the gateway block.
+
+| Budget | Dimension | A | A2 | B | B2 |
+|--------|-----------|--:|---:|--:|---:|
+| Validator replay | VerificationBytes | 2,985,342,204 | 2,910,631,295 | 1,823,848,514 | 1,821,298,028 |
+| Validator replay | SearchStateBytes | 491,701,078 | 473,238,353 | 202,241,134 | 201,227,279 |
+| Producer self-replay | VerificationBytes | 2,998,558,053 | 2,923,812,086 | 1,837,000,532 | 1,834,498,875 |
+| Producer execution | VerificationBytes | 183,808,136 | 185,749,328 | 188,581,551 | 186,283,619 |
+
+- The validator replay of the gateway block uses 1,087 MB to 1,164 MB less
+  VerificationBytes (about 38 %) and 271 MB to 290 MB less SearchStateBytes
+  (about 58 %).
+- Against the original caps, this replay goes from 10.84–11.12 to 6.78–6.79
+  times the VerificationBytes cap. It goes from 3.53–3.66 to 1.50–1.51 times
+  the SearchStateBytes cap.
+- The plan predicted about 1,098 MB of VerificationBytes and 255 MB of
+  SearchStateBytes for all of D-C2. Part 3 alone removes 1,087 MB to
+  1,164 MB and 271 MB to 290 MB.
+- The validator replays of the first block use 16 MB less
+  VerificationBytes (24 %) and 7 MB less SearchStateBytes (45 %).
+- A sampled attribution (one sample per MiB) puts the reduction in the
+  store. For the gateway validator replay, store writes fall from 886 MB to
+  127 MB of VerificationBytes. Store reads and cold fills fall from 533 MB
+  to 111 MB. The export stays at 131 MB.
+
+The two runs of each arm also show the schedule dependence that the index
+removes. Data such as keys and timestamps change in every run, and they
+affect both arms. Between its two runs, arm A differs by 74.7 MB of
+VerificationBytes for the gateway validator replay. Arm B differs by
+2.6 MB.
+
+Producer execution uses the legacy store, which this part does not change.
+Its two runs differ by 1.9 MB in arm A and by 2.3 MB in arm B. The
+difference of the arm means is 2.7 MB, so the change is within the
+variation between runs.
+
+The validator replays of one block still differ. For the gateway block, the
+largest difference is 21,914 and 246,918 bytes of VerificationBytes in arm
+A, and 30,818 and 47,265 bytes in arm B. The index charges read no other
+key, so they do not cause this remainder. D-C5 finds and closes its
+sources.
 
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,

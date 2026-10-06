@@ -96,12 +96,14 @@ fn with_reader<T>(
     meter: &Meter,
     action: impl FnOnce(&CandidateReader<'_, u8, u8, u8, u8>) -> T,
 ) -> T {
-    let data = |channel: &u8| {
+    // Changed by D-C2c (D-S1, DR-96): the readers receive the keys; these
+    // fixtures read the space's legacy store.
+    let data = |channel: &u8, _key: StoreKey| {
         space
             .get_store()
             .get_data_view_with_reader(channel, &|| Ok(Vec::new()), meter)
     };
-    let continuations = |channels: &[u8]| {
+    let continuations = |channels: &[u8], _keys: &GroupKeys| {
         space
             .get_store()
             .get_continuation_views_with_reader(channels, &|| Ok(Vec::new()), meter)
@@ -111,6 +113,22 @@ fn with_reader<T>(
         data: &data,
         continuations: &continuations,
     })
+}
+
+/// D-C2c (DR-96): channel keys on an unlimited meter, computed before the
+/// metered work under test.
+fn channel_keys(channels: &[u8]) -> Vec<StoreKey> {
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    channels
+        .iter()
+        .map(|channel| native_source::channel_key(channel, &free).expect("an unlimited meter"))
+        .collect()
+}
+
+/// D-C2c (DR-96): the keys of the join groups on an unlimited meter.
+fn operation_keys(joins: &[Vec<u8>]) -> OperationKeys {
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    OperationKeys::build(joins, &free).expect("an unlimited meter")
 }
 
 fn put(space: &Space, channel: u8, value: u8, persistent: bool) {
@@ -364,7 +382,8 @@ proptest! {
             let source = Consume::create(&channels, &patterns, &9u8, false);
             let expected = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &BTreeSet::new(), None);
             let meter = Meter::default();
-            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_consume_candidate(&channels, &patterns, &9, &source, &BTreeSet::new(), None, reader)).unwrap();
+            let keys = channel_keys(&channels);
+            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_consume_candidate(&channels, &keys, &patterns, &9, &source, &BTreeSet::new(), None, reader)).unwrap();
             assert_eq!(actual.is_some(), expected.is_some());
             if let (Some(actual), Some(expected)) = (actual, expected) {
                 same_data(&actual.data, &expected.data);
@@ -392,11 +411,12 @@ proptest! {
             let expected = space.prepare_native_produce_candidate(&1, &incoming, persistent, &source, vec![channels.clone()], None).unwrap().unwrap();
             let before = state(&space);
             let meter = Meter::default();
-            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels.clone()], None, reader)).unwrap().unwrap();
+            let keys = operation_keys(&[channels.clone()]);
+            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels.clone()], &keys, None, reader)).unwrap().unwrap().0;
             same_data(&actual.candidate.data_candidates, &expected.candidate.data_candidates);
             assert_eq!(bincode::serialize(&actual.comm).unwrap(), bincode::serialize(&expected.comm).unwrap());
             let identity = Logical(expected.comm);
-            let selected = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels], Some(&identity), reader)).unwrap().unwrap();
+            let selected = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels], &keys, Some(&identity), reader)).unwrap().unwrap().0;
             same_data(&selected.candidate.data_candidates, &actual.candidate.data_candidates);
             assert_eq!(state(&space), before);
         });
@@ -523,10 +543,12 @@ async fn every_consume_cut_preserves_warm_state_and_prepays_coordinator_allocati
     let patterns = [0, 0, 0];
     let source = Consume::create(&channels.to_vec(), &patterns.to_vec(), &9u8, false);
     space.get_store().get_continuations(&channels);
+    let keys = channel_keys(&channels);
     let baseline = Meter::default();
     with_reader(&space, &baseline, |reader| {
         space.prepare_metered_consume_candidate(
             &channels,
+            &keys,
             &patterns,
             &9,
             &source,
@@ -547,7 +569,7 @@ async fn every_consume_cut_preserves_warm_state_and_prepays_coordinator_allocati
         let (result, actual) = measure_allocations(|| {
             with_reader(&space, &meter, |reader| {
                 space.prepare_metered_consume_candidate(
-                    &channels, &patterns, &9, &source, &peeks, None, reader,
+                    &channels, &keys, &patterns, &9, &source, &peeks, None, reader,
                 )
             })
         });
@@ -575,12 +597,23 @@ async fn produce_rolls_back_each_failed_probe_and_preserves_legacy_selection() {
         .prepare_native_produce_candidate(&1, &6, false, &source, joins.clone(), None)
         .unwrap()
         .unwrap();
+    let keys = operation_keys(&joins);
     let baseline = Meter::default();
     let actual = with_reader(&space, &baseline, |reader| {
-        space.prepare_metered_produce_candidate(&1, &6, false, &source, joins.clone(), None, reader)
+        space.prepare_metered_produce_candidate(
+            &1,
+            &6,
+            false,
+            &source,
+            joins.clone(),
+            &keys,
+            None,
+            reader,
+        )
     })
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .0;
     same_data(&actual.candidate.data_candidates, &expected.candidate.data_candidates);
     assert_eq!(actual.candidate.continuation_index, expected.candidate.continuation_index);
     assert_eq!(
@@ -600,7 +633,9 @@ async fn produce_rolls_back_each_failed_probe_and_preserves_legacy_selection() {
         };
         let (result, actual) = measure_allocations(|| {
             with_reader(&space, &meter, |reader| {
-                space.prepare_metered_produce_candidate(&1, &6, false, &source, input, None, reader)
+                space.prepare_metered_produce_candidate(
+                    &1, &6, false, &source, input, &keys, None, reader,
+                )
             })
         });
         assert!(matches!(result, Err(RSpaceError::HostWorkRejected)), "cut {reject}");
@@ -676,9 +711,11 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
             _ => changed.times_repeated.clear(),
         }
         let meter = Meter::default();
+        let keys = channel_keys(&[1]);
         assert!(
             with_reader(&space, &meter, |reader| space.prepare_metered_consume_candidate(
                 &[1],
+                &keys,
                 &[0],
                 &9,
                 &source,
@@ -700,9 +737,12 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
     let before = state(&space);
     let meter = Meter::default();
     let input = vec![vec![1]];
+    let keys = operation_keys(&input);
     let (result, bytes) = measure_allocations(|| {
         with_reader(&space, &meter, |reader| {
-            space.prepare_metered_produce_candidate(&1, &8, false, &trigger, input, None, reader)
+            space.prepare_metered_produce_candidate(
+                &1, &8, false, &trigger, input, &keys, None, reader,
+            )
         })
     });
     assert!(matches!(result, Err(RSpaceError::InterpreterError(_))));

@@ -99,6 +99,7 @@ where
     pub(super) async fn produce_lock(
         &self,
         channel: &C,
+        key: crate::rspace::hashing::native_source::StoreKey,
     ) -> Result<(ChannelLockGuard, ChannelLockGuard), RSpaceError> {
         self.epoch.reserve_work(1, 0)?;
         crate::rspace::native_backing::inspect(channel, &|operations, scanned, backing| {
@@ -109,7 +110,9 @@ where
         let first = striped_locks::native::prepare(&self.space.phase_a_locks, &hash, reserve)?
             .acquire()
             .await;
-        let joins = self.read_joins(channel)?;
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
+        // let joins = self.read_joins(channel)?;
+        let joins = self.read_joins(channel, key)?;
         self.epoch.reserve_work(joins.len(), 0)?;
         let count = joins
             .iter()

@@ -17,6 +17,7 @@ use super::hashing::native_source::SourceMeter;
 
 mod native;
 pub mod native_index;
+pub(crate) mod native_store;
 
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
@@ -188,15 +189,58 @@ where
     }
 }
 
-/// A copy-free view of the cached data of one channel: an O(1) snapshot of
-/// its persistent shard and the channel key. It holds no lock (C2, DR-82).
+// Changed by D-C2c (D-S1, DR-96): a view of the digest-keyed store holds the
+// shared entry; a view of the legacy store keeps its shard snapshot.
+// /// A copy-free view of the cached data of one channel: an O(1) snapshot of
+// /// its persistent shard and the channel key. It holds no lock (C2, DR-82).
+// pub struct NativeDataView<C, A: Clone> {
+//     shard: imbl::HashMap<C, Vec<Datum<A>>>,
+//     channel: C,
+// }
+//
+// impl<C: Clone + Hash + Eq, A: Clone> NativeDataView<C, A> {
+//     pub fn values(&self) -> &[Datum<A>] {
+// self.shard.get(&self.channel).map_or(&[], Vec::as_slice) } }
+
+/// A copy-free view of the cached data of one channel. It holds no lock
+/// (C2, DR-82). A view of the legacy store is an O(1) snapshot of the
+/// channel's shard and the channel key; a view of the digest-keyed store is
+/// the shared entry (D-C2c, DR-96).
 pub struct NativeDataView<C, A: Clone> {
-    shard: imbl::HashMap<C, Vec<Datum<A>>>,
-    channel: C,
+    source: DataViewSource<C, A>,
+}
+
+enum DataViewSource<C, A: Clone> {
+    Shard {
+        shard: imbl::HashMap<C, Vec<Datum<A>>>,
+        channel: C,
+    },
+    Entry(Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>),
+}
+
+impl<C, A: Clone> NativeDataView<C, A> {
+    fn from_shard(shard: imbl::HashMap<C, Vec<Datum<A>>>, channel: C) -> Self {
+        Self {
+            source: DataViewSource::Shard { shard, channel },
+        }
+    }
+
+    fn from_entry(entry: Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>) -> Self {
+        Self {
+            source: DataViewSource::Entry(entry),
+        }
+    }
 }
 
 impl<C: Clone + Hash + Eq, A: Clone> NativeDataView<C, A> {
-    pub fn values(&self) -> &[Datum<A>] { self.shard.get(&self.channel).map_or(&[], Vec::as_slice) }
+    pub fn values(&self) -> &[Datum<A>] {
+        match &self.source {
+            DataViewSource::Shard { shard, channel } => {
+                shard.get(channel).map_or(&[], Vec::as_slice)
+            }
+            DataViewSource::Entry(entry) => entry.value.as_slice(),
+        }
+    }
 }
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala

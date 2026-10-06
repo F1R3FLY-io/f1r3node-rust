@@ -245,6 +245,11 @@ impl<K, V> DigestShards<K, V> {
         self.shards[shard].write().expect("digest shard write lock")
     }
 
+    /// D-C2c (DR-96): one shard, for the export's iteration in digest order.
+    pub fn read_shard(&self, shard: usize) -> RwLockReadGuard<'_, DigestShard<K, V>> {
+        self.shards[shard].read().expect("digest shard read lock")
+    }
+
     /// The entry of `key`, after the search charge.
     pub fn get<'s>(
         shard: &'s DigestShard<K, V>,
@@ -257,8 +262,8 @@ impl<K, V> DigestShards<K, V> {
 
     /// Inserts a key that the shard does not hold, after the search charge
     /// and the insert charge. A present key is rejected, as in the legacy
-    /// store. Returns the stored entry; a caller that keeps it charges
-    /// [`view_charge`].
+    /// store. Returns the stored entry; the insert also charges this clone of
+    /// the stored pointer ([`view_charge`]).
     pub fn insert_new(
         &self,
         shard: &mut DigestShard<K, V>,
@@ -272,7 +277,13 @@ impl<K, V> DigestShards<K, V> {
         if shard.contains_key(&key) {
             return Err(RSpaceError::HostWorkRejected);
         }
+        // Changed by D-C2c (D-S1, DR-96): the returned entry is a clone of the
+        // stored pointer, so the insert charges its view too.
+        // insert_charge::<K, V>()
+        //     .ok_or(RSpaceError::HostWorkRejected)?
+        //     .reserve(meter)?;
         insert_charge::<K, V>()
+            .and_then(|charge| charge.plus(view_charge()))
             .ok_or(RSpaceError::HostWorkRejected)?
             .reserve(meter)?;
         let entry = Arc::new(NativeEntry {

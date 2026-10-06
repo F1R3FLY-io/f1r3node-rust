@@ -136,7 +136,10 @@ impl EpochRestore for NativeReplayRestore {
     fn publish(self) { NativeReplayRestore::publish(self) }
 }
 
-pub struct NativeRuntimeReplaySession<C, P, A, K> {
+// Changed by D-C2c (D-S1, DR-96): the native session's digest-keyed store
+// holds data, continuations and patterns, which need Clone.
+// pub struct NativeRuntimeReplaySession<C, P, A, K> {
+pub struct NativeRuntimeReplaySession<C, P: Clone, A: Clone, K: Clone> {
     inner: NativeReplaySession<C, P, A, K, SessionEpoch>,
 }
 

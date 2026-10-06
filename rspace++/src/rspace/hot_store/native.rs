@@ -144,7 +144,7 @@ impl Write for IdentityWriter<'_> {
     }
 }
 
-fn continuation_identity_metered<
+pub(super) fn continuation_identity_metered<
     P: Clone + Debug + CloneBacking,
     K: Clone + Debug + CloneBacking,
 >(
@@ -296,7 +296,7 @@ where
     }
 }
 
-fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceError> {
+pub(super) fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceError> {
     let bytes = length
         .checked_mul(size_of::<T>())
         .ok_or(RSpaceError::HostWorkRejected)?;
@@ -308,7 +308,11 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceErr
     Ok(result)
 }
 
-fn merge<T>(left: Vec<T>, right: Vec<T>, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceError> {
+pub(super) fn merge<T>(
+    left: Vec<T>,
+    right: Vec<T>,
+    meter: &dyn SourceMeter,
+) -> Result<Vec<T>, RSpaceError> {
     let count = left
         .len()
         .checked_add(right.len())
@@ -1147,10 +1151,13 @@ where
             self.data
                 .native_insert_new_snapshot(channel, values, meter)?
         };
-        Ok(super::NativeDataView {
-            shard,
-            channel: channel.clone(),
-        })
+        // Changed by D-C2c (D-S1, DR-96): the view type has a constructor per
+        // store.
+        // Ok(super::NativeDataView {
+        //     shard,
+        //     channel: channel.clone(),
+        // })
+        Ok(super::NativeDataView::from_shard(shard, channel.clone()))
     }
 
     pub(super) fn native_continuations(

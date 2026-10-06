@@ -8,19 +8,26 @@ use shared::rust::collection_backing::{tree_backing, tree_growth, tree_search_bo
 use super::*;
 use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{self, SourceMeter};
+use crate::rspace::hashing::native_source::{
+    self, GroupKeys, OperationKeys, SourceMeter, StoreKey,
+};
 use crate::rspace::hot_store::NativeDataView;
 use crate::rspace::native_backing;
 
 type Result<T> = std::result::Result<T, RSpaceError>;
 // Changed by C2 (DR-82): the reader returns a copy-free view.
 // type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<Vec<Datum<A>>>;
-type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<NativeDataView<C, A>>;
+// Changed by D-C2c (D-S1, DR-96): the reader receives the channel key.
+// type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<NativeDataView<C, A>>;
+type DataReader<'a, C, A> = &'a dyn Fn(&C, StoreKey) -> Result<NativeDataView<C, A>>;
 // Changed by C1 (DR-81): the reader returns shared views.
 // type ContinuationReader<'a, C, P, K> = &'a dyn Fn(&[C]) ->
 // Result<Vec<WaitingContinuation<P, K>>>;
+// Changed by D-C2c (D-S1, DR-96): the reader receives the group keys.
+// type ContinuationReader<'a, C, P, K> =
+//     &'a dyn Fn(&[C]) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 type ContinuationReader<'a, C, P, K> =
-    &'a dyn Fn(&[C]) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
+    &'a dyn Fn(&[C], &GroupKeys) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 
 pub(in crate::rspace::replay_rspace) struct CandidateReader<'a, C, P: Clone, A: Clone, K: Clone> {
     pub(in crate::rspace::replay_rspace) meter: &'a (dyn SourceMeter + Send + Sync),
@@ -354,15 +361,20 @@ where
         })
     }
 
-    /// One copy-free view of the cached data of each channel (C2, DR-82).
+    /// One copy-free view of the cached data of each channel (C2, DR-82),
+    /// read by the channel's key (D-C2c, DR-96).
     fn metered_data_views(
         &self,
         channels: &[C],
+        keys: &[StoreKey],
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<Vec<NativeDataView<C, A>>> {
+        if keys.len() != channels.len() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
         let mut views = buffer(channels.len(), reader.meter)?;
-        for channel in channels {
-            views.push((reader.data)(channel)?);
+        for (channel, key) in channels.iter().zip(keys) {
+            views.push((reader.data)(channel, *key)?);
         }
         Ok(views)
     }
@@ -638,9 +650,11 @@ where
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::rspace::replay_rspace) fn prepare_metered_consume_candidate(
         &self,
         channels: &[C],
+        keys: &[StoreKey],
         patterns: &[P],
         continuation: &K,
         consume: &Consume,
@@ -656,7 +670,7 @@ where
         }
         // Changed by C2 (DR-82): the channel data borrow copy-free views.
         // let data = self.metered_channel_data(channels, None, expected, reader)?;
-        let views = self.metered_data_views(channels, reader)?;
+        let views = self.metered_data_views(channels, keys, reader)?;
         let data = self.metered_channel_data(channels, &views, None, expected, reader)?;
         let Some(data) =
             self.metered_match_data(channels, patterns, continuation, &data, reader.meter)?
@@ -672,6 +686,10 @@ where
         Ok(Some(PreparedConsumeCandidate { data, comm }))
     }
 
+    /// The produce candidate and the index of its join group in
+    /// `grouped_channels` (D-C2c, DR-96: the retirement uses that group's
+    /// keys).
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::rspace::replay_rspace) fn prepare_metered_produce_candidate(
         &self,
         channel: &C,
@@ -679,9 +697,13 @@ where
         persist: bool,
         source: &Produce,
         grouped_channels: Vec<Vec<C>>,
+        keys: &OperationKeys,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<Option<PreparedProduceCandidate<C, P, A, K>>> {
+    ) -> Result<Option<(PreparedProduceCandidate<C, P, A, K>, usize)>> {
+        if keys.groups.len() != grouped_channels.len() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
         let next = if persist {
             None
         } else {
@@ -693,10 +715,13 @@ where
             };
             Some(next)
         };
-        for channels in grouped_channels {
-            let continuations = sorted((reader.continuations)(&channels)?, reader.meter)?;
+        for (group, (channels, group_keys)) in
+            grouped_channels.into_iter().zip(&keys.groups).enumerate()
+        {
+            let continuations =
+                sorted((reader.continuations)(&channels, group_keys)?, reader.meter)?;
             // Changed by C2 (DR-82): the channel data borrow copy-free views.
-            let views = self.metered_data_views(&channels, reader)?;
+            let views = self.metered_data_views(&channels, &group_keys.channels, reader)?;
             let data = self.metered_channel_data(
                 &channels,
                 &views,
@@ -742,7 +767,7 @@ where
                     continuation_index: index,
                     data_candidates,
                 };
-                return Ok(Some(PreparedProduceCandidate { candidate, comm }));
+                return Ok(Some((PreparedProduceCandidate { candidate, comm }, group)));
             }
         }
         Ok(None)

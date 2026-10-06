@@ -6,7 +6,9 @@ use tokio::sync::RwLock;
 
 use super::native_epoch::{NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore};
 use super::*;
+use crate::rspace::hashing::native_source::{GroupKeys, StoreKey, channel_key};
 use crate::rspace::hot_store::HotStoreState;
+use crate::rspace::hot_store::native_store::{NativeHotStore, NativeStoreState};
 
 #[cfg(test)]
 mod backing;
@@ -30,14 +32,19 @@ where
 {
     identity: Arc<()>,
     epoch: EpochCheckpoint<E>,
-    state: HotStoreState<C, P, A, K>,
+    // Changed by D-C2c (D-S1, DR-96): the native session uses its
+    // digest-keyed store.
+    // state: HotStoreState<C, P, A, K>,
+    state: NativeStoreState<C, P, A, K>,
     log: Log,
     counters: BTreeMap<Produce, i32>,
     waiting: i64,
 }
 
-pub struct NativeReplaySession<C, P, A, K, E> {
+pub struct NativeReplaySession<C, P: Clone, A: Clone, K: Clone, E> {
     space: ReplayRSpace<C, P, A, K>,
+    /// D-C2c (D-S1, DR-96): the session's digest-keyed store.
+    store: Arc<NativeHotStore<C, P, A, K>>,
     root: [u8; 32],
     epoch: E,
     identity: Arc<()>,
@@ -162,9 +169,20 @@ where
         let (replay_operations, replay_bytes) =
             ReplayRSpace::<C, P, A, K>::native_constructor_layout(cache_shards)
                 .ok_or(RSpaceError::HostWorkRejected)?;
+        let (native_store_operations, native_store_bytes) =
+            NativeHotStore::<C, P, A, K>::constructor_layout()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        // Changed by D-C2c (D-S1, DR-96): the session also builds its
+        // digest-keyed store.
+        // let fixed_operations = store_operations
+        //     .checked_add(lock_operations)
+        //     .and_then(|value| value.checked_add(replay_operations))
+        //     .and_then(|value| value.checked_add(2))
+        //     .ok_or(RSpaceError::HostWorkRejected)?;
         let fixed_operations = store_operations
             .checked_add(lock_operations)
             .and_then(|value| value.checked_add(replay_operations))
+            .and_then(|value| value.checked_add(native_store_operations))
             .and_then(|value| value.checked_add(2))
             .ok_or(RSpaceError::HostWorkRejected)?;
         let operations = shards
@@ -182,11 +200,13 @@ where
             .and_then(|value| value.checked_add(lock_bytes))
             .and_then(|value| value.checked_add(replay_bytes))
             .and_then(|value| value.checked_add(wrapper_bytes))
+            .and_then(|value| value.checked_add(native_store_bytes))
             .ok_or(RSpaceError::HostWorkRejected)?;
         epoch.reserve_work(operations, bytes)?;
         let store = HotStoreInstances::create_from_hr_native(base, cache_shards);
         Ok(Self {
             space: ReplayRSpace::apply_native(history, Arc::new(store), matcher, cache_shards),
+            store: Arc::new(NativeHotStore::new()),
             root,
             epoch,
             identity: Arc::new(()),
@@ -231,20 +251,25 @@ where
         )
     }
 
+    /// The consume source and the store keys of its channels, in channel
+    /// order (D-C2c, D-S1, DR-96).
     fn consume_source(
         &self,
         channels: &[C],
         patterns: &[P],
         continuation: &K,
         persist: bool,
-    ) -> Result<Consume, RSpaceError>
+    ) -> Result<(Consume, Vec<StoreKey>), RSpaceError>
     where
         E: super::native_epoch::NativeOperationEpoch<C, P, A, K>,
     {
         self.ensure_open()?;
         self.epoch
             .prepare_consume_source(channels, patterns, continuation)?;
-        crate::rspace::hashing::native_source::consume(
+        // Changed by D-C2c (D-S1, DR-96): the source also returns the keys of
+        // its channels.
+        // crate::rspace::hashing::native_source::consume(
+        crate::rspace::hashing::native_source::consume_keys(
             channels,
             patterns,
             continuation,
@@ -260,7 +285,10 @@ where
         let _exclusive = self.gate.write().await;
         self.ensure_open()?;
         let boundary = self.epoch.begin_boundary()?;
-        let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
+        // Changed by D-C2c (D-S1, DR-96): the native session uses its
+        // digest-keyed store.
+        // let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
+        let (shards, bytes) = NativeHotStore::<C, P, A, K>::snapshot_layout();
         let operations = shards
             .checked_mul(2)
             .and_then(|count| count.checked_add(16))
@@ -276,7 +304,10 @@ where
         Ok(NativeSessionCheckpoint {
             identity: Arc::clone(&self.identity),
             epoch: boundary.checkpoint(),
-            state: self.space.get_store().snapshot(),
+            // Changed by D-C2c (D-S1, DR-96): the native session uses its
+            // digest-keyed store.
+            // state: self.space.get_store().snapshot(),
+            state: self.store.snapshot(),
             log: log.clone(),
             counters: counters.clone(),
             waiting: self
@@ -299,7 +330,9 @@ where
             .epoch
             .begin_boundary()?
             .prepare_restore(&checkpoint.epoch)?;
-        let store = self.space.get_store();
+        // Changed by D-C2c (D-S1, DR-96): the native session uses its
+        // digest-keyed store.
+        // let store = self.space.get_store();
         let mut log = self.space.event_log.lock().expect("native replay log");
         let mut counters = self
             .space
@@ -308,7 +341,8 @@ where
             .expect("native replay counters");
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
-        store.set_state(checkpoint.state);
+        // store.set_state(checkpoint.state);
+        self.store.restore(checkpoint.state);
         *log = checkpoint.log;
         *counters = checkpoint.counters;
         self.space
@@ -354,12 +388,17 @@ where
         let preparation =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
         let prepared_result = (|| {
-            let changes =
-                self.space
-                    .get_store()
-                    .changes_metered(&|operations, scanned, backing| {
-                        self.history_reserve(operations, scanned, backing)
-                    })?;
+            // Changed by D-C2c (D-S1, DR-96): the native session uses its
+            // digest-keyed store.
+            // let changes =
+            //     self.space
+            //         .get_store()
+            //         .changes_metered(&|operations, scanned, backing| {
+            //             self.history_reserve(operations, scanned, backing)
+            //         })?;
+            let changes = self.store.changes(&|operations, scanned, backing| {
+                self.history_reserve(operations, scanned, backing)
+            })?;
             let history = self.space.get_history_repository();
             let prepared = history
                 .prepare_native_checkpoint(changes, &|operations, scanned, backing| {
@@ -451,7 +490,10 @@ where
             .consume_lock_with(&hashes, |operations, bytes| reserve(operations, 0, bytes))
             .await?;
         self.ensure_open()?;
-        self.read_data_with(channel, &reserve)
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
+        // self.read_data_with(channel, &reserve)
+        let key = channel_key(channel, &reserve)?;
+        self.read_data_with(channel, key, &reserve)
     }
 
     pub async fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
@@ -464,7 +506,12 @@ where
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        self.read_joins(channel)
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
+        // self.read_joins(channel)
+        let key = channel_key(channel, &|operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
+        })?;
+        self.read_joins(channel, key)
     }
 
     pub async fn get_continuations(
@@ -476,7 +523,12 @@ where
         let hashes = self.channel_hashes(channels, channels.len())?;
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        self.read_continuations(channels)
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the group keys.
+        // self.read_continuations(channels)
+        let keys = GroupKeys::build(channels, &|operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
+        })?;
+        self.read_continuations(channels, &keys)
     }
 }
 

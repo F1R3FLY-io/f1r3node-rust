@@ -143,7 +143,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
         },
     );
     assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
-    assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+    // digest-keyed store.
+    // assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    assert_eq!(session.store.entry_counts()[0], 0);
 }
 
 async fn query(session: &Session, kind: usize) -> Result<(), RSpaceError> {
@@ -182,7 +185,10 @@ async fn cold_and_warm_native_queries_never_use_the_legacy_reader() {
         }
     }
     session.restore(checkpoint).await.unwrap();
-    assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+    // digest-keyed store.
+    // assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    assert_eq!(session.store.entry_counts()[0], 0);
     for kind in 0..3 {
         query(&session, kind).await.unwrap();
     }
@@ -269,10 +275,14 @@ async fn every_cold_read_reservation_cut_leaves_no_partial_typed_cache() {
             let session = isolated(history.clone());
             *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
             assert!(query(&session, kind).await.is_err(), "kind={kind}, cut={accepted}");
-            let state = session.space.get_store().snapshot();
-            assert!(state.data_flat().is_empty());
-            assert!(state.joins_flat().is_empty());
-            assert!(state.continuations_flat().is_empty());
+            // Changed by D-C2c (D-S1, DR-96): the native session caches in
+            // its digest-keyed store.
+            // let state = session.space.get_store().snapshot();
+            // assert!(state.data_flat().is_empty());
+            // assert!(state.joins_flat().is_empty());
+            // assert!(state.continuations_flat().is_empty());
+            let [data, continuations, _, joins, _] = session.store.entry_counts();
+            assert_eq!((data, continuations, joins), (0, 0, 0));
             assert_eq!(*session.epoch.state.lock().unwrap(), (vec![], 0, false, false));
             for lock in session
                 .space
@@ -324,8 +334,12 @@ async fn independent_native_readers_keep_separate_caches_and_exhaustion() {
     let (failed, successful) = tokio::join!(query(&left, 0), query(&right, 0));
     assert!(failed.is_err());
     successful.unwrap();
-    assert!(left.space.get_store().snapshot().data_flat().is_empty());
-    assert_eq!(right.space.get_store().snapshot().data_flat().len(), 1);
+    // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+    // digest-keyed store.
+    // assert!(left.space.get_store().snapshot().data_flat().is_empty());
+    // assert_eq!(right.space.get_store().snapshot().data_flat().len(), 1);
+    assert_eq!(left.store.entry_counts()[0], 0);
+    assert_eq!(right.store.entry_counts()[0], 1);
     let inspection = Epoch::default();
     assert_eq!(
         left.get_data_with_budget(&"data".to_owned(), |operations, bytes| {
@@ -377,7 +391,10 @@ async fn malformed_authenticated_records_never_publish_a_partial_cache_or_fall_b
     for _ in 0..3 {
         let error = session.get_data(&"data".to_owned()).await.unwrap_err();
         assert_eq!(error, RSpaceError::InterpreterError("native history: TypedRecord".to_owned()));
-        assert!(session.space.get_store().snapshot().data_flat().is_empty());
+        // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+        // digest-keyed store.
+        // assert!(session.space.get_store().snapshot().data_flat().is_empty());
+        assert_eq!(session.store.entry_counts()[0], 0);
         assert_eq!(history.root(), root);
     }
 }
