@@ -1612,3 +1612,131 @@ pub async fn create_runtime_from_kv_store(
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::interpreter::io::handler_trait::{EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS};
+    use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
+        let reducer_cell = Arc::new(std::sync::OnceLock::new());
+        let dispatcher: RhoDispatch = Arc::new(RholangAndScalaDispatcher {
+            _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            reducer: reducer_cell,
+        });
+
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let space =
+            RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
+                store,
+                Arc::new(Box::new(Matcher)),
+            )
+            .unwrap();
+        let rspace: RhoISpace = Arc::new(Box::new(space));
+
+        (dispatcher, rspace)
+    }
+
+    /// Registration-count regression gate: walking `FS_HANDLERS` via
+    /// `fs_handlers_to_definitions` must produce exactly
+    /// `EXPECTED_MIGRATED_HANDLER_COUNT` rows.  This is distinct from
+    /// `fs_handlers::fs_handlers_count_matches_migrated_pinned` (which
+    /// pins the slice length): it defends against a regression in
+    /// `fs_handlers_to_definitions` itself — e.g., a `.filter(...)`
+    /// chained in, a stray `.take(N)`, or a short-circuit that drops
+    /// entries after `FsProcesses` construction.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_count_matches_registry() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        assert_eq!(
+            defs.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+            "fs_handlers_to_definitions produced {} definitions but \
+             EXPECTED_MIGRATED_HANDLER_COUNT is {}.  A regression in \
+             the FS_HANDLERS → Definition mapping is dropping entries \
+             — handler dispatch will silently no-op for the missing \
+             URNs.",
+            defs.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+        );
+    }
+
+    /// Every produced URN must be unique.  Two entries sharing a
+    /// `urn_suffix` would collide in `RhoDispatchMap`, clobbering one
+    /// handler at registration — a silent dispatch regression.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_urns_unique() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let mut seen = std::collections::HashSet::new();
+        for def in &defs {
+            assert!(
+                seen.insert(def.urn.clone()),
+                "duplicate FS native URN `{}` in fs_handlers_to_definitions \
+                 output — two FS_HANDLERS entries share a `urn_suffix`, \
+                 which would clobber one handler at RhoDispatchMap \
+                 registration.",
+                def.urn,
+            );
+        }
+    }
+
+    /// Every produced URN must start with the shared
+    /// `io::FS_NATIVE_URN_PREFIX` ("rho:io:fs:native:").  The reducer's
+    /// `filter_fs_native_urns` check in `eval_new` tests
+    /// `urn.starts_with(FS_NATIVE_URN_PREFIX)` — a regression where
+    /// the local versioned prefix in `fs_handlers_to_definitions`
+    /// drifts to something that no longer starts with the shared
+    /// prefix would silently bypass the filter: user deploys could
+    /// bind the FS native URNs directly, defeating the phase-scoped
+    /// visibility gate (slices 5.32/5.33/5.35).
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        for def in &defs {
+            assert!(
+                def.urn.starts_with(FS_NATIVE_URN_FILTER_PREFIX),
+                "FS native URN `{}` does not start with the shared \
+                 filter prefix `{}` — the reducer's \
+                 `filter_fs_native_urns` check in `eval_new` would \
+                 fail to reject this URN in user deploys, silently \
+                 bypassing phase-scoped visibility.",
+                def.urn,
+                FS_NATIVE_URN_FILTER_PREFIX,
+            );
+        }
+    }
+
+    /// Every registered URN suffix in `FS_HANDLERS` must be reachable
+    /// from the Definition output.  Walking FS_HANDLERS and matching
+    /// against produced URNs confirms the mapping is total — no entry
+    /// is silently dropped between `FS_HANDLERS.iter()` and the
+    /// returned Vec.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_covers_every_registry_entry() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let defs = fs_handlers_to_definitions(dispatcher, space);
+        let def_urns: std::collections::HashSet<&str> =
+            defs.iter().map(|d| d.urn.as_str()).collect();
+        for entry in FS_HANDLERS.iter() {
+            let expected_urn = format!("rho:io:fs:native:1.0.0/{}", entry.urn_suffix);
+            assert!(
+                def_urns.contains(expected_urn.as_str()),
+                "FS_HANDLERS entry `{}` (urn_suffix=`{}`) is missing \
+                 from fs_handlers_to_definitions output — the \
+                 FS_HANDLERS → Definition mapping is not total.  \
+                 Expected URN: `{}`",
+                entry.name,
+                entry.urn_suffix,
+                expected_urn,
+            );
+        }
+    }
+}
