@@ -136,14 +136,14 @@ impl ServersInstances {
             public_http: http_router,
             admin_http: admin_http_router,
         } = application
-            .routes(
-                &node_conf,
-                rp_conf_cell.clone(),
-                rp_connections,
-                node_discovery,
-                event_stream,
+            .routes(crate::rust::runtime::application::ApplicationContext {
+                settings: node_conf.api_server.clone(),
+                peer_conf: rp_conf_cell.clone(),
+                connections: rp_connections,
+                discovery: node_discovery,
+                events: event_stream,
                 startup_events,
-            )
+            })
             .await?;
         // Read current RPConf
         let rp_conf = rp_conf_cell

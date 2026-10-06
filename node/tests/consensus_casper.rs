@@ -15,9 +15,11 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::routing::Protocol;
 use models::rust::casper::protocol::casper_message::DeployData;
 use node::rust::configuration::NodeConf;
-use node::rust::runtime::setup::{setup_node_program, PreparedNode};
+use node::rust::runtime::application::{ApplicationContext, ApplicationRoutes};
+use node::rust::runtime::setup::setup_node_program;
 use prost::Message;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tower::ServiceExt;
 
 #[derive(Clone)]
 struct TestTransport;
@@ -87,7 +89,76 @@ fn config(directory: &std::path::Path) -> (NodeConf, PrivateKey) {
     (conf, key)
 }
 
-async fn prepare(conf: NodeConf) -> eyre::Result<PreparedNode> {
+struct PreparedTestNode {
+    consensus: consensus_runtime::PreparedConsensus,
+    packet_handler: Arc<dyn comm::rust::p2p::packet_handler::PacketHandler>,
+    application: TestApplication,
+}
+
+struct TestApplication {
+    public_http: axum::Router,
+    admin_http: axum::Router,
+    deploy:
+        models::casper::v1::deploy_service_client::DeployServiceClient<tonic::transport::Channel>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+}
+
+impl TestApplication {
+    async fn close(mut self) {
+        let _ = self.shutdown.take().unwrap().send(());
+        tokio::time::timeout(Duration::from_secs(10), &mut self.server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn deploy_http(&self, request: node::rust::api::web_api::DeployRequest) -> String {
+        let response = self
+            .public_http
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&request).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn propose_http(&self) -> String {
+        let response = self
+            .admin_http
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/propose")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+}
+
+impl Drop for TestApplication {
+    fn drop(&mut self) { self.server.abort(); }
+}
+
+async fn prepare(conf: NodeConf) -> eyre::Result<PreparedTestNode> {
     let local = PeerNode {
         id: NodeIdentifier {
             key: vec![1; 32].into(),
@@ -102,15 +173,59 @@ async fn prepare(conf: NodeConf) -> eyre::Result<PreparedNode> {
         10,
         10,
     ));
-    setup_node_program(
-        ConnectionsCell::new(),
-        peer_conf,
+    let connections = ConnectionsCell::new();
+    let discovery = Arc::new(TestDiscovery);
+    let events = F1r3flyEvents::new();
+    let prepared = setup_node_program(
+        connections.clone(),
+        peer_conf.clone(),
         Arc::new(TestTransport),
-        conf,
-        F1r3flyEvents::new(),
-        Arc::new(TestDiscovery),
+        conf.clone(),
+        events.clone(),
+        discovery.clone(),
     )
-    .await
+    .await?;
+    let ApplicationRoutes {
+        external,
+        public_http,
+        admin_http,
+        internal,
+    } = prepared
+        .application
+        .routes(ApplicationContext {
+            settings: conf.api_server,
+            peer_conf,
+            connections,
+            discovery,
+            events: events.consume(),
+            startup_events: events.startup_buffer(),
+        })
+        .await?;
+    drop(internal);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(external.serve_with_incoming_shutdown(
+        tokio_stream::wrappers::TcpListenerStream::new(listener),
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    let deploy = models::casper::v1::deploy_service_client::DeployServiceClient::connect(format!(
+        "http://{address}"
+    ))
+    .await?;
+    Ok(PreparedTestNode {
+        consensus: prepared.consensus,
+        packet_handler: prepared.packet_handler,
+        application: TestApplication {
+            public_http,
+            admin_http,
+            deploy,
+            shutdown: Some(shutdown),
+            server,
+        },
+    })
 }
 
 fn copy_closed_store(source: &std::path::Path, destination: &std::path::Path) {
@@ -127,22 +242,13 @@ fn copy_closed_store(source: &std::path::Path, destination: &std::path::Path) {
     }
 }
 
-fn casper_application(
-    application: &node::rust::runtime::setup::PreparedApplication,
-) -> &node::rust::consensus::casper::api_compat::PreparedApplication {
-    match application {
-        node::rust::runtime::setup::PreparedApplication::CbcCasper(application) => application,
-    }
-}
-
 async fn deploy_status(
-    application: &node::rust::runtime::setup::PreparedApplication,
+    application: &TestApplication,
     signature: prost::bytes::Bytes,
 ) -> models::casper::DeployFinalizationStatusInfo {
-    use models::casper::v1::deploy_service_server::DeployService;
-    let response = casper_application(application)
-        .api_servers
+    let response = application
         .deploy
+        .clone()
         .deploy_finalization_status(tonic::Request::new(
             models::casper::DeployFinalizationStatusQuery {
                 deploy_sig: signature,
@@ -173,7 +279,7 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
         assert_eq!(handle.status().protocol.id, "cbc-casper");
         let genesis = handle.finalized().await.unwrap();
         runtime.shutdown().await.unwrap();
-        drop(prepared.application);
+        prepared.application.close().await;
         drop(prepared.packet_handler);
         let follower_directory = tempfile::tempdir().unwrap();
         copy_closed_store(directory.path(), follower_directory.path());
@@ -198,19 +304,18 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
             deploy_payload = proto.encode_to_vec();
             let response = match index {
                 0 => {
-                    use models::casper::v1::deploy_service_server::DeployService;
-                    let response = casper_application(&prepared.application).api_servers.deploy.do_deploy(tonic::Request::new(proto)).await.unwrap().into_inner();
+                    let response = prepared.application.deploy.clone().do_deploy(tonic::Request::new(proto)).await.unwrap().into_inner();
                     match response.message {
                         Some(models::casper::v1::deploy_response::Message::Result(value)) => value,
                         other => panic!("gRPC deploy failed: {other:?}"),
                     }
                 }
-                1 => casper_application(&prepared.application).web_api.deploy(http_request).await.unwrap(),
+                1 => prepared.application.deploy_http(http_request).await,
                 _ => handle.submit(deploy_payload.clone()).await.unwrap(),
             };
             assert!(response.starts_with("Success!"), "{response}");
             let response = if index == 0 {
-                casper_application(&prepared.application).admin_web_api.propose().await.unwrap()
+                prepared.application.propose_http().await
             } else {
                 handle.propose(false).await.unwrap()
             };
@@ -225,7 +330,7 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
         let manifest = std::fs::read(directory.path().join("consensus-manifest.json")).unwrap();
         runtime.shutdown().await.unwrap();
         assert_eq!(handle.status().phase, Phase::Stopped);
-        drop(prepared.application);
+        prepared.application.close().await;
         drop(prepared.packet_handler);
 
         let native_blocks = {
@@ -264,7 +369,7 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
         follower.packet_handler.handle_packet(&peer, &native_blocks[0].to_proto().mk_packet()).await.unwrap();
         assert_eq!(follower_handle.finalized().await.unwrap(), finalized);
         follower_runtime.shutdown().await.unwrap();
-        drop(follower.application);
+        follower.application.close().await;
         drop(follower.packet_handler);
         {
             use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -297,7 +402,7 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
         assert_eq!(deploy_status(&recovered.application, first_deploy_signature).await, status_before);
         assert_eq!(std::fs::read(directory.path().join("consensus-manifest.json")).unwrap(), manifest);
         runtime.shutdown().await.unwrap();
-        drop(recovered.application);
+        recovered.application.close().await;
         drop(recovered.packet_handler);
 
         let mut readonly = conf.clone();
