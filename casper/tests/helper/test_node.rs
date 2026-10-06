@@ -7,7 +7,9 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
-use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+};
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
@@ -36,7 +38,6 @@ use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -353,6 +354,23 @@ impl TestNode {
         current[0]
             .propagate_block(deploy_datums, &mut all_others)
             .await
+    }
+
+    /// Makes every node receive the blocks of every other node. `sync_with_one`
+    /// makes its caller the receiver, so each pair is synced in both directions.
+    pub async fn sync_all(nodes: &mut [TestNode]) -> Result<(), CasperError> {
+        for sender_idx in 0..nodes.len() {
+            for receiver_idx in 0..nodes.len() {
+                if sender_idx == receiver_idx {
+                    continue;
+                }
+                let [receiver, sender] = nodes
+                    .get_disjoint_mut([receiver_idx, sender_idx])
+                    .expect("receiver and sender are different nodes");
+                receiver.sync_with_one(sender).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Helper method to propagate a block from one node to another specific node.
@@ -1024,7 +1042,7 @@ impl TestNode {
         let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
         let connections_cell = ConnectionsCell::new();
@@ -1088,7 +1106,7 @@ impl TestNode {
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
         // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
         let (block_processor_queue_tx, block_processor_queue_rx) =
-            mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(1024);
+            mpsc::channel::<BlockQueueItem>(1024);
         let block_processor_queue = (
             block_processor_queue_tx,
             Arc::new(Mutex::new(block_processor_queue_rx)),
@@ -1137,6 +1155,7 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            observer: std::sync::OnceLock::new(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),
@@ -1185,7 +1204,7 @@ impl TestNode {
 
         let running_engine = Running::new(
             block_processor_queue.0.clone(), // block_processing_queue_tx
-            Arc::new(DashSet::new()),        // blocks_in_processing
+            Arc::new(InFlightBlocks::new()), // blocks_in_processing
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
             _approved_block.clone(),         // approved_block
             the_init,                        // the_init

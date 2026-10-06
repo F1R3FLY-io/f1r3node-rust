@@ -1,6 +1,8 @@
 //! Shared `tracing` subscriber initialisation for both the production
 //! binary (`init`) and test suites (`init_for_tests`).
 
+mod bounded_file;
+
 use std::path::Path;
 
 use eyre::{eyre, Result};
@@ -50,11 +52,55 @@ pub enum LogSink {
     Both,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LogFileConfig {
     pub rotation: LogRotation,
-    /// Number of rotated files to keep. 0 = unlimited.
     pub retention: usize,
+    #[serde(
+        rename = "max-file-size-bytes",
+        alias = "max_file_size_bytes",
+        deserialize_with = "de_positive_bytes"
+    )]
+    pub max_file_size_bytes: u64,
+    #[serde(
+        rename = "max-total-size-bytes",
+        alias = "max_total_size_bytes",
+        deserialize_with = "de_positive_bytes"
+    )]
+    pub max_total_size_bytes: u64,
+}
+
+fn de_positive_bytes<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where D: serde::Deserializer<'de> {
+    let value = i64::deserialize(deserializer)?;
+    u64::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| serde::de::Error::custom("A log byte limit must be a positive integer."))
+}
+
+impl Default for LogFileConfig {
+    fn default() -> Self {
+        Self {
+            rotation: LogRotation::Never,
+            retention: 0,
+            max_file_size_bytes: 100 * 1024 * 1024,
+            max_total_size_bytes: 2 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+impl LogFileConfig {
+    fn validate(&self) -> std::io::Result<()> {
+        if self.max_file_size_bytes == 0 || self.max_total_size_bytes < self.max_file_size_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "logging.file requires 0 < max-file-size-bytes <= max-total-size-bytes",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -62,11 +108,6 @@ pub struct LogFileConfig {
 pub enum LogRotation {
     #[default]
     Never,
-    /// Rotate every minute. Retention then bounds the log to roughly
-    /// `retention` minutes rather than days — the only granularity that
-    /// keeps a debug-level run (measured at gigabytes per minute across a
-    /// shard) inside a fixed disk budget while still retaining the window
-    /// around a failure.
     Minutely,
     Hourly,
     Daily,
@@ -83,6 +124,7 @@ pub struct TracingGuards {
 /// subscriber. `data_dir` is required when `cfg.sink` includes file output;
 /// logs are written to `<data_dir>/logs/node.log`.
 pub fn init(cfg: &LoggingConfig, data_dir: Option<&Path>) -> Result<TracingGuards> {
+    cfg.file.validate()?;
     let filter = resolve_filter(&cfg.filter);
     let mut guards = TracingGuards::default();
     let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = Vec::new();
@@ -156,25 +198,8 @@ fn make_file_writer(
     data_dir: &Path,
     cfg: &LogFileConfig,
 ) -> Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
-    let log_dir = data_dir.join("logs");
-
-    std::fs::create_dir_all(&log_dir)
-        .map_err(|e| eyre!("failed to create log directory {:?}: {}", log_dir, e))?;
-
-    let mut builder = tracing_appender::rolling::Builder::new()
-        .rotation(match cfg.rotation {
-            LogRotation::Never => tracing_appender::rolling::Rotation::NEVER,
-            LogRotation::Minutely => tracing_appender::rolling::Rotation::MINUTELY,
-            LogRotation::Hourly => tracing_appender::rolling::Rotation::HOURLY,
-            LogRotation::Daily => tracing_appender::rolling::Rotation::DAILY,
-        })
-        .filename_prefix("node.log");
-    if cfg.retention > 0 {
-        builder = builder.max_log_files(cfg.retention);
-    }
-    let appender = builder
-        .build(&log_dir)
-        .map_err(|e| eyre!("failed to build rolling file appender: {}", e))?;
+    let appender = bounded_file::BoundedFile::new(data_dir, cfg)
+        .map_err(|e| eyre!("failed to build bounded file appender: {}", e))?;
     Ok(tracing_appender::non_blocking(appender))
 }
 
@@ -190,6 +215,7 @@ mod tests {
         let cfg = LogFileConfig {
             rotation: LogRotation::Never,
             retention: 0,
+            ..LogFileConfig::default()
         };
 
         let (_writer, _guard) = make_file_writer(data_dir.path(), &cfg).expect("make_file_writer");
@@ -242,6 +268,8 @@ mod tests {
             file: LogFileConfig {
                 rotation: LogRotation::Hourly,
                 retention: 5,
+                max_file_size_bytes: 256,
+                max_total_size_bytes: 1024,
             },
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -251,6 +279,8 @@ mod tests {
         assert!(matches!(decoded.sink, LogSink::Both));
         assert!(matches!(decoded.file.rotation, LogRotation::Hourly));
         assert_eq!(decoded.file.retention, 5);
+        assert_eq!(decoded.file.max_file_size_bytes, 256);
+        assert_eq!(decoded.file.max_total_size_bytes, 1024);
     }
 
     #[test]
@@ -265,11 +295,76 @@ mod tests {
             let cfg = LogFileConfig {
                 rotation,
                 retention: 3,
+                ..LogFileConfig::default()
             };
             let (_writer, _guard) =
                 make_file_writer(data_dir.path(), &cfg).expect("make_file_writer");
             assert!(data_dir.path().join("logs").is_dir(), "{rotation:?}");
         }
+    }
+
+    #[test]
+    fn file_writer_limits_hot_error_output_by_bytes() {
+        use std::io::Write;
+
+        let data_dir = tempdir().unwrap();
+        let cfg: LogFileConfig = serde_json::from_str(
+            r#"{"rotation":"never","retention":0,"max-file-size-bytes":128,"max-total-size-bytes":384}"#,
+        )
+        .unwrap();
+        let (mut writer, guard) = make_file_writer(data_dir.path(), &cfg).unwrap();
+        for _ in 0..1000 {
+            writer
+                .write_all(b"ERROR repeated transport accept failure\n")
+                .unwrap();
+        }
+        drop(writer);
+        drop(guard);
+        let sizes: Vec<u64> = std::fs::read_dir(data_dir.path().join("logs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .collect();
+        assert!(sizes.iter().all(|size| *size <= 128), "{sizes:?}");
+        assert!(sizes.iter().sum::<u64>() <= 384, "{sizes:?}");
+        assert!(sizes.iter().sum::<u64>() > 0);
+    }
+
+    #[test]
+    fn json_error_events_remain_parseable_under_size_rotation() {
+        let data_dir = tempdir().unwrap();
+        let cfg = LogFileConfig {
+            max_file_size_bytes: 512,
+            max_total_size_bytes: 1536,
+            ..LogFileConfig::default()
+        };
+        let (writer, guard) = make_file_writer(data_dir.path(), &cfg).unwrap();
+        let subscriber = Registry::default().with(make_layer(LogFormat::Json, writer));
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..1000 {
+                tracing::error!(
+                    fault_code = 24,
+                    "Repeated accept failure in a controlled fixture"
+                );
+            }
+        });
+        drop(guard);
+        let mut total = 0;
+        let mut events = 0;
+        for entry in std::fs::read_dir(data_dir.path().join("logs")).unwrap() {
+            let contents = std::fs::read(entry.unwrap().path()).unwrap();
+            assert!(contents.len() <= 512);
+            total += contents.len();
+            for line in contents
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+            {
+                let event: serde_json::Value = serde_json::from_slice(line).unwrap();
+                assert_eq!(event["fault_code"], 24);
+                events += 1;
+            }
+        }
+        assert!(events > 0);
+        assert!(total <= 1536);
     }
 
     #[test]

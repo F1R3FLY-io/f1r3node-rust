@@ -11,12 +11,11 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage, BlockRequest,
-    CasperMessage, FinalizedFloorSeed, HasBlock, HasBlockRequest,
+    self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockRequest, CasperMessage,
+    FinalizedFloorSeed, HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
@@ -168,31 +167,31 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                     let block_hash = b.block_hash.clone();
-                    if !self.blocks_in_processing.insert(block_hash.clone()) {
-                        tracing::debug!(
-                            "Skipping BlockMessage {} enqueue because it is already queued/in-processing",
-                            PrettyPrinter::build_string_bytes(&block_hash)
-                        );
-                        return Ok(());
-                    }
-                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
-                    if self.blocks_in_processing.len() > max_in_flight {
-                        self.blocks_in_processing.remove(&block_hash);
-                        self.block_retriever
-                            .note_local_backpressure_drop(&block_hash, "running-receipt");
-                        tracing::warn!(
-                            "Dropping BlockMessage {} because in-flight block cap {} is reached",
-                            PrettyPrinter::build_string_bytes(&block_hash),
-                            max_in_flight
-                        );
-                        return Ok(());
-                    }
+                    let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
+                    {
+                        InFlightMark::Marked(guard) => guard,
+                        InFlightMark::AlreadyInFlight => {
+                            tracing::debug!(
+                                    "Skipping BlockMessage {} enqueue because it is already queued/in-processing",
+                                    PrettyPrinter::build_string_bytes(&block_hash)
+                                );
+                            return Ok(());
+                        }
+                        InFlightMark::CapReached => {
+                            self.block_retriever
+                                .note_local_backpressure_drop(&block_hash, "running-receipt");
+                            tracing::warn!(
+                                    "Dropping BlockMessage {} because in-flight block cap {} is reached",
+                                    PrettyPrinter::build_string_bytes(&block_hash),
+                                    MAX_BLOCKS_IN_PROCESSING
+                                );
+                            return Ok(());
+                        }
+                    };
                     self.block_processing_queue_tx
-                        .send((self.casper.clone(), b))
+                        .send((self.casper.clone(), b, guard))
                         .await
                         .map_err(|e| {
-                            // Roll back pre-enqueue mark if queue send fails.
-                            self.blocks_in_processing.remove(&block_hash);
                             CasperError::RuntimeError(format!(
                                 "Failed to send block to queue: {}",
                                 e
@@ -340,9 +339,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
 // NOTE: Changed to use Arc<dyn MultiParentCasper> directly instead of generic M
 // based on discussion with Steven for TestFixture compatibility - avoids ?Sized issues
 pub struct Running<T: TransportLayer + Send + Sync> {
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     // Scala: theInit: F[Unit] - lazy async computation
@@ -360,7 +358,9 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
-use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
+use crate::rust::blocks::block_processor::{
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+};
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
     /// The floor and frontier of the block we are about to hand over as a sync
@@ -435,11 +435,8 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     }
 
     pub fn new(
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         casper: Arc<dyn MultiParentCasper + Send + Sync>,
         approved_block: ApprovedBlock,
         the_init: Arc<

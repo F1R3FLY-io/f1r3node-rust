@@ -1153,6 +1153,21 @@ done
 command -v docker >/dev/null
 command -v timeout >/dev/null
 command -v jq >/dev/null
+HARNESS="${SOAK_DISK_TEST_HARNESS_BIN:-}"
+if [[ -z "$HARNESS" ]]; then
+    case "$(uname -m)" in
+        arm64|aarch64) TARGET=aarch64-unknown-linux-musl ;;
+        x86_64) TARGET=x86_64-unknown-linux-musl ;;
+        *) exit 2 ;;
+    esac
+    rustup target add "$TARGET" >"$OUTPUT/harness-target.txt" 2>&1
+    CARGO_PROFILE_DEV_OPT_LEVEL=1 RUSTFLAGS='-C linker=rust-lld -C link-self-contained=yes -C target-feature=+crt-static' \
+        cargo build --locked --manifest-path "$SOURCE/scripts/casper-soak/Cargo.toml" --target "$TARGET" \
+        --bin casper-soak --message-format=json >"$OUTPUT/harness-build.jsonl" 2>"$OUTPUT/harness-build.txt"
+    HARNESS="$(jq -rs '[.[] | select(.reason=="compiler-artifact" and .target.name=="casper-soak" and .executable!=null) | .executable] | last' "$OUTPUT/harness-build.jsonl")"
+fi
+[[ -f "$HARNESS" && -x "$HARNESS" && ! -L "$HARNESS" ]] || exit 2
+shasum -a 256 "$HARNESS" >"$OUTPUT/harness.sha256"
 # The unprivileged container user must be able to read the copied sources.
 # GNU tar sets the modes on the way in; BSD tar (macOS) has no --mode, so the
 # sources' own modes are used there.
@@ -1193,6 +1208,7 @@ run_scenario() {
         --user 65534:65534 --workdir /case \
         --env "SOAK_DISK_TEST_SOURCE_SHA=${SOAK_DISK_TEST_SOURCE_SHA:-unknown}" \
         --env "SOAK_DISK_TEST_SCENARIO=$scenario" \
+        --env SOAK_HARNESS_BIN=/case/casper-soak \
         --entrypoint bash "$IMAGE" /case/test.sh --inside)"
     [[ "$CONTAINER" =~ ^[0-9a-f]{64}$ ]] || return 2
     docker inspect "$CONTAINER" >"$out/container-inspect.json"
@@ -1204,6 +1220,7 @@ run_scenario() {
     "$TAR" -C "$SOURCE" "${TAR_MODE[@]}" -cf - "${SOURCE_FILES[@]}" |
         docker cp - "$CONTAINER:/case/repo/"
     docker cp "${BASH_SOURCE[0]}" "$CONTAINER:/case/test.sh"
+    docker cp "$HARNESS" "$CONTAINER:/case/casper-soak"
     timeout --signal=TERM --kill-after=5 40 docker start -a "$CONTAINER" \
         >"$out/result.txt" 2>&1 || status=$?
     docker inspect "$CONTAINER" >"$out/container-finished.json"
