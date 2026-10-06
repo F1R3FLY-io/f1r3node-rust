@@ -317,6 +317,30 @@ if [ "$DISK_HYGIENE_BAND_MB" -gt "$((DISK_INTEGER_MAX - DISK_FREE_FLOOR_MB))" ];
 	printf 'SOAK_DISK_FREE_FLOOR_MB plus SOAK_DISK_HYGIENE_BAND_MB must not exceed 9223372036854775807\n' >&2
 	exit 2
 fi
+# Node log budgets (TASK-020-4, docs/casper/design/soak-log-budget-guardian.md).
+# EPIC-020 bounds both node log sinks at the source: 100 MiB per file and
+# 2 GiB per directory for the node file sink, and 3 files of 100 MiB for the
+# container json-file log. The guardian checks those caps instead of assuming
+# them. The defaults add one rotation of slack. 0 disables a probe.
+if ! CONTAINER_LOG_BUDGET_MB="$(disk_setting_decimal "${SOAK_CONTAINER_LOG_BUDGET_MB:-400}")"; then
+	printf 'SOAK_CONTAINER_LOG_BUDGET_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
+	exit 2
+fi
+if ! NODE_LOG_BUDGET_MB="$(disk_setting_decimal "${SOAK_NODE_LOG_BUDGET_MB:-2560}")"; then
+	printf 'SOAK_NODE_LOG_BUDGET_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
+	exit 2
+fi
+LOG_PROBE_EVERY="${SOAK_LOG_PROBE_EVERY:-3}"
+if ! [[ "$LOG_PROBE_EVERY" =~ ^[1-3]$ ]]; then
+	printf 'SOAK_LOG_PROBE_EVERY must be an integer from 1 through 3\n' >&2
+	exit 2
+fi
+LOG_PROBE_SECONDS="${SOAK_LOG_PROBE_SECONDS:-4}"
+if ! [[ "$LOG_PROBE_SECONDS" =~ ^[1-4]$ ]]; then
+	printf 'SOAK_LOG_PROBE_SECONDS must be an integer from 1 through 4\n' >&2
+	exit 2
+fi
+NODE_LOG_DIR=/var/lib/rnode/logs
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
 # overridable so the driver test can sweep and measure a private tree instead
@@ -454,6 +478,117 @@ disk_free_mb() {
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
 }
+
+log_budgets_enabled() {
+	[ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ] || [ "$NODE_LOG_BUDGET_MB" -gt 0 ]
+}
+
+# Size of one file, read directly or through passwordless sudo: the Docker
+# json-file log lives under /var/lib/docker, which the runner user may not be
+# able to read. Prints nothing and fails when neither read works.
+log_file_bytes() {
+	local bytes
+	bytes="$(stat -c %s "$1" 2>/dev/null)" || bytes="$(sudo -n stat -c %s "$1" 2>/dev/null)" || return 1
+	[[ "$bytes" =~ ^[0-9]{1,18}$ ]] || return 1
+	printf '%s\n' "$bytes"
+}
+
+# Whether a file exists, checked directly or through passwordless sudo, for the
+# same reason as log_file_bytes. A rotated file that exists but cannot be read
+# fails the sample. A rotated file that does not exist is skipped.
+log_file_present() {
+	[ -e "$1" ] || sudo -n test -e "$1" 2>/dev/null
+}
+
+# Whether an owned container still runs. A container that left the running
+# owned set between the listing and its probes stopped writing, so the sample
+# skips it. When docker ps fails, the container counts as running and the
+# probe failure stands.
+log_container_running() {
+	local listed
+	listed="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" --filter "id=$1" 2>/dev/null)" || return 0
+	[ "$listed" = "$1" ]
+}
+
+# One line for each owned node container: "<id> <container MiB> <node MiB>",
+# with "-" for a disabled probe. A probe that cannot be read fails the sample
+# and names itself on stderr. A container that stopped during the sample
+# is skipped. A missing node log directory counts as 0: a node on the stdout
+# sink writes no file log. Call it through log_budget_probe.
+log_budget_sample() {
+	local ids cid inspected owner path suffix bytes total container_mb node_mb
+	ids="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || {
+		printf 'log probe unavailable: docker ps\n' >&2
+		return 1
+	}
+	while IFS= read -r cid; do
+		[ -n "$cid" ] || continue
+		if ! [[ "$cid" =~ ^[a-f0-9]{64}$ ]]; then
+			printf 'log probe unavailable: container id\n' >&2
+			return 1
+		fi
+		inspected="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}} {{.LogPath}}' "$cid" 2>/dev/null)" || {
+			log_container_running "$cid" || continue
+			printf 'log probe unavailable: docker inspect %s\n' "${cid:0:12}" >&2
+			return 1
+		}
+		owner="${inspected%% *}"
+		path="${inspected#* }"
+		[ "$owner" = "$SOAK_WRITER_OWNER" ] || continue
+		container_mb=-
+		node_mb=-
+		if [ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ]; then
+			if [[ "$path" != /* ]] || ! total="$(log_file_bytes "$path")"; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
+				return 1
+			fi
+			for suffix in 1 2 3 4 5 6 7 8 9; do
+				log_file_present "$path.$suffix" || continue
+				if ! bytes="$(log_file_bytes "$path.$suffix")"; then
+					log_file_present "$path.$suffix" || continue
+					log_container_running "$cid" || continue 2
+					printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
+					return 1
+				fi
+				total="$((total + bytes))"
+			done
+			container_mb="$(((total + 1048575) / 1048576))"
+		fi
+		if [ "$NODE_LOG_BUDGET_MB" -gt 0 ]; then
+			bytes="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>/dev/null |
+				awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')"
+			if ! [[ "$bytes" =~ ^[0-9]{1,18}$ ]]; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: node log directory of %s\n' "${cid:0:12}" >&2
+				return 1
+			fi
+			node_mb="$(((bytes + 1048575) / 1048576))"
+		fi
+		printf '%s %s %s\n' "${cid:0:12}" "$container_mb" "$node_mb"
+	done <<<"$ids"
+}
+
+# Admission check for the log probes: prints the reason and succeeds when a
+# probe cannot read a running owned container. With no owned container the
+# check passes, and the guardian performs it on its first sample with one.
+log_budget_refusal() {
+	local reason
+	log_budgets_enabled || return 1
+	reason="$(log_budget_probe 2>&1 >/dev/null)" && return 1
+	printf '%s\n' "${reason:-log probe unavailable}"
+}
+
+log_budget_probe() (
+	export SOAK_WRITER_OWNER CONTAINER_LOG_BUDGET_MB NODE_LOG_BUDGET_MB NODE_LOG_DIR
+	export -f log_file_bytes log_file_present log_container_running log_budget_sample
+	timeout --signal=TERM --kill-after=1 "$LOG_PROBE_SECONDS" bash -c 'log_budget_sample' ||
+		{
+			status=$?
+			[ "$status" -ne 124 ] || printf 'log probe unavailable: deadline %ss\n' "$LOG_PROBE_SECONDS" >&2
+			exit 1
+		}
+)
 
 guardian_clock_seconds() {
 	local uptime _unused
@@ -1195,6 +1330,16 @@ run_bench_segment() {
 			return 1
 		fi
 	fi
+	local log_refusal
+	if log_refusal="$(log_budget_refusal)"; then
+		EARLY_EXIT_REASON="host_protection_breach"
+		DEADLINE=0
+		FAILURES="$((FAILURES + 1))"
+		publish_record -t "$OUTPUT_DIR/protection-breach.txt" printf 'The log probe is unavailable before benchmark admission (%s). Set SOAK_CONTAINER_LOG_BUDGET_MB=0 and SOAK_NODE_LOG_BUDGET_MB=0 to run without the log guardian. The driver refused work.\n' \
+			"$log_refusal"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: %s before benchmark admission\n' "$log_refusal"
+		return 1
+	fi
 	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
 		publish_record "$HOST_GUARDIAN_BREACH" printf 'The run domain is unverified before benchmark admission. The driver refused work.\n'
 	fi
@@ -1454,7 +1599,7 @@ if [ "$DEADLINE" -gt "$(date +%s)" ] && ! start_crash_monitor; then
 	printf 'The crash monitor is unavailable. The driver refused work.\n' >&2
 	exit 2
 fi
-if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ] || log_budgets_enabled; then
 	if ! guardian_record_progress; then
 		printf 'The host guardian progress record is unavailable. The driver refused work.\n' >&2
 		exit 2
@@ -1527,6 +1672,28 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		warn_floor_mb=$((HOST_FREE_FLOOR_MB + ${SOAK_HOST_WARN_BAND_MB:-4096}))
 		disk_over=0
 		disk_hard_floor_mb=$((DISK_FREE_FLOOR_MB / 2))
+		log_sample_n=0
+		container_log_over=0
+		node_log_over=0
+		# The disk floor rule for one log probe: a sample over the budget is a
+		# strike, and three consecutive strikes or one sample at two times the
+		# budget is a breach. The comparison avoids doubling a 64-bit budget.
+		guardian_log_breached() {
+			local probe="$1" budget="$2" worst="$3" mb="$4" strikes_var="$5" strikes
+			strikes="${!strikes_var}"
+			if [ "$budget" -le 0 ] || [ "$mb" = - ] || [ "$mb" -le "$budget" ]; then
+				printf -v "$strikes_var" '%s' 0
+				return 1
+			fi
+			strikes=$((strikes + 1))
+			printf -v "$strikes_var" '%s' "$strikes"
+			[ "$strikes" -ge 3 ] || [ "$((mb - budget))" -ge "$budget" ] || return 1
+			publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian detected the %s of container %s at %s MiB over budget %s MiB (consecutive samples %s). Workload termination is unconfirmed.\n' \
+				"$probe" "$worst" "$mb" "$budget" "$strikes"
+			stop_node_writers -q kill || true
+			guardian_stamp_health_tag breach na "log:$probe:$worst:${mb}MiB"
+			return 0
+		}
 		[ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1
 		last_stamp=0
 		sample_n=0
@@ -1561,6 +1728,28 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 				fi
 			fi
 			guardian_record_progress || exit 1
+			# Every LOG_PROBE_EVERY samples (15s by default): each log probe is
+			# a Docker round trip for each owned container.
+			if log_budgets_enabled && [ $((log_sample_n % LOG_PROBE_EVERY)) -eq 0 ]; then
+				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
+					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
+					publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian probe is unavailable during execution (%s). Workload termination is unconfirmed.\n' \
+						"${log_reason:-log probe unavailable}"
+					stop_node_writers -q kill || true
+					guardian_stamp_health_tag breach na "log probe unavailable"
+					exit 0
+				fi
+				read -r container_worst container_mb < <(printf '%s\n' "$log_sample" |
+					awk '$2 ~ /^[0-9]+$/ && ($2 + 0 > max + 0 || id == "") { max = $2; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+				read -r node_worst node_mb < <(printf '%s\n' "$log_sample" |
+					awk '$3 ~ /^[0-9]+$/ && ($3 + 0 > max + 0 || id == "") { max = $3; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+				if guardian_log_breached 'container log' "$CONTAINER_LOG_BUDGET_MB" "$container_worst" "$container_mb" container_log_over ||
+					guardian_log_breached 'node log directory' "$NODE_LOG_BUDGET_MB" "$node_worst" "$node_mb" node_log_over; then
+					exit 0
+				fi
+				guardian_record_progress || exit 1
+			fi
+			log_sample_n=$((log_sample_n + 1))
 			if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
 				continue
 			fi
@@ -1597,6 +1786,8 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		done
 	) &
 	HOST_GUARDIAN_PID=$!
+	printf 'orchestrator log guardian budgets: container log %sMB, node log directory %sMB (0 disables), probe every %s samples\n' \
+		"$CONTAINER_LOG_BUDGET_MB" "$NODE_LOG_BUDGET_MB" "$LOG_PROBE_EVERY"
 	printf 'orchestrator host guardian watching MemAvailable floor %sMB (hard floor %sMB, warn %sMB) and disk free floor %sMB (hard floor %sMB); pid %s\n' \
 		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
 		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
@@ -1698,6 +1889,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			FAILURES="$((FAILURES + 1))"
 			break
 		fi
+	fi
+	if LOG_REFUSAL="$(log_budget_refusal)"; then
+		EARLY_EXIT_REASON="host_protection_breach"
+		publish_record -t "$OUTPUT_DIR/protection-breach.txt" printf 'The log probe is unavailable before admission (%s). Set SOAK_CONTAINER_LOG_BUDGET_MB=0 and SOAK_NODE_LOG_BUDGET_MB=0 to run without the log guardian. The driver refused work.\n' \
+			"$LOG_REFUSAL"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: %s before admission\n' "$LOG_REFUSAL"
+		FAILURES="$((FAILURES + 1))"
+		break
 	fi
 	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
 		publish_record "$HOST_GUARDIAN_BREACH" printf 'The run domain is unverified before iteration admission. The driver refused work.\n'
