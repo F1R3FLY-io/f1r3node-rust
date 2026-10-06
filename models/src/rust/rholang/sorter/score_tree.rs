@@ -215,6 +215,7 @@ impl Score {
     pub const UINT32: i32 = 21;
     pub const UINT16: i32 = 22;
     pub const UINT8: i32 = 23;
+    pub const FLOAT32: i32 = 19;
 
     // Vars
     pub const BOUND_VAR: i32 = 50;

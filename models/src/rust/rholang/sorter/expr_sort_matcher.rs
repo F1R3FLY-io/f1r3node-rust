@@ -734,6 +734,14 @@ impl Sortable<Expr> for ExprSortMatcher {
                     ]),
                 },
 
+                ExprInstance::GFloat32(bits) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::FLOAT32 as i64,
+                        *bits as i64,
+                    ]),
+                },
+
                 ExprInstance::GBigInt(bytes) => ScoredTerm {
                     term: e.clone(),
                     score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![

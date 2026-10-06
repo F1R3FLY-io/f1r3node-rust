@@ -468,6 +468,7 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => a == b,
             (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => a == b,
             (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => a == b,
+            (ExprInstance::GFloat32(a), ExprInstance::GFloat32(b)) => a == b,
             _ => false,
         }
     }
@@ -517,6 +518,7 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GUint32(a) => a.hash(state),
             ExprInstance::GUint16(a) => a.hash(state),
             ExprInstance::GUint8(a) => a.hash(state),
+            ExprInstance::GFloat32(a) => a.hash(state),
         }
     }
 }

@@ -9,9 +9,9 @@ use super::event_log_index::EventLogIndex;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::trace::event::{Consume, Produce};
 
-/// Merge strategy for a mergeable channel. Mirrors
-/// `rholang::interpreter::merging::merge_type::MergeType` but is redefined
-/// here to avoid `rspace++` taking a dependency on `rholang`.
+/// Merge strategy for a mergeable channel. `IntegerAdd` combines diffs by
+/// checked addition (vault balances, gas accumulators). `BitmaskOr` combines
+/// them by bitwise OR through `u64` (Registry.rho interior-node bitmaps).
 #[derive(
     Clone,
     Copy,

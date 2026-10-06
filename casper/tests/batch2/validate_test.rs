@@ -72,6 +72,38 @@ fn counter_value(snapshotter: &Snapshotter, metric_name: &str) -> u64 {
         .sum()
 }
 
+fn assert_repeat_deploy_stages(snapshotter: &Snapshotter, stages: &[(&str, usize)]) {
+    let snapshot = snapshotter.snapshot().into_vec();
+    for (stage, expected) in stages {
+        let name = format!("block.validation.repeat-deploy.{stage}.time");
+        let count: usize = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == name)
+            .map(|(_, _, _, value)| match value {
+                DebugValue::Histogram(values) => {
+                    assert!(values
+                        .iter()
+                        .all(|value| value.into_inner().is_finite() && value.into_inner() >= 0.0));
+                    values.len()
+                }
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(count, *expected, "{name}");
+    }
+}
+
+fn assert_repeat_deploy_attribution(snapshotter: &Snapshotter, probes: usize, scans: usize) {
+    assert_repeat_deploy_stages(snapshotter, &[
+        ("parents", 1),
+        ("rejected-sigs", 0),
+        ("retry-gate", 0),
+        ("carrier.watermark", 1),
+        ("carrier.probes", probes),
+        ("ancestor-scan", scans),
+    ]);
+}
+
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
     block_dag_storage: &mut IndexedBlockDagStorage,
@@ -1144,6 +1176,7 @@ async fn repeat_deploy_certified_index_still_flags_a_repeated_deploy() {
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
         );
+        assert_repeat_deploy_attribution(&snapshotter, 1, 1);
         assert_eq!(
             counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
             1
@@ -1216,6 +1249,7 @@ async fn repeat_deploy_certified_index_accepts_fresh_deploys() {
             Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None)
         });
         assert_eq!(result, Either::Right(ValidBlock::Valid));
+        assert_repeat_deploy_attribution(&snapshotter, 1, 0);
         assert_eq!(
             counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
             1
@@ -1480,13 +1514,16 @@ async fn repeat_deploy_certified_index_engagement_skips_the_scan() {
             .get_representation()
             .expect("dag representation");
         let mut uncertified_snapshot = mk_casper_snapshot(dag);
-        let scan_verdict = Validate::repeat_deploy(
-            &candidate,
-            &mut uncertified_snapshot,
-            &block_store,
-            50,
-            None,
-        );
+        let (scan_verdict, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(
+                &candidate,
+                &mut uncertified_snapshot,
+                &block_store,
+                50,
+                None,
+            )
+        });
+        assert_repeat_deploy_attribution(&snapshotter, 0, 1);
         assert!(
             matches!(scan_verdict, Either::Left(_)),
             "control: with the fast path off, the unreadable ancestry must fail the scan; \
@@ -1735,7 +1772,17 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
              so the rejection at block_m is live"
         );
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, Some(&ctx));
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, Some(&ctx))
+        });
+        assert_repeat_deploy_stages(&snapshotter, &[
+            ("parents", 1),
+            ("rejected-sigs", 1),
+            ("retry-gate", 1),
+            ("carrier.watermark", 0),
+            ("carrier.probes", 0),
+            ("ancestor-scan", 0),
+        ]);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
@@ -3047,7 +3094,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         let runtime_manager = RuntimeManager::create_with_store(
             (*kvm).r_space_stores().await.unwrap(),
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -3769,7 +3816,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
         let runtime_manager = RuntimeManager::create_with_store(
             (*kvm).r_space_stores().await.unwrap(),
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -3899,7 +3946,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
         let runtime_manager = RuntimeManager::create_with_store(
             (*kvm).r_space_stores().await.unwrap(),
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 

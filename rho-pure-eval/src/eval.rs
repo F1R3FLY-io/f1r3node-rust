@@ -76,6 +76,7 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         | ExprInstance::GUri(_)
         | ExprInstance::GByteArray(_)
         | ExprInstance::GDouble(_)
+        | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
@@ -281,9 +282,12 @@ fn eq_binop(
 }
 
 fn par_contains_nan_double(par: &Par) -> bool {
-    use models::rhoapi::expr::ExprInstance::{EListBody, EMapBody, ESetBody, ETupleBody, GDouble};
+    use models::rhoapi::expr::ExprInstance::{
+        EListBody, EMapBody, ESetBody, ETupleBody, GDouble, GFloat32,
+    };
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
@@ -389,6 +393,7 @@ fn type_name(instance: &ExprInstance) -> &'static str {
         ExprInstance::GUri(_) => "Uri",
         ExprInstance::GByteArray(_) => "ByteArray",
         ExprInstance::GDouble(_) => "Double",
+        ExprInstance::GFloat32(_) => "Float32",
         ExprInstance::EListBody(_) => "List",
         ExprInstance::ETupleBody(_) => "Tuple",
         ExprInstance::ESetBody(_) => "Set",

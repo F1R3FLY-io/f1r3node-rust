@@ -19,10 +19,27 @@ replication.
 | Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
 | Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
 | Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) · [Cost-accounting CbC and FV reconciliation](./design/cost-accounting-cbc-fv-reconciliation.md) · [Decision ledger](./design/decision-ledger/README.md) (decided 2026-09-16) |
-| CbC claims | [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
+| CbC claims | [Soak harness claim index](../claims/casper-soak-harness.md) · [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
+| CbC evidence | [Casper evidence records](./cbc-evidence/) |
 | Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
 
 Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).
+
+## CbC evidence ownership
+
+Canonical Casper evidence lives in `docs/casper/cbc-evidence/`. It includes Casper runtime records, heartbeat proposal evidence, and the Casper soak formal-area records.
+
+Shared storage, execution, protobuf, and harness evidence remains in `docs/cbc-evidence/`. Claim specifications remain in `docs/claims/` for this migration.
+
+Relative symlinks at the old evidence paths preserve the shared CbC driver's flat lookup. They contain no duplicate evidence or independent status.
+
+A record with a compatibility symlink must name other files by repository-relative path in code spans, not by relative link. The link checker resolves a relative link from the symlink path, where it breaks.
+
+Until the driver supports module routing, keep a root compatibility symlink for each new Casper record. Mixed epic checks still use the default evidence directory.
+
+For Casper-only operations, `CBC_EVIDENCE_DIR=docs/casper/cbc-evidence` selects the canonical directory. Do not use that override for an epic with shared artifacts.
+
+Migration changes neither claim status nor verification evidence. Pending claims remain pending, and legacy discharges retain their original scope limitations.
 
 ---
 
@@ -218,7 +235,7 @@ Not every overlapping channel touch is a conflict. Some channels carry data with
 
 When the conflict-set merger inspects a shared channel, it looks up the channel's tag against this table. If a `MergeType` is found, the deploys are merged rather than treated as conflicting. If not, ordinary conflict resolution applies (one deploy is kept, the other rejected).
 
-`BitmaskOr` was added to handle a class of failure where two registry inserts from sibling blocks both touched the same `TreeHashMap` interior node. Without bitmask merging, one of the inserts would be rejected at multi-parent merge — even though the inserts were at different keys and logically commute. The regression is captured at unit level by `casper/tests/multi_node/bridge_contract_concurrent_merge.rs`.
+`BitmaskOr` exists for a specific class of channel: two writes to the same channel can each set distinct bits in a bitmap and combine without conflict. The motivating case is the registry's `TreeHashMap` interior nodes, where two inserts at different keys race on the parent's child-bitmap update. `casper/tests/multi_node/registry_key_merge.rs` covers this case directly: writes to different keys merge, and writes to the same key conflict. `casper/tests/multi_node/bridge_contract_concurrent_merge.rs` covers it through the bridge contract.
 
 To diagnose a suspected merge rejection, run with `RUST_LOG=f1r3fly.merge.tag_check=trace` to see which channels match a `MergeType` and which do not.
 

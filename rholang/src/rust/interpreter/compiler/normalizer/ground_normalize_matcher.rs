@@ -1,8 +1,8 @@
 use models::rhoapi::Expr;
 use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
-    new_gint32_expr, new_gint_expr, new_gstring_expr, new_guint16_expr, new_guint32_expr,
-    new_guint64_expr, new_guint8_expr, new_guri_expr,
+    new_gfloat32_expr, new_gint32_expr, new_gint_expr, new_gstring_expr, new_guint16_expr,
+    new_guint32_expr, new_guint64_expr, new_guint8_expr, new_guri_expr,
 };
 use rholang_parser::ast::Proc as NewProc;
 
@@ -40,12 +40,30 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             Ok(new_gbigrat_expr(num_bytes, den_bytes))
         }
 
-        NewProc::FloatLiteral { value, .. } => {
-            let f: f64 = value.parse().map_err(|_| {
-                InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
-            })?;
-            Ok(new_gdouble_expr(f))
-        }
+        NewProc::FloatLiteral { value, bits } => match bits {
+            64 => {
+                let f: f64 = value.parse().map_err(|_| {
+                    InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
+                })?;
+                Ok(new_gdouble_expr(f))
+            }
+            32 => {
+                let f: f32 = value.parse().map_err(|_| {
+                    InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
+                })?;
+                if f.is_infinite() {
+                    return Err(InterpreterError::NormalizerError(format!(
+                        "Float literal {}f32 is out of range for f32",
+                        value
+                    )));
+                }
+                Ok(new_gfloat32_expr(f))
+            }
+            _ => Err(InterpreterError::NormalizerError(format!(
+                "Float width f{} is not supported: only f32 and f64 floats are supported, found {}f{}",
+                bits, value, bits
+            ))),
+        },
 
         NewProc::FixedPointLiteral { value, scale } => {
             let unscaled_bytes = decimal_str_to_unscaled(value, *scale)?;
@@ -471,6 +489,40 @@ mod tests {
             }),
             Err(InterpreterError::NormalizerError(_))
         ));
+    }
+
+    #[test]
+    fn f32_float_literals_compile_as_gfloat32() {
+        let expr = normalize_ground(&Proc::FloatLiteral {
+            value: "2.5",
+            bits: 32,
+        })
+        .unwrap();
+        assert_eq!(
+            expr.expr_instance,
+            Some(ExprInstance::GFloat32(2.5f32.to_bits()))
+        );
+
+        assert!(matches!(
+            normalize_ground(&Proc::FloatLiteral {
+                value: "1e39",
+                bits: 32,
+            }),
+            Err(InterpreterError::NormalizerError(_))
+        ));
+    }
+
+    #[test]
+    fn float_literals_with_unsupported_width_are_rejected() {
+        for bits in [16u16, 128] {
+            let result = normalize_ground(&Proc::FloatLiteral { value: "1.0", bits });
+            match result {
+                Err(InterpreterError::NormalizerError(msg)) => {
+                    assert!(msg.contains(&format!("f{bits}")), "bits {bits}: {msg}")
+                }
+                other => panic!("expected NormalizerError for f{bits}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

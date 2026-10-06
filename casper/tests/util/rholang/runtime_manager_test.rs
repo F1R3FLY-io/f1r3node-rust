@@ -256,7 +256,7 @@ where
     F: Fn(&S::Result) -> bool,
     <S as SystemDeployTrait>::Result: PartialEq,
 {
-    let runtime = runtime_manager.spawn_runtime().await;
+    let runtime = runtime_manager.spawn_runtime().await.unwrap();
     {
         runtime
             .set_block_data(BlockData {
@@ -282,7 +282,7 @@ where
         } => {
             result_assertion(&play_result);
 
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
             {
                 replay_runtime
                     .set_block_data(BlockData {
@@ -802,7 +802,7 @@ async fn compute_state_should_charge_for_parsing_and_execution() {
             )
             .unwrap();
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             runtime.cost.set(inital_phlo.clone());
             let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
             let _ = runtime.inj(term, Env::new(), rand).await;
@@ -1054,6 +1054,80 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                 .unwrap();
 
             assert!(play_post_state == replay_compute_state_result);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn replay_attribution_preserves_success_failure_and_cache_paths() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@\"attribution\"!(1)".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let initial = genesis_block.body.state.post_state_hash;
+            let (expected, processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &initial).await;
+            runtime_manager
+                .delete_mergeable_channels(
+                    &expected,
+                    genesis_context.validator_pks()[0].bytes.clone(),
+                    0,
+                )
+                .unwrap();
+            for attempt in 0..3 {
+                let mut candidate = processed.clone();
+                if attempt == 0 {
+                    candidate.cost.cost -= 1;
+                }
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                let guard = metrics::set_default_local_recorder(&recorder);
+                let result = replay_compute_state(
+                    &mut runtime_manager,
+                    &genesis_context,
+                    candidate,
+                    &initial,
+                )
+                .await;
+                drop(guard);
+                if attempt == 0 {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), expected);
+                }
+                let snapshot = snapshotter.snapshot().into_vec();
+                for (stage, count) in [
+                    ("lock-wait", usize::from(attempt != 2)),
+                    ("execute", usize::from(attempt != 2)),
+                    ("save-mergeable", usize::from(attempt == 1)),
+                ] {
+                    let name = format!("block.replay.runtime.{stage}.time");
+                    let actual: usize = snapshot
+                        .iter()
+                        .filter(|(key, _, _, _)| key.key().name() == name)
+                        .map(|(_, _, _, value)| match value {
+                            DebugValue::Histogram(values) => {
+                                assert!(values.iter().all(|value| value.into_inner().is_finite()
+                                    && value.into_inner() >= 0.0));
+                                values.len()
+                            }
+                            _ => 0,
+                        })
+                        .sum();
+                    assert_eq!(actual, count, "{name}, attempt={attempt}");
+                }
+            }
         },
     )
     .await
@@ -1924,7 +1998,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -2308,7 +2382,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -2836,7 +2910,7 @@ in {
                 .to_string();
 
             // Checkpoint via a fresh runtime so exploratory deploy can see the state
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut runtime_ops = RuntimeOps::new(runtime);
             runtime_ops
                 .runtime
@@ -3077,7 +3151,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -3760,7 +3834,7 @@ async fn strict_exploratory_query_propagates_execution_failure() {
             let failing_par =
                 Compiler::source_to_adt(failing_source).expect("compile failing term");
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut ops = RuntimeOps::new(runtime);
 
             // Lenient path (display/API callers): degrades to an empty result.

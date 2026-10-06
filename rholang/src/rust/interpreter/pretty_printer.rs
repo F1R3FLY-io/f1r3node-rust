@@ -535,6 +535,14 @@ impl PrettyPrinter {
                         Ok(format!("{}f64", f))
                     }
                 }
+                ExprInstance::GFloat32(bits) => {
+                    let f = f32::from_bits(*bits);
+                    if f == f.floor() && f.is_finite() {
+                        Ok(format!("{:.1}f32", f))
+                    } else {
+                        Ok(format!("{}f32", f))
+                    }
+                }
                 ExprInstance::GBigInt(bytes) => {
                     Ok(format!("{}n", twos_complement_to_decimal(bytes)))
                 }
@@ -1551,6 +1559,14 @@ mod tests {
             assert_eq!(
                 print_expr(ExprInstance::GDouble(2.5f64.to_bits())),
                 "2.5f64"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::GFloat32(2.0f32.to_bits())),
+                "2.0f32"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::GFloat32(0.1f32.to_bits())),
+                "0.1f32"
             );
             assert_eq!(print_expr(ExprInstance::GBigInt(vec![0x00, 0xFF])), "255n");
             assert_eq!(print_expr(ExprInstance::GBigInt(vec![])), "0n");
