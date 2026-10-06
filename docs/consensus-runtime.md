@@ -2,12 +2,26 @@
 
 This change implements the lifecycle boundary for issue #624. CBC Casper remains the default protocol. Cordial integration belongs to issue #625.
 
+## Repository layout
+
+```text
+casper/                 Existing default consensus engine
+consensus/
+  api/                  Shared consensus interface
+  runtime/              Shared lifecycle and supervision
+node/                   Process host and Casper application adapter
+```
+
+The existing `casper/` crate stays at the repository root. The shared crates retain the package names `consensus-api` and `consensus-runtime`.
+Other protocol crates will sit directly under `consensus/`, such as `consensus/cordial-miners/`. There is no intermediate `protocols/` directory.
+The Cordial crate is outside the current #624 change and will be added through #625.
+
 ## Ownership
 
 | Module | Responsibility |
 | --- | --- |
-| `consensus-api` | Protocol descriptors, capabilities, opaque requests, status, and adapter contract |
-| `consensus-runtime` | Bounded admission, deadlines, readiness, task supervision, and shutdown |
+| `consensus/api` | Protocol descriptors, capabilities, opaque requests, status, and adapter contract |
+| `consensus/runtime` | Bounded admission, deadlines, readiness, task supervision, and shutdown |
 | `node/src/rust/runtime` | Process configuration, transport, server listeners, and process shutdown |
 | `node/src/rust/consensus/factory.rs` | Selection of the compiled protocol factory |
 | `node/src/rust/consensus/ingress.rs` | Conversion of transport packets into opaque runtime requests |

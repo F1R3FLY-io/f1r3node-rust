@@ -24,11 +24,11 @@ fn host_and_shared_runtime_do_not_import_native_consensus_state() {
         ),
         (
             "consensus API",
-            include_str!("../../consensus-api/src/lib.rs"),
+            include_str!("../../consensus/api/src/lib.rs"),
         ),
         (
             "consensus runtime",
-            include_str!("../../consensus-runtime/src/lib.rs"),
+            include_str!("../../consensus/runtime/src/lib.rs"),
         ),
     ];
     for (name, source) in sources {

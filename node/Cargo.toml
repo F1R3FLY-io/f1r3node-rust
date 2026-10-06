@@ -19,8 +19,8 @@ doctest = false
 [dependencies]
 heed = { workspace = true }
 bincode = { workspace = true }
-consensus-api = { path = "../consensus-api" }
-consensus-runtime = { path = "../consensus-runtime" }
+consensus-api = { path = "../consensus/api" }
+consensus-runtime = { path = "../consensus/runtime" }
 models = { path = "../models" }
 crypto = { path = "../crypto" }
 rholang = { path = "../rholang" }

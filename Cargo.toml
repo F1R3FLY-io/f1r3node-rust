@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-	"consensus-api",
-	"consensus-runtime",
+	"consensus/api",
+	"consensus/runtime",
 	"casper",
 	"rspace++",
 	"rholang",
