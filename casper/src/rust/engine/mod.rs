@@ -19,3 +19,4 @@ pub mod snapshot_chunk_server;
 pub mod snapshot_chunk_wire;
 pub mod wal_payload_retriever;
 pub mod wal_payload_server;
+pub mod wal_payload_wire;
