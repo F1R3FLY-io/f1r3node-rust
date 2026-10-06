@@ -499,6 +499,8 @@ jobs:
           - block-storage
           - comm
           - graphz
+          - consensus-api
+          - consensus-runtime
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -547,6 +549,17 @@ jobs:
           dt=${PIPESTATUS[0]}
           echo "nextest exit=$nt doctest exit=$dt"
           [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
+
+      - name: Test host without a consensus factory
+        if: matrix.crate == 'node'
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        run: >-
+          cargo test --locked --release -p node --no-default-features
+          --test consensus_factory --test consensus_application
+          --test consensus_ingress --test consensus_boundaries
 
       - name: Upload test logs
         if: failure()
