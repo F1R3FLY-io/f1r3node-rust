@@ -1013,6 +1013,73 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
+/// Build `Definition` rows for every entry in the `FS_HANDLERS`
+/// distributed slice.  Each definition adapts the typed per-handler
+/// `dispatch` fn-pointer (which takes an `FsProcesses` + the triple
+/// `(args, is_replay, previous)`) into the `Definition` handler
+/// contract (which takes a `ProcessContext` and returns a per-call
+/// inner closure).
+///
+/// The adaptation strategy: construct ONE `FsProcesses` instance up
+/// front, Arc-clone it into each per-handler closure.  This gives
+/// every fs native URN access to the same `FileHandleTable` + mode
+/// + metering surface — critical for state continuity across
+/// handler invocations (fds opened by `fs_open` must be seen by
+/// `fs_read`, etc.).  Mode defaults to `Consensus` and metering to
+/// `NoopMetering` for the Wave 4 posture; later slices rewire these
+/// when the real cost-accounted-rho API lands.
+///
+/// `fs_remove_dir` is trait-exempt (DD-RemoveDirReplyShape complexity)
+/// and NOT in `FS_HANDLERS`; it gets a dedicated `Definition` row at
+/// a future call site that explicitly handles the 4 divergence reply
+/// shapes.
+///
+/// NOT CALLED FROM `setup_system_processes` YET — this helper lands
+/// as pure infrastructure.  Wiring requires (a) a reduce.rs URN
+/// filter so user deploys cannot invoke fs natives directly during
+/// state execution (bypassing the Fs cap's sandbox), (b) toggling
+/// the filter off/on around genesis composition.  Those slices land
+/// before the first `fs_handlers_to_definitions()` call site.
+#[allow(dead_code)]
+fn fs_handlers_to_definitions(dispatcher: RhoDispatch, space: RhoISpace) -> Vec<Definition> {
+    use super::accounting::noop::{Metering, NoopMetering};
+    use super::io::handle_table::FileHandleTable;
+    use super::io::handler_trait::fs_processes::FsProcesses;
+    use super::io::handler_trait::FS_HANDLERS;
+    use super::io::ConsensusMode;
+
+    const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:1.0.0/";
+
+    let fs_handles = FileHandleTable::new();
+    let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
+    let fs_processes = FsProcesses::new(
+        dispatcher,
+        space,
+        fs_handles,
+        ConsensusMode::Consensus,
+        fs_metering,
+    );
+
+    FS_HANDLERS
+        .iter()
+        .map(|entry| {
+            let fs_processes = fs_processes.clone();
+            let dispatch = entry.dispatch;
+            Definition {
+                urn: format!("{FS_NATIVE_URN_PREFIX}{}", entry.urn_suffix),
+                fixed_channel: (entry.fixed_channel)(),
+                arity: entry.arity as Arity,
+                body_ref: entry.body_ref,
+                handler: Box::new(move |_ctx| {
+                    let fs_processes = fs_processes.clone();
+                    Box::new(move |args| dispatch(fs_processes.clone(), args))
+                }),
+                remainder: None,
+            }
+        })
+        .collect()
+}
+
 fn dispatch_table_creator(
     space: RhoISpace,
     dispatcher: RhoDispatch,
