@@ -6689,7 +6689,7 @@ for this cluster.
 ## DR-95 — History decode charged by the decoded structure
 
 **Status.** In progress for Phase D item D-C1 of epic 8946 (D-S2 of the
-Phase D plan). Part 1 (D-C1a) implemented 2026-10-06.
+Phase D plan). Part 1 (D-C1a) and part 2 (D-C1b) implemented 2026-10-06.
 
 **Context.** The metered history decoder
 (`rspace++/src/rspace/history/native_reader/typed.rs`) does not know the
@@ -6727,6 +6727,122 @@ this part changes no charge.
   makes the same reservations for both types.
 - `history_decode_values_equal_bincode`: history records of waiting
   continuations decode to the values that plain bincode decodes.
+
+**Decision (part 2, D-C1b).** The decoder has a second mode, History mode,
+for closed history record types.
+
+1. `decode_history_record` decodes in History mode. `decode_record` keeps the
+   legacy rule. Part 3 (D-C1c) moves the history decode sites to the new
+   entry point. This part changes no production charge.
+2. History mode charges each node once, at its deserializer hook. The charge
+   is one operation and the node's size in scanned bytes, with no backing.
+   The seed hook makes no charge. The body of a tuple or struct variant makes
+   no charge either, because the deserializer hook of the enum charged the
+   enum node. The legacy rule charges at all three hooks.
+3. History mode reserves backing only for the allocations of the decode, each
+   before it occurs:
+   - Vector growth. Serde's vector visitor starts at capacity 0, because the
+     decoder reports no size hint. It then pushes each element. Before
+     element $`i`$, the decoder computes the capacity after the push with the
+     growth rule of Rust's `RawVec`. When this capacity changes, the decoder
+     reserves the new capacity times the element size as backing. It also
+     reserves the copy of the $`i`$ old elements as scanned bytes. It makes no
+     reservation when bincode reports that no element remains.
+   - Tagged B-tree sets. Before insert $`i`$, the decoder reserves the
+     increment `tree_growth(i, 1)` of DR-77.
+   - B-tree maps. Before key $`i`$, the decoder reserves the key half
+     `tree_growth::<K, ()>(i, 1)`. Before value $`i`$, it reserves the value
+     half `tree_growth::<(), V>(i, 1)`. The two halves cover the node of the
+     map.
+   - Strings and byte buffers. The decoder reserves the exact length before
+     the copy, as before.
+   - The error box. The decoder reserves `size_of::<bincode::ErrorKind>() +
+     64` bytes before the decode, as before.
+
+   The growth rule of `RawVec` (`grow_amortized`) sets the new capacity
+   $`c'`$ from the capacity $`c`$, the length $`i`$ and the element size
+   $`e`$. Here $`m(e)`$ is the smallest capacity that `RawVec` allocates
+   for elements of $`e`$ bytes:
+
+   ```math
+   c' = \max\bigl(2c,\; i + 1,\; m(e)\bigr), \qquad
+   m(e) = \begin{cases} 8 & e = 1 \\ 4 & 1 < e \le 1024 \\ 1 & e > 1024 \end{cases}
+   ```
+
+4. History mode is sound only for types whose decode makes no other
+   allocation. The unsafe marker trait `ClosedDecode`
+   (`shared/src/rust/closed_decode.rs`) states this contract, and
+   `decode_history_record` requires it. The implementations are:
+   - in `shared`: scalars, strings, vectors, options, B-tree maps, arrays
+     and tuples of closed types;
+   - in `models`: every rhoapi message and `oneof` type that `Par`,
+     `ListParWithRandom`, `BindPattern` and `TaggedContinuation` reach. The
+     generated types contain no box, hash table or B-tree set. The only
+     B-tree map is `New.injections`;
+   - in `rspace++`: `Blake2b256Hash`, `Produce`, `Consume`, `Datum` and
+     `WaitingContinuation`.
+
+   A box, a shared pointer, a hash table or an untagged B-tree set would
+   allocate without a reservation. The negative controls below show this.
+
+**Soundness (part 2).** `NativeDecodeBacking.v` models a decoded record as
+a tree of inline nodes, vectors, tagged sets, maps and strings. It models
+the decode as a trace of node charges, reservations and allocations. Every
+prefix of the trace of a well-formed record allocates at most what it
+reserved. The B-tree premise is cumulative. A split can allocate two nodes
+at an insert whose own increment is 0, and the slack of the earlier
+increments pays for these nodes. The premise follows from the B-tree
+occupancy invariant of DR-77. The tests check the Rust facts that the model
+takes as premises: the growth of `RawVec`, the B-tree node sizes and the
+absence of other allocations.
+
+**Verification (part 2).** `NativeDecodeBacking.v` proves without axioms:
+
+- `growth_reservations_match_raw_vec` and `grown_holds_push`: the decoder's
+  growth reservations are exactly the buffers that `RawVec` allocates for the
+  same pushes, and the new capacity holds the pushed element.
+- `decode_charge_prefix_covers` and `decode_charge_covers_allocation`: every
+  prefix of the decode trace of a well-formed record is covered.
+- `single_charge_per_node`: the decoder makes one node charge per node.
+- `split_map_tree_covers_joint` and `btree_allocation_within`: the key and
+  value halves of the Rust node size cover the joint node, and the B-tree
+  occupancy invariant gives the tree premise through
+  `IncrementalTreeBacking.incremental_prefix_covers_nodes`.
+- Contrasts: `legacy_byte_array_excess` (20,928 bytes of legacy backing for a
+  32-byte vector that allocates 56 bytes) and
+  `twelfth_insert_needs_earlier_slack` (a split at the twelfth insert).
+- Negative controls: `untagged_set_undercharges` and
+  `box_invisible_undercharges`. A set under the vector rule and a box leave
+  allocations that no prefix of reservations covers.
+
+Tests in `rspace++/src/rspace/history/native_reader/typed/tests.rs`:
+
+- `vec_growth_model_matches_std_allocations`: for element sizes 1, 4, 24,
+  296, 600 and 1,025, and for 0 to 40 elements, the bytes that the decode
+  allocates equal the History reservation less the error box.
+- `history_decode_charges_each_node_once`: a record with five nodes gets five
+  node charges. An enum gets one charge for the enum node and one for its
+  variant identifier, for each form of variant. The body of a tuple or
+  struct variant gets no charge of its own. The legacy rule makes more
+  charges.
+- `every_history_reservation_cut_covers_allocations`: for every reservation
+  that the meter rejects, the bytes allocated before the rejection were
+  reserved, and the decode returns the host error.
+- `history_records_values_and_allocations` (128 cases): records with vectors
+  of strings, a B-tree map, a tagged set and an option decode to the bincode
+  value. The allocation is at most the History reservation, and the History
+  reservation is at most the legacy reservation.
+- `history_decode_values_equal_bincode` now also decodes in History mode and
+  checks the allocation.
+
+Test in `rholang/src/rust/interpreter/accounting/native_runtime/tests/history_decode.rs`:
+
+- `history_records_cover_actual_allocations` (64 cases): generated
+  `WaitingContinuation<BindPattern, TaggedContinuation>`,
+  `Datum<ListParWithRandom>` and `Vec<Par>` records, with cost authorities,
+  guards and cost stacks. The History decode returns the encoded value and
+  allocates at most its reservation. The History reservation is at most the
+  legacy reservation.
 
 **Cross-refs.** DR-77. Leaves `ofp-2-cap-d-c1a-tree-set-tag`,
 `ofp-2-cap-d-c1b-exact-decode-model` and `ofp-2-cap-d-c1c-switch-decode-sites`.

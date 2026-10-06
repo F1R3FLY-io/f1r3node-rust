@@ -762,3 +762,6 @@ mod operation_source_tests;
 
 #[path = "tests/observation_construction.rs"]
 mod observation_construction_tests;
+
+#[path = "tests/history_decode.rs"]
+mod history_decode_tests;

@@ -252,8 +252,9 @@ fn tree_set_tag_leaves_the_decode_charge_unchanged() {
     assert_eq!(tagged_meter.bytes.get(), untagged_meter.bytes.get());
 }
 
-/// D-S2 (DR-95): history records of waiting continuations decode to the
-/// values that plain bincode decodes, with the tagged peek set.
+/// D-S2 (DR-95): history records of waiting continuations decode in both
+/// modes to the values that plain bincode decodes, with the tagged peek set,
+/// and History mode reserves backing for every byte that it allocates.
 #[test]
 fn history_decode_values_equal_bincode() {
     use crate::rspace::internal::WaitingContinuation;
@@ -272,5 +273,227 @@ fn history_decode_values_equal_bincode() {
         let decoded: WaitingContinuation<String, String> =
             decode_record(&bytes, &Meter::new(usize::MAX)).unwrap();
         assert_eq!(decoded, continuation);
+        let meter = Meter::new(usize::MAX);
+        let (decoded, allocated) = measure(|| {
+            decode_history_record::<WaitingContinuation<String, String>, _>(&bytes, &meter)
+        });
+        assert_eq!(decoded.unwrap(), continuation);
+        assert!(allocated <= meter.bytes.get());
+    }
+}
+
+/// A meter that records every charge.
+struct Recorder {
+    charges: std::cell::RefCell<Vec<NativeReadCharge>>,
+}
+
+impl Recorder {
+    fn new() -> Self {
+        Self {
+            charges: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl NativeReadMeter for Recorder {
+    type Error = usize;
+
+    fn reserve(&self, charge: NativeReadCharge) -> Result<(), usize> {
+        self.charges.borrow_mut().push(charge);
+        Ok(())
+    }
+}
+
+/// The bytes that every decode pre-charges for bincode's error box.
+fn error_box() -> usize { size_of::<bincode::ErrorKind>() + 64 }
+
+macro_rules! closed_test_types {
+    ($($ty:ty),* $(,)?) => {
+        // SAFETY: test records with plain derives over vectors, arrays,
+        // strings, maps, tagged sets and scalars.
+        $(unsafe impl ClosedDecode for $ty {})*
+    };
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Element296 {
+    head: [u64; 32],
+    tail: [u64; 5],
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Element600 {
+    first: [u64; 32],
+    second: [u64; 32],
+    rest: [u64; 11],
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Element1025 {
+    rows: [[u8; 32]; 32],
+    last: u8,
+}
+
+impl Default for Element1025 {
+    fn default() -> Self {
+        Self {
+            rows: [[3; 32]; 32],
+            last: 9,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Pair {
+    left: u32,
+    right: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Mixed {
+    names: Vec<String>,
+    rows: BTreeMap<u64, Vec<u8>>,
+    #[serde(deserialize_with = "tree_set")]
+    peeks: BTreeSet<i32>,
+    note: Option<String>,
+}
+
+closed_test_types!(TaggedSet, Element296, Element600, Element1025, Pair, Mixed, Choice);
+
+/// D-S2 (DR-95): decoding a vector of `count` elements in History mode
+/// reserves exactly the bytes that the vector's buffers allocate (the error
+/// box aside), for every element size class of `RawVec`.
+fn growth_matches<T>(count: usize)
+where T: Clone + Default + PartialEq + std::fmt::Debug + Serialize + DeserializeOwned + ClosedDecode
+{
+    let values = vec![T::default(); count];
+    let bytes = history_options().serialize(&values).unwrap();
+    let meter = Meter::new(usize::MAX);
+    let (decoded, allocated) = measure(|| decode_history_record::<Vec<T>, _>(&bytes, &meter));
+    assert_eq!(decoded.unwrap(), values);
+    assert_eq!(
+        allocated,
+        meter.bytes.get() - error_box(),
+        "{} elements of {} bytes",
+        count,
+        size_of::<T>()
+    );
+}
+
+#[test]
+fn vec_growth_model_matches_std_allocations() {
+    assert_eq!(size_of::<Element296>(), 296);
+    assert_eq!(size_of::<Element600>(), 600);
+    assert_eq!(size_of::<Element1025>(), 1025);
+    for count in 0..=40 {
+        growth_matches::<u8>(count);
+        growth_matches::<u32>(count);
+        growth_matches::<[u64; 3]>(count);
+        growth_matches::<Element296>(count);
+        growth_matches::<Element600>(count);
+        growth_matches::<Element1025>(count);
+    }
+}
+
+/// The node charges of a History decode of `value`: the charges of one
+/// operation and no backing. The values below hold no empty string, whose
+/// exact-length reservation would also match.
+fn history_node_charges<T>(value: &T) -> usize
+where T: std::fmt::Debug + PartialEq + Serialize + DeserializeOwned + ClosedDecode {
+    let bytes = history_options().serialize(value).unwrap();
+    let history = Recorder::new();
+    assert_eq!(&decode_history_record::<T, _>(&bytes, &history).unwrap(), value);
+    let charges = history.charges.borrow();
+    charges
+        .iter()
+        .filter(|charge| charge.backing_bytes == 0 && charge.operations == 1)
+        .count()
+}
+
+/// D-S2 (DR-95): History mode charges each node once (one operation and its
+/// size, no backing); the legacy rule charged each node at both hooks.
+#[test]
+fn history_decode_charges_each_node_once() {
+    let value = Pair {
+        left: 7,
+        right: vec![1, 2],
+    };
+    // The record, its two fields and the two vector elements.
+    let nodes = history_node_charges(&value);
+    assert_eq!(nodes, 5);
+    // An enum is one node, and its variant identifier is another. The body of
+    // a tuple or struct variant is not a node of its own: its fields are.
+    assert_eq!(history_node_charges(&Choice::Empty), 2);
+    assert_eq!(history_node_charges(&Choice::One("ab".to_owned())), 3);
+    assert_eq!(history_node_charges(&Choice::Pair(7, vec![1, 2])), 6);
+    assert_eq!(
+        history_node_charges(&Choice::Named {
+            flag: true,
+            items: vec![Some("x".to_owned()), None],
+        }),
+        7
+    );
+    let bytes = history_options().serialize(&value).unwrap();
+    let legacy = Recorder::new();
+    assert_eq!(decode_record::<Pair, _>(&bytes, &legacy).unwrap(), value);
+    assert!(legacy.charges.borrow().len() > 2 * nodes - 1);
+}
+
+/// D-S2 (DR-95): History mode reserves each allocation before it happens:
+/// whatever reservation the meter rejects, the bytes allocated up to that
+/// point are covered by the reservations accepted before it.
+#[test]
+fn every_history_reservation_cut_covers_allocations() {
+    let value = Mixed {
+        names: (0..9).map(|index| format!("name-{index}")).collect(),
+        rows: (0..7)
+            .map(|key| (key, vec![key as u8; 3 + key as usize]))
+            .collect(),
+        peeks: (0..13).collect(),
+        note: Some("a note".to_owned()),
+    };
+    let bytes = history_options().serialize(&value).unwrap();
+    let total = {
+        let meter = Meter::new(usize::MAX);
+        assert_eq!(decode_history_record::<Mixed, _>(&bytes, &meter).unwrap(), value);
+        meter.calls.get()
+    };
+    for cut in 0..=total {
+        let meter = Meter::new(cut);
+        let (result, allocated) = measure(|| decode_history_record::<Mixed, _>(&bytes, &meter));
+        assert!(
+            allocated <= meter.bytes.get(),
+            "cut {cut}: allocated {allocated} reserved {}",
+            meter.bytes.get()
+        );
+        if cut < total {
+            assert!(matches!(result, Err(NativeReadError::Host(_))), "cut {cut}");
+        } else {
+            assert_eq!(result.unwrap(), value);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// D-S2 (DR-95): History mode decodes the values that bincode decodes and
+    /// reserves backing for every allocation of generated mixed records.
+    #[test]
+    fn history_records_values_and_allocations(
+        names in prop::collection::vec("[a-z]{0,24}", 0..20),
+        rows in prop::collection::btree_map(any::<u64>(), prop::collection::vec(any::<u8>(), 0..40), 0..12),
+        peeks in prop::collection::btree_set(any::<i32>(), 0..24),
+        note in prop::option::of("[a-z]{0,16}"),
+    ) {
+        let value = Mixed { names, rows, peeks, note };
+        let bytes = history_options().serialize(&value).unwrap();
+        let meter = Meter::new(usize::MAX);
+        let (decoded, allocated) = measure(|| decode_history_record::<Mixed, _>(&bytes, &meter));
+        prop_assert_eq!(decoded.unwrap(), value.clone());
+        prop_assert!(allocated <= meter.bytes.get());
+        let legacy = Meter::new(usize::MAX);
+        prop_assert_eq!(decode_record::<Mixed, _>(&bytes, &legacy).unwrap(), value);
+        prop_assert!(meter.bytes.get() <= legacy.bytes.get());
     }
 }

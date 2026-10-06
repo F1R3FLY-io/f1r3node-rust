@@ -222,7 +222,7 @@ fn shared_values_are_shallow_copies_and_deep_inspections() {
     assert_eq!(Arc::strong_count(&value), 5);
 }
 
-fn term() -> impl Strategy<Value = Par> {
+pub(crate) fn term() -> impl Strategy<Value = Par> {
     (prop::collection::vec(any::<u8>(), 0..256), 0_usize..32)
         .prop_map(|(bytes, count)| Par {
             exprs: vec![

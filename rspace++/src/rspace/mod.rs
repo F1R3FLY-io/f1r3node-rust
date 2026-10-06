@@ -1,5 +1,6 @@
 pub mod hashing;
 pub(crate) mod candidate_order;
+pub mod closed_decode;
 pub mod history;
 pub mod hot_store;
 pub mod internal;
