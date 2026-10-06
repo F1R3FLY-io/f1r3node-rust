@@ -1655,7 +1655,7 @@ fn stage_spine_state_divergence(
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == x_sig && !pd.is_failed),
+            .any(|pd| pd.identity_bytes() == x_sig.as_ref() && !pd.is_failed()),
         "staging: A must carry x as a non-failed deploy — it is the settled \
          content whose absence downstream is the whole specimen"
     );

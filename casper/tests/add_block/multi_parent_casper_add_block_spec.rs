@@ -1162,7 +1162,7 @@ async fn build_block_with_invalid_justification(
 
     let body = Body {
         state: post_state,
-        deploys: deploys.to_vec(),
+        deploys: deploys.iter().cloned().map(Into::into).collect(),
         rejected_deploys: vec![],
         system_deploys: vec![],
         extra_bytes: Bytes::new(),

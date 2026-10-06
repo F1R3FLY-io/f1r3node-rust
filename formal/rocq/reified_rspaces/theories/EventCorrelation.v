@@ -25,9 +25,12 @@
    play (H23), also for a deploy that runs out of phlo inside a transaction
    (docs/rspace/reified-rspaces/findings/space-replay-out-of-phlo.md).
 
-   Code base: HEAD 6f7a80da3. Every host file that this header cites with a
-   line range is identical at e748426, the base of the design report. The
-   P1 files space_store_handle.rs, rspace/space_play.rs and
+   Code base: the campaign tree after the merge of feature/cost-accounted-rho
+   at 4d67b5ccc. Every host file that this header cites with a line range
+   equals that file at 4d67b5ccc, except the Reified hooks that footprint
+   policy p4 approves. Before the merge, the code base was HEAD 6f7a80da3
+   (e748426 for the cited host files).
+   The P1 files space_store_handle.rs, rspace/space_play.rs and
    replay_rspace/space_replay.rs are new. This header cites their items by
    name, because their line numbers change often. Decision 36 changes
    TxnCore::verify, StagedConsumeFire and the replay commit of a fire
@@ -49,45 +52,45 @@
    pid_leb, comm_sort        rs/trace/event.rs:57-65 (COMM produce sort)
    mk_comm                   rs/trace/event.rs:37-78 (COMM::new)
    counters_of               rs/rspace/trace_log.rs:69-86 (produce_counters),
-                             rs/replay_rspace.rs:718-734
+                             rs/replay_rspace.rs:808-824
    play_counters_closure     rs/rspace/ops_produce.rs:185-191
    incr, bump                rs/rspace/trace_log.rs:158-172 (log_produce
-                             counter), rs/replay_rspace.rs:1489-1495
-   rollback, unbump          rs/replay_rspace.rs:1497-1510, 1164-1166
-   Store                     rs/hot_store.rs:191-316 (HotStore view with
+                             counter), rs/replay_rspace.rs:1579-1585
+   rollback, unbump          rs/replay_rspace.rs:1587-1600, 1254-1256
+   Store                     rs/hot_store.rs:202-349 (HotStore view with
                              history read-through)
-   put_datum                 rs/hot_store.rs:819-837
-   host_remove_datum         rs/hot_store.rs:852-885
-   put_continuation,         rs/hot_store.rs:660-723, 1255-1257
+   put_datum                 rs/hot_store.rs:879-897
+   host_remove_datum         rs/hot_store.rs:912-945
+   put_continuation,         rs/hot_store.rs:720-783, 1315-1317
      wk_ident
-   host_remove_continuation  rs/hot_store.rs:758-801
-   put_join, remove_join     rs/hot_store.rs:957-980, 1009-1053
+   host_remove_continuation  rs/hot_store.rs:818-861
+   put_join, remove_join     rs/hot_store.rs:1017-1040, 1069-1113
    store_waiting_continuation rs/rspace/ops_consume.rs:179-190,
-                             rs/replay_rspace.rs:1562-1578
+                             rs/replay_rspace.rs:1652-1668
    host_rm_loop              rs/rspace/ops_produce.rs:228-248,
-                             rs/replay_rspace.rs:1708-1728
+                             rs/replay_rspace.rs:1798-1818
    host_spd_loop             rs/rspace/ops_consume.rs:192-202,
-                             rs/replay_rspace.rs:1596-1606
+                             rs/replay_rspace.rs:1686-1696
    hkey, sort_desc           rs/rspace/ops_produce.rs:233-234,
                              rs/rspace/ops_consume.rs:193-194,
-                             rs/replay_rspace.rs:1597-1598, 1713-1714
+                             rs/replay_rspace.rs:1687-1688, 1803-1804
                              (stable sort_by_key(Reverse(datum_index)))
    host_prelude              rs/rspace/accounting.rs:20-87,
-                             rs/rspace/ops_produce.rs:31-77,
+                             rs/rspace/ops_produce.rs:32-78,
                              rs/rspace/ops_consume.rs:31-81,
-                             rs/replay_rspace.rs:746-815, 1043-1102,
-                             rholang/src/rust/interpreter/reduce.rs:535-539,
-                             647-651 (register_introduction_authority)
-   host_play_produce         rs/rspace/ops_produce.rs:31-113, 163-210
+                             rs/replay_rspace.rs:836-905, 1133-1192,
+                             rholang/src/rust/interpreter/reduce.rs:539-543,
+                             651-655 (register_introduction_authority)
+   host_play_produce         rs/rspace/ops_produce.rs:32-113, 163-210
    host_play_consume         rs/rspace/ops_consume.rs:31-154
-   host_replay_produce       rs/replay_rspace.rs:1043-1177, 1273-1335
-   host_replay_consume       rs/replay_rspace.rs:746-977
+   host_replay_produce       rs/replay_rspace.rs:1133-1267, 1363-1425
+   host_replay_consume       rs/replay_rspace.rs:836-1067
    Ev, Obs                   rs/trace/event.rs:16-26 (Event, IOEvent),
-                             rs/rspace_interface.rs:39-119 (observer)
-   IOKey, Bindings, unbind   rs/replay_rspace.rs:64, 1408-1436
+                             rs/rspace_interface.rs:42-122 (observer)
+   IOKey, Bindings, unbind   rs/replay_rspace.rs:71, 1498-1526
                              (remove_bindings_for), rs/internal.rs:116-164
-   bound                     rs/replay_rspace.rs:936-943, 1306-1311 (assert)
-   rig                       rs/replay_rspace.rs:390-450 (the binding loop
+   bound                     rs/replay_rspace.rs:1026-1033, 1396-1401 (assert)
+   rig                       rs/replay_rspace.rs:480-540 (the binding loop
                              at 398-446)
    View, vdata .. vcount     design §1.3 (TxnView overlay, κ_v = κ_host + δ),
                              ssh TxnView
@@ -95,7 +98,7 @@
                              and TxnCore::stage_consume
    verify, trigger_key       ssh TxnCore::verify and binding_multiplicity
                              (FR-3): only the trigger key, as host replay
-                             looks it up (rs/replay_rspace.rs:859-867 for a
+                             looks it up (rs/replay_rspace.rs:949-957 for a
                              consume, 1112-1120 for a produce)
    available                 ssh SpaceTxn::recorded_comms (FR-3: the trigger
                              key of the queried source)
@@ -121,17 +124,17 @@
      dir_always_none         production RhoCommObserver gives no directive
                              for a space operation (H19 covers one)
    replay_reproduces_play_   play keeps the log of a failed deploy and
-     run, replay_sim_gen     reverts it (casper/src/rust/rholang/runtime.rs:560-584).
+     run, replay_sim_gen     reverts it (casper/src/rust/rholang/runtime.rs:934-958).
                              Replay compares the status, then the cost
-                             (casper/src/rust/rholang/replay_runtime.rs:437-450)
+                             (casper/src/rust/rholang/replay_runtime.rs:619-632)
    space_prelude, commit_*   design §2.1 (play) and §2.2 (replay) tables,
                              ssh commit_operation and commit_staged
    space_pf_loop,            design §2.1 row 6 (record removal by equality,
      space_cf_loop           peek retention)
    backend                   design §2.3 (ReportingRspace delegates)
    sub_order, sched_part     rholang/src/rust/interpreter/
-                             deterministic_reduction.rs:79-116,
-                             rs/operation_context.rs:138-175, ssh sub_order
+                             deterministic_reduction.rs:84-135,
+                             rs/operation_context.rs:177-214, ssh sub_order
    covered                   ssh check_event_correlation (FR-7: it runs in
                              every build profile. FR-7': it reads the staged
                              effects of one operation)
@@ -148,12 +151,12 @@
    op_groups, access,        ssh TxnCore::admit_group, read_continuations,
      session                 read_joins (TxnView::load_joins checks each
                              returned group), stage_produce, stage_consume
-   CKey, touch, stage_keys   rs/hot_store.rs:611-658 (get_continuations
+   CKey, touch, stage_keys   rs/hot_store.rs:671-718 (get_continuations
                              caches the history value), 805-817
                              (get_data), 927-955 (get_joins), ssh
                              TxnView::load_data, load_continuations,
                              load_joins
-   leaf_at, ck_actions       rs/hot_store.rs:1055-1110 (changes)
+   leaf_at, ck_actions       rs/hot_store.rs:1115-1170 (changes)
    hkey                      rs/history/history_repository_impl.rs:306-348
                              (transform: hash, hash_from_vec), rs/hashing/
                              stable_hash_provider.rs (hash_from_hashes sorts
@@ -203,13 +206,13 @@
    reoffer_due, reoffer_of,  FR-10: the agent re-offers the datum of a peek
      reoffers                fire as the next operation of the transaction,
                              with the same Produce::create identity
-   head_reproduces           rholang/src/rust/interpreter/reduce.rs:776-803
+   head_reproduces           rholang/src/rust/interpreter/reduce.rs:780-807
                              (a non-persistent produce fires a peek
                              waiter), 709-775 (a persistent produce),
                              901-928 (a consume), 973-1008 (produce_peeks);
                              rs/util.rs:57-70 and rs/rspace/ops_consume.rs:
                              204-229 (the data_list tuples), rs/
-                             space_matcher.rs:57-75 (removed_datum)
+                             space_matcher.rs:72-90 (removed_datum)
    no_pending_match, offer,  the produce plan of a head-only queue with the
      offer_ops, offer_p1     re-offer (p4-design-report B.4, invariant INV).
                              offer_p1 is the same plan under the P1 rule
@@ -288,7 +291,7 @@
      operation of the transaction (reoffers): a produce with the same
      channel, value and persist flag. So the re-offer has the produce
      identity, the observer calls and the counter step of HEAD's re-produce
-     (reduce.rs:973-1008). The re-offer fires the next waiter or stores the
+     (reduce.rs:977-1012). The re-offer fires the next waiter or stores the
      datum. When the fired waiter is persistent, it stays at the head, and
      the P4 plan re-issues the datum in a new transaction (p4-design-report
      A10, a divergent pair). The model does not include the authority value
@@ -849,7 +852,7 @@ Inductive Fx :=
 | FxPutJoin (c : Chan) (g : list Chan)
 | FxRemoveJoin (c : Chan) (g : list Chan).
 
-(* ── Replay bindings (replay_rspace.rs:64, 390-450, 1408-1436) ─────────── *)
+(* ── Replay bindings (replay_rspace.rs:71, 480-540, 1498-1526) ─────────── *)
 
 Inductive IOKey := KConsume (c : CId) | KProduce (p : PId).
 
@@ -915,8 +918,8 @@ Definition upd_joins (S : Store) (c : Chan) (l : list (list Chan)) : Store :=
 Definition upd_count (S : Store) (k : PId -> nat) : Store :=
   mkStore (s_data S) (s_conts S) (s_joins S) k.
 
-(* ── Counters (trace_log.rs:69-86, 158-172 and replay_rspace.rs:718-744,
-      1489-1510) ────────────────────────────────────────────────────────── *)
+(* ── Counters (trace_log.rs:69-86, 158-172 and replay_rspace.rs:808-834,
+      1579-1600) ────────────────────────────────────────────────────────── *)
 
 Definition pid_eqb (a b : PId) : bool := if pid_eq_dec a b then true else false.
 
@@ -932,7 +935,7 @@ Definition bump (S : Store) (src : PId) (persist : bool) : Store :=
 Definition unbump (S : Store) (src : PId) (persist : bool) : Store :=
   upd_count S (rollback (s_count S) src persist).
 
-(* produce_counters (trace_log.rs:69-86 and replay_rspace.rs:718-734). *)
+(* produce_counters (trace_log.rs:69-86 and replay_rspace.rs:808-824). *)
 Definition counters_of (k : PId -> nat) (ps : list PId) : list (PId * nat) :=
   map (fun p => (p, k p)) ps.
 
@@ -965,7 +968,7 @@ Definition comm_data (cands : list Cand) : list (Val * bool) :=
 
 (* ── Hot-store primitives (hot_store.rs) ──────────────────────────────── *)
 
-(* The continuation dedup identity (hot_store.rs:1255-1257). *)
+(* The continuation dedup identity (hot_store.rs:1315-1317). *)
 Definition wk_ident (w : WK) : list Pat * Kont * bool * list nat :=
   (w_pats w, w_kont w, w_persist w, w_peeks w).
 
@@ -979,11 +982,11 @@ Defined.
 Definition ident_eqb (w1 w2 : WK) : bool :=
   if ident_eq_dec (wk_ident w1) (wk_ident w2) then true else false.
 
-(* put_datum inserts at index 0 (hot_store.rs:819-837). *)
+(* put_datum inserts at index 0 (hot_store.rs:879-897). *)
 Definition put_datum (S : Store) (c : Chan) (d : Datum) : Store * list Fx :=
   (upd_data S c (d :: s_data S c), [FxPutDatum c d]).
 
-(* Host remove_datum by index (hot_store.rs:852-885). None is the
+(* Host remove_datum by index (hot_store.rs:912-945). None is the
    out-of-bounds error. *)
 Definition host_remove_datum (S : Store) (c : Chan) (i : nat) : option (Store * list Fx) :=
   match nth_error (s_data S c) i with
@@ -998,13 +1001,13 @@ Definition space_remove_datum (S : Store) (c : Chan) (d : Datum) : Store * list 
   else (S, []).
 
 (* put_continuation: insert at index 0 unless the identity is present
-   (hot_store.rs:660-723). *)
+   (hot_store.rs:720-783). *)
 Definition put_continuation (S : Store) (g : list Chan) (w : WK) : Store * list Fx :=
   if existsb (ident_eqb w) (s_conts S g)
   then (S, [])
   else (upd_conts S g (w :: s_conts S g), [FxPutCont g w]).
 
-(* Host remove_continuation by index (hot_store.rs:758-801), for channels
+(* Host remove_continuation by index (hot_store.rs:818-861), for channels
    without an installed continuation. *)
 Definition host_remove_continuation (S : Store) (g : list Chan) (i : nat) : Store * list Fx :=
   match nth_error (s_conts S g) i with
@@ -1017,14 +1020,14 @@ Definition space_remove_continuation (S : Store) (g : list Chan) (w : WK) : Stor
   then (upd_conts S g (remove_first wk_eq_dec w (s_conts S g)), [FxRemoveCont g w])
   else (S, []).
 
-(* put_join inserts at index 0 only if absent (hot_store.rs:957-980). *)
+(* put_join inserts at index 0 only if absent (hot_store.rs:1017-1040). *)
 Definition put_join (S : Store) (c : Chan) (g : list Chan) : Store * list Fx :=
   if in_dec lc_eq_dec g (s_joins S c)
   then (S, [])
   else (upd_joins S c (g :: s_joins S c), [FxPutJoin c g]).
 
 (* remove_join removes only if the continuation list of the join is empty
-   (hot_store.rs:1009-1053). *)
+   (hot_store.rs:1069-1113). *)
 Definition remove_join (S : Store) (c : Chan) (g : list Chan) : Store * list Fx :=
   match s_conts S g with
   | [] =>
@@ -1043,7 +1046,7 @@ Fixpoint put_joins (S : Store) (cs : list Chan) (g : list Chan) : Store * list F
   end.
 
 (* store_waiting_continuation (ops_consume.rs:179-190 and
-   replay_rspace.rs:1562-1578). *)
+   replay_rspace.rs:1652-1668). *)
 Definition store_waiting_continuation (S : Store) (chs : list Chan) (w : WK) : Store * list Fx :=
   let p1 := put_continuation S chs w in
   let p2 := put_joins (fst p1) chs chs in (fst p2, snd p1 ++ snd p2).
@@ -1071,7 +1074,7 @@ Definition hkey (cd : Cand) : nat := if cd_incoming cd then 0 else S (cd_hidx cd
 Definition vkey (cd : Cand) : nat := if cd_incoming cd then 0 else S (cd_vidx cd).
 
 (* Host remove_matched_datum_and_join (ops_produce.rs:228-248 and
-   replay_rspace.rs:1708-1728). On a remove_datum error, the loop continues
+   replay_rspace.rs:1798-1818). On a remove_datum error, the loop continues
    and skips remove_join. *)
 Fixpoint host_rm_loop (S : Store) (chs : list Chan) (cs : list Cand) : Store * list Fx :=
   match cs with
@@ -1088,7 +1091,7 @@ Fixpoint host_rm_loop (S : Store) (chs : list Chan) (cs : list Cand) : Store * l
   end.
 
 (* Host store_persistent_data (ops_consume.rs:192-202 and
-   replay_rspace.rs:1596-1606). The loop ignores errors. *)
+   replay_rspace.rs:1686-1696). The loop ignores errors. *)
 Fixpoint host_spd_loop (S : Store) (cs : list Cand) : Store * list Fx :=
   match cs with
   | [] => (S, [])
@@ -1138,10 +1141,10 @@ Record Res := mkRes {
 
 Inductive Pre := PreStop (obs : list Obs) (st : Status) | PreGo (obs : list Obs).
 
-(* Host call prefix (accounting.rs:20-31, ops_produce.rs:43-77,
-   ops_consume.rs:45-81 and replay_rspace.rs:761-815, 1054-1102). The first
+(* Host call prefix (accounting.rs:20-31, ops_produce.rs:44-78,
+   ops_consume.rs:45-81 and replay_rspace.rs:851-905, 1144-1192). The first
    call is the register_introduction_authority call of the reducer
-   (reduce.rs:535-539, 647-651). The substrate calls before_observe at the
+   (reduce.rs:539-543, 651-655). The substrate calls before_observe at the
    same position. *)
 Definition host_prelude (m : Mode) (H : list Obs) (s : Src) (start observe : Obs) : Pre :=
   let o0 := ObBefore s in
@@ -1188,7 +1191,7 @@ Definition space_prelude (m : Mode) (H : list Obs) (s : Src) (start observe : Ob
 
 (* ── Host operations, in HEAD code order ──────────────────────────────── *)
 
-(* Play produce: ops_produce.rs:31-113 and 163-210. *)
+(* Play produce: ops_produce.rs:32-113 and 163-210. *)
 Definition host_play_produce (H : list Obs) (S : Store) (rd : Bindings)
     (ch : Chan) (v : Val) (persist : bool) (out : POut) : Res :=
   let src := produce_id ch v persist in
@@ -1240,7 +1243,7 @@ Definition host_play_consume (H : list Obs) (S : Store) (rd : Bindings)
       end
   end.
 
-(* Replay produce: replay_rspace.rs:1043-1177 and 1273-1335.  The assert!
+(* Replay produce: replay_rspace.rs:1133-1267 and 1363-1425.  The assert!
    at 1305 is StPanic. *)
 Definition host_replay_produce (H : list Obs) (S : Store) (rd : Bindings)
     (ch : Chan) (v : Val) (persist : bool) (out : POut) : Res :=
@@ -1268,7 +1271,7 @@ Definition host_replay_produce (H : list Obs) (S : Store) (rd : Bindings)
       end
   end.
 
-(* Replay consume: replay_rspace.rs:746-977. *)
+(* Replay consume: replay_rspace.rs:836-1067. *)
 Definition host_replay_consume (H : list Obs) (S : Store) (rd : Bindings)
     (chs : list Chan) (pats : list Pat) (k : Kont) (persist : bool) (peeks : list nat)
     (out : COut) : Res :=
@@ -1455,7 +1458,7 @@ Definition available (rd : Bindings) (paired : list Comm) (k : IOKey) (cm : Comm
 (* Verify (design §2.4, FR-3): TxnCore::verify looks up only the trigger
    key [k] of the fire. [k] is KProduce source for a produce-side fire and
    KConsume source for a consume-side fire, exactly as host replay does
-   (replay_rspace.rs:859-867, 1113-1121). The COMM pairs while an unpaired
+   (replay_rspace.rs:949-957, 1203-1211). The COMM pairs while an unpaired
    recorded copy remains under [k]: paired < count / binding_multiplicity.
    The normalization by the multiplicity makes the rule sound: a key that
    occurs [mult k cm] times in the COMM carries [mult k cm] bindings per
@@ -3017,7 +3020,7 @@ Definition reoffer_due (op : Op) : bool :=
 (* [next] re-offers the datum of [op]: a produce with the same channel,
    value and persist flag. So it has the Produce::create identity, the
    trigger key and the counter step of HEAD's re-produce
-   (reduce.rs:973-1008). Its outcome is the agent's decision: it fires the
+   (reduce.rs:977-1012). Its outcome is the agent's decision: it fires the
    next waiter or stores the datum. *)
 Definition reoffer_of (op next : Op) : Prop :=
   match op, next with
@@ -3070,7 +3073,7 @@ Qed.
 (* FR-10: staging accepts the re-offer, a second produce with the same
    identity in the transaction. The accounting layer also accepts a second
    registration of an identity with an equal authority
-   (accounting/mod.rs:959-964). Each produce steps the counter of the
+   (accounting/mod.rs:1041-1046). Each produce steps the counter of the
    identity by one, as log_produce does for HEAD's produce and re-produce.
    With no next waiter, the re-offer stores the datum at the head of the
    list of its channel. *)
@@ -3173,11 +3176,11 @@ Qed.
 
 (* head_reproduces lists the channel and the value of each produce that HEAD
    re-produces after a fire whose waiter peeks. The function produce_peeks
-   (reduce.rs:973-1008) takes each result of wrap_result whose persist flag
+   (reduce.rs:977-1012) takes each result of wrap_result whose persist flag
    is false (rs/util.rs:57-70). It re-produces the removed value of that
-   result (rs/space_matcher.rs:57-75) on its channel, as a non-persistent
+   result (rs/space_matcher.rs:72-90) on its channel, as a non-persistent
    produce. The reducer calls produce_peeks after a non-persistent produce
-   (reduce.rs:776-803) and after a non-persistent consume (901-928). After a
+   (reduce.rs:780-807) and after a non-persistent consume (901-928). After a
    persistent produce, the reducer calls it and also re-issues that produce
    (709-775). *)
 Definition head_reproduces (cands : list Cand) : list (Chan * Val) :=
@@ -3876,7 +3879,7 @@ Definition kept_after (op : Op) (kept : Chan -> list Datum) : Chan -> list Datum
   fun c => kept c ++ retained op c.
 
 (* In replay, the host asserts that the recorded bindings contain the COMM
-   (replay_rspace.rs:936-943, 1306-1311).  The run-level theorems discharge
+   (replay_rspace.rs:1026-1033, 1396-1401).  The run-level theorems discharge
    this from the binding invariant. *)
 Definition bound_ok (T : Txn) (op : Op) (rd : Bindings) : Prop :=
   backend (t_mode T) <> Play ->
@@ -4343,7 +4346,7 @@ Definition add_binding (rd : Bindings) (k : IOKey) (c : Comm) : Bindings :=
   fun k' c' => if iokey_eq_dec k' k then (if comm_eq_dec c' c then S (rd k' c') else rd k' c')
                else rd k' c'.
 
-(* rig (replay_rspace.rs:390-450): every COMM event of the log is bound under
+(* rig (replay_rspace.rs:480-540): every COMM event of the log is bound under
    each of its IO events (consume first, then produces) that the log
    contains. *)
 Definition rig_comm (io : list IOKey) (rd : Bindings) (c : Comm) : Bindings :=
@@ -5637,7 +5640,7 @@ Definition op_groups (op : Op) : list (list Chan) :=
   | OConsume chs _ _ _ _ _ => [chs]
   end.
 
-(* ── Hot-store read cache (hot_store.rs:611-658, 805-817, 927-955) ────── *)
+(* ── Hot-store read cache (hot_store.rs:671-718, 865-877, 987-1015) ────── *)
 
 (* The keys of the three hot-store maps. *)
 Inductive CKey := CData (c : Chan) | CCont (g : list Chan) | CJoins (c : Chan).
@@ -5649,8 +5652,8 @@ Definition key_canonical (k : CKey) : bool :=
   match k with CCont g => canonical g | _ => true end.
 
 (* A first read of a key caches it: get_continuations, get_data and
-   get_joins insert the history value into the map (hot_store.rs:611-658,
-   805-817, 927-955). The list stands for the cached keys in the iteration
+   get_joins insert the history value into the map (hot_store.rs:671-718,
+   865-877, 987-1015). The list stands for the cached keys in the iteration
    order of changes(). *)
 Definition touch (k : CKey) (cache : list CKey) : list CKey :=
   if in_dec ckey_eq_dec k cache then cache else cache ++ [k].
@@ -5751,7 +5754,7 @@ Variable encode_data : list Datum -> Leaf.
 Variable encode_conts : list WK -> Leaf.
 Variable encode_joins : list (list Chan) -> Leaf.
 
-(* changes() (hot_store.rs:1055-1110): an empty cached list becomes a
+(* changes() (hot_store.rs:1115-1170): an empty cached list becomes a
    Delete (None), a non-empty list an Insert of its leaf. *)
 Definition leaf_at (S : Store) (k : CKey) : option Leaf :=
   match k with
@@ -6896,7 +6899,7 @@ Qed.
    erased), the events of play, the status of play and the store of play.
    So an operation that play rejects (an out-of-phlo charge) fails replay
    at the same call, after the same prefix (D6). The second conjunct rigs
-   replay with the commit log of play (replay_rspace.rs:390-450). *)
+   replay with the commit log of play (replay_rspace.rs:480-540). *)
 Theorem replay_reproduces_play_run :
   ob_ignores_directive -> dir_always_none ->
   (forall ops Tp0 Tp Tr0 Hp Hr S rdp rdr io rem,
@@ -6980,11 +6983,20 @@ Fixpoint path_lt (a b : list (nat * nat)) : Prop :=
   end.
 
 (* Paths that the deterministic scheduler creates (deterministic_reduction.rs
-   79-116). The root participant is []. A split appends (step, 1) and then
-   (index, 0). An operation appends (step, 0) to its participant. *)
+   84-135: next_operation and split). The root participant is []. Child i of a
+   split at step s appends the one segment (s, i + 1): the compacted split of
+   feature/cost-accounted-rho (C9, DR-84), which this campaign merged at
+   4d67b5ccc. An operation appends (step, 0) to its participant. A participant
+   uses one step counter for its operations and its splits. *)
 Inductive sched_part : list (nat * nat) -> Prop :=
 | sp_root : sched_part []
+| sp_split : forall p s i, sched_part p -> sched_part (p ++ [(s, Datatypes.S i)]).
+(* Disabled by the merge of feature/cost-accounted-rho at 4d67b5ccc (DR-84):
+   the legacy splitter appended the two segments (s, 1) and (i, 0). The Rust
+   program keeps that splitter only as the test oracle split_legacy, so the
+   model describes the compacted split.
 | sp_split : forall p s i, sched_part p -> sched_part (p ++ [(s, 1); (i, 0)]).
+*)
 
 Definition sched_op (q : list (nat * nat)) : Prop :=
   exists p s, sched_part p /\ q = p ++ [(s, 0)].
@@ -6996,7 +7008,7 @@ Definition sub_order (parent : list (nat * nat)) (i : nat) : list (nat * nat) :=
   parent ++ [(i, SUB_OPERATION_TAG)].
 
 (* OperationOrder derives Ord: the session first, then the path
-   (operation_context.rs:161-165). *)
+   (operation_context.rs:200-204). *)
 Definition order_lt (a b : nat * list (nat * nat)) : Prop :=
   fst a < fst b \/ (fst a = fst b /\ path_lt (snd a) (snd b)).
 
@@ -7049,6 +7061,25 @@ Proof.
   intros [Hs | (_ & Hl)]; [destruct x; unfold seg_lt in Hs; simpl in Hs; lia | exact (IH Hl)].
 Qed.
 
+(* Every segment of a participant path has a non-zero second component,
+   because a split segment is (s, i + 1). An operation segment (s, 0) thus
+   never occurs inside a participant path. *)
+Lemma sched_part_nonzero :
+  forall p, sched_part p -> forall j x, nth_error p j = Some x -> snd x <> 0.
+Proof.
+  intros p Hp. induction Hp as [| p s i Hp IH]; intros j x Hj.
+  - destruct j; discriminate.
+  - destruct (Nat.lt_ge_cases j (length p)) as [Hlt | Hge].
+    + rewrite nth_error_app1 in Hj by exact Hlt. exact (IH j x Hj).
+    + rewrite nth_error_app2 in Hj by exact Hge.
+      destruct (j - length p) as [| k].
+      * simpl in Hj. injection Hj as <-. simpl. lia.
+      * destruct k; simpl in Hj; discriminate.
+Qed.
+
+(* Disabled by the merge of feature/cost-accounted-rho at 4d67b5ccc (DR-84):
+   the parity shape holds only for the legacy split (s, 1) (i, 0), and
+   sched_part_nonzero replaces it in the proof of sched_op_no_extension.
 Lemma sched_part_shape :
   forall p, sched_part p ->
     Nat.even (length p) = true /\
@@ -7066,23 +7097,26 @@ Proof.
       * assert (Ej : j = Datatypes.S (length p)) by lia. subst j.
         exfalso. rewrite Nat.even_succ, <- Nat.negb_even, He in Hje. discriminate.
 Qed.
+*)
 
+(* No scheduler operation path is a proper prefix of another one. Let
+   a = p ++ [(s, 0)] be a prefix of b = p' ++ [(s', 0)]. Then p' is longer
+   than p, so the segment of b at the position length p is a segment of p'
+   (non-zero by sched_part_nonzero) and is also the last segment (s, 0) of a. *)
 Lemma sched_op_no_extension :
   forall a b r, sched_op a -> sched_op b -> r <> [] -> b <> a ++ r.
 Proof.
   intros a b r (p & s & Hp & Ea) (p' & s' & Hp' & Eb) Hr E.
-  destruct (sched_part_shape p Hp) as (He & _).
-  destruct (sched_part_shape p' Hp') as (_ & Hj').
   assert (Hlen : length b = length a + length r) by (rewrite E, length_app; reflexivity).
   assert (Hr1 : 1 <= length r) by (destruct r; [contradiction | simpl; lia]).
   assert (Hla : length a = Datatypes.S (length p)) by (rewrite Ea, length_app; simpl; lia).
   assert (Hlb : length b = Datatypes.S (length p')) by (rewrite Eb, length_app; simpl; lia).
   assert (Hlt : length p < length p') by lia.
-  destruct (Hj' (length p) Hlt He) as (s'' & Hn').
-  assert (Hnb : nth_error b (length p) = Some (s'', 1)) by (rewrite Eb, nth_error_app1 by exact Hlt; exact Hn').
   assert (Hna : nth_error b (length p) = Some (s, 0)).
   { rewrite E, nth_error_app1 by lia. rewrite Ea, nth_error_app2 by lia. rewrite Nat.sub_diag. reflexivity. }
-  rewrite Hna in Hnb. injection Hnb as _ C. discriminate.
+  assert (Hnb : nth_error p' (length p) = Some (s, 0)).
+  { rewrite <- Hna, Eb, nth_error_app1 by exact Hlt. reflexivity. }
+  exact (sched_part_nonzero p' Hp' (length p) (s, 0) Hnb eq_refl).
 Qed.
 
 (* H8: a sub-order sorts after its parent and before every later scheduler

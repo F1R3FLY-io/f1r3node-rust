@@ -51,6 +51,55 @@ fn genesis_policy_rejects_schedule_bytes_prices_and_trailing_data() {
     }
 }
 
+#[test]
+fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
+    let historical = PhloGenesisPolicy::from_schedule(&schedule()).unwrap();
+    let historical_wire = historical.encode().unwrap();
+    assert!(!historical.offered_funded_v6_active());
+    assert!(!PhloGenesisPolicy::decode(&historical_wire)
+        .unwrap()
+        .offered_funded_v6_active());
+    let offered = historical.clone().with_offered_funded_v6_active();
+    let offered_wire = offered.encode().unwrap();
+    assert!(offered.offered_funded_v6_active());
+    assert_eq!(PhloGenesisPolicy::decode(&offered_wire).unwrap(), offered);
+    assert_ne!(historical_wire, offered_wire);
+    let invalid_false = pack(&[
+        PHLO_GENESIS_POLICY_V2_DOMAIN.to_vec(),
+        historical.schedule_bytes.clone(),
+        vec![0],
+    ]);
+    assert_eq!(
+        PhloGenesisPolicy::decode(&invalid_false),
+        Err(PhloScheduleError::GenesisPolicyActivation)
+    );
+    let mut wrong_version = schedule();
+    wrong_version.protocol_version = 7;
+    let wrong_version_policy = PhloGenesisPolicy::from_schedule(&wrong_version).unwrap();
+    assert_eq!(
+        wrong_version_policy
+            .clone()
+            .with_offered_funded_v6_active()
+            .encode(),
+        Err(PhloScheduleError::GenesisPolicyActivation)
+    );
+    let wrong_version_wire = pack(&[
+        PHLO_GENESIS_POLICY_V2_DOMAIN.to_vec(),
+        wrong_version_policy.schedule_bytes,
+        vec![1],
+    ]);
+    assert_eq!(
+        PhloGenesisPolicy::decode(&wrong_version_wire),
+        Err(PhloScheduleError::GenesisPolicyActivation)
+    );
+    let invalid_extra = pack(&[
+        PHLO_GENESIS_POLICY_V1_DOMAIN.to_vec(),
+        historical.schedule_bytes,
+        vec![1],
+    ]);
+    assert!(PhloGenesisPolicy::decode(&invalid_extra).is_err());
+}
+
 proptest! {
     #[test]
     fn genesis_policy_preserves_every_field_except_offer(

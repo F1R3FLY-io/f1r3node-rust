@@ -419,19 +419,19 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         .await
         .expect("validator 0 proposes recovery_block");
 
-    let recovery_sigs: Vec<&Bytes> = recovery_block
+    let recovery_sigs: Vec<&[u8]> = recovery_block
         .body
         .deploys
         .iter()
-        .map(|pd| &pd.deploy.sig)
+        .map(|pd| pd.identity_bytes())
         .collect();
     assert!(
-        recovery_sigs.iter().any(|s| **s == conflict_sig),
+        recovery_sigs.iter().any(|s| *s == conflict_sig.as_ref()),
         "recovery_block.body.deploys must replay recovered sig {}; got body.deploys sigs = {:?}",
         hex::encode(&conflict_sig),
         recovery_sigs
             .iter()
-            .map(|s| hex::encode(s.as_ref()))
+            .map(|s| hex::encode(*s))
             .collect::<Vec<_>>()
     );
     // Packaging the replay must NOT drain the buffer entry: the recovery
@@ -452,7 +452,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         .body
         .deploys
         .iter()
-        .map(|pd| pd.deploy.sig.clone())
+        .map(|pd| pd.identity_bytes().to_vec().into())
         .collect();
     let overlapping_rejected_sigs: Vec<Bytes> = recovery_block
         .body
@@ -518,7 +518,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == conflict_sig),
+            .any(|pd| pd.identity_bytes() == conflict_sig.as_ref()),
         "issue #42: the recovered sig {} must not be re-included once its clean \
          recovery inclusion is canonically won over the proposer's parents, even \
          before the recovery block finalizes; got body.deploys sigs = {:?}",
@@ -527,7 +527,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .body
             .deploys
             .iter()
-            .map(|pd| hex::encode(&pd.deploy.sig))
+            .map(|pd| hex::encode(pd.identity_bytes()))
             .collect::<Vec<_>>()
     );
     // The buffer entry is still retained (custody holds until finalized-won).
@@ -567,7 +567,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == conflict_sig),
+            .any(|pd| pd.identity_bytes() == conflict_sig.as_ref()),
         "a finalized-won sig must not be replayed again"
     );
     {

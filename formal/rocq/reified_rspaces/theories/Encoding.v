@@ -53,8 +53,8 @@
                             50-53, 96-98, 101-103 (REJECTED_PARAM_KEYS,
                             REJECTED_THEORY_NAMES, is_param_key,
                             is_theory_name)
-   par, par_eqb (§5)        models/src/lib.rs:210-225, 466-473, 660-666,
-                            676-680, 705-711 (the Eq of Par, New, EList,
+   par, par_eqb (§5)        models/src/lib.rs:210-225, 466-473, 662-668,
+                            678-682, 707-713 (the Eq of Par, New, EList,
                             ETuple and EMap)
    marker, marker_id, marker_of_id, marker_tuple_arity (§4.1, §4.2)
                             models/src/rust/reified/encoding.rs:29, 34-45,
@@ -90,8 +90,8 @@
    head_marker (§4.2)       models/src/rust/reified/encoding.rs:369-374
                             (sole_marker_tuple)
    position, recognize (§4.3, §4.4)
-                            rholang/src/rust/interpreter/reduce.rs:1238-1264,
-                            1255, 1314-1333, 1678-1697, 1680, 1681, 1683
+                            rholang/src/rust/interpreter/reduce.rs:1219-1245,
+                            1236, 1295-1314, 1659-1678, 1661, 1662, 1664
                             (H2: the tuple arm of the term match at 1255.
                             H3: the data evaluation, then reified_produce.
                             H4: at 1681, after the substitution at 1680
@@ -109,15 +109,15 @@
                             owned_evaluation_terms)
    evaluation_random, term_schedule (§2(g))
                             rholang/src/rust/interpreter/util/mod.rs:162-181,
-                            rholang/src/rust/interpreter/reduce.rs:317-455,
-                            324, 332-336, 341, 364, 387 (eval_inner)
+                            rholang/src/rust/interpreter/reduce.rs:360-457,
+                            367, 375-379, 384, 407, 430 (eval_inner)
    lexical_schedule_count_iff (§2(h), H-1)
                             rholang/src/rust/interpreter/accounting/
                             lexical.rs:44, 105-114, 125-129
    subst (Section Variable, §2(e))
                             rholang/src/rust/interpreter/substitute.rs:
-                            454-535, 520, 1340-1361, 1363-1382, 1405-1428,
-                            1421, 1455, 644-663, 654 (Par with the
+                            456-537, 522, 1342-1363, 1365-1384, 1407-1430,
+                            1423, 1457, 646-665, 656 (Par with the
                             unforgeables kept at 520, EList, ETuple, EMap
                             re-sorted by create_from_vec at 1421, ground
                             terms, the New body under env.shift at 654)
@@ -129,18 +129,18 @@
                             tuple_par: each flag is the disjunction over
                             the children)
    refresh, sdecode (I-20)  rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:683-694, 697-705, 790-830,
-                            856-888, 891-893, 927-935, 938-947, 959-968,
-                            985-994, 998-1005 (Field, marker_fields,
+                            reducer_hooks.rs:708-719, 722-730, 815-855,
+                            881-913, 916-918, 952-960, 963-972, 984-993,
+                            1010-1019, 1023-1030 (Field, marker_fields,
                             derived_flag, refresh_field,
                             derived_flag_of_new, refresh_tuple,
                             refreshed_tuple, refresh_tuple_par,
                             refreshed_marker_par, trailing_params)
-   fsubst (I-20)            rholang/src/rust/interpreter/substitute.rs:525,
-                            995-1016, 1018-1037, 1060-1083, 1340-1361,
-                            1363-1382, 1405-1428 and
-                            rholang/src/rust/interpreter/reduce.rs:3065-3087,
-                            3089-3110, 3135-3155 (substitution and
+   fsubst (I-20)            rholang/src/rust/interpreter/substitute.rs:527,
+                            997-1018, 1020-1039, 1062-1085, 1342-1363,
+                            1365-1384, 1407-1430 and
+                            rholang/src/rust/interpreter/reduce.rs:3125-3147,
+                            3149-3170, 3195-3215 (substitution and
                             evaluation keep the connective_used flags of
                             the Par, the list, the tuple and the map)
    name_decl, binder_order, normalize_new (§1.4)
@@ -204,7 +204,7 @@
      and that a tuple with a stale flag is accepted only after the refresh.
    - Section 8b keeps the flags only where the encoder derives them: the
      holder Par, the tuple and the container fields of marker_fields
-     (reducer_hooks.rs:697-705). A value keeps its own flag, which no hook
+     (reducer_hooks.rs:722-730). A value keeps its own flag, which no hook
      changes, so a flagged construct pairs each value with its flag. A map
      key is a GString, whose flag is false.
    - The substitution is a Section Variable. Its equations are premises of
@@ -1644,7 +1644,7 @@ Definition evaluation_random {R : Type} (split_byte split_short : R -> nat -> R)
   else Some (split_byte r index).
 
 (* eval_inner gives term i the random state evaluation_random r i n, where n
-   is the length of the term list (reduce.rs:324-387). The partition of the
+   is the length of the term list (reduce.rs:367-430). The partition of the
    cost stacks keeps the original indices. *)
 Definition term_schedule {R : Type} (split_byte split_short : R -> nat -> R) (r : R)
   (terms : list generated_message) : list (generated_message * option R) :=
@@ -1898,37 +1898,37 @@ Qed.
 
 Section Substitution.
   (* subst sigma t models Substitute::substitute_and_charge at depth 0 with
-     the environment sigma (substitute.rs:102-130). shift k sigma models
+     the environment sigma (substitute.rs:102-131). shift k sigma models
      env.shift(k). Each premise below states one equation of HEAD
      substitution on a shape that the encoding uses. The equations hold up
      to the connective_used flags, which α forgets: HEAD keeps the flags of
-     a substituted Par, tuple, list and map (substitute.rs:525, 995-1083,
-     1340-1428), so a substituted marker tuple can carry stale flags. The
+     a substituted Par, tuple, list and map (substitute.rs:527, 997-1085,
+     1342-1430), so a substituted marker tuple can carry stale flags. The
      hooks recompute the derived flags before the strict decode (I-20), so
      the premises need no flag. Headline 15 states the flagged form.
-     The storage substitution of a receive body (reduce.rs:1434-1438) uses
+     The storage substitution of a receive body (reduce.rs:1415-1419) uses
      substitute_no_sort_and_charge. That variant satisfies the same premises
      on USE and NEWSPACE tuples, which contain no map. It also sorts the map
      values in create_from_vec. The hooks decode a PARAMS or QUERY map only
-     after the sorting variant (reduce.rs:1319 and 1680). *)
+     after the sorting variant (reduce.rs:1300 and 1661). *)
   Variable Env : Type.
   Variable subst : Env -> par -> par.
   Variable shift : nat -> Env -> Env.
 
-  (* substitute.rs:520 copies the unforgeables. *)
+  (* substitute.rs:522 copies the unforgeables. *)
   Hypothesis subst_priv : forall sigma id, subst sigma (PPriv id) = PPriv id.
-  (* substitute.rs:1455 returns a ground expression unchanged. *)
+  (* substitute.rs:1457 returns a ground expression unchanged. *)
   Hypothesis subst_str : forall sigma s, subst sigma (PStr s) = PStr s.
-  (* substitute.rs:1340-1361 substitutes each list element. *)
+  (* substitute.rs:1342-1363 substitutes each list element. *)
   Hypothesis subst_list :
     forall sigma ps, subst sigma (PList ps) = PList (map (subst sigma) ps).
-  (* substitute.rs:1363-1382 substitutes each tuple element in place. *)
+  (* substitute.rs:1365-1384 substitutes each tuple element in place. *)
   Hypothesis subst_tuple :
     forall sigma ps, subst sigma (PTuple ps) = PTuple (map (subst sigma) ps).
-  (* substitute.rs:1405-1428 substitutes each value and re-sorts the map. *)
+  (* substitute.rs:1407-1430 substitutes each value and re-sorts the map. *)
   Hypothesis subst_map :
     forall sigma kvs, subst sigma (PMap kvs) = PMap (canon_map (map_values (subst sigma) kvs)).
-  (* substitute.rs:644-663 substitutes the body under env.shift(bind_count). *)
+  (* substitute.rs:646-665 substitutes the body under env.shift(bind_count). *)
   Hypothesis subst_new :
     forall sigma k uris injections body,
       subst sigma (PNew k uris injections body) =
@@ -2015,7 +2015,7 @@ Section Substitution.
   Qed.
 
   (* This lemma does not use subst_new. Evaluation (eval_expr,
-     reduce.rs:3065-3155 and 7751-7770) satisfies the five equations that the
+     reduce.rs:3125-3215 and 7811-7830) satisfies the five equations that the
      proof uses. Thus PARAMS, QUERY, USE and FREE decoding also commutes with
      evaluation. *)
   Lemma subst_encode_except_newspace :
@@ -2084,7 +2084,7 @@ Section Substitution.
     end.
 
   (* HEAD substitution and evaluation keep the container flags of the
-     tuple (substitute.rs:995-1083, reduce.rs:3065-3155), so they can go
+     tuple (substitute.rs:997-1085, reduce.rs:3125-3215), so they can go
      stale. *)
   Definition fsubst (sigma : Env) (x : ftuple) : ftuple := mkFTuple (fsubst_c sigma (ft_construct x)) (ft_flags x).
 
@@ -2423,7 +2423,7 @@ Definition plan_decode_annotation (a : par) : option par :=
 
 (* nil_binding binds the variable with index 0 to Nil. A receive that gets
    Nil for s does this to its body (storage substitution,
-   reduce.rs:1434-1438). *)
+   reduce.rs:1415-1419). *)
 Definition nil_binding : concrete_env := fun i => if i =? 0 then Some PNil else None.
 
 (* Headline 12. The superseded encoding maps the annotation Nil and the

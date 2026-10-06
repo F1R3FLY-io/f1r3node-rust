@@ -25,7 +25,7 @@ impl Match<String, String, String> for Matcher {
     fn check_commit_metered(
         &self,
         _: &String,
-        _: &[String],
+        _: &[&String],
         meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         meter.reserve(1, 0, 0)?;
@@ -39,6 +39,7 @@ fn empty_trace() -> CheckedNativeOperationTrace {
         attempts: Arc::from([]),
         retries: Arc::from([]),
         used: 0,
+        paths: fixture_paths(),
     };
     bind(&recording, Arc::from([]), Vec::new()).unwrap()
 }

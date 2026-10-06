@@ -1,0 +1,83 @@
+' Canonical order of RSpace match candidates (DR-75, register item I1).
+' Phase one sorts candidates by (source hash, store index) and reads only the
+' precomputed Produce/Consume hashes. Phase two re-sorts each run of two or
+' more equal source hashes by (digest, store index), so only tie-run members
+' are serialized and hashed. Play, directive replay and metered native replay
+' share the function, so they choose the same candidate.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-75);
+'                  rspace++/src/rspace/candidate_order.rs (canonical_order,
+'                  Unmetered); rspace++/src/rspace/replay_rspace/native_candidate/
+'                  metered.rs (MeteredOrder).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/CandidateSourceOrder.v;
+'                  formal/tlaplus/cost_accounted_rho/NativeCandidateOrder.tla.
+' Palette:  store read = supply blue · sorting = process lilac · run scan = gate teal
+'           digest of a tie-run member = delta amber · single candidate = pool green
+'           result = note green · decisions = control amber
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/canonical-candidate-order.puml
+'          (or: ./render.sh canonical-candidate-order.puml)
+
+@startuml canonical-candidate-order
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+title Canonical candidate order: source hash first, digest only for ties (DR-75)
+
+start
+:read the candidates of one channel (or channel group)
+index each candidate by its store position <latex>i(c) = 0, \ldots, n - 1</latex>; <<$ca_supply>>
+if (<latex>n \le 1</latex>?) then (yes)
+  :return the candidates as read
+  (no sort, no digest); <<$ca_note_green>>
+  stop
+else (no)
+endif
+:**phase one**
+sort by <latex>(h(c),\, i(c))</latex>
+<latex>h(c)</latex> = precomputed Produce.hash or Consume.hash (32 bytes)
+no candidate is serialized; <<$ca_process>>
+:scan adjacent source hashes
+split the sequence into maximal runs of equal <latex>h</latex>; <<$ca_gate>>
+repeat
+  if (run length <latex>|r| \ge 2</latex>?) then (tie run)
+    :digest each member
+    <latex>d(c) = \mathrm{Blake2b}_{256}(\mathrm{bincode}(c))</latex>; <<$ca_delta>>
+    :**phase two**
+    sort the run by <latex>(d(c),\, i(c))</latex>; <<$ca_process>>
+  else (single candidate)
+    :keep the candidate in place
+    (no digest); <<$ca_pool>>
+  endif
+repeat while (another run?) is (yes)
+-> no;
+:canonical order <latex>(h(c),\, d(c),\, i(c))</latex>
+the same in play, directive replay and metered native replay; <<$ca_note_green>>
+stop
+
+note right
+  **Why the digest tie-break exists**
+  Consume.hash omits peeks and the original pattern order.
+  Produce.hash omits the non-determinism metadata.
+  An index-only or source-only key would depend on the
+  store's insertion order (proved counterexamples).
+
+  **Metering (native replay)**
+  Host work is reserved before each allocation,
+  comparison, adjacent-hash scan and digest.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| store read with original indices |
+  |<$ca_process>| sort (phase one or phase two) |
+  |<$ca_gate>| run detection over adjacent source hashes |
+  |<$ca_delta>| digest of a tie-run member (the only serialization) |
+  |<$ca_pool>| single candidate: no digest |
+  |<$ca_note_green>| result |
+  |<$ca_control>| decision |
+endlegend
+
+@enduml

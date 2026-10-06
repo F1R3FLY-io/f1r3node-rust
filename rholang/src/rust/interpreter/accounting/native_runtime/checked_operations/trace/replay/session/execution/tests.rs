@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits, HostWorkUsages};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -146,7 +146,8 @@ async fn replay_process_with_funding(
         budget.clone(),
         ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
     block_data.write().await.block_number = 123;
     deploy_data.write().await.timestamp = 456;
     let scope = budget.enter_comm_accounting_scope();
@@ -614,6 +615,249 @@ async fn native_replay_authority_state_matches_recorded_execution() {
         Interruption::None,
     )
     .await;
+}
+
+/// Host-work use of the native replay of `term`: play records the native
+/// journal, the checked journal binds the trace, and the replay runs it
+/// (C14, DR-79).
+async fn replayed_host_usage(term: &str) -> HostWorkUsages {
+    let funding = FundingFixture::default();
+    let (weights, limit) = (funding.weights, 1_000_000);
+    let parsed = Compiler::source_to_adt(term).unwrap();
+    let mut stores = InMemoryStoreManager::new();
+    let (play, _) = RSpace::create_with_replay(
+        stores.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(Matcher)),
+    )
+    .unwrap();
+    play.create_checkpoint().await.unwrap();
+    let history = play.get_history_repository();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
+    let settings = priced_config(limit, weights, funding.price);
+    let play_host = settings.host_work();
+    budget.reset_for_native_execution(settings).unwrap();
+    let (reducer, block_data, _, deploy_data) = create_rho_env(
+        play.clone(),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(default_mergeable_tags()),
+        &mut extra_processes(),
+        budget.clone(),
+        ExternalServices::noop(),
+    )
+    .await
+    .unwrap();
+    block_data.write().await.block_number = 123;
+    deploy_data.write().await.timestamp = 456;
+    let scope = budget.enter_comm_accounting_scope();
+    let rand = || Blake2b512Random::create_from_bytes(b"native-executor-regression");
+    let played = reducer
+        .inj_with_observation(parsed.clone(), rand(), Some(play_host))
+        .await;
+    assert!(played.0.is_ok(), "{played:?}");
+    drop(scope);
+    let recording = budget.native_budget_recording().unwrap().unwrap();
+    let operations = budget.native_operation_recording().unwrap().unwrap();
+    let log = play.create_soft_checkpoint().await.log;
+    let host = priced_config(limit, weights, funding.price).host_work();
+    let trace = with_priced_contract(limit, weights, funding.price, |contract| {
+        contract
+            .check_operation_journal(
+                recording.session,
+                &recording,
+                operations,
+                journal_limits(),
+                &host,
+            )
+            .unwrap()
+    })
+    .bind_trace(
+        log.into(),
+        NativeOperationTraceLimits {
+            events: 1_000,
+            source_entries: 10_000,
+            source_bytes: 10_000_000,
+            telemetry_items: 1_000,
+            telemetry_bytes: 1_000_000,
+        },
+        &host,
+    )
+    .unwrap();
+    let replay_budget = RuntimeBudget::new(Cost::unsafe_max());
+    replay_budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
+    let mut replay_settings = priced_config(limit, weights, funding.price);
+    replay_settings.host_work = host.clone();
+    replay_budget
+        .reset_for_native_execution(replay_settings)
+        .unwrap();
+    let mut environment = create_native_replay_env(
+        trace,
+        history,
+        Arc::new(Box::new(Matcher)),
+        host.clone(),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(default_mergeable_tags()),
+        &mut extra_processes(),
+        replay_budget,
+        ExternalServices::noop(),
+    )
+    .await
+    .unwrap();
+    environment.block_data.write().await.block_number = 123;
+    environment.deploy_data.write().await.timestamp = 456;
+    let replayed = tokio::time::timeout(
+        Duration::from_secs(60),
+        environment.evaluate_raw(parsed, rand()),
+    )
+    .await
+    .expect("native reducer must complete");
+    assert_eq!(replayed.0, played.0);
+    environment.check_complete().await.unwrap();
+    assert_eq!(
+        environment.accounting_budget().authority_events(),
+        budget.authority_events()
+    );
+    assert!(environment.accounting_budget().authority_events().len() > 10);
+    host.usages()
+}
+
+/// C14 (DR-79): the replay authority charges use live map sizes. Native
+/// execution serializes each frontier, so the replay of one trace reports
+/// the same host-work use in all dimensions on a current-thread runtime and
+/// on multi-thread runtimes. The deploy has parallel branches and more than
+/// ten COMMs, so the event map grows past one tree level.
+#[test]
+fn native_replay_authority_charge_is_schedule_independent() {
+    let term = r#"new loop, a, b, c, d in {
+        contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(12) |
+        a!(1) | b!(2) | c!(3) | d!(4) |
+        for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
+    }"#;
+    let current = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime")
+        .block_on(replayed_host_usage(term));
+    for workers in [2, 4, 8] {
+        let parallel = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime")
+            .block_on(replayed_host_usage(term));
+        assert_eq!(parallel, current, "{workers} workers");
+    }
+}
+
+/// Plays `term` natively with the legacy or the compacted splitter and
+/// returns the checkpoint root, the event log and the length of the longest
+/// recorded operation path (C9, DR-84). The session reads the splitter flag
+/// of this thread when it is built.
+async fn played_checkpoint(
+    term: &str,
+    legacy: bool,
+) -> (
+    rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    rspace_plus_plus::rspace::trace::Log,
+    usize,
+) {
+    struct ResetSplitter;
+    impl Drop for ResetSplitter {
+        fn drop(&mut self) {
+            crate::rust::interpreter::deterministic_reduction::LEGACY_SPLIT
+                .with(|flag| flag.set(false));
+        }
+    }
+    crate::rust::interpreter::deterministic_reduction::LEGACY_SPLIT.with(|flag| flag.set(legacy));
+    let _reset = ResetSplitter;
+    let funding = FundingFixture::default();
+    let (weights, limit) = (funding.weights, 1_000_000);
+    let parsed = Compiler::source_to_adt(term).unwrap();
+    let mut stores = InMemoryStoreManager::new();
+    let (play, _) = RSpace::create_with_replay(
+        stores.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(Matcher)),
+    )
+    .unwrap();
+    play.create_checkpoint().await.unwrap();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
+    let settings = priced_config(limit, weights, funding.price);
+    let play_host = settings.host_work();
+    budget.reset_for_native_execution(settings).unwrap();
+    let (reducer, block_data, _, deploy_data) = create_rho_env(
+        play.clone(),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(default_mergeable_tags()),
+        &mut extra_processes(),
+        budget.clone(),
+        ExternalServices::noop(),
+    )
+    .await
+    .unwrap();
+    block_data.write().await.block_number = 123;
+    deploy_data.write().await.timestamp = 456;
+    let scope = budget.enter_comm_accounting_scope();
+    let played = reducer
+        .inj_with_observation(
+            parsed,
+            Blake2b512Random::create_from_bytes(b"native-executor-regression"),
+            Some(play_host),
+        )
+        .await;
+    assert!(played.0.is_ok(), "{played:?}");
+    drop(scope);
+    let deepest = budget
+        .native_operation_recording()
+        .unwrap()
+        .unwrap()
+        .iter()
+        .map(|record| record.occurrence.path.depth())
+        .max()
+        .unwrap_or(0);
+    let checkpoint = play.create_checkpoint().await.unwrap();
+    (checkpoint.root, checkpoint.log, deepest)
+}
+
+/// C9 (DR-84): the compacted splitter keeps the forward lexicographic order
+/// of every generated path. Native play of each corpus term therefore fires
+/// the same COMMs in the same order and reaches the same root with the
+/// compacted splitter and with the legacy splitter.
+#[tokio::test]
+async fn compacted_schedule_equals_legacy_schedule() {
+    let corpus = [
+        r#"new loop, a, b, c, d in {
+            contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(12) |
+            a!(1) | b!(2) | c!(3) | d!(4) |
+            for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
+        }"#,
+        r#"new fork, done in {
+            contract fork(@n) = { if (n > 0) { fork!(n - 1) | fork!(n - 1) } else { done!(n) } } |
+            fork!(4) | for (@x <= done) { Nil }
+        }"#,
+        r#"new a, b, ack in {
+            contract a(@x) = { ack!(x) } | a!(1) | a!(2) | b!(3) | b!(4) |
+            for (@x <- ack & @y <- b) { Nil } | for (@x <- ack & @y <- b) { Nil }
+        }"#,
+        r#"new c, d, e in {
+            c!!(1) | for (@x <<- c) { d!(x) } | for (@y <- c) { e!(y + 1) } |
+            for (@u <- d & @v <- e) { Nil }
+        }"#,
+    ];
+    for term in corpus {
+        let (legacy_root, legacy_log, legacy_depth) = played_checkpoint(term, true).await;
+        let (compacted_root, compacted_log, compacted_depth) = played_checkpoint(term, false).await;
+        assert!(compacted_depth < legacy_depth, "{term}");
+        assert!(
+            legacy_log.iter().any(|event| matches!(
+                event,
+                rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+            )),
+            "{term}"
+        );
+        assert_eq!(compacted_log, legacy_log, "{term}");
+        assert_eq!(compacted_root, legacy_root, "{term}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

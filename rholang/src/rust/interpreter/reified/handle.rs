@@ -25,11 +25,15 @@
 //! the method name (`UnknownMethod`), the argument count (`BadArgument`), the named params
 //! (`UnknownParam`, keys in bytewise order), and then the arguments. `gensym`, `qualifier` and
 //! `config` stage nothing and commit nothing. `produce` runs one collection operation with
-//! the random state and the cost authority of the call (A16), then dispatches its fires.
-//! `consume` accepts only matchers of user agents, so in P4 it ends with a typed error or with
-//! the abort `AgentSpacesUnavailable` (A9).
+//! the random state and the cost authority of the call (A16). Its fires, its re-issue and its
+//! reply `Nil` are the branches of the outcome, and the reply is the last branch: a dispatch
+//! ends the reduction participant that makes it, so the participant cannot send the reply after
+//! a fire. `consume` accepts only matchers of user agents, so in P4 it ends with a typed error
+//! or with the abort `AgentSpacesUnavailable` (A9).
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -46,7 +50,7 @@ use super::factory::ContractArgs;
 use super::runtime::ReifiedRuntime;
 use super::system_channels::{handle_of, HANDLE_OP_PROCESS};
 use crate::rust::interpreter::contract_call::ContractCall;
-use crate::rust::interpreter::dispatch::RhoDispatch;
+use crate::rust::interpreter::dispatch::{DispatchType, RhoDispatch};
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::reduce::ReducerCore;
 use crate::rust::interpreter::spaces::agent::{ProduceOp, SpaceAgent, SpaceOp};
@@ -156,6 +160,15 @@ impl ParsedMessage {
     }
 }
 
+/// What a method leaves to do after its checks.
+#[derive(Clone, Debug, PartialEq)]
+enum MethodEffect {
+    /// A reply that the process sends on `ret` at once.
+    Reply(Par),
+    /// A collection operation. The process replies `Nil` as the last branch of its outcome.
+    Operation(SpaceOp),
+}
+
 /// True when a typed reply can use `ret`: one unforgeable, or one bundle with the write flag,
 /// and nothing else (A23).
 pub fn is_reply_name(ret: &Par) -> bool {
@@ -220,39 +233,47 @@ impl HandleProcess {
             .read_config(Arc::clone(&self.agent), space, call.cost_authority.clone())
             .await?;
         let config = SpaceConfig::from_par(&config_map).map_err(SpaceError::from)?;
-        let (ret, reply) = match ParsedMessage::parse(message) {
+        let (ret, effect) = match ParsedMessage::parse(message) {
             ParsedMessage::Dropped => return Ok(Vec::new()),
             ParsedMessage::Malformed { ret, method } => {
                 let reply = method_error(SpaceReplyCode::MalformedMessage, &method, Vec::new());
-                (ret, reply)
+                (ret, MethodEffect::Reply(reply))
             }
             ParsedMessage::Message(message) => {
                 let ret = message.ret.clone();
-                let reply = self
-                    .run(
-                        &contract.dispatcher,
-                        space,
-                        (&config_map, &config),
-                        &call,
-                        message,
-                    )
+                let effect = self
+                    .run(space, (&config_map, &config), &call, message)
                     .await?;
-                (ret, reply)
+                (ret, effect)
             }
         };
-        let reply = vec![reply];
-        produce(&reply, &ret).await?;
-        Ok(reply)
+        match effect {
+            MethodEffect::Reply(reply) => {
+                let reply = vec![reply];
+                produce(&reply, &ret).await?;
+                Ok(reply)
+            }
+            MethodEffect::Operation(op) => {
+                let reply = vec![Par::default()];
+                let replied = produce(&reply, &ret);
+                let then: Pin<
+                    Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + Send>,
+                > = Box::pin(async move { replied.await.map(|_| DispatchType::Skip) });
+                reducer(&contract.dispatcher)?
+                    .space_op(op, Some(then))
+                    .await?;
+                Ok(reply)
+            }
+        }
     }
 
     async fn run(
         &self,
-        dispatcher: &RhoDispatch,
         space: NativeSpace,
         (config_map, config): (&Par, &SpaceConfig),
         call: &ListParWithRandom,
         message: HandleMessage,
-    ) -> Result<Par, InterpreterError> {
+    ) -> Result<MethodEffect, InterpreterError> {
         let HandleMessage {
             method,
             args,
@@ -266,32 +287,35 @@ impl HandleProcess {
             let suggested = suggestion(&method, &HANDLE_METHODS)
                 .map(string_par)
                 .unwrap_or_default();
-            return Ok(method_error(SpaceReplyCode::UnknownMethod, &method, vec![
-                ("suggestion", suggested),
-            ]));
+            return Ok(MethodEffect::Reply(method_error(
+                SpaceReplyCode::UnknownMethod,
+                &method,
+                vec![("suggestion", suggested)],
+            )));
         };
         if args.len() != handle_method.arity() {
-            return Ok(bad_argument(&method, "arguments"));
+            return Ok(MethodEffect::Reply(bad_argument(&method, "arguments")));
         }
         let schema = param_schema(handle_method, config)?;
         if let Some(key) = named.keys().find(|key| !schema.contains(&key.as_str())) {
             let suggested = suggestion(key, &schema).map(string_par).unwrap_or_default();
-            return Ok(method_error(SpaceReplyCode::UnknownParam, &method, vec![
-                ("param", string_par(key)),
-                ("suggestion", suggested),
-            ]));
+            return Ok(MethodEffect::Reply(method_error(
+                SpaceReplyCode::UnknownParam,
+                &method,
+                vec![("param", string_par(key)), ("suggestion", suggested)],
+            )));
         }
         match handle_method {
             HandleMethod::Gensym => {
                 let random = Blake2b512Random::from_bytes(&call.random_state);
-                Ok(self.agent.gensym(space, &random)?)
+                Ok(MethodEffect::Reply(self.agent.gensym(space, &random)?))
             }
-            HandleMethod::Qualifier => Ok(string_par(config.qualifier.as_str())),
-            HandleMethod::Config => Ok(config_map.clone()),
-            HandleMethod::Produce => {
-                produce_method(dispatcher, space, call, &method, &args, &named).await
+            HandleMethod::Qualifier => {
+                Ok(MethodEffect::Reply(string_par(config.qualifier.as_str())))
             }
-            HandleMethod::Consume => consume_method(&method, &args),
+            HandleMethod::Config => Ok(MethodEffect::Reply(config_map.clone())),
+            HandleMethod::Produce => produce_method(space, call, &method, &args, &named),
+            HandleMethod::Consume => consume_method(&method, &args).map(MethodEffect::Reply),
         }
     }
 }
@@ -321,29 +345,28 @@ fn param_schema(
 }
 
 /// `produce(ch, msg; persistent = b)`: one collection operation on the key of `ch`, then
-/// `Nil`.
-async fn produce_method(
-    dispatcher: &RhoDispatch,
+/// `Nil`. A bad argument is a typed error reply.
+fn produce_method(
     space: NativeSpace,
     call: &ListParWithRandom,
     method: &str,
     args: &[Par],
     named: &BTreeMap<String, Par>,
-) -> Result<Par, InterpreterError> {
+) -> Result<MethodEffect, InterpreterError> {
     let [ch, msg] = args else {
-        return Ok(bad_argument(method, "arguments"));
+        return Ok(MethodEffect::Reply(bad_argument(method, "arguments")));
     };
     let Some(channel) = writable_channel(ch) else {
-        return Ok(bad_argument(method, "ch"));
+        return Ok(MethodEffect::Reply(bad_argument(method, "ch")));
     };
     let Some(payload) = sole_list(msg) else {
-        return Ok(bad_argument(method, "msg"));
+        return Ok(MethodEffect::Reply(bad_argument(method, "msg")));
     };
     let persistent = match named.get(PERSISTENT_PARAM) {
         None => false,
         Some(value) => match sole_bool(value) {
             Some(persistent) => persistent,
-            None => return Ok(bad_argument(method, PERSISTENT_PARAM)),
+            None => return Ok(MethodEffect::Reply(bad_argument(method, PERSISTENT_PARAM))),
         },
     };
     let op = ProduceOp {
@@ -359,8 +382,7 @@ async fn produce_method(
         persistent,
         authority: call.cost_authority.clone().unwrap_or_default(),
     };
-    reducer(dispatcher)?.space_op(SpaceOp::Produce(op)).await?;
-    Ok(Par::default())
+    Ok(MethodEffect::Operation(SpaceOp::Produce(op)))
 }
 
 /// `consume(pairs, arrow, body)`: the shape checks of a consume whose matchers are user-agent

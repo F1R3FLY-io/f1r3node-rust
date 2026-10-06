@@ -150,6 +150,11 @@ pub mod builder {
             .genesis_block_data
             .validate_native_token()
             .map_err(|e| eyre::eyre!("native token config invalid: {}", e))?;
+        node_conf
+            .casper
+            .genesis_block_data
+            .lowered_resource_policy()
+            .map_err(|e| eyre::eyre!("genesis resource policy config invalid: {}", e))?;
 
         // The proposer computes its recovery cap as
         // `max(pending_deploy_max_lag, deploy_recovery_max_lag)`. When

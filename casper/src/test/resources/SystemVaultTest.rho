@@ -37,6 +37,9 @@ match (
       testInvalidVaultAddress,
       testUnfBoundVault,
       testLogging,
+      testTransferBatch,
+      testFindIsReadOnly,
+      testAbsentCostCursor,
       withVaultAndIdentityOf,
       transfer,
       assertBalances
@@ -55,7 +58,10 @@ match (
             ("Fail the transfer if there are insufficient funds", *testInsufficeintFunds),
             ("Fail the transfer if the destination addresss is not a valid VaultAddress", *testInvalidVaultAddress),
             ("Transfer from unforgeable name bound vault", *testUnfBoundVault),
-            ("Logging works", *testLogging)
+            ("Logging works", *testLogging),
+            ("Transfer batch funds new unforgeable vaults atomically", *testTransferBatch),
+            ("Find does not create vaults", *testFindIsReadOnly),
+            ("An unused monetary scope has no cursor", *testAbsentCostCursor)
           ])
       } |
 
@@ -218,6 +224,88 @@ match (
                     *ackCh)
                 }
               }
+            }
+          }
+        }
+      } |
+      contract testTransferBatch(rhoSpec, SystemVault, ackCh) = {
+        new VaultAddress(`rho:vault:address`), first, second,
+            firstAddressCh, secondAddressCh, sourceCh,
+            beforeCh, transferCh, firstVaultCh, secondVaultCh,
+            invalidCh, invalidAddressCh, noFundsCh,
+            afterCh, firstBalanceCh, secondBalanceCh
+        in {
+          VaultAddress!("fromUnforgeable", *first, *firstAddressCh) |
+          VaultAddress!("fromUnforgeable", *second, *secondAddressCh) |
+          withVaultAndIdentityOf!(genesisPubKey, *sourceCh) |
+          for (@firstAddress <- firstAddressCh & @secondAddress <- secondAddressCh &
+               sourceVault, @sourceKey <- sourceCh) {
+            sourceVault!("balance", *beforeCh) |
+            for (@before <- beforeCh) {
+              sourceVault!("transferBatch", [(firstAddress, 17), (secondAddress, 23)], sourceKey, *transferCh) |
+              for (@transferResult <- transferCh) {
+                SystemVault!("findOrCreate", firstAddress, *firstVaultCh) |
+                SystemVault!("findOrCreate", secondAddress, *secondVaultCh) |
+                for (@(true, firstVault) <- firstVaultCh & @(true, secondVault) <- secondVaultCh) {
+                  sourceVault!("transferBatch", [(firstAddress, 1), (firstAddress, 1)], sourceKey, *invalidCh) |
+                  for (@invalidResult <- invalidCh) {
+                    sourceVault!("transferBatch", [(firstAddress, 1), ("invalid", 1)], sourceKey, *invalidAddressCh) |
+                    for (@invalidAddressResult <- invalidAddressCh) {
+                      sourceVault!("transferBatch", [(firstAddress, 999999999)], sourceKey, *noFundsCh) |
+                      for (@noFundsResult <- noFundsCh) {
+                        sourceVault!("balance", *afterCh) |
+                        @firstVault!("balance", *firstBalanceCh) |
+                        @secondVault!("balance", *secondBalanceCh) |
+                        rhoSpec!("assertMany", [
+                          (((true, Nil), "==", transferResult), "batch succeeds"),
+                          (((false, "Transfer targets must be distinct"), "==", invalidResult), "duplicate target is rejected"),
+                          (((false, "Invalid target vault address"), "==", invalidAddressResult), "invalid late target is rejected"),
+                          (((false, "Insufficient funds"), "==", noFundsResult), "insufficient batch funds are rejected"),
+                          ((before - 40, "== <-", *afterCh), "source balance is conserved"),
+                          ((17, "== <-", *firstBalanceCh), "first target receives its share"),
+                          ((23, "== <-", *secondBalanceCh), "second target receives its share")
+                        ], *ackCh)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+      contract testFindIsReadOnly(rhoSpec, SystemVault, ackCh) = {
+        new VaultAddress(`rho:vault:address`), absent,
+            addressCh, firstCh, secondCh, invalidCh in {
+          VaultAddress!("fromUnforgeable", *absent, *addressCh) |
+          for (@address <- addressCh) {
+            SystemVault!("find", address, *firstCh) |
+            for (@firstResult <- firstCh) {
+              SystemVault!("find", address, *secondCh) |
+              for (@secondResult <- secondCh) {
+                SystemVault!("find", "bad", *invalidCh) |
+                for (@invalidResult <- invalidCh) {
+                  rhoSpec!("assertMany", [
+                    (((false, "Vault not found"), "==", firstResult), "first absent lookup"),
+                    (((false, "Vault not found"), "==", secondResult), "second absent lookup"),
+                    (((false, "Invalid address length"), "==", invalidResult), "invalid address is rejected")
+                  ], *ackCh)
+                }
+              }
+            }
+          }
+        }
+      } |
+      contract testAbsentCostCursor(rhoSpec, SystemVault, ackCh) = {
+        new firstCh, secondCh in {
+          SystemVault!("costCursor", "0000000000000000000000000000000000000000000000000000000000000000".hexToBytes(), *firstCh) |
+          for (@first <- firstCh) {
+            SystemVault!("costCursor", "0000000000000000000000000000000000000000000000000000000000000000".hexToBytes(), *secondCh) |
+            for (@second <- secondCh) {
+              rhoSpec!("assertMany", [
+                (([false, 0, 0], "==", first), "unused scope has no cursor"),
+                ((first, "==", second), "cursor lookup is read-only")
+              ], *ackCh)
             }
           }
         }

@@ -185,7 +185,7 @@ impl TestFixture {
         let (runtime_manager, history_repo) = RuntimeManager::create_with_history(
             rspace_store.clone(), // Clone the Arc-wrapped store (cheap operation)
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -297,6 +297,10 @@ impl TestFixture {
             KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(deploy_storage_store);
         let deploy_storage = KeyValueDeployStorage {
             store: deploy_storage_typed_store,
+            envelope_store: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
+            envelope_rejections:
+                block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejectionLog::default(
+                ),
         };
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.

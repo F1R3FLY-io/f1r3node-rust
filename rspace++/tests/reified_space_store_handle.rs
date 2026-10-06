@@ -616,7 +616,7 @@ async fn space_store_handle_parity_sub_orders_distinct_and_flatten_in_sequence()
     assert_parity(&twin).await;
 }
 
-// HEAD's peek path (reduce.rs:776-803, 973-1008): a peek fire removes the
+// HEAD's peek path (reduce.rs:780-807, 977-1012): a peek fire removes the
 // bound records in the host, and the reducer produces them again. The space
 // keeps the stored record of the consume-side peek on `a` (the oracle puts
 // it back into the host without events), and the produce-side peek on `b`
@@ -3762,7 +3762,10 @@ async fn space_store_handle_fire_checks_cost_changed_entries() {
     }
     let (one, many) = (costs[0], costs[1]);
     assert_eq!(one.staging, many.staging, "staging copies: {costs:?}");
-    assert_eq!(one.commit_serializations, many.commit_serializations, "commit serializations: {costs:?}");
+    assert_eq!(
+        one.commit_serializations, many.commit_serializations,
+        "commit serializations: {costs:?}"
+    );
     assert_eq!(
         many.commit_clones - one.commit_clones,
         many.list_read - one.list_read,
@@ -3827,12 +3830,12 @@ fn result_flags(receipt: &SpaceOpReceipt<String, Pat, String, String>) -> Vec<bo
 
 // A name for a peek waiter on `channel` that the host tries before the
 // taking waiter `taking`. The host tries the waiting continuations of a
-// channel group in the order of `deterministic_candidates`
-// (space_matcher.rs): by the Blake2b-256 hash of their bincode bytes.
+// channel group in the canonical candidate order (candidate_order.rs, DR-75):
+// by the hash of their source consume, then by the digest of their bincode
+// bytes only when two source hashes are equal. The two waiters have different
+// continuations, so their source hashes differ.
 fn peek_tried_first(channel: &str, taking: &str) -> String {
-    let order = |waiting: &WaitingContinuation<Pat, String>| {
-        Blake2b256Hash::new(&bincode::serialize(waiting).expect("serialize a waiter"))
-    };
+    let order = |waiting: &WaitingContinuation<Pat, String>| waiting.source.hash.clone();
     let taking = order(&waiter(&[channel], taking, false));
     (0..64)
         .map(|index| format!("peek-{}", index))
@@ -3841,7 +3844,7 @@ fn peek_tried_first(channel: &str, taking: &str) -> String {
 }
 
 // An introduction-authority registry with the rule of
-// accounting/mod.rs:959-976: the first registration of an identity keeps
+// accounting/mod.rs:1041-1063: the first registration of an identity keeps
 // its authority, and a later registration of that identity passes only with
 // an equal authority. The registry records every callback in `recorder`.
 #[derive(Default)]

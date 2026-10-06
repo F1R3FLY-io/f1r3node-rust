@@ -83,7 +83,7 @@ impl RoutingExecution {
                 }),
             )
             .await?;
-        reducer.dispatch_space_outcome(outcome).await?;
+        reducer.dispatch_space_outcome(outcome, None).await?;
         Ok(None)
     }
 }
@@ -230,7 +230,8 @@ mod tests {
             &mut Vec::new(),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .expect("create the rho runtime");
         runtime
             .cost
             .set(Cost::create(i64::MAX, "routing execution test".to_string()));

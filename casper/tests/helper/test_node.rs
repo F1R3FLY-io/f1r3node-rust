@@ -115,7 +115,9 @@ impl TestNode {
         })?;
 
         // Create block using block_creator
-        block_creator::create(
+        block_creator::create_with_approved_genesis(
+            self.casper.get_approved_block()?,
+            self.casper.offered_funded_active,
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
@@ -353,6 +355,23 @@ impl TestNode {
         current[0]
             .propagate_block(deploy_datums, &mut all_others)
             .await
+    }
+
+    /// Makes every node receive the blocks of every other node. `sync_with_one`
+    /// makes its caller the receiver, so each pair is synced in both directions.
+    pub async fn sync_all(nodes: &mut [TestNode]) -> Result<(), CasperError> {
+        for sender_idx in 0..nodes.len() {
+            for receiver_idx in 0..nodes.len() {
+                if sender_idx == receiver_idx {
+                    continue;
+                }
+                let [receiver, sender] = nodes
+                    .get_disjoint_mut([receiver_idx, sender_idx])
+                    .expect("receiver and sender are different nodes");
+                receiver.sync_with_one(sender).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Helper method to propagate a block from one node to another specific node.
@@ -1024,7 +1043,7 @@ impl TestNode {
         let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
         let connections_cell = ConnectionsCell::new();
@@ -1123,7 +1142,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
+            casper_version: genesis.header.version,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,
@@ -1155,6 +1174,11 @@ impl TestNode {
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
+            offered_funded_active: runtime_manager
+                .find_genesis_resource_policy(&genesis.body.state.post_state_hash)
+                .await
+                .expect("test genesis resource policy query must succeed")
+                .is_some_and(|policy| policy.offered_funded_v6_active()),
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),

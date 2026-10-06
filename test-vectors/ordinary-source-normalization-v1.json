@@ -1,5 +1,5 @@
 {
-  "captured_at_revision": "6f7a80da335569c0c4661b7e64c0103465ea2ae9",
+  "captured_at_revision": "4d67b5ccc42c4e510162d075f7ed423bf8175563",
   "entries": {
     "casper/src/main/resources/AuthKey.rho": {
       "outcome": "ok",
@@ -63,14 +63,14 @@
     },
     "casper/src/main/resources/SystemVault.rho": {
       "outcome": "ok",
-      "prost_blake2b256": "61b3b9089c333307ca41e237ff1eab915e2bbb88271a621d399ac365b49db99b",
-      "source_blake2b256": "5767bf0cb35a70c4e776ae0554a42fc17ff219612c91e08fba47bec30c2ece3b",
-      "stable_hash": "348f1dd43feb269b9df220bfdb2dabbe009a65308f24ba205e5fabcd3607a9e8"
+      "prost_blake2b256": "8fad8b5e1f53b503e79af5cef90acdb222ff4d5b579c131098c504b5cc9d4f8a",
+      "source_blake2b256": "e8120f921ac6f649b3bc8cb3963ebe21fee588b8cb940c6b95698d9c74d5b9a8",
+      "stable_hash": "54040f3be764a890804414e4c425d1b6ebd0a17a39ee7ab76c6af720ea19cd8c"
     },
     "casper/src/main/resources/TokenMetadata.rhox": {
       "outcome": "ok",
       "prost_blake2b256": "56c783f1394e83c6a3a59f8a696397ef741d2ee81ad8c0637e8b4acf5a5b7f60",
-      "source_blake2b256": "7a7f3ca311fcfd4d5e51c772e079900a9c25502aabe6bd67ade073922ed8af4c",
+      "source_blake2b256": "42a16b00f8e177abb18d166e2cc91911a0a31abaff1dae61c1c5e8d04aa4a54f",
       "stable_hash": "b35fef75c9428bbaffca6bce31ac72b0f07ee3d145085dcbb2e55e0811712908"
     },
     "casper/src/main/resources/VersionedRegistry.rho": {
@@ -183,9 +183,9 @@
     },
     "casper/src/test/resources/SystemVaultTest.rho": {
       "outcome": "ok",
-      "prost_blake2b256": "f7f00ec75141949ba07b052f3b075a2852677a61c7eb5be3ede0621b5df7b62f",
-      "source_blake2b256": "53c3e959b2e8b4c309ba14ba31aab48aa529656c033259c4c0974ea8afe1e18d",
-      "stable_hash": "90c887f7f1a359137fd00fadeaa93035a87fdfd4a2a2f79492d5248032b56098"
+      "prost_blake2b256": "ef345ba03be95256674dd00eb407721b6f6e8bb0c4a74a73bddf9c0e2f0cb99d",
+      "source_blake2b256": "c9bbf07dc42dc92a23b24673e02cd9189dfe34a7d03e2c8e00e60fa6bf73340e",
+      "stable_hash": "ed94d555df0eba581e1320dfe419372889db44ab737c8d93838ebe737010f138"
     },
     "casper/src/test/resources/TimeoutResultCollectorTest.rho": {
       "outcome": "ok",
@@ -1029,6 +1029,7 @@
   "template_values": [
     "initialBonds={}",
     "posMultiSigPublicKeys=[]",
+    "resourcePolicyGetter=",
     "*=0"
   ]
 }

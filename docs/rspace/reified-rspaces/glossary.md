@@ -38,49 +38,49 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
 | [Datum](#datum) | 1 | [Recognized position](#recognized-position) | 2 |
 | [Deploy](#deploy) | 1 | [Record envelope](#record-envelope) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [Event log](#event-log) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Replay](#replay) | 1 |
-| [Factory](#factory) | 2 | [Reporting](#reporting) | 1 |
-| [Factory capability](#factory-capability) | 2 | [Retention](#retention) | 2 |
-| [FIPS](#fips) | 1 | [Rholang](#rholang) | 1 |
-| [Fire round](#fire-round) | 2 | [Rocq](#rocq) | 1 |
-| [Footprint policy](#footprint-policy) | 2 | [Routing class](#routing-class) | 2 |
-| [Frontend](#frontend) | 1 | [RSpace](#rspace) | 1 |
-| [Gate](#gate) | 2 | [Send](#send) | 1 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Space](#space) | 2 |
-| [Handle](#handle) | 2 | [Space agent](#space-agent) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Space counter](#space-counter) | 2 |
-| [Head record](#head-record) | 2 | [Space family](#space-family) | 2 |
-| [Head waiter](#head-waiter) | 2 | [Space id](#space-id) | 2 |
-| [Head-only matching](#head-only-matching) | 2 | [Space intent](#space-intent) | 2 |
-| [Headline](#headline) | 2 | [Space name](#space-name) | 2 |
-| [History trie](#history-trie) | 1 | [Space reference](#space-reference) | 2 |
-| [Host operation](#host-operation) | 2 | [Space transaction](#space-transaction) | 2 |
-| [Host work](#host-work) | 1 | [Staged view](#staged-view) | 2 |
-| [Hot store](#hot-store) | 1 | [Storage channel](#storage-channel) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Store identity](#store-identity) | 2 |
-| [Inert](#inert) | 2 | [Sub-order](#sub-order) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Sweep](#sweep) | 2 |
-| [Internal operation](#internal-operation) | 2 | [System process](#system-process) | 1 |
-| [Invariant map](#invariant-map) | 2 | [Theory](#theory) | 2 |
-| [Join](#join) | 1 | [Theory identity](#theory-identity) | 2 |
-| [KIND](#kind) | 2 | [Times-repeated](#times-repeated) | 2 |
-| [LFS](#lfs) | 2 | [TLA+](#tla) | 1 |
-| [Lock coverage](#lock-coverage) | 2 | [Trigger event](#trigger-event) | 2 |
-| [Lock stripe](#lock-stripe) | 1 | [Tuple space](#tuple-space) | 1 |
-| [Marker](#marker) | 2 | [Typed reply](#typed-reply) | 2 |
-| [Marker tuple](#marker-tuple) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
-| [Matcher](#matcher) | 2 | [Unpaired fire](#unpaired-fire) | 2 |
-| [Merge](#merge) | 1 | [URN](#urn) | 1 |
-| [Model map](#model-map) | 2 | [Use context](#use-context) | 2 |
-| [Name](#name) | 1 | [User agent-backed space](#user-agent-backed-space) | 2 |
-| [Namespace tag](#namespace-tag) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Native space](#native-space) | 2 | [Volatile channel](#volatile-channel) | 2 |
-| [Negative control](#negative-control) | 2 | [Waiter](#waiter) | 2 |
-| [Op channel](#op-channel) | 2 | [Witness test](#witness-test) | 2 |
-| [Operation order](#operation-order) | 2 | [Write skew](#write-skew) | 2 |
-| [Outcome](#outcome) | 2 |  |  |
+| [Evaluation scope](#evaluation-scope) | 2 | [Reduction participant](#reduction-participant) | 2 |
+| [Event log](#event-log) | 1 | [Regression corpus](#regression-corpus) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Reified RSpace](#reified-rspace) | 2 |
+| [Factory](#factory) | 2 | [Replay](#replay) | 1 |
+| [Factory capability](#factory-capability) | 2 | [Reporting](#reporting) | 1 |
+| [FIPS](#fips) | 1 | [Retention](#retention) | 2 |
+| [Fire round](#fire-round) | 2 | [Rholang](#rholang) | 1 |
+| [Footprint policy](#footprint-policy) | 2 | [Rocq](#rocq) | 1 |
+| [Frontend](#frontend) | 1 | [Routing class](#routing-class) | 2 |
+| [Gate](#gate) | 2 | [RSpace](#rspace) | 1 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Send](#send) | 1 |
+| [Handle](#handle) | 2 | [Space](#space) | 2 |
+| [Handle capability](#handle-capability) | 2 | [Space agent](#space-agent) | 2 |
+| [Head record](#head-record) | 2 | [Space counter](#space-counter) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space family](#space-family) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space id](#space-id) | 2 |
+| [Headline](#headline) | 2 | [Space intent](#space-intent) | 2 |
+| [History trie](#history-trie) | 1 | [Space name](#space-name) | 2 |
+| [Host operation](#host-operation) | 2 | [Space reference](#space-reference) | 2 |
+| [Host work](#host-work) | 1 | [Space transaction](#space-transaction) | 2 |
+| [Hot store](#hot-store) | 1 | [Staged view](#staged-view) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Storage channel](#storage-channel) | 2 |
+| [Inert](#inert) | 2 | [Store identity](#store-identity) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Sub-order](#sub-order) | 2 |
+| [Internal operation](#internal-operation) | 2 | [Sweep](#sweep) | 2 |
+| [Invariant map](#invariant-map) | 2 | [System process](#system-process) | 1 |
+| [Join](#join) | 1 | [Theory](#theory) | 2 |
+| [KIND](#kind) | 2 | [Theory identity](#theory-identity) | 2 |
+| [LFS](#lfs) | 2 | [Times-repeated](#times-repeated) | 2 |
+| [Lock coverage](#lock-coverage) | 2 | [TLA+](#tla) | 1 |
+| [Lock stripe](#lock-stripe) | 1 | [Trigger event](#trigger-event) | 2 |
+| [Marker](#marker) | 2 | [Tuple space](#tuple-space) | 1 |
+| [Marker tuple](#marker-tuple) | 2 | [Typed reply](#typed-reply) | 2 |
+| [Matcher](#matcher) | 2 | [Unforgeable name](#unforgeable-name) | 1 |
+| [Merge](#merge) | 1 | [Unpaired fire](#unpaired-fire) | 2 |
+| [Model map](#model-map) | 2 | [URN](#urn) | 1 |
+| [Name](#name) | 1 | [Use context](#use-context) | 2 |
+| [Namespace tag](#namespace-tag) | 2 | [User agent-backed space](#user-agent-backed-space) | 2 |
+| [Native space](#native-space) | 2 | [Verification recipe](#verification-recipe) | 2 |
+| [Negative control](#negative-control) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Op channel](#op-channel) | 2 | [Waiter](#waiter) | 2 |
+| [Operation order](#operation-order) | 2 | [Witness test](#witness-test) | 2 |
+| [Outcome](#outcome) | 2 | [Write skew](#write-skew) | 2 |
 
 ## Part 1: background terms
 
@@ -861,11 +861,24 @@ The times-repeated map of a COMM event records the value of $`\kappa(p)`$ at the
 In play, the counter of a non-persistent produce that fires already counts that produce.
 Replay accepts a stored non-persistent datum for a recorded COMM event only when the counter of the datum equals the recorded value.
 
+### Reduction participant
+
+A reduction participant is one sequential strand of the evaluation of a deploy in the deterministic scheduler.
+It makes its operations one after another, and it numbers them with its steps $`0, 1, 2, \ldots`$.
+A split replaces a participant with one child participant for each parallel branch.
+
+The reducer of `feature/cost-accounted-rho`, which the campaign merged at `4d67b5ccc`, evaluates a fired body in a detached task.
+So a dispatch splits one child from the participant that makes it, and the child runs the body.
+After the dispatch, that participant makes no operation, so work that follows a space operation runs in a branch of its own ([design N6](design.md#n6-scheduling)).
+
 ### Operation order
 
 The operation order is the ordering key that the deterministic scheduler gives to each RSpace operation.
-It is a pair of a session id and a path, which is a list of pairs $`(n, t)`$ with a tag $`t`$.
-The scheduler uses the tag 0 for an operation step and for a branch index, and the tag 1 for a split into parallel branches.
+It is a pair of a session id and a path, which is a list of segments $`(n, t)`$.
+An operation of a [reduction participant](#reduction-participant) appends the segment $`(k, 0)`$, where $`k`$ is the next step of the participant.
+Since the merge of `4d67b5ccc`, child $`c`$ of a split at step $`k`$ appends the one segment $`(k, c + 1)`$ (DR-84 of `feature/cost-accounted-rho`).
+Before the merge, a split appended the two segments $`(k, 1)`$ and $`(c, 0)`$.
+
 Orders compare by session id first, and then lexicographically by path.
 Play and replay give each operation the same order, and RSpace logs the events of a deploy in groups sorted by order.
 
@@ -873,7 +886,9 @@ Play and replay give each operation the same order, and RSpace logs the events o
 
 A sub-order is the ordering key of one operation inside a space transaction ([decision 19](decision-register.md#decision-19)).
 Operation $`i`$ of a transaction that commits under the [operation order](#operation-order) $`\mathit{parent}`$ runs under $`\mathit{parent} \mathbin{+\!\!+} [(i, 2)]`$.
-The value 2 is `SUB_OPERATION_TAG`, which the scheduler never uses, so no scheduler order equals a sub-order.
+The value 2 is `SUB_OPERATION_TAG`.
+A scheduler order ends with an operation segment $`(k, 0)`$, and a sub-order ends with $`(i, 2)`$, so no scheduler order equals a sub-order.
+A split segment can have the second component 2, so the argument uses the final segment ([Rocq headline H8](verification.md#42-headlines-of-eventcorrelationv)).
 Native phlo recording rejects two operations under one order, so each operation needs its own sub-order.
 
 ### Space intent
@@ -1080,7 +1095,9 @@ The file `scripts/verify-reified/consensus-checklist.json` binds each item to th
 ### Footprint policy
 
 A footprint policy lists the files that a phase must not change and the exact edits that it may make.
-The checker `check-footprint.py` compares each file with its SHA-256 digest at the base revision `6f7a80da3`, the commit that the campaign starts from.
+The checker `check-footprint.py` compares each file with its SHA-256 digest at the base revision.
+The base revision is `4d67b5ccc`, the tip of `feature/cost-accounted-rho` that the campaign merged on 2026-10-05.
+Before the merge, it was `6f7a80da3`, the commit that the campaign starts from.
 So the check needs no git history, and it also runs in the sandbox of pgmcp.
 
 ### Regression corpus

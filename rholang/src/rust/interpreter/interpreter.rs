@@ -438,7 +438,9 @@ impl InterpreterImpl {
         mergeable: HashMap<Par, MergeType>,
         evidence: Option<NativeReplayAccountingSnapshot>,
     ) -> Result<EvaluateResult, InterpreterError> {
-        self.c.reserve_native_result_backing()?;
+        // Changed by D-O4 (DR-89): rows are copied only without evidence.
+        // self.c.reserve_native_result_backing()?;
+        self.c.reserve_native_result_backing(evidence.is_none())?;
         let (
             byte_observations,
             native_phlo_usage,

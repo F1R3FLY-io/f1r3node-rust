@@ -70,6 +70,7 @@ fn replay_fixture(budget: HostWorkBudget) -> NativeOperationReplay {
         attempts: attempts.into(),
         retries: Arc::from([]),
         used: 9,
+        paths: fixture_paths(),
     };
     let log = events(&rows);
     bind(&recording, rows.into(), log)
@@ -90,7 +91,7 @@ fn reserve_slot(
     operation_context::scope(
         OperationOrder {
             session: row.occurrence.session,
-            path: row.occurrence.path.to_vec().into(),
+            path: CausalPath::from(fixture_paths().segments(row.occurrence.path)),
         },
         async {
             replay.reserve_current(match &source {
@@ -209,6 +210,7 @@ fn single_footprint_fixture(footprint: Vec<Arc<[u8]>>) -> NativeOperationReplay 
         }]),
         retries: Arc::from([]),
         used: 1,
+        paths: fixture_paths(),
     };
     let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
     row.footprint = footprint.into();
@@ -648,6 +650,7 @@ fn empty_replay_is_complete_and_supports_root_checkpoint() {
         attempts: Arc::from([]),
         retries: Arc::from([]),
         used: 0,
+        paths: fixture_paths(),
     };
     let replay = bind(&recording, Arc::from([]), Vec::new())
         .unwrap()

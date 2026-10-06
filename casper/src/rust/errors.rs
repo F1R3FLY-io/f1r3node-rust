@@ -1,8 +1,10 @@
 use std::fmt;
 
 use comm::rust::errors::CommError;
+use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::deploy_id::DeployIdV6;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
@@ -45,7 +47,19 @@ pub enum CasperError {
     /// (`FloorOfView::IncompatibilityHold`). Typed so that regime split is a
     /// match, not a string search. Carries the full preformatted detail.
     IncompatibleFinalizedFork(String),
+    /// An offered-funded candidate failed before publication for a reason
+    /// that belongs to the candidate (envelope, funding, metering, settlement,
+    /// or producer self-replay). The proposer removes it from the pending pool
+    /// and tries the next candidate. It is never a verdict about a block.
+    OfferedCandidateRejected(OfferedCandidateRejection),
     Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferedCandidateRejection {
+    pub deploy_id: DeployIdV6,
+    pub pre_state_root: StateHash,
+    pub reason: String,
 }
 
 impl fmt::Display for CasperError {
@@ -72,6 +86,13 @@ impl fmt::Display for CasperError {
             // violation: ... — incompatible finalized fork"), and harness
             // forbidden-log patterns key on that text — print it verbatim.
             CasperError::IncompatibleFinalizedFork(detail) => write!(f, "{}", detail),
+            CasperError::OfferedCandidateRejected(rejection) => write!(
+                f,
+                "Offered candidate rejected: deploy={} pre_state_root={} reason={}",
+                hex::encode(rejection.deploy_id.as_array()),
+                hex::encode(&rejection.pre_state_root),
+                rejection.reason
+            ),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }

@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -52,15 +51,13 @@ use super::accounting::costs::{
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
-    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
-    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
-    var_eval_cost,
+    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost,
+    equality_check_cost_legacy, list_append_cost, method_call_cost, modulo_cost,
+    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+    string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
-use super::deterministic_reduction::{
-    self, DeterministicRSpace, ParticipantGuard, ReductionCoordinator, ScopedJoinHandle,
-};
+use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -262,12 +259,17 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: deterministic_reduction::root(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                self.eval_inner(par, env, rand, CostAuthority::default()),
-            ),
+            inner: async move {
+                let (result, _, errors) = deterministic_reduction::root_with_observation(
+                    self.space.clone(),
+                    self.metering.budget(),
+                    self.reduction_coordinator.clone(),
+                    None,
+                    self.eval_inner(par, env, rand, CostAuthority::default()),
+                )
+                .await;
+                self.finish_detached_errors(result, errors)
+            },
         })
     }
 
@@ -283,13 +285,17 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: deterministic_reduction::root_with_host_work(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                Some(host_work),
-                self.eval_inner(par, env, rand, CostAuthority::default()),
-            ),
+            inner: async move {
+                let (result, _, errors) = deterministic_reduction::root_with_observation(
+                    self.space.clone(),
+                    self.metering.budget(),
+                    self.reduction_coordinator.clone(),
+                    Some(host_work),
+                    self.eval_inner(par, env, rand, CostAuthority::default()),
+                )
+                .await;
+                self.finish_detached_errors(result, errors)
+            },
         })
     }
 
@@ -305,13 +311,50 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: deterministic_reduction::root(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                self.eval_inner(par, env, rand, authority),
-            ),
+            inner: async move {
+                let (result, _, errors) = deterministic_reduction::root_with_observation(
+                    self.space.clone(),
+                    self.metering.budget(),
+                    self.reduction_coordinator.clone(),
+                    None,
+                    self.eval_inner(par, env, rand, authority),
+                )
+                .await;
+                self.finish_detached_errors(result, errors)
+            },
         })
+    }
+
+    pub(crate) async fn eval_continuation(
+        self: &Arc<Self>,
+        par: Par,
+        env: Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        if deterministic_reduction::current().is_none() {
+            return self.eval(par, &env, rand).await;
+        }
+        let reducer = self.clone();
+        deterministic_reduction::spawn_detached(async move {
+            reducer
+                .eval_inner(par, &env, rand, CostAuthority::default())
+                .await
+        });
+        Ok(())
+    }
+
+    fn finish_detached_errors(
+        &self,
+        result: Result<(), InterpreterError>,
+        mut errors: Vec<InterpreterError>,
+    ) -> Result<(), InterpreterError> {
+        if errors.is_empty() {
+            return result;
+        }
+        if let Err(error) = result {
+            errors.insert(0, error);
+        }
+        self.aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     async fn eval_inner(
@@ -403,54 +446,13 @@ impl ReducerCore {
 
             self.spawned_eval_tasks
                 .fetch_add(futures.len() as u64, Ordering::Relaxed);
-            let join_start = std::time::Instant::now();
-            let mut unordered = FuturesUnordered::new();
             let parent_context = deterministic_reduction::current()
                 .expect("parallel evaluation requires a reduction context");
             let child_contexts = parent_context.split(futures.len());
-            for ((index, fut), child_context) in futures.into_iter().enumerate().zip(child_contexts)
-            {
-                // Spawn each branch as its own task. This preserves actual runtime
-                // parallelism and gives deeply recursive branches an independent
-                // task stack while still reporting errors in source order below.
-                let guard = ParticipantGuard::for_context(&child_context);
-                let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
-                    child_context,
-                    async move {
-                        let _guard = guard;
-                        fut.await
-                    },
-                )));
-                unordered.push(async move { (index, handle.await) });
+            for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+                deterministic_reduction::spawn_detached_in_context(child_context, fut);
             }
-
-            let mut flattened_results: Vec<(usize, InterpreterError)> = Vec::new();
-            while let Some((index, joined)) = unordered.next().await {
-                match joined {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => flattened_results.push((index, err)),
-                    Err(join_error) => flattened_results.push((
-                        index,
-                        InterpreterError::ReduceError(format!(
-                            "parallel eval task failed: {join_error}"
-                        )),
-                    )),
-                }
-            }
-            parent_context.rejoin();
-            metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
-                .increment(join_start.elapsed().as_nanos() as u64);
-
-            flattened_results.sort_by_key(|(index, _)| *index);
-            let stable_errors = flattened_results
-                .into_iter()
-                .map(|(_, err)| err)
-                .collect::<Vec<_>>();
-
-            match self.aggregate_evaluator_errors(stable_errors) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
+            Ok(())
         }
     }
 
@@ -470,7 +472,7 @@ impl ReducerCore {
     ) {
         let env = Env::new();
         self.reified.begin_evaluation_scope();
-        StackGrowingFuture {
+        let (result, summary, errors) = StackGrowingFuture {
             inner: deterministic_reduction::root_with_observation(
                 self.space.clone(),
                 self.metering.budget(),
@@ -489,7 +491,8 @@ impl ReducerCore {
                 },
             ),
         }
-        .await
+        .await;
+        (self.finish_detached_errors(result, errors), summary)
     }
 
     pub async fn inj_with_host_work(
@@ -498,6 +501,7 @@ impl ReducerCore {
         rand: Blake2b512Random,
         host_work: HostWorkBudget,
     ) -> Result<(), InterpreterError> {
+        self.reified.begin_evaluation_scope();
         self.eval_with_host_work(par, &Env::new(), rand, host_work)
             .await
     }
@@ -1023,42 +1027,15 @@ impl ReducerCore {
             >,
         >,
     ) -> Result<DispatchType, InterpreterError> {
-        let mut unordered = FuturesUnordered::new();
         let parent_context = deterministic_reduction::current()
             .expect("parallel dispatch requires a reduction context");
         let child_contexts = parent_context.split(futures.len());
-        for ((index, fut), child_context) in futures.into_iter().enumerate().zip(child_contexts) {
-            // Persistent/peek continuations must progress independently; spawning
-            // preserves parallel execution and isolates deep recursive branches.
-            let guard = ParticipantGuard::for_context(&child_context);
-            let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
-                child_context,
-                async move {
-                    let _guard = guard;
-                    fut.await
-                },
-            )));
-            unordered.push(async move { (index, handle.await) });
+        for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+            deterministic_reduction::spawn_detached_in_context(child_context, async move {
+                fut.await.map(|_| ())
+            });
         }
-
-        let mut errors = Vec::new();
-        while let Some((index, joined)) = unordered.next().await {
-            match joined {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => errors.push((index, err)),
-                Err(join_error) => errors.push((
-                    index,
-                    InterpreterError::ReduceError(format!(
-                        "parallel dispatch task failed: {join_error}"
-                    )),
-                )),
-            }
-        }
-        parent_context.rejoin();
-
-        errors.sort_by_key(|(index, _)| *index);
-        let stable_errors = errors.into_iter().map(|(_, err)| err).collect();
-        self.aggregate_evaluator_errors(stable_errors)
+        Ok(DispatchType::Skip)
     }
 
     /* Collect mergeable channels */
@@ -1082,6 +1059,10 @@ impl ReducerCore {
         });
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
+
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
 
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
@@ -1994,6 +1975,16 @@ impl ReducerCore {
     }
 
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || {
+            self.eval_expr_to_expr_inner(expr, env)
+        })
+    }
+
+    fn eval_expr_to_expr_inner(
+        &self,
+        expr: &Expr,
+        env: &Env<Par>,
+    ) -> Result<Expr, InterpreterError> {
         if matches!(
             expr.expr_instance.as_ref(),
             Some(
@@ -2078,6 +2069,24 @@ impl ReducerCore {
                     }
                 }
 
+                (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    let f1 = f32::from_bits(d1);
+                    let f2 = f32::from_bits(d2);
+                    if f1.is_nan() || f2.is_nan() {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(false)),
+                        })
+                    } else {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(relopi(
+                                f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                                0,
+                            ))),
+                        })
+                    }
+                }
+
                 (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                     self.metering
                         .reserve_primitive(bigint_comparison_cost(b1.len(), b2.len()))?;
@@ -2144,6 +2153,10 @@ impl ReducerCore {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
                 }),
 
+                ExprInstance::GFloat32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(*x)),
+                }),
+
                 ExprInstance::GBigInt(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GBigInt(x.clone())),
                 }),
@@ -2180,6 +2193,12 @@ impl ReducerCore {
                             let f = f64::from_bits(bits);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
+                            })
+                        }
+                        ExprInstance::GFloat32(bits) => {
+                            let f = f32::from_bits(bits);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32((-f).to_bits())),
                             })
                         }
                         ExprInstance::GBigInt(bytes) => {
@@ -2238,6 +2257,13 @@ impl ReducerCore {
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(multiplication_cost())?;
+                            let result = f32::from_bits(d1) * f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -2318,6 +2344,13 @@ impl ReducerCore {
                             let result = f64::from_bits(d1) / f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(division_cost())?;
+                            let result = f32::from_bits(d1) / f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -2403,7 +2436,8 @@ impl ReducerCore {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
+                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
                             ))
@@ -2500,6 +2534,14 @@ impl ReducerCore {
                             })
                         }
 
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(sum_cost())?;
+                            let result = f32::from_bits(d1) + f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
+                            })
+                        }
+
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                             self.metering
                                 .reserve_primitive(bigint_sum_cost(b1.len(), b2.len()))?;
@@ -2555,6 +2597,7 @@ impl ReducerCore {
 
                         (ExprInstance::GInt(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2589,6 +2632,14 @@ impl ReducerCore {
                             let result = f64::from_bits(d1) - f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.metering.reserve_primitive(subtraction_cost())?;
+                            let result = f32::from_bits(d1) - f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -2666,6 +2717,7 @@ impl ReducerCore {
 
                         (ExprInstance::GInt(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2721,8 +2773,12 @@ impl ReducerCore {
                     // TODO: build an equality operator that takes in an environment. - OLD
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.metering
-                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
+                    let cost = if self.metering.budget().is_legacy() {
+                        equality_check_cost_legacy(&sv1, &sv2)
+                    } else {
+                        equality_check_cost(&sv1, &sv2)
+                    };
+                    self.metering.reserve_primitive(cost)?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         false
@@ -2739,8 +2795,12 @@ impl ReducerCore {
                     let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.metering
-                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
+                    let cost = if self.metering.budget().is_legacy() {
+                        equality_check_cost_legacy(&sv1, &sv2)
+                    } else {
+                        equality_check_cost(&sv1, &sv2)
+                    };
+                    self.metering.reserve_primitive(cost)?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         true
@@ -7837,6 +7897,7 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
         ExprInstance::GDouble(_) => String::from("float"),
+        ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),
         ExprInstance::GFixedPoint(_) => String::from("fixedpoint"),
@@ -7887,6 +7948,7 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 fn par_contains_nan_double(par: &Par) -> bool {
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(ExprInstance::GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
@@ -8149,3 +8211,70 @@ mod economic_failure_tests;
 #[cfg(test)]
 #[path = "reduce_byte_receipts_tests.rs"]
 mod byte_receipts_tests;
+#[cfg(test)]
+mod is_mergeable_channel_tests {
+    use models::rhoapi::{ETuple, Expr};
+    use models::rust::utils::new_gstring_par;
+
+    use super::*;
+    use crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name;
+    use crate::rust::interpreter::test_utils::resources::with_runtime;
+
+    fn tuple(ps: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps,
+                locally_free: vec![],
+                connective_used: false,
+            })),
+        }])
+    }
+
+    async fn merge_type(chan: Par) -> Option<MergeType> {
+        with_runtime("is-mergeable-channel-", |runtime| async move {
+            runtime.reducer.is_mergeable_channel(&chan)
+        })
+        .await
+    }
+
+    fn other() -> Par { new_gstring_par("x".to_string(), vec![], false) }
+
+    #[tokio::test]
+    async fn a_channel_that_is_not_a_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(bitmask_or_mergeable_tag_name()).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_empty_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_with_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_without_a_tag_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![other()])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_tuple_whose_head_is_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name(), other()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_after_the_head_is_not_matched() {
+        assert_eq!(
+            merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
+            None
+        );
+    }
+}

@@ -1,6 +1,6 @@
 {
-  "digests": "test-vectors/head-file-digests-6f7a80da3.json",
-  "base_revision": "6f7a80da335569c0c4661b7e64c0103465ea2ae9",
+  "digests": "test-vectors/head-file-digests-4d67b5ccc.json",
+  "base_revision": "4d67b5ccc42c4e510162d075f7ed423bf8175563",
   "pinned_roots": [
     "."
   ],
@@ -543,7 +543,7 @@
           "added_line_counts": [
             [
               "        self.reified.begin_evaluation_scope();",
-              2
+              3
             ]
           ],
           "replaced_lines": [
@@ -587,7 +587,7 @@
             "            Self::Space(order, _) => order,",
             "            Self::Space(_, delivery) => delivery.deliver(),",
             "            Intent::Space(space) => space.extend_footprint(&mut footprint, &self.budget),",
-            "            Intent::Space(space) => space.execute(order).await,"
+            "            Intent::Space(space) => space.execute(self, order).await,"
           ]
         },
         {
@@ -1093,6 +1093,8 @@
         "docs/rspace/reified-rspaces/README.md",
         "docs/rspace/reified-rspaces/agent-api.md",
         "docs/rspace/reified-rspaces/decision-register.md",
+        "docs/rspace/reified-rspaces/design-record/2026-08-15-design-ledger.md",
+        "docs/rspace/reified-rspaces/design-record/README.md",
         "docs/rspace/reified-rspaces/design.md",
         "docs/rspace/reified-rspaces/diagrams/01-substrate-components.puml",
         "docs/rspace/reified-rspaces/diagrams/01-substrate-components.svg",
@@ -1369,11 +1371,13 @@
         "scripts/verify-reified/tests/test_closure.py",
         "scripts/verify-reified/tests/test_doc_lint.py",
         "scripts/verify-reified/tlc-expect-violation.sh",
+        "test-vectors/head-file-digests-4d67b5ccc.json",
         "test-vectors/head-file-digests-6f7a80da3.json",
         "test-vectors/legacy-golden-corpus-v1.json",
         "test-vectors/ordinary-execution-v1.json",
         "test-vectors/ordinary-float-forms-v1.json",
         "test-vectors/ordinary-source-normalization-v1.json",
+        "test-vectors/protobuf-schema-head-4d67b5ccc.json",
         "test-vectors/protobuf-schema-head-6f7a80da3.json",
         "test-vectors/reified-syntax-corpus-v1.json"
       ]

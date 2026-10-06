@@ -59,7 +59,7 @@
    ─────────────────────────────────────────────────────────────────────────
    - fits w d is the metered match of the payload of d against the pattern
      of w followed by the guard of w (SpaceMatcher::matches,
-     spaces/matching.rs:68-81). The model takes it as a section variable:
+     spaces/matching.rs:69-82). The model takes it as a section variable:
      every theorem holds for every matcher.
    - The bincode bytes of an entry give a strict total order on distinct
      entries. The model writes rank for the position of those bytes in that

@@ -197,6 +197,7 @@ pub struct CheckedPhloExecution<'a> {
     fresh_usage: u64,
     acquisition_charge: u64,
     retained_acquisitions: &'a [PhloResourceAmount<'a>],
+    retained_usage: u64,
     retained_acquisition_value: u64,
     limits: PhloExecutionLimits,
 }
@@ -225,6 +226,8 @@ impl<'a> CheckedPhloExecution<'a> {
     pub fn prepaid_usage(self) -> u64 { self.prepaid_usage }
 
     pub fn fresh_usage(self) -> u64 { self.fresh_usage }
+
+    pub fn retained_usage(self) -> u64 { self.retained_usage }
 
     pub fn retained_acquisitions(self) -> &'a [PhloResourceAmount<'a>] {
         self.retained_acquisitions
@@ -567,6 +570,7 @@ fn check_execution_resources<'a>(
         fresh_usage,
         acquisition_charge,
         retained_acquisitions: &[],
+        retained_usage: 0,
         retained_acquisition_value: 0,
         limits,
     })

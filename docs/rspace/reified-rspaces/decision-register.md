@@ -15,14 +15,14 @@ Where this register and the ledger differ, this register applies.
 - Read the statement for the decision itself, and the reason for its rationale.
 
 The plan quotes the words of the user for some decisions, and the entries keep these words in double quotes.
-Decisions 19 to 39 override the earlier plan sections where they conflict.
+Decisions 19 to 44 override the earlier plan sections where they conflict.
 The minimal-footprint revision (M-1 to M-5) overrides the target architecture of the plan where they conflict.
 
 ## Terms used in this register
 
 - **Plan:** the realignment and completion plan [[PLAN](#ref-plan)].
 - **Ledger:** the design ledger of 2026-08-15 in the [design record](design-record/2026-08-15-design-ledger.md). It is history, not a specification.
-- **Baseline:** the commit `e748426` before the campaign changes. The plan calls it HEAD.
+- **Baseline:** the node code without the campaign changes. The plan calls it HEAD. It was the commit `e748426` until the merge of [decision 44](#decision-44), and it is the commit `4d67b5ccc` since that merge.
 - **Codex:** the earlier agent session that ran the campaign from 2026-10-01 to 2026-10-03 and diverged from the design.
 - **Phase:** one of the plan steps P0 to P12. The [README](README.md#campaign-phases) lists them.
 - **pgmcp:** the service that indexes the workspace and holds the tracker of the campaign.
@@ -86,6 +86,11 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 37](#decision-37) | Receive selection follows the F1r3lang rule from the F1r3lang merge on | 2026-10-05 | In force. Implemented in P12 |
 | [Decision 38](#decision-38) | Priority-queue waiters wait in one queue per level | 2026-10-05 | In force |
 | [Decision 39](#decision-39) | P5 design choices F1 to F17 and F20, without F21 | 2026-10-05 | In force, vetoable value of F9 |
+| [Decision 40](#decision-40) | Space charging follows the cost-accounted-rho policy | 2026-10-05 | In force. Applied in P5 |
+| [Decision 41](#decision-41) | Bag and set spaces order candidates by source hash | 2026-10-05 | In force. Applied in P5a |
+| [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implementation pending |
+| [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implementation pending |
+| [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -549,7 +554,7 @@ These decisions override the earlier plan sections where they conflict.
 - D1: The volatile sweep runs at the end of `ReducerCore::inj_with_observation` and `ReducerCore::inj` (`reduce.rs`), in P7. Every play, replay, reporting, and native-replay path passes there, under the evaluation guard.
 - D2: `SpaceStoreHandle` is a struct over `Arc<dyn SpaceTxnHost<C, P, A, K>>`. `SpaceTxn` takes whole operations with an explicit outcome (`ProduceOutcome::{Store, Fire}`, `ConsumeOutcome::{Park, Fire}`) and `commit`.
   `SpaceTxn` has no raw `put`, `remove`, or `log` methods and no `replay()`. The traits are generic over `C, P, A, K`, because rspace++ cannot name `Par`.
-- D3: Each operation of a transaction runs under its own sub-order $`\mathit{parent} \mathbin{+\!\!+} [(i, 2)]`$, where 2 is `SUB_OPERATION_TAG`. Native phlo recording rejects two operations under one order (`accounting/native_runtime/operations.rs:212`).
+- D3: Each operation of a transaction runs under its own sub-order $`\mathit{parent} \mathbin{+\!\!+} [(i, 2)]`$, where 2 is `SUB_OPERATION_TAG`. Native phlo recording rejects two operations under one order (`accounting/native_runtime/operations.rs:265`).
 - D4: A native replay directive fails the space operation closed (`NativeReplayDirectiveUnsupported`).
 - D5: `root_leaf_record_count` counts the records in the outer frame of the leaf (`get_data_proj_binary`). No history module changes.
 - D6: Commit is prefix-atomic. If the observer rejects operation $`i`$, the operations before $`i`$ stay applied, as in the equivalent host program. The deploy fails, and the soft-checkpoint revert removes them.
@@ -845,7 +850,7 @@ A join into an ordered collection needs an envelope with several `ord` values an
 
 **Reason.** With a peek waiter at the head of a queue, a stored copy of the datum can match the next waiter.
 That pending match breaks the no-pending-match invariant of the space.
-The re-offer equals the re-produce of the baseline reducer (`reduce.rs:977-1012`), so the events and the observer calls stay equal to those of the host.
+The re-offer equals the re-produce of the baseline reducer (`reduce.rs:981-1016`), so the events and the observer calls stay equal to those of the host.
 
 ### <a id="decision-31"></a>Decision 31: Every operation on an ordered collection bumps its counter
 
@@ -885,13 +890,13 @@ With a counter step on every operation, both cases race on the counters, and mer
 **Statement.** The user approved four changes of the plan text, items A5, A6, A7, and A21 of the P4 design.
 
 - A5: `canonical_inner_channel_bytes` is the bincode of the sorted Par, which is the preimage of the store identity. Protocol Buffers encodes `locally_free`, so prost bytes would split one store channel into two keys.
-- A6: `HANDLE_OP` is bound to the URN `rho:reified:internal:handleOp`. The baseline binds every system definition to a URN (`rho_runtime.rs:1574-1580`), and `registry_lookup` serves any key.
+- A6: `HANDLE_OP` is bound to the URN `rho:reified:internal:handleOp`. The baseline binds every system definition to a URN (`rho_runtime.rs:1578-1584`), and `registry_lookup` serves any key.
 - A6, continued: the operation accepts a call only with the unforgeable `this`. It must be a `GPrivate` of exactly 34 bytes with KIND H or h, and its config record `C(sid)` must exist.
 - A6, continued: this replaces the `GByteArray(sid)` forwarder of I-2, which would leak the capability through `config` and `toByteArray`.
 - A7: P2 implements the send hook as the same-signature swap of `self.produce(` for `self.reified_produce(`. The function `reified_produce` splits the trailing params first, and it fails closed as decision 22 says.
 - A7, continued: the H2 arm is one line without a guard, of at most 100 columns, for example `eval_marker`. The reason is that H1 admits only marker tuples into process position.
 - A21: a persistent send (`!!`) to a two-byte `0xE0` operation channel, or to an H or h handle, aborts the deploy. The two-byte channels are the factories, `getSpaceAgent`, `assertEqual`, `vector`, and the internal operations.
-- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:713-779`, `1014-1062`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
+- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:717-783`, `1018-1039`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
 
 **User's words.** "Approve all four (Recommended)"
 
@@ -1030,7 +1035,7 @@ An unpaired fire never logs, removes, or unbinds anything, so each recorded COMM
 **Statement.**
 
 - **Timing.** The rule below is the target semantics of spaces. The register records it now, and the pgmcp leaf `rrs-f1r3lang-space-where-semantics` holds the notes. The campaign implements it only after F1r3lang is finalized and becomes the frontend of F1r3node, in P12, which waits for SIG-F.
-- **Until then**, space receives use the current guard rule of this tree, as the host does. A consume takes the first spatial match of each bind and checks the guard once, and a refusal parks the waiter (`ops_consume.rs:111-153`). On the produce side, a guard refusal moves to the next waiter (`space_matcher.rs:178-185`). Head-only disciplines test only the head, so both rules agree for the queue, the stack, and the priority queue.
+- **Until then**, space receives use the current guard rule of this tree, as the host does. A consume takes the first spatial match of each bind and checks the guard once, and a refusal parks the waiter (`ops_consume.rs:111-153`). On the produce side, a guard refusal moves to the next waiter (`space_matcher.rs:193-200`). Head-only disciplines test only the head, so both rules agree for the queue, the stack, and the priority queue.
 - **The set discipline under the current rule** (readiness review S3, option (a)). A guarded waiter can park while a stored member passes its guard. A later send of an equal member then fires the waiter with the incoming member. The agent then retires the stored members of that class with single-channel `K_retire` COMMs, so the class leaves the set. Only a `where` guard reaches this case. Under the rule of F1r3lang it cannot arise, because the consume selects the passing member.
 - **The target rule (notes for P12).** F1r3lang records the guard rule of the host as its defect D1, and it fixes the rule. In the fixed rule, a `where` guard takes part in candidate selection, and a guard failure counts as a pattern non-match. A receive fires with the lexicographically least selection whose data match spatially and pass the guard, over the canonical candidate order. The repository `f1r3node-rust-f1r3lang` implements this search in lines 380 to 470 of `rspace++/src/rspace/space_matcher.rs`.
 - At P12, spaces adopt the rule in their own agents, with no host change. Single-bind receives take the first candidate, in discipline order, that matches and passes the guard. Head-only disciplines test only the head, so a head that fails the guard blocks ([decision 11](#decision-11)). Joins use the complete search of F1r3lang, with its second repair. In that repair, a spatial dead end at a later bind backtracks to the next datum of an earlier bind. The `K_retire` step of the set then becomes unreachable for single-bind receives.
@@ -1088,7 +1093,7 @@ A waiter queue for each level gives each queue one head, and the order rule deci
 - F8: a forged channel in an Array or Vector space aborts with `NotAnIndexName`.
 - F9: the PathMap depth cap is 64, with the abort `PathTooDeep`. The value is vetoable.
 - F10: at the round cap, the original operation is re-issued, as in P4.
-- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:1664` gains `.await`.
+- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:1645` gains `.await`.
 - F12: the tracker leaf `rrs-spaces-determinism-collision-ties` completes in P6.
 - F13: the legacy Rocq modules get the dispositions that the P5 design report lists, with the changes of its readiness review. The port drops the axiom `FunctionalExtensionality`.
 - F14: two set waiters are equal only when they are byte-identical.
@@ -1103,6 +1108,112 @@ A waiter queue for each level gives each queue one head, and the order rule deci
 **Reason.** The P5 design pass found these choices where the plan and the FIPS leave details open, or where the plan does not fit the code.
 The readiness review corrected the design, and it recommended each approved choice, some of them with changes.
 A receive has one peek flag for all its binds, so no program can make mixed peeks, and F21 is not needed (readiness review S5).
+
+### <a id="decision-40"></a>Decision 40: Space charging follows the cost-accounted-rho policy
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. P5 applies it. |
+| Supersedes | The phrase "per-operation candidate-scan caps" of the plan sections "Bounded work" and I-12, and the matching words of [decision 34](#decision-34) |
+| Related | [Decision 41](#decision-41), [decision 42](#decision-42), [I-12](#i-12), [I-21](#i-21), [M-3](#m-3) |
+
+**Statement.**
+
+- **Scans: no structural candidate-scan cap.** As in DR-88 of `feature/cost-accounted-rho`, an agent reserves every read and copy before it makes it. It reserves on the host-work budget of the deploy.
+- It reserves through the metered matcher (`get_metered`, `check_commit_metered`) and the reservation helpers of `shared/src/rust/clone_backing.rs`.
+- The dimensions map as on that branch: operations to VerificationOperations, scanned bytes to VerificationBytes, and backing bytes to SearchStateBytes.
+- Nothing is inspected up front. A budget that runs out gives the deterministic error `HostWorkRejected`.
+- `FIRE_ROUND_CAP` of [I-21](#i-21) stays, because it bounds the size of a transaction, not a scan.
+- **PathMap delivery: the vehicle carries the payload.** The delivery record that is never stored is `[envelope(MARKER, src(d)), EList(p∖q), payload…]`, so its introduction bytes cover the payload, as the equivalent host produce does. Stored markers stay short.
+- The campaign does not edit the accounting module ([M-3](#m-3)). In this tree the host-work budget is `None` in `inj_attempt`. So these charges bound nothing in production until the cost-accounting work activates the budget, as for host operations.
+
+**User's words.** On the scan cap: "Use the policy of the latest feature/cost-accounted-rho branch changes (see: ~/Workspace/f1r3fly.io/f1r3node-rust/)". On the cost of a PathMap delivery: "Use the policy of the latest feature/cost-accounted-rho branch changes".
+
+**Reason.** One charging policy for host operations and space operations keeps the cost of a space operation equal to the cost of its equivalent host program.
+DR-47 of that branch charges a send its introduction whether the send is delivered or stored, so no charge depends on the arrival order.
+
+### <a id="decision-41"></a>Decision 41: Bag and set spaces order candidates by source hash
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. P5a applies it. |
+| Supersedes | "Ascending record bytes" for the bag, and the key order of set classes, in the disciplines table of the plan |
+| Related | [Decision 40](#decision-40), [decision 44](#decision-44) |
+
+**Statement.** As in DR-75 of `feature/cost-accounted-rho`, the bag and set agents order their candidates by the hash of their source produce or consume.
+They compare full digests only between equal source hashes, and the store index decides last.
+The rule is the canonical order of `rspace++/src/rspace/candidate_order.rs`, which the host uses since the merge of [decision 44](#decision-44).
+
+**User's words.** "Source-hash order (Recommended)".
+
+**Reason.** The order reads only precomputed hashes for distinct sources, so its work does not grow with the payloads.
+The host and the spaces use one order, so a space operation and its equivalent host program choose the same candidate.
+
+### <a id="decision-42"></a>Decision 42: The queue agent's metering is aligned now
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. The implementation is pending. |
+| Supersedes | The one-dimension `ScanMeter` of P4, which charged `SearchCandidates` for each matcher call |
+| Related | [Decision 40](#decision-40), [I-12](#i-12), [M-3](#m-3) |
+
+**Statement.** The P4 queue agent follows [decision 40](#decision-40) now.
+`ScanMeter` takes the dimension mapping of `feature/cost-accounted-rho`.
+The agent reserves its own envelope decodes, payload copies, clones, and tie-breaks before each one.
+The change touches the committed P4 code (`reified/costs.rs` and `spaces/*`) and the tests that pin the old mapping.
+
+**User's words.** "Align now (Recommended)".
+
+**Reason.** After the merge of [decision 44](#decision-44), the matcher reserves its own reads with that mapping.
+The old `ScanMeter` would drop the operations and the backing bytes that the matcher reserves, so its charges would differ from those of the host.
+
+### <a id="decision-43"></a>Decision 43: A re-issued persistent operation keeps its first-round identity
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force. The implementation is pending. |
+| Amends | [Decision 31](#decision-31) for re-issued operations: the counter still bumps in every round |
+| Related | [I-21](#i-21), [decision 29](#decision-29) |
+
+**Statement.** On `feature/cost-accounted-rho`, a persistent produce keeps one identity across its re-produces, and its introduction is charged once for each identity in each deploy.
+So a persistent space operation keeps the `ord` of its first round when it is re-issued at a divergent pair or at `FIRE_ROUND_CAP`.
+Thus it also keeps its record and its identity.
+The counter still bumps in every round ([decision 31](#decision-31)).
+A design pass decides where a re-issued element takes its FIFO place before the code changes.
+
+**User's words.** On the cost of re-issued persistent operations: "refer to the feature/cost-accounted-rho branch".
+
+**Reason.** The same identity in every round makes the introduction charge independent of the number of rounds, as on the host.
+
+### <a id="decision-44"></a>Decision 44: Merge of feature/cost-accounted-rho at 4d67b5ccc
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-05 |
+| Status | In force |
+| Amends | The base revision of every regression baseline: HEAD names the node code at `4d67b5ccc` |
+| Related | [Decision 40](#decision-40), [decision 41](#decision-41), [decision 42](#decision-42), [decision 43](#decision-43), [verification 8.8](verification.md#88-the-merge-of-featurecost-accounted-rho) |
+
+**Statement.**
+
+- The campaign merged `feature/cost-accounted-rho` at `4d67b5ccc` into `feature/reified-rspaces`. The merge base is `e748426`.
+- The footprint digests, the protobuf schema pins, and the three ordinary corpora moved to `4d67b5ccc` ([verification 8.8](verification.md#88-the-merge-of-featurecost-accounted-rho)). The corpora were captured in a clean export of that commit.
+- The merge adapts the Reified code to the branch in four places:
+  - `matching.rs` passes the matched data by reference to `check_commit_metered`.
+  - `schedule.rs` registers each space job task in the session registry of detached tasks.
+  - The reply of a handle `produce` is the last branch of the outcome, because a dispatch now ends the participant that makes it.
+  - The model of the scheduler paths in `EventCorrelation.v` follows the compacted split DR-84.
+- Casper does not change, and the footprint confirms that every file outside the approved Reified edits equals `4d67b5ccc`.
+
+**User's words.** "in fact, do you want to go ahead and merge its latest changes into this branch?", then "yes, merge it carefully".
+
+**Reason.** Decisions 40 to 43 take their rules from that branch, and the branch changes the host that the spaces must match.
+With the merge, the spaces and the host share one candidate order, one dispatcher, and one charging policy.
+The tests compare them on one base.
 
 ## Minimal-footprint revision: M-1 to M-5
 
@@ -1566,8 +1677,8 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 **Reason.**
 
 - A P2 finding: the evaluation and the substitution of the baseline keep the flag `connective_used` of a tuple, a list, or a map. They keep it also when the children of the container change.
-- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3065-3087`, `3089-3110`, and `3135-3155`.
-- The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1340-1361`, `1363-1382`, and `1405-1428`.
+- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3125-3147`, `3149-3170`, and `3135-3155`.
+- The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1342-1363`, `1365-1384`, and `1405-1428`.
 - Ordinary data can use connectives, as in `x!(Int)`. Without the refresh, a legal `use` body could fail closed as `NonCanonical`.
 - Only the top level of a marker tuple can hold a stale flag, so the refresh costs time linear in the width of the tuple.
 - To ignore the flags instead would weaken the contract of the decoder.

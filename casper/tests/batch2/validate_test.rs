@@ -3047,7 +3047,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         let runtime_manager = RuntimeManager::create_with_store(
             (*kvm).r_space_stores().await.unwrap(),
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -3769,7 +3769,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
         let runtime_manager = RuntimeManager::create_with_store(
             (*kvm).r_space_stores().await.unwrap(),
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -3899,7 +3899,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
         let runtime_manager = RuntimeManager::create_with_store(
             (*kvm).r_space_stores().await.unwrap(),
             m_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 

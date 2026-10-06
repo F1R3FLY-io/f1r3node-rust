@@ -13,6 +13,7 @@
 
 use std::any::Any;
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -23,7 +24,7 @@ use tokio::sync::oneshot;
 
 use super::{
     current, insert_authority, insert_channel, internal_scope, poll_driver_once, Completion,
-    DirectExecutionGuard, Intent, ReductionContext, ReductionSession, ScopedJoinHandle,
+    DirectExecutionGuard, Intent, ReductionContext, ReductionSession,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::errors::InterpreterError;
@@ -104,12 +105,36 @@ impl SpaceIntent {
     }
 
     /// Runs the job in its own task, inside `operation_context::scope(order)` (readiness review
-    /// S9). A join error is a `BugFoundError`.
-    pub(super) async fn execute(self, order: OperationOrder) -> Completion {
+    /// S9). The task is registered with the session's tasks for the time it runs, so a canceled
+    /// root aborts it as it aborts the detached reductions. A join error is a `BugFoundError`.
+    pub(super) async fn execute(
+        self,
+        session: &ReductionSession,
+        order: OperationOrder,
+    ) -> Completion {
         let SpaceIntent { job, reply, .. } = self;
-        let task =
-            ScopedJoinHandle::new(tokio::spawn(operation_context::scope(order.clone(), job())));
-        let result = match task.await {
+        let task = tokio::spawn(operation_context::scope(order.clone(), job()));
+        let task_id = session.next_detached_id.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut tasks = session
+                .detached_tasks
+                .lock()
+                .expect("detached reduction tasks lock");
+            match tasks.canceled {
+                true => task.abort(),
+                false => {
+                    tasks.handles.insert(task_id, task.abort_handle());
+                }
+            }
+        }
+        let joined = task.await;
+        session
+            .detached_tasks
+            .lock()
+            .expect("detached reduction tasks lock")
+            .handles
+            .remove(&task_id);
+        let result = match joined {
             Ok(result) => result,
             Err(error) => Err(InterpreterError::BugFoundError(format!(
                 "deterministic space operation failed: {error}"
@@ -223,7 +248,7 @@ mod tests {
 
     use super::super::{
         conflict_components, root, root_with_host_work, scope, ParticipantGuard, PreparedIntent,
-        ReductionCoordinator,
+        ReductionCoordinator, ScopedJoinHandle,
     };
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;

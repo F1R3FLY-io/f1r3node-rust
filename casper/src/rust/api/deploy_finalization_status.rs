@@ -158,7 +158,7 @@ fn checked_block_membership(
         .body
         .deploys
         .iter()
-        .any(|pd| pd.deploy.sig == sig_bytes)
+        .any(|pd| pd.identity_bytes() == sig_bytes)
         || block
             .body
             .rejected_deploys

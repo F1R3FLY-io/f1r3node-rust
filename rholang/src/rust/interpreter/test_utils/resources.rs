@@ -76,7 +76,8 @@ where
         Arc::new(Box::new(Matcher)),
         external_services,
     )
-    .await;
+    .await
+    .unwrap();
 
     f(runtime).await
 }
@@ -140,7 +141,8 @@ pub async fn create_runtimes_with_services(
         additional_system_processes,
         external_services.clone(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay,
@@ -149,7 +151,8 @@ pub async fn create_runtimes_with_services(
         additional_system_processes,
         external_services,
     )
-    .await;
+    .await
+    .unwrap();
     (
         rho_runtime,
         replay_rho_runtime,

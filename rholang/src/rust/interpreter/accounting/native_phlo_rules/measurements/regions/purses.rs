@@ -35,9 +35,12 @@ pub struct NativePhloPurse<'a> {
     authority: Sig,
     channel: Par,
     encoded_channel: Vec<u8>,
+    /// The position of this purse in insertion order (C8, DR-87).
+    ordinal: usize,
 }
 
 impl NativePhloPurse<'_> {
+    pub(crate) fn ordinal(&self) -> usize { self.ordinal }
     pub fn original_authority(&self) -> &CostSignature { self.original_authority }
     pub fn authority(&self) -> &Sig { &self.authority }
     pub fn channel(&self) -> &Par { &self.channel }
@@ -155,11 +158,13 @@ impl NativePhloRegionDemands<'_> {
                     return Err(NativePhloPurseError::ChannelShapeMismatch);
                 }
                 let encoded_channel = channel.encode_to_vec();
+                let ordinal = purses.len();
                 purses.insert(region.instance_id.as_slice(), NativePhloPurse {
                     original_authority,
                     authority,
                     channel,
                     encoded_channel,
+                    ordinal,
                 });
             }
         }
@@ -172,6 +177,11 @@ impl NativePhloRegionDemands<'_> {
 
 impl NativePhloLocatedDemands<'_> {
     pub fn binding_count(&self) -> usize { self.purses.len() }
+
+    /// The purse bindings in region instance-id order (C8, DR-87).
+    pub(crate) fn purses(&self) -> impl Iterator<Item = &NativePhloPurse<'_>> {
+        self.purses.values()
+    }
 
     pub fn occurrences(&self) -> impl Iterator<Item = NativePhloLocatedDemand<'_>> {
         self.demands

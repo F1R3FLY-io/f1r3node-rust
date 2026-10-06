@@ -530,6 +530,12 @@ pub fn new_gdouble_expr(value: f64) -> Expr {
     }
 }
 
+pub fn new_gfloat32_expr(value: f32) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GFloat32(value.to_bits())),
+    }
+}
+
 pub fn new_gbigint_expr(bytes: Vec<u8>) -> Expr {
     Expr {
         expr_instance: Some(ExprInstance::GBigInt(bytes)),

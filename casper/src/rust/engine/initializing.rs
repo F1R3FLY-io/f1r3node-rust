@@ -1463,7 +1463,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // outer Mutex / lock acquisition is required.
         let result = self
             .runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_envelopes(
                 &pre_state_hash,
                 deploys,
                 system_deploys,
@@ -1540,7 +1540,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // outer Mutex / lock acquisition is required.
         let result = self
             .runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_envelopes(
                 &pre_state_hash,
                 deploys,
                 system_deploys,

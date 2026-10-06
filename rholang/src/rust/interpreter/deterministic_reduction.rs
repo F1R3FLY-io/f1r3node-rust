@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -12,6 +12,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
 use rspace_plus_plus::rspace::reporting_rspace::ReportPhase;
@@ -20,7 +21,9 @@ use rspace_plus_plus::rspace::rspace_interface::{
 };
 use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
-use tokio::sync::{oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::{oneshot, Notify, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::task::AbortHandle;
+#[cfg(test)]
 use tokio::task::JoinHandle;
 
 use super::accounting::economic_failure::{
@@ -92,6 +95,52 @@ impl ReductionContext {
         if count == 0 {
             return Vec::new();
         }
+        #[cfg(test)]
+        if self.session.legacy_split {
+            return self.split_legacy(count);
+        }
+        let step = self.next_step.fetch_add(1, Ordering::Relaxed);
+        // Changed by C9 (DR-84): each child gets the one segment
+        // (step, index + 1) instead of the pair (step, 1)·(index, 0).
+        // Operations keep (step, 0), so the forward lexicographic order of
+        // every generated path is unchanged and a split adds one segment.
+        // let mut split_prefix = self.participant.clone();
+        // split_prefix.push_back((step, 1));
+        let children = (0..count)
+            .map(|index| {
+                // let mut participant = split_prefix.clone();
+                // participant.push_back((index as u64, 0));
+                let mut participant = self.participant.clone();
+                let child = u64::try_from(index)
+                    .ok()
+                    .and_then(|index| index.checked_add(1))
+                    .expect("split child index fits in u64");
+                participant.push_back((step, child));
+                Self {
+                    session: self.session.clone(),
+                    session_id: self.session_id,
+                    participant,
+                    next_step: Arc::new(AtomicU64::new(0)),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.session.split(
+            &self.participant,
+            children
+                .iter()
+                .map(|child| child.participant.clone())
+                .collect(),
+        );
+        children
+    }
+
+    /// The legacy splitter, kept as the test oracle of C9 (DR-84): each child
+    /// gets the pair (step, 1)·(index, 0).
+    #[cfg(test)]
+    fn split_legacy(&self, count: usize) -> Vec<Self> {
+        if count == 0 {
+            return Vec::new();
+        }
         let step = self.next_step.fetch_add(1, Ordering::Relaxed);
         let mut split_prefix = self.participant.clone();
         split_prefix.push_back((step, 1));
@@ -141,6 +190,124 @@ pub(crate) fn record_evaluator_failures(errors: &[InterpreterError]) {
     }
 }
 
+pub(crate) fn spawn_detached(
+    future: impl Future<Output = Result<(), InterpreterError>> + Send + 'static,
+) {
+    let context = current().expect("detached reduction requires a reduction context");
+    let child = context.split(1).pop().expect("one child context");
+    spawn_detached_in_context(child, future);
+}
+
+pub(crate) fn spawn_detached_in_context(
+    child: ReductionContext,
+    future: impl Future<Output = Result<(), InterpreterError>> + Send + 'static,
+) {
+    let session = child.session.clone();
+    let participant = child.participant.clone();
+    let task_id = session.next_detached_id.fetch_add(1, Ordering::Relaxed);
+    session.detached_count.fetch_add(1, Ordering::AcqRel);
+    let (start, ready) = oneshot::channel();
+    let task_session = session.clone();
+    let mut detached_guard = DetachedGuard::new(task_session.clone(), task_id, participant.clone());
+    let handle = tokio::spawn(scope(child.clone(), async move {
+        if ready.await.is_ok() {
+            if let Err(error) = future.await {
+                record_evaluator_failures(std::slice::from_ref(&error));
+                task_session
+                    .detached_errors
+                    .lock()
+                    .expect("detached reduction errors lock")
+                    .push((participant, error));
+            }
+        }
+        detached_guard.finished = true;
+        drop(detached_guard);
+    }));
+    let mut tasks = session
+        .detached_tasks
+        .lock()
+        .expect("detached reduction tasks lock");
+    if tasks.canceled {
+        handle.abort();
+    } else {
+        tasks.handles.insert(task_id, handle.abort_handle());
+    }
+    drop(tasks);
+    let _ = start.send(());
+}
+
+struct DetachedTasks {
+    canceled: bool,
+    handles: HashMap<u64, AbortHandle>,
+}
+
+struct DetachedGuard {
+    session: Arc<ReductionSession>,
+    task_id: u64,
+    participant: ParticipantId,
+    finished: bool,
+}
+
+impl DetachedGuard {
+    fn new(session: Arc<ReductionSession>, task_id: u64, participant: ParticipantId) -> Self {
+        Self {
+            session,
+            task_id,
+            participant,
+            finished: false,
+        }
+    }
+}
+
+impl Drop for DetachedGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.session
+                .failures
+                .record(EvaluationFailureSummary::single(PhloFailure::Platform));
+            self.session
+                .detached_errors
+                .lock()
+                .expect("detached reduction errors lock")
+                .push((
+                    self.participant.clone(),
+                    InterpreterError::ReduceError("detached reduction task failed".to_string()),
+                ));
+        }
+        self.session.complete(&self.participant);
+        self.session
+            .detached_tasks
+            .lock()
+            .expect("detached reduction tasks lock")
+            .handles
+            .remove(&self.task_id);
+        if self.session.detached_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.session.detached_done.notify_waiters();
+        }
+    }
+}
+
+struct RootCancellationGuard {
+    session: Arc<ReductionSession>,
+    complete: bool,
+}
+
+impl Drop for RootCancellationGuard {
+    fn drop(&mut self) {
+        if !self.complete {
+            let mut tasks = self
+                .session
+                .detached_tasks
+                .lock()
+                .expect("detached reduction tasks lock");
+            tasks.canceled = true;
+            for task in tasks.handles.values() {
+                task.abort();
+            }
+        }
+    }
+}
+
 pub fn reserve_host_work(
     dimension: HostWorkDimension,
     units: HostWorkUnits,
@@ -162,14 +329,17 @@ async fn internal_scope<T>(future: impl Future<Output = T>) -> T {
     INTERNAL_REDUCTION.scope((), future).await
 }
 
+#[cfg(test)]
 pub(crate) struct ScopedJoinHandle<T> {
     inner: JoinHandle<T>,
 }
 
+#[cfg(test)]
 impl<T> ScopedJoinHandle<T> {
     pub(crate) fn new(inner: JoinHandle<T>) -> Self { Self { inner } }
 }
 
+#[cfg(test)]
 impl<T> Future for ScopedJoinHandle<T> {
     type Output = Result<T, tokio::task::JoinError>;
 
@@ -181,6 +351,7 @@ impl<T> Future for ScopedJoinHandle<T> {
     }
 }
 
+#[cfg(test)]
 impl<T> Drop for ScopedJoinHandle<T> {
     fn drop(&mut self) { self.inner.abort(); }
 }
@@ -233,10 +404,10 @@ pub(crate) async fn root_with_observation<T>(
     coordinator: ReductionCoordinator,
     host_work: Option<HostWorkBudget>,
     future: impl Future<Output = T>,
-) -> (T, EvaluationFailureSummary) {
+) -> (T, EvaluationFailureSummary, Vec<InterpreterError>) {
     if let Some(context) = current() {
         let result = future.await;
-        return (result, context.session.failures.snapshot());
+        return (result, context.session.failures.snapshot(), Vec::new());
     }
     let session_id = budget.deploy_id();
     let evaluation_guard = coordinator.enter_evaluation().await;
@@ -246,12 +417,34 @@ pub(crate) async fn root_with_observation<T>(
         host_work,
         evaluation_guard,
     ));
+    let mut cancellation = RootCancellationGuard {
+        session: session.clone(),
+        complete: false,
+    };
     let context = ReductionContext::root(session.clone(), session_id);
     session.register(CausalPath::new());
     let guard = ParticipantGuard::new(session.clone(), CausalPath::new());
     let result = scope(context, future).await;
     drop(guard);
-    (result, session.failures.snapshot())
+    session.wait_for_detached().await;
+    if session.budget.native_execution_active() && !session.has_complete_cut() {
+        session
+            .failures
+            .record(EvaluationFailureSummary::single(PhloFailure::Platform));
+    }
+    let mut errors = std::mem::take(
+        &mut *session
+            .detached_errors
+            .lock()
+            .expect("detached reduction errors lock"),
+    );
+    errors.sort_by(|left, right| left.0.cmp(&right.0));
+    cancellation.complete = true;
+    (
+        result,
+        session.failures.snapshot(),
+        errors.into_iter().map(|(_, error)| error).collect(),
+    )
 }
 
 pub(crate) struct ParticipantGuard {
@@ -267,6 +460,7 @@ impl ParticipantGuard {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn for_context(context: &ReductionContext) -> Self {
         Self::new(context.session.clone(), context.participant.clone())
     }
@@ -310,7 +504,16 @@ struct SessionState {
     driving: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// C9 (DR-84): sessions built on this thread while the flag is set split
+    /// with the legacy two-segment scheme, for the schedule-equality test.
+    pub(crate) static LEGACY_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 struct ReductionSession {
+    #[cfg(test)]
+    legacy_split: bool,
     space: ExecutionSpace,
     budget: RuntimeBudget,
     host_work: Option<HostWorkBudget>,
@@ -318,6 +521,11 @@ struct ReductionSession {
     failure_work: Option<HostWorkBudget>,
     state: Mutex<SessionState>,
     evaluation_guard: Mutex<Option<OwnedRwLockReadGuard<()>>>,
+    next_detached_id: AtomicU64,
+    detached_count: AtomicUsize,
+    detached_done: Notify,
+    detached_tasks: Mutex<DetachedTasks>,
+    detached_errors: Mutex<Vec<(ParticipantId, InterpreterError)>>,
 }
 
 enum Intent {
@@ -428,6 +636,23 @@ struct PreparedIntent {
 }
 
 impl ReductionSession {
+    async fn wait_for_detached(&self) {
+        loop {
+            let notified = self.detached_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.detached_count.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    fn has_complete_cut(&self) -> bool {
+        let state = self.state.lock().expect("reduction session lock");
+        state.participants.is_empty() && state.intents.is_empty() && !state.driving
+    }
+
     fn new(
         space: ExecutionSpace,
         budget: RuntimeBudget,
@@ -435,6 +660,8 @@ impl ReductionSession {
         evaluation_guard: OwnedRwLockReadGuard<()>,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            legacy_split: LEGACY_SPLIT.with(std::cell::Cell::get),
             space,
             budget,
             failure_work: host_work
@@ -448,6 +675,14 @@ impl ReductionSession {
                 driving: false,
             }),
             evaluation_guard: Mutex::new(Some(evaluation_guard)),
+            next_detached_id: AtomicU64::new(0),
+            detached_count: AtomicUsize::new(0),
+            detached_done: Notify::new(),
+            detached_tasks: Mutex::new(DetachedTasks {
+                canceled: false,
+                handles: HashMap::new(),
+            }),
+            detached_errors: Mutex::new(Vec::new()),
         }
     }
 
@@ -746,7 +981,7 @@ impl ReductionSession {
                     result,
                 }
             }
-            Intent::Space(space) => space.execute(order).await,
+            Intent::Space(space) => space.execute(self, order).await,
         }
     }
 
@@ -811,6 +1046,9 @@ fn insert_authority(
     authority: Option<&models::rhoapi::CostAuthority>,
     budget: &RuntimeBudget,
 ) {
+    if budget.native_execution_active() {
+        footprint.insert(vec![2, 0]);
+    }
     if !budget.has_comm_accounting_scope() || budget.is_unmetered() {
         return;
     }
@@ -902,6 +1140,14 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
         self.inner.get_data(channel).await
+    }
+
+    async fn get_data_metered(
+        &self,
+        channel: &Par,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+        self.inner.get_data_metered(channel, meter).await
     }
 
     async fn get_waiting_continuations(
@@ -998,6 +1244,12 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
+        if current().is_some_and(|context| context.session.budget.is_legacy()) {
+            return self
+                .inner
+                .consume(channels, patterns, continuation, persistent, peeks)
+                .await;
+        }
         self.execution
             .consume(channels, patterns, continuation, persistent, peeks)
             .await
@@ -1012,6 +1264,9 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
+        if current().is_some_and(|context| context.session.budget.is_legacy()) {
+            return self.inner.produce(channel, data, persistent).await;
+        }
         self.execution.produce(channel, data, persistent).await
     }
 
@@ -1122,17 +1377,27 @@ impl ExecutionBackend for ScheduledExecution {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Duration;
 
     use models::rhoapi::{CostAuthority, CostRegion};
     use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
+    use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use tokio::sync::Notify;
 
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
+    use crate::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
+        NativePhloExecutionContract, NativePhloRegionLimits,
+    };
+    use crate::rust::interpreter::accounting::phlo_controls::{
+        check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
+    };
+    use crate::rust::interpreter::accounting::NativeRuntimeConfig;
+    use crate::rust::interpreter::execution_space::{ConsumeResult, ProduceResult};
     use crate::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 
     fn prepared(order: u64, keys: &[u8]) -> PreparedIntent {
@@ -1217,6 +1482,412 @@ mod tests {
             ]),
             vec![vec![0], vec![1], vec![2]]
         );
+    }
+
+    fn native_budget() -> RuntimeBudget {
+        let descriptor = PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"native-test",
+            shard: b"root",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: NativePhloDimension::ALL
+                .into_iter()
+                .zip([0, 0, 1, 0])
+                .zip([b"c".as_slice(), b"i", b"t", b"r"])
+                .map(|((dimension, weight), name)| dimension.resource_class(name, weight))
+                .collect(),
+            actual_price: 0,
+            compatibility_rule: native_resource_compatibility_rule(),
+        };
+        let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
+        let selected = binding.schedule();
+        let permitted = [selected];
+        let owners = [0];
+        let controls = check_phlo_controls(
+            selected.environment,
+            0,
+            u64::MAX,
+            SignedPhloControls {
+                limit: 1,
+                price_ceiling: 0,
+                required_owner_ceilings: &owners,
+                permitted_schedules: &permitted,
+            },
+            selected,
+            1,
+        )
+        .unwrap();
+        let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+        let config = NativeRuntimeConfig::new(
+            contract,
+            NativeBudgetTraceLimits {
+                attempts: 4,
+                path_segments: 4,
+                regions: NativePhloRegionLimits {
+                    regions: 4,
+                    encoded_authority_bytes: 4096,
+                },
+            },
+            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000))),
+        );
+        let budget = RuntimeBudget::new(Cost::create(1, "native global schedule"));
+        budget.reset_for_native_execution(config).unwrap();
+        budget
+    }
+
+    #[tokio::test]
+    async fn native_selected_cut_rejects_unjoined_participant() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (_, incomplete, _) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                let children = current().expect("root reduction context").split(1);
+                drop(children);
+            },
+        )
+        .await;
+        assert!(incomplete.contains(PhloFailure::Platform));
+
+        let (_, complete, _) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {},
+        )
+        .await;
+        assert_eq!(complete, EvaluationFailureSummary::default());
+    }
+
+    #[tokio::test]
+    async fn detached_reduction_is_drained_and_reports_its_failure() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (result, summary, errors) = root_with_observation(
+            reducer.space.clone(),
+            reducer.metering.budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                spawn_detached(async {
+                    tokio::task::yield_now().await;
+                    Err(InterpreterError::UserAbortError)
+                });
+            },
+        )
+        .await;
+        assert_eq!(result, ());
+        assert_eq!(summary, EvaluationFailureSummary::single(PhloFailure::User));
+        assert_eq!(errors, vec![InterpreterError::UserAbortError]);
+    }
+
+    #[tokio::test]
+    async fn native_root_waits_for_detached_complete_cut() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (_, summary, errors) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                spawn_detached(async {
+                    tokio::task::yield_now().await;
+                    Ok(())
+                });
+            },
+        )
+        .await;
+        assert_eq!(summary, EvaluationFailureSummary::default());
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn canceled_root_aborts_its_detached_reduction() {
+        struct MarkDrop(Arc<AtomicBool>);
+
+        impl Drop for MarkDrop {
+            fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+        }
+
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let entered_child = entered.clone();
+        let dropped_child = dropped.clone();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async move {
+                    spawn_detached(async move {
+                        let _guard = MarkDrop(dropped_child);
+                        entered_child.notify_one();
+                        std::future::pending::<Result<(), InterpreterError>>().await
+                    });
+                    entered.notified().await;
+                    std::future::pending::<()>().await;
+                },
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached reduction should be aborted");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async {},
+            ),
+        )
+        .await
+        .expect("canceled reduction should release its session");
+    }
+
+    #[tokio::test]
+    async fn canceled_session_aborts_detached_child_before_first_poll() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let polled = Arc::new(AtomicBool::new(false));
+        let child_polled = polled.clone();
+        let (_, summary, errors) = tokio::time::timeout(
+            Duration::from_secs(2),
+            root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async move {
+                    let context = current().expect("reduction context");
+                    let child = context.split(1).pop().expect("child context");
+                    child
+                        .session
+                        .detached_tasks
+                        .lock()
+                        .expect("detached reduction tasks lock")
+                        .canceled = true;
+                    spawn_detached_in_context(child, async move {
+                        child_polled.store(true, Ordering::SeqCst);
+                        Ok(())
+                    });
+                },
+            ),
+        )
+        .await
+        .expect("canceled child must complete");
+        assert!(!polled.load(Ordering::SeqCst));
+        assert!(summary.contains(PhloFailure::Platform));
+        assert_eq!(errors.len(), 1);
+    }
+
+    struct NearLimitBackend {
+        first_channel: Par,
+        admissions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ExecutionBackend for NearLimitBackend {
+        async fn consume(
+            &self,
+            _: Vec<Par>,
+            _: Vec<BindPattern>,
+            _: TaggedContinuation,
+            _: bool,
+            _: BTreeSet<i32>,
+        ) -> Result<ConsumeResult, RSpaceError> {
+            unreachable!()
+        }
+
+        async fn produce(
+            &self,
+            channel: Par,
+            _: ListParWithRandom,
+            _: bool,
+        ) -> Result<ProduceResult, RSpaceError> {
+            if channel == self.first_channel {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if self.admissions.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(None)
+            } else {
+                Err(RSpaceError::HostWorkRejected)
+            }
+        }
+
+        async fn get_joins(&self, _: Par) -> Result<Vec<Vec<Par>>, RSpaceError> { Ok(Vec::new()) }
+
+        async fn is_replay(&self) -> bool { false }
+
+        async fn update_produce(&self, _: &Produce, _: Produce) -> Result<(), RSpaceError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_disjoint_operations_reserve_near_limit_in_causal_order() {
+        let budget = native_budget();
+        let first_channel = models::rust::utils::new_gint_par(1, Vec::new(), false);
+        let second_channel = models::rust::utils::new_gint_par(2, Vec::new(), false);
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let space = scheduled_execution(ExecutionSpace::new(NearLimitBackend {
+            first_channel: first_channel.clone(),
+            admissions: admissions.clone(),
+        }));
+        let (first, second) = root(
+            space.clone(),
+            budget,
+            ReductionCoordinator::default(),
+            async {
+                let parent = current().unwrap();
+                let mut children = parent.split(2).into_iter();
+                let first_context = children.next().unwrap();
+                let second_context = children.next().unwrap();
+                let first_space = space.clone();
+                let first = tokio::spawn(scope(first_context.clone(), async move {
+                    let _guard = ParticipantGuard::for_context(&first_context);
+                    first_space
+                        .produce(first_channel, ListParWithRandom::default(), false)
+                        .await
+                }));
+                let second_space = space.clone();
+                let second = tokio::spawn(scope(second_context.clone(), async move {
+                    let _guard = ParticipantGuard::for_context(&second_context);
+                    second_space
+                        .produce(second_channel, ListParWithRandom::default(), false)
+                        .await
+                }));
+                let result = (first.await.unwrap(), second.await.unwrap());
+                parent.rejoin();
+                result
+            },
+        )
+        .await;
+        assert!(first.is_ok());
+        assert!(matches!(second, Err(RSpaceError::HostWorkRejected)));
+        assert_eq!(admissions.load(Ordering::SeqCst), 2);
+    }
+
+    struct OrderedNativeBackend {
+        seen: Arc<Mutex<Vec<Par>>>,
+    }
+
+    #[async_trait]
+    impl ExecutionBackend for OrderedNativeBackend {
+        async fn consume(
+            &self,
+            _: Vec<Par>,
+            _: Vec<BindPattern>,
+            _: TaggedContinuation,
+            _: bool,
+            _: BTreeSet<i32>,
+        ) -> Result<ConsumeResult, RSpaceError> {
+            unreachable!()
+        }
+
+        async fn produce(
+            &self,
+            channel: Par,
+            _: ListParWithRandom,
+            _: bool,
+        ) -> Result<ProduceResult, RSpaceError> {
+            self.seen.lock().expect("native order trace").push(channel);
+            Ok(None)
+        }
+
+        async fn get_joins(&self, _: Par) -> Result<Vec<Vec<Par>>, RSpaceError> { Ok(Vec::new()) }
+
+        async fn is_replay(&self) -> bool { false }
+
+        async fn update_produce(&self, _: &Produce, _: Produce) -> Result<(), RSpaceError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_recursive_frontiers_ignore_branch_arrival_order() {
+        let channels =
+            [1, 2, 3, 4].map(|value| models::rust::utils::new_gint_par(value, Vec::new(), false));
+        for iteration in 0..8 {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let space = scheduled_execution(ExecutionSpace::new(OrderedNativeBackend {
+                seen: seen.clone(),
+            }));
+            let expected = channels.clone();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                root(
+                    space.clone(),
+                    native_budget(),
+                    ReductionCoordinator::default(),
+                    async {
+                        let parent = current().expect("root reduction context");
+                        let mut children = parent.split(2).into_iter();
+                        let first_context = children.next().unwrap();
+                        let second_context = children.next().unwrap();
+                        let first_space = space.clone();
+                        let first_channels = [channels[0].clone(), channels[2].clone()];
+                        let first = tokio::spawn(scope(first_context.clone(), async move {
+                            let _guard = ParticipantGuard::for_context(&first_context);
+                            if iteration % 2 == 0 {
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                            for channel in first_channels {
+                                first_space
+                                    .produce(channel, ListParWithRandom::default(), false)
+                                    .await?;
+                                tokio::task::yield_now().await;
+                            }
+                            Ok::<(), RSpaceError>(())
+                        }));
+                        let second_space = space.clone();
+                        let second_channels = [channels[1].clone(), channels[3].clone()];
+                        let second = tokio::spawn(scope(second_context.clone(), async move {
+                            let _guard = ParticipantGuard::for_context(&second_context);
+                            if iteration % 2 == 1 {
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                            for channel in second_channels {
+                                second_space
+                                    .produce(channel, ListParWithRandom::default(), false)
+                                    .await?;
+                                tokio::task::yield_now().await;
+                            }
+                            Ok::<(), RSpaceError>(())
+                        }));
+                        first.await.unwrap().unwrap();
+                        second.await.unwrap().unwrap();
+                        parent.rejoin();
+                    },
+                ),
+            )
+            .await
+            .expect("native frontier stalled");
+            assert_eq!(*seen.lock().expect("native order trace"), expected);
+        }
     }
 
     #[test]
@@ -1469,5 +2140,164 @@ mod tests {
                 live == 1,
             );
         }
+    }
+
+    /// One step of a participant plan in the C9 path tests (DR-84): an
+    /// operation, or a split whose children run their own plans.
+    #[derive(Clone, Debug)]
+    enum PathAction {
+        Operation,
+        Split(Vec<Vec<PathAction>>),
+    }
+
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = *state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn path_plan(state: &mut u64, depth: usize) -> Vec<PathAction> {
+        let length = usize::try_from(splitmix(state) % 5).expect("plan length fits in usize");
+        let mut plan = Vec::with_capacity(length);
+        for _ in 0..length {
+            let split = depth > 0 && splitmix(state).is_multiple_of(3);
+            plan.push(match split {
+                false => PathAction::Operation,
+                true => {
+                    let count = usize::try_from(splitmix(state) % 3)
+                        .expect("child count fits in usize")
+                        + 1;
+                    let mut children = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        children.push(path_plan(state, depth - 1));
+                    }
+                    PathAction::Split(children)
+                }
+            });
+        }
+        plan
+    }
+
+    /// Runs `plan` from `context` and appends the participant path and every
+    /// operation and descendant path that the plan generates.
+    fn generated_paths(
+        context: &ReductionContext,
+        plan: &[PathAction],
+        legacy: bool,
+        paths: &mut Vec<CausalPath>,
+    ) {
+        paths.push(context.participant.clone());
+        for action in plan {
+            match action {
+                PathAction::Operation => paths.push(context.next_operation().path),
+                PathAction::Split(children) => {
+                    let contexts = match legacy {
+                        true => context.split_legacy(children.len()),
+                        false => context.split(children.len()),
+                    };
+                    for (child, child_plan) in contexts.iter().zip(children) {
+                        generated_paths(child, child_plan, legacy, paths);
+                    }
+                }
+            }
+        }
+    }
+
+    /// C9 (DR-84): on random operation and split plans, the compacted
+    /// splitter and the legacy splitter generate paths in the same forward
+    /// lexicographic order. Distinct steps of a plan get distinct paths, so
+    /// the compaction is injective on generated paths. The shared-root
+    /// comparison of `CausalPath` agrees with the vector order.
+    #[tokio::test]
+    async fn compacted_paths_preserve_vec_order() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (mut total, mut deepest) = (0, 0);
+        for seed in 0..64_u64 {
+            let mut state = seed;
+            let plan = path_plan(&mut state, 4);
+            let ((compacted, legacy), _, _) = root_with_observation(
+                reducer.space.clone(),
+                native_budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                async {
+                    let root = current().expect("root reduction context");
+                    let compacted_root =
+                        ReductionContext::root(root.session.clone(), root.session_id);
+                    let legacy_root = ReductionContext::root(root.session.clone(), root.session_id);
+                    let mut compacted = Vec::new();
+                    let mut legacy = Vec::new();
+                    generated_paths(&compacted_root, &plan, false, &mut compacted);
+                    generated_paths(&legacy_root, &plan, true, &mut legacy);
+                    (compacted, legacy)
+                },
+            )
+            .await;
+            assert_eq!(compacted.len(), legacy.len(), "seed {seed}");
+            total += compacted.len();
+            deepest = legacy.iter().map(CausalPath::len).fold(deepest, usize::max);
+            let compacted_vectors = compacted.iter().map(CausalPath::to_vec).collect::<Vec<_>>();
+            let legacy_vectors = legacy.iter().map(CausalPath::to_vec).collect::<Vec<_>>();
+            for left in 0..compacted.len() {
+                for right in 0..compacted.len() {
+                    let expected = legacy_vectors[left].cmp(&legacy_vectors[right]);
+                    assert_eq!(
+                        expected == std::cmp::Ordering::Equal,
+                        left == right,
+                        "seed {seed}"
+                    );
+                    assert_eq!(
+                        compacted_vectors[left].cmp(&compacted_vectors[right]),
+                        expected,
+                        "seed {seed}: {:?} {:?}",
+                        compacted_vectors[left],
+                        compacted_vectors[right],
+                    );
+                    assert_eq!(
+                        compacted[left].cmp(&compacted[right]),
+                        expected,
+                        "seed {seed}"
+                    );
+                    assert_eq!(legacy[left].cmp(&legacy[right]), expected, "seed {seed}");
+                }
+            }
+        }
+        assert_eq!((total, deepest), (1_227, 9));
+    }
+
+    /// C9 (DR-84): `spawn_detached` splits one child for each detached
+    /// reduction. A chain of 512 nested detached reductions gives an
+    /// operation path of 513 segments, within the protocol-6 limit of 1,024
+    /// path segments. The legacy splitter gave 1,025 segments.
+    #[tokio::test]
+    async fn funding_flow_depth_at_most_513() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let (depths, _, _) = root_with_observation(
+            reducer.space.clone(),
+            native_budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            async {
+                let root = current().expect("root reduction context");
+                let mut compacted = ReductionContext::root(root.session.clone(), root.session_id);
+                let mut legacy = ReductionContext::root(root.session.clone(), root.session_id);
+                for _ in 0..512 {
+                    compacted = compacted.split(1).pop().expect("one compacted child");
+                    legacy = legacy.split_legacy(1).pop().expect("one legacy child");
+                }
+                (
+                    compacted.next_operation().path.len(),
+                    legacy.next_operation().path.len(),
+                )
+            },
+        )
+        .await;
+        assert_eq!(depths, (513, 1025));
     }
 }

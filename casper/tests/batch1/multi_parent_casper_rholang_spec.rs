@@ -29,7 +29,12 @@ async fn multi_parent_casper_should_create_blocks_based_on_deploys() {
         .create_block_unsafe(std::slice::from_ref(&deploy))
         .await
         .unwrap();
-    let deploys: Vec<_> = block.body.deploys.iter().map(|pd| &pd.deploy).collect();
+    let deploys: Vec<_> = block
+        .body
+        .deploys
+        .iter()
+        .map(|pd| &pd.as_legacy().expect("legacy fixture").deploy)
+        .collect();
     let parents = proto_util::parent_hashes(&block);
 
     assert_eq!(parents.len(), 1);

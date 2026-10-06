@@ -252,7 +252,7 @@ async fn unpinned_exploratory_read_does_not_see_unfinalized_state() {
         .await
         .expect("n1 should create and propagate b1");
     assert!(
-        !b1.body.deploys[0].is_failed,
+        !b1.body.deploys[0].is_failed(),
         "the deploy must succeed for this test to be about visibility"
     );
 
@@ -452,7 +452,7 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         !transfer_block.body.deploys.is_empty(),
         "Block should contain the deploy"
     );
-    let actual_cost = transfer_block.body.deploys[0].cost.cost;
+    let actual_cost = transfer_block.body.deploys[0].cost().cost;
     tracing::info!("Real deploy cost: {}", actual_cost);
 
     // Step 2: Get the parent block's post-state hash (state before the transfer)

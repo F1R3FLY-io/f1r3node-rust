@@ -12,7 +12,7 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeBudgetAttempt, NativeBudgetOccurrence,
 };
 use crate::rust::interpreter::accounting::native_runtime::tests::{
-    authority, journal_limits, with_contract,
+    authority, fixture_path, fixture_paths, journal_limits, with_contract,
 };
 use crate::rust::interpreter::accounting::native_runtime::{
     NativeBudgetRetry, NativeCommRecord, NativeCommSource, NativeConsumeSource,
@@ -26,7 +26,7 @@ fn host() -> HostWorkBudget {
 fn occurrence(id: u64, stage: NativeAttemptStage) -> NativeBudgetOccurrence {
     NativeBudgetOccurrence {
         session: [0; 32],
-        path: vec![(id, 0)],
+        path: fixture_path(id),
         stage,
     }
 }
@@ -61,7 +61,7 @@ fn operation(
     NativeOperationRecord {
         occurrence: NativeOperationOccurrence {
             session: [0; 32],
-            path: vec![(id, 0)].into(),
+            path: fixture_path(id),
         },
         source: NativeOperationSource::Produce(produce(id as u8)),
         consume_peeks: None,
@@ -127,6 +127,7 @@ fn fixture() -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
             attempts: attempts.into(),
             retries: retries.into(),
             used: 3,
+            paths: fixture_paths(),
         },
         rows.into(),
     )
@@ -146,6 +147,7 @@ fn consume_fixture(
         .into(),
         retries: Arc::from([]),
         used: 1,
+        paths: fixture_paths(),
     };
     let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
     row.source = NativeOperationSource::Consume(NativeConsumeSource {
@@ -218,6 +220,7 @@ fn journal_accepts_complete_evidence_and_empty_execution() {
         attempts: Arc::from([]),
         retries: Arc::from([]),
         used: 0,
+        paths: fixture_paths(),
     };
     assert_eq!(check(&empty, Arc::from([])).unwrap().total(), 0);
 }
@@ -421,6 +424,7 @@ fn stage_fixture(
             attempts: attempts.into(),
             retries: retries.into(),
             used: 0,
+            paths: fixture_paths(),
         },
         rows.into(),
     )
@@ -505,6 +509,7 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                     attempts: attempts.into(),
                     retries: Arc::from([]),
                     used: 0,
+                    paths: fixture_paths(),
                 };
                 let result = with_contract(0, [0, 0, 1, 0], |contract| {
                     contract.check_operation_journal(
@@ -549,6 +554,7 @@ fn journal_preserves_overflow_denial_and_rejects_retry_of_denied_attempt() {
         }]),
         retries: Arc::from([]),
         used: 0,
+        paths: fixture_paths(),
     };
     let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
     row.completion = RSpaceOperationCompletion::Rejected;
@@ -627,7 +633,7 @@ proptest! {
             granted: true,
         }).collect::<Vec<_>>();
         let recording = NativeBudgetRecording {
-            session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: 0,
+            session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: 0, paths: fixture_paths(),
         };
         let rows = links.iter().map(|index| operation(*index as u64, 0, total, NativeObservationLink::Attempt(*index)))
             .collect::<Vec<_>>();

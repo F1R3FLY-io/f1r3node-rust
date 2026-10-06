@@ -229,7 +229,30 @@ pub fn token_metadata(
     native_token_decimals: u32,
     shard_id: &str,
 ) -> Signed<DeployData> {
+    token_metadata_with_policy(
+        native_token_name,
+        native_token_symbol,
+        native_token_decimals,
+        shard_id,
+        None,
+    )
+}
+
+pub fn token_metadata_with_policy(
+    native_token_name: &str,
+    native_token_symbol: &str,
+    native_token_decimals: u32,
+    shard_id: &str,
+    resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+) -> Signed<DeployData> {
     let decimals_str = native_token_decimals.to_string();
+    let getter = resource_policy.map_or_else(String::new, |policy| {
+        let bytes = policy.encode().expect("validated genesis policy must encode");
+        format!(
+            "contract TokenMetadata(@\"resourcePolicy\", ret) = {{ ret!(\"{}\".hexToBytes()) }} |\n  ",
+            hex::encode(bytes)
+        )
+    });
     to_deploy(
         CompiledRholangTemplate::new(
             "TokenMetadata.rhox",
@@ -239,6 +262,7 @@ pub fn token_metadata(
                 ("nativeTokenName", native_token_name),
                 ("nativeTokenSymbol", native_token_symbol),
                 ("nativeTokenDecimals", &decimals_str),
+                ("resourcePolicyGetter", &getter),
             ],
         ),
         TOKEN_METADATA_PK,

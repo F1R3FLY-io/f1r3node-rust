@@ -14,8 +14,13 @@ const CORPUS_PATH: &str = "test-vectors/ordinary-source-normalization-v1.json";
 const CAPTURE_ENV: &str = "RRS_CAPTURE_SOURCES_OUT";
 const CAPTURE_REVISION_ENV: &str = "RRS_CAPTURE_REVISION";
 const COMPILE_STACK_BYTES: usize = 256 * 1024 * 1024;
-const TEMPLATE_VALUES: [(&str, &str); 2] =
-    [("initialBonds", "{}"), ("posMultiSigPublicKeys", "[]")];
+// `resourcePolicyGetter` takes the value of the default genesis, which sets no
+// resource policy (standard_deploys.rs, token_metadata_with_policy).
+const TEMPLATE_VALUES: [(&str, &str); 3] = [
+    ("initialBonds", "{}"),
+    ("posMultiSigPublicKeys", "[]"),
+    ("resourcePolicyGetter", ""),
+];
 const DEFAULT_TEMPLATE_VALUE: &str = "0";
 const FLOAT_CORPUS_PATH: &str = "test-vectors/ordinary-float-forms-v1.json";
 const FLOAT_CORPUS_NAME: &str = "ordinary_float_forms_v1";

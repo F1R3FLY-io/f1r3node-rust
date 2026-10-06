@@ -130,7 +130,7 @@ async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
         "block should carry the one user deploy"
     );
     assert!(
-        signed_block.body.deploys[0].is_failed,
+        signed_block.body.deploys[0].is_failed(),
         "premise: the deploy must be recorded as failed for this test to mean anything"
     );
 

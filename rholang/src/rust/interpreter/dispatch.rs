@@ -68,7 +68,7 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval(body, &env, merged_rand).await?;
+                    reducer.eval_continuation(body, env, merged_rand).await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }

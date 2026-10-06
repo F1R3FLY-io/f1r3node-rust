@@ -915,7 +915,8 @@ async fn check_inert(construct: &ReifiedConstruct, mask: u16) -> Result<(), Test
 
 // ── E10 ────────────────────────────────────────────────────────────────────
 
-/// The filter of HEAD (`util/mod.rs` at 6f7a80da3): a variable or a method call.
+/// The filter of HEAD (`util/mod.rs` at 4d67b5ccc, unchanged since 6f7a80da3): a variable or a
+/// method call.
 fn head_keeps(expr: &Expr) -> bool {
     matches!(
         expr.expr_instance,

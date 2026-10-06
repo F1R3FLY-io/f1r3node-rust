@@ -3,7 +3,7 @@
   "phase": "P1",
   "title": "Reified RSpaces P1: Rust items of the storage substrate, the fix rules FR-1 to FR-9, the round-2 rules FR-1', FR-5', FR-7' and FR-9' the round-3 rule FR-10 and decision 36 (replay reproduces play), and the formal models that cover them",
   "design": "p1-design-report §5(a), plan decision 19 (D1-D7), P1 fix rules FR-1 to FR-9, the round-2 rules FR-1', FR-5', FR-7' and FR-9' and the round-3 rule FR-10 (prompts/p1-fix-rules.md, plan decision 30), and decision 36 (it amends decision 19: an unpaired replay fire stages and fails at commit)",
-  "code_base": "The host code that the models cite is at HEAD 6f7a80da3. The P1 items are in new files. The line numbers below are informative. The checker finds each item by its scope and name. An item with \"status\": \"pending\" is code that another change still writes.",
+  "code_base": "The host code that the models cite is the campaign tree after the merge of feature/cost-accounted-rho at 4d67b5ccc (HEAD 6f7a80da3 before the merge). The P1 items are in new files. The line numbers below are informative. The checker finds each item by its scope and name. An item with \"status\": \"pending\" is code that another change still writes.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [

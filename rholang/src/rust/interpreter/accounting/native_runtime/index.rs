@@ -3,22 +3,41 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use models::rust::host_work::HostWorkDimension;
+use rspace_plus_plus::rspace::operation_context::PathDigest;
 
-use super::recording::work;
+use super::recording::{work, RecordedOccurrence};
 use super::{HostWorkBudget, InterpreterError};
-use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetOccurrence,
-};
+use crate::rust::interpreter::accounting::native_phlo_rules::NativeAttemptStage;
 
 pub(super) trait IndexKey: Ord {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError>;
+
+    fn compare_metered(
+        &self,
+        other: &Self,
+        budget: &HostWorkBudget,
+    ) -> Result<Ordering, InterpreterError> {
+        let (operations, bytes) = self.comparison_work()?;
+        work(
+            budget,
+            HostWorkDimension::VerificationOperations,
+            operations
+                .checked_add(2)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+        )?;
+        work(budget, HostWorkDimension::VerificationBytes, bytes)?;
+        Ok(self.cmp(other))
+    }
 }
 
 impl IndexKey for Arc<[u8]> {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((1, self.len())) }
 }
 
-impl IndexKey for NativeBudgetOccurrence {
+// Changed by C7b (DR-86): the path-keyed comparison belongs to the
+// producer's recorded occurrences, which keep copied paths.
+// impl IndexKey for NativeBudgetOccurrence {
+impl IndexKey for RecordedOccurrence {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
         let operations = self
             .path
@@ -35,10 +54,68 @@ impl IndexKey for NativeBudgetOccurrence {
             bytes.ok_or(InterpreterError::HostWorkRejected)?,
         ))
     }
+
+    fn compare_metered(
+        &self,
+        other: &Self,
+        budget: &HostWorkBudget,
+    ) -> Result<Ordering, InterpreterError> {
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        work(budget, HostWorkDimension::VerificationBytes, 32)?;
+        let order = self.session.cmp(&other.session);
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+        let shared = self.path.len().min(other.path.len());
+        let mut start = 0;
+        while start < shared {
+            let end = start.saturating_add(16).min(shared);
+            let count = end - start;
+            work(budget, HostWorkDimension::VerificationOperations, count * 2)?;
+            work(budget, HostWorkDimension::VerificationBytes, count * 16)?;
+            for index in start..end {
+                let order = self.path[index].cmp(&other.path[index]);
+                if order != Ordering::Equal {
+                    return Ok(order);
+                }
+            }
+            start = end;
+        }
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        let order = self.path.len().cmp(&other.path.len());
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        work(budget, HostWorkDimension::VerificationBytes, 1)?;
+        Ok(self.stage.cmp(&other.stage))
+    }
 }
 
 impl IndexKey for (NativeAttemptStage, [u8; 32]) {
     fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((2, 33)) }
+}
+
+/// The key of the recording occurrence index (C7a, DR-85): the session, the
+/// chained digest of the path, the path depth, the last segment and the
+/// stage. Two occurrences have equal keys exactly when their paths are
+/// equal, unless Blake2b-256 collides. A comparison reads a fixed number of
+/// bytes, whatever the path depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct OccurrenceKey {
+    pub(super) session: [u8; 32],
+    pub(super) digest: PathDigest,
+    pub(super) depth: usize,
+    pub(super) last: Option<(u64, u64)>,
+    pub(super) stage: NativeAttemptStage,
+}
+
+const OCCURRENCE_KEY_COMPARISON_BYTES: usize = 32 + 32 + size_of::<usize>() + 17 + 1;
+
+impl IndexKey for OccurrenceKey {
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
+        Ok((5, OCCURRENCE_KEY_COMPARISON_BYTES))
+    }
 }
 
 pub(super) fn height_bound(nodes: usize) -> usize {
@@ -163,6 +240,8 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
     #[cfg(test)]
     pub(super) fn capacity(&self) -> usize { self.logical_capacity }
 
+    // Since C7b (DR-86) only tests read the keys in insertion order.
+    #[cfg(test)]
     pub(super) fn keys(&self) -> impl Iterator<Item = &K> {
         self.nodes.iter().map(|node| &node.key)
     }
@@ -198,18 +277,7 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
         key: &K,
         budget: &HostWorkBudget,
     ) -> Result<Location, InterpreterError> {
-        let (operations, bytes) = key.comparison_work()?;
-        self.locate(key, |a, b| {
-            work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                operations
-                    .checked_add(2)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )?;
-            work(budget, HostWorkDimension::VerificationBytes, bytes)?;
-            Ok(a.cmp(b))
-        })
+        self.locate(key, |a, b| a.compare_metered(b, budget))
     }
 
     pub(super) fn get(

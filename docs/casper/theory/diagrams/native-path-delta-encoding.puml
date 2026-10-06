@@ -1,0 +1,56 @@
+' Delta encoding of consecutive causal paths in native evidence (DR-74).
+' The v2 recording encodes each path as (shared-prefix length p, suffix
+' length s, suffix segments) relative to the previous path. The encoder emits
+' the maximal shared prefix; the decoder rejects every non-maximal prefix, so
+' each recording has exactly one encoding (NativePathDeltaCodec.v).
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-74);
+'                  rholang/src/rust/interpreter/accounting/native_runtime/wire.rs
+'                  (write_path_delta, read_path_delta).
+' Palette:  paths = supply blue · prefix computation = process lilac
+'           canonical entry = pool green · decoder check = gate teal
+'           rejected entry = red
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/native-path-delta-encoding.puml
+'          (or: ./render.sh native-path-delta-encoding.puml)
+
+@startuml native-path-delta-encoding
+!include palette.iuml
+$ca_base_skin()
+skinparam rectangle {
+  BorderColor #333333
+  RoundCorner 12
+}
+skinparam ArrowColor $ca_neutral
+title Delta encoding of consecutive causal paths (DR-74)
+
+rectangle "**previous path**\n(0,1) (0,0) (2,2)" as Previous $ca_supply
+rectangle "**current path**\n(0,1) (0,0) (3,1) (4,4)" as Current $ca_supply
+rectangle "**maximal shared prefix**\n<latex>p = \mathrm{lcp}(\mathrm{current}, \mathrm{previous}) = 2</latex>" as Prefix $ca_process
+rectangle "**canonical v2 entry**\np = 2 · s = 2 · (3,1) (4,4)" as Canonical $ca_pool
+rectangle "**decoder**\nrebuild previous[0..p] ++ suffix\nreject when s > 0, p < len(previous),\nand suffix head = previous[p]" as Decoder $ca_gate
+rectangle "**non-maximal entry**\np = 1 · s = 3 · (0,0) (3,1) (4,4)\nrejected: suffix head (0,0) = previous[1]" as NonMaximal $ca_rejectfill
+rectangle "**decoded current path**\n(0,1) (0,0) (3,1) (4,4)" as Decoded $ca_note_green
+
+Previous --> Prefix
+Current --> Prefix
+Prefix --> Canonical : encoder emits\nthe maximal prefix
+Canonical --> Decoder
+NonMaximal -[$ca_debit]-> Decoder
+Decoder --> Decoded : accepted entry
+note right of Decoder $ca_note_grey
+  The previous path of the first attempt is
+  empty. Retries continue the chain from the
+  last attempt. v1 records still decode.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| consecutive causal paths |
+  |<$ca_process>| longest common prefix |
+  |<$ca_pool>| the one canonical encoding |
+  |<$ca_gate>| decoder bounds and canonicality check |
+  |<$ca_rejectfill>| non-maximal encoding (rejected) |
+  |<$ca_note_green>| decoded path |
+endlegend
+
+@enduml

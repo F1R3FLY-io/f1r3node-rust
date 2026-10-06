@@ -106,7 +106,7 @@ The defect was only that the check at staging stopped the transaction before tha
 
 ### 4.3 The parity requirement
 
-Casper accepts a replayed deploy only when its failed flag and its cost equal the values of play (`casper/src/rust/rholang/replay_runtime.rs:437-450`):
+Casper accepts a replayed deploy only when its failed flag and its cost equal the values of play (`casper/src/rust/rholang/replay_runtime.rs:619-632`):
 
 ```math
 (\mathit{failed}_r,\ c_r) = (\mathit{failed}_p,\ c_p).
@@ -121,7 +121,7 @@ With the fix, replay makes the charges $`w_a`$ to $`w_k`$ in the same order, and
 ## 5. Reach and effect
 
 Every collection operation starts with a counter fire (`rholang/src/rust/interpreter/spaces/counter.rs:185-223`, [decision 31](../decision-register.md#decision-31)).
-Every deploy pays introduction charges: the interpreter enters the COMM accounting scope for each deploy (`rholang/src/rust/interpreter/interpreter.rs:229`), and the introduction charge applies in that scope (`rholang/src/rust/interpreter/accounting/mod.rs:1099-1111`).
+Every deploy pays introduction charges: the interpreter enters the COMM accounting scope for each deploy (`rholang/src/rust/interpreter/interpreter.rs:229`), and the introduction charge applies in that scope (`rholang/src/rust/interpreter/accounting/mod.rs:1191-1203`).
 So a plain deploy can run out of phlo inside any space transaction, and no cost-signed syntax is necessary.
 
 Before the fix, any user could make validators reject an honest block that held a space deploy.
@@ -187,9 +187,9 @@ The fix changes only two substrate files. Casper, the host, and the P4 agents do
 
 The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv) records the headlines and the invariants of the fix:
 
-- Headline H4 `verify_sound_complete` (`EventCorrelation.v:5356`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:5292`) stages a fire without its trigger event unpaired.
-- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:5322`) shows that an unpaired fire never commits, and that it emits no event and no effect.
-- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:6900`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
+- Headline H4 `verify_sound_complete` (`EventCorrelation.v:5359`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:5295`) stages a fire without its trigger event unpaired.
+- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:5325`) shows that an unpaired fire never commits, and that it emits no event and no effect.
+- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:6903`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
 - The new invariant T6 `ReplayOutcomeEqual` of `CheckpointReplay.tla` states that validators never reject an honest block. Its replayed deploy ends with the failure and the spending of play.
 - The Unsafe control `StagingDivergenceUnsafe.cfg` restores the rule of decision 19 and refutes exactly T6. The control `AcceptUnpairedUnsafe.cfg` commits an unpaired fire and refutes exactly T1.
 - Three Rocq mutants fail in the expected declarations: `ec-replay-fire-fails-at-staging`, `ec-unpaired-skips-observe-comm`, and `ec-unpaired-fire-commits`.
@@ -198,9 +198,9 @@ The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv)
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_space_txn_replay_divergence_typed_at_commit` | `rspace++/tests/reified_space_store_handle_props.rs:2396` | Property 5, renamed (H4, T3): an unpaired fire stages with no host call, and the commit fails at it with `ReplayDivergence` after its calls. |
-| `prop_space_txn_replay_requires_trigger_event` | `rspace++/tests/reified_space_store_handle_props.rs:2459` | Property 16 (H4): without its trigger event, a fire stages unpaired and fails at commit. |
-| `prop_space_txn_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle_props.rs:2467` | Property 25, new (H23, T6): replay rejects the call that play rejected, with the outcome, the calls, and the state of play. |
+| `prop_space_txn_replay_divergence_typed_at_commit` | `rspace++/tests/reified_space_store_handle_props.rs:2408` | Property 5, renamed (H4, T3): an unpaired fire stages with no host call, and the commit fails at it with `ReplayDivergence` after its calls. |
+| `prop_space_txn_replay_requires_trigger_event` | `rspace++/tests/reified_space_store_handle_props.rs:2474` | Property 16 (H4): without its trigger event, a fire stages unpaired and fails at commit. |
+| `prop_space_txn_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle_props.rs:2482` | Property 25, new (H23, T6): replay rejects the call that play rejected, with the outcome, the calls, and the state of play. |
 | `space_store_handle_replay_divergence_is_typed_at_commit` | `rspace++/tests/reified_space_store_handle.rs:1457` | The integration form of property 5, renamed. |
 | `space_store_handle_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle.rs:1947` | A sweep over every position of a fallible call (H23, T6). |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:821` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
@@ -228,15 +228,15 @@ The design pass compared other options:
 ### 7.1 Host replay skips a rejected COMM charge
 
 Host replay has the same mismatch when play rejects a COMM charge.
-It stores the produce, or parks the consume, and it skips the rejected charge (`rspace++/src/rspace/replay_rspace.rs:1124-1129`).
-A COMM is charged only when its cost authority has a non-Unit signature (`rholang/src/rust/interpreter/accounting/mod.rs:1666-1685`).
+It stores the produce, or parks the consume, and it skips the rejected charge (`rspace++/src/rspace/replay_rspace.rs:1214-1219`).
+A COMM is charged only when its cost authority has a non-Unit signature (`rholang/src/rust/interpreter/accounting/mod.rs:1794-1813`).
 So only deploys with cost-signed syntax reach this case.
 The pgmcp finding 9921 records it for the RSpace and cost-accounting owners.
 
 ### 7.2 A log that omits a COMM
 
 Replay follows the log as the schedule of the deploy.
-Host replay stores a datum whose COMM the log omits, and it does not look for a waiting match (`rspace++/src/rspace/replay_rspace.rs:1124-1129`).
+Host replay stores a datum whose COMM the log omits, and it does not look for a waiting match (`rspace++/src/rspace/replay_rspace.rs:1214-1219`).
 Space replay instead fails the deploy with `ReplayDivergence`, at commit since decision 36.
 Casper compares only the failed flag and the cost, so in both cases validators accept a log that omits a COMM.
 At the baseline, a proposer can thus suppress a COMM, and with spaces it can make a space deploy fail.

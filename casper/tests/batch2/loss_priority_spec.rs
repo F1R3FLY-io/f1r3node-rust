@@ -219,7 +219,7 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         .body
         .deploys
         .iter()
-        .any(|processed| processed.deploy.sig == starved_sig));
+        .any(|processed| processed.identity_bytes() == starved_sig.as_ref()));
 
     let second_contender = costly_write("second", 2, &contender_sec, &shard_id);
     let second_contender_sig = second_contender.sig.clone();
@@ -411,7 +411,7 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == starved_sig);
+            .any(|pd| pd.identity_bytes() == starved_sig.as_ref());
         let merge_rejected_starved = merge
             .body
             .rejected_deploys
@@ -587,7 +587,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
             .body
             .deploys
             .iter()
-            .any(|processed| processed.deploy.sig == starved_sig)
+            .any(|processed| processed.identity_bytes() == starved_sig.as_ref())
         {
             first_eligible_round.get_or_insert(round);
         }

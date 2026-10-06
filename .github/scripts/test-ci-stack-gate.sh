@@ -54,6 +54,7 @@ run_case() {
     PR_BASE_REF="$base_ref" \
     PR_HEAD_REF="$head_ref" \
     PR_HEAD_REPOSITORY="$head_repo" \
+    PR_HAS_HEAVY_LABEL="${PR_HAS_HEAVY_LABEL:-false}" \
     FAKE_CHILDREN="$children" \
     FAKE_PULL="$fake_pull" \
     FAKE_COMMIT="$TMP/commit.json" \
@@ -72,10 +73,17 @@ run_case() {
   fi
 }
 
-run_case standalone pull_request refs/pull/1/merge dev feature/one example/repository '[]' '' '' true
-run_case bottom-stack-with-child pull_request refs/pull/1/merge dev feature/one example/repository '[{}]' '' '' true
+run_case standalone pull_request refs/pull/1/merge dev feature/one example/repository '[]' '' '' false
+run_case bottom-stack-with-child pull_request refs/pull/1/merge dev feature/one example/repository '[{}]' '' '' false
 run_case upper-stack pull_request refs/pull/2/merge feature/one feature/two example/repository '[]' '' '' false
 run_case fork pull_request refs/pull/3/merge dev feature/three fork/repository '[]' '' '' false
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-pr pull_request refs/pull/1/merge dev feature/one example/repository '[]' '' '' true
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-fork pull_request refs/pull/3/merge dev feature/three fork/repository '[]' '' '' false
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-upper-stack pull_request refs/pull/2/merge feature/one feature/two example/repository '[]' '' '' false
+run_case merge-group merge_group refs/heads/gh-readonly-queue/dev/pr-1-abc '' '' '' '[]' '' '' true
 run_case dev-push push refs/heads/dev '' '' '' '[]' '' '' true
 run_case version-tag push refs/tags/v0.4.46 '' '' '' '[]' '' '' true
 run_case staging-push push refs/heads/staging '' '' '' '[]' '' '' false

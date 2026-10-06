@@ -9,14 +9,17 @@ use models::rhoapi::{
 };
 use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
-    new_gint_expr,
+    new_gfloat32_expr, new_gint_expr,
 };
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 use rspace_plus_plus::rspace::rspace::RSpace;
 
 fn gdouble_par(value: f64) -> Par { Par::default().with_exprs(vec![new_gdouble_expr(value)]) }
+
+fn gfloat32_par(value: f32) -> Par { Par::default().with_exprs(vec![new_gfloat32_expr(value)]) }
 
 fn bigint_par(bytes: Vec<u8>) -> Par { Par::default().with_exprs(vec![new_gbigint_expr(bytes)]) }
 
@@ -394,6 +397,165 @@ async fn float_comparison() {
         binop_expr!(eq, gdouble_par(3.14), gdouble_par(3.14)),
         new_gbool_expr(true)
     );
+}
+
+#[test]
+fn float_literals_other_than_f32_and_f64_are_rejected_at_compile_time() {
+    for source in [
+        r#"new so(`rho:io:stdout`) in { so!(1.0f128) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0f32 + 1.0f128) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1e39f32) }"#,
+    ] {
+        assert!(
+            matches!(
+                Compiler::source_to_adt(source),
+                Err(InterpreterError::NormalizerError(_))
+            ),
+            "expected NormalizerError for {source}"
+        );
+    }
+
+    for source in [
+        r#"new so(`rho:io:stdout`) in { so!(1.0f64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0 + 2.5f64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0f32 + 2.5f32) }"#,
+    ] {
+        assert!(
+            Compiler::source_to_adt(source).is_ok(),
+            "expected {source} to compile"
+        );
+    }
+}
+
+#[test]
+fn f32_literal_compiles_to_gfloat32() {
+    let par = Compiler::source_to_adt("@0!(1.5f32)").unwrap();
+    let data = &par.sends[0].data[0];
+    assert_eq!(data.exprs, vec![new_gfloat32_expr(1.5)]);
+}
+
+// ============================================================================
+// GFloat32
+// ============================================================================
+
+#[tokio::test]
+async fn float32_arithmetic_uses_f32_precision() {
+    let (r, e) = setup!();
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, gfloat32_par(16777216.0), gfloat32_par(1.0)),
+        new_gfloat32_expr(16777216.0)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, gdouble_par(16777216.0), gdouble_par(1.0)),
+        new_gdouble_expr(16777217.0)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, gfloat32_par(0.1), gfloat32_par(0.2)),
+        new_gfloat32_expr(0.1f32 + 0.2f32)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(minus, gfloat32_par(5.5), gfloat32_par(2.0)),
+        new_gfloat32_expr(3.5)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(mult, gfloat32_par(1.5), gfloat32_par(3.0)),
+        new_gfloat32_expr(4.5)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(div, gfloat32_par(1.0), gfloat32_par(3.0)),
+        new_gfloat32_expr(1.0f32 / 3.0f32)
+    );
+    assert_ok_expr!(r, e, neg_expr!(gfloat32_par(2.5)), new_gfloat32_expr(-2.5));
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(div, gfloat32_par(1.0), gfloat32_par(0.0)),
+        new_gfloat32_expr(f32::INFINITY)
+    );
+}
+
+#[tokio::test]
+async fn float32_modulo_rejected() {
+    let (r, e) = setup!();
+    assert_err!(
+        r,
+        e,
+        binop_expr!(modulo, gfloat32_par(5.0), gfloat32_par(2.0)),
+        "Modulus not defined on floating point"
+    );
+}
+
+#[tokio::test]
+async fn float32_comparison_and_nan() {
+    let (r, e) = setup!();
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(lt, gfloat32_par(1.0), gfloat32_par(2.0)),
+        new_gbool_expr(true)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(gte, gfloat32_par(2.0), gfloat32_par(2.0)),
+        new_gbool_expr(true)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(lt, gfloat32_par(f32::NAN), gfloat32_par(1.0)),
+        new_gbool_expr(false)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(eq, gfloat32_par(f32::NAN), gfloat32_par(f32::NAN)),
+        new_gbool_expr(false)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(eq, gfloat32_par(1.5), gfloat32_par(1.5)),
+        new_gbool_expr(true)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(eq, gfloat32_par(1.5), gdouble_par(1.5)),
+        new_gbool_expr(false)
+    );
+}
+
+#[tokio::test]
+async fn float32_and_float64_do_not_mix() {
+    let (r, e) = setup!();
+    for input in [
+        binop_expr!(plus, gfloat32_par(1.0), gdouble_par(1.0)),
+        binop_expr!(plus, gdouble_par(1.0), gfloat32_par(1.0)),
+        binop_expr!(minus, gfloat32_par(1.0), gdouble_par(1.0)),
+        binop_expr!(mult, gfloat32_par(1.0), gdouble_par(1.0)),
+        binop_expr!(div, gfloat32_par(1.0), gdouble_par(1.0)),
+        binop_expr!(lt, gfloat32_par(1.0), gdouble_par(1.0)),
+        binop_expr!(plus, gfloat32_par(1.0), gint_par(1)),
+    ] {
+        assert!(
+            r.eval_expr(&input, &e).is_err(),
+            "expected error for {input:?}"
+        );
+    }
 }
 
 // ============================================================================

@@ -119,7 +119,7 @@ async fn play_system_deploy_timed<S: SystemDeployTrait>(
     start_state: &StateHash,
     system_deploy: &mut S,
 ) -> Result<(StateHash, std::time::Duration), CasperError> {
-    let runtime = runtime_manager.spawn_runtime().await;
+    let runtime = runtime_manager.spawn_runtime().await.unwrap();
     runtime
         .set_block_data(BlockData {
             time_stamp: 0,
@@ -481,7 +481,7 @@ async fn time_replay_per_deploy(
     start_state: &StateHash,
     processed_deploy: &ProcessedDeploy,
 ) -> Result<ReplayPhaseTimings, CasperError> {
-    let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+    let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
     replay_runtime
         .set_block_data(BlockData {
             time_stamp: processed_deploy.deploy.data.time_stamp,
@@ -756,7 +756,7 @@ async fn replay_phase_telemetry_reports_empty_block_work() {
 
     with_runtime_manager(
         |runtime_manager, _genesis_context, genesis_block| async move {
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
             let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
             replay_ops
                 .replay_deploys(
@@ -904,7 +904,7 @@ async fn measure_block_replay_cost() {
                 }
 
                 // One replay runtime per block, mirroring production.
-                let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+                let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
                 replay_runtime.set_block_data(block_data).await;
                 let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
                 replay_ops

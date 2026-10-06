@@ -68,6 +68,8 @@ WRAPPED_BY[FundedPrepaidSettlementZero]=FundedPrepaidSettlement
 WRAPPED_BY[JointFundingSettlementZeroResource]=JointFundingSettlement
 WRAPPED_BY[FamilyCursorSettlementUnrestricted]=FamilyCursorSettlement
 WRAPPED_BY[AtomicTrieUpsertNil]=AtomicTrieUpsert
+WRAPPED_BY[OfferedCandidateQuarantineLarge]=OfferedCandidateQuarantine
+WRAPPED_BY[NativeCandidateOrderLarge]=NativeCandidateOrder
 WRAPPED_BY[CompoundProtocol]=MCCompound
 WRAPPED_BY[CompoundSettlement]=MCCompoundSettlement
 WRAPPED_BY[CostAccountedRho]=MC
@@ -112,6 +114,10 @@ WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
 declare -A EXPECTED_REFUTATION_WRAPPER
 declare -A EXPECTED_REFUTATION_INVARIANT
 EXPECTED_REFUTATION_WRAPPER[NativeReplayAuthorityDebitUnsafe]=MCNativeReplayAuthority
+EXPECTED_REFUTATION_WRAPPER[StateBoundCandidateFundingStaleUnsafe]=StateBoundCandidateFunding
+EXPECTED_REFUTATION_INVARIANT[StateBoundCandidateFundingStaleUnsafe]=BalanceConservation
+EXPECTED_REFUTATION_WRAPPER[AtomicQuoteSharedCapacityStaleUnsafe]=AtomicQuoteSharedCapacity
+EXPECTED_REFUTATION_INVARIANT[AtomicQuoteSharedCapacityStaleUnsafe]=PhysicalConservation
 EXPECTED_REFUTATION_INVARIANT[NativeReplayAuthorityDebitUnsafe]=ExactAuthority
 EXPECTED_REFUTATION_WRAPPER[NativeReplayAuthorityRestoreUnsafe]=MCNativeReplayAuthority
 EXPECTED_REFUTATION_INVARIANT[NativeReplayAuthorityRestoreUnsafe]=ExactAuthority
@@ -937,6 +943,26 @@ EXPECTED_REFUTATION_WRAPPER[MintedEpochFrontierClearRedemptionUnsafe]=MintedEpoc
 EXPECTED_REFUTATION_INVARIANT[MintedEpochFrontierClearRedemptionUnsafe]=LifecyclePreservesFrontier
 EXPECTED_REFUTATION_WRAPPER[MintedEpochFrontierRetroactiveMintUnsafe]=MintedEpochFrontier
 EXPECTED_REFUTATION_INVARIANT[MintedEpochFrontierRetroactiveMintUnsafe]=LifecycleDoesNotMint
+EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineEscapeUnsafe]=OfferedCandidateQuarantine
+EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineEscapeUnsafe]=NoCandidateErrorEscapes
+EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineOverremoveUnsafe]=OfferedCandidateQuarantine
+EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineOverremoveUnsafe]=RemovedOnlyByInclusionOrQuarantine
+EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineUnboundedUnsafe]=OfferedCandidateQuarantine
+EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineUnboundedUnsafe]=AttemptsBounded
+EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineNoEvictUnsafe]=OfferedCandidateQuarantine
+EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineNoEvictUnsafe]=LogBounded
+EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineSkipHeadUnsafe]=OfferedCandidateQuarantine
+EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineSkipHeadUnsafe]=FirstFundableIncluded
+EXPECTED_REFUTATION_WRAPPER[NativeCandidateOrderIndexOnlyUnsafe]=NativeCandidateOrder
+EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderIndexOnlyUnsafe]=InsertionIndependent
+EXPECTED_REFUTATION_WRAPPER[NativeCandidateOrderSourceOnlyUnsafe]=NativeCandidateOrder
+EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderSourceOnlyUnsafe]=InsertionIndependent
+EXPECTED_REFUTATION_WRAPPER[NativeCandidateOrderReplayNoTieBreakUnsafe]=NativeCandidateOrder
+EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderReplayNoTieBreakUnsafe]=PlayReplayAgree
+EXPECTED_REFUTATION_WRAPPER[NativeSharedReadCleanupFillWithoutPrepayUnsafe]=NativeSharedReadCleanup
+EXPECTED_REFUTATION_INVARIANT[NativeSharedReadCleanupFillWithoutPrepayUnsafe]=LivePrepaid
+EXPECTED_REFUTATION_WRAPPER[NativeSharedReadCleanupStoreWithoutPrepayUnsafe]=NativeSharedReadCleanup
+EXPECTED_REFUTATION_INVARIANT[NativeSharedReadCleanupStoreWithoutPrepayUnsafe]=EntriesPrepaid
 
 # Collect all .cfg files whose paired .tla module exists.
 specs=()
@@ -967,6 +993,9 @@ done
 
 matching_external=0
 if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
+    matching_external=$((matching_external + 1))
+fi
+if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
     matching_external=$((matching_external + 1))
 fi
 if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]]; then
@@ -1195,6 +1224,45 @@ if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
         failed_specs+=("EvaluationBoundary_cancel(expected-refutation)")
         echo "$boundary_output" | tail -10 | sed 's/^/    /'
     fi
+fi
+
+if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
+    counted_module="$REDUCTION_TLA_DIR/CountedDetachedReduction.tla"
+    counted_safe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction.cfg"
+    printf "  %-40s " "CountedDetachedReduction"
+    counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction" \
+        "$counted_safe" "$counted_module" -deadlock 2>&1 || true)
+    if grep -q "Model checking completed. No error has been found" <<<"$counted_output"; then
+        echo "PASS"
+        passes=$((passes + 1))
+    else
+        echo "FAIL"
+        failures=$((failures + 1))
+        failed_specs+=("CountedDetachedReduction")
+        echo "$counted_output" | tail -10 | sed 's/^/    /'
+    fi
+
+    for control in count charge permit; do
+        counted_unsafe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction_${control}_unsafe.cfg"
+        case "$control" in
+            count) expected_invariant="CountExact" ;;
+            charge) expected_invariant="ChargeEqual" ;;
+            permit) expected_invariant="PermitUntilQuiescence" ;;
+        esac
+        printf "  %-40s " "CountedDetachedReduction_${control} (expected refutation)"
+        counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction_${control}" \
+            "$counted_unsafe" "$counted_module" -deadlock 2>&1 || true)
+        if grep -Fq "Invariant $expected_invariant is violated" <<<"$counted_output"; then
+            echo "PASS (refuted $expected_invariant)"
+            passes=$((passes + 1))
+            expected_refutations=$((expected_refutations + 1))
+        else
+            echo "FAIL (expected $expected_invariant counterexample)"
+            failures=$((failures + 1))
+            failed_specs+=("CountedDetachedReduction_${control}(expected-refutation)")
+            echo "$counted_output" | tail -10 | sed 's/^/    /'
+        fi
+    done
 fi
 
 # ─────────────────────────────────────────────────────────────────────────

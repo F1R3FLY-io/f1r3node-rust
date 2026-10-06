@@ -49,6 +49,13 @@ use super::{io_msg_scrub, QuarantineError, SafeParent};
 /// on the opened fd is compared against `root.identity()`; a mismatch
 /// surfaces `QuarantineError::RootIdentityChanged`.
 ///
+/// Thin wrapper over [`safe_descend_verified`] that threads the
+/// `Root`'s captured identity through as the `Some` branch of the
+/// `expected_root_id` parameter.  Prefer this entry point for
+/// boot-path handlers that already have a `Root` on hand;
+/// [`safe_descend_verified`] is the right entry point for WAL
+/// replay sites that resolve identity on a per-entry basis.
+///
 /// # TOCTOU-immunity contract
 ///
 /// The `SafeParent.dirfd` returned is bound to the exact path
@@ -68,6 +75,41 @@ use super::{io_msg_scrub, QuarantineError, SafeParent};
 /// the node user does not have write access to the root's parent
 /// chain).
 pub fn safe_descend(root: &Root, rel: &str) -> Result<SafeParent, QuarantineError> {
+    safe_descend_verified(root.path(), rel, Some(root.identity()))
+}
+
+/// Explicit-identity variant of [`safe_descend`].  Takes
+/// `(root: &Path, rel: &str, expected_root_id: Option<(u64, u64)>)`
+/// so WAL replay sites — which resolve `(root, rel, identity)` per
+/// entry from a boot-time `RootIdentityRegistry` lookup — can pass
+/// the triple directly without reconstructing a `Root` on every
+/// call.
+///
+/// # When `expected_root_id = None`
+///
+/// Skips the H-5 identity check (does not fstat the opened root).
+/// Appropriate ONLY for callers that have already enforced
+/// out-of-band root integrity (e.g., operator-frozen tempdir
+/// roots in test harnesses).  Production replay sites that resolve
+/// a root through the registry MUST pass `Some((dev, ino))` — a
+/// `None` there would silently drop the rename-and-recreate
+/// defense.
+///
+/// # When `expected_root_id = Some((dev, ino))`
+///
+/// Matches [`safe_descend`]'s H-5 behavior: after opening the
+/// root, fstat it and compare against the expected pair.
+/// Mismatch surfaces `QuarantineError::RootIdentityChanged` and
+/// aborts the descent before any `*at` syscall against the
+/// (possibly attacker-populated) new tree.
+///
+/// The TOCTOU-immunity contract and residual-threat caveat on
+/// [`safe_descend`] apply identically here.
+pub fn safe_descend_verified(
+    root: &Path,
+    rel: &str,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<SafeParent, QuarantineError> {
     if rel.is_empty() {
         return Err(QuarantineError::Empty);
     }
@@ -100,16 +142,18 @@ pub fn safe_descend(root: &Root, rel: &str) -> Result<SafeParent, QuarantineErro
     // symlink-swap on the root path fails cleanly (ELOOP on Linux,
     // ENOTDIR on macOS — both map to `SymlinkComponent`).  What
     // this does NOT close: rename-and-recreate.  That's the H-5
-    // defense below.
-    let cur = open_dir(root.path(), true)?;
+    // defense below (only when expected_root_id is Some).
+    let cur = open_dir(root, true)?;
 
-    // H-5: verify the opened root's identity matches the pair
-    // `Root::capture` recorded at boot.  Detects rename-and-recreate:
-    // a fresh mkdir yields a new inode, so `actual != root.identity()`
-    // and we bail before landing in an attacker's tree.
-    let actual = fstat_dev_inode(cur.as_raw_fd())?;
-    if actual != root.identity() {
-        return Err(QuarantineError::RootIdentityChanged);
+    // H-5: verify the opened root's identity matches the caller-
+    // supplied expected pair.  Detects rename-and-recreate: a
+    // fresh mkdir yields a new inode, so `actual != expected` and
+    // we bail before landing in an attacker's tree.
+    if let Some(expected) = expected_root_id {
+        let actual = fstat_dev_inode(cur.as_raw_fd())?;
+        if actual != expected {
+            return Err(QuarantineError::RootIdentityChanged);
+        }
     }
 
     let mut cur = cur;
@@ -550,5 +594,148 @@ mod tests {
             }
             other => panic!("expected IoError(InvalidInput), got {other:?}"),
         }
+    }
+
+    // ---------------------------------------------------------------
+    // safe_descend_verified — explicit-identity variant
+    // ---------------------------------------------------------------
+
+    /// `safe_descend_verified` with `None` SKIPs the H-5 identity
+    /// check: it opens the root at its current `(dev, inode)` and
+    /// proceeds without comparing against any boot-captured value.
+    /// Appropriate for test harnesses that don't need rename-and-
+    /// recreate defense.
+    #[test]
+    fn safe_descend_verified_with_none_skips_identity_check() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("rootless");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"content").unwrap();
+
+        // No identity captured ahead of time — None means skip the check.
+        let sp = safe_descend_verified(&root_path, "leaf.txt", None).unwrap();
+        assert!(sp.leaf.to_bytes() == b"leaf.txt");
+    }
+
+    /// `safe_descend_verified` with `Some(matching)` passes the
+    /// check and succeeds.
+    #[test]
+    fn safe_descend_verified_with_matching_identity_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("checked");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"content").unwrap();
+
+        // Capture the root's current (dev, ino) by stat.
+        use std::os::unix::fs::MetadataExt;
+        let md = fs::metadata(&root_path).unwrap();
+        let expected = (md.dev(), md.ino());
+
+        let sp = safe_descend_verified(&root_path, "leaf.txt", Some(expected)).unwrap();
+        assert!(sp.leaf.to_bytes() == b"leaf.txt");
+    }
+
+    /// `safe_descend_verified` with `Some(mismatched)` surfaces
+    /// `RootIdentityChanged` even if the path still resolves — the
+    /// H-5 defense is active for the explicit-identity entry point
+    /// identically to [`safe_descend`].
+    #[test]
+    fn safe_descend_verified_with_mismatched_identity_returns_root_identity_changed() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("mismatched");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"content").unwrap();
+
+        // Supply a bogus (dev, ino) that cannot match the real root.
+        let bogus = (u64::MAX, u64::MAX);
+        assert_err(
+            safe_descend_verified(&root_path, "leaf.txt", Some(bogus)),
+            QuarantineError::RootIdentityChanged,
+        );
+    }
+
+    /// `safe_descend_verified(.., None)` IS vulnerable to rename-
+    /// and-recreate (that's its documented posture — identity check
+    /// is opt-in).  Pin the behavior so a future contributor
+    /// thinking "I'll add an unconditional check for safety"
+    /// surfaces this intent before weakening the None-caller
+    /// semantics.
+    #[test]
+    fn safe_descend_verified_with_none_follows_rename_and_recreate_by_design() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("legit");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"real").unwrap();
+
+        // Rename-and-recreate.
+        let backup = tmp.path().join("legit.bak");
+        fs::rename(&root_path, &backup).unwrap();
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"attacker").unwrap();
+
+        // None skips identity → the descent silently lands in the
+        // fresh (attacker-populated) tree.  That's the documented
+        // posture; `safe_descend` (via `&Root`) is the H-5-protected
+        // entry point.
+        let sp = safe_descend_verified(&root_path, "leaf.txt", None).unwrap();
+        assert!(sp.leaf.to_bytes() == b"leaf.txt");
+    }
+
+    /// `safe_descend` (the `&Root` entry point) MUST remain
+    /// equivalent to `safe_descend_verified(root.path(), rel,
+    /// Some(root.identity()))` — the refactor's structural
+    /// invariant.  Pins the delegation so a future divergence
+    /// (e.g., `safe_descend` growing an extra check that
+    /// `safe_descend_verified` doesn't share) surfaces here.
+    #[test]
+    fn safe_descend_matches_safe_descend_verified_with_captured_identity() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("delegation");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"content").unwrap();
+        let root = Root::capture(&root_path).unwrap();
+
+        let via_root = safe_descend(&root, "leaf.txt").unwrap();
+        let via_explicit =
+            safe_descend_verified(&root_path, "leaf.txt", Some(root.identity())).unwrap();
+        // Both resolved to the same leaf CString; dirfd equality is
+        // not observable (different fd numbers), but the leaf and
+        // success-vs-error should match.
+        assert_eq!(via_root.leaf.to_bytes(), via_explicit.leaf.to_bytes());
+    }
+
+    /// Completes the delegation equivalence story: both entry
+    /// points MUST surface the same error variant on the same
+    /// H-5-failure scenario (rename-and-recreate).  Pure-code-
+    /// sharing argues this must hold, but a future refactor that
+    /// accidentally diverged the two paths' error-mapping (e.g.,
+    /// `safe_descend` growing bespoke diagnostics around the
+    /// identity check) would surface here instead of silently
+    /// changing operator-facing behavior across the two
+    /// entry points.
+    #[test]
+    fn safe_descend_and_verified_both_return_root_identity_changed_on_h5_failure() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("victim");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"real").unwrap();
+        let root = Root::capture(&root_path).unwrap();
+        let captured_id = root.identity();
+
+        // Rename-and-recreate: fresh mkdir yields a new inode.
+        let backup = tmp.path().join("victim.bak");
+        fs::rename(&root_path, &backup).unwrap();
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"attacker").unwrap();
+
+        // Both entry points MUST surface RootIdentityChanged.
+        assert_err(
+            safe_descend(&root, "leaf.txt"),
+            QuarantineError::RootIdentityChanged,
+        );
+        assert_err(
+            safe_descend_verified(&root_path, "leaf.txt", Some(captured_id)),
+            QuarantineError::RootIdentityChanged,
+        );
     }
 }

@@ -30,9 +30,11 @@ IEEE 754 double-precision (f64). Stored as raw bits (`fixed64` in protobuf) to p
 
 ```rho
 3.14f64
-2.5f32       // f32 suffix (stored as f64 internally)
+3.14         // unsuffixed float literal is f64
 -0.0f64
 ```
+
+The `f32` suffix gives a different type, Float32 (see below). The compiler rejects other widths, for example `1.0f128`, with a normalizer error.
 
 ### IEEE 754 Semantics
 
@@ -53,6 +55,23 @@ NaN detection is recursive: `[NaN] == [NaN]` is also `false`.
 ### Float Modulo
 
 **Not supported.** Returns error: `"modulus not defined on floating point"`.
+
+## Float32 (GFloat32)
+
+IEEE 754 single-precision (f32). Stored as raw bits (`fixed32` in protobuf). Suffix: `f32`.
+
+```rho
+2.5f32
+16777216.0f32 + 1.0f32   // 16777216.0f32 (f32 has a 24-bit significand)
+16777216.0f64 + 1.0f64   // 16777217.0f64
+1.0f32 + 1.0f64          // ERROR: Float32 + Float
+```
+
+- Arithmetic and comparisons compute in f32. Each operation rounds to f32.
+- Float32 and Float (f64) are different types. A mix of the two is an error.
+- The IEEE 754 rules for Inf, NaN and modulo are the same as for Float.
+- A literal that is out of range for f32 (for example `1e39f32`) is a normalizer error.
+- The printer shows the `f32` suffix: `2.5f32`.
 
 ## BigInt (GBigInt)
 
@@ -217,6 +236,7 @@ All binary operations require matching types. None of these work:
 42 + 3.14f64             // ERROR: Int + Float
 100n + 42                // ERROR: BigInt + Int
 1r / 2r + 0.5f64         // ERROR: BigRat + Float
+1.0f32 + 1.0f64          // ERROR: Float32 + Float
 1.5p1 + 1.50p2           // ERROR: scale mismatch (even within FixedPoint)
 ```
 
@@ -226,6 +246,7 @@ All binary operations require matching types. None of these work:
 |------|-------------|----------|
 | Int | `g_int` (int64) | Direct |
 | Float | `g_double` (fixed64) | Raw IEEE 754 bits |
+| Float32 | `g_float32` (fixed32) | Raw IEEE 754 bits |
 | BigInt | `g_big_int` (bytes) | Big-endian two's complement |
 | BigRat | `g_big_rat` { numerator, denominator } | Both big-endian two's complement bytes |
 | FixedPoint | `g_fixed_point` { unscaled, scale } | unscaled: big-endian two's complement bytes; scale: uint32 |

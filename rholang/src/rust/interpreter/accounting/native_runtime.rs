@@ -6,8 +6,8 @@ use rspace_plus_plus::rspace::operation_context;
 use super::byte_accounting::{ByteCharge, BYTE_COST_SCHEDULE_V1};
 use super::byte_receipts::ByteObservation;
 use super::native_phlo_rules::{
-    NativeBudgetOccurrence, NativeBudgetTraceLimits, NativePhloExecutionContract,
-    NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
+    NativeBudgetTraceLimits, NativePhloExecutionContract, NativePhloExecutionError,
+    NativePhloReservation, PreparedNativePhloCharge,
 };
 use super::{AuthorityRuntimeState, BillableKind, RuntimeBudget, Token};
 use crate::rust::interpreter::errors::InterpreterError;
@@ -17,8 +17,10 @@ mod recording;
 mod operation_sources;
 mod operations;
 pub(super) mod index;
+mod path_trie;
 mod checked_operations;
 mod replay_authority;
+mod wire;
 pub(crate) mod clone_backing;
 pub use checked_operations::{
     CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeOperationJournalError,
@@ -34,9 +36,14 @@ pub use operation_sources::{
 pub use operations::{
     NativeCommRecord, NativeObservationLink, NativeOperationOccurrence, NativeOperationRecord,
 };
+pub use path_trie::{NativePathTrie, PathId};
 use recording::{recording_error, work, NativeBudgetRecorder, NativeObservationPreparation};
 pub use recording::{NativeBudgetRecording, NativeBudgetRetry};
 pub(crate) use replay_authority::NativeAuthorityCheckpoint;
+pub use wire::{
+    decode_native_budget_recording, decode_native_operation_journal,
+    encode_native_budget_recording, encode_native_operation_journal, NativeRecordingWireLimits,
+};
 
 pub struct NativeRuntimeConfig {
     replay_bound: bool,
@@ -71,6 +78,14 @@ impl NativeRuntimeConfig {
 }
 
 impl RuntimeBudget {
+    pub fn native_execution_active(&self) -> bool {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .is_some()
+    }
+
     pub(crate) fn native_host_work(&self) -> Option<HostWorkBudget> {
         self.authority_state
             .lock()
@@ -193,9 +208,19 @@ impl RuntimeBudget {
                     .checked_mul(std::mem::size_of::<(u64, u64)>())
                     .ok_or(InterpreterError::HostWorkRejected)?,
             )?;
-            let occurrence = NativeBudgetOccurrence {
+            // Changed by C7b (DR-86): the producer records a copied path; the
+            // captured evidence names its trie node.
+            // let occurrence = NativeBudgetOccurrence {
+            let occurrence = recording::RecordedOccurrence {
                 session,
                 path: order.path.to_vec(),
+                stage: observation.kind.into(),
+            };
+            let occurrence_key = index::OccurrenceKey {
+                session,
+                digest: order.path.digest(),
+                depth: order.path.len(),
+                last: order.path.last_segment(),
                 stage: observation.kind.into(),
             };
             let comparison_bytes =
@@ -216,6 +241,7 @@ impl RuntimeBudget {
             Ok(Some(NativeObservationPreparation {
                 generation: Arc::clone(&generation),
                 occurrence,
+                occurrence_key,
                 observation: Arc::clone(observation),
                 charge,
                 comparison_bytes,

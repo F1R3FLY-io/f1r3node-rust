@@ -1,27 +1,13 @@
 {
-  "capture_command": "export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/verification/reified-rspaces/p1-closeout/capture-ordinary/fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test -p rholang --test reified_ordinary_regression > target/verification/reified-rspaces/p1-closeout/capture-ordinary/capture.log 2>&1",
-  "captured_at_revision": "11c39d77d79d4b1a2b3753599115a8b458125923",
-  "code_identical_to": "e748426 except the P1 substrate modules, which ordinary execution never calls (footprint policy p1)",
+  "capture_command": "git archive 4d67b5ccc | tar -x -C target/scratch/base-4d67b5ccc && cp rholang/tests/reified_ordinary_regression.rs target/scratch/base-4d67b5ccc/rholang/tests/ && cd target/scratch/base-4d67b5ccc && export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/capture/ordinary-fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_ordinary_regression > target/capture/ordinary.log 2>&1",
+  "captured_at_revision": "4d67b5ccc42c4e510162d075f7ed423bf8175563",
+  "code_identical_to": "4d67b5ccc42c4e510162d075f7ed423bf8175563, the tip of feature/cost-accounted-rho that the campaign merged on 2026-10-05: the capture ran in a clean export of that commit (git archive), with the campaign's harness file copied in, so no Reified code was present",
   "deterministic_candidates": {
     "continuations": {
       "bodies": [
         {
           "body": {
-            "par": "\"rrs-dc-fired\"!(1, x-1)"
-          },
-          "guard": null,
-          "has_cost_authority": true
-        },
-        {
-          "body": {
             "par": "\"rrs-dc-fired\"!(3, x-1)"
-          },
-          "guard": null,
-          "has_cost_authority": true
-        },
-        {
-          "body": {
-            "par": "\"rrs-dc-fired\"!(0, x-1)"
           },
           "guard": null,
           "has_cost_authority": true
@@ -35,6 +21,20 @@
         },
         {
           "body": {
+            "par": "\"rrs-dc-fired\"!(5, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(1, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
+        {
+          "body": {
             "par": "\"rrs-dc-fired\"!(4, x-1)"
           },
           "guard": null,
@@ -42,27 +42,27 @@
         },
         {
           "body": {
-            "par": "\"rrs-dc-fired\"!(5, x-1)"
+            "par": "\"rrs-dc-fired\"!(0, x-1)"
           },
           "guard": null,
           "has_cost_authority": true
         }
       ],
       "fired": [
-        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
         "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
-        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5",
         "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
+        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded",
+        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
         "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
-        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded"
+        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5"
       ],
       "ranked_hashes": [
-        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
         "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
-        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5",
         "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
+        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded",
+        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
         "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
-        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded"
+        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5"
       ],
       "sends": [
         "@\"rrs-dc-cont\"!(0)",
@@ -76,26 +76,29 @@
     },
     "data": {
       "ranked_hashes": [
-        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096",
+        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
+        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
         "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
         "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
-        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
-        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
-        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4"
+        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4",
+        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096"
       ],
       "source": "@\"rrs-dc-data\"!(0) | @\"rrs-dc-data\"!(1) | @\"rrs-dc-data\"!(2) | @\"rrs-dc-data\"!(3) | @\"rrs-dc-data\"!(4) | @\"rrs-dc-data\"!(5)",
       "take_source": "for (@x <- @\"rrs-dc-data\") { Nil }",
       "taken": [
-        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096",
+        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
+        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
         "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
         "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
-        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
-        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
-        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4"
+        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4",
+        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096"
       ],
       "values": [
         [
-          "1"
+          "5"
+        ],
+        [
+          "2"
         ],
         [
           "0"
@@ -104,13 +107,10 @@
           "4"
         ],
         [
-          "2"
-        ],
-        [
-          "5"
-        ],
-        [
           "3"
+        ],
+        [
+          "1"
         ]
       ]
     }
@@ -828,24 +828,24 @@
       },
       "deterministic_data_order": [
         [
-          "[7, 6]"
+          "[1, 9]"
         ],
         [
-          "[1, 9]"
+          "[7, 6]"
         ]
       ],
       "greedy_assignment": [
-        1,
-        0
+        0,
+        1
       ],
       "match_matrix": [
         [
-          false,
-          true
-        ],
-        [
           true,
           false
+        ],
+        [
+          false,
+          true
         ]
       ],
       "normalized_bind_patterns": [
@@ -992,7 +992,7 @@
           {
             "channel_hash": "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
             "failed": false,
-            "hash": "22de7bd210d1f8805fdd3b791a80007e59268c06033c0e6f8015f1b43125ad84",
+            "hash": "a8e23494e8b18233f809c41d340fb226573aafd6377fb3f8bf28a02c4dfec485",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -1018,7 +1018,7 @@
           "[1, 6]"
         ],
         [
-          "[1, 5]"
+          "[1, 1]"
         ]
       ],
       "greedy_assignment": null,
@@ -1481,13 +1481,13 @@
             "ReductionSteps": 1,
             "ReductionTermBytes": 90,
             "SearchCandidates": 0,
-            "SearchStateBytes": 19054,
+            "SearchStateBytes": 20614,
             "StructuralBytes": 210,
             "StructuralItems": 1,
             "SubstitutionBindings": 0,
             "SubstitutionBytes": 25,
-            "VerificationBytes": 2289304,
-            "VerificationOperations": 286770,
+            "VerificationBytes": 55227,
+            "VerificationOperations": 7973,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1547,13 +1547,13 @@
             "ReductionSteps": 4,
             "ReductionTermBytes": 274,
             "SearchCandidates": 0,
-            "SearchStateBytes": 140295,
+            "SearchStateBytes": 149054,
             "StructuralBytes": 858,
             "StructuralItems": 3,
             "SubstitutionBindings": 4,
             "SubstitutionBytes": 209,
-            "VerificationBytes": 9623236,
-            "VerificationOperations": 1186322,
+            "VerificationBytes": 648115,
+            "VerificationOperations": 68554,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1611,13 +1611,13 @@
             "ReductionSteps": 2,
             "ReductionTermBytes": 286,
             "SearchCandidates": 0,
-            "SearchStateBytes": 19034,
+            "SearchStateBytes": 20594,
             "StructuralBytes": 343,
             "StructuralItems": 1,
             "SubstitutionBindings": 6,
             "SubstitutionBytes": 96,
-            "VerificationBytes": 2289259,
-            "VerificationOperations": 286770,
+            "VerificationBytes": 55182,
+            "VerificationOperations": 7973,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1677,13 +1677,13 @@
             "ReductionSteps": 4,
             "ReductionTermBytes": 280,
             "SearchCandidates": 0,
-            "SearchStateBytes": 110598,
+            "SearchStateBytes": 115356,
             "StructuralBytes": 520,
             "StructuralItems": 1,
             "SubstitutionBindings": 12,
             "SubstitutionBytes": 186,
-            "VerificationBytes": 7128204,
-            "VerificationOperations": 884999,
+            "VerificationBytes": 405310,
+            "VerificationOperations": 46553,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1748,13 +1748,13 @@
             "ReductionSteps": 4,
             "ReductionTermBytes": 320,
             "SearchCandidates": 0,
-            "SearchStateBytes": 207631,
+            "SearchStateBytes": 216225,
             "StructuralBytes": 762,
             "StructuralItems": 1,
             "SubstitutionBindings": 7,
             "SubstitutionBytes": 199,
-            "VerificationBytes": 9739280,
-            "VerificationOperations": 1195335,
+            "VerificationBytes": 751997,
+            "VerificationOperations": 76313,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1816,13 +1816,13 @@
             "ReductionSteps": 3,
             "ReductionTermBytes": 144,
             "SearchCandidates": 0,
-            "SearchStateBytes": 125393,
+            "SearchStateBytes": 133479,
             "StructuralBytes": 611,
             "StructuralItems": 2,
             "SubstitutionBindings": 2,
             "SubstitutionBytes": 114,
-            "VerificationBytes": 9461881,
-            "VerificationOperations": 1173752,
+            "VerificationBytes": 505053,
+            "VerificationOperations": 56539,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1883,13 +1883,13 @@
             "ReductionSteps": 5,
             "ReductionTermBytes": 289,
             "SearchCandidates": 0,
-            "SearchStateBytes": 255820,
+            "SearchStateBytes": 272544,
             "StructuralBytes": 1123,
             "StructuralItems": 3,
             "SubstitutionBindings": 4,
             "SubstitutionBytes": 243,
-            "VerificationBytes": 16669022,
-            "VerificationOperations": 2067291,
+            "VerificationBytes": 1028482,
+            "VerificationOperations": 111957,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -1949,13 +1949,13 @@
             "ReductionSteps": 3,
             "ReductionTermBytes": 188,
             "SearchCandidates": 0,
-            "SearchStateBytes": 119716,
+            "SearchStateBytes": 124474,
             "StructuralBytes": 606,
             "StructuralItems": 2,
             "SubstitutionBindings": 2,
             "SubstitutionBytes": 158,
-            "VerificationBytes": 7166513,
-            "VerificationOperations": 885235,
+            "VerificationBytes": 437489,
+            "VerificationOperations": 46857,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -2013,13 +2013,13 @@
             "ReductionSteps": 1,
             "ReductionTermBytes": 41,
             "SearchCandidates": 0,
-            "SearchStateBytes": 19490,
+            "SearchStateBytes": 21050,
             "StructuralBytes": 151,
             "StructuralItems": 1,
             "SubstitutionBindings": 0,
             "SubstitutionBytes": 29,
-            "VerificationBytes": 2298512,
-            "VerificationOperations": 286946,
+            "VerificationBytes": 64435,
+            "VerificationOperations": 8145,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -2077,13 +2077,13 @@
             "ReductionSteps": 1,
             "ReductionTermBytes": 23,
             "SearchCandidates": 0,
-            "SearchStateBytes": 19030,
+            "SearchStateBytes": 20590,
             "StructuralBytes": 114,
             "StructuralItems": 1,
             "SubstitutionBindings": 0,
             "SubstitutionBytes": 19,
-            "VerificationBytes": 2289258,
-            "VerificationOperations": 286770,
+            "VerificationBytes": 55181,
+            "VerificationOperations": 7973,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },
@@ -2133,7 +2133,9 @@
           "comm_identity_counts": [
             2
           ],
-          "errors": [],
+          "errors": [
+            "ReduceError(\"native funded execution forbids external service calls\")"
+          ],
           "host_work_rejection": "None",
           "host_work_usage": {
             "AuthorityDepth": 4,
@@ -2143,13 +2145,13 @@
             "ReductionSteps": 2,
             "ReductionTermBytes": 112,
             "SearchCandidates": 0,
-            "SearchStateBytes": 66417,
+            "SearchStateBytes": 68741,
             "StructuralBytes": 279,
             "StructuralItems": 1,
             "SubstitutionBindings": 2,
             "SubstitutionBytes": 41,
-            "VerificationBytes": 2419682,
-            "VerificationOperations": 298506,
+            "VerificationBytes": 173930,
+            "VerificationOperations": 19085,
             "WitnessBytes": 0,
             "WitnessFields": 0
           },

@@ -59,7 +59,7 @@ R_{\mathrm{out}}=H_{\mathrm{out}}-y.
 
 Each subtraction requires a proved nonnegative result in that source's own asset units.
 Input and output quantities are not interchangeable merely because their numeric values match.
-The input decomposition must account for every transfer and conversion-fee recipient required by the captured quote.
+The input decomposition must account for every transfer and the explicit signed conversion-fee recipient in the captured V2 quote.
 The output decomposition must identify its approved resource acquisition, fee, or other retained funding obligation.
 
 Only the exact quoted input for the retained output is converted.
@@ -175,6 +175,8 @@ The native integration must preserve that function's meaning through actual cust
 It checks that burn plus fee fits the corresponding allocation.
 Those current native fields do not encode the complete multi-asset quote and acquisition provenance required here.
 Extending the integration must preserve those safety checks without interpreting address equality as arbitrary asset equivalence.
+
+The native [`accepted_trade` reader and planner](../../../../casper/src/rust/util/rholang/costacc/conversion/accepted_trade.rs) use the borrowed, metered history reader to inspect one canonical receipt under an authenticated state root. A separate-prior plan binds the receipt's output asset, physical custody, source identity, and exact old unspent amount, then computes an old-to-new receipt value for the realized debit. A missing receipt returns `IssuerUnavailable`. There is no production native trade issuer or atomic application of this receipt update with the corresponding asset debit, so this reader and planner do not activate separate-prior conversion. The checked subtraction refines the original-source arithmetic in [`CanonicalCustodyAliasing.v`](../../../../formal/rocq/cost_accounted_rho/theories/CanonicalCustodyAliasing.v); it does not establish the missing multi-asset authority or publication proof.
 
 ## Verification requirements
 

@@ -50,6 +50,7 @@ use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
 use super::reified;
+use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -267,7 +268,7 @@ pub struct RhoRuntimeImpl {
     pub block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
-    pub merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    pub(crate) merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -1382,6 +1383,7 @@ fn dispatch_table_creator(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    cost: RuntimeBudget,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1407,6 +1409,7 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            cost.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1515,6 +1518,7 @@ async fn setup_reducer(
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        cost.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1598,7 +1602,7 @@ fn insert_mergeable_bindings(
     mergeable_tags: &HashMap<Par, MergeType>,
 ) -> Result<(), InterpreterError> {
     let conflict =
-        |uri| InterpreterError::ReduceError(format!("duplicate mergeable tag URI: {uri}"));
+        |uri| InterpreterError::SetupError(format!("duplicate mergeable tag URI: {uri}"));
     let tag_uri_bindings = mergeable_tag_uri_bindings(mergeable_tags).map_err(conflict)?;
     for (uri, tag_par) in tag_uri_bindings {
         let merge_type = mergeable_tags
@@ -1965,12 +1969,15 @@ pub async fn create_rho_env<T>(
     extra_system_processes: &mut Vec<Definition>,
     cost: RuntimeBudget,
     external_services: ExternalServices,
-) -> (
-    Arc<DebruijnInterpreter>,
-    Arc<tokio::sync::RwLock<BlockData>>,
-    InvalidBlocks,
-    Arc<tokio::sync::RwLock<DeployData>>,
-)
+) -> Result<
+    (
+        Arc<DebruijnInterpreter>,
+        Arc<tokio::sync::RwLock<BlockData>>,
+        InvalidBlocks,
+        Arc<tokio::sync::RwLock<DeployData>>,
+    ),
+    InterpreterError,
+>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -1984,7 +1991,7 @@ where
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    insert_mergeable_bindings(&mut urn_map, &mergeable_tags).unwrap();
+    insert_mergeable_bindings(&mut urn_map, &mergeable_tags)?;
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
@@ -1998,6 +2005,10 @@ where
         raw_rspace,
         reduction_coordinator.clone(),
     )));
+    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+        scheduled_rspace,
+        cost.clone(),
+    )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -2005,7 +2016,7 @@ where
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let core = setup_reducer(
-        scheduled_rspace.clone().into(),
+        charging_rspace.clone().into(),
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -2023,11 +2034,11 @@ where
     )
     .await;
     let reducer = Arc::new(DebruijnInterpreter {
-        space: scheduled_rspace,
+        space: charging_rspace,
         core,
     });
 
-    (reducer, block_data_ref, invalid_blocks, deploy_data_ref)
+    Ok((reducer, block_data_ref, invalid_blocks, deploy_data_ref))
 }
 
 // This is from Nassim Taleb's "Skin in the Game"
@@ -2053,7 +2064,7 @@ async fn create_runtime<T>(
     init_registry: bool,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl
+) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -2073,7 +2084,7 @@ where
         cost.clone(),
         external_services,
     )
-    .await;
+    .await?;
 
     let (reducer, block_ref, invalid_blocks, deploy_ref) = rho_env;
     let mut runtime = RhoRuntimeImpl::new(
@@ -2090,7 +2101,7 @@ where
         runtime.create_checkpoint().await;
     }
 
-    runtime
+    Ok(runtime)
 }
 
 /// Creates a runtime for executing Rholang code.
@@ -2123,7 +2134,7 @@ pub async fn create_rho_runtime<T>(
     init_registry: bool,
     extra_system_processes: &mut Vec<Definition>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl
+) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -2166,7 +2177,7 @@ pub async fn create_replay_rho_runtime<T>(
     init_registry: bool,
     extra_system_processes: &mut Vec<Definition>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl
+) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -2192,7 +2203,7 @@ pub(crate) async fn _create_runtimes<T, R>(
     additional_system_processes: &mut Vec<Definition>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
-) -> (RhoRuntimeImpl, RhoRuntimeImpl)
+) -> Result<(RhoRuntimeImpl, RhoRuntimeImpl), InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -2214,7 +2225,7 @@ where
         additional_system_processes,
         external_services.clone(),
     )
-    .await;
+    .await?;
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay_space,
@@ -2223,9 +2234,9 @@ where
         additional_system_processes,
         external_services,
     )
-    .await;
+    .await?;
 
-    (rho_runtime, replay_rho_runtime)
+    Ok((rho_runtime, replay_rho_runtime))
 }
 
 #[tracing::instrument(
@@ -2240,18 +2251,16 @@ pub async fn create_runtime_from_kv_store(
     additional_system_processes: &mut Vec<Definition>,
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
     external_services: ExternalServices,
-) -> RhoRuntimeImpl {
+) -> Result<RhoRuntimeImpl, InterpreterError> {
     let space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> =
         RSpace::create(stores, matcher).unwrap();
 
-    let runtime = create_rho_runtime(
+    create_rho_runtime(
         space,
         mergeable_tags,
         init_registry,
         additional_system_processes,
         external_services,
     )
-    .await;
-
-    runtime
+    .await
 }

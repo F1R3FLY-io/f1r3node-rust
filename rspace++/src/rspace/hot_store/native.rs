@@ -50,6 +50,38 @@ where
     K: Clone + Hash + Eq + CloneBacking,
     V: Clone + CloneBacking,
 {
+    reserve_replace_with(map, key, meter, |value, meter| {
+        native_backing::reserve_copy_and_cleanup(value, meter)
+    })
+}
+
+/// C5 (DR-83): the replace charge of a continuation shard. Its values are
+/// store-owned vectors of shared pointers, each counted inline
+/// (`native_backing::reserve_shared_copy_and_cleanup`).
+fn reserve_replace_shared<K, T>(
+    map: &imbl::HashMap<K, Vec<Arc<T>>>,
+    key: &K,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError>
+where
+    K: Clone + Hash + Eq + CloneBacking,
+    T: CloneBacking,
+{
+    reserve_replace_with(map, key, meter, |values, meter| {
+        native_backing::reserve_shared_copy_and_cleanup(values, meter)
+    })
+}
+
+fn reserve_replace_with<K, V>(
+    map: &imbl::HashMap<K, V>,
+    key: &K,
+    meter: &dyn SourceMeter,
+    reserve_value: impl Fn(&V, &dyn SourceMeter) -> Result<(), RSpaceError>,
+) -> Result<(), RSpaceError>
+where
+    K: Clone + Hash + Eq + CloneBacking,
+    V: Clone + CloneBacking,
+{
     lookup(map, key, meter)?;
     let (operations, bytes) =
         persistent_insert_backing::<K, V>(map.len()).ok_or(RSpaceError::HostWorkRejected)?;
@@ -67,7 +99,7 @@ where
     for (existing, value) in map.iter() {
         inspect_key(existing, repetitions, meter)?;
         native_backing::reserve_copy_and_cleanup(existing, meter)?;
-        native_backing::reserve_copy_and_cleanup(value, meter)?;
+        reserve_value(value, meter)?;
     }
     Ok(())
 }
@@ -158,6 +190,21 @@ where
         action(guard.get(key))
     }
 
+    /// An O(1) snapshot of the persistent shard that holds `key`
+    /// (C2, DR-82).
+    fn native_snapshot(
+        &self,
+        key: &K,
+        meter: &dyn SourceMeter,
+    ) -> Result<imbl::HashMap<K, V>, RSpaceError> {
+        native_backing::inspect(key, meter)?;
+        let guard = self.shards[shard_of(key)].read().expect("shard read lock");
+        lookup(&guard, key, meter)?;
+        let bytes = size_of::<imbl::HashMap<K, V>>();
+        meter.reserve(1, bytes, bytes)?;
+        Ok(guard.clone())
+    }
+
     fn native_get(&self, key: &K, meter: &dyn SourceMeter) -> Result<Option<V>, RSpaceError> {
         self.native_with(key, meter, |value| {
             value
@@ -175,6 +222,30 @@ where
         value: V,
         meter: &dyn SourceMeter,
     ) -> Result<(), RSpaceError> {
+        self.native_insert_new_with(key, value, false, meter)
+            .map(drop)
+    }
+
+    /// C2 (DR-82): inserts a new entry and returns an O(1) snapshot of its
+    /// shard, taken under the same write lock. Every charge, including the
+    /// snapshot, is reserved before the insert.
+    fn native_insert_new_snapshot(
+        &self,
+        key: &K,
+        value: V,
+        meter: &dyn SourceMeter,
+    ) -> Result<imbl::HashMap<K, V>, RSpaceError> {
+        self.native_insert_new_with(key, value, true, meter)?
+            .ok_or(RSpaceError::HostWorkRejected)
+    }
+
+    fn native_insert_new_with(
+        &self,
+        key: &K,
+        value: V,
+        snapshot: bool,
+        meter: &dyn SourceMeter,
+    ) -> Result<Option<imbl::HashMap<K, V>>, RSpaceError> {
         native_backing::inspect(key, meter)?;
         let mut guard = self.shards[shard_of(key)]
             .write()
@@ -201,8 +272,12 @@ where
             native_backing::reserve_copy_and_cleanup(existing, meter)?;
             native_backing::reserve_copy_and_cleanup(value, meter)?;
         }
+        if snapshot {
+            let bytes = size_of::<imbl::HashMap<K, V>>();
+            meter.reserve(1, bytes, bytes)?;
+        }
         guard.insert(key.clone(), value);
-        Ok(())
+        Ok(snapshot.then(|| guard.clone()))
     }
 
     fn native_insert_replace(
@@ -452,11 +527,16 @@ where
                     "native continuation retirement index is invalid".to_owned(),
                 ));
             }
-            reserve_replace(&continuation_shard, &key, meter)?;
-            native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            // Changed by C5 (DR-83): the continuation shard holds store-owned
+            // shared pointers whose payload releases were prepaid at entry.
+            // reserve_replace(&continuation_shard, &key, meter)?;
+            // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            reserve_replace_shared(&continuation_shard, &key, meter)?;
+            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let index = index as usize;
-            native_backing::reserve_cleanup(&values[index], meter)?;
+            // native_backing::reserve_cleanup(&values[index], meter)?;
+            native_backing::reserve_shared_cleanup(&values[index], meter)?;
             let moved = values
                 .len()
                 .checked_sub(index)
@@ -601,7 +681,10 @@ where
         native_backing::reserve_cleanup(&waiting, meter)?;
         native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
-        let identity = continuation_identity_metered(&waiting, meter)?;
+        // Changed by D-S4 (DR-90): the new identity is built only when a stored
+        // continuation has the same source hash (see the loop below).
+        // let identity = continuation_identity_metered(&waiting, meter)?;
+        let mut identity: Option<String> = None;
         let installed = self
             .installed_continuations
             .native_with(&key, meter, |value| Ok(usize::from(value.is_some())))?;
@@ -615,7 +698,41 @@ where
             )
         })?;
         let mut duplicate = false;
+        // Changed by D-S4 (DR-90): equal identities imply equal source hashes
+        // (the hash covers the sorted pattern encodings, the body and the
+        // flag), so a stored continuation whose source hash differs is not a
+        // duplicate. Identities are built and compared only on equal hashes.
+        // for value in existing {
+        //     let prior = continuation_identity_metered(value, meter)?;
+        //     meter.reserve(
+        //         1,
+        //         identity
+        //             .len()
+        //             .checked_add(prior.len())
+        //             .ok_or(RSpaceError::HostWorkRejected)?,
+        //         0,
+        //     )?;
+        //     if prior == identity {
+        //         duplicate = true;
+        //         break;
+        //     }
+        // }
+        let hash_bytes = waiting
+            .source
+            .hash
+            .0
+            .len()
+            .checked_mul(2)
+            .ok_or(RSpaceError::HostWorkRejected)?;
         for value in existing {
+            meter.reserve(1, hash_bytes, 0)?;
+            if value.source.hash != waiting.source.hash {
+                continue;
+            }
+            if identity.is_none() {
+                identity = Some(continuation_identity_metered(&waiting, meter)?);
+            }
+            let identity = identity.as_ref().expect("identity built above");
             let prior = continuation_identity_metered(value, meter)?;
             meter.reserve(
                 1,
@@ -625,7 +742,7 @@ where
                     .ok_or(RSpaceError::HostWorkRejected)?,
                 0,
             )?;
-            if prior == identity {
+            if prior == *identity {
                 duplicate = true;
                 break;
             }
@@ -638,8 +755,12 @@ where
         let continuation_update = if duplicate {
             None
         } else {
-            reserve_replace(&continuation_shard, &key, meter)?;
-            native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            // Changed by C5 (DR-83): the continuation shard holds store-owned
+            // shared pointers whose payload releases were prepaid at entry.
+            // reserve_replace(&continuation_shard, &key, meter)?;
+            // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            reserve_replace_shared(&continuation_shard, &key, meter)?;
+            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let count = values
                 .len()
@@ -1001,6 +1122,37 @@ where
         Ok(values)
     }
 
+    /// C2 (DR-82): a copy-free view of the cached data of `channel`. A warm
+    /// read takes an O(1) snapshot of the shard. A cold read prepays the
+    /// release of the decoded data, moves them into the cache, and takes the
+    /// snapshot under the insert's write lock, after every reservation.
+    pub(super) fn native_data_view(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<super::NativeDataView<C, A>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking,
+    {
+        let shard = self.data.native_snapshot(channel, meter)?;
+        let shard = if shard.contains_key(channel) {
+            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            shard
+        } else {
+            let values = read()?;
+            native_backing::reserve_cleanup(&values, meter)?;
+            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            self.data
+                .native_insert_new_snapshot(channel, values, meter)?
+        };
+        Ok(super::NativeDataView {
+            shard,
+            channel: channel.clone(),
+        })
+    }
+
     pub(super) fn native_continuations(
         &self,
         channels: &[C],
@@ -1045,6 +1197,64 @@ where
             cached.push(Arc::new(value.clone()));
         }
         let result = merge(prefix, values, meter)?;
+        self.continuations.native_insert_new(&key, cached, meter)?;
+        Ok(result)
+    }
+
+    /// C1 (DR-81): the continuations of `channels` as shared views. A warm
+    /// read clones only the `Arc` pointers. A cold read moves each decoded
+    /// continuation into its `Arc` and prepays its release once, when it
+    /// enters the cache. A caller copies only the continuation it selects.
+    pub(super) fn native_continuation_views(
+        &self,
+        channels: &[C],
+        read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        K: CloneBacking,
+    {
+        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        let key = channels.to_vec();
+        let pointer = size_of::<Arc<WaitingContinuation<P, K>>>();
+        let allocation =
+            shared::rust::clone_backing::arc_allocation_bytes::<WaitingContinuation<P, K>>()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        let installed = self.installed_continuations.native_get(&key, meter)?;
+        let mut prefix = buffer(usize::from(installed.is_some()), meter)?;
+        if let Some(installed) = installed {
+            meter.reserve(2, allocation, allocation)?;
+            prefix.push(Arc::new(installed));
+        }
+        let warm = self.continuations.native_with(&key, meter, |values| {
+            values
+                .map(|values| {
+                    let mut result = buffer(values.len(), meter)?;
+                    for value in values {
+                        meter.reserve(1, pointer, 0)?;
+                        result.push(Arc::clone(value));
+                    }
+                    Ok(result)
+                })
+                .transpose()
+        })?;
+        if let Some(values) = warm {
+            return merge(prefix, values, meter);
+        }
+        let values = read()?;
+        let mut shared = buffer(values.len(), meter)?;
+        let mut cached = buffer(values.len(), meter)?;
+        for value in values {
+            native_backing::reserve_cleanup(&value, meter)?;
+            meter.reserve(2, allocation, allocation)?;
+            let value = Arc::new(value);
+            meter.reserve(1, pointer, 0)?;
+            cached.push(Arc::clone(&value));
+            shared.push(value);
+        }
+        let result = merge(prefix, shared, meter)?;
         self.continuations.native_insert_new(&key, cached, meter)?;
         Ok(result)
     }

@@ -4,6 +4,9 @@ use proptest::prelude::*;
 
 use super::super::tests::Logical;
 use super::*;
+use crate::rspace::candidate_order::{
+    candidate_strategy, canonical_candidates, datum_with_source, encoded_order,
+};
 use crate::rspace::history::native_reader::measure_allocations;
 use crate::rspace::rspace::RSpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -70,11 +73,12 @@ impl Match<u8, u8, u8> for Matcher {
     fn check_commit_metered(
         &self,
         continuation: &u8,
-        matched: &[u8],
+        matched: &[&u8],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool> {
         meter.reserve(1, 1, 0)?;
-        Ok(self.check_commit(continuation, matched))
+        let owned: Vec<u8> = matched.iter().map(|value| **value).collect();
+        Ok(self.check_commit(continuation, &owned))
     }
 }
 
@@ -95,12 +99,12 @@ fn with_reader<T>(
     let data = |channel: &u8| {
         space
             .get_store()
-            .get_data_with_reader(channel, &|| Ok(Vec::new()), meter)
+            .get_data_view_with_reader(channel, &|| Ok(Vec::new()), meter)
     };
     let continuations = |channels: &[u8]| {
         space
             .get_store()
-            .get_continuations_with_reader(channels, &|| Ok(Vec::new()), meter)
+            .get_continuation_views_with_reader(channels, &|| Ok(Vec::new()), meter)
     };
     action(&CandidateReader {
         meter,
@@ -255,17 +259,95 @@ async fn counter_preparation_prepays_nested_source_cleanup() {
     assert!(space.produce_counter.lock().unwrap().is_empty());
 }
 
+/// C3 (DR-78; `OrderedLookupBound.search_within_size_bound`): a
+/// produce-counter lookup charges `tree_search_bound(len)` comparisons, and
+/// each comparison reads two hashes. The charge grows with the height of the
+/// map, not with its size. Preparation charges two lookups (the read and the
+/// insert of `publish`), the source copy and cleanup, and the tree growth.
+#[tokio::test]
+async fn counter_charge_is_logarithmic() {
+    let space = space().await;
+    let probe = Produce::create(&0u8, &0u8, false);
+    let hash_bytes = probe.hash.0.len();
+    let lookup = |entries: usize| {
+        let bound = tree_search_bound(entries);
+        [bound, bound * 2 * hash_bytes, 0]
+    };
+    let copy = Meter::default();
+    native_backing::reserve_copy_and_cleanup(&probe, &copy).expect("copy charge");
+    let copy = copy.used.get();
+    for size in [0_usize, 1, 10, 11, 70, 71, 430, 431, 2_000] {
+        {
+            let mut counters = space.produce_counter.lock().expect("produce counter lock");
+            counters.clear();
+            for index in 0..size {
+                let channel = u8::try_from(index / 256 + 1).expect("channel fits in u8");
+                let value = u8::try_from(index % 256).expect("value fits in u8");
+                counters.insert(Produce::create(&channel, &value, false), 1);
+            }
+            assert_eq!(counters.len(), size);
+        }
+        let count = Meter::default();
+        assert_eq!(space.metered_produce_count(&probe, &count).expect("count"), 0);
+        assert_eq!(count.used.get(), lookup(size), "count charge at {size} entries");
+
+        let prepare = Meter::default();
+        drop(
+            space
+                .prepare_metered_produce_counter(&probe, false, &prepare)
+                .expect("prepare"),
+        );
+        let (growth_operations, growth_bytes) =
+            tree_growth::<Produce, i32>(size, 1).expect("tree growth");
+        assert_eq!(
+            prepare.used.get(),
+            [
+                2 * lookup(size)[0] + copy[0] + growth_operations,
+                2 * lookup(size)[1] + copy[1] + growth_bytes,
+                copy[2] + growth_bytes,
+            ],
+            "preparation charge at {size} entries"
+        );
+        assert_eq!(
+            space
+                .produce_counter
+                .lock()
+                .expect("produce counter lock")
+                .len(),
+            size
+        );
+    }
+    // The legacy count charge at 2,000 entries was 2,001 * 32 + 2,000
+    // operations and 4,001 hash reads.
+    assert_eq!(lookup(2_000), [44, 44 * 2 * hash_bytes, 0]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
+    // Disabled by I1 (DR-75): the metered order no longer equals the legacy
+    // (digest, index) order, and `Vec<u8>` has no source hash. Replaced by
+    // `paid_order_matches_unmetered_canonical_order`.
+    // #[test]
+    // fn paid_order_matches_legacy_hash_and_original_index(
+    //     values in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..256), 0..64),
+    // ) {
+    //     let expected = deterministic_candidates(values.clone());
+    //     let meter = Meter::default();
+    //     let (actual, bytes) = measure_allocations(|| sorted(values, &meter));
+    //     prop_assert_eq!(actual.unwrap(), expected);
+    //     prop_assert!(bytes <= meter.used.get()[2], "requested {}, reserved {}", bytes, meter.used.get()[2]);
+    // }
+
+    /// Metered native replay and play produce the same canonical order
+    /// (`CandidateSourceOrder.lazy_two_phase_is_canonical`), and every metered
+    /// allocation was reserved first.
     #[test]
-    fn paid_order_matches_legacy_hash_and_original_index(
-        values in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..256), 0..64),
-    ) {
-        let expected = deterministic_candidates(values.clone());
+    fn paid_order_matches_unmetered_canonical_order(values in candidate_strategy()) {
+        let expected = canonical_candidates(values.clone());
         let meter = Meter::default();
         let (actual, bytes) = measure_allocations(|| sorted(values, &meter));
-        prop_assert_eq!(actual.unwrap(), expected);
+        prop_assert_eq!(encoded_order(&actual.unwrap()), encoded_order(&expected));
         prop_assert!(bytes <= meter.used.get()[2], "requested {}, reserved {}", bytes, meter.used.get()[2]);
     }
 
@@ -323,7 +405,15 @@ proptest! {
 
 #[test]
 fn every_order_reservation_cut_rejects_without_unpaid_allocation() {
-    let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    // I1 (DR-75): the metered order needs source hashes; the fixture keeps a
+    // tie run (source 1) so the cut also covers digest reservations.
+    // let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    let values = vec![
+        datum_with_source(vec![7u8; 2048], 1, false),
+        datum_with_source(vec![3u8; 512], 2, false),
+        datum_with_source(vec![7u8; 2048], 1, true),
+        datum_with_source(Vec::new(), 0, false),
+    ];
     let baseline = Meter::default();
     sorted(values.clone(), &baseline).unwrap();
     for reject in 0..baseline.calls.get() {
@@ -345,7 +435,15 @@ fn every_order_reservation_cut_rejects_without_unpaid_allocation() {
 
 #[test]
 fn ordering_accepts_exact_credit_and_rejects_each_smaller_dimension() {
-    let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    // I1 (DR-75): the metered order needs source hashes; the fixture keeps a
+    // tie run (source 1) so the cut also covers digest reservations.
+    // let values = vec![vec![7u8; 2048], vec![3; 512], vec![7; 2048], Vec::new()];
+    let values = vec![
+        datum_with_source(vec![7u8; 2048], 1, false),
+        datum_with_source(vec![3u8; 512], 2, false),
+        datum_with_source(vec![7u8; 2048], 1, true),
+        datum_with_source(Vec::new(), 0, false),
+    ];
     let baseline = Meter::default();
     let expected = sorted(values.clone(), &baseline).unwrap();
     let exact = Meter {
@@ -368,17 +466,47 @@ fn ordering_accepts_exact_credit_and_rejects_each_smaller_dimension() {
     }
 }
 
+// Disabled by I1 (DR-75): the legacy order inspected every payload, and
+// `Arc<String>` has no source hash. Replaced by
+// `shared_order_inspects_only_tie_members_and_preserves_shared_ownership`.
+// #[test]
+// fn shared_payload_order_inspects_the_payload_and_preserves_shared_ownership()
+// {     let values: Vec<Arc<String>> =
+//         vec![Arc::new("large".repeat(4096)), Arc::new("other".repeat(1024))];
+//     let expected = deterministic_candidates(values.clone());
+//     let meter = Meter::default();
+//     let input = values.clone();
+//     let (actual, bytes) = measure_allocations(|| sorted(input, &meter));
+//     let actual = actual.unwrap();
+//     assert_eq!(actual, expected);
+//     assert!(meter.used.get()[1] > values.iter().map(|value|
+// value.len()).sum());     assert!(bytes <= meter.used.get()[2]);
+//     for (value, index) in actual {
+//         assert!(Arc::ptr_eq(&value, &values[index as usize]));
+//     }
+// }
+
+/// `CandidateSourceOrder.digests_only_for_ties`: candidates with distinct
+/// source hashes are never inspected or digested; tie-run members are.
 #[test]
-fn shared_payload_order_inspects_the_payload_and_preserves_shared_ownership() {
-    let values: Vec<Arc<String>> =
-        vec![Arc::new("large".repeat(4096)), Arc::new("other".repeat(1024))];
-    let expected = deterministic_candidates(values.clone());
+fn shared_order_inspects_only_tie_members_and_preserves_shared_ownership() {
+    let distinct = "large".repeat(1 << 18);
+    let tie = "tie".repeat(1024);
+    let values: Vec<Arc<Datum<String>>> = vec![
+        Arc::new(datum_with_source(distinct.clone(), 9, false)),
+        Arc::new(datum_with_source(tie.clone(), 4, false)),
+        Arc::new(datum_with_source(distinct.clone(), 8, false)),
+        Arc::new(datum_with_source(tie.clone(), 4, true)),
+    ];
+    let expected = canonical_candidates(values.clone());
     let meter = Meter::default();
     let input = values.clone();
     let (actual, bytes) = measure_allocations(|| sorted(input, &meter));
     let actual = actual.unwrap();
-    assert_eq!(actual, expected);
-    assert!(meter.used.get()[1] > values.iter().map(|value| value.len()).sum());
+    assert_eq!(encoded_order(&actual), encoded_order(&expected));
+    let scanned = meter.used.get()[1];
+    assert!(scanned >= 2 * tie.len(), "tie members are digested: scanned {scanned}");
+    assert!(scanned < distinct.len(), "distinct sources are not inspected: scanned {scanned}");
     assert!(bytes <= meter.used.get()[2]);
     for (value, index) in actual {
         assert!(Arc::ptr_eq(&value, &values[index as usize]));
@@ -580,4 +708,130 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
     assert!(matches!(result, Err(RSpaceError::InterpreterError(_))));
     assert!(bytes <= meter.used.get()[2]);
     assert_eq!(state(&space), before);
+}
+
+/// D-M1 (DR-88) fixtures: a string space whose matcher reads only the first
+/// byte of the pattern and the datum (and meters exactly that read), and
+/// whose commit check reads nothing of the continuation.
+struct PrefixMatcher;
+
+impl Match<String, String, String> for PrefixMatcher {
+    fn get(&self, pattern: &String, value: &String) -> Option<String> {
+        (pattern.as_bytes().first() == value.as_bytes().first()).then(|| value.clone())
+    }
+
+    fn get_metered(
+        &self,
+        pattern: &String,
+        value: &String,
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<String>> {
+        meter.reserve(1, 2, 0)?;
+        if pattern.as_bytes().first() != value.as_bytes().first() {
+            return Ok(None);
+        }
+        meter.reserve(1, value.len(), value.len())?;
+        Ok(Some(value.clone()))
+    }
+
+    fn check_commit_metered(
+        &self,
+        _: &String,
+        _: &[&String],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool> {
+        meter.reserve(1, 0, 0)?;
+        Ok(true)
+    }
+}
+
+type StringSpace = ReplayRSpace<String, String, String, String>;
+
+async fn string_space() -> StringSpace {
+    let mut stores = InMemoryStoreManager::new();
+    RSpace::create_with_replay(
+        stores.r_space_stores().await.expect("string space stores"),
+        Arc::new(Box::new(PrefixMatcher)),
+    )
+    .expect("string replay space")
+    .1
+}
+
+/// The charge of one `metered_match_data` call over a single stored datum.
+fn match_data_charge(
+    space: &StringSpace,
+    pattern: &str,
+    datum: &Datum<String>,
+    continuation: &str,
+) -> (bool, [usize; 3]) {
+    let channel = "channel".to_string();
+    let data = vec![ChannelData {
+        channel: channel.clone(),
+        values: vec![(Cow::Borrowed(datum), 0)],
+    }];
+    let meter = Meter::default();
+    let matched = space
+        .metered_match_data(
+            std::slice::from_ref(&channel),
+            &[pattern.to_string()],
+            &continuation.to_string(),
+            &data,
+            &meter,
+        )
+        .expect("metered match data");
+    (matched.is_some(), meter.used.get())
+}
+
+/// D-M1 (DR-88): a failed match attempt charges only what the matcher reads,
+/// so unread tails of the pattern and the datum do not change the charge.
+#[tokio::test]
+async fn match_attempt_charge_excludes_unread_pattern_and_datum() {
+    let space = string_space().await;
+    let channel = "channel".to_string();
+    let short_datum = Datum::create(&channel, "a".to_string(), false);
+    let long_datum = Datum::create(&channel, format!("a{}", "y".repeat(4_096)), false);
+    let short = match_data_charge(&space, "b", &short_datum, "k");
+    let long = match_data_charge(&space, &format!("b{}", "x".repeat(4_096)), &long_datum, "k");
+    assert!(!short.0 && !long.0);
+    assert_eq!(short.1, long.1);
+}
+
+/// D-M1 (DR-88): the commit check reads only what its matcher reads, so the
+/// unread continuation body does not change the charge of a successful match.
+#[tokio::test]
+async fn commit_check_charge_is_independent_of_continuation_body() {
+    let space = string_space().await;
+    let channel = "channel".to_string();
+    let datum = Datum::create(&channel, "a-value".to_string(), false);
+    let short = match_data_charge(&space, "a", &datum, "k");
+    let long = match_data_charge(&space, "a", &datum, &"k".repeat(4_096));
+    assert!(short.0 && long.0);
+    assert_eq!(short.1, long.1);
+}
+
+/// Negative control for D-M1 and D-M6 (DR-88): the legacy selection walked
+/// the pattern, the datum and the whole continuation, and copied every
+/// matched datum, so its charge grew with bytes that no step read.
+#[tokio::test]
+async fn legacy_selection_charge_grew_with_unread_values() {
+    let space = string_space().await;
+    let channel = "channel".to_string();
+    let datum = Datum::create(&channel, "a-value".to_string(), false);
+    let legacy = |pattern: &str, continuation: &str| {
+        let (_, current) = match_data_charge(&space, pattern, &datum, continuation);
+        let walks = Meter::default();
+        native_backing::inspect(&pattern.to_string(), &walks).expect("pattern walk");
+        native_backing::inspect(&datum.a, &walks).expect("datum walk");
+        native_backing::reserve_copy_and_cleanup(&datum.a, &walks).expect("matched copy");
+        native_backing::inspect(&continuation.to_string(), &walks).expect("continuation walk");
+        let walks = walks.used.get();
+        [current[0] + walks[0], current[1] + walks[1], current[2] + walks[2]]
+    };
+    let short = legacy("a", "k");
+    let long = legacy(&format!("a{}", "x".repeat(4_096)), &"k".repeat(4_096));
+    let (_, current_short) = match_data_charge(&space, "a", &datum, "k");
+    let (_, current_long) =
+        match_data_charge(&space, &format!("a{}", "x".repeat(4_096)), &datum, &"k".repeat(4_096));
+    assert_eq!(current_short, current_long);
+    assert!(long[1] > short[1] + 8_000, "{short:?} vs {long:?}");
 }

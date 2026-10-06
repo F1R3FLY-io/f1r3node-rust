@@ -413,7 +413,8 @@ pub(crate) mod harness {
                 budget.clone(),
                 ExternalServices::noop(),
             )
-            .await;
+            .await
+            .expect("create the rho environment");
             assert!(
                 processes.is_empty(),
                 "the dispatch table drains the definitions"

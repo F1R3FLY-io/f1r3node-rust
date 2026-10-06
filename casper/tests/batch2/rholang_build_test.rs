@@ -55,6 +55,10 @@ in {
         .await
         .unwrap();
 
+    assert_eq!(signed_block.body.deploys.len(), 1);
+    assert!(!signed_block.body.deploys[0].is_failed());
+    assert_eq!(signed_block.body.deploys[0].cost().cost, 53_251);
+
     let expected_timestamp = signed_block.header.timestamp;
     let expected = format!(
         r#"([4, 6, 10, 14], "The timestamp is {}")"#,

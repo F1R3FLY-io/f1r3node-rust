@@ -559,7 +559,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == loser_sig),
+            .any(|pd| pd.identity_bytes() == loser_sig.as_ref()),
         rejected_sigs(&b_block)
             .iter()
             .map(short)

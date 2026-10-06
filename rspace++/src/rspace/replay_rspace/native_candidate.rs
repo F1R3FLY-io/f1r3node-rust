@@ -1,6 +1,6 @@
 use super::native_epoch::NativeCandidateIdentity;
 use super::*;
-use crate::rspace::space_matcher::deterministic_candidates;
+use crate::rspace::candidate_order::canonical_candidates;
 
 pub(super) mod metered;
 
@@ -57,7 +57,7 @@ where
         let mut candidates: HashMap<_, _> = channels
             .iter()
             .map(|channel| {
-                (channel.clone(), deterministic_candidates(self.get_store().get_data(channel)))
+                (channel.clone(), canonical_candidates(self.get_store().get_data(channel)))
             })
             .collect();
         if let Some(expected) = expected {
@@ -115,7 +115,7 @@ where
         let candidate = self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
-                deterministic_candidates(self.get_store().get_continuations_arc(&channels))
+                canonical_candidates(self.get_store().get_continuations_arc(&channels))
                     .into_iter()
                     .filter(|(waiting, _)| {
                         expected.is_none_or(|identity| identity.matches_consume(&waiting.source))
@@ -123,7 +123,7 @@ where
                     .collect()
             },
             |c| {
-                let mut entries = deterministic_candidates(self.get_store().get_data(&c));
+                let mut entries = canonical_candidates(self.get_store().get_data(&c));
                 if &c == channel {
                     entries.insert(
                         0,

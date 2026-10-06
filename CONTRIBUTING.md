@@ -99,9 +99,31 @@ A PR is ready for review when:
 - [ ] Public API / CLI / config changes are documented
 - [ ] No secrets, credentials, or PII in code, commits, fixtures, or logs
 
+Green CI on a pull request covers build, lint, unit tests, coverage, and the
+supply-chain audit. It does **not** cover the integration suite: the
+`Integration Tests (amd64)` and `(arm64)` checks pass with a note that coverage
+is deferred, and the suite runs for real in the merge queue. Add the `ci-heavy`
+label to run it on the pull request itself — worth doing for consensus,
+storage, or CI changes rather than discovering a failure at merge time.
+
 Maintainers review for correctness, test coverage, scope discipline, and consistency with
 documented architecture. Respond to feedback in additional commits rather than force-pushing
 over reviewed history.
+
+## Merging
+
+`dev` merges through a merge queue. Once review and the required checks are
+done, a maintainer chooses **Merge when ready** instead of Merge, which adds the
+pull request to the queue.
+
+The queue batches several pull requests, applies them on top of `dev`, and runs
+the integration suite against that combined result — the state that will exist
+after merging, which a per-pull-request run never tests. A batch that passes
+merges; a batch that fails removes the offending pull request from the queue and
+re-queues the rest.
+
+If yours is removed, its timeline records why. Push a fix and queue it again. To
+reproduce the failure on your own head first, add the `ci-heavy` label.
 
 ---
 
@@ -115,7 +137,12 @@ Upstream access does not bypass review. Protected branches such as `master` and 
 
 ## CI Approval for Fork Pull Requests
 
-CI for fork-based pull requests requires maintainer approval every time. This protects project CI capacity, GitHub-hosted minutes, and Oracle Cloud Infrastructure runner capacity while contributor trust is established.
+Fork pull requests run the GitHub-hosted checks on every push, unprivileged. The
+integration suite does not run per push: like an upstream pull request, a fork
+gets that coverage in the merge queue, or earlier when a maintainer applies the
+`ci-heavy` label. Either path still holds Oracle Cloud Infrastructure capacity
+behind maintainer approval, which protects project CI capacity and runner
+capacity while contributor trust is established.
 
 Approval to run CI is not approval to merge. Maintainers may review the code, ask for local validation output, or request changes before approving expensive CI.
 

@@ -948,7 +948,7 @@ fn inspect_parent_updates(
                         .body
                         .deploys
                         .iter()
-                        .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
+                        .any(|processed| !is_system_deploy_id(processed.identity_bytes()));
                     if has_user_deploys {
                         update.has_new_parent_with_user_deploys = true;
                     }
@@ -989,7 +989,7 @@ fn cone_has_user_work(
                     .body
                     .deploys
                     .iter()
-                    .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
+                    .any(|processed| !is_system_deploy_id(processed.identity_bytes()));
                 if carries_deploy || !block.body.rejected_deploys.is_empty() {
                     return true;
                 }

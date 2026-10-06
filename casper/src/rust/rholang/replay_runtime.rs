@@ -8,10 +8,16 @@ use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    Event, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy, SystemDeployData,
 };
+use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
+use models::rust::cost_protocol_limits::{
+    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
+};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
@@ -49,6 +55,129 @@ use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
+}
+
+struct OfferedReplayPreflight {
+    candidate_count: usize,
+}
+
+fn inspect_offered_replay_preflight(
+    start_hash: &StateHash,
+    terms: &[ProcessedUserDeploy],
+) -> Result<Option<OfferedReplayPreflight>, CasperError> {
+    let limits = offered_funded_v6_limits();
+    let mut count = 0usize;
+    for (index, term) in terms.iter().enumerate() {
+        let ProcessedUserDeploy::Offered(processed) = term else {
+            continue;
+        };
+        let host = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+        let evidence_bytes = processed.native_cost_evidence_bytes().len();
+        if evidence_bytes > limits.evidence.total_bytes
+            || processed.deploy_log().len() > limits.deploy_log_events
+        {
+            return Err(CasperError::RuntimeError(
+                "offered replay candidate exceeds protocol limits".to_string(),
+            ));
+        }
+        let estimated_allocation = evidence_bytes.checked_mul(8).ok_or_else(|| {
+            CasperError::RuntimeError("offered replay evidence allocation overflows".to_string())
+        })?;
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationBytes, evidence_bytes),
+            (HostWorkDimension::VerificationOperations, evidence_bytes),
+            (HostWorkDimension::SearchStateBytes, estimated_allocation),
+            (
+                HostWorkDimension::VerificationOperations,
+                processed.deploy_log().len(),
+            ),
+        ] {
+            host.reserve(
+                dimension,
+                HostWorkUnits::new(u64::try_from(amount).map_err(|_| {
+                    CasperError::RuntimeError("offered replay work overflows".to_string())
+                })?),
+            )
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        }
+        processed
+            .validate(limits.evidence)
+            .map_err(CasperError::RuntimeError)?;
+        let evidence = processed
+            .evidence(limits.evidence)
+            .map_err(CasperError::RuntimeError)?;
+        if index == 0 && evidence.original_funding_root.as_slice() != start_hash.as_ref() {
+            return Err(CasperError::RuntimeError(
+                "first offered deploy funding root differs from block pre-state".to_string(),
+            ));
+        }
+        count = count.checked_add(1).ok_or_else(|| {
+            CasperError::RuntimeError("offered replay candidate count overflows".to_string())
+        })?;
+    }
+    Ok((count > 0).then_some(OfferedReplayPreflight {
+        candidate_count: count,
+    }))
+}
+
+pub(crate) fn validate_offered_replay_preflight(
+    start_hash: &StateHash,
+    terms: &[ProcessedUserDeploy],
+) -> Result<bool, CasperError> {
+    Ok(inspect_offered_replay_preflight(start_hash, terms)?.is_some())
+}
+
+fn check_offered_log_completion(
+    expected: &[Event],
+    user_events: usize,
+    grant_events: usize,
+    settlement_events: &[Event],
+) -> Result<(), CasperError> {
+    let boundary = user_events.checked_add(grant_events).ok_or_else(|| {
+        CasperError::RuntimeError("offered replay event boundary overflows".to_string())
+    })?;
+    let tail = expected.get(boundary..).ok_or_else(|| {
+        CasperError::RuntimeError("offered replay event boundary exceeds deploy log".to_string())
+    })?;
+    if tail != settlement_events {
+        return Err(CasperError::RuntimeError(
+            "offered replay did not consume the complete settlement log".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn verify_offered_replay_completion(
+    processed: &OfferedProcessedDeploy,
+    user_events: usize,
+    grant_events: usize,
+    settlement_events: &[Event],
+    final_root: &[u8],
+    wallet_receipt: &[u8],
+    resource_rev: u128,
+    fee_rev: u128,
+) -> Result<(), CasperError> {
+    let evidence = processed
+        .evidence(offered_funded_v6_limits().evidence)
+        .map_err(CasperError::RuntimeError)?;
+    if final_root != evidence.post_state_root
+        || wallet_receipt != evidence.wallet_settlement
+        || resource_rev
+            != evidence
+                .resource_rev()
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        || fee_rev != evidence.fee_rev
+    {
+        return Err(CasperError::RuntimeError(
+            "offered replay settlement differs from committed cost evidence".to_string(),
+        ));
+    }
+    check_offered_log_completion(
+        processed.deploy_log(),
+        user_events,
+        grant_events,
+        settlement_events,
+    )
 }
 
 impl ReplayRuntimeOps {
@@ -89,8 +218,34 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        self.replay_compute_state_envelopes(
+            start_hash,
+            terms.into_iter().map(ProcessedUserDeploy::Legacy).collect(),
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
+        )
+        .await
+    }
+
+    pub async fn replay_compute_state_envelopes(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedUserDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        if let Some(preflight) = inspect_offered_replay_preflight(start_hash, &terms)? {
+            return Err(CasperError::RuntimeError(format!(
+                "offered-funded replay of {} candidates requires complete independent native settlement validation",
+                preflight.candidate_count,
+            )));
+        }
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
             let entries: Vec<String> = invalid_blocks
@@ -115,7 +270,7 @@ impl ReplayRuntimeOps {
             .set_invalid_blocks(invalid_blocks)
             .await;
 
-        self.replay_deploys(start_hash, terms, system_deploys, !is_genesis, block_data)
+        self.replay_deploys_envelopes(start_hash, terms, system_deploys, !is_genesis, block_data)
             .await
     }
 
@@ -132,6 +287,30 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         block_data: &BlockData,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        self.replay_deploys_envelopes(
+            start_hash,
+            terms.into_iter().map(ProcessedUserDeploy::Legacy).collect(),
+            system_deploys,
+            with_cost_accounting,
+            block_data,
+        )
+        .await
+    }
+
+    pub async fn replay_deploys_envelopes(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedUserDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        with_cost_accounting: bool,
+        block_data: &BlockData,
+    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        if let Some(preflight) = inspect_offered_replay_preflight(start_hash, &terms)? {
+            return Err(CasperError::RuntimeError(format!(
+                "offered-funded replay of {} candidates requires complete independent native settlement validation",
+                preflight.candidate_count,
+            )));
+        }
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(terms.len() as f64);
@@ -153,6 +332,9 @@ impl ReplayRuntimeOps {
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
         for term in terms {
+            let ProcessedUserDeploy::Legacy(term) = term else {
+                unreachable!("offered replay rejected before state reset")
+            };
             let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
             deploy_results.push(result);
         }
@@ -715,5 +897,34 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
         result
+    }
+}
+
+#[cfg(test)]
+mod offered_replay_tests {
+    use models::rust::casper::protocol::casper_message::ProduceEvent;
+
+    use super::*;
+
+    fn event(value: u8) -> Event {
+        Event::Produce(ProduceEvent {
+            channels_hash: vec![value].into(),
+            hash: Default::default(),
+            persistent: false,
+            times_repeated: 0,
+            is_deterministic: true,
+            output_value: Vec::new(),
+            failed: false,
+        })
+    }
+
+    #[test]
+    fn offered_replay_completion_requires_exact_settlement_suffix() {
+        let expected = vec![event(1), event(2), event(3)];
+        assert!(check_offered_log_completion(&expected, 1, 1, &expected[2..]).is_ok());
+        assert!(check_offered_log_completion(&expected, 1, 1, &[]).is_err());
+        assert!(check_offered_log_completion(&expected, 1, 1, &[event(2)]).is_err());
+        assert!(check_offered_log_completion(&expected, 2, 2, &[]).is_err());
+        assert!(check_offered_log_completion(&expected, usize::MAX, 1, &[]).is_err());
     }
 }

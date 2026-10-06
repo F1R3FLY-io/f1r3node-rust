@@ -12,18 +12,36 @@ use rspace_plus_plus::rspace::rspace_interface::{
 use rspace_plus_plus::rspace::trace::event::COMM;
 use serde::Serialize;
 
-use super::index::{reserve_lookup, reserve_vector, IndexKey, NativeIndex};
+use super::index::{reserve_vector, IndexKey, NativeIndex};
 use super::operation_sources::{allocate, channel_bytes, NativeCommSource, NativeOperationSource};
-use super::recording::{recording_error, work};
+use super::path_trie::{NativePathTrie, PathId};
+use super::recording::{recording_error, work, RecordedOccurrence};
 use super::{InterpreterError, NativeRuntimeConfig, RuntimeBudget};
-use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetOccurrence,
-};
+use crate::rust::interpreter::accounting::native_phlo_rules::NativeAttemptStage;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeOperationOccurrence {
     pub session: [u8; 32],
-    pub path: Arc<[(u64, u64)]>,
+    // Changed by C7b (DR-86): a journal row names the node of its path in the
+    // recording's path trie instead of holding a copy of the path.
+    // pub path: Arc<[(u64, u64)]>,
+    pub path: PathId,
+}
+
+/// The occurrence of an operation that the producer is recording: the
+/// session and a copy of the causal path (C7b, DR-86).
+struct PendingOccurrence {
+    session: [u8; 32],
+    path: Arc<[(u64, u64)]>,
+}
+
+/// The path trie of captured evidence and the node of each recorded path, in
+/// the wire order of the evidence (C7b, DR-86).
+pub(super) struct CapturedPaths {
+    pub(super) trie: NativePathTrie,
+    pub(super) attempts: Vec<PathId>,
+    pub(super) retries: Vec<PathId>,
+    pub(super) rows: Vec<PathId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +116,41 @@ impl IndexKey for OperationKey {
             bytes.ok_or(InterpreterError::HostWorkRejected)?,
         ))
     }
+
+    fn compare_metered(
+        &self,
+        other: &Self,
+        budget: &super::HostWorkBudget,
+    ) -> Result<std::cmp::Ordering, InterpreterError> {
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        work(budget, HostWorkDimension::VerificationBytes, 32)?;
+        let order = self.0.session.cmp(&other.0.session);
+        if order != std::cmp::Ordering::Equal {
+            return Ok(order);
+        }
+        work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        let length = self.0.path.len();
+        let order = length.cmp(&other.0.path.len());
+        if order != std::cmp::Ordering::Equal {
+            return Ok(order);
+        }
+        let mut left = self.0.path.segments_rev();
+        let mut right = other.0.path.segments_rev();
+        let mut remaining = length;
+        while remaining != 0 {
+            let count = remaining.min(16);
+            work(budget, HostWorkDimension::VerificationOperations, count * 2)?;
+            work(budget, HostWorkDimension::VerificationBytes, count * 16)?;
+            for _ in 0..count {
+                let order = left.next().cmp(&right.next());
+                if order != std::cmp::Ordering::Equal {
+                    return Ok(order);
+                }
+            }
+            remaining -= count;
+        }
+        Ok(std::cmp::Ordering::Equal)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -107,7 +160,7 @@ struct PublishedObservation {
 }
 
 struct PendingOperation {
-    occurrence: NativeOperationOccurrence,
+    occurrence: PendingOccurrence,
     source: NativeOperationSource,
     consume_peeks: Option<Arc<[i32]>>,
     footprint: Arc<[Arc<[u8]>]>,
@@ -244,28 +297,12 @@ impl NativeRuntimeConfig {
             1,
             &self.host_work,
         )?;
-        reserve_lookup(
-            (
-                self.limits
-                    .path_segments
-                    .checked_mul(2)
-                    .and_then(|count| count.checked_add(4))
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-                self.limits
-                    .path_segments
-                    .checked_mul(16)
-                    .and_then(|count| count.checked_add(32))
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            ),
-            self.limits.attempts,
-            &self.host_work,
-        )?;
         let mut path = allocate(key.0.path.len(), &self.host_work)?;
         path.extend(key.0.path.segments_rev());
         path.reverse();
         let index = self.operations.rows.len();
         let row = PendingOperation {
-            occurrence: NativeOperationOccurrence {
+            occurrence: PendingOccurrence {
                 session: key.0.session,
                 path: path.into(),
             },
@@ -360,7 +397,7 @@ impl NativeRuntimeConfig {
 
     pub(super) fn operation_stage_slot(
         &self,
-        occurrence: &NativeBudgetOccurrence,
+        occurrence: &RecordedOccurrence,
     ) -> Result<Option<usize>, InterpreterError> {
         if self.operations.rows.is_empty() {
             return Ok(None);
@@ -375,7 +412,7 @@ impl NativeRuntimeConfig {
         let row = &self.operations.rows[index];
         if row.completion.is_some()
             || row.occurrence.session != occurrence.session
-            || row.occurrence.path.as_ref() != occurrence.path
+            || row.occurrence.path.as_ref() != occurrence.path.as_slice()
         {
             return Err(recording_error(
                 "native charge differs from its active operation",
@@ -485,11 +522,47 @@ impl NativeRuntimeConfig {
         true
     }
 
+    /// Builds the path trie of the captured evidence in its wire order: the
+    /// attempts, then the retries from the last attempt, then the journal
+    /// rows from the empty path. The decoder interns the same paths in the
+    /// same order, so it builds the same nodes with the same ids.
+    pub(super) fn capture_paths(&self) -> Result<CapturedPaths, InterpreterError> {
+        let host = &self.host_work;
+        let mut trie = NativePathTrie::new(self.limits.path_segments, host)?;
+        let mut previous: (&[(u64, u64)], PathId) = (&[], PathId::ROOT);
+        let mut attempts = allocate(self.recording.attempts.len(), host)?;
+        for row in &self.recording.attempts {
+            let id = trie.intern_delta(&row.occurrence.path, previous.0, previous.1, host)?;
+            attempts.push(id);
+            previous = (&row.occurrence.path, id);
+        }
+        let mut retries = allocate(self.recording.retries.len(), host)?;
+        for row in &self.recording.retries {
+            let id = trie.intern_delta(&row.occurrence.path, previous.0, previous.1, host)?;
+            retries.push(id);
+            previous = (&row.occurrence.path, id);
+        }
+        previous = (&[], PathId::ROOT);
+        let mut rows = allocate(self.operations.rows.len(), host)?;
+        for row in &self.operations.rows {
+            let id = trie.intern_delta(&row.occurrence.path, previous.0, previous.1, host)?;
+            rows.push(id);
+            previous = (&row.occurrence.path, id);
+        }
+        Ok(CapturedPaths {
+            trie,
+            attempts,
+            retries,
+            rows,
+        })
+    }
+
     fn capture_operations(&self) -> Result<Arc<[NativeOperationRecord]>, InterpreterError> {
         self.ensure_recording_complete()?;
+        let paths = self.capture_paths()?;
         let mut result = allocate(self.operations.rows.len(), &self.host_work)?;
         let mut linked = 0usize;
-        for row in &self.operations.rows {
+        for (row, path) in self.operations.rows.iter().zip(&paths.rows) {
             let introduction = row
                 .introduction
                 .ok_or_else(|| recording_error("native operation lacks introduction evidence"))?;
@@ -508,7 +581,10 @@ impl NativeRuntimeConfig {
                 _ => return Err(recording_error("native COMM source and observation differ")),
             };
             result.push(NativeOperationRecord {
-                occurrence: row.occurrence.clone(),
+                occurrence: NativeOperationOccurrence {
+                    session: row.occurrence.session,
+                    path: *path,
+                },
                 source: row.source.clone(),
                 consume_peeks: row.consume_peeks.clone(),
                 footprint: Arc::clone(&row.footprint),
@@ -599,5 +675,205 @@ impl RuntimeBudget {
             .as_ref()
             .map(NativeRuntimeConfig::capture_operations)
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod metered_key_tests {
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+
+    use super::*;
+    use crate::rust::interpreter::host_work::HostWorkBudget;
+
+    #[test]
+    fn operation_key_comparison_preserves_order_and_charges_inspected_path() {
+        let first = OperationKey(OperationOrder {
+            session: [7; 32],
+            path: vec![(1, 2); 512].into(),
+        });
+        let mut changed_path = vec![(1, 2); 512];
+        changed_path[511] = (2, 2);
+        let changed = OperationKey(OperationOrder {
+            session: [7; 32],
+            path: changed_path.into(),
+        });
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000)));
+        assert_eq!(
+            first.compare_metered(&changed, &budget).unwrap(),
+            first.cmp(&changed)
+        );
+        assert_eq!(
+            budget.usage(HostWorkDimension::VerificationBytes).get(),
+            288
+        );
+
+        let changed = OperationKey(OperationOrder {
+            session: [7; 32],
+            path: vec![(1, 2); 511].into(),
+        });
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000)));
+        assert_eq!(
+            first.compare_metered(&changed, &budget).unwrap(),
+            first.cmp(&changed)
+        );
+        assert_eq!(budget.usage(HostWorkDimension::VerificationBytes).get(), 32);
+
+        let mut changed_path = vec![(1, 2); 512];
+        changed_path[0] = (2, 2);
+        let changed = OperationKey(OperationOrder {
+            session: [7; 32],
+            path: changed_path.into(),
+        });
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000));
+        limits.set(
+            HostWorkDimension::VerificationBytes,
+            HostWorkLimit::new(32 + 511 * 16),
+        );
+        assert!(first
+            .compare_metered(&changed, &HostWorkBudget::new(limits))
+            .is_err());
+        limits.set(
+            HostWorkDimension::VerificationBytes,
+            HostWorkLimit::new(32 + 512 * 16),
+        );
+        let exact = HostWorkBudget::new(limits);
+        assert_eq!(
+            first.compare_metered(&changed, &exact).unwrap(),
+            first.cmp(&changed)
+        );
+    }
+
+    fn operation_key(path: &[(u64, u64)]) -> OperationKey {
+        OperationKey(OperationOrder {
+            session: [7; 32],
+            path: path.to_vec().into(),
+        })
+    }
+
+    fn branching_paths() -> Vec<Vec<(u64, u64)>> {
+        vec![
+            vec![(0, 1), (0, 0)],
+            vec![(0, 2)],
+            vec![(0, 1)],
+            vec![(0, 1), (1, 0)],
+            vec![(1, 0)],
+            vec![(0, 0), (5, 5)],
+            vec![(1, 1)],
+            vec![(1, 0), (0, 0)],
+            vec![(0, 0), (1, 0)],
+            vec![(0, 1), (0, 0), (2, 2)],
+            Vec::new(),
+        ]
+    }
+
+    #[test]
+    fn operation_key_metered_order_matches_derived_order_for_branching_paths() {
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+        let paths = branching_paths();
+        for left in &paths {
+            for right in &paths {
+                let (left_key, right_key) = (operation_key(left), operation_key(right));
+                assert_eq!(
+                    left_key
+                        .compare_metered(&right_key, &budget)
+                        .expect("metered comparison fits the budget"),
+                    left_key.cmp(&right_key),
+                    "metered and derived orders disagree for {left:?} and {right:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn operation_index_built_by_metered_inserts_answers_prepaid_lookups() {
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+        let paths = branching_paths();
+        let mut index = NativeIndex::<OperationKey, usize>::default();
+        for (position, path) in paths.iter().enumerate() {
+            let prepared = index
+                .prepare_insert(operation_key(path), position, &budget)
+                .expect("metered insert fits the budget");
+            index.commit(prepared);
+        }
+        for (position, path) in paths.iter().enumerate() {
+            assert_eq!(
+                index
+                    .get(&operation_key(path), &budget)
+                    .expect("metered lookup fits the budget"),
+                Some(&position),
+                "metered lookup misses {path:?}"
+            );
+            assert_eq!(
+                index.get_prepaid(&operation_key(path)),
+                Some(&position),
+                "prepaid lookup misses {path:?}"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `MeteredComparison.v`: `metered_operation_compare_correct`,
+        /// `chunk_scan_charge_bounded`, and `chunk_scan_equal_prefix_charges_all`.
+        /// Paths cross the 16-segment chunk boundary.
+        #[test]
+        fn operation_key_metered_order_equals_ord_with_bounded_charges(
+            left in proptest::collection::vec((0u64..2, 0u64..2), 0..40),
+            right in proptest::collection::vec((0u64..2, 0u64..2), 0..40),
+        ) {
+            let budget =
+                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+            let (left_key, right_key) = (operation_key(&left), operation_key(&right));
+            proptest::prop_assert_eq!(
+                left_key
+                    .compare_metered(&right_key, &budget)
+                    .expect("metered comparison fits the budget"),
+                left_key.cmp(&right_key)
+            );
+            let charged = budget.usage(HostWorkDimension::VerificationBytes).get();
+            let compared = if left.len() == right.len() { left.len() as u64 } else { 0 };
+            proptest::prop_assert!(charged <= 32 + 16 * compared);
+            if left == right {
+                proptest::prop_assert_eq!(charged, 32 + 16 * compared);
+            }
+        }
+
+        /// Extracted from `MeteredComparison.v` through `NativeIndex`: metered and
+        /// prepaid lookups use one total order, so an index built by metered inserts
+        /// answers both lookups identically for arbitrary key sets and probes.
+        #[test]
+        fn operation_index_comparators_agree_for_arbitrary_key_sets(
+            inserted in proptest::collection::btree_set(
+                proptest::collection::vec((0u64..2, 0u64..2), 0..20),
+                0..24,
+            ),
+            probes in proptest::collection::vec(
+                proptest::collection::vec((0u64..2, 0u64..2), 0..20),
+                0..24,
+            ),
+        ) {
+            let budget =
+                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
+            let inserted: Vec<Vec<(u64, u64)>> = inserted.into_iter().collect();
+            let mut index = NativeIndex::<OperationKey, usize>::default();
+            for (position, path) in inserted.iter().enumerate() {
+                let prepared = index
+                    .prepare_insert(operation_key(path), position, &budget)
+                    .expect("metered insert fits the budget");
+                index.commit(prepared);
+            }
+            for probe in inserted.iter().chain(probes.iter()) {
+                let expected = inserted.iter().position(|path| path == probe);
+                proptest::prop_assert_eq!(
+                    index
+                        .get(&operation_key(probe), &budget)
+                        .expect("metered lookup fits the budget")
+                        .copied(),
+                    expected
+                );
+                proptest::prop_assert_eq!(index.get_prepaid(&operation_key(probe)).copied(), expected);
+            }
+        }
     }
 }

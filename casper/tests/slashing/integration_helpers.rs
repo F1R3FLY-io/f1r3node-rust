@@ -225,7 +225,7 @@ pub async fn equivocate_block(
     };
     let body = Body {
         state,
-        deploys: processed_deploys,
+        deploys: processed_deploys.into_iter().map(Into::into).collect(),
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
@@ -360,7 +360,7 @@ pub async fn propose_with_explicit_justifications(
     };
     let body = Body {
         state,
-        deploys: processed_deploys,
+        deploys: processed_deploys.into_iter().map(Into::into).collect(),
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
@@ -533,7 +533,7 @@ pub async fn propose_with_block_mutation(
     };
     let body = Body {
         state,
-        deploys: processed_deploys,
+        deploys: processed_deploys.into_iter().map(Into::into).collect(),
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
@@ -681,7 +681,7 @@ pub async fn propose_neglecting_block(
     };
     let body = Body {
         state,
-        deploys: processed_deploys,
+        deploys: processed_deploys.into_iter().map(Into::into).collect(),
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),

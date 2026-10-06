@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::hash::Hasher;
 use std::sync::Arc;
 
@@ -851,4 +852,485 @@ fn every_warm_read_cut_keeps_owned_copies_within_accepted_credit() {
             assert_eq!(after.joins_flat(), before.joins_flat());
         }
     }
+}
+
+fn owned_continuations(
+    store: &Store,
+    rows: &Rows,
+    meter: &Meter,
+) -> Vec<WaitingContinuation<String, String>> {
+    store
+        .get_continuations_with_reader(&[], &|| Ok(rows.continuations.clone()), meter)
+        .expect("owned continuation read")
+}
+
+fn continuation_views(
+    store: &Store,
+    rows: &Rows,
+    meter: &Meter,
+) -> Result<Vec<Arc<WaitingContinuation<String, String>>>, RSpaceError> {
+    store.get_continuation_views_with_reader(&[], &|| Ok(rows.continuations.clone()), meter)
+}
+
+/// C1 (DR-81; `NativeSharedReads.shared_selection_equals_deep_selection`):
+/// shared views hold the same continuations, in the same order, as owned
+/// reads, on a cold and on a warm cache.
+#[test]
+fn shared_reads_select_like_deep_reads() {
+    let rows = Rows::new();
+    for view_first in [true, false] {
+        let store = installed();
+        let unlimited = Meter::new(usize::MAX);
+        let (views, owned) = if view_first {
+            let views = continuation_views(&store, &rows, &unlimited).expect("cold view read");
+            (views, owned_continuations(&store, &rows, &unlimited))
+        } else {
+            let owned = owned_continuations(&store, &rows, &unlimited);
+            (continuation_views(&store, &rows, &unlimited).expect("warm view read"), owned)
+        };
+        let viewed: Vec<_> = views.iter().map(|view| view.as_ref().clone()).collect();
+        assert_eq!(viewed, owned, "view first: {view_first}");
+        assert_eq!(owned[0].continuation, "installed");
+        assert_eq!(&owned[1..], rows.continuations);
+    }
+}
+
+/// C1 (DR-81): a warm view read allocates no continuation payload. Its
+/// allocation does not change when the payload grows 16 times, while a warm
+/// owned read copies every payload.
+#[test]
+fn shared_read_allocates_no_payload() {
+    let measure = |scale: usize| {
+        let continuations = vec![
+            WaitingContinuation {
+                patterns: vec!["pattern".repeat(100 * scale); 3],
+                continuation: "continuation".repeat(500 * scale),
+                persist: true,
+                peeks: [0, 2].into_iter().collect(),
+                source: Consume::default(),
+            };
+            2
+        ];
+        let store = store();
+        let unlimited = Meter::new(usize::MAX);
+        let read = || Ok(continuations.clone());
+        store
+            .get_continuation_views_with_reader(&[], &read, &unlimited)
+            .expect("cache fill");
+        let (views, view_bytes) = measure_allocations(|| {
+            store.get_continuation_views_with_reader(&[], &read, &unlimited)
+        });
+        assert_eq!(views.expect("warm view read").len(), continuations.len());
+        let (owned, owned_bytes) =
+            measure_allocations(|| store.get_continuations_with_reader(&[], &read, &unlimited));
+        assert_eq!(owned.expect("warm owned read"), continuations);
+        (view_bytes, owned_bytes)
+    };
+    let (small_view, small_owned) = measure(1);
+    let (large_view, large_owned) = measure(16);
+    assert_eq!(small_view, large_view, "view bytes depend on the payload");
+    assert!(large_owned > 8 * small_owned, "{large_owned} vs {small_owned} owned bytes");
+    assert!(small_owned > small_view, "{small_owned} owned vs {small_view} view bytes");
+}
+
+/// C1 (DR-81; `NativeSharedReads.prefetch_then_read_equals_read`): a view
+/// read used as a prefetch fills the cache and leaves every later read equal
+/// to a read without the prefetch.
+#[test]
+fn prefetch_leaves_state_and_selection_unchanged() {
+    let rows = Rows::new();
+    let unlimited = Meter::new(usize::MAX);
+    let plain = installed();
+    let expected = owned_continuations(&plain, &rows, &unlimited);
+    let prefetched = installed();
+    continuation_views(&prefetched, &rows, &unlimited).expect("prefetch");
+    let reads = Cell::new(0);
+    let after = prefetched
+        .get_continuations_with_reader(
+            &[],
+            &|| {
+                reads.set(reads.get() + 1);
+                Ok(rows.continuations.clone())
+            },
+            &unlimited,
+        )
+        .expect("read after prefetch");
+    assert_eq!(after, expected);
+    assert_eq!(reads.get(), 0, "the prefetch filled the cache");
+    let views = continuation_views(&prefetched, &rows, &unlimited).expect("view after prefetch");
+    let viewed: Vec<_> = views.iter().map(|view| view.as_ref().clone()).collect();
+    assert_eq!(viewed, expected);
+}
+
+/// C1 (DR-81; `NativeSharedReads.every_release_was_prepaid`): every
+/// reservation cut of a cold view read rejects and leaves the cache empty,
+/// so a later read decodes the history again.
+#[test]
+fn every_view_read_cut_rejects_without_filling_the_cache() {
+    let rows = Rows::new();
+    let full = Meter::new(usize::MAX);
+    continuation_views(&installed(), &rows, &full).expect("full read");
+    for cut in 0..full.calls.get() {
+        let store = installed();
+        let limited = Meter::new(cut);
+        assert_eq!(
+            continuation_views(&store, &rows, &limited).map(|views| views.len()),
+            Err(RSpaceError::HostWorkRejected),
+            "cut {cut}"
+        );
+        let reads = Cell::new(0);
+        store
+            .get_continuations_with_reader(
+                &[],
+                &|| {
+                    reads.set(reads.get() + 1);
+                    Ok(rows.continuations.clone())
+                },
+                &Meter::new(usize::MAX),
+            )
+            .expect("read after cut");
+        assert_eq!(reads.get(), 1, "cut {cut} left the cache empty");
+    }
+}
+
+fn owned_data(store: &Store, data: &[Datum<String>], meter: &Meter) -> Vec<Datum<String>> {
+    store
+        .get_data_with_reader(&String::new(), &|| Ok(data.to_vec()), meter)
+        .expect("owned data read")
+}
+
+fn data_view(
+    store: &Store,
+    data: &[Datum<String>],
+    meter: &Meter,
+) -> Result<NativeDataView<String, String>, RSpaceError> {
+    store.get_data_view_with_reader(&String::new(), &|| Ok(data.to_vec()), meter)
+}
+
+/// C2 (DR-82; `NativeSharedReads.shared_selection_equals_deep_selection`): a
+/// data view holds the same datums, in the same order, as an owned read, on a
+/// cold and on a warm cache.
+#[test]
+fn data_view_selection_matches_owned() {
+    let rows = Rows::new();
+    for view_first in [true, false] {
+        let store = store();
+        let unlimited = Meter::new(usize::MAX);
+        let (view, owned) = if view_first {
+            let view = data_view(&store, &rows.data, &unlimited).expect("cold data view");
+            (view, owned_data(&store, &rows.data, &unlimited))
+        } else {
+            let owned = owned_data(&store, &rows.data, &unlimited);
+            (data_view(&store, &rows.data, &unlimited).expect("warm data view"), owned)
+        };
+        assert_eq!(view.values(), owned.as_slice(), "view first: {view_first}");
+        assert_eq!(owned, rows.data);
+    }
+}
+
+/// C2 (DR-82): a warm data view allocates no datum payload. Its allocation
+/// does not change when the payload grows 16 times, while a warm owned read
+/// copies every datum.
+#[test]
+fn data_view_allocates_no_payload() {
+    let measure = |scale: usize| {
+        let data = vec![
+            Datum {
+                a: "datum".repeat(500 * scale),
+                persist: false,
+                source: Produce::default(),
+            };
+            2
+        ];
+        let store = store();
+        let unlimited = Meter::new(usize::MAX);
+        data_view(&store, &data, &unlimited).expect("cache fill");
+        let (view, view_bytes) = measure_allocations(|| data_view(&store, &data, &unlimited));
+        assert_eq!(view.expect("warm data view").values(), data.as_slice());
+        let (owned, owned_bytes) = measure_allocations(|| owned_data(&store, &data, &unlimited));
+        assert_eq!(owned, data);
+        (view_bytes, owned_bytes)
+    };
+    let (small_view, small_owned) = measure(1);
+    let (large_view, large_owned) = measure(16);
+    assert_eq!(small_view, large_view, "view bytes depend on the payload");
+    assert!(large_owned > 8 * small_owned, "{large_owned} vs {small_owned} owned bytes");
+    assert!(small_owned > small_view, "{small_owned} owned vs {small_view} view bytes");
+}
+
+/// C2 (DR-82): a data view is a snapshot. A later write to the channel does
+/// not change the view, and a new read sees the write.
+#[test]
+fn data_view_is_a_stable_snapshot() {
+    let rows = Rows::new();
+    let store = store();
+    let unlimited = Meter::new(usize::MAX);
+    let view = data_view(&store, &rows.data, &unlimited).expect("data view");
+    let added = Datum {
+        a: "later".to_owned(),
+        persist: false,
+        source: Produce::default(),
+    };
+    store.put_datum(&String::new(), added.clone());
+    assert_eq!(view.values(), rows.data.as_slice());
+    let fresh = data_view(&store, &rows.data, &unlimited).expect("fresh data view");
+    assert_eq!(fresh.values().len(), rows.data.len() + 1);
+    assert!(fresh.values().contains(&added));
+}
+
+/// C2 (DR-82; `NativeSharedReads.every_release_was_prepaid`): every
+/// reservation cut of a cold data view rejects and leaves the cache empty, so
+/// a later read decodes the history again.
+#[test]
+fn every_data_view_cut_rejects_without_filling_the_cache() {
+    let rows = Rows::new();
+    let full = Meter::new(usize::MAX);
+    data_view(&store(), &rows.data, &full).expect("full read");
+    for cut in 0..full.calls.get() {
+        let store = store();
+        let limited = Meter::new(cut);
+        assert_eq!(
+            data_view(&store, &rows.data, &limited).map(|view| view.values().len()),
+            Err(RSpaceError::HostWorkRejected),
+            "cut {cut}"
+        );
+        let reads = Cell::new(0);
+        store
+            .get_data_with_reader(
+                &String::new(),
+                &|| {
+                    reads.set(reads.get() + 1);
+                    Ok(rows.data.clone())
+                },
+                &Meter::new(usize::MAX),
+            )
+            .expect("read after cut");
+        assert_eq!(reads.get(), 1, "cut {cut} left the cache empty");
+    }
+}
+
+fn charge(reserve: impl FnOnce(&Meter) -> Result<(), RSpaceError>) -> (usize, usize, usize) {
+    let meter = Meter::new(usize::MAX);
+    reserve(&meter).expect("charge");
+    (meter.operations.get(), meter.scanned.get(), meter.backing.get())
+}
+
+/// C5 (DR-83): the shared charge of a store-owned pointer vector equals the
+/// walker's charge minus the walk into the payloads. For payload-free
+/// pointers, the only difference is the push of each empty payload.
+#[test]
+fn shared_copy_charge_omits_only_the_payload_walk() {
+    for length in [0_usize, 1, 3, 17] {
+        let values: Vec<Arc<()>> = (0..length).map(|_| Arc::new(())).collect();
+        let shared =
+            charge(|meter| native_backing::reserve_shared_copy_and_cleanup(&values, meter));
+        let walked = charge(|meter| native_backing::reserve_copy_and_cleanup(&values, meter));
+        assert_eq!(walked.0, shared.0 + 3 * length, "operations at length {length}");
+        assert_eq!(walked.1, shared.1, "scanned bytes at length {length}");
+        assert_eq!(walked.2, shared.2, "backing at length {length}");
+    }
+}
+
+/// C5 (DR-83): the shared charge does not depend on the payload size, stays
+/// below the walked charge, and covers the allocation of the pointer copy.
+#[test]
+fn shared_copy_charge_is_independent_of_payload() {
+    let measure = |scale: usize| {
+        let values: Vec<Arc<String>> = (0..3)
+            .map(|_| Arc::new("payload".repeat(100 * scale)))
+            .collect();
+        let shared =
+            charge(|meter| native_backing::reserve_shared_copy_and_cleanup(&values, meter));
+        let walked = charge(|meter| native_backing::reserve_copy_and_cleanup(&values, meter));
+        let (copy, allocated) = measure_allocations(|| values.clone());
+        assert_eq!(copy.len(), values.len());
+        assert!(allocated <= shared.2, "{allocated} allocated > {} reserved", shared.2);
+        (shared, walked)
+    };
+    let (small_shared, small_walked) = measure(1);
+    let (large_shared, large_walked) = measure(16);
+    assert_eq!(small_shared, large_shared);
+    assert!(large_walked.1 > small_walked.1);
+    assert!(small_shared.1 < small_walked.1);
+}
+
+/// C5 (DR-83): the shared cleanup of one pointer does not depend on its
+/// payload and stays below the walked cleanup.
+#[test]
+fn shared_cleanup_charges_the_pointer_only() {
+    let small = Arc::new("p".to_owned());
+    let large = Arc::new("p".repeat(10_000));
+    let small_shared = charge(|meter| native_backing::reserve_shared_cleanup(&small, meter));
+    let large_shared = charge(|meter| native_backing::reserve_shared_cleanup(&large, meter));
+    let large_walked = charge(|meter| native_backing::reserve_cleanup(&large, meter));
+    assert_eq!(small_shared, large_shared);
+    assert!(large_shared.1 < large_walked.1);
+}
+
+/// D-S4 (DR-90) oracle: the identity the legacy duplicate check compared.
+fn legacy_identity(waiting: &WaitingContinuation<String, String>) -> String {
+    format!(
+        "{:?}|{:?}|{}|{:?}",
+        waiting.patterns, waiting.continuation, waiting.persist, waiting.peeks
+    )
+}
+
+fn sourced(
+    channels: &[String],
+    patterns: Vec<String>,
+    body: String,
+    persist: bool,
+    peeks: BTreeSet<i32>,
+) -> WaitingContinuation<String, String> {
+    let source = Consume::create(&channels.to_vec(), &patterns, &body, persist);
+    WaitingContinuation {
+        patterns,
+        continuation: body,
+        persist,
+        peeks,
+        source,
+    }
+}
+
+/// A stored consume publishes join updates, so the join cache of each channel
+/// must be filled first (as a native session does).
+fn prime_joins(store: &Store, channels: &[String]) {
+    let setup = Meter::new(usize::MAX);
+    for channel in channels {
+        store
+            .get_joins_with_reader(channel, &|| Ok(Vec::new()), &setup)
+            .expect("join cache fill");
+    }
+}
+
+fn continuation_strategy() -> impl Strategy<Value = (Vec<String>, String, bool, BTreeSet<i32>)> {
+    (
+        prop::collection::vec("[ab]{1,3}", 1..4),
+        "[xy]{1,3}",
+        any::<bool>(),
+        prop::collection::btree_set(0_i32..3, 0..3),
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S4 (DR-90): the source-hash prefilter decides duplicates exactly as
+    /// the identity scan, for copies, permuted patterns, other peeks and new
+    /// continuations.
+    #[test]
+    fn prefiltered_duplicate_decision_matches_identity_scan(
+        stored in prop::collection::vec(continuation_strategy(), 1..5),
+        choice in 0_usize..4,
+        pick in any::<prop::sample::Index>(),
+        fresh in continuation_strategy(),
+    ) {
+        let channels = vec!["channel".to_owned()];
+        let stored: Vec<_> = stored
+            .into_iter()
+            .map(|(patterns, body, persist, peeks)| sourced(&channels, patterns, body, persist, peeks))
+            .collect();
+        let base = &stored[pick.index(stored.len())];
+        let waiting = match choice {
+            0 => base.clone(),
+            1 => {
+                let mut patterns = base.patterns.clone();
+                patterns.reverse();
+                sourced(&channels, patterns, base.continuation.clone(), base.persist, base.peeks.clone())
+            }
+            2 => {
+                let mut peeks = base.peeks.clone();
+                if !peeks.remove(&0) {
+                    peeks.insert(0);
+                }
+                sourced(&channels, base.patterns.clone(), base.continuation.clone(), base.persist, peeks)
+            }
+            _ => sourced(&channels, fresh.0, fresh.1, fresh.2, fresh.3),
+        };
+        let store = store();
+        for continuation in stored.iter().rev() {
+            store.put_continuation(&channels, continuation.clone());
+        }
+        prime_joins(&store, &channels);
+        let expected_duplicate = stored
+            .iter()
+            .any(|prior| legacy_identity(prior) == legacy_identity(&waiting));
+        let (inserted, _) = store
+            .store_consume_metered(&channels, waiting, &Meter::new(usize::MAX))
+            .expect("stored consume");
+        prop_assert_eq!(inserted, !expected_duplicate);
+    }
+
+    /// D-S4 (DR-90): equal identities imply equal source hashes.
+    #[test]
+    fn identity_equality_implies_source_hash_equality(
+        left in continuation_strategy(),
+        right in continuation_strategy(),
+        copy in any::<bool>(),
+    ) {
+        let channels = vec!["left".to_owned(), "right".to_owned()];
+        let left = sourced(&channels, left.0, left.1, left.2, left.3);
+        let right = if copy {
+            sourced(&channels, left.patterns.clone(), left.continuation.clone(), left.persist, left.peeks.clone())
+        } else {
+            sourced(&channels, right.0, right.1, right.2, right.3)
+        };
+        if legacy_identity(&left) == legacy_identity(&right) {
+            prop_assert_eq!(left.source.hash, right.source.hash);
+        }
+    }
+}
+
+/// D-S4 (DR-90): stored continuations whose source hash differs from the new
+/// one are not formatted, so their bodies do not change the charge.
+#[test]
+fn distinct_source_hashes_format_no_identity() {
+    let channels = vec!["channel".to_owned()];
+    let charge = |body_size: usize| {
+        let store = store();
+        for index in 0..4 {
+            store.put_continuation(
+                &channels,
+                sourced(
+                    &channels,
+                    vec![format!("pattern{index}")],
+                    "b".repeat(body_size),
+                    false,
+                    BTreeSet::new(),
+                ),
+            );
+        }
+        prime_joins(&store, &channels);
+        let waiting =
+            sourced(&channels, vec!["new".to_owned()], "k".to_owned(), false, BTreeSet::new());
+        let meter = Meter::new(usize::MAX);
+        let (inserted, _) = store
+            .store_consume_metered(&channels, waiting, &meter)
+            .expect("stored consume");
+        assert!(inserted);
+        (meter.operations.get(), meter.scanned.get(), meter.backing.get())
+    };
+    assert_eq!(charge(1), charge(4_096));
+}
+
+/// Negative control for D-S4 (DR-90): the legacy check formatted every stored
+/// continuation, so its charge grew with bodies it never needed to compare.
+#[test]
+fn legacy_duplicate_check_formatted_every_stored_continuation() {
+    let channels = vec!["channel".to_owned()];
+    let formatted = |body_size: usize| {
+        let meter = Meter::new(usize::MAX);
+        for index in 0..4 {
+            let prior = sourced(
+                &channels,
+                vec![format!("pattern{index}")],
+                "b".repeat(body_size),
+                false,
+                BTreeSet::new(),
+            );
+            continuation_identity_metered(&prior, &meter).expect("identity");
+        }
+        meter.scanned.get()
+    };
+    assert!(formatted(4_096) > formatted(1) + 4 * 4_000);
 }

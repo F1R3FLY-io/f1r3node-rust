@@ -980,7 +980,8 @@ for (@k <- queue!?("qualifier")) { @"rrs-k"!(k) }"#,
             &mut Vec::new(),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .expect("create the reporting runtime");
         fund(&reporter);
         reporter
             .reset(&root)

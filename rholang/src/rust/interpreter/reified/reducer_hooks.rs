@@ -217,7 +217,7 @@ impl ReducerCore {
                 data,
                 authority,
             }) => self.produce(chan, data, persistent, authority),
-            Ok(SendRoute::Space(op)) => Box::pin(self.space_op(SpaceOp::Produce(op))),
+            Ok(SendRoute::Space(op)) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
             Err(error) => Box::pin(std::future::ready(Err(error))),
         }
     }
@@ -326,18 +326,21 @@ impl ReducerCore {
                 key,
                 channel,
                 pattern,
-            }) => Box::pin(self.space_op(SpaceOp::Consume(ConsumeOp {
-                space,
-                key,
-                channel,
-                pattern,
-                body,
-                persistent,
-                peek,
-                guard,
-                authority,
-                introduction_authority,
-            }))),
+            }) => Box::pin(self.space_op(
+                SpaceOp::Consume(ConsumeOp {
+                    space,
+                    key,
+                    channel,
+                    pattern,
+                    body,
+                    persistent,
+                    peek,
+                    guard,
+                    authority,
+                    introduction_authority,
+                }),
+                None,
+            )),
             Err(error) => Box::pin(std::future::ready(Err(error))),
         }
     }
@@ -420,31 +423,52 @@ impl ReducerCore {
 
     /// Runs one operation on a collection of a native space as an `Intent::Space` job, then
     /// dispatches its fires and its re-issue (P4 design C.3). The routed sends and receives and
-    /// the handle methods reach a space through this method.
-    pub(crate) async fn space_op(&self, op: SpaceOp) -> Result<DispatchType, InterpreterError> {
+    /// the handle methods reach a space through this method. `then` is the work of the caller
+    /// after the operation, for example the reply of a handle method. It runs as the last branch
+    /// of the outcome (see `dispatch_space_outcome`).
+    pub(crate) async fn space_op(
+        &self,
+        op: SpaceOp,
+        then: Option<DispatchFuture<'static>>,
+    ) -> Result<DispatchType, InterpreterError> {
         let outcome = self.reified.run_op(native_agent(), op).await?;
-        self.dispatch_space_outcome(outcome).await
+        self.dispatch_space_outcome(outcome, then).await
     }
 
-    /// Dispatches the fires of a committed space operation and runs its re-issue (P4 design
-    /// C.3, readiness review H6).
+    /// Dispatches the fires of a committed space operation, runs its re-issue and then the
+    /// work `then` of the caller (P4 design C.3, readiness review H6).
     ///
     /// Each fire dispatches its continuation with the matched data, as a HEAD COMM does. The
-    /// substrate keeps a peeked record, so no fire produces a datum again. One fire without a
-    /// re-issue dispatches directly. Otherwise each fire is a branch with its own metering
-    /// child, and the re-issue is the last branch: a new `space_op`. `run_parallel_dispatches`
-    /// needs a reduction context, so without one the branches run in index order.
+    /// substrate keeps a peeked record, so no fire produces a datum again.
+    ///
+    /// In a reduction, a dispatch ends the participant that makes it: `eval_continuation`
+    /// moves the participant to the detached task of the body. So the participant can make no
+    /// operation after a dispatch. For this reason, `then` is a branch of the outcome, as the
+    /// re-issue is. The branches are the fires in staging order, then the re-issue (a new
+    /// `space_op`), then `then`. Each fire and the re-issue has its own metering child.
+    ///
+    /// A single fire without a re-issue and without `then` dispatches directly, and `then`
+    /// without fires and without a re-issue runs directly. Otherwise the branches run as
+    /// parallel participants through `run_parallel_dispatches`, which needs a reduction
+    /// context. Without one, the branches run in index order.
     pub(crate) fn dispatch_space_outcome<'a>(
         &'a self,
         outcome: SpaceOutcome,
+        then: Option<DispatchFuture<'static>>,
     ) -> DispatchFuture<'a> {
         Box::pin(async move {
             let SpaceOutcome { fires, reissue } = outcome;
             if fires.is_empty() && reissue.is_none() {
-                return Ok(DispatchType::Skip);
+                return match then {
+                    Some(then) => then.await,
+                    None => Ok(DispatchType::Skip),
+                };
             }
             let is_replay = self.space.is_replay().await;
-            let fires = match (<[SpaceFire; 1]>::try_from(fires), reissue.is_some()) {
+            let fires = match (
+                <[SpaceFire; 1]>::try_from(fires),
+                reissue.is_some() || then.is_some(),
+            ) {
                 (Ok([fire]), false) => {
                     let (continuation, data) = dispatch_parts(fire);
                     return self
@@ -454,8 +478,9 @@ impl ReducerCore {
                 (Ok(fire), true) => Vec::from(fire),
                 (Err(fires), _) => fires,
             };
-            let mut branches: Vec<DispatchFuture<'static>> =
-                Vec::with_capacity(fires.len() + usize::from(reissue.is_some()));
+            let mut branches: Vec<DispatchFuture<'static>> = Vec::with_capacity(
+                fires.len() + usize::from(reissue.is_some()) + usize::from(then.is_some()),
+            );
             for (index, fire) in fires.into_iter().enumerate() {
                 let branch = self.with_metering_child(index);
                 let (continuation, data) = dispatch_parts(fire);
@@ -467,10 +492,10 @@ impl ReducerCore {
             }
             if let Some(SpaceReissue { op, .. }) = reissue {
                 let branch = self.with_metering_child(branches.len());
-                branches
-                    .push(Box::pin(async move { branch.space_op(op).await })
-                        as DispatchFuture<'static>);
+                branches.push(Box::pin(async move { branch.space_op(op, None).await })
+                    as DispatchFuture<'static>);
             }
+            branches.extend(then);
             match deterministic_reduction::current() {
                 Some(_) => self.run_parallel_dispatches(branches).await,
                 None => self.run_sequential_dispatches(branches).await,
@@ -1028,7 +1053,7 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::cost_accounting::CostAccounting;
     use crate::rust::interpreter::accounting::costs::Cost;
-    use crate::rust::interpreter::deterministic_reduction::root;
+    use crate::rust::interpreter::deterministic_reduction::root_with_observation;
     use crate::rust::interpreter::external_services::ExternalServices;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reduce::DebruijnInterpreter;
@@ -1087,7 +1112,8 @@ mod tests {
             &mut Vec::new(),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .expect("create the rho runtime");
         runtime
             .cost
             .set(Cost::create(i64::MAX, "reified hooks test".to_string()));
@@ -2368,6 +2394,59 @@ mod tests {
         }
     }
 
+    /// Runs `step` as one root evaluation and returns its result. A dispatch ends the
+    /// participant that makes it, so a test that runs several operations runs each one in its
+    /// own root, as each deploy runs in its own root. As `inj` does, the step begins a new
+    /// evaluation scope of the spaces. The detached reductions must not fail.
+    async fn in_root<T>(reducer: &ReducerCore, step: impl Future<Output = T>) -> T {
+        reducer.reified.begin_evaluation_scope();
+        let (result, _, errors) = root_with_observation(
+            reducer.space.clone(),
+            reducer.metering.budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            step,
+        )
+        .await;
+        assert!(
+            errors.is_empty(),
+            "the detached reductions failed: {errors:?}"
+        );
+        result
+    }
+
+    /// A branch `then` that records the number of data on `channel` when it runs.
+    fn observing_then(
+        host: &ParRSpace,
+        channel: &Par,
+        seen: &Arc<std::sync::Mutex<Option<usize>>>,
+    ) -> DispatchFuture<'static> {
+        let host = host.clone();
+        let channel = channel.clone();
+        let seen = Arc::clone(seen);
+        Box::pin(async move {
+            let count = host.get_data(&channel).await.len();
+            *seen.lock().expect("the observation lock") = Some(count);
+            Ok(DispatchType::Skip)
+        })
+    }
+
+    /// A branch `then` that sends `value` on `channel` through the reducer: an operation after
+    /// the dispatch of the fires.
+    fn sending_then(
+        reducer: &Arc<ReducerCore>,
+        channel: &Par,
+        value: i64,
+    ) -> DispatchFuture<'static> {
+        let reducer = Arc::clone(reducer);
+        let channel = channel.clone();
+        Box::pin(async move {
+            reducer
+                .reified_produce(channel, datum(vec![int(value)]), false, authority())
+                .await
+        })
+    }
+
     /// Readiness review H6: without a reduction context the branches run one after another in
     /// index order, and their errors aggregate in index order.
     #[tokio::test]
@@ -2377,10 +2456,13 @@ mod tests {
         let out = private(30);
         fixture
             .reducer
-            .dispatch_space_outcome(SpaceOutcome {
-                fires: vec![fire_to(&out, 1), fire_to(&out, 2)],
-                reissue: None,
-            })
+            .dispatch_space_outcome(
+                SpaceOutcome {
+                    fires: vec![fire_to(&out, 1), fire_to(&out, 2)],
+                    reissue: None,
+                },
+                None,
+            )
             .await
             .expect("both fires dispatch");
         assert_eq!(stored(&fixture.host, &out).await, vec![vec![int(1)], vec![
@@ -2389,29 +2471,49 @@ mod tests {
         assert_failures_in_index_order(
             fixture
                 .reducer
-                .dispatch_space_outcome(SpaceOutcome {
-                    fires: failing_fires(),
-                    reissue: None,
-                })
+                .dispatch_space_outcome(
+                    SpaceOutcome {
+                        fires: failing_fires(),
+                        reissue: None,
+                    },
+                    None,
+                )
                 .await,
         );
         let single = private(31);
         fixture
             .reducer
-            .dispatch_space_outcome(SpaceOutcome {
-                fires: vec![fire_to(&single, 3)],
-                reissue: None,
-            })
+            .dispatch_space_outcome(
+                SpaceOutcome {
+                    fires: vec![fire_to(&single, 3)],
+                    reissue: None,
+                },
+                None,
+            )
             .await
             .expect("one fire dispatches directly");
         assert_eq!(stored(&fixture.host, &single).await, vec![vec![int(3)]]);
         assert!(matches!(
             fixture
                 .reducer
-                .dispatch_space_outcome(SpaceOutcome::default())
+                .dispatch_space_outcome(SpaceOutcome::default(), None)
                 .await,
             Ok(DispatchType::Skip)
         ));
+        let after = private(35);
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        fixture
+            .reducer
+            .dispatch_space_outcome(
+                SpaceOutcome {
+                    fires: vec![fire_to(&after, 10), fire_to(&after, 11)],
+                    reissue: None,
+                },
+                Some(observing_then(&fixture.host, &after, &seen)),
+            )
+            .await
+            .expect("the fires and then run");
+        assert_eq!(*seen.lock().expect("the observation lock"), Some(2));
     }
 
     /// Negative control of H6: `run_parallel_dispatches` without a reduction context panics, so
@@ -2424,40 +2526,99 @@ mod tests {
         let _ = fixture.reducer.run_parallel_dispatches(vec![branch]).await;
     }
 
-    /// In a reduction the branches run as parallel participants, and their errors still
-    /// aggregate in index order.
+    /// In a reduction the branches run as parallel participants. The dispatch returns when it
+    /// has started them, and the errors of the branches reach the root in index order. Each
+    /// dispatch runs in its own root, because a dispatch ends the participant that makes it.
     #[tokio::test]
     async fn reducer_space_routing_dispatch_in_a_reduction_runs_parallel_branches() {
         let fixture = detached().await;
         let reducer: &ReducerCore = &fixture.reducer;
         let out = private(32);
-        let (dispatched, failed) = root(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async {
-                assert!(deterministic_reduction::current().is_some());
-                let dispatched = reducer
-                    .dispatch_space_outcome(SpaceOutcome {
+        let dispatched = in_root(reducer, async {
+            assert!(deterministic_reduction::current().is_some());
+            reducer
+                .dispatch_space_outcome(
+                    SpaceOutcome {
                         fires: vec![fire_to(&out, 4), fire_to(&out, 5)],
                         reissue: None,
-                    })
-                    .await;
-                let failed = reducer
-                    .dispatch_space_outcome(SpaceOutcome {
-                        fires: failing_fires(),
-                        reissue: None,
-                    })
-                    .await;
-                (dispatched, failed)
-            },
-        )
+                    },
+                    None,
+                )
+                .await
+        })
         .await;
-        dispatched.expect("both fires dispatch");
+        assert!(matches!(dispatched, Ok(DispatchType::Skip)));
         assert_eq!(stored(&fixture.host, &out).await, vec![vec![int(4)], vec![
             int(5)
         ]]);
-        assert_failures_in_index_order(failed);
+        let (failed, _, errors) = root_with_observation(
+            reducer.space.clone(),
+            reducer.metering.budget(),
+            reducer.reduction_coordinator.clone(),
+            None,
+            reducer.dispatch_space_outcome(
+                SpaceOutcome {
+                    fires: failing_fires(),
+                    reissue: None,
+                },
+                None,
+            ),
+        )
+        .await;
+        assert!(matches!(failed, Ok(DispatchType::Skip)));
+        assert_failures_in_index_order(
+            reducer
+                .finish_detached_errors(Ok(()), errors)
+                .map(|()| DispatchType::Skip),
+        );
+    }
+
+    /// Regression of the merge with the stack-safe reducer: an operation after a dispatch in one
+    /// participant fails, because the dispatch moved the participant to the body. So `then` runs
+    /// as the last branch, in its own participant. Its operation succeeds, and without fires and
+    /// re-issue `then` runs directly.
+    #[tokio::test]
+    async fn reducer_space_routing_then_runs_after_the_fires_in_its_own_branch() {
+        let fixture = detached().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let core = Arc::clone(&fixture.reducer.core);
+        let out = private(36);
+        for fires in [vec![fire_to(&out, 12)], vec![
+            fire_to(&out, 13),
+            fire_to(&out, 14),
+        ]] {
+            let count = fires.len();
+            let dispatched = in_root(
+                reducer,
+                reducer.dispatch_space_outcome(
+                    SpaceOutcome {
+                        fires,
+                        reissue: None,
+                    },
+                    Some(sending_then(&core, &out, 15 + count as i64)),
+                ),
+            )
+            .await;
+            assert!(matches!(dispatched, Ok(DispatchType::Skip)));
+        }
+        assert_eq!(stored(&fixture.host, &out).await, vec![
+            vec![int(12)],
+            vec![int(13)],
+            vec![int(14)],
+            vec![int(16)],
+            vec![int(17)]
+        ]);
+        let alone = private(37);
+        let direct = in_root(
+            reducer,
+            reducer.dispatch_space_outcome(
+                SpaceOutcome::default(),
+                Some(sending_then(&core, &alone, 18)),
+            ),
+        )
+        .await;
+        assert!(matches!(direct, Ok(DispatchType::Skip)));
+        assert_eq!(stored(&fixture.host, &alone).await, vec![vec![int(18)]]);
     }
 
     /// The re-issue of an outcome is the last branch, a new space operation. In a runtime
@@ -2488,10 +2649,13 @@ mod tests {
                 code(
                     fixture
                         .reducer
-                        .dispatch_space_outcome(SpaceOutcome {
-                            fires,
-                            reissue: Some(reissue.clone()),
-                        })
+                        .dispatch_space_outcome(
+                            SpaceOutcome {
+                                fires,
+                                reissue: Some(reissue.clone()),
+                            },
+                            None,
+                        )
                         .await
                 ),
                 expected("RuntimeUnavailable")
@@ -2501,6 +2665,40 @@ mod tests {
     }
 
     // ── A native space end to end ──────────────────────────────────────────────────────────────
+
+    /// FR-5': every root entry of the reducer begins an evaluation scope of the spaces, and
+    /// `inj_with_host_work` too. Each root evaluation starts at the order of the root
+    /// participant, and the session is the deploy of the budget. So the creation and both runs
+    /// commit their first transaction under one parent order. Without a new scope, the first run
+    /// already fails with `ParentOrderReused`.
+    #[tokio::test]
+    async fn reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope() {
+        use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+
+        use crate::rust::interpreter::host_work::HostWorkBudget;
+
+        let fixture = hosted().await;
+        let reducer: &ReducerCore = &fixture.reducer;
+        let space = native(42);
+        let name = space_name(space, [5; 32]);
+        in_root(reducer, create(reducer, space))
+            .await
+            .expect("create the space");
+        let term = send(name.clone(), vec![int(1)]);
+        for run in 0..2 {
+            let host_work =
+                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+            reducer
+                .inj_with_host_work(term.clone(), rand(b"host-work"), host_work)
+                .await
+                .unwrap_or_else(|error| panic!("run {run} of the send failed: {error:?}"));
+        }
+        let collection = namespace::gprivate(namespace::data_channel(
+            space,
+            &CollectionKey::of_channel(&name).expect("a key"),
+        ));
+        assert_eq!(fixture.host.get_data(&collection).await.len(), 2);
+    }
 
     /// With a host runtime, the hooks run the operations of a space name on its collection. A
     /// forged channel in a use block also reaches the space. The fired bodies dispatch.
@@ -2513,53 +2711,60 @@ mod tests {
         let out = private(41);
         let forged = string("rrs-4c-in-space");
         let waiter = || body(send(out.clone(), vec![bound(0)]));
-        root(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async {
-                create(reducer, space).await?;
-                reducer
-                    .reified_consume(
-                        vec![bind(name.clone())],
-                        waiter(),
-                        false,
-                        false,
-                        None,
-                        authority(),
-                        authority(),
-                    )
-                    .await?;
-                reducer
-                    .reified_produce(name.clone(), datum(vec![int(7)]), false, authority())
-                    .await?;
-                reducer
-                    .reified_produce(name.clone(), datum(vec![int(8)]), false, authority())
-                    .await?;
-                reducer
-                    .reified_consume(
-                        vec![bind(name.clone())],
-                        waiter(),
-                        false,
-                        false,
-                        None,
-                        authority(),
-                        authority(),
-                    )
-                    .await?;
-                reducer
-                    .eval_marker(
-                        &use_block(handle(space), send(forged.clone(), vec![int(9)])),
-                        &Env::new(),
-                        rand(b"use"),
-                        &authority(),
-                    )
-                    .await?;
-                Ok::<_, InterpreterError>(())
-            },
+        in_root(reducer, create(reducer, space))
+            .await
+            .expect("create the space");
+        in_root(
+            reducer,
+            reducer.reified_consume(
+                vec![bind(name.clone())],
+                waiter(),
+                false,
+                false,
+                None,
+                authority(),
+                authority(),
+            ),
         )
         .await
-        .expect("the space operations run");
+        .expect("park the waiter");
+        in_root(
+            reducer,
+            reducer.reified_produce(name.clone(), datum(vec![int(7)]), false, authority()),
+        )
+        .await
+        .expect("fire the waiter");
+        in_root(
+            reducer,
+            reducer.reified_produce(name.clone(), datum(vec![int(8)]), false, authority()),
+        )
+        .await
+        .expect("store the datum");
+        in_root(
+            reducer,
+            reducer.reified_consume(
+                vec![bind(name.clone())],
+                waiter(),
+                false,
+                false,
+                None,
+                authority(),
+                authority(),
+            ),
+        )
+        .await
+        .expect("take the datum");
+        in_root(
+            reducer,
+            reducer.eval_marker(
+                &use_block(handle(space), send(forged.clone(), vec![int(9)])),
+                &Env::new(),
+                rand(b"use"),
+                &authority(),
+            ),
+        )
+        .await
+        .expect("send in the use block");
         assert_eq!(stored(&fixture.host, &out).await, vec![vec![int(7)], vec![
             int(8)
         ]]);

@@ -1,7 +1,12 @@
 use std::borrow::Cow;
 use std::ops::{Add, Mul, Sub};
 
-use models::rhoapi::{PCost, Par};
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{
+    BindPattern, ListParWithRandom, PCost, Par, ParWithRandom, TaggedContinuation,
+};
+use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash;
 use shared::rust::ByteString;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala
@@ -103,6 +108,13 @@ pub fn equality_check_cost<T: prost::Message, P: prost::Message>(x: &T, y: &P) -
         value: positive_billable_value(min_size as i64),
         operation: Cow::Borrowed("equality check"),
     }
+}
+
+pub fn equality_check_cost_legacy<T: prost::Message, P: prost::Message>(x: &T, y: &P) -> Cost {
+    Cost::create(
+        std::cmp::min(x.encoded_len(), y.encoded_len()) as i64,
+        "equality check",
+    )
 }
 
 pub fn boolean_and_cost() -> Cost { Cost::create(2, "boolean and") }
@@ -343,3 +355,60 @@ pub fn new_bindings_cost(n: i64) -> Cost {
 }
 
 pub fn match_eval_cost() -> Cost { Cost::create(12, "match eval") }
+
+pub fn storage_cost_consume(
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+) -> Cost {
+    let body_cost = match continuation.tagged_cont.as_ref() {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => body.encoded_len() as i64,
+        _ => 0,
+    };
+    Cost::create(
+        storage_cost(channels).value + storage_cost(patterns).value + body_cost,
+        "consume storage",
+    )
+}
+
+pub fn storage_cost_produce(channel: &Par, data: &ListParWithRandom) -> Cost {
+    let channel_cost = channel.encoded_len() as i64;
+    let data_cost: i64 = data.pars.iter().map(|p| p.encoded_len() as i64).sum();
+    Cost::create(channel_cost + data_cost, "produces storage")
+}
+
+pub fn comm_event_storage_cost(channels_involved: i64) -> Cost {
+    let consume_cost = event_storage_cost(channels_involved);
+    let produce_costs = event_storage_cost(1).value * channels_involved;
+    Cost::create(
+        consume_cost.value + produce_costs,
+        "comm event storage cost",
+    )
+}
+
+pub fn event_storage_cost(channels_involved: i64) -> Cost {
+    Cost::create(
+        blake2b256_hash::LENGTH + channels_involved * blake2b256_hash::LENGTH,
+        "event storage cost",
+    )
+}
+
+fn storage_cost<A: prost::Message>(items: &[A]) -> Cost {
+    let total_size: usize = items.iter().map(|item| item.encoded_len()).sum();
+    Cost::create(total_size as i64, "storage cost")
+}
+
+#[cfg(test)]
+mod legacy_compat_tests {
+    use super::*;
+
+    #[test]
+    fn empty_operand_keeps_dev_zero_equality_charge() {
+        let empty = Par::default();
+        let nonempty = models::rust::utils::new_gint_par(1, Vec::new(), false);
+        assert_eq!(equality_check_cost_legacy(&empty, &nonempty).value, 0);
+        assert_eq!(equality_check_cost(&empty, &nonempty).value, 1);
+    }
+}

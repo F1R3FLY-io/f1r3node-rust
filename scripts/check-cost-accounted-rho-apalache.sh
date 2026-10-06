@@ -83,6 +83,13 @@ run_expected_violation() {
 echo "Checking cost-accounted rho with Apalache 0.58.3+..."
 
 overall=0
+run_check atomic-quote-shared-capacity \
+  "shared provider capacity, exact duplicate output, and cumulative use through length 8" \
+  --config=AtomicQuoteSharedCapacityApalache.cfg --length=8 AtomicQuoteSharedCapacity.tla || overall=1
+run_expected_violation atomic-quote-shared-capacity-stale-unsafe \
+  "stale publication duplicates shared provider capacity" \
+  PhysicalConservation \
+  --config=AtomicQuoteSharedCapacityStaleUnsafeApalache.cfg --length=8 AtomicQuoteSharedCapacity.tla || overall=1
 run_check native-cache-backing \
   "cold and warm cache copies preserve credit, publication, cancellation, retry, and checkpoint state through length 8" \
   --config=NativeCacheBacking.cfg --length=8 NativeCacheBacking.tla || overall=1
@@ -980,6 +987,21 @@ run_expected_violation deterministic-evaluation-boundary-cancel-unsafe \
   "detaching child tasks and releasing the evaluation permit is independently refuted" \
   Inv_CheckpointAtEvaluationQuiescence \
   --config=../deterministic_parallel_reduction/MC_EvaluationBoundary_cancel_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
+run_check counted-detached-reduction \
+  "counted child tasks preserve selected replay, exact charges, failures, and the evaluation permit" \
+  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_Apalache.cfg --length=8 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
+run_expected_violation counted-detached-reduction-count-unsafe \
+  "counting child tasks after parent completion is independently refuted" \
+  CountExact \
+  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_count_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
+run_expected_violation counted-detached-reduction-charge-unsafe \
+  "a changed detached-task charge is independently refuted" \
+  ChargeEqual \
+  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_charge_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
+run_expected_violation counted-detached-reduction-permit-unsafe \
+  "early evaluation-permit release is independently refuted" \
+  PermitUntilQuiescence \
+  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_permit_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
 run_check block-heap-lifecycle \
   "concurrent block completion bounds reclaimable heap without changing committed semantics" \
   --config=BlockHeapLifecycleApalache.cfg --length=12 BlockHeapLifecycle.tla || overall=1

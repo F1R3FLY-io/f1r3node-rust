@@ -51,7 +51,7 @@
    r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
                             110-127 (produce routes with no context)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:510-515
+     without_context        reducer_hooks.rs:535-540
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             106-129
@@ -65,13 +65,13 @@
    handle_of                rholang/src/rust/interpreter/reified/
                             system_channels.rs:93-98
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
-                            127-156, 161-170, 511-547, 549-554, 556-561,
-                            563-572, 581-586 (ParsedMessage::parse,
+                            131-160, 174-183, 533-569, 571-576, 578-583,
+                            585-594, 603-608 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
-                            80-89, 92-98
+                            84-93, 96-102
    call, run                rholang/src/rust/interpreter/reified/handle.rs:
-                            200-246, 248-296
+                            213-268, 270-320
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -775,8 +775,10 @@ Section UseWrapper.
 
   (* The first step of a fired body: the dispatcher evaluates it on the
      root reducer, whose context is None
-     (rholang/src/rust/interpreter/dispatch.rs:62-71). A USE tuple enters
-     its context (eval_marker). *)
+     (rholang/src/rust/interpreter/dispatch.rs:62-71). Inside a reduction,
+     eval_continuation runs the body in a detached task of that root
+     reducer, so the context is None there as well. A USE tuple enters its
+     context (eval_marker). *)
   Definition fire_step (e : env) (p : par) : fire_result :=
     match decode_use p with
     | Some (space, body) =>

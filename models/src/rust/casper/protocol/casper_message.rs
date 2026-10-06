@@ -12,6 +12,10 @@ use crate::casper::system_deploy_data_proto::SystemDeploy;
 use crate::casper::*;
 use crate::rhoapi::PCost;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
+use crate::rust::cost_protocol_limits::offered_funded_v6_limits;
+use crate::rust::deploy_envelope::{DeployEnvelopeFormat, DeployEnvelopeLimits};
+use crate::rust::phlo_wire::PhloWireLimits;
 
 // TODO: Use type ByteString from models crate
 type ByteString = prost::bytes::Bytes;
@@ -37,6 +41,11 @@ pub enum CasperMessage {
     MergeableEntryResponse(MergeableEntryResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
+    // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
+    GetSnapshotChunkRequest(GetSnapshotChunkRequest),
+    SnapshotChunkResponse(SnapshotChunkResponse),
+    HasSnapshotRequest(HasSnapshotRequest),
+    HasSnapshot(HasSnapshot),
 }
 
 impl CasperMessage {
@@ -125,6 +134,22 @@ impl CasperMessage {
     pub fn from_floor_cache_response(proto: FloorCacheResponseProto) -> Self {
         CasperMessage::FloorCacheResponse(FloorCacheResponse::from_proto(proto))
     }
+
+    pub fn from_get_snapshot_chunk_request(proto: GetSnapshotChunkRequestProto) -> Self {
+        CasperMessage::GetSnapshotChunkRequest(GetSnapshotChunkRequest::from_proto(proto))
+    }
+
+    pub fn from_snapshot_chunk_response(proto: SnapshotChunkResponseProto) -> Self {
+        CasperMessage::SnapshotChunkResponse(SnapshotChunkResponse::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot_request(proto: HasSnapshotRequestProto) -> Self {
+        CasperMessage::HasSnapshotRequest(HasSnapshotRequest::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot(proto: HasSnapshotProto) -> Self {
+        CasperMessage::HasSnapshot(HasSnapshot::from_proto(proto))
+    }
 }
 
 // TODO: Remove all into() and to_vec() once we have correct ByteString type in the models crate
@@ -159,6 +184,168 @@ impl BlockRequest {
     pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
     pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+}
+
+// --- Snapshot chunk-fetch (Wave 3, Phase 7b-1) ---------------
+//
+// Joiners fetch a finalized snapshot in 4 MiB chunks keyed by
+// `(block_hash, chunk_index)`.  The response carries the raw
+// chunk bytes, its Blake2b256 hash, the Merkle root anchor over
+// all chunk hashes, the total chunk count, and the chunk's
+// bottom-up Merkle inclusion proof against the root.  The
+// requester rehashes `chunk_bytes` locally and verifies the
+// proof against the anchored root before accepting the chunk.
+
+/// One step of a bottom-up Merkle inclusion proof.
+/// `is_sibling_right = true` means the sibling is the RIGHT
+/// child at this level (concat order: `current || sibling`);
+/// `false` means the sibling is the LEFT child (`sibling ||
+/// current`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MerkleProofStep {
+    pub sibling_hash: ByteString,
+    pub is_sibling_right: bool,
+}
+
+impl MerkleProofStep {
+    pub fn from_proto(proto: MerkleProofStepProto) -> Self {
+        Self {
+            sibling_hash: proto.sibling_hash,
+            is_sibling_right: proto.is_sibling_right,
+        }
+    }
+
+    pub fn to_proto(self) -> MerkleProofStepProto {
+        MerkleProofStepProto {
+            sibling_hash: self.sibling_hash,
+            is_sibling_right: self.is_sibling_right,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GetSnapshotChunkRequest {
+    pub block_hash: ByteString,
+    pub chunk_index: u32,
+}
+
+impl GetSnapshotChunkRequest {
+    pub fn from_proto(proto: GetSnapshotChunkRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            chunk_index: proto.chunk_index,
+        }
+    }
+
+    pub fn to_proto(self) -> GetSnapshotChunkRequestProto {
+        GetSnapshotChunkRequestProto {
+            block_hash: self.block_hash,
+            chunk_index: self.chunk_index,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotChunkResponse {
+    pub block_hash: ByteString,
+    pub chunk_index: u32,
+    pub chunk_bytes: ByteString,
+    pub chunk_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+    pub merkle_proof: Vec<MerkleProofStep>,
+}
+
+impl SnapshotChunkResponse {
+    pub fn from_proto(proto: SnapshotChunkResponseProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            chunk_index: proto.chunk_index,
+            chunk_bytes: proto.chunk_bytes,
+            chunk_hash: proto.chunk_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+            merkle_proof: proto
+                .merkle_proof
+                .into_iter()
+                .map(MerkleProofStep::from_proto)
+                .collect(),
+        }
+    }
+
+    pub fn to_proto(self) -> SnapshotChunkResponseProto {
+        SnapshotChunkResponseProto {
+            block_hash: self.block_hash,
+            chunk_index: self.chunk_index,
+            chunk_bytes: self.chunk_bytes,
+            chunk_hash: self.chunk_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
+            merkle_proof: self
+                .merkle_proof
+                .into_iter()
+                .map(MerkleProofStep::to_proto)
+                .collect(),
+        }
+    }
+}
+
+/// Joiner → serving validator: "do you have a serveable
+/// snapshot for this block?"  Broadcast + point-to-point;
+/// serving nodes reply with [`HasSnapshot`] when they can
+/// serve it.  Mirrors the [`HasBlockRequest`] / [`HasBlock`]
+/// pattern.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasSnapshotRequest {
+    pub block_hash: ByteString,
+}
+
+impl HasSnapshotRequest {
+    pub fn from_proto(proto: HasSnapshotRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+        }
+    }
+
+    pub fn to_proto(self) -> HasSnapshotRequestProto {
+        HasSnapshotRequestProto {
+            block_hash: self.block_hash,
+        }
+    }
+}
+
+/// Response to [`HasSnapshotRequest`].  Carries `merkle_root`
+/// so the joiner can pin an anchor BEFORE issuing per-chunk
+/// requests.  Both `merkle_root` and `chunk_count` are
+/// ADVISORY — the joiner MUST re-verify `merkle_root` against
+/// its locally-anchored root (from block finalization) and
+/// expect `chunk_count` to match the actual chunks it later
+/// receives via [`GetSnapshotChunkRequest`].  A server
+/// reporting an inflated `chunk_count` would be caught by the
+/// per-chunk inclusion-proof check during fetch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HasSnapshot {
+    pub block_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+}
+
+impl HasSnapshot {
+    pub fn from_proto(proto: HasSnapshotProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+        }
+    }
+
+    pub fn to_proto(self) -> HasSnapshotProto {
+        HasSnapshotProto {
+            block_hash: self.block_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -471,6 +658,23 @@ pub struct BlockMessage {
 
 impl BlockMessage {
     pub fn from_proto(proto: BlockMessageProto) -> Result<Self, String> {
+        Self::from_proto_using(proto, Body::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BlockMessageProto,
+        envelope_limits: DeployEnvelopeLimits,
+        evidence_limits: PhloWireLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_using(proto, |body| {
+            Body::from_proto_with_limits(body, envelope_limits, evidence_limits)
+        })
+    }
+
+    fn from_proto_using(
+        proto: BlockMessageProto,
+        decode_body: impl FnOnce(BodyProto) -> Result<Body, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
             block_hash: proto.block_hash,
             header: Header::from_proto(
@@ -478,7 +682,7 @@ impl BlockMessage {
                     .header
                     .ok_or_else(|| "Missing header field".to_string())?,
             ),
-            body: Body::from_proto(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
+            body: decode_body(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
             justifications: proto
                 .justifications
                 .into_iter()
@@ -580,7 +784,7 @@ impl RejectedDeploy {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub state: F1r3flyState,
-    pub deploys: Vec<ProcessedDeploy>,
+    pub deploys: Vec<ProcessedUserDeploy>,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
@@ -590,6 +794,23 @@ pub struct Body {
 
 impl Body {
     pub fn from_proto(proto: BodyProto) -> Result<Self, String> {
+        Self::from_proto_using(proto, ProcessedUserDeploy::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BodyProto,
+        envelope_limits: DeployEnvelopeLimits,
+        evidence_limits: PhloWireLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_using(proto, |deploy| {
+            ProcessedUserDeploy::from_proto_with_limits(deploy, envelope_limits, evidence_limits)
+        })
+    }
+
+    fn from_proto_using(
+        proto: BodyProto,
+        decode: impl FnMut(ProcessedDeployProto) -> Result<ProcessedUserDeploy, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
             state: F1r3flyState::from_proto(
                 proto
@@ -599,8 +820,8 @@ impl Body {
             deploys: proto
                 .deploys
                 .into_iter()
-                .map(|d| ProcessedDeploy::from_proto(d))
-                .collect::<Result<Vec<ProcessedDeploy>, String>>()?,
+                .map(decode)
+                .collect::<Result<Vec<_>, String>>()?,
             rejected_deploys: proto
                 .rejected_deploys
                 .into_iter()
@@ -757,6 +978,11 @@ impl ProcessedDeploy {
     }
 
     pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        if proto.native_cost_evidence.is_some() {
+            return Err(
+                "native cost evidence requires the funded processed-deploy decoder".to_string(),
+            );
+        }
         Ok(Self {
             deploy: DeployData::from_proto(
                 proto
@@ -787,8 +1013,201 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
+            native_cost_evidence: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessedUserDeploy {
+    Legacy(ProcessedDeploy),
+    Offered(OfferedProcessedDeploy),
+}
+
+impl ProcessedUserDeploy {
+    pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        let version = proto
+            .deploy
+            .as_ref()
+            .and_then(|deploy| deploy.authorization_v61.as_ref())
+            .map(|authorization| authorization.format_version);
+        match DeployEnvelopeFormat::from_authorization_version(version)? {
+            DeployEnvelopeFormat::Legacy => ProcessedDeploy::from_proto(proto).map(Self::Legacy),
+            DeployEnvelopeFormat::OfferedFunded => {
+                let limits = offered_funded_v6_limits();
+                OfferedProcessedDeploy::from_proto(proto, limits.envelope, limits.evidence)
+                    .map(Self::Offered)
+            }
+            _ => Err("processed deploy authorization format is not active".to_string()),
+        }
+    }
+
+    pub fn from_proto_with_limits(
+        proto: ProcessedDeployProto,
+        envelope_limits: DeployEnvelopeLimits,
+        evidence_limits: PhloWireLimits,
+    ) -> Result<Self, String> {
+        let version = proto
+            .deploy
+            .as_ref()
+            .and_then(|deploy| deploy.authorization_v61.as_ref())
+            .map(|authorization| authorization.format_version);
+        match DeployEnvelopeFormat::from_authorization_version(version)? {
+            DeployEnvelopeFormat::Legacy => ProcessedDeploy::from_proto(proto).map(Self::Legacy),
+            DeployEnvelopeFormat::OfferedFunded => {
+                OfferedProcessedDeploy::from_proto(proto, envelope_limits, evidence_limits)
+                    .map(Self::Offered)
+            }
+            _ => Err("processed deploy authorization format is not active".to_string()),
+        }
+    }
+
+    pub fn to_proto(&self) -> ProcessedDeployProto {
+        match self {
+            Self::Legacy(deploy) => deploy.clone().to_proto(),
+            Self::Offered(deploy) => deploy.to_proto_verified(),
+        }
+    }
+
+    pub fn identity_bytes(&self) -> &[u8] {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.sig,
+            Self::Offered(deploy) => deploy.identity_bytes(),
+        }
+    }
+
+    pub fn valid_after_block_number(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.valid_after_block_number,
+            Self::Offered(deploy) => deploy.envelope().body().valid_after_block_number,
+        }
+    }
+
+    pub fn shard_id(&self) -> &str {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.data.shard_id,
+            Self::Offered(deploy) => &deploy.envelope().body().shard_id,
+        }
+    }
+
+    pub fn phlo_price(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.phlo_price,
+            Self::Offered(deploy) => {
+                let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+                    deploy.envelope().view()
+                else {
+                    unreachable!("verified offered processed deploy")
+                };
+                signed.data.phlo_price()
+            }
+        }
+    }
+
+    pub fn phlo_limit(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.phlo_limit,
+            Self::Offered(deploy) => {
+                let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+                    deploy.envelope().view()
+                else {
+                    unreachable!("verified offered processed deploy")
+                };
+                signed.data.phlo_limit()
+            }
+        }
+    }
+
+    pub fn term(&self) -> &str {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.data.term,
+            Self::Offered(deploy) => &deploy.envelope().body().term,
+        }
+    }
+
+    pub fn expiration_timestamp(&self) -> Option<i64> {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.expiration_timestamp,
+            Self::Offered(deploy) => deploy.envelope().body().expiration_timestamp,
+        }
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(deploy) => deploy.deploy.data.time_stamp,
+            Self::Offered(deploy) => deploy.envelope().body().time_stamp,
+        }
+    }
+
+    pub fn deployer_bytes(&self) -> &[u8] {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy.pk.bytes,
+            Self::Offered(deploy) => &deploy.envelope().primary().pk.bytes,
+        }
+    }
+
+    pub fn to_deploy_info(&self) -> DeployInfo {
+        match self {
+            Self::Legacy(deploy) => deploy.clone().to_deploy_info(),
+            Self::Offered(deploy) => {
+                let body = deploy.envelope().body();
+                DeployInfo {
+                    deployer: PrettyPrinter::build_string_no_limit(self.deployer_bytes()),
+                    term: body.term.clone(),
+                    timestamp: body.time_stamp,
+                    sig: PrettyPrinter::build_string_no_limit(self.identity_bytes()),
+                    sig_algorithm: deploy.envelope().primary().sig_algorithm.name(),
+                    phlo_price: self.phlo_price(),
+                    phlo_limit: self.phlo_limit(),
+                    valid_after_block_number: body.valid_after_block_number,
+                    cost: deploy.cost().cost,
+                    errored: deploy.is_failed(),
+                    system_deploy_error: String::new(),
+                    transfers: Vec::new(),
+                    transfers_available: false,
+                }
+            }
+        }
+    }
+
+    pub fn deploy_log(&self) -> &[Event] {
+        match self {
+            Self::Legacy(deploy) => &deploy.deploy_log,
+            Self::Offered(deploy) => deploy.deploy_log(),
+        }
+    }
+
+    pub fn cost(&self) -> &PCost {
+        match self {
+            Self::Legacy(deploy) => &deploy.cost,
+            Self::Offered(deploy) => deploy.cost(),
+        }
+    }
+
+    pub fn is_failed(&self) -> bool {
+        match self {
+            Self::Legacy(deploy) => deploy.is_failed,
+            Self::Offered(deploy) => deploy.is_failed(),
+        }
+    }
+
+    pub fn as_legacy(&self) -> Option<&ProcessedDeploy> {
+        match self {
+            Self::Legacy(deploy) => Some(deploy),
+            Self::Offered(_) => None,
+        }
+    }
+
+    pub fn as_offered(&self) -> Option<&OfferedProcessedDeploy> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Offered(deploy) => Some(deploy),
+        }
+    }
+}
+
+impl From<ProcessedDeploy> for ProcessedUserDeploy {
+    fn from(value: ProcessedDeploy) -> Self { Self::Legacy(value) }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1610,6 +2029,23 @@ mod tests {
             .current()
     }
 
+    #[test]
+    fn processed_user_deploy_keeps_legacy_wire_and_rejects_malformed_offered_decode() {
+        let legacy = ProcessedDeploy::empty(signed_deploy());
+        let legacy_wire = legacy.clone().to_proto();
+        let decoded = ProcessedUserDeploy::from_proto(legacy_wire.clone()).unwrap();
+        assert_eq!(decoded.to_proto(), legacy_wire);
+        assert_eq!(decoded.as_legacy(), Some(&legacy));
+
+        let mut offered_wire = legacy_wire;
+        offered_wire.deploy.as_mut().unwrap().authorization_v61 = Some(DeployAuthorizationV61 {
+            format_version:
+                crate::rust::signed_phlo_deploy::OFFERED_FUNDED_DEPLOY_AUTHORIZATION_VERSION,
+            ..Default::default()
+        });
+        assert!(ProcessedUserDeploy::from_proto(offered_wire).is_err());
+    }
+
     fn produce_event() -> ProduceEvent {
         ProduceEvent {
             channels_hash: Bytes::from_static(b"chan"),
@@ -1844,6 +2280,10 @@ mod tests {
             processed
         );
 
+        let mut unsupported = processed.clone().to_proto();
+        unsupported.native_cost_evidence = Some(vec![1, 2, 3].into());
+        assert!(ProcessedDeploy::from_proto(unsupported).is_err());
+
         let empty = ProcessedDeploy::empty(deploy.clone());
         assert_eq!(empty.cost, PCost { cost: 0 });
         assert!(!empty.is_failed);
@@ -2065,5 +2505,138 @@ mod tests {
             CasperMessage::from_floor_cache_request(request.clone().to_proto()),
             CasperMessage::FloorCacheRequest(request)
         );
+    }
+
+    // --- Snapshot chunk-fetch roundtrips (Wave 3, Phase 7b-1) ---
+
+    #[test]
+    fn merkle_proof_step_proto_roundtrip() {
+        for is_right in [false, true] {
+            let step = MerkleProofStep {
+                sibling_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+                is_sibling_right: is_right,
+            };
+            let roundtripped = MerkleProofStep::from_proto(step.clone().to_proto());
+            assert_eq!(roundtripped, step);
+        }
+    }
+
+    #[test]
+    fn get_snapshot_chunk_request_proto_roundtrip() {
+        let req = GetSnapshotChunkRequest {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 42,
+        };
+        let roundtripped = GetSnapshotChunkRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn snapshot_chunk_response_proto_roundtrip() {
+        let resp = SnapshotChunkResponse {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 7,
+            chunk_bytes: prost::bytes::Bytes::from(vec![0x22; 1024]),
+            chunk_hash: prost::bytes::Bytes::from(vec![0x33; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x44; 32]),
+            chunk_count: 16,
+            merkle_proof: vec![
+                MerkleProofStep {
+                    sibling_hash: prost::bytes::Bytes::from(vec![0x55; 32]),
+                    is_sibling_right: true,
+                },
+                MerkleProofStep {
+                    sibling_hash: prost::bytes::Bytes::from(vec![0x66; 32]),
+                    is_sibling_right: false,
+                },
+            ],
+        };
+        let roundtripped = SnapshotChunkResponse::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_get_snapshot_chunk_request() {
+        let proto = GetSnapshotChunkRequestProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 3,
+        };
+        let msg = CasperMessage::from_get_snapshot_chunk_request(proto.clone());
+        match msg {
+            CasperMessage::GetSnapshotChunkRequest(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+                assert_eq!(inner.chunk_index, proto.chunk_index);
+            }
+            _ => panic!("expected GetSnapshotChunkRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_snapshot_chunk_response() {
+        let proto = SnapshotChunkResponseProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            chunk_index: 0,
+            chunk_bytes: prost::bytes::Bytes::new(),
+            chunk_hash: prost::bytes::Bytes::new(),
+            merkle_root: prost::bytes::Bytes::new(),
+            chunk_count: 1,
+            merkle_proof: Vec::new(),
+        };
+        let msg = CasperMessage::from_snapshot_chunk_response(proto.clone());
+        assert!(matches!(msg, CasperMessage::SnapshotChunkResponse(_)));
+    }
+
+    // --- HasSnapshot lookup pair roundtrips (Wave 3, PR 3.2) ---
+
+    #[test]
+    fn has_snapshot_request_proto_roundtrip() {
+        let req = HasSnapshotRequest {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+        };
+        let roundtripped = HasSnapshotRequest::from_proto(req.clone().to_proto());
+        assert_eq!(roundtripped, req);
+    }
+
+    #[test]
+    fn has_snapshot_proto_roundtrip() {
+        let resp = HasSnapshot {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x22; 32]),
+            chunk_count: 5,
+        };
+        let roundtripped = HasSnapshot::from_proto(resp.clone().to_proto());
+        assert_eq!(roundtripped, resp);
+    }
+
+    #[test]
+    fn casper_message_from_has_snapshot_request() {
+        let proto = HasSnapshotRequestProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+        };
+        let msg = CasperMessage::from_has_snapshot_request(proto.clone());
+        match msg {
+            CasperMessage::HasSnapshotRequest(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+            }
+            _ => panic!("expected HasSnapshotRequest variant"),
+        }
+    }
+
+    #[test]
+    fn casper_message_from_has_snapshot() {
+        let proto = HasSnapshotProto {
+            block_hash: prost::bytes::Bytes::from(vec![0x11; 32]),
+            merkle_root: prost::bytes::Bytes::from(vec![0x22; 32]),
+            chunk_count: 7,
+        };
+        let msg = CasperMessage::from_has_snapshot(proto.clone());
+        match msg {
+            CasperMessage::HasSnapshot(inner) => {
+                assert_eq!(inner.block_hash, proto.block_hash);
+                assert_eq!(inner.merkle_root, proto.merkle_root);
+                assert_eq!(inner.chunk_count, proto.chunk_count);
+            }
+            _ => panic!("expected HasSnapshot variant"),
+        }
     }
 }

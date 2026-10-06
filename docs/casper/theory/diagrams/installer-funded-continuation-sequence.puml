@@ -1,0 +1,78 @@
+' Cross-deploy funding by the installer of a signed continuation (DR-68, decision D5).
+' Under P1 uniform signing and Rule 4, an installer's unsigned trigger carries the
+' installer's region. A later deploy that fires the trigger pays only its own
+' work; the COMM in the installer's region draws on the installer's located purse,
+' authorized by the stored signed term and bounded by the purse balance at R0.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-68);
+'                  publications/cost-accounting/cost-accounted-rho.tex
+'                  (sec:rewrites Rules 1-5, def:sugar-uniform, def:funding-proof).
+' Palette:  clients = supply blue · runtime = process lilac · funding = gate teal
+'           installer purse = pool green · gateway purse = capability indigo
+'           debit = red arrows · authorization = blue arrows
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/installer-funded-continuation-sequence.puml
+'          (or: ./render.sh installer-funded-continuation-sequence.puml)
+
+@startuml installer-funded-continuation-sequence
+!include palette.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $ca_neutral
+  LifeLineBorderColor #666666
+  ParticipantBorderColor #333333
+  BoxBorderColor #999999
+}
+title Installer-signed continuation funded by the installer's purse (DR-68)
+
+actor "Installer" as Installer $ca_supply
+actor "Gateway client" as Gateway $ca_supply
+participant "Proposer and\nvalidators" as Node $ca_gate
+participant "Reducer and\nnative meter" as Reducer $ca_process
+participant "Funding family\nselection" as Family $ca_gate
+participant "Installer\nlocated purse" as InstallerPurse $ca_pool
+participant "Gateway\nsigned sources" as GatewayPurse $ca_capability
+
+== Installation (earlier block) ==
+Installer -> Node : offered deploy signed by the installer
+Node -> Reducer : execute the installer's term
+Reducer -> Reducer : store trigger continuation\nwith the installer's region (stored signed term)
+
+== Trigger (later block) ==
+Gateway -> Node : offered deploy signed by the gateway
+Node -> Reducer : execute the gateway's term
+Reducer -> Reducer : send matches the stored trigger
+Reducer -> Family : obligations of this candidate\n(COMM in the installer region,\nbody work in the gateway region)
+Family -[$ca_instantiate]-> InstallerPurse : eligible for installer-region obligations\nauthorized by the stored signed term
+Family -[$ca_instantiate]-> GatewayPurse : eligible for gateway-region obligations\nauthorized by the gateway envelope
+alt installer lane budget covers the COMM\n(balance at <latex>R_0</latex> minus earlier group holds)
+  Family -> Node : feasible assignment
+  Node -[$ca_debit]-> InstallerPurse : debit the installer-region COMM
+  Node -[$ca_debit]-> GatewayPurse : debit the gateway's own work and fee
+  Node -> Gateway : receipt (one row per debited purse)
+else installer lane budget exhausted
+  Reducer -> Reducer : the interaction does not fire\n(failure matrix: missing local capability)
+  note right of Reducer $ca_note_amber
+    No charge for an unfired
+    communication. P1 Rule 4
+    token gating.
+  end note
+end
+
+note over InstallerPurse $ca_note_grey
+  Genesis continuations carry the Unit
+  signature, which maps to no purse,
+  so blessed system signers are never charged.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| signing clients |
+  |<$ca_gate>| proposer, validators, and funding selection |
+  |<$ca_process>| reducer and native meter |
+  |<$ca_pool>| installer's located purse (wallet keying, DR-28) |
+  |<$ca_capability>| gateway's signed sources |
+  |<$ca_debit>| debit at settlement |
+  |<$ca_instantiate>| funding eligibility and authorization |
+endlegend
+
+@enduml

@@ -19,6 +19,10 @@ pub trait NodeDiscovery: Send + Sync {
     /// This should be called when a peer fails health checks to ensure
     /// aggressive cleanup of the discovery table, not just the connections.
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError>;
+
+    fn evict_unreachable_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
+        self.remove_peer(peer)
+    }
 }
 
 pub fn kademlia<T: KademliaRPC + Send + Sync + 'static>(

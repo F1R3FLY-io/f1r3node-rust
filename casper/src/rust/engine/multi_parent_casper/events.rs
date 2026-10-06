@@ -70,10 +70,10 @@ fn block_event(
         .iter()
         .map(|pd| {
             DeployEvent::new(
-                hex::encode(pd.deploy.sig.clone()),
-                pd.cost.cost as i64,
-                hex::encode(pd.deploy.pk.bytes.clone()),
-                pd.is_failed,
+                hex::encode(pd.identity_bytes()),
+                pd.cost().cost as i64,
+                hex::encode(pd.deployer_bytes()),
+                pd.is_failed(),
             )
         })
         .collect::<Vec<_>>();

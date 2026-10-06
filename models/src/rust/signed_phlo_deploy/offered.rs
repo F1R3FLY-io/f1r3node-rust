@@ -1,7 +1,7 @@
 use crypto::rust::signatures::signed::{Cosigned, ToMessage};
 use prost::Message;
 
-use super::{check_canonical_funding, encode_signing_payload, FundedDeployLimits};
+use super::{check_canonical_offered_funding, encode_signing_payload, FundedDeployLimits};
 use crate::casper::DeployDataProto;
 use crate::rust::cost_deploy_data::DeployData;
 
@@ -32,7 +32,7 @@ impl OfferedFundedDeploy {
             .map_err(|_| "offered phloLimit must be nonnegative".to_string())?;
         let price = u64::try_from(phlo_price)
             .map_err(|_| "offered phloPrice must be nonnegative".to_string())?;
-        check_canonical_funding(&funding_intent, limits.funding)?;
+        check_canonical_offered_funding(&funding_intent, limits.funding)?;
         let mut proto = body.to_message();
         proto.language.clone_from(&body.language);
         proto.phlo_limit = phlo_limit;
@@ -70,9 +70,23 @@ impl OfferedFundedDeploy {
 
     pub fn funding_intent(&self) -> &[u8] { &self.funding_intent }
 
+    pub fn signing_payload_len(&self) -> usize { self.signing_payload.len() }
+
     pub fn phlo_limit(&self) -> i64 { self.phlo_limit }
 
     pub fn phlo_price(&self) -> i64 { self.phlo_price }
+
+    pub fn rev_ceiling(&self, fee_rev: u128) -> Result<u128, String> {
+        u128::try_from(self.phlo_limit)
+            .ok()
+            .and_then(|limit| {
+                u128::try_from(self.phlo_price)
+                    .ok()
+                    .and_then(|price| limit.checked_mul(price))
+            })
+            .and_then(|amount| amount.checked_add(fee_rev))
+            .ok_or_else(|| "offered REV ceiling overflows".to_string())
+    }
 
     pub fn from_proto(
         proto: DeployDataProto,

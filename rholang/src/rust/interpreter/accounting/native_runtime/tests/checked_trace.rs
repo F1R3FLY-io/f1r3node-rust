@@ -40,11 +40,16 @@ fn consumer(source: &NativeConsumeSource) -> Consume {
     }
 }
 
-fn events(rows: &[NativeOperationRecord]) -> Vec<Event> {
+/// The RSpace event log of rows whose paths are nodes of the fixture trie.
+fn events(rows: &[NativeOperationRecord]) -> Vec<Event> { events_in(&fixture_paths(), rows) }
+
+/// The RSpace event log of rows whose paths are nodes of `paths`, in the
+/// order of their causal paths.
+fn events_in(paths: &NativePathTrie, rows: &[NativeOperationRecord]) -> Vec<Event> {
     let mut order: Vec<_> = rows.iter().collect();
     order.sort_by_key(|row| OperationOrder {
         session: row.occurrence.session,
-        path: CausalPath::from(row.occurrence.path.to_vec()),
+        path: CausalPath::from(paths.segments(row.occurrence.path)),
     });
     let mut result = Vec::new();
     for row in order {
@@ -97,21 +102,26 @@ fn bind(
 #[test]
 fn trace_covers_every_event_and_keeps_original_journal_indexes() {
     let (recording, mut rows, _) = trace_fixture();
+    let mut paths = fixture_paths().as_ref().clone();
+    let deep = paths
+        .intern(fixture_path(1), &[(9, 0)], &host())
+        .expect("fixture path fits");
     let rows_mut = Arc::make_mut(&mut rows);
-    rows_mut[0].occurrence.path = Arc::from([(9, 0)]);
-    rows_mut[1].occurrence.path = Arc::from([(1, 0), (9, 0)]);
-    rows_mut[2].occurrence.path = Arc::from([(1, 0)]);
+    rows_mut[0].occurrence.path = fixture_path(9);
+    rows_mut[1].occurrence.path = deep;
+    rows_mut[2].occurrence.path = fixture_path(1);
     let mut recording = recording;
     for attempt in Arc::make_mut(&mut recording.attempts) {
-        let index = if attempt.occurrence.path[0].0 == 0 {
+        let index = if attempt.occurrence.path == fixture_path(0) {
             0
         } else {
             1
         };
-        attempt.occurrence.path = rows[index].occurrence.path.to_vec();
+        attempt.occurrence.path = rows[index].occurrence.path;
     }
-    Arc::make_mut(&mut recording.retries)[0].occurrence.path = rows[2].occurrence.path.to_vec();
-    let log = events(&rows);
+    Arc::make_mut(&mut recording.retries)[0].occurrence.path = rows[2].occurrence.path;
+    recording.paths = Arc::new(paths);
+    let log = events_in(&recording.paths, &rows);
     let trace = bind(&recording, rows, log).unwrap();
     assert_eq!(trace.operation_count(), 3);
     assert_eq!(trace.event_count(), 4);
@@ -450,17 +460,19 @@ proptest! {
     ) {
         let mut rows = Vec::new();
         let mut attempts = Vec::new();
-        for (index, path) in paths.into_iter().rev().enumerate() {
+        let mut trie = NativePathTrie::new(8, &host()).expect("trie fits");
+        for (index, segments) in paths.into_iter().rev().enumerate() {
+            let path = trie.intern(PathId::ROOT, &segments, &host()).expect("path fits");
             let outcome = outcomes[index];
             let start = attempts.len();
             let intro = observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0);
             attempts.push(NativeBudgetAttempt {
-                occurrence: NativeBudgetOccurrence { session: [0; 32], path: path.clone(), stage: NativeAttemptStage::ProduceIntroduction },
+                occurrence: NativeBudgetOccurrence { session: [0; 32], path, stage: NativeAttemptStage::ProduceIntroduction },
                 observation: intro,
                 granted: outcome != 2,
             });
             let mut row = operation(index as u64, start, start + 1, NativeObservationLink::Attempt(start));
-            row.occurrence.path = path.clone().into();
+            row.occurrence.path = path;
             if outcome == 1 || outcome == 3 {
                 let source = produce(index as u8);
                 let comm = NativeCommSource {
@@ -480,8 +492,8 @@ proptest! {
             }
             rows.push(row);
         }
-        let recording = NativeBudgetRecording { session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: 0 };
-        let log = events(&rows);
+        let recording = NativeBudgetRecording { session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: 0, paths: Arc::new(trie) };
+        let log = events_in(&recording.paths, &rows);
         let trace = bind(&recording, rows.into(), log.clone()).unwrap();
         let projected: Vec<_> = (0..trace.operation_count()).flat_map(|slot| trace.events(slot).unwrap().iter().cloned()).collect();
         prop_assert_eq!(projected, log);
@@ -490,8 +502,75 @@ proptest! {
             let expected = match row.completion { RSpaceOperationCompletion::Stored => 1, RSpaceOperationCompletion::Matched => 2, RSpaceOperationCompletion::Rejected => 0 };
             prop_assert_eq!(trace.events(slot).unwrap().len(), expected);
             if slot > 0 {
-                prop_assert!(trace.operation(slot - 1).unwrap().occurrence.path < row.occurrence.path);
+                prop_assert!(
+                    recording.paths.segments(trace.operation(slot - 1).unwrap().occurrence.path)
+                        < recording.paths.segments(row.occurrence.path)
+                );
             }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// C7b (DR-86; `NativePathTrie.occurrence_key_correct`): the replay's
+    /// digest index finds the slot that a binary search over the slots in
+    /// path order finds, for every operation path, and finds no slot for
+    /// prefixes, extensions and other paths.
+    #[test]
+    fn replay_digest_lookup_equals_binary_search(
+        paths in prop::collection::btree_set(
+            prop::collection::vec((0_u64..3, 0_u64..3), 1..6),
+            1..24,
+        ),
+        probes in prop::collection::vec(prop::collection::vec((0_u64..3, 0_u64..3), 0..7), 0..24),
+    ) {
+        let mut trie = NativePathTrie::new(8, &host()).expect("trie fits");
+        let mut rows = Vec::new();
+        let mut attempts = Vec::new();
+        for (index, segments) in paths.iter().enumerate() {
+            let path = trie.intern(PathId::ROOT, segments, &host()).expect("path fits");
+            attempts.push(NativeBudgetAttempt {
+                occurrence: NativeBudgetOccurrence {
+                    session: [0; 32],
+                    path,
+                    stage: NativeAttemptStage::ProduceIntroduction,
+                },
+                observation: observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0),
+                granted: true,
+            });
+            let mut row = operation(index as u64, index, index + 1, NativeObservationLink::Attempt(index));
+            row.occurrence.path = path;
+            rows.push(row);
+        }
+        let recording = NativeBudgetRecording {
+            session: [0; 32],
+            attempts: attempts.into(),
+            retries: Arc::from([]),
+            used: 0,
+            paths: Arc::new(trie),
+        };
+        let log = events_in(&recording.paths, &rows);
+        let replay = bind(&recording, rows.into(), log)
+            .expect("journal binds")
+            .into_replay(host())
+            .expect("replay builds");
+        let slots = (0..replay.trace().operation_count())
+            .map(|slot| recording.paths.segments(replay.trace().operation(slot).expect("slot").occurrence.path))
+            .collect::<Vec<_>>();
+        let mut candidates = paths.iter().cloned().collect::<Vec<_>>();
+        for path in &paths {
+            candidates.push(path[..path.len() - 1].to_vec());
+            let mut longer = path.clone();
+            longer.push((2, 2));
+            candidates.push(longer);
+        }
+        candidates.extend(probes);
+        for probe in candidates {
+            let expected = slots.binary_search(&probe).ok();
+            let found = replay.lookup_slot(&CausalPath::from(probe.clone())).ok();
+            prop_assert_eq!(found, expected, "{:?}", probe);
         }
     }
 }

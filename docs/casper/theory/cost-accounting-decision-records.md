@@ -3817,3 +3817,2679 @@ replay.
 
 **Cross-refs.** DR-11, DR-31, DR-38, CA-P-209, TM-CA-199, UC-CA-188,
 and E2E-056.
+
+## DR-64 — Funding is checked before execution, and the unprovable remainder is held to the signed limit
+
+**Status.** Adopted 2026-10-03 as decision D1 of epic 8946. Batch B2 (gap G1)
+implements it.
+
+**Terms.** Records DR-64 to DR-74 use these names.
+
+- P1 is the Cost-Accounted Rho Calculus paper,
+  `publications/cost-accounting/cost-accounted-rho.tex`, at publications
+  revision `0bf78174`.
+- $`R_0`$ is the original root. It is the authenticated state root that a
+  candidate funds from.
+- A source is one signed funding entry of an offered envelope
+  (`PhloSourcePolicyV1`). Its `hold_cap` and `debit_cap` bound what the source
+  can hold and debit. The total exposure bounds all sources together.
+- A hold reserves part of a source balance for one candidate until
+  settlement.
+- $`\Delta^{\mathrm{known}}_s`$ is the demand that static analysis proves for
+  the signature lane $`s`$.
+- `phloLimit` and `phloPrice` are the signed limit and the signed price of the
+  envelope.
+
+**Context.** P1 §`sec:acceptance-protocol` requires the validator to compute
+the demand by static analysis before any part of a deployment executes.
+
+The offered path executed the candidate first (`evaluate_native_offered`) and
+measured its obligations afterward. The static analysis (`delta_sigma`,
+`static_authority_plan`) and the hold arithmetic (`FundingBranchReservation`)
+existed, but no production path called them.
+
+P1 gives a margin rule for demand that static analysis cannot resolve. An
+unresolvable dereference contributes an "unknown" demand. The validator then
+rejects unless the supply exceeds the known lower bound plus a configurable
+safety margin (proof sketch of `thm:decidability`).
+
+![Activity diagram of the pre-execution acceptance check. A signed offered envelope and the original root R0 enter. The check resolves lexical names from the envelope seed and runs static_authority_plan for each signature lane. A provable lane contributes its exact demand and syntactic byte charges, and an unprovable lane contributes zero. The remainder R equals the signed phloLimit minus the known demand, times phloPrice. The check fits the known holds plus the complete remainder on eligible signed sources at R0, within hold_cap, debit_cap, and total exposure. If the holds do not fit, the candidate is rejected before any runtime entry, with no effect and no charge. Otherwise it executes in a fresh offered runtime. Within bounds, settlement charges measured use and refunds the unused hold. Exhaustion of the signed limit in a capped part is a classified user failure. An overrun of an exact lane is a correctness failure with no charge.](diagrams/offered-preexecution-acceptance.svg)
+
+(*Source: [`diagrams/offered-preexecution-acceptance.puml`](diagrams/offered-preexecution-acceptance.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-preexecution-acceptance.puml`.*)
+
+**Decision.** The signed `phloLimit` is the P1 safety margin.
+
+1. Before execution, the producer and every validator compute the known demand
+   $`\Delta^{\mathrm{known}}_s`$ for each signature lane $`s`$. They use the
+   envelope and $`R_0`$ only.
+2. The computation reuses `static_authority_plan`, the lexical name resolver,
+   and the pure byte charge functions. A construct that the analysis cannot
+   prove contributes 0 to the known demand.
+3. The unprovable remainder $`R`$ is the unused part of the signed limit at the
+   signed price:
+
+   ```math
+   R \;=\; \left(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\right) \cdot \mathrm{phloPrice}.
+   ```
+
+4. The producer holds the known demand and the complete remainder on the
+   eligible signed sources. A partial remainder hold is not allowed.
+5. If the holds do not fit the supply at $`R_0`$, the candidate is rejected
+   before any runtime entry. The rejection has no effect and no charge.
+6. Settlement charges the measured use. It refunds the unused hold to the
+   original sources.
+
+Unprovable constructs include data-dependent recursion, unresolved
+dereference, persistent input, dynamic authority, and payload sizes that come
+from stored state.
+
+**Algorithm (literate form).** The check is one top-level chunk built from four
+named chunks. The text before each chunk explains it.
+
+```text
+⟨pre-execution acceptance⟩ ≡
+  ⟨compute the known demand⟩
+  ⟨compute the remainder⟩
+  ⟨fit the holds or reject⟩
+  ⟨execute, settle, and refund⟩
+```
+
+The known demand comes only from analyzers that already exist. A lane that the
+analysis cannot prove contributes nothing here, because the remainder covers
+it.
+
+```text
+⟨compute the known demand⟩ ≡
+  names ← resolve_lexical_names(envelope, envelope_seed)
+  for each signature lane s of the envelope
+    known[s] ← static_authority_plan(s, names), or 0 on UnprovableDemand
+  known[s] ← known[s] + byte_charges(syntactic sends and receives of lane s)
+```
+
+The remainder is the P1 safety margin. The signer chose it when the signer
+chose the limit.
+
+```text
+⟨compute the remainder⟩ ≡
+  margin ← (phlo_limit − Σ known[s]) × phlo_price
+```
+
+The holds are checked against the authenticated supply before any runtime
+work. This is the gate of P1 acceptance step 5.
+
+```text
+⟨fit the holds or reject⟩ ≡
+  holds ← fit(known + margin, eligible_sources, hold_cap, debit_cap, total_exposure, R0)
+  if holds = none
+    reject(envelope, "insufficient certified funding")    -- no runtime entry
+```
+
+Execution runs with the computed bound. Settlement returns what the run did not
+use.
+
+```text
+⟨execute, settle, and refund⟩ ≡
+  result ← execute(envelope, resource_bound(known, margin))
+  settle(result.measured_use)
+  refund(holds − result.measured_use)
+```
+
+**Failure classification.** This decision adds one outcome to the failure
+matrix in `cost-accounting-impl/economic-failure-policy-decisions.md`.
+
+| Outcome | Application effect | User economic effect |
+| --- | --- | --- |
+| Exhaustion of the signed limit inside a limit-capped (unprovable) demand part | Roll back the failed user operation. | Retain the authorized billable prefix and the fee. Refund the unused hold. |
+
+The existing outcome "exhaustion that contradicts a certified sufficient
+bound" keeps its meaning for exact lanes. It is a correctness failure, and it
+has no charge.
+
+**Rejected alternatives.** A rule that requires a finite proof for every
+recursion rejects deployments that P1 accepts with a margin. A partial
+remainder hold contradicts the margin rule.
+
+**Verification obligations.** The `EndToEndAuthority.v` branch lemmas
+(`left_branch_fits_pointwise_max`, `right_branch_fits_pointwise_max`,
+`pointwise_refund_is_unused_reservation`) extend to the capped remainder.
+
+Tests show four facts. An underfunded offer never enters the runtime. A static
+offer holds its exact demand. A dynamic offer holds up to the limit and gets
+the rest back. Validators recompute the same decision. DR-67 covers the stack
+safety of the newly reachable analyzer.
+
+**Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
+`def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
+Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
+`ofp-1-proof-bound-kind`.
+
+## DR-65 — Same-block offers that share a purse form one funding decision
+
+**Status.** Adopted 2026-10-03 as decision D2 of epic 8946. Batch B3 (gap G2)
+implements it.
+
+**Terms.** These names extend the terms of DR-64.
+
+- A purse $`p`$ is one physical custody key that sources draw on.
+- A group $`G`$ is a set of same-block candidates that share at least one
+  purse, directly or through other members.
+- $`\mathrm{hold}_m(p)`$ is the DR-64 hold of member $`m`$ on purse $`p`$.
+- $`\mathrm{supply}_{R_0}(p)`$ is the balance of purse $`p`$ at $`R_0`$.
+- $`R_{i-1}`$ is the root after member $`i - 1`$ executes. $`R_{0}`$ precedes
+  the first member.
+- $`\mathrm{debit}_i(p)`$ is the settlement debit of member $`i`$ on purse
+  $`p`$, and $`\mathrm{balance}_{\mathrm{after}}(p)`$ is the purse balance just
+  before that debit.
+
+**Context.** The proposer selected at most one offered deploy for each block.
+Replay required one isolated candidate.
+
+P1 §`sec:deploy-boundaries` (paragraph "Simultaneous arrival") treats
+deployments that arrive together as one parallel composition. If their
+combined demand exceeds the supply, neither deployment executes.
+
+P1 also states that accepted resources are committed and unavailable to other
+deployments.
+
+![Activity diagram of the same-block funding decision. In the first partition, the proposer and every validator take the pending offered candidates in canonical order and run the DR-64 check of each candidate on its own signed sources at R0. A candidate that is not fundable alone is rejected alone and cannot sink others. Union-find over canonical physical custody keys groups the remaining candidates that share a purse. If any purse p has a group hold sum greater than its supply at R0, every member of the group is rejected with no effect. In the second partition, each accepted member i funds from R0 and executes from R(i-1) in a fresh offered runtime. At settlement, the held-capacity guard requires balance_after(p) minus debit_i(p) to be at least the holds of all later members. If the guard holds, the member settles. If it fails, the member is a classified user failure that rolls back and pays its billable work and fee. The block is then published, and validators recompute groups, holds, and guards.](diagrams/offered-same-block-funding-groups.svg)
+
+(*Source: [`diagrams/offered-same-block-funding-groups.puml`](diagrams/offered-same-block-funding-groups.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-same-block-funding-groups.puml`.*)
+
+**Decision.**
+
+1. A block can contain more than one offered deploy. The members execute in
+   canonical order. Member $`i`$ funds from $`R_0`$ and executes from
+   $`R_{i-1}`$.
+2. The proposer first rejects each candidate that is invalid or unfundable on
+   its own sources. Such a candidate cannot sink other candidates.
+3. The remaining candidates form groups by union-find over canonical physical
+   custody keys.
+4. If one purse $`p`$ has
+   $`\sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)`$, every
+   member of $`G`$ is rejected with no effect.
+5. A held-capacity guard protects later members. At the settlement of member
+   $`i`$, every purse $`p`$ must satisfy:
+
+   ```math
+   \mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \;\geq\; \sum_{j > i} \mathrm{hold}_j(p).
+   ```
+
+   If the guard fails, member $`i`$ is a classified user failure. It rolls back
+   and pays its billable work and fee from the restored balance.
+6. Validators recompute the groups, holds, and guard outcomes for every
+   included member. Rejections stay in the local pending lifecycle and never
+   enter a block.
+7. Each member runs in a fresh offered runtime, in proposal and in replay.
+
+**Algorithm (literate form).** The decision has three named chunks.
+
+```text
+⟨same-block funding decision⟩ ≡
+  ⟨reject candidates that fail alone⟩
+  ⟨reject groups whose holds exceed a purse⟩
+  ⟨execute accepted members with the held-capacity guard⟩
+```
+
+A candidate that fails on its own sources is removed first. That order keeps
+one invalid candidate from sinking a valid group.
+
+```text
+⟨reject candidates that fail alone⟩ ≡
+  for each candidate c in canonical order
+    if dr64_check(c, own_sources(c), R0) = none
+      reject(c)
+```
+
+Grouping follows P1's simultaneous-arrival rule. The members of a group share
+at least one purse, so their holds add up on that purse.
+
+```text
+⟨reject groups whose holds exceed a purse⟩ ≡
+  groups ← union_find(remaining candidates, canonical custody keys)
+  for each group G
+    if ∃ p : Σ_{m ∈ G} hold[m][p] > supply(R0, p)
+      reject every member of G
+```
+
+The guard keeps resources that later members hold out of reach of earlier
+members. This is P1's statement that accepted resources are committed.
+
+```text
+⟨execute accepted members with the held-capacity guard⟩ ≡
+  root ← R0
+  for each accepted member i in canonical order
+    result ← execute(i, funding_root = R0, execution_root = root)
+    if ∀ p : balance_after(p) − debit[i][p] ≥ Σ_{j > i} hold[j][p]
+      settle(i, result)
+    else
+      classified_user_failure(i)        -- roll back, pay billable work and fee
+    root ← root after member i
+```
+
+**Rejected alternatives.** A joint funding search over the group is not used,
+because P1 sums the demands. Prefix admission, which accepts members until the
+supply runs out, contradicts the simultaneous-arrival rule.
+
+**Verification obligations.** `SameBlockFundingGroups.tla` checks
+GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard, and
+DecisionPermutationInvariant under TLC and Apalache.
+
+Negative controls for prefix admission, independent full capacity, and a
+missing held guard must fail their named invariants. Rocq proves
+`group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds`,
+and `group_decision_permutation_invariant`. Each invariant becomes a Rust
+property test.
+
+**Cross-refs.** P1 `sec:deploy-boundaries`. DR-64, DR-72. Leaves
+`ofp-3-funding-groups`, `ofp-4-held-capacity-guard`, and
+`ofp-5-replay-groups`.
+
+## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
+
+**Status.** Adopted 2026-10-03 as decision D3 of epic 8946, by the user
+directive "Activate tests; offered-only". Batch B5 (gap G4) implements the
+test activation in stages. The offered-only production rule is implemented.
+
+**Context.** Under offered activation, user deployments use only the offered
+native path. Most Casper tests still built legacy genesis and body-only
+deploys. The legacy phlo meter therefore stayed reachable only through tests.
+
+The section "Historical replay contract" in
+`cost-accounting-impl/activation-migration-policy-decisions.md` keeps the
+legacy-replay requirement open. It closes only when the user approves narrower
+historical support.
+
+![Diagram that maps each kind of evaluation request to one accounting scope. User deploys use the native offered meter, which is funded, settled, and produces receipts. Genesis uses the trusted install scope, which is unmetered, carries the Unit signature, and records cost zero. System deploys keep their unchanged system scope. The exploratory estimate is a native dry run that is unfunded, host-work bounded, resets to the start root, and returns measured phlo. Internal reads of policy and token metadata use the unmetered internal read path. The RhoSpec harness uses the named inj path. Genesis replay is symmetric with genesis play. Historical body-only execution returns a compatibility error before any state reset, because the legacy meter adapter is commented out and a fresh protocol-6 genesis is required.](diagrams/offered-evaluation-scopes.svg)
+
+(*Source: [`diagrams/offered-evaluation-scopes.puml`](diagrams/offered-evaluation-scopes.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-evaluation-scopes.puml`.*)
+
+**Decision.**
+
+1. Test genesis uses protocol 6 with the offered-funded resource policy. Every
+   test user deploy is an offered-funded envelope.
+2. Under offered activation, admission rejects body-only deploys, selection
+   takes offered envelopes only, and validation rejects a block that contains
+   any body-only deploy.
+3. The legacy meter adapter is commented out with the reason "D3: legacy phlo
+   meter retired". Code is never deleted to disable it.
+4. Each kind of evaluation maps to one scope, as the diagram shows. The
+   user-facing exploratory estimate follows DR-71.
+5. The plan approved on 2026-10-03 narrows historical support. Body-only
+   historical execution returns an explicit compatibility error before any
+   state reset. A fresh protocol-6 genesis is required.
+6. The two legacy-charge tests follow the adopted failure policy. A classified
+   user failure charges the billable prefix and the fee. A parse error is
+   rejected before execution with no charge.
+
+**Verification.** `OfferedOnlyActivation.v` proves the offered-only rule
+without axioms. Active admission rejects body-only deploys, active selection
+is height-independent and offered-only, active validation rejects any
+body-only deploy, and every reachable active state is offered-only.
+
+Two property tests extract these invariants.
+`offered_selection_window_is_canonical_bounded_and_height_independent` checks
+selection over random pending mixes and heights.
+`active_validation_rejects_exactly_blocks_with_a_body_only_deploy` checks the
+validation predicate.
+
+The integration test `active_validator_rejects_a_block_with_a_body_only_deploy`
+re-signs an offered block with an appended body-only deploy. The peer rejects
+it as an invalid transaction and does not add it to its DAG.
+
+**Verification obligations for the staged test activation.** The trusted
+install scope leaves genesis post-state roots unchanged, and genesis costs are
+0. `OfferedOnlyActivation.v` gains an evaluation-scope type with no legacy
+case. `EndToEndCostConsensus.tla` gains a negative control. The full Casper
+suite passes on the activated harness.
+
+**Cross-refs.** DR-6, DR-34, DR-47, DR-71, DR-73. Leaves under
+`ofp-3-test-activation`.
+
+## DR-67 — Stack safety covers the recursion that cost accounting adds
+
+**Status.** Adopted 2026-10-03 as decision D4 of epic 8946 ("cost-accounting
+only"). Batch B2 implements it.
+
+**Context.** Commit `c3aacd649` made cost-accounted reduction stack-safe.
+DR-64 makes the static analyzer and the lexical resolver reachable in
+production. Their recursion can exhaust the stack on deep terms.
+
+**Decision.** Only the recursion that cost accounting added becomes an
+explicit work stack and value stack, with a push/pop scope stack. The ports
+follow the `feature/f1r3lang-mettail-only` and mettail-rust templates
+(`WorklistFoldEquivalence.v`, `StackSafePDA.v`). General interpreter recursion
+is reported, not changed.
+
+**Verification obligations.** Each port has a Rocq refinement lemma: the
+worklist fold equals the recursive fold. Differential property tests compare
+each port with the recursive reference, which stays as a `#[cfg(test)]`
+oracle.
+
+**Cross-refs.** DR-64. Leaves `ofp-1-stack-safe-analyzer`,
+`ofp-1-stack-safe-lexical`, and `ofp-1-stack-safe-signatures`.
+
+## DR-68 — An installer-signed continuation draws on the installer's located purse
+
+**Status.** Adopted 2026-10-03 as decision D5 of epic 8946 ("P1 Rule 4, wallet
+stack"). Batch B4 (gap G3) implements it.
+
+**Context.** The gateway flow failed with "measured funding case has no
+feasible signed assignment". Three positive obligations carried the
+installer's authority: one COMM, 733 introduction bytes, and 128 trace bytes.
+
+The installer's trigger `for (@request, deployerId <= @"agent-trigger")` is
+unsigned. Under P1 uniform signing (`def:sugar-uniform`), it therefore carries
+the installer's region. The runtime attribution is correct.
+
+Funding eligibility admitted only the sources of the triggering envelope
+(`family_selection.rs`). The installer's purse was not a candidate source.
+
+![Sequence diagram with the actors Installer, Gateway client, Proposer and validators, Reducer and native meter, Funding family selection, Installer located purse, and Gateway signed sources. In an earlier block, the installer's offered deploy stores a trigger continuation with the installer's region as a stored signed term. In a later block, the gateway's offered deploy sends a message that matches the stored trigger. The reducer reports the obligations of the candidate: the COMM in the installer region and the body work in the gateway region. Funding selection makes the installer's located purse eligible for installer-region obligations, authorized by the stored signed term, and the gateway's sources eligible for gateway-region obligations. If the installer lane budget, which is the balance at R0 minus earlier group holds, covers the COMM, settlement debits both purses and the gateway receives a receipt with one row per debited purse. If the budget is exhausted, the interaction does not fire and has no charge, which is the P1 Rule 4 token gating. A note states that genesis continuations carry the Unit signature, which maps to no purse.](diagrams/installer-funded-continuation-sequence.svg)
+
+(*Source: [`diagrams/installer-funded-continuation-sequence.puml`](diagrams/installer-funded-continuation-sequence.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/installer-funded-continuation-sequence.puml`.*)
+
+**Decision.**
+
+1. The installer's located purse is an eligible source for obligations in the
+   installer's stored signed region. The purse is the installer's wallet under
+   the D2.9 wallet keying (DR-28). The stored term
+   (`extend_persistent_regions`) is the authorization.
+2. The installer lane's budget is the purse balance at $`R_0`$ minus the
+   earlier group holds of DR-65.
+3. When that budget is exhausted, the failure-matrix outcome "missing local
+   capability" applies. The interaction does not fire and has no charge. This
+   is the token gating of P1 Rule 4.
+4. Genesis continuations carry the `Unit` signature, which maps to no purse.
+   Blessed system signers are never charged.
+5. The gateway test uses its intended P1 funding-slot form
+   `[gateway ⊸ slot]`. Clients read installed names through the public
+   `listenForContinuationAtName`.
+
+**Verification obligations.** The three-node gateway flow passes. A TLA+
+control shows that a trigger with no stored signature cannot draw an installer
+purse. `FundingSlotBootstrap.v` covers the third-party stack. Each invariant
+becomes a Rust property test.
+
+**Cross-refs.** P1 `sec:rewrites` (Rules 1–5), `def:sugar-uniform`,
+`def:funding-proof`. DR-28, DR-64, DR-65. Leaves
+`ofp-2-rooted-region-sources` and `ofp-2-gateway-attribution`.
+
+## DR-69 — Recovery carries offered envelopes by format plumbing only
+
+**Status.** Adopted 2026-10-03 as decision D6 of epic 8946. Batch B5 (gap G6)
+implements it.
+
+**Context.** The offered path bypassed the rejected-deploy buffer. It also
+cleared retry and in-scope recovery selection. About 35 recovery-family tests
+depend on that machinery.
+
+**Decision.** The rejected-deploy buffer, retry, and in-scope recovery carry
+the offered envelope as one more deploy format. Recovery algorithms and
+decisions do not change, because they are general Casper behavior.
+
+**Verification obligations.** The recovery-family tests pass on the activated
+harness. Recovery outcomes match the current outcomes for the same scenarios.
+
+**Cross-refs.** DR-55, DR-56, DR-66. Leaf `ofp-3-recovery-offered-format`.
+
+## DR-70 — Block reporting replays offered blocks through the offered replay path
+
+**Status.** Adopted 2026-10-03 as decision D7 of epic 8946. Batch B5 (gap G7)
+implements it.
+
+**Context.** `reporting_casper.rs` rejected offered blocks.
+
+**Decision.** Reporting replays an offered block through the existing offered
+replay path (`certify_offered_draft`,
+`replay_compute_state_envelopes_with_policy`). It reports the native evidence
+and the receipts. The historical `precharge_report_shape_spec` is commented
+out with a reason.
+
+**Verification obligations.** `block_report_api_test` and
+`multi_parent_casper_reporting_spec` pass on offered blocks.
+
+**Cross-refs.** DR-66. Leaf `ofp-5-offered-reporting`.
+
+## DR-71 — The exploratory cost estimate is a native unfunded dry run
+
+**Status.** Adopted 2026-10-03 as decision D8 of epic 8946. Batch B5
+implements it.
+
+**Context.** DR-64 makes the signed `phloLimit` the P1 safety margin. Clients
+need a measured estimate to choose that limit. The legacy exploratory estimate
+used the retired meter.
+
+**Decision.** The user-facing exploratory estimate runs the native meter
+without funding, bounded by host-work limits. It resets to the starting root
+and publishes nothing. It returns the measured phlo (issue #53). Internal
+exploratory reads of policy and token metadata keep the unmetered read path.
+
+**Verification obligations.** The estimate equals the measured phlo of the
+same term executed as a funded offer at the same root. The dry run leaves the
+root unchanged.
+
+**Cross-refs.** DR-64, DR-66. Leaf `ofp-5-exploratory-dry-run`.
+
+## DR-72 — A failing offered candidate is quarantined, and the proposer tries the next one
+
+**Status.** Implemented 2026-10-04 for register item I4 of epic 8946 (batch
+B0).
+
+**Context.** Three defects let one failing offer stop offered block
+production:
+
+1. The proposer took only the first offer. A non-retryable failure returned an
+   error from `create_inner`.
+2. One pending envelope in an inactive format returned an error from
+   selection.
+3. A deploy that drained its own funding wallet failed settlement. The
+   proposer error then repeated on every attempt.
+
+P1 §`sec:deploy-boundaries` states that a rejected deployment has no effect.
+It must not block other deployments.
+
+![Activity diagram of the quarantine-and-retry loop. The proposer reads pending envelopes in canonical order. An envelope in an inactive format is quarantined at selection with a status entry that has no root. The proposer selects the first eligible offer and keeps at most ordinary_cap minus 1 alternates. It checkpoints the attempt in a fresh offered runtime. If the block is created, it is published. If the result is OfferedCandidateRejected with the attempted identity, the proposer removes that envelope from pending storage and records a bounded status entry with the identity, the root R0, the block, and the reason, at most 4096 entries and 1024 reason bytes. It then tries the next alternate. With no alternate left, it continues with no user deploys when empty-block, slashing, or recovered-slash work exists, and otherwise returns NoNewDeploys. An infrastructure error, such as storage, history, RSpace storage, lock, stream, communication, or availability, keeps its own type and propagates.](diagrams/offered-candidate-quarantine-loop.svg)
+
+(*Source: [`diagrams/offered-candidate-quarantine-loop.puml`](diagrams/offered-candidate-quarantine-loop.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-candidate-quarantine-loop.puml`.*)
+
+**Decision.**
+
+1. `CasperError::OfferedCandidateRejected` is a typed error. It carries the
+   deploy identity, the original root, and the reason.
+2. The runtime maps a failure in the candidate pipeline to this error. The
+   pipeline covers the envelope, funding, metering, settlement, producer
+   self-replay, and publication authorization.
+3. Infrastructure failures keep their own types and still propagate. They are
+   key-value store, history, lock, stream, communication, and availability
+   failures, plus the history, radix-tree, and key-value classes of RSpace
+   errors.
+4. Budget exhaustion inside RSpace (`HostWorkRejected`, `OutOfPhlogistons`) and
+   every other RSpace error belong to the candidate. Otherwise a candidate
+   that exhausts its budget inside an RSpace operation stalls the proposer.
+5. The proposer quarantines the envelope. It removes the envelope from pending
+   storage and records a bounded status entry bound to the root.
+6. The status log holds at most 4096 entries and at most 1024 reason bytes for
+   each entry. It evicts the oldest entry first. A new admission of the same
+   identity clears its entry.
+7. The proposer then tries the next canonical offered candidate. Selection
+   keeps at most `ordinary_cap − 1` alternates. One proposal therefore executes
+   at most `ordinary_cap` candidates, plus one attempt without user deploys.
+8. When no alternate remains, the proposal continues exactly as with no user
+   deploys. It returns `NoNewDeploys` unless empty blocks, slashing deploys, or
+   recovered slashes require a block.
+9. An envelope in an inactive format is quarantined at selection with no root,
+   because the format decision does not depend on state.
+
+**Algorithm (literate form).** The loop has two named chunks. The function
+`next_offered_attempt` implements the second chunk, and both the checkpoint
+loop and its property test call it.
+
+```text
+⟨offered proposal⟩ ≡
+  attempt ← next_offered_attempt(window, other_work)
+  loop
+    result ← checkpoint(attempt)
+    if result = OfferedCandidateRejected(attempt.id, R0, reason)
+      quarantine(attempt.id, R0, reason)
+      attempt ← next_offered_attempt(alternates, other_work)
+      continue
+    return result
+```
+
+The next attempt is the next canonical alternate. With none left, the proposal
+falls back to the behavior for an empty user-deploy set.
+
+```text
+⟨next offered attempt⟩ ≡
+  match alternates.next()
+    candidate          → Candidate(candidate)
+    none, other_work   → NoUserDeploys
+    none               → NoNewDeploys
+```
+
+**Scope.** The change is local to the proposer and adds no consensus-visible
+state. It does not change validation, voting, finality, fork choice, or
+recovery. DR-65's held-capacity guard later turns the self-drain case into a
+classified user failure.
+
+**Verification.** The TLA+ model
+`formal/tlaplus/cost_accounted_rho/OfferedCandidateQuarantine.tla` covers
+several proposals. It models admission and readmission, the canonical window,
+checkpoints, the bounded status log, and infrastructure errors. Each behavior
+chooses its fundable set, cap, and log capacity in the initial state.
+
+TLC checks ten invariants: `TypeOK`, `NoCandidateErrorEscapes`,
+`RemovedOnlyByInclusionOrQuarantine`, `QuarantinedNeverIncluded`,
+`AttemptsBounded`, `LogBounded`, `LogDistinct`, `PendingNotLogged`,
+`LogOrderFollowsHistory`, and `FirstFundableIncluded`.
+
+TLC also checks the action property `QuarantineAppendsAndEvictsOldest` and the
+liveness property `ProposalsTerminate`. The base configuration has 9,288
+distinct states. The large configuration has 1,563,676.
+
+Five negative controls each fail their named invariant: escape, overremove,
+unbounded, noevict, and skiphead. The local gate
+`scripts/check-cost-accounted-rho-tla-invariants.sh` registers all seven
+configurations.
+
+Four property tests extract the invariants into Rust:
+
+- `envelope_rejection_log_matches_bounded_fifo_reference` compares the log
+  with a reference bounded FIFO (`LogBounded`, `LogDistinct`,
+  `PendingNotLogged`, `QuarantineAppendsAndEvictsOldest`).
+- `offered_attempt_loop_matches_quarantine_model` drives
+  `next_offered_attempt` as the checkpoint loop does (`FirstFundableIncluded`,
+  `RemovedOnlyByInclusionOrQuarantine`, `QuarantinedNeverIncluded`,
+  `AttemptsBounded`).
+- `offered_selection_window_is_canonical_bounded_and_height_independent`
+  checks the window, the alternates bound, and inactive-format quarantine.
+- `candidate_failures_become_typed_rejections_and_infrastructure_passes_through`
+  checks the classification over fifteen error classes
+  (`NoCandidateErrorEscapes`).
+
+The integration test
+`unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_included`
+shows that an unfundable head offer does not stop the next offer. It also
+checks the root-bound status entry.
+
+**Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
+`ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
+`ofp-3-rejection-status` exposes the status entry through the API.
+
+## DR-73 — Approved-genesis version adoption applies only to policy-carrying genesis
+
+**Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
+B0).
+
+**Context.** `GenesisResourcePolicy::adopt` requires the running
+`casper_version` to equal the protocol version of the approved genesis policy.
+
+The uncommitted integration diff adopted the approved header version for every
+approved genesis. That change also altered the general Casper path for legacy
+genesis, which carries no resource policy.
+
+**Decision.** `hash_set_casper` computes the running version with
+`adopted_casper_version` before it loads the policy. The helper matches on the
+policy. A genesis with a policy adopts the approved header version. A legacy
+genesis keeps the local version, exactly as on `dev`. Cost-accounted chains
+keep the DR-34 authority chain.
+
+```text
+⟨adopted casper version⟩ ≡
+  match genesis_policy
+    some(_) → approved_header_version
+    none    → local_version
+```
+
+**Verification.** `GenesisVersionAdoption.v` proves five theorems without
+axioms:
+
+- `legacy_genesis_keeps_local_version`
+- `policy_genesis_adopts_header_version`
+- `adopted_policy_passes_adopt_check`
+- `unadopted_mismatch_fails_adopt_check`
+- `policy_genesis_version_is_node_independent`
+
+Two property tests extract them. `version_adoption_follows_the_genesis_policy`
+checks the helper. `adopted_version_passes_adopt_and_unadopted_mismatch_fails`
+checks the adopted version against the real `GenesisResourcePolicy::adopt`.
+
+**Cross-refs.** DR-34, DR-47, DR-66. Leaves `ofp-1-baseline-hygiene` and
+`ofp-1-baseline-verify-activation`.
+
+## DR-74 — Native evidence encodes each causal path as a delta from the previous path
+
+**Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
+B0).
+
+**Terms.**
+
+- A causal path is the sequence of segments that identifies where one native
+  operation ran. A segment is a pair of 64-bit integers.
+- $`\mathrm{lcp}(a, b)`$ is the length of the longest common prefix of the
+  paths $`a`$ and $`b`$.
+- An entry is the encoding of one path: the prefix length $`p`$, the suffix
+  length $`s`$, and the $`s`$ suffix segments.
+
+**Context.** The native budget recording and the native operation journal
+carry one causal path for each recorded attempt.
+
+A gateway funding trace had 1,029 attempts with 529,617 path segments. Those
+segments exceeded the 1 MiB recording limit, although execution performed only
+about 1,000 operations.
+
+A measurement showed that 534,964 segments repeated a prefix of the preceding
+path. Only 2,463 segments were new.
+
+Index comparisons also charged the worst-case work of a complete path for
+every comparison. A second reservation before each lookup charged the same
+work again.
+
+![Diagram of the delta encoding. A previous path (0,1) (0,0) (2,2) and a current path (0,1) (0,0) (3,1) (4,4) enter a longest-common-prefix computation, which gives p equal to 2. The encoder emits the canonical v2 entry with p equal to 2, s equal to 2, and the suffix (3,1) (4,4). The decoder rebuilds the first p segments of the previous path followed by the suffix, and it rejects an entry when s is positive, p is less than the previous length, and the suffix head equals the previous path at position p. A non-maximal entry with p equal to 1, s equal to 3, and suffix (0,0) (3,1) (4,4) is rejected, because its suffix head (0,0) equals the previous path at position 1. The accepted entry decodes to the current path. A note states that the first attempt uses the empty previous path, that retries continue the chain from the last attempt, and that v1 records still decode.](diagrams/native-path-delta-encoding.svg)
+
+(*Source: [`diagrams/native-path-delta-encoding.puml`](diagrams/native-path-delta-encoding.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/native-path-delta-encoding.puml`.*)
+
+**Decision.**
+
+1. New recordings use the domains `f1r3node:native-budget-recording:v2` and
+   `f1r3node:native-operation-journal:v2`.
+2. Each path is encoded as an entry relative to the previous path. The first
+   attempt uses the empty path as its previous path. Retries continue the
+   chain from the last attempt.
+3. The encoder always emits the maximal shared prefix,
+   $`p = \mathrm{lcp}(\mathrm{current}, \mathrm{previous})`$. The decoder
+   rejects a non-maximal prefix, so each recording has exactly one encoding.
+4. The decoder still accepts the v1 domains for historical records.
+5. A metered key comparison charges only the inspected prefix, in chunks of
+   16 segments. It returns exactly the order of the key's `Ord`, because
+   `NativeIndex` uses both comparators on one tree.
+6. The duplicate reservation before each operation-index lookup is removed.
+   The charge before each comparison still bounds the work.
+
+**Algorithm (literate form).** The codec has two named chunks, one for each
+direction.
+
+The encoder compares the current path with the previous one in 16-segment
+chunks and charges each chunk before it compares it. It then writes the
+maximal prefix length and the remaining suffix.
+
+```text
+⟨encode one path⟩ ≡
+  p ← lcp(path, previous)                 -- chunked scan, charged per chunk
+  emit(p, length(path) − p, path[p ..])
+```
+
+The decoder bounds both lengths before it allocates. It rejects an entry whose
+suffix could have shared one more segment with the previous path. That check
+is what makes the encoding unique.
+
+```text
+⟨decode one path⟩ ≡
+  require p ≤ min(length(previous), maximum)
+  require s ≤ maximum − p
+  path ← previous[0 .. p] ++ suffix
+  require s = 0 or p = length(previous) or suffix[0] ≠ previous[p]
+  return path
+```
+
+**Scope.** The encoding changes the bytes of native evidence for protocol 6,
+which is not yet released. Producers and validators run the same codec, so
+they agree.
+
+The consensus host-work limits are unchanged. Profiling must find the root
+cause of the remaining replay cost before any limit changes.
+
+**Verification.** `NativePathDeltaCodec.v` proves five theorems without
+axioms, generically over any segment type with decidable equality:
+
+- `encode_one_decodes` and `decode_one_canonical`, for one path.
+- `delta_codec_round_trip` and `delta_codec_canonical`, for a path chain.
+- `delta_encoding_unique`, which states that each chain has exactly one
+  accepted encoding.
+
+`MeteredComparison.v` proves five theorems without axioms. The chunked scan
+finds exactly the first difference (`chunk_scan_result`). It never charges
+beyond the compared range (`chunk_scan_charge_bounded`). An equal prefix is
+charged in full (`chunk_scan_equal_prefix_charges_all`).
+
+For every chunk size of at least 1, the chunked path comparison equals the
+derived lexicographic order (`metered_lex_compare_correct`). The chunked
+operation-key comparison equals `Ord for OperationKey`
+(`metered_operation_compare_correct`).
+
+Property tests extract these theorems into Rust:
+
+- `path_delta_chain_round_trips_and_rejects_every_noncanonical_prefix` checks
+  round trips over random path chains. It also checks that every non-maximal
+  prefix entry of every path is rejected.
+- `operation_key_metered_order_equals_ord_with_bounded_charges` and
+  `native_occurrence_metered_order_with_shared_session_and_bounded_charges`
+  check the order equalities and the charge bounds across the chunk boundary.
+- `operation_index_comparators_agree_for_arbitrary_key_sets` checks that
+  metered and prepaid index lookups give the same answers.
+
+The example tests `canonical_recording_and_journal_round_trip`,
+`historical_recording_decodes_and_noncanonical_delta_is_rejected`, and
+`historical_operation_journal_decodes` cover the v1 compatibility paths.
+
+**Cross-refs.** DR-72. Leaves `ofp-2-path-codec-parity`,
+`ofp-2-limit-envelope`, and `ofp-1-baseline-verify-codec`.
+
+## DR-75 — RSpace candidates are ordered by source hash, and only ties are digested
+
+**Status.** Implemented 2026-10-04 for register item I1 of epic 8946 (batch
+B1).
+
+**Terms.**
+
+- A candidate is a stored datum or a stored waiting continuation that an
+  RSpace operation can match.
+- $`h(c)`$ is the source hash of candidate $`c`$: the precomputed
+  `Produce.hash` of a datum or `Consume.hash` of a continuation. It has
+  32 bytes.
+- $`d(c)`$ is the digest of $`c`$: the Blake2b-256 hash of the bincode
+  encoding of the complete candidate.
+- $`i(c)`$ is the index of $`c`$: its position in the store read.
+- A tie run is a maximal run of two or more candidates with equal source hash
+  after the candidates are sorted by $`(h(c), i(c))`$.
+- $`\lvert c \rvert`$ is the encoded size of $`c`$ in bytes.
+
+**Context.** The `dev` branch shuffles the candidates of a channel at random
+(`shuffle_with_index`). Cost accounting needs play and native replay to choose
+the same candidate, so this branch replaced the shuffle with a deterministic
+order.
+
+That order sorted by $`(d(c), i(c))`$. Every produce and every consume
+therefore serialized and hashed every candidate on the channel, including
+complete continuation bodies. System contracts register 8 to 26 methods on one
+channel (ListOps 26, PoS 21, SystemVault 8), so each method call hashed every
+method body again.
+
+The metered native replay used the same order. It inspected and hashed every
+candidate for each operation and charged host work for all of it.
+
+The order changes only which candidate an operation chooses among two or more
+that satisfy the same pattern. It does not need a full digest unless two
+candidates have the same source hash.
+
+![Activity diagram of the canonical candidate order. The candidates of one channel are read and indexed by store position. A list with at most one candidate is returned as read, with no sort and no digest. Otherwise phase one sorts by the pair of source hash and index, and serializes no candidate. A scan over adjacent source hashes splits the sequence into maximal runs of equal source hash. For each run of length at least two, every member is digested with Blake2b-256 over its bincode encoding, and phase two sorts the run by the pair of digest and index. A single candidate stays in place with no digest. The result is the canonical order by source hash, digest, and index, which play, directive replay, and metered native replay all compute. A note explains that Consume.hash omits peeks and the original pattern order, that Produce.hash omits the non-determinism metadata, that an index-only or source-only key would depend on the insertion order, and that metered native replay reserves host work before each allocation, comparison, scan, and digest.](diagrams/canonical-candidate-order.svg)
+
+(*Source: [`diagrams/canonical-candidate-order.puml`](diagrams/canonical-candidate-order.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/canonical-candidate-order.puml`.*)
+
+**Decision.**
+
+1. The canonical candidate order is lexicographic in
+   $`(h(c), d(c), i(c))`$.
+2. Phase one sorts by $`(h(c), i(c))`$. It reads only the precomputed source
+   hashes.
+3. Phase two sorts each tie run by $`(d(c), i(c))`$. A digest is computed only
+   for a member of a tie run.
+4. Play, directive replay, and metered native replay call one function,
+   `candidate_order::canonical_order`. Play and directive replay use the
+   unmetered work implementation. Metered native replay uses
+   `MeteredOrder`, which reserves host work before each allocation,
+   comparison, adjacent-hash scan, and digest.
+5. The legacy $`(d(c), i(c))`$ function stays only as a test oracle. The
+   legacy metered body is commented out with its reason.
+
+The digest tie-break is necessary. `Consume.hash` omits the peeks and the
+original pattern order of a continuation. `Produce.hash` omits
+`is_deterministic`, `output_value`, and `failed`. Two candidates with equal
+source hash can therefore differ. A key of the index alone, or of the source
+hash and index alone, makes the choice depend on the store's insertion order.
+The verification section cites proved counterexamples for both.
+
+**Algorithm (literate form).** The order has three named chunks.
+
+The first chunk indexes the store read and returns short lists at once. A
+list of zero or one candidate needs no work.
+
+```text
+⟨canonical order⟩ ≡
+  entries ← [(c_k, k) | k ∈ 0 .. n − 1]        -- preallocated; k = store index
+  if n ≤ 1: return entries
+  ⟨phase one⟩
+  ⟨phase two⟩
+  return entries
+```
+
+Phase one compares only 32-byte source hashes. It never serializes a
+candidate.
+
+```text
+⟨phase one⟩ ≡
+  sort entries by (h(c), i(c))
+```
+
+Phase two finds the runs with one adjacent comparison per pair. It digests
+and sorts a run only when the run has at least two members.
+
+```text
+⟨phase two⟩ ≡
+  for each maximal run r of entries with equal h:
+    if |r| ≥ 2:
+      for c ∈ r: d(c) ← Blake2b-256(bincode(c))
+      sort r by (d(c), i(c))
+```
+
+**Work.** Let $`n`$ be the number of candidates and let $`\mathcal{T}`$ be
+the set of tie runs. The legacy order and the canonical order perform this
+work:
+
+```math
+W_{\mathrm{legacy}} = \sum_{k=1}^{n} \lvert c_k \rvert + O(n \log n),
+\qquad
+W_{\mathrm{canonical}} = O(n \log n) + \sum_{r \in \mathcal{T}} \Bigl( \sum_{c \in r} \lvert c \rvert + O(\lvert r \rvert \log \lvert r \rvert) \Bigr)
+```
+
+The comparisons in $`O(n \log n)`$ read 32-byte keys. With pairwise distinct
+source hashes, $`\mathcal{T}`$ is empty and no candidate is serialized. When
+every candidate shares one source hash, the canonical order costs what the
+legacy order costs.
+
+**Scope.** This change is cost-accounting work. The deterministic order exists
+only on this branch, for native replay, and `dev` keeps its random shuffle.
+The change touches only that order and its callers.
+
+The choice changes only when two or more candidates satisfy the same pattern.
+It applies to every play execution on this branch, including genesis and
+system deploys, and to native replay for protocol 6, which is not yet
+released. Ordinary replay follows the recorded log and does not sort, so
+historical blocks replay unchanged. Event-identity hashes are unchanged.
+
+A golden value that the order change moves is re-derived from evidence. The
+procedure dumps the COMM events of the old and the new order and finds the
+first difference. It accepts the new value only when that difference is a
+choice among two or more matching candidates whose canonical order differs
+from the legacy digest order. Any other difference is a defect.
+
+**Verification.** `CandidateSourceOrder.v` proves 14 theorems without axioms:
+
+- `canonical_sort_permutation` and `canonical_sort_sorted`: the canonical
+  order is a sorted permutation of its input.
+- `sorted_permutation_unique`: with distinct indices, at most one sorted
+  arrangement exists.
+- `two_phase_is_canonical` and `lazy_two_phase_is_canonical`: the two phases,
+  with or without the tie-run shortcut, give exactly the canonical order.
+- `phase_one_ignores_digests`: phase one reads no digest.
+- `digests_only_for_ties` and `two_phase_digests_only_for_ties`: a candidate
+  is digested only if its source hash occurs at least twice.
+- `distinct_sources_need_no_digest` and
+  `two_phase_distinct_sources_need_no_digest`: with pairwise distinct source
+  hashes, no candidate is digested.
+- `candidate_order_insertion_independent`: the payload order does not depend
+  on the insertion order.
+- `filter_commutes_with_canonical_sort`: a filter before or after the sort
+  selects the same candidates in the same order.
+- `index_only_key_is_insertion_dependent` and
+  `source_only_key_is_insertion_dependent`: the proved counterexamples.
+
+The payload $`(h(c), d(c))`$ stands for the candidate value. The claim that
+the order is a function of the candidate multiset therefore relies on the
+collision resistance of the digest, which the model does not verify.
+
+`NativeCandidateOrder.tla` builds two stores that hold one multiset in
+different insertion orders and consumes from both with arbitrary patterns. TLC
+checks `TypeOK`, `TwoPhaseIsCanonical`, `InsertionIndependent`,
+`PlayReplayAgree`, `DigestsOnlyForTies`, and `FilterCommutes`. The safe
+configuration has 1,343 distinct states and the large configuration has
+13,011. The three negative controls fail as expected:
+
+| Control | Mutation | Violated invariant |
+|---|---|---|
+| `NativeCandidateOrderIndexOnlyUnsafe` | both nodes order by index only | `InsertionIndependent` |
+| `NativeCandidateOrderSourceOnlyUnsafe` | both nodes order by source hash and index | `InsertionIndependent` |
+| `NativeCandidateOrderReplayNoTieBreakUnsafe` | replay omits the digest tie-break | `PlayReplayAgree` |
+
+Property tests extract these results into Rust:
+
+- `canonical_order_equals_reference_with_generated_collisions` compares the
+  order with a reference sort that digests every candidate. Its generator uses
+  a three-value source domain, so tie runs are frequent.
+- `canonical_order_is_insertion_independent`,
+  `filter_then_sort_equals_sort_then_filter`, and
+  `ties_digest_only_run_members` check insertion independence, filter
+  commutation, and the exact digest count.
+- `paid_order_matches_unmetered_canonical_order` checks that metered native
+  replay gives the play order and reserves every allocation first.
+- `twenty_six_distinct_continuations_compute_zero_digests` is the sentinel
+  for a system-contract channel.
+- `shared_order_inspects_only_tie_members_and_preserves_shared_ownership`
+  checks that distinct-source candidates are never inspected.
+- The cut tests `every_order_reservation_cut_rejects_without_unpaid_allocation`
+  and `ordering_accepts_exact_credit_and_rejects_each_smaller_dimension` use a
+  fixture with a tie run, so they also cover digest reservations.
+
+Three directive-replay tests in `rspace++/tests/comm_observer_tests/native_directive.rs`
+predicted the play order with the legacy digest:
+`repeated_channel_bindings_follow_play_order_not_insertion_order`,
+`store_consumes_greedy_guard_veto_without_exhaustive_search`, and
+`store_produce_uses_the_same_guard_veto_loop_as_play`. Their fixtures now sort
+by the canonical key, the source hash and then the digest. The tests keep
+their purpose: replay follows the play order, and a guard veto of the first
+greedy candidate stores the operation without an exhaustive search. Before
+the change, the second test failed, because the canonical order put the
+guard-approved candidate first.
+
+**Cross-refs.** DR-72, DR-74. Leaves `ofp-2-perf-ordering` and
+`ofp-2-cap-root-causes`.
+
+## DR-76 — The metered COMM observation charges only what it reads
+
+**Status.** Implemented 2026-10-04 for cap root cause C12 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- A metered run is a sequence of reservations and reads. A reservation adds
+  units to the host-work budget. A read is work that no other step meters.
+- A self-metered step reserves its own work before it performs it, for
+  example the COMM identity hash and the authority merge.
+- Prefix coverage is the metering rule: every prefix of a run reads at most
+  the units that the same prefix has reserved.
+- $`\lvert v \rvert`$ is the inspection charge of a value $`v`$: the units
+  that a walk over its in-memory structure reserves.
+
+**Context.** The native observer constructs one observation for every COMM.
+It runs in the producer's execution and again in typed native replay.
+
+The charged-unit probe measured the gateway funding block under the original
+caps. The producer's VerificationBytes budget tripped at 268,435,431 of
+268,435,456 units. The COMM observer used 35% of that budget at the trip
+point. With the cap raised, the observer's inspection of the fired
+continuation used 175 MB of the producer's 655 MB demand (26.7%).
+
+The construction (`comm_metered`) inspected three inputs before its work:
+the COMM, the fired continuation, and each matched datum. It then reads
+these inputs as follows:
+
+| Input | What the construction reads | Prepayment needed |
+|---|---|---|
+| COMM | only inside `cost_identity_metered`, which is self-metered, and the channel count | no |
+| Fired continuation | only `cost_authority`, inside the self-metered authority functions | no |
+| Each datum | the unmetered `message_bytes` walk | yes |
+
+The continuation body of a system-contract method is large, and every COMM
+that fires it inspected the whole body again.
+
+**Decision.**
+
+1. `comm_metered` no longer inspects the COMM or the fired continuation.
+   Both inspections stay in the source, commented out with their reason.
+2. The datum inspections stay, because they prepay the unmetered
+   `message_bytes` walk.
+3. The observation values (identity, authority, measurement) are unchanged.
+   The play observer and typed native replay call the same function, so
+   their charges stay equal.
+
+**Algorithm (literate form).**
+
+```text
+⟨metered COMM observation⟩ ≡
+  for each matched datum d: reserve |d|            -- prepays message_bytes
+  identity ← cost_identity_metered(comm)          -- self-metered
+  authority ← merge(continuation.cost_authority,  -- self-metered
+                    datum authorities)
+  measurement ← comm_charge(comm, data)           -- reads each datum once
+  return (identity, authority, measurement)
+```
+
+**Charge.** Let $`c`$ be the COMM, $`k`$ the fired continuation with body
+$`b`$, guard $`g`$ and authority $`a`$, and $`d_1, \ldots, d_m`$ the matched
+data. The legacy and the C12 charges differ by exactly the two removed
+inspections:
+
+```math
+R_{\mathrm{legacy}} = R_{\mathrm{C12}} + \lvert c \rvert + \lvert k \rvert,
+\qquad
+\lvert k \rvert = \lvert b \rvert + \lvert g \rvert + \lvert a \rvert .
+```
+
+The C12 charge $`R_{\mathrm{C12}}`$ does not depend on $`b`$ or $`g`$.
+
+**Scope.** This change is cost-accounting work. `observation_construction.rs`
+exists only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. It changes no evidence encoding and no
+observation value.
+
+**Verification.** `ObservationReadCoverage.v` proves six theorems without
+axioms:
+
+- `trace_covered` and `legacy_trace_covered`: both runs satisfy prefix
+  coverage.
+- `trace_reads_equal_legacy_reads`: both runs perform the same reads.
+- `legacy_excess`: the legacy run reserves exactly
+  $`\lvert c \rvert + \lvert k \rvert`$ more.
+- `charge_independent_of_body_and_guard`: the C12 run does not depend on the
+  body or the guard.
+- `legacy_charge_depends_on_unread_body`: a proved counterexample.
+
+Property tests in `native_runtime/tests/observation_construction.rs` extract
+these results:
+
+- `comm_observation_charge_is_independent_of_continuation_body`;
+- `comm_observation_values_are_unchanged_for_every_body`;
+- `comm_observation_accepts_exact_credit_and_rejects_each_smaller_dimension`;
+- `legacy_comm_charge_grew_with_the_unread_body`.
+
+The `rholang` suite passes 2,830 of 2,830 tests in release. With the original
+caps, the four offered-funding API suites pass. The gateway API test still
+fails at the gateway call, as before. That failure is register item G3.
+
+**Cross-refs.** DR-72, DR-75. Leaves `ofp-2-cap-c12-comm-observer-reads` and
+`ofp-2-cap-root-causes`.
+
+## DR-77 — Tree growth charges the increment of the tree backing
+
+**Status.** Implemented 2026-10-04 for cap root cause C13 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- $`B(n)`$ is the backing bound of a B-tree with $`n`$ entries:
+  $`B(n) = N(n) \cdot s`$, where $`N(n) = 1 + \lfloor (n-1)/5 \rfloor`$ for
+  $`n \geq 1`$ and $`N(0) = 0`$ bounds the node count, and $`s`$ is the
+  byte size of one node (`tree_backing` in `collection_backing.rs`).
+- The growth charge of a batch of $`a`$ entries added to a tree of $`n`$
+  entries is $`B(n + a) - B(n)`$.
+- Host-work usage accumulates: the budget never releases a reservation.
+
+**Context.** The native runtime budget keeps several B-trees that grow
+during execution:
+- the introduction-authority registry;
+- the introductions registry;
+- the authority frontier and events;
+- the pending stack transfers.
+
+Metered native replay keeps one more: the produce-counter map, which lives
+for the whole replay.
+
+Before each insert, the budget reserved backing for the tree.
+
+The probe of the gateway funding block showed these owned-backing
+reservations as 51% of the producer's SearchStateBytes (68 MB of 133.5 MB).
+That budget stood at 99.5% of its 128 MiB cap.
+
+The helpers `reserve_registry_insert`, `reserve_tree_birth` and
+`reserve_tree_batch` reserved $`B(n + 1)`$ or $`B(n + a)`$. That is the
+backing of the whole tree at its new size, on every insert. Because usage
+accumulates, $`n`$ single inserts reserved:
+
+```math
+R_{\mathrm{legacy}}(n) = \sum_{k=1}^{n} B(k) \;\geq\; \frac{n (n + 1)}{10}\, s ,
+```
+
+while the tree never holds more than $`B(n) \leq (1 + n/5)\, s`$. For 1,000
+inserts the legacy charge reserved 100,500 nodes for a tree that needs 200.
+
+The same file already charged the increment for persistent regions
+(`extend_persistent_regions`).
+
+**Decision.**
+
+1. A new helper `tree_growth` in `shared::rust::collection_backing` returns
+   the increment $`B(n + a) - B(n)`$ for bytes and for operations.
+2. `reserve_registry_insert`, `reserve_tree_birth` and `reserve_tree_batch`
+   (runtime budget) and `prepare_metered_produce_counter` (metered native
+   replay) reserve that increment. The legacy lines stay in the source,
+   commented out with their reason.
+3. Every call site passes the current tree size before the insert, so a batch
+   that builds a fresh tree ($`n = 0`$) keeps its charge $`B(a)`$.
+
+**Algorithm (literate form).**
+
+```text
+⟨tree growth⟩ ≡
+  require n + a does not overflow
+  (operations', bytes') ← tree_backing(n + a)
+  (operations, bytes)  ← tree_backing(n)
+  return (operations' − operations, bytes' − bytes)   -- B is monotone
+```
+
+**Soundness.** `SearchStateBytes` counts canonical logical bytes retained for
+a search state, and it does not use allocator metadata
+([host-work budget](host-work-budget.md)). Two cases cover all trees:
+
+- An insert-only tree (the two registries and the produce-counter map): the
+  cumulative charge after $`k`$ single inserts telescopes to $`B(k)`$. By
+  `checkpoint_node_count`, $`N(k)`$ bounds every node of a B-tree with $`k`$
+  entries whose non-root nodes hold at least five entries, which is the
+  occupancy invariant of the standard library's `BTreeMap`. Inserts never free
+  nodes, so every node that the inserts allocated is covered at every prefix.
+- A tree that also removes entries (the events, the pending stack transfers
+  and their event identities) or clears itself (the frontier and the stack
+  births): an insert charges the growth from the current size, and a removal
+  refunds nothing. At every prefix the cumulative charge is at least
+  $`B`$ of the largest size reached, so it covers the retained tree.
+
+**Scope.** This change is cost-accounting work. The helpers exist only on this
+branch. The change alters host-work charges of protocol 6, which is not yet
+released. It changes no evidence encoding and no observable value.
+
+**Verification.** `IncrementalTreeBacking.v` proves eight results without
+axioms:
+
+- `incremental_charges_telescope`: for every monotone projection, the charges
+  of any batch sequence add up to the final value minus the initial value.
+- `incremental_bytes_from_empty` and `incremental_operations_from_empty`.
+- `incremental_prefix_covers_nodes`: the prefix coverage stated above.
+- `legacy_cumulative_quadratic`: $`n (n + 1) \leq 10 \sum_{k \leq n} N(k)`$.
+- `incremental_nodes_linear`: $`N(n) \leq 1 + n/5`$.
+- `charges_cover_retained_with_removals`: for any sequence of inserts and
+  removals, every prefix has charged at least $`B`$ of the current size.
+- `legacy_example`: 1,050 legacy nodes against 20 for 100 inserts.
+
+Property tests in the `tree_growth_tests` module of `accounting/mod.rs`
+extract these results:
+
+- `tree_growth_charges_telescope_to_the_final_backing` (256 random batch
+  sequences);
+- `incremental_reservation_covers_std_btree_allocations`. It inserts up to
+  600 random keys into a standard `BTreeMap`. With the test binary's measuring
+  allocator, it checks that the allocated bytes never exceed the cumulative
+  reservation;
+- `growth_charges_cover_retained_backing_with_removals` (256 random insert
+  and removal sequences on a standard `BTreeMap`);
+- `legacy_whole_tree_charge_per_insert_is_quadratic` (1,000 inserts).
+
+**Cross-refs.** DR-76. Leaves `ofp-2-cap-c13-incremental-tree-backing` and
+`ofp-2-cap-root-causes`.
+
+## DR-78 — Produce-counter lookups charge the B-tree search bound
+
+**Status.** Implemented 2026-10-04 for cap root cause C3 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- A *B-tree with the node bounds of the standard `BTreeMap`* has these
+  properties:
+  - every node holds at most 11 keys.
+  - every node except the root holds at least 5 keys.
+  - a nonempty root holds at least 1 key.
+  - an internal node with $`k`$ keys has $`k + 1`$ children.
+  - all leaves have the same depth.
+- The *height* of a tree is its number of levels. A single leaf has
+  height 1.
+- $`h(n)`$ is the *height bound* of a map with $`n`$ entries:
+  $`h(0) = 0`$, and for $`n \geq 1`$, $`h(n)`$ is the largest $`h`$ with
+  $`2 \cdot 6^{h-1} - 1 \leq n`$. Equivalently,
+  $`h(n) = \lfloor \log_6 \frac{n+1}{2} \rfloor + 1`$
+  (`tree_height_bound`).
+- $`c(n) = 11 \cdot h(n)`$ is the *search bound* (`tree_search_bound`).
+- A *lookup* is one search of the map for one key. `get`, `contains_key` and
+  the position search of `insert` are lookups.
+- A comparison of two `Produce` keys reads only their 32-byte `hash` fields
+  (`impl Ord for Produce` in `rspace++/src/rspace/trace/event.rs`).
+
+**Context.** Metered native replay keeps the produce-counter map
+(`ReplayRSpace::produce_counter`, a `BTreeMap<Produce, i32>`) for the whole
+replay. Each COMM also builds a local `times_repeated` map. The legacy charge
+of one lookup walked every key of the map only to charge it:
+
+| Site | Legacy charge for a map with $`n`$ entries |
+| --- | --- |
+| `prepare_metered_produce_counter` (read and insert) | $`64 (n + 1) + 2n`$ operations and $`64 (n + 1) + 64n`$ bytes |
+| `metered_produce_count` (read) | $`32 (n + 1) + n`$ operations and $`32 (n + 1) + 32n`$ bytes |
+| `metered_comm` (`times_repeated` lookup, then insert) | the `metered_produce_count` charge for each lookup |
+
+One lookup thus charged $`\Theta(n)`$ work. A replay that produces on $`n`$
+distinct sources charged $`\Theta(n^2)`$ work in total. A `BTreeMap` search
+makes $`O(\log n)`$ comparisons.
+
+**Decision.**
+
+1. `shared::rust::collection_backing` gets two functions:
+   `tree_height_bound(n)` returns $`h(n)`$, and `tree_search_bound(n)`
+   returns $`c(n)`$ (saturating).
+2. A new helper `reserve_ordered_lookup(entries, hash_bytes, meter)` in
+   `metered.rs` reserves $`c(n)`$ operations,
+   $`2 \cdot \mathit{hash\_bytes} \cdot c(n)`$ scanned bytes, and no
+   backing. That is one operation and two hash reads for each comparison.
+   The metered comparator (`MeteredOrder::scan` and `sort`) uses the same
+   convention.
+3. Five lookups in three functions call the helper with the current map
+   size:
+   - two in `prepare_metered_produce_counter`: the read, and the insert that
+     `publish` performs.
+   - one in `metered_produce_count`.
+   - two in `metered_comm`: the `times_repeated` lookup, and the insert of a
+     new source.
+4. The legacy lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).** $`p`$ holds $`6^h`$, so $`2p - 1`$ is the
+smallest size of a tree of height $`h + 1`$.
+
+```text
+⟨height bound⟩(n) ≡
+  if n = 0 then return 0
+  h ← 1; p ← 6                         -- invariant: p = 6^h
+  loop
+    m ← 2·p − 1                        -- least size of a tree of height h + 1
+    if m overflows or m > n then return h
+    h ← h + 1
+    if 6·p overflows then return h     -- then 2·6·p − 1 > n as well
+    p ← 6·p
+
+⟨ordered lookup charge⟩(n, hash_bytes) ≡
+  c ← 11 · ⟨height bound⟩(n)           -- saturating
+  reserve(operations = c, scanned = 2 · hash_bytes · c, backing = 0)
+```
+
+![Diagram of the smallest standard BTreeMap of height 3. The root holds 1 key and 2 children. Each of the two internal nodes holds 5 keys and 6 children. Each of the 12 leaves holds 5 keys, so the tree holds 71 entries, which is 2 times 6 squared minus 1. A highlighted search path goes from the root through one internal node to one leaf, with at most 11 comparisons in each node. A first panel states the least size of a tree of height h and the height bound h of n. A second panel states the charge of one lookup: c of n equals 11 times h of n comparisons, reserved as c of n operations and 64 times c of n scanned bytes with no backing, so 2,000 entries give height 4 and 44 comparisons. A third panel states the legacy charge: one step for each entry, 66,032 operations for one lookup at 2,000 entries, and a quadratic total for a replay.](diagrams/btree-search-bound.svg)
+
+(*Source: [`diagrams/btree-search-bound.puml`](diagrams/btree-search-bound.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/btree-search-bound.puml`.*)
+
+**Soundness.** The argument has four steps.
+
+1. *Size lower bound.* By induction on the height, a non-root subtree of
+   height $`h \geq 1`$ holds at least $`6^h - 1`$ entries:
+   - a leaf holds at least $`5 = 6 - 1`$.
+   - an internal node holds at least 5 keys and 6 subtrees, so it holds at
+     least $`5 + 6 (6^{h-1} - 1) = 6^h - 1`$.
+
+   A root of height $`h + 1 \geq 2`$ holds at least 1 key and 2 subtrees, so
+   it holds at least $`1 + 2 (6^h - 1) = 2 \cdot 6^h - 1`$ entries. A root of
+   height 1 holds at least $`1 = 2 \cdot 6^0 - 1`$ entry.
+2. *Height bound.* By step 1, a map with $`n`$ entries has height at most
+   $`h(n)`$.
+3. *Search bound.* A search compares the target with the keys of one node
+   from the left. It stops at the first key that is not smaller than the
+   target, and then it stops or descends into one child. So each level costs
+   at most 11 comparisons, and one search costs at most
+   $`11 \cdot \mathrm{height} \leq c(n)`$.
+4. *Charged size.* The charge of each lookup uses the map size at the time
+   of the search:
+   - `prepare_metered_produce_counter` holds the produce-counter lock from
+     the charge until `publish` inserts.
+   - `metered_produce_count` holds the lock for its read.
+   - `times_repeated` is local to one COMM.
+
+An insert performs one search and then splits nodes without key
+comparisons. DR-77 charges the backing of the insert.
+
+**Determinism.** The charge uses the live map size, as the legacy charge
+did. The [host-work budget](host-work-budget.md) requires that local
+scheduling cannot change the cumulative use. Under native execution,
+`insert_authority` adds the common footprint key `[2, 0]` to every intent
+(`deterministic_reduction.rs`). Each frontier is thus one conflict
+component, and its operations run one at a time in canonical causal order.
+The produce-counter size at each lookup is therefore a function of the
+canonical execution. The `times_repeated` map is local to one COMM.
+
+**Limits.**
+
+- For a map with at most 21 entries, the scanned-byte charge can be larger
+  than the legacy charge: by at most 672 bytes for one lookup, and by at most
+  1,344 bytes for one preparation. The cause is that the bound charges 11
+  comparisons for each level, also when a node holds fewer keys. The
+  operation charge is always smaller than the legacy charge.
+- The model does not verify the Rust `BTreeMap` implementation. The property
+  tests count the comparisons of the real `BTreeMap`.
+
+**Out of scope.** The runtime budget's `reserve_registry_lookup` in
+`accounting/mod.rs` keeps its linear charge.
+
+- Several of its call sites pass the sum of the sizes of two or three maps
+  and pay for one search in each map. One example is the stack-birth conflict
+  check.
+- Some call sites pay in advance for the searches of the stack-transfer
+  commit. The commit runs after an `await` and can interleave with other
+  commits.
+
+A linear charge on the sum covers those searches. One B-tree bound on the sum
+does not: two searches in two maps of 1,000 entries can make 88 comparisons,
+but $`c(2001) = 44`$. A sound logarithmic charge for those sites needs one
+charge for each searched map and a size bound that holds at the commit. The
+approved C3 item does not include that change. In the gateway-block probe,
+`reserve_registry_lookup` was about 2% of the proposer's
+`VerificationBytes`. Update: the approved C13 item includes that change, and DR-80
+implements it with one charge for each searched map.
+
+**Scope.** This change is cost-accounting work. The metered native replay and
+its produce-counter charges exist only on this branch. The change alters
+host-work charges of protocol 6, which is not yet released. It changes no
+evidence encoding and no observable value. The produce counts, the COMM
+events, and the candidate order are unchanged.
+
+**Verification.** `OrderedLookupBound.v` proves five results without axioms:
+
+- `btree_size_lower_bound`: step 1 above, for subtrees and for roots.
+- `btree_search_comparisons`: a left-to-right scan search in a well-formed
+  tree of height $`h`$ makes at most $`11h`$ comparisons.
+- `btree_height_bound`: a well-formed root of height $`h`$ with $`n`$ entries
+  has $`h \leq h(n)`$, where the model's `height_bound` computes $`h(n)`$ as
+  the Rust loop does.
+- `search_within_size_bound`: one search makes at most $`11 \cdot h(n)`$
+  comparisons.
+- `linear_charge_example`: $`h(2000) = 4`$.
+
+Property tests extract these results:
+
+- `std_btree_get_comparisons_within_bound` in
+  `shared::rust::collection_backing` (256 cases). Each case builds a map of
+  up to $`2^{16}`$ entries. It uses one of five construction paths:
+  - single inserts in random order.
+  - single inserts in ascending order.
+  - single inserts in descending order.
+  - the bulk build of `collect`.
+  - random inserts followed by removals.
+
+  Each case probes present and absent keys. A counting key type counts the
+  comparisons of the real `BTreeMap`.
+- `std_btree_get_comparisons_within_bound_at_the_largest_size`: $`2^{16}`$
+  ascending inserts, with every key probed.
+- `tree_height_bound_changes_at_the_minimum_root_sizes` and
+  `linear_lookup_charge_exceeds_the_bound` ($`h(2000) = 4`$,
+  $`c(2000) = 44`$).
+- `counter_charge_is_logarithmic` in `metered/tests.rs`. It checks map sizes
+  from 0 to 2,000, on both sides of each height step. At each size, the count
+  charge equals the bound. The preparation charge equals two bounds plus the
+  copy and the tree growth.
+
+The existing reservation-cut tests of the produce counter still pass. They
+show that every reservation comes before the state changes.
+
+**Cross-refs.** DR-77. Leaves `ofp-2-cap-c3-logarithmic-lookup-charge` and
+`ofp-2-cap-root-causes`.
+
+## DR-79 — Replay authority tree visits charge the B-tree bound of the live map size
+
+**Status.** Implemented 2026-10-04 for cap root cause C14 of epic 8946
+(batch B1, phase A).
+
+**Terms.**
+
+- The *replay authority binding* (`ReplayAuthorityBinding`) re-checks the
+  cost accounting of an offered-funded deploy during native replay. For each
+  COMM row, it records an authority event and updates two ledgers for each
+  signature lane. A denied COMM goes into the frontier.
+- A *publication* is one `prepare` followed by `publish`, or by an abort
+  (`Drop`).
+- A *visit* is one B-tree search that `tree_update` charges.
+- $`h(n)`$ is the height bound and $`c(n) = 11 \cdot h(n)`$ is the search
+  bound of a map with $`n`$ entries (DR-78).
+- The maps are $`S`$ (pending stack identities), $`P`$ (pending replay
+  events), $`E`$ (events), $`F`$ (frontier), $`R`$ (reserved), $`Z`$
+  (realized) and $`A`$ (allocation). A debit has $`k`$ lanes.
+
+**Context.** `tree_update` charged every visit as a search in a tree of 65
+levels (`usize::BITS + 1`). That is 715 comparisons and 66 nodes for each
+visit, about 63 KB of `VerificationBytes`. One granted COMM with one lane
+makes 22 visits.
+
+The probe of the gateway funding block showed these charges as 10.3% of each
+replay budget's `VerificationBytes` (659 MB of 6.43 GB). They were also 5.6%
+of its `SearchStateBytes`. The maps hold dozens of entries, so their height is
+at most 3. The binding and its charges exist only on this branch.
+
+**Decision.**
+
+1. `tree_update` takes the size $`n`$ of the maps that its visits search. A
+   visit charges $`c(n)`$ comparisons, the key bytes of each comparison, and
+   $`h(n) + 1`$ nodes. An insert also charges $`h(n) + 1`$ nodes of
+   `SearchStateBytes`. The 65-level lines stay in the source, commented out
+   with their reason.
+2. Each charge group gets the size of the maps that it searches:
+
+   | Group | Visits | Searches | Charged size |
+   | --- | --- | --- | --- |
+   | Identity lookups | 3 | $`S`$, $`P`$, $`E`$ at prepare | $`\max(\lvert S\rvert, \lvert P\rvert, \lvert E\rvert)`$ |
+   | Dominance scan (enforced allocation only) | $`\lvert R\rvert`$ | $`A`$ at prepare | $`\lvert A\rvert`$ |
+   | Ledger, for each lane | 2 + 9 + 4 | $`R`$ and $`Z`$ (and $`A`$ when enforced) at prepare, publish and abort | $`\max(\lvert R\rvert, \lvert Z\rvert) + k`$, at least $`\lvert A\rvert`$ when enforced |
+   | Event maps | 3 + 1, two inserts | $`P`$ at prepare, publish and abort, $`E`$ at publish | $`\max(\lvert P\rvert, \lvert E\rvert) + 1`$ |
+   | Frontier (denied COMM) | 1, one insert | $`F`$ at publish | $`\lvert F\rvert + 1`$ |
+
+3. The visit counts and the insert flags do not change.
+4. The approved test "replay charges equal for play and replay" cannot hold,
+   because play never uses the binding. Play charges authority work through
+   `reserve_authority_identity`. Two tests replace it:
+   - replays of one trace on a current-thread runtime and on multi-thread
+     runtimes report the same use.
+   - play and replay end with equal authority state.
+
+**Algorithm (literate form).**
+
+```text
+⟨tree update⟩(insert, visits, n) ≡
+  h ← ⟨height bound⟩(n)                      -- DR-78
+  c ← 11 · h · visits
+  charge VerificationOperations c
+  charge VerificationBytes c · |K| + node · (h + 1) · visits
+  if insert then charge SearchStateBytes node · (h + 1)
+
+⟨publication charge⟩(state, row) ≡
+  ⟨tree update⟩(false, 3, max(|S|, |P|, |E|))
+  if the allocation is enforced then
+    repeat |R| times ⟨tree update⟩(false, 1, |A|)
+  if the row is a granted COMM with a debit of k lanes then
+    L ← max(|R|, |Z|) + k
+    if the allocation is enforced then L ← max(L, |A|)
+    for each lane:
+      ⟨tree update⟩(false, 2, L)
+      ⟨tree update⟩(lane not in R, 9, L)
+      ⟨tree update⟩(lane not in Z, 4, L)
+    N ← max(|P|, |E|) + 1
+    ⟨tree update⟩(true, 3, N)
+    ⟨tree update⟩(true, 1, N)
+  if the row is a denied COMM then
+    ⟨tree update⟩(true, 1, |F| + 1)
+```
+
+![Activity diagram of one replay authority publication. The native session driver runs one intent at a time, because every intent carries the footprint key [2, 0]. Prepare takes the authority lock. The three identity lookups are charged at the largest of the sizes of the pending stack identities, the pending replay events and the events. When the allocation is enforced, the dominance scan is charged as one visit for each reserved entry at the allocation size. For a granted COMM with k lanes, the ledger visits are charged at the larger reserved or realized size plus k, and the event-map visits and two inserts at the larger pending or events size plus one. Then prepare validates, adds the debit to the reserved ledger and inserts the pending event. For a denied COMM, the frontier insert is charged at the frontier size plus one. A note states that every charge comes before the first mutation, and that no await, no other intent and no participant runs between prepare and publish. Publish removes the pending event, adds the debit to the realized ledger and inserts the event or frontier entry. An abort removes the pending event and subtracts the debit from the reserved ledger. Each search thus runs on a map no larger than its charged size, so it makes at most 11 times h of n comparisons and reads at most h of n nodes. A legend defines the map letters and names the two negative controls.](diagrams/replay-authority-charge-sizes.svg)
+
+(*Source: [`diagrams/replay-authority-charge-sizes.puml`](diagrams/replay-authority-charge-sizes.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/replay-authority-charge-sizes.puml`.*)
+
+**Soundness.** The argument has five steps.
+
+1. *Search bound.* By `search_within_bound`, a search in a map with at most
+   $`n`$ entries makes at most $`c(n)`$ comparisons and reads at most
+   $`h(n)`$ nodes.
+2. *Charged sizes.* Each charged size bounds its maps when the searches run:
+   - The identity lookups and the dominance scan run at once, under the
+     lock, at the live sizes.
+   - Between prepare and publish or abort, only this publication changes
+     the ledgers. The debit adds at most $`k`$ keys to $`R`$ or to $`Z`$, so
+     $`\max(\lvert R\rvert, \lvert Z\rvert) + k`$ bounds both maps at every
+     ledger search. Under enforcement, the allocation lookups search $`A`$.
+   - $`P`$ holds the pending event until publish or abort, and $`E`$ grows
+     by one entry at publish. $`F`$ grows by one entry at publish.
+3. *Removals.* A removal can read one sibling on each level below the root,
+   in addition to its search path. For each lane, the ledger groups charge
+   15 visits for at most 10 searches. The event-map group charges 4 visits
+   for 3 operations. Each spare visit is sized by the map that removes.
+4. *Insert allocation.* An insert allocates at most $`h + 1`$ nodes: one on
+   each level that splits, and a new root. `tree_backing` sizes a node larger
+   than an internal node of the standard map.
+5. *Determinism.* The live sizes are a function of the canonical execution:
+   - Native execution adds the footprint key `[2, 0]` to every intent, so
+     each frontier is one conflict component. Its intents run one at a time
+     in canonical causal order.
+   - No `.await` separates `ticket.prepare` from `completion.publish` in the
+     native replay operations.
+   - Participants, and their cost-stack transfers, do not run while the
+     driver runs a frontier.
+
+**Precondition.** Step 2 requires that no other publication and no
+cost-stack transfer change the maps between a prepare and its publish. The
+binding API allows several publications in flight, and two unit tests use
+that. Under such use, a later publication can grow $`E`$ or $`Z`$ before an
+earlier one publishes. The deferred searches of the earlier publication can
+then exceed their charged sizes. Production never does this, by step 5. This
+record documents the precondition, and the binding does not check it at run
+time.
+
+**Scope.** This change is cost-accounting work. The binding and its charges
+exist only on this branch. The change alters host-work charges of protocol
+6, which is not yet released. It changes no evidence encoding and no
+observable value.
+
+**Out of scope.** Four findings stay recorded in pgmcp and are not changed:
+
+- the full dominance scan of `validate_add` depends on interleaving under
+  concurrent publications.
+- play-side cost-stack transfer charges use live sizes while parallel
+  participants run.
+- cost-stack commit searches are paid at prepare-time sizes.
+- `SearchStateBytes` charges use `size_of`.
+
+**Verification.** `OrderedLookupBound.v` adds five results without axioms:
+
+- `height_bound_monotone`: a larger size never has a smaller height bound.
+- `search_visits_le_height`: a search reads at most $`h`$ nodes.
+- `search_within_bound`: step 1 above.
+- `pre_operation_size_undercharges`: a negative control. A deferred search
+  charged at the size before the operation charges less than the search.
+- `summed_size_undercharges`: a negative control. Two 77-entry trees take 44
+  comparisons, but one bound on the summed size allows 33.
+
+Tests:
+
+- `authority_update_charge_covers_std_btree_work` (128 cases). Each case
+  builds a random authority state, with up to 700 events and frontier
+  entries, 120 ledger entries and 8 lanes. The case is enforced or not,
+  granted or denied, and publishes or aborts. A counting key type and the test
+  allocator measure the real map work, which uses the real `sparse_ledger`
+  functions. The charge covers the comparisons, 64 bytes for each comparison,
+  and the allocated bytes.
+- `deferred_searches_are_charged_after_the_operation`: the exact operation
+  charge, at sizes on both sides of the height steps.
+- `retry_comparison_exhaustion_preserves_published_authority`: updated to
+  the live-size lookup charge.
+- `native_replay_authority_charge_is_schedule_independent`. It replays a
+  deploy with parallel branches and 17 COMMs on a current-thread runtime and
+  on runtimes with 2, 4 and 8 workers. The use is identical in all 16
+  dimensions.
+- `native_replay_authority_state_matches_recorded_execution` (existing):
+  play and replay end with equal events, realized ledger and frontier.
+
+**Cross-refs.** DR-78. Leaves `ofp-2-cap-c14-authority-tree-bound` and
+`ofp-2-cap-root-causes`.
+
+## DR-80 — Registry lookups charge the B-tree search bound of each searched map
+
+**Status.** Implemented 2026-10-04. It completes cap root cause C13 of epic
+8946 (batch B1, phase A). DR-77 implemented the growth part.
+
+**Context.** The approved C13 item also requires that the runtime budget's
+registry lookups use the B-tree search bound of DR-78.
+`reserve_registry_lookup` charged one comparison for each entry. Some call
+sites charged one summed size for searches in two or three maps. After
+DR-77, an insert charges only the growth of its tree, not its own search.
+
+**Decision.**
+
+1. `reserve_registry_lookup` charges $`c(n) = 11 \cdot h(n)`$ comparisons for
+   a registry with $`n`$ entries, and the key bytes of each comparison. The
+   linear lines stay in the source, commented out with their reason.
+2. Each charge pays for one search in one map, at a size that holds when the
+   search runs:
+   - The stack-birth conflict check charges `stack_births` and
+     `pending_stack_transfers` separately.
+   - The event-identity check charges `events`, `pending_stack_event_ids` and
+     `pending_replay_events` separately for each event.
+   - `reserve_authority_identity` charges its three identity maps
+     separately. It also charges the search of the event insert and of the
+     frontier insert.
+   - The inserts into the introduction registry and into the persistent
+     introductions charge their own search.
+   - The commit or the abort of a stack transfer charges the removal from
+     the pending map, at its size with this transfer included.
+3. The charges for searches at commit keep the existing sizes: the size now
+   plus the entries that the pending transfers can add.
+
+**Soundness.** By `OrderedLookupBound.search_within_bound`, a search in a map
+with at most $`n`$ entries makes at most $`c(n)`$ comparisons. Each charge
+now uses the size of the one map that it searches.
+`OrderedLookupBound.summed_size_undercharges` shows why one logarithmic bound
+on a summed size is not sound.
+
+**Limits.** The searches at commit run after `produce(...).await`, and
+parallel participants can commit other transfers before them. The legacy
+linear charge had the same dependence on the size at commit. This dependence
+stays recorded in pgmcp, and this change does not alter it.
+
+**Verification.**
+
+- `registry_lookup_charges_the_search_bound`: the exact charge, at sizes on
+  both sides of the height steps.
+- `std_btree_get_comparisons_within_bound` (DR-78): the bound holds for the
+  real `BTreeMap`.
+
+**Cross-refs.** DR-77, DR-78, DR-79. Leaf
+`ofp-2-cap-c13-incremental-tree-backing`.
+
+## DR-81 — Native continuation reads share the cached payloads
+
+**Status.** Implemented 2026-10-04 for cap root cause C1 of epic 8946
+(batch B1, phase B).
+
+**Context.** The native hot store caches the continuations of a channel
+group once, each behind a shared pointer (`Arc`). The native read
+`native_continuations` copied every cached continuation on every read and
+charged each copy. The consume path also read the continuations once only to
+fill the cache, and then dropped the copies.
+
+The phase A probe of the gateway funding block attributed about 66% of each
+validator replay's `VerificationBytes` to the native history reads
+(`history_reserve` in `native_session/history.rs`).
+
+**Decision.**
+
+1. A new reader `native_continuation_views` returns the shared pointers:
+   - a warm read clones only the pointers, at one operation and one pointer
+     size for each continuation;
+   - a cold read moves each decoded continuation into its pointer, without
+     a copy, and prepays its release once, when it enters the cache.
+2. The candidate reader of metered native replay uses the views. It copies
+   only the continuation that it selects, with `reserve_copy_and_cleanup`.
+3. The consume path prefetches with `prefetch_continuations`, which fills the
+   cache and copies no continuation.
+4. The owned reader `native_continuations` stays for the public
+   `get_continuations` API and serves as the test oracle. The replaced lines
+   stay in the source, commented out with their reason.
+
+**Soundness.** A view resolves to the same payload as a copy, so the
+selection is unchanged. Every payload's release is prepaid when the payload
+enters the cache, and a pointer clone allocates no payload. The last pointer
+drop therefore releases a prepaid payload.
+
+**Scope.** This change is cost-accounting work. Native replay and its hot
+store paths exist only on this branch. The change alters host-work charges of
+protocol 6, which is not yet released. It changes no observable value: the
+selected candidate and the COMM are the same.
+
+**Verification.** `NativeSharedReads.v` proves without axioms:
+
+- `shared_selection_equals_deep_selection`;
+- `prefetch_then_read_equals_read`;
+- `cleanup_prepaid_preserved` and `every_release_was_prepaid`;
+- a negative control: a cold fill without prepayment leads to an unpaid
+  release.
+
+`NativeSharedReadCleanup.tla` checks `LivePrepaid`, `EntriesPrepaid`,
+`EveryReleasePrepaid` and `WarmReadsAllocateNothing`. Two unsafe controls
+violate their invariants:
+
+| Control | Mutation | Violated invariant |
+| --- | --- | --- |
+| `NativeSharedReadCleanupFillWithoutPrepayUnsafe` | a cold read skips the payload prepayment | `LivePrepaid` |
+| `NativeSharedReadCleanupStoreWithoutPrepayUnsafe` | a cold read skips the cache-entry prepayment | `EntriesPrepaid` |
+
+Tests in `hot_store/native/tests.rs`:
+
+- `shared_reads_select_like_deep_reads`: views equal owned reads on a cold
+  and on a warm cache.
+- `shared_read_allocates_no_payload`: the warm view read allocates the same
+  bytes when the payload grows 16 times.
+- `prefetch_leaves_state_and_selection_unchanged`.
+- `every_view_read_cut_rejects_without_filling_the_cache`.
+
+**Cross-refs.** DR-75, DR-79. Leaf `ofp-2-cap-c1-shared-continuation-reads`.
+
+## DR-82 — Native data reads use copy-free shard snapshots
+
+**Status.** Implemented 2026-10-05 for cap root cause C2 of epic 8946
+(batch B1, phase B).
+
+**Context.** The native hot store caches the data of each channel in a
+persistent shard (`imbl::HashMap`). The native data read copied every
+cached datum of the channel on every read, and charged each copy. The
+produce path also read the data once only to fill the cache, and then
+dropped the copies. Together with the continuation reads of DR-81, these
+reads made up most of each validator replay's `VerificationBytes`.
+
+**Decision.**
+
+1. A new reader `native_data_view` returns a `NativeDataView`: an O(1)
+   snapshot of the persistent shard and the channel key. A view holds no
+   lock and copies no datum.
+   - A warm read takes the snapshot.
+   - A cold read prepays the release of the decoded data, moves them into
+     the cache, and takes the snapshot under the insert's write lock
+     (`native_insert_new_snapshot`). Every charge is reserved before the
+     insert.
+2. The candidate preparation of metered native replay borrows the datums
+   of the views (`Cow::Borrowed`). Only the incoming datum of a produce is
+   owned. The selected datum's fields are copied as before. The views
+   drop before publication.
+3. The produce path prefetches with `prefetch_data`, which fills the cache
+   and copies no datum.
+4. The owned reader stays for the public `get_data` API and for
+   installation. The replaced lines stay in the source, commented out with
+   their reason.
+
+**Soundness.** A borrowed datum is the cached datum, so the canonical order
+and the selection are unchanged. A snapshot of a persistent map is not
+changed by later writes. Every reservation of a cold read comes before the
+insert, so a rejected reservation leaves the cache unchanged.
+
+**Scope.** This change is cost-accounting work. Native replay and its hot
+store paths exist only on this branch. The change alters host-work charges of
+protocol 6, which is not yet released. It changes no observable value.
+
+**Verification.** `NativeSharedReads.v` adds, without axioms:
+
+- `rejected_cold_read_leaves_cache` and `accepted_cold_read_equals_read`;
+- `insert_first_fills_cache_on_rejection`: a negative control. A read that
+  inserts before it reserves leaves the cache filled after a rejection.
+
+`NativeSharedReadCleanup.tla` (DR-81) also stands for the data views: a
+snapshot is a shared pointer to the shard version.
+
+Tests in `hot_store/native/tests.rs`:
+
+- `data_view_selection_matches_owned`: views equal owned reads on a cold
+  and on a warm cache.
+- `data_view_allocates_no_payload`: the warm view allocates the same bytes
+  when the payload grows 16 times.
+- `data_view_is_a_stable_snapshot`: a later write does not change a view.
+- `every_data_view_cut_rejects_without_filling_the_cache`. This test found
+  a first draft that reserved the snapshot after the insert.
+
+**Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.
+
+## DR-83 — Continuation-shard replaces count store-owned pointers inline
+
+**Status.** Implemented 2026-10-05 for cap root cause C5 of epic 8946
+(batch B1, phase B). Its gate H8 holds: in the phase A probe,
+`reserve_replace` was 6.6% of each validator replay's `VerificationBytes`
+and 19.7% of its `SearchStateBytes`. The same item's C6 (H4, export at 0.9%
+and 1.4%) and C11 (H9, no measurable duplicate-check site) are refuted and
+change nothing.
+
+**Context.** A replace in a persistent hot-store shard charges a copy and a
+cleanup of every value in the shard. The values of a continuation shard are
+vectors of store-owned shared pointers. The cleanup walk followed each
+pointer into its payload, although each payload's release was prepaid when
+it entered the cache: on a cold read (DR-81) and on a stored consume
+(`native_store_consume` prepays the stored continuation).
+
+**Decision.**
+
+1. The walker gains a shared-pointer cleanup walk
+   (`clone_backing::inspect_shared_pointers`). It visits each pointer and
+   skips its payload, so pointers nested inside a payload are never reached.
+2. `native_backing::reserve_shared_copy_and_cleanup` charges a store-owned
+   pointer vector with the walker's copy walk and the shared cleanup walk.
+   `reserve_shared_cleanup` charges one retired pointer the same way.
+3. The continuation-shard replaces use them: `reserve_replace_shared` in
+   `native_store_consume` and `native_retire_produce_match`, the copy of the
+   existing pointer vector there, and the retired pointer of a match. Data and
+   join shards keep the full charge. The replaced lines stay in the source,
+   commented out with their reason.
+
+**Soundness.** Every store-owned pointer's payload release was prepaid at
+entry. A replace copies and drops pointers only, so the last drop releases a
+prepaid payload. The shared charge equals the walked charge minus the walk
+into the payloads.
+
+**Scope.** This change is cost-accounting work. The native hot store paths
+exist only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. It changes no observable value.
+
+**Verification.** `NativeSharedReads.v` adds
+`shared_replace_needs_no_payload_cleanup`, without axioms. Tests in
+`hot_store/native/tests.rs`:
+
+- `shared_copy_charge_omits_only_the_payload_walk`: for payload-free
+  pointers, the walked charge exceeds the shared charge by exactly the push
+  of each empty payload.
+- `shared_copy_charge_is_independent_of_payload`: the shared charge stays
+  the same when the payload grows 16 times, stays below the walked charge,
+  and covers the allocation of the pointer copy.
+- `shared_cleanup_charges_the_pointer_only`.
+
+**Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.
+
+## DR-84 — A split adds one causal-path segment
+
+**Status.** Implemented 2026-10-05 for cap root cause C9 of epic 8946
+(batch B1, phase C).
+
+**Context.** The deterministic scheduler orders RSpace operations by their
+causal paths, in the forward lexicographic order of `Vec<(u64, u64)>`. An
+operation of participant `P` at step `s` has the path `P·(s, 0)`.
+`ReductionContext::split` gave child `i` of a split at step `s` the
+participant path `P·(s, 1)·(i, 0)`. The detached driver of commit
+`c3aacd649` evaluates every continuation body in a child of `split(1)`. A
+chain of `L` nested continuations therefore reached an operation path of
+`2L + 1` segments. The gateway funding flow reached 1,025 segments, above the
+protocol-6 limit `V6_NATIVE_PATH_SEGMENTS` of 1,024. The provisional limit
+4,096 hid that excess.
+
+**Decision.**
+
+1. `split` gives child `i` of a split at step `s` the one segment
+   `(s, i + 1)`. Operations keep `(s, 0)`. The replaced lines stay in the
+   source, commented out with their reason.
+2. The legacy splitter stays as the test oracle `split_legacy` under
+   `#[cfg(test)]`. A thread-local test flag selects it when a session is
+   built.
+3. The committed limit `V6_NATIVE_PATH_SEGMENTS` stays 1,024.
+
+![Diagram of one participant plan and its causal paths under the two splitters. The plan has an operation at step 0, a split into two children at step 1, an operation of child 0, a split of child 1 into one grandchild, an operation of the grandchild, and an operation at step 2 after the children rejoin. The legacy splitter gives child i the segments (s,1) (i,0), and its sorted operation paths are (0,0), then (1,1) (0,0) (0,0), then (1,1) (1,0) (0,1) (0,0) (0,0), then (2,0). Its longest path has 5 segments. The compacted splitter gives child i the segment (s, i + 1), and its sorted operation paths are (0,0), then (1,1) (0,0), then (1,2) (0,1) (0,0), then (2,0). Its longest path has 3 segments. Both columns lead to a note that every operation has the same rank, by render_order_isomorphism, and that k nested splits give k + 1 segments instead of 2k + 1. A red box shows the rejected naive fusion (s, i): Op 1 and Child 1 0 both give (1,0), by naive_fusion_collides. A note explains that the step counter prevents that pair in the program, but that the chosen fusion keeps the order without that invariant, because (s, i + 1) is greater than (s, 0). A legend names the five colours.](diagrams/detached-path-compaction.svg)
+
+(*Source: [`diagrams/detached-path-compaction.puml`](diagrams/detached-path-compaction.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/detached-path-compaction.puml`.*)
+
+**Soundness.** Describe each generated path by its units: an operation at
+step `s`, or child `i` of a split at step `s`. Let `legacy(u)` and
+`compact(u)` be the paths of the two splitters for the unit list `u`. For all
+unit lists `u` and `v`:
+
+```math
+\mathrm{cmp}\bigl(\mathrm{compact}(u), \mathrm{compact}(v)\bigr)
+  = \mathrm{cmp}\bigl(\mathrm{legacy}(u), \mathrm{legacy}(v)\bigr)
+```
+
+At the first unit where `u` and `v` differ, both renderings decide the
+comparison in the same way:
+
+| Units | Legacy segments | Compacted segments | Result in both |
+| --- | --- | --- | --- |
+| two operations | `(s, 0)` and `(t, 0)` | `(s, 0)` and `(t, 0)` | `s` against `t` |
+| operation and child | `(s, 0)` and `(t, 1)` | `(s, 0)` and `(t, j + 1)` | `s` against `t`, and the operation first when `s = t` |
+| two children | `(s, 1)·(i, 0)` and `(t, 1)·(j, 0)` | `(s, i + 1)` and `(t, j + 1)` | `s` against `t`, then `i` against `j` |
+
+Equal units give equal segments in both renderings. The proof therefore
+needs no premise on the plan. The scheduler orders every frontier in the
+same way, so the schedule, the event log and the post-state root do not
+change. The naive fusion `(s, i)` would give the operation `(s, 0)` and the
+first child of a split at step `s` the same path. A participant uses one step
+counter for its operations and its splits, so the program never makes that
+pair. The chosen fusion does not depend on that invariant.
+
+Two orders keyed by paths change. `OperationKey` compares the path length
+first, so the shape of its lookup index changes. `NativeIndex::keys`
+iterates in insertion order, so only the lookup charges change, and they
+shrink with the shorter paths. `JournalKey` compares the segments
+lexicographically, so its order does not change.
+
+**Scope.** This change is cost-accounting work. The detached driver and the
+native evidence exist only on this branch. Native evidence records shorter
+paths in the same format, which is a protocol-6 encoding change. Protocol 6
+is not yet released. The change alters no schedule, event log or root.
+
+**Verification.** `DetachedPathCompaction.v` proves without axioms:
+
+- `fuse_render`: `fuse` maps every legacy path to the compacted path of the
+  same units;
+- `render_order_isomorphism` and `fuse_order_isomorphism`;
+- `fuse_injective`;
+- `fuse_halves_participant_depth` and `funding_flow_depth`: 513 segments
+  instead of 1,025 for 512 nested splits;
+- `naive_fusion_collides`: a negative control for the fusion `(s, i)`.
+
+Tests:
+
+- `compacted_paths_preserve_vec_order` (`deterministic_reduction.rs`): 64
+  seeded random plans generate 1,227 paths, nested up to four splits. Every
+  pair of compacted paths compares like the legacy pair, by vector order and
+  by the shared-root comparison of `CausalPath`. Distinct steps have distinct
+  paths.
+- `funding_flow_depth_at_most_513` (`deterministic_reduction.rs`): 512
+  nested splits give 513 segments, and the legacy splitter gives 1,025.
+- `compacted_schedule_equals_legacy_schedule` (native execution tests):
+  native play of four corpus terms with recursion, a fork tree, joins, peeks
+  and a persistent send gives the same event log and the same root with both
+  splitters. Each term records a shorter longest path with the compacted
+  splitter, so the legacy flag took effect.
+
+**Cross-refs.** DR-74. Leaf `ofp-2-cap-c9-path-compaction`.
+
+## DR-85 — Causal paths carry a chained digest, and the recording index compares digests
+
+**Status.** Implemented 2026-10-05 for cap root cause C7a of epic 8946
+(batch B1, phase C). Its gate H5 holds: in the phase B probe, the recording
+occurrence index was 33.6% of the producer execution budget's
+`VerificationBytes` (169 MB of 502 MB).
+
+**Context.** The native recorder detects a repeated occurrence with an
+index of the recorded occurrences (`NativeBudgetRecorder::occurrences`). The
+index was keyed by `NativeBudgetOccurrence` (session, path, stage), and a
+comparison read the two paths segment by segment up to their first
+difference. The recorded paths share long prefixes, so each comparison on a
+search path read most of the path. The index also held a second copy of each
+path.
+
+**Decision.**
+
+1. Each node of a `CausalPath` stores the digest of its path. `push_back`
+   computes it in constant time from the parent digest:
+   - the root digest is Blake2b-256 over the domain tag
+     `f1r3fly/causal-path/v1` and the node-kind byte 0;
+   - a child digest is Blake2b-256 over the domain tag, the node-kind byte 1,
+     the parent digest and the two segment words in big-endian order.
+2. The recording index is keyed by `OccurrenceKey`: the session, the digest,
+   the depth, the last segment and the stage. A comparison charges a fixed
+   90 bytes and 7 operations, whatever the path depth.
+3. `reserve_record` copies the path once, for the attempt, instead of twice.
+   Its operation and `SearchStateBytes` charges count one copy.
+   `capture_recording` sums the depths of the keys.
+
+The replaced lines stay in the source, commented out with their reason.
+
+**Soundness.** Two paths have equal chained digests exactly when they are
+equal, if the child digest determines its parent digest and segment and no
+child digest equals the root digest. Blake2b-256 collision resistance and
+the node-kind byte justify that premise. The digest-keyed index therefore
+reports a repeat exactly when the path-keyed index does. The index order
+changes from path order to digest order, but only lookups use it:
+`NativeIndex::keys` iterates in insertion order.
+
+A digest collision would make the producer reject its own execution as a
+repeat. Validators do not use the recorder: they check the decoded journal
+independently. A collision therefore cannot make a validator accept a wrong
+value.
+
+**Scope.** This change is cost-accounting work. The native recorder and the
+causal-path digests exist only on this branch. The recording content and its
+encoding do not change. The change alters host-work charges of protocol 6,
+which is not yet released.
+
+**Verification.** `NativePathTrie.v` (part 1) proves without axioms:
+
+- `chain_snoc`: the digest of `p ++ [s]` is the child digest of the digest
+  of `p` and `s`;
+- `digest_chain_correct`: equal digests exactly when the paths are equal;
+- `occurrence_key_correct`: equal occurrence keys exactly when the sessions,
+  paths and stages are equal;
+- `unchained_digest_collides`: a negative control. A key that hashes only the
+  last segment gives two different paths the same key.
+
+Tests:
+
+- `path_digest_folds_the_segments` (`operation_context.rs`): the digest of a
+  path folds the child digest over its segments, and paths with a shared
+  prefix have equal digests exactly when they are equal.
+- `digest_keyed_occurrences_match_path_keyed_index` (`tests/index.rs`): on
+  generated occurrence sequences with frequent repeats, the digest-keyed
+  index reports the same repeats as the path-keyed index.
+- `digest_keyed_lookup_charge_is_independent_of_depth` (`tests/index.rs`): a
+  comparison charges 90 bytes, and a lookup stays within the index height
+  bound for paths of depth 1 and 1,000. The path-keyed lookup at depth 1,000
+  charges more than 100 times the digest-keyed lookup.
+
+**Cross-refs.** DR-74, DR-84. Leaf `ofp-2-cap-c7a-path-digests`.
+
+## DR-86 — Native evidence interns its causal paths in one hash-consed trie
+
+**Status.** Implemented 2026-10-05 for cap root cause C7b of epic 8946
+(batch B1, phase C).
+
+**Context.** The native evidence decoder rebuilt every causal path of a
+recording and its journal as a vector. A delta entry copied the shared prefix
+of the previous path and appended the suffix (DR-74). The journal check
+counted the sum of the path depths against `total_path_segments`. The journal
+index, `check_link`, `bind_trace` and the replay slot lookup compared whole
+paths. In the gateway funding flow before C9, the depth sum was about
+1.04 M, above the limit of 262,144, although the chain added only about 2.5 k
+new segments. The phase B probe attributed about 18% of each validator
+replay's `VerificationBytes` to path comparisons: the journal index (6.7%)
+and the trace binding and slot lookup (11.7%).
+
+**Decision.**
+
+1. A recording owns one hash-consed trie of its causal paths
+   (`NativePathTrie`). A node is a (parent, segment) pair, interned once. Each
+   node stores the chained digest of C7a and a jump table of ancestors.
+   Occurrences and journal rows name nodes (`PathId`) instead of holding path
+   vectors.
+2. The decoder interns each delta suffix below the ancestor at the prefix
+   depth. It admits the suffix length against the limit Σ s_i before it
+   allocates a node. It checks the canonical prefix before it creates the
+   first suffix node. The new field `total_path_segments` of the recording
+   wire limits holds the limit, set to `deploy_log_items`. A recording and its
+   journal share the counter. The wire format does not change.
+3. The journal check limits the node count. Journal keys and `check_link`
+   compare node ids. `bind_trace` orders the slots by a depth-first walk of
+   the trie that visits children by increasing segment. The replay finds a
+   slot by the digest key of the live path in a sorted index.
+4. The producer records copied paths as before. When it captures its
+   evidence, it builds the same trie in the wire order of the evidence. Its
+   evidence therefore equals the decode of its encoding, ids included.
+5. The committed journal limit `total_path_segments` stays `deploy_log_items`.
+
+The replaced lines stay in the source, commented out with their reason. The
+encode and decode functions of the journal take the recording's trie, so two
+calls in `offered_evidence.rs` change.
+
+**Soundness.**
+
+- The trie decoder accepts exactly the chains that the vector decoder
+  accepts, and each node denotes the decoded path. Node ids are equal exactly
+  when the paths are equal, so the uniqueness checks and the links decide as
+  before.
+- The walk lists the paths in strictly increasing lexicographic order and
+  lists every node. The rows share one session and have distinct paths, so
+  the walk gives the order of the replaced sort. An operation at the empty
+  path, the root, comes first, as before.
+- Equal digest keys mean equal paths under the collision premise of DR-85.
+  The index rejects a duplicate key.
+- The node count is at most Σ s_i, so `deploy_log_items` bounds the trie.
+  The check relaxes: Σ s_i ≤ Σ depth, so evidence that passed before still
+  passes.
+- Each child search charges the B-tree search bound of the children map
+  (DR-78). Each new node charges its vector growth, its tree growth (DR-77)
+  and its digest. The walk, the index and the lookups charge their actual
+  work. Every charge comes before the work.
+
+**Scope.** This change is cost-accounting work. The native evidence codec,
+the journal check and native replay exist only on this branch. The Casper
+changes pass the recording's trie to the journal codec and set the new limit.
+The evidence bytes, the event log and the roots do not change. Protocol 6 is
+not yet released.
+
+**Verification.** `NativePathTrie.v` (part 2) proves without axioms:
+
+- `node_identity_is_path_equality`;
+- `child_spec`, `intern_spec` and `path_of_ancestor`;
+- `trie_decode_denotes_paths` against `NativePathDeltaCodec.decode_all`;
+- `trie_nodes_bounded_by_suffixes`;
+- `trie_dfs_is_lex_sort`, `preorder_unique` and `preorder_complete`;
+- `materialized_segments_quadratic` and
+  `materialized_segments_exceed_journal_limit`: a negative control. A
+  staircase chain of 724 paths has 724 new segments but 262,450
+  materialized segments.
+
+Tests:
+
+- `trie_decode_round_trips_v1_v2` (`wire.rs`): the trie encoder writes the
+  bytes of the segment encoder, and the v2 and v1 decoders rebuild the
+  encoder's trie with the same ids for a recording chain and a journal chain.
+- `delta_limit_checked_before_allocation` (`wire.rs`): a suffix header above
+  the remaining limit fails with no node and no `SearchStateBytes` charge, and
+  the limit counts a recording and its journal together.
+- `trie_order_equals_vec_sort` and `ids_equal_iff_paths_equal`
+  (`tests/path_trie.rs`), with ancestor, prefix and limit tests.
+- `replay_digest_lookup_equals_binary_search` (`tests/checked_trace.rs`): the
+  digest index finds the slot of every operation path and no slot for its
+  prefixes, extensions and other paths.
+
+**Cross-refs.** DR-74, DR-77, DR-78, DR-85. Leaf
+`ofp-2-cap-c7b-decoded-path-trie`.
+
+## DR-87 — The acquisition demand holds one entry for each obligation key
+
+**Status.** Implemented 2026-10-05 for cap root cause C8 of epic 8946
+(batch B1, phase C).
+
+**Context.** `prepare_acquisition_demand` pushed one resource entry for each
+located occurrence of a measured class. In the gateway funding flow, 2,899
+occurrences of a few keys gave 5,798 entries in the required and fresh parts
+of the witness, 5,798 authority nodes and about 4.76 MiB of key bytes. These
+counts exhausted the protocol-6 limits for obligations (4,096), authority
+nodes (4,096) and key bytes (262,144), and the limits were raised
+provisionally.
+
+**Decision.**
+
+1. The demand holds one entry for each distinct key: a purse identity and a
+   class. Each entry holds the summed quantity of its occurrences. The
+   entries are sorted by the identity encoding and the class.
+2. The purse identity is the canonical obligation-key encoding of the
+   purse's location and authority (`PhloResource::encoded_obligation_key`).
+   Two purses on one channel with different authorities therefore stay
+   distinct. Two signatures with one authority value merge. The spec text
+   names (purse channel, class) as the key. The authority is added, because
+   the payment exactness that the spec requires needs it.
+3. The entry limit applies to the distinct keys. A zero quantity and an
+   overflowing quantity sum are rejected when the demand is prepared. The
+   later checks rejected the same inputs before.
+4. The demand maps each occurrence to its entry (`occurrence_entry`). The
+   prepaid selection still works on occurrences, so the evidence positions
+   do not change. The binding maps each position to its entry and keeps a
+   quantity bound for each occurrence, so it decides as before.
+5. Settlement already merged the obligations of each key before it encoded
+   them. It now receives distinct entries.
+6. The committed limits stay at their original values.
+
+The replaced lines stay in the source, commented out with their reason.
+
+**Soundness.** Aggregation keeps the counted quantity of every key, the
+priced value, the counted discharge and the exhaustion of supply. Payments
+stay exact. The obligations and the funding case are equal as sets, and the
+funding case is put in canonical order before family selection and capture,
+so its bytes do not change. Validators compute the same aggregation from the
+same evidence.
+
+**Scope.** This change is cost-accounting work. The acquisition demand, the
+prepaid binding and the settlement of offered deploys exist only on this
+branch. The Casper changes are in the cost-accounting tree: the demand
+binding and the acquisition limits. No encoding changes. The accepted set
+grows: an offer whose occurrences exceeded the limits, but whose distinct
+keys fit, is now accepted. This is a protocol-6 rule change, and protocol 6
+is not yet released. Prepaid draws are not aggregated: each draw still
+derives two keys. Phase D (S11) measures that remaining use.
+
+**Verification.** `AggregatedAcquisitionDemand.v` proves without axioms:
+
+- `aggregate_preserves_counts` and `aggregate_expansion_permutation`;
+- `aggregate_preserves_weighted_usage`;
+- `aggregate_preserves_partition` and `aggregate_preserves_exhaustion`;
+- `aggregate_keys_distinct`;
+- `aggregated_payment_exact`;
+- `occurrence_key_work_exceeds_aggregated`: a negative control. 2,899
+  occurrences of eight one-node keys need 5,798 authority nodes, above the
+  limit of 4,096, and their aggregate needs 16.
+
+Tests in `acquisition/tests/aggregation.rs`:
+
+- `aggregated_witness_checks_like_occurrence_witness`: on generated purses,
+  including one channel with two authorities, the entries have distinct keys
+  and sum their occurrences, the result does not depend on the row order,
+  and the aggregated demand checks, discharges and projects its obligations
+  like the per-occurrence demand. At the distinct entry limit, the
+  aggregated witness passes and a larger per-occurrence witness fails.
+- `settlement_encodes_each_key_once`: a demand with 64 copies of each
+  occurrence gives one obligation for each key and the fee, encodes each key
+  once, and does the encoding work of a demand with one occurrence per key.
+- `funding_flow_has_nine_keys`: two purse identities and four classes in
+  2,904 occurrences give nine obligations under the original limits, which
+  the per-occurrence demand exceeds.
+
+The existing acquisition tests now assert the aggregated entry counts. The
+gateway funding flow itself is measured in the phase C probe.
+
+**Cross-refs.** DR-77, DR-85, DR-86. Leaf `ofp-2-cap-c8-aggregated-demand`.
+
+## DR-88 — Candidate selection charges only what the matcher reads
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A1 of epic 8946
+(D-M1 and D-M6 of the Phase D plan).
+
+**Context.** Native replay selects candidates in
+`metered_match_data` (`native_candidate/metered.rs`) and checks
+installations in `install` (`native_session/installation.rs`). Before each
+match attempt the caller inspected the whole pattern and the whole datum.
+Before the commit check it inspected the whole continuation, and it copied
+every matched datum into an owned vector only to pass a slice to
+`check_commit_metered`. In the gateway funding block the continuation
+inspection alone charged 177.2 MB of VerificationBytes per validator
+replay (157.3 MB on the produce path, 19.9 MB on the consume path), the
+pattern and datum inspections 14.7 MB, and the copies 27.3 MB.
+
+**Decision.**
+
+1. `Match::get_metered` and `Match::check_commit_metered` carry a written
+   contract: an implementation reserves every read of the pattern, the
+   datum, the continuation and the matched data before it performs the read.
+   The rholang `Matcher` complies: `fold_match` reserves a copy of every
+   pair it touches, `free_check` reserves every surplus target, and the
+   commit check reserves one operation and then walks only the guard. Every
+   test matcher complies.
+2. The caller no longer inspects the pattern, the datum or the continuation
+   before these calls. The inspections are commented out with their reason.
+3. `check_commit_metered` takes the matched data by reference
+   (`&[&A]`). The caller builds a vector of references, charged as a buffer
+   of `n` pointers, instead of copying every matched datum. The owned-copy
+   code is commented out with its reason. The unmetered `check_commit` keeps
+   its owned signature.
+
+**Soundness.** The removed inspections prepaid no read: every read of the
+pattern, the datum and the guard is reserved by the self-metered callee
+before it happens, so prefix coverage holds for the new runs as for the
+legacy runs. The reference vector is the only remaining work of the old
+copy step, and it is reserved before it is built. The decisions do not
+change: the commit check over borrowed data evaluates the same guard on the
+same bindings. Every charge depends only on value sizes and `size_of`, so
+producer self-replay and validator replays compute it identically.
+
+**Scope.** This change is cost-accounting work: native replay and its
+metered matcher interface exist only on this branch. The play path
+(`Match::get`, `Match::check_commit`) does not change. No encoding, root or
+event changes.
+
+**Verification.** `CandidateReadCoverage.v` proves without axioms, over the
+event model of `ObservationReadCoverage`:
+
+- `attempt_trace_covered`, `legacy_attempt_trace_covered`,
+  `commit_trace_covered` and `legacy_commit_trace_covered`;
+- `attempt_reads_equal_legacy_reads` and `legacy_attempt_excess`: the
+  attempt reads the same and reserves one pattern and one datum inspection
+  less;
+- `legacy_commit_excess` and `legacy_commit_reads`: the commit check
+  reserves the continuation inspection, the owned vector and the copies less
+  and the reference vector more, and the copies were real work;
+- `attempt_charge_independent_of_unread_tails`,
+  `commit_charge_independent_of_body` and
+  `commit_refs_charge_independent_of_matched_sizes`;
+- negative controls `legacy_commit_charge_depends_on_unread_body`,
+  `legacy_attempt_charge_depends_on_unread_tails` and
+  `legacy_commit_copy_excess`.
+
+Tests:
+
+- rspace++ `native_candidate/metered/tests.rs`:
+  `match_attempt_charge_excludes_unread_pattern_and_datum` (4 KiB unread
+  tails on the pattern and the datum leave a failed attempt's charge
+  unchanged), `commit_check_charge_is_independent_of_continuation_body` (a
+  4 KiB continuation leaves a successful match's charge unchanged), and the
+  negative control `legacy_selection_charge_grew_with_unread_values`.
+- rholang `matcher/match.rs`: `commit_guard_by_reference_matches_owned_guard`
+  (borrowed and owned checks decide alike for empty, constant, bound-variable,
+  cross-binding, out-of-range and non-boolean guards),
+  `commit_check_charge_is_independent_of_continuation_body` (also: without a
+  guard the check charges exactly one operation, whatever the matched data),
+  and the negative control `legacy_commit_charge_grew_with_unread_body`.
+- The existing every-cut and differential tests of candidate selection and
+  installation pass unchanged.
+
+**Cross-refs.** DR-76 (C12, the same read-coverage rule for the COMM
+observation), DR-81, DR-82. Leaf `ofp-2-cap-d-a1-commit-check-reads`.
+
+## DR-89 — Replay authority charges only the reads and copies it makes
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A2 of epic 8946
+(D-O4 and D-O5 of the Phase D plan).
+
+**Context.** Two replay-authority charges did not follow the work.
+
+1. `ReplayAuthorityBinding::prepare` walked the whole recorded observation
+   of every COMM row and reserved a copy of its authority, whatever the
+   branch. Only the retry branch compares the recorded observation, and only
+   a new row copies the authority: into the event when it is granted, into
+   the frontier at publication when it is not.
+2. `reserve_native_result_backing` reserved a copy and cleanup of the whole
+   events map (its tree backing and every event's shared byte-observation
+   payload) and of every byte-observation row payload. `capture_result`
+   copies only each event's id, authority and debit
+   (`authority_events`). In replay the rows come from the evidence and are
+   not copied. In play the rows are copied as shared pointers whose payload
+   releases were prepaid when the rows were born.
+
+In the gateway funding block these charges were 39.8 MB of VerificationBytes
+per validator replay and 24.1 MB in producer execution.
+
+**Decision.**
+
+1. `prepare` no longer walks the observation or reserves the authority copy
+   up front; both lines are commented out with their reason. The retry
+   branch inspects the saved and the recorded observation before it compares
+   them. The `(None, false)` branch reserves the authority copy and the copy
+   of the shared observation pointer that the event or the frontier keeps.
+2. `reserve_native_result_backing(copies_rows)` reserves, for each event,
+   the copy and cleanup of its id, its authority and its debit
+   (`backing::reserve_event_copies`), and keeps the realized ledger, the stack
+   births and the result vectors. When rows are copied (play, no evidence), it
+   reserves the pointer-slice copy and the shared-pointer cleanup
+   (`inspect_shared_pointer_slice`, the C5 rule of DR-83). `capture_result`
+   passes `evidence.is_none()`.
+3. The shared walker gains `inspect_shared_pointer_slice`, the slice form of
+   `inspect_shared_pointers`. The rholang wrappers `reserve` and
+   `reserve_slice` are enabled outside tests.
+
+**Soundness.** Each branch of `prepare` reserves every read and copy it
+performs before it performs it: the comparison reads both observations, the
+event or the frontier copies the authority and the shared pointer. The
+result backing covers every copy `capture_result` makes: event ids,
+authorities and debits with their releases, the realized ledger and the
+births, and in play the row pointers. Row payload releases were prepaid at
+birth (`reserve_observation_birth` reserves the shared allocation as owned
+backing, and the canonical authority is built under owned backing). The
+charges depend only on value sizes and on whether evidence is present, which
+every replay of a block agrees on.
+
+**Scope.** Cost-accounting work: the native replay authority and its result
+backing exist only on this branch. The error order changes only on replays
+that are already invalid (a row that fails an identity check is now rejected
+before the observation walk is reserved). No encoding, root or event changes.
+
+**Verification.** `ReplayAuthorityPrepareCoverage.v` proves without axioms:
+`prepare_trace_covered`, `legacy_prepare_trace_covered`,
+`prepare_reads_equal_legacy_reads`, `legacy_prepare_excess`,
+`prepare_charge_independent_of_unread_values` and the negative control
+`legacy_prepare_inspects_unread_observation`. `ResultBackingCoverage.v`
+proves `result_charge_covers_play_copies`,
+`result_charge_covers_replay_copies`, `legacy_result_trace_covered`,
+`result_reads_equal_legacy_reads`, `legacy_result_excess`,
+`shared_row_cleanup_releases_no_payload` and the negative control
+`legacy_result_charge_counts_unreturned_payloads`.
+
+Tests in `replay_authority/tests/backing.rs`:
+
+- `prepare_rejects_each_smaller_dimension_without_publication`: for a
+  granted, a frontier and a retry row, a budget one unit short in any
+  dimension rejects the prepare and publishes nothing.
+- `result_backing_charges_row_pointers_not_payloads`: the replay result
+  backing does not depend on the rows; the play charge for a row does not
+  depend on its payload.
+- `event_result_backing_covers_counted_allocations`: the bytes the result
+  copies allocate (counted by a measuring allocator) stay within the reserved
+  SearchStateBytes.
+- Negative controls `legacy_prepare_charge_walked_the_recorded_observation`
+  and `legacy_result_backing_walked_unreturned_payloads`.
+
+The existing replay-authority tests, including the retry exhaustion and the
+checkpoint and result rejection tests, pass unchanged.
+
+**Cross-refs.** DR-79 (C14), DR-83 (C5), DR-88. Leaf
+`ofp-2-cap-d-a2-replay-authority-backing`.
+
+## DR-90 — The stored consume's duplicate check compares source hashes first
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A4 of epic 8946
+(D-S4 of the Phase D plan; the conditional fix C11 of phase B, whose gate is
+now met).
+
+**Context.** `native_store_consume` (`hot_store/native.rs`) decides whether
+a new waiting continuation duplicates a stored one by comparing their
+identities: the Debug text of the patterns, the body, the persistence flag
+and the peeks. It formatted the new continuation and every stored
+continuation of the channel group on every store. In the gateway funding
+block the formatting charged about 151 MB of VerificationBytes and 22 MB of
+SearchStateBytes per validator replay (4.6% of VerificationBytes).
+
+**Decision.**
+
+1. For each stored continuation the check first compares its source hash
+   with the new continuation's source hash (one operation and 64 bytes).
+   A stored continuation with a different hash is not a duplicate.
+2. Only on equal hashes does the check format and compare the identities.
+   The new continuation's identity is formatted at most once, the first time
+   it is needed.
+3. The replaced code stays in the source, commented out with its reason.
+
+**Soundness.** The source hash of a consume is the hash of the sorted channel
+hashes, the sorted pattern encodings, the body encoding and the flag
+(`native_source::consume`, equal to the legacy `Consume::create`). Every
+continuation of one cache entry has the same channels. Equal identities
+therefore give equal patterns, body and flag, hence equal sorted encodings
+and an equal hash, whatever the hash function. So a different hash rules out
+a duplicate, and the decision is the decision of the identity scan. Equal
+hashes do not imply equal identities (patterns in another order, other
+peeks), so the identity comparison stays for hash ties. Floats are stored as
+raw bits, so Debug equality and encoding equality agree.
+
+**Scope.** Cost-accounting work: the native stored consume exists only on
+this branch. No encoding, root or event changes; the decision does not
+change.
+
+**Verification.** `NativeDuplicatePrefilter.v` proves without axioms, for an
+arbitrary hash function: `identity_eq_implies_source_hash_eq`,
+`prefiltered_duplicate_equals_scan`,
+`prefilter_builds_identities_only_on_hash_ties`, and the negative control
+`permuted_patterns_share_hash` (a hash-only check would be wrong).
+
+Tests in `hot_store/native/tests.rs`:
+
+- `prefiltered_duplicate_decision_matches_identity_scan` (256 cases): the
+  stored-consume decision equals the identity scan for exact copies,
+  permuted patterns, changed peeks and new continuations, with real sources.
+- `identity_equality_implies_source_hash_equality` (256 cases).
+- `distinct_source_hashes_format_no_identity`: with four stored
+  continuations of other hashes, 4 KiB bodies leave the charge unchanged.
+- Negative control `legacy_duplicate_check_formatted_every_stored_continuation`.
+
+The existing stored-consume test, which stores continuations with equal
+(default) sources, passes unchanged.
+
+**Cross-refs.** DR-83 (C5). Leaf `ofp-2-cap-d-a4-duplicate-prefilter`.
+
+## DR-91 — Bound values move out of the owned free map
+
+**Status.** Implemented 2026-10-05 for Phase D item D-A3 of epic 8946 (D-M4
+of the Phase D plan).
+
+**Context.** After a successful spatial match, `Matcher::get_with_context`
+(`matcher/match.rs`) takes the free map out of the matcher context and
+builds the bound values of levels `0..free_count`. For every level it
+inspected the whole free map, looked the level up, and copied the bound
+value; the map was dropped right after. In the gateway funding block the map
+inspections charged about 45 MB and the copies about 20 MB of
+VerificationBytes per validator replay. The charge was quadratic in the
+number of bindings.
+
+**Decision.**
+
+1. The extraction moves into `Matcher::extract_bound_pars`, which consumes
+   the owned free map (a `BTreeMap<i32, Par>`) in key order. For each level
+   it skips the keys below the level, one operation each, and takes the key
+   equal to the level, if any, charging one operation and the bytes of the
+   moved slot. A missing level binds the default `Par`, as before.
+2. The bound values are moved, not copied. The bindings that are skipped
+   (keys below a level, such as negative keys) or left over (keys at or
+   above `free_count`) are dropped with the map, as before.
+3. The replaced loop stays in the source, commented out with its reason. A
+   test-only re-export `accounting::measured_allocations` gives tests outside
+   the accounting module the counting-allocator helper.
+
+**Soundness.** The keys of a `BTreeMap` come out in ascending order, so the
+cursor reaches each level's key, if present, before any larger key. The
+cursor extraction therefore returns exactly the per-level lookups. Each moved
+value was already charged for its copy and cleanup when the matcher built
+it, and the legacy code dropped the same map. The charge depends only on the
+number of keys and levels, so every replay computes it identically.
+
+**Scope.** Cost-accounting work: the metered matcher exists for native
+replay on this branch; the unmetered matcher uses the same extraction, which
+returns the same values. No encoding, root or event changes.
+
+**Verification.** `FreeMapExtraction.v` proves without axioms
+`extraction_by_move_equals_lookup` (for a sorted map and strictly increasing
+levels, the cursor extraction equals the lookups at those levels) and
+`legacy_extraction_charge_quadratic`, with the negative control
+`legacy_extraction_charge_example`.
+
+Tests in `matcher/match.rs`:
+
+- `bound_pars_by_move_equal_lookup_extraction` (256 cases): maps with keys
+  from -3 to 8, including negative, missing and out-of-range keys, give the
+  legacy lookup values.
+- `extraction_charge_independent_of_binding_sizes`: 512-expression bindings
+  leave the charge unchanged.
+- `extraction_allocates_no_binding_copy`: the extraction allocates only the
+  result vector (counting allocator).
+
+**Cross-refs.** DR-88. Leaf `ofp-2-cap-d-a3-bound-values-by-move`.
+
+## DR-92 — Walker block accounting and the chunked worklist
+
+**Status.** Implemented 2026-10-05 for Phase D items D-B1 and D-B3 of epic
+8946 (D-O1 parts 1 and 3 of the Phase D plan). No call site uses the block
+mode yet. D-B4 (Stage A) and D-E (Stage B) switch the call sites.
+
+**Context.** The clone-backing walker (`shared/src/rust/clone_backing.rs`)
+charged each push `(3, 3 * size_of::<T>(), 0)`. The `fields!` and
+`variants!` macros push every field, so the walker charged the inline bytes
+of a nested value once per nesting level. For example, an `Expr` of about
+600 bytes was charged at `Expr`, at `Option<ExprInstance>` and at
+`ExprInstance`. A slice element was charged in the slice allocation and
+again in its push. The worklist growth charge followed the capacity doubling
+of the pending vector, so it depended on the depth-first peak of the
+traversal. In the Phase C exact probe of the gateway funding block, the
+walker charges were about 68% of the validator replay VerificationBytes:
+
+| Walker charge | VerificationBytes | SearchStateBytes |
+|---------------|------------------:|-----------------:|
+| Pushes (7.53 M) | 2,062.5 MB | — |
+| Slice allocations | 484.4 MB | — |
+| B-tree maps | 80.7 MB | — |
+| Worklist growth | 52.4 MB | 49.3 MB |
+
+**Decision.**
+
+1. A block mode charges each memory block once. A `blocks` flag on the
+   walker selects it, through the entry points `inspect_blocks`,
+   `inspect_blocks_slice`, `reserve_blocks`,
+   `reserve_blocks_copy_and_cleanup`, `reserve_blocks_slice`,
+   `reserve_blocks_slice_copy_and_cleanup`, `inspect_shared_pointers_blocks`
+   and `inspect_shared_pointer_slice_blocks`.
+   - A block is a contiguous region that a traversal reads as a unit. The
+     root's inline bytes, a heap allocation (a vector or slice buffer, a box,
+     string bytes, B-tree or hash-table nodes), a shared payload and a
+     borrowed referent are blocks.
+   - A visited block, whose elements the walker visits, costs `2b` scanned
+     bytes for an inspection (the walker and one consumer traversal). It
+     costs `3b` for a copy (the walker, the read and the write).
+   - An opaque block costs `b` for an inspection and `2b` for a copy. String
+     bytes, a buffer of inline scalars and a boxed or shared inline payload
+     are opaque blocks.
+   - A copy also reserves `b` SearchStateBytes for each block that it
+     allocates. The root's inline bytes, a shared payload and a borrowed
+     referent are blocks that the walk does not allocate.
+2. A push costs 3 operations and a constant number of bytes. It never
+   charges the size of the pushed value, because the value's inline bytes
+   lie in the enclosing block, which is charged once.
+   - A worklist entry costs `BLOCK_ENTRY_SCANNED` = 2 × 16 + 3 × 8 = 56
+     scanned bytes and `BLOCK_ENTRY_BACKING` = 4 × 16 = 64 bytes of backing.
+     The 56 bytes pay the write at the push, the read at the pop, one niche
+     word that the walker reads again, one word that the consumer reads
+     again, and one word for the header moves of the worklist.
+   - An inline field costs `BLOCK_FIELD_SCANNED` = 8 bytes: one word that a
+     consumer reads again, such as a discriminant or a scalar that hashing or
+     encoding reads twice.
+   - A copy of a shared pointer also costs `BLOCK_SHARED_HEADER_SCANNED` =
+     16 bytes: the read and the write of the strong count.
+3. The block mode uses a chunked worklist (D-B3) instead of the doubling
+   vector. Chunk 0 holds 4 entries and chunk j holds 4 × 2^j entries. A chunk
+   gets its exact capacity when the stack first grows into it and stays until
+   the walk ends. Thus each chunk is allocated at most once, and no entry
+   moves. Only the vector that holds the headers of chunks 1..k grows by
+   doubling, from 4 headers. The worklist charge is a constant per entry.
+   It depends only on the shape of the value, not on sibling order or on the
+   traversal peak.
+4. The legacy per-level mode is unchanged. Every production call site still
+   uses it. The Rholang and RSpace++ wrappers of the block entry points come
+   with their first call sites in D-B4, because unused crate-private
+   wrappers are dead code. The public `SorterMeter::clone_blocks` and
+   `SorterMeter::inspect_blocks` land here.
+
+**Soundness.**
+
+- *Partition.* The inline fields of a value lie inside the enclosing entry,
+  and the elements of a block lie inside the block. Thus the walker's reads
+  of the entries inside one block total at most the block's bytes, plus one
+  niche word per entry. These reads are the entries' own bytes, such as
+  discriminants, pointers and lengths.
+- *Traversal.* One linear consumer traversal reads every block once, plus
+  one word per node.
+- *Prefix coverage.* The walk charges each block when the parent's
+  `children()` meets it, and it charges the root block before the root push.
+  It charges each entry or field at its push. Thus every charge comes before
+  the reads of the walker and of the consumer.
+- *Worklist.* The chunked worklist writes each entry once and reads it once.
+  For a peak of P entries, the chunks and the chunk headers allocate at most
+  four slots per entry. The header moves take at most 8 bytes per entry. The
+  peak never exceeds the number of entries that the walk pushes.
+- *Determinism.* The charge depends only on the shape of the value and on
+  compile-time sizes. It does not depend on sibling order, on the traversal
+  peak, on thread interleaving or on hash seeds.
+- *Call-site precondition.* A call site in block mode must prepay exactly one
+  linear traversal of the value. Clone, one side of `PartialEq`, Drop, Debug
+  or serde and bincode with metered output, and prost `encoded_len` of a flat
+  message are such traversals. A nested prost encode uses the D-B2 depth
+  charge. The D-B4 and D-E audits check each site.
+
+**Scope.** Cost-accounting work: the walker exists for host-work metering.
+This item changes no call site, encoding, root or event.
+
+**Verification.** `WalkerBlockCharge.v` proves the following results without
+axioms. They hold for every entry charge `E` and field charge `F` with
+`E >= 2p + 2w` and `F >= w`, where `p` is the entry size and `w` is a word.
+
+- `visit_reads_le_block_bytes` (the partition) and
+  `fields_have_no_visit_reads`.
+- `block_inspection_covers_walk_and_traversal` and
+  `block_copy_covers_walk_and_clone`.
+- `block_trace_covered`: prefix coverage, with the `covered` notion of
+  `ObservationReadCoverage`.
+- `block_copy_backing_covers_allocation`: the backing equals the clone's
+  allocation trace.
+- `block_inspection_fits_block_copy` and
+  `block_charge_independent_of_sibling_order`.
+- For the worklist: `worklist_charge_independent_of_traversal_order`,
+  `worklist_charge_covers_peak`, `worklist_charge_covers_entries` and
+  `rust_entry_constant_covers_header_moves`.
+- The negative control `level_charge_counts_inline_bytes_per_level` and
+  `level_charge_example`. For depth 3 and size 600, the legacy charge is
+  7,200 bytes and the block inspection charge is 1,376 bytes.
+
+Static assertions in the Rust module tie the proof's 16-byte entries and
+24-byte chunk headers to the Rust sizes.
+
+Tests in `shared/src/rust/clone_backing/tests.rs`:
+
+- `block_inspection_charge_matches_independent_block_oracle` (256 cases of
+  nested vectors, boxes, strings and scalars), for inspections and copies.
+- `block_copy_backing_covers_counted_allocations` (counting allocator) and
+  `block_inspection_fits_every_block_copy_budget`.
+- `block_charge_is_independent_of_inline_nesting_depth`, with the negative
+  control `legacy_level_charge_grew_with_inline_nesting_depth`.
+- `shared_pointer_blocks_charge_header_and_payload`.
+- `worklist_charge_independent_of_child_order` and
+  `worklist_allocations_within_charge` (256 cases each).
+- `worklist_chunks_follow_the_chunk_model`: the worklist allocates exactly
+  the bytes of the chunk model for flat values of 0 to 600 entries.
+- `chunked_worklist_reuses_chunks_and_pops_in_order`: no allocation when the
+  stack grows again, and LIFO order.
+
+Tests elsewhere:
+
+- `block_charges_of_generated_terms_match_independent_block_oracle` and
+  `block_copy_backing_covers_generated_term_clones` in
+  `rholang/src/rust/interpreter/accounting/native_runtime/clone_backing/tests.rs`
+  (128 random `Par` terms each).
+- `block_clones_and_inspections_charge_the_walker_block_charges` in
+  `models/src/rust/rholang/sorter/metered.rs`.
+
+**Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
+releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
+`ofp-2-cap-d-b3-worklist-charge`.
+
+## DR-93 — Nested prost encodes charged by depth
+
+**Status.** Implemented 2026-10-05 for Phase D item D-B2 of epic 8946
+(D-O6 of the Phase D plan). This item is a soundness prerequisite of the
+walker block mode (DR-92) at encode sites.
+
+**Context.** Prost computes the length of a nested message again at every
+enclosing level. In prost 0.14.4, `encoding::message::encode` calls
+`encoded_len` on the nested message before it encodes it, and
+`Message::encode` computes the top-level length once more. Thus an encode of
+a message of height `h` reads the value up to `1 + h` times. A site that
+computes the length to size its buffer and then encodes reads the value up
+to `2 + h` times.
+
+The encode sites that a walker inspection prepays reserved one linear
+traversal. The legacy walker's per-level charge covered the recomputation
+with its slack, but the block mode of DR-92 removes that slack. A charge of
+`d * encoded_len` is not an upper bound either, because a length
+computation reads in-memory fields, including empty fields that encode to
+0 bytes.
+
+**Decision.**
+
+1. A depth walk, `inspect_blocks_depth`, is a block-mode inspection that
+   records the nesting depth of every worklist entry. It returns the depth
+   `d` of the deepest entry, with depth 1 for the root entry, and the
+   scanned bytes `C` that it reserved. It keeps 24-byte entries (a value and
+   its depth) in the chunked worklist. Its entry constants are
+   `BLOCK_DEPTH_ENTRY_SCANNED` = 2 × 24 + 3 × 8 = 72 and
+   `BLOCK_DEPTH_ENTRY_BACKING` = 4 × 24 = 96.
+2. `reserve_nested_encode(value, encoded_len, meter)` runs the depth walk.
+   Then it reserves `d * C + encoded_len` VerificationBytes: `d` more
+   traversals and the output writes. `SorterMeter::nested_encode` wraps it.
+3. Each prost encode of a nested message that a walker inspection prepays
+   calls the reservation after the length computation and before the
+   encode. The existing inspections stay. D-B4 decides whether each
+   inspection is still necessary for the other reads at its site.
+
+**Inventory.** A read-only inventory of every production prost
+`encoded_len`, `encode` and `encode_to_vec` call in the Rholang
+interpreter and accounting, RSpace++, the Casper cost-accounting modules
+and the models helpers found these sites that a walker inspection prepays:
+
+| Site | Encoded value | Depth | Prepaid before | Change |
+|------|---------------|-------|----------------|--------|
+| `authority.rs`, `cost_atom_to_sig_metered`, Quote | quoted `Par` | data-dependent | `meter.inspect(&par)` | `nested_encode` |
+| `authority.rs`, `cost_atom_to_sig_metered`, Name | named `Par` | data-dependent | `meter.inspect(&par)` | `nested_encode` |
+| `authority.rs`, `cost_signature_lane_metered`, atom | quoted or named `Par` | data-dependent | `meter.inspect(par)` | `nested_encode` |
+| `authority.rs`, `cost_signature_lane_metered`, channel | sorted signature-channel `Par` | constant | `meter.inspect(&channel)` | `nested_encode` |
+| `authority/fallback_metered.rs`, `cost_region_metered` | canonical `CostSignature` | data-dependent | inspections in `canonical_cost_signature_metered` | `nested_encode` |
+| `byte_accounting.rs`, `message_bytes` | `Par`, `ListParWithRandom`, `BindPattern`, `TaggedContinuation` | data-dependent | inspections in `observation_construction.rs` | none: a length computation is one traversal |
+
+RSpace++ has no prost encodes. Its native sources use bincode through a
+metered writer that charges each write.
+
+The inventory also found sites outside this item. A walker inspection does
+not prepay them, so this item does not change them. They are recorded for a
+later decision:
+
+- These sites reserve a linear charge, derived from the encoded length, for
+  a nested encode: `write_observation` and `read_observation` in
+  `native_runtime/wire.rs`, `bounded_legacy_events` in
+  `native_runtime/replay_authority/result.rs`,
+  `capture_retained_birth_stacks` in `prepaid_receipts/births.rs`, and
+  `ToByteArrayMethod::serialize` in `reduce.rs`.
+- These sites encode in a metered path without a reservation:
+  - `observation_comparison_bytes` in `budget_trace.rs` (length only);
+  - the flat channel encodes in `supply.rs` and `stack_pops.rs`;
+  - the unmetered `cost_signature_to_sig` and `cost_region`, which metered
+    callers reach;
+  - `Sig::lane_hash` for each billable event (flat and bounded);
+  - `private_name_payer` in `direct_wallet_funding.rs`, which decodes and
+    re-encodes a deploy-supplied `Par` before its flatness checks, under a
+    fixed protocol-maximum preflight reservation;
+  - `insert_channel` in `deterministic_reduction.rs`.
+
+**Soundness.** The depth walk prepays one traversal of the value, as any
+block inspection does, so `C` is at least the bytes of one traversal. Every
+nested message is a worklist entry at least one level below its parent's
+entry, so `d >= 1 + h`. Then the depth walk and `d * C` cover the length
+computation and the encode, `2 + h` traversals, and `encoded_len` covers
+the output writes. The charge depends only on the value's shape and on
+compile-time sizes.
+
+**Scope.** Cost-accounting work: the change adds host-work reservations at
+the five encode sites and changes no encoding, root or event. The Phase D
+plan expects about 1 to 2 MB more VerificationBytes per budget in the
+gateway flow, where signature `Par` values are shallow.
+
+**Verification.** `NestedEncodeCost.v` proves without axioms
+`encode_work_le_height`, `nested_encode_work_le_depth_times_visited_blocks`
+and `depth_weighted_charge_covers_encode`. The negative control
+`linear_charge_undercounts_deep_chain`, with `deep_chain_example`, shows
+that two traversals do not cover a deep chain. `WalkerBlockCharge.v` adds
+`worklist_charge_covers_peak_for_slot` and
+`rust_depth_entry_constant_covers_header_moves` for the 24-byte entries.
+
+Tests:
+
+- `depth_walk_matches_block_walk_with_depth_entries` and
+  `depth_walk_allocations_within_charge` (256 cases each), and
+  `nested_encode_reservation_adds_depth_traversals_and_output`, in
+  `shared/src/rust/clone_backing/tests.rs`. The first checks the walk depth
+  against an independent recursion.
+- `nested_encode_charge_covers_counted_reads` (128 random `Par` terms) and
+  `deep_chain_charge_grows_with_depth`, in
+  `rholang/src/rust/interpreter/accounting/native_runtime/clone_backing/tests.rs`.
+  They count the length recomputations with an independent model of prost.
+  They check `d > h` and that the charge covers the counted reads. The
+  negative control shows that one legacy inspection does not cover the
+  encode of a depth-64 chain.
+- `nested_encode_sites_charge_quadratically_in_depth` in `authority.rs`:
+  the three metered paths charge quadratically in the depth, and their
+  results equal the unmetered conversions.
+
+**Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.

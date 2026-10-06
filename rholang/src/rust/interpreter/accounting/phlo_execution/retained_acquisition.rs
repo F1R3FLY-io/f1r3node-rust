@@ -56,13 +56,15 @@ impl<'a> CheckedPhloExecution<'a> {
                 .checked_add(entry.quantity)
                 .ok_or(PhloExecutionError::ArithmeticOverflow)?;
         }
-        let value = weighted_usage(&counts, self.controls.schedule().weights)?
+        let usage = weighted_usage(&counts, self.controls.schedule().weights)?;
+        let value = usage
             .checked_mul(self.controls.schedule().actual_price)
             .ok_or(PhloExecutionError::ArithmeticOverflow)?;
         self.acquisition_charge
             .checked_add(value)
             .ok_or(PhloExecutionError::ArithmeticOverflow)?;
         self.retained_acquisitions = retained;
+        self.retained_usage = usage;
         self.retained_acquisition_value = value;
         Ok(self)
     }

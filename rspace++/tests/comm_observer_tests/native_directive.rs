@@ -472,7 +472,7 @@ impl Match<Any, String, String> for OrderedMatch {
     fn check_commit_metered(
         &self,
         continuation: &String,
-        data: &[String],
+        data: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         let steps = data
@@ -483,11 +483,13 @@ impl Match<Any, String, String> for OrderedMatch {
         meter.reserve(steps, 0, 0)?;
         let scanned = data
             .iter()
-            .chain(self.0.iter())
-            .try_fold(0usize, |total, value| total.checked_add(value.len()))
+            .map(|value| value.len())
+            .chain(self.0.iter().map(String::len))
+            .try_fold(0usize, |total, length| total.checked_add(length))
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(1, scanned, 0)?;
-        Ok(self.check_commit(continuation, data))
+        let owned: Vec<String> = data.iter().map(|value| (*value).clone()).collect();
+        Ok(self.check_commit(continuation, &owned))
     }
 }
 
@@ -497,10 +499,17 @@ async fn repeated_channel_bindings_follow_play_order_not_insertion_order() {
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["first".to_string(), "second".to_string()];
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // values.sort_by_key(|value| {
+    //     Blake2b256Hash::new(
+    //         &bincode::serialize(&Datum::create(&channel, value.clone(),
+    // false)).unwrap(),     )
+    // });
     values.sort_by_key(|value| {
-        Blake2b256Hash::new(
-            &bincode::serialize(&Datum::create(&channel, value.clone(), false)).unwrap(),
-        )
+        let datum = Datum::create(&channel, value.clone(), false);
+        let digest = Blake2b256Hash::new(&bincode::serialize(&datum).expect("datum serializes"));
+        (datum.source.hash, digest)
     });
     for produce in [false, true] {
         let mut expected_order = values.clone();
@@ -627,7 +636,7 @@ impl Match<Any, String, String> for GuardRejects {
     fn check_commit_metered(
         &self,
         _: &String,
-        _: &[String],
+        _: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         meter.reserve(1, 0, 0)?;
@@ -718,10 +727,17 @@ async fn store_consumes_greedy_guard_veto_without_exhaustive_search() {
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["one".to_string(), "two".to_string()];
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // values.sort_by_key(|value| {
+    //     Blake2b256Hash::new(
+    //         &bincode::serialize(&Datum::create(&channel, value.clone(),
+    // false)).unwrap(),     )
+    // });
     values.sort_by_key(|value| {
-        Blake2b256Hash::new(
-            &bincode::serialize(&Datum::create(&channel, value.clone(), false)).unwrap(),
-        )
+        let datum = Datum::create(&channel, value.clone(), false);
+        let digest = Blake2b256Hash::new(&bincode::serialize(&datum).expect("datum serializes"));
+        (datum.source.hash, digest)
     });
     let mut stores = InMemoryStoreManager::new();
     let (play, replay) = TestSpace::create_with_replay(
@@ -780,7 +796,7 @@ impl Match<Any, String, String> for NamedGuard {
     fn check_commit_metered(
         &self,
         continuation: &String,
-        matched: &[String],
+        matched: &[&String],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<bool, RSpaceError> {
         let scanned = continuation
@@ -788,7 +804,8 @@ impl Match<Any, String, String> for NamedGuard {
             .checked_add(self.rejected.len())
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(2, scanned, 0)?;
-        Ok(self.check_commit(continuation, matched))
+        let owned: Vec<String> = matched.iter().map(|value| (*value).clone()).collect();
+        Ok(self.check_commit(continuation, &owned))
     }
 }
 
@@ -798,17 +815,31 @@ async fn store_produce_uses_the_same_guard_veto_loop_as_play() {
     use rspace_plus_plus::rspace::internal::WaitingContinuation;
     let channels = vec!["channel".to_string()];
     let mut continuations = vec!["first".to_string(), "second".to_string()];
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // continuations.sort_by_key(|continuation| {
+    //     Blake2b256Hash::new(
+    //         &bincode::serialize(&WaitingContinuation::create(
+    //             &channels,
+    //             &vec![Any],
+    //             continuation,
+    //             false,
+    //             BTreeSet::new(),
+    //         ))
+    //         .unwrap(),
+    //     )
+    // });
     continuations.sort_by_key(|continuation| {
-        Blake2b256Hash::new(
-            &bincode::serialize(&WaitingContinuation::create(
-                &channels,
-                &vec![Any],
-                continuation,
-                false,
-                BTreeSet::new(),
-            ))
-            .unwrap(),
-        )
+        let waiting = WaitingContinuation::create(
+            &channels,
+            &vec![Any],
+            continuation,
+            false,
+            BTreeSet::new(),
+        );
+        let digest =
+            Blake2b256Hash::new(&bincode::serialize(&waiting).expect("continuation serializes"));
+        (waiting.source.hash, digest)
     });
     for reject_all in [false, true] {
         let mut stores = InMemoryStoreManager::new();

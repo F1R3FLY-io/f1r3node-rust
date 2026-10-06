@@ -9,6 +9,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use super::RSpace;
+use crate::rspace::candidate_order::CandidateSource;
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
@@ -75,7 +76,6 @@ where
         observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         Self::observe_produce(observer, produce_ref, &channel, &data, persist)?;
-
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
             a: data.clone(),
@@ -289,7 +289,10 @@ where
         None
     }
 
-    pub(super) fn shuffle_with_index<D: Serialize>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        crate::rspace::space_matcher::deterministic_candidates(t)
+    pub(super) fn shuffle_with_index<D: Serialize + CandidateSource>(
+        &self,
+        t: Vec<D>,
+    ) -> Vec<(D, i32)> {
+        crate::rspace::candidate_order::canonical_candidates(t)
     }
 }

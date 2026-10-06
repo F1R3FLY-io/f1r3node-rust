@@ -252,6 +252,7 @@ variants!(
     EMinusMinusBody,
     EModBody,
     GDouble,
+    GFloat32,
     GBigInt,
     GBigRat,
     GFixedPoint

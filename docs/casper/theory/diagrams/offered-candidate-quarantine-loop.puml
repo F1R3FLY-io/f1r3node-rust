@@ -1,0 +1,68 @@
+' Proposer liveness for offered-funded candidates (DR-72, register item I4).
+' A candidate-attributable failure becomes CasperError::OfferedCandidateRejected.
+' The proposer quarantines that envelope with a bounded, root-bound status entry
+' and tries the next canonical alternate. Infrastructure failures keep their own
+' types. With no alternate left, the proposal behaves exactly as with no user
+' deploys.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-72);
+'                  casper/src/rust/blocks/proposer/block_creator.rs (selection and
+'                  checkpoint loop); casper/src/rust/rholang/runtime.rs
+'                  (offered_candidate_rejection: RSpace budget exhaustion is a
+'                  candidate failure; only RSpace storage errors pass through); block-storage
+'                  key_value_deploy_storage.rs (EnvelopeRejectionLog).
+' Palette:  pending store = supply blue · selection = process lilac · checkpoint = pool green
+'           quarantine = delta amber · success = note green · rejected/infra = red
+'           decisions = control amber
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/offered-candidate-quarantine-loop.puml
+'          (or: ./render.sh offered-candidate-quarantine-loop.puml)
+
+@startuml offered-candidate-quarantine-loop
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+title Quarantine and retry of failing offered candidates (DR-72)
+
+start
+:read pending envelopes\nin canonical order; <<$ca_supply>>
+if (envelope format active?) then (no)
+  :quarantine at selection\nstatus entry without a root; <<$ca_delta>>
+else (yes)
+endif
+:select the first eligible offer\nkeep at most ordinary_cap - 1 alternates; <<$ca_process>>
+repeat
+  :checkpoint the attempt\n(fresh offered runtime); <<$ca_pool>>
+  if (result) then (Created)
+    :publish the block; <<$ca_note_green>>
+    stop
+  elseif (OfferedCandidateRejected\nwith the attempted identity) then (yes)
+    :quarantine: remove from pending storage\nrecord {identity, <latex>R_0</latex>, block, reason}\n(at most 4096 entries, 1024 reason bytes); <<$ca_delta>>
+    if (alternate left?) then (yes)
+      :attempt := next alternate; <<$ca_process>>
+    elseif (empty-block, slashing, or\nrecovered-slash work?) then (yes)
+      :attempt := no user deploys; <<$ca_process>>
+    else (no)
+      :NoNewDeploys; <<$ca_note_green>>
+      stop
+    endif
+  else (infrastructure error)
+    :propagate the typed error\n(storage, history, RSpace storage, lock,\nstream, comm, availability); <<$ca_rejectfill>>
+    stop
+  endif
+repeat while (retry)
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| pending envelope store |
+  |<$ca_process>| selection of the attempt |
+  |<$ca_pool>| checkpoint execution |
+  |<$ca_delta>| quarantine with a bounded status entry |
+  |<$ca_note_green>| block published, or no new deploys |
+  |<$ca_rejectfill>| infrastructure error (not the candidate's fault) |
+  |<$ca_control>| decision |
+endlegend
+
+@enduml

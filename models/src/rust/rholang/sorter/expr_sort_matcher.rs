@@ -737,6 +737,14 @@ impl Sortable<Expr> for ExprSortMatcher {
                     ]),
                 },
 
+                ExprInstance::GFloat32(bits) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::FLOAT32 as i64,
+                        *bits as i64,
+                    ]),
+                },
+
                 ExprInstance::GBigInt(bytes) => ScoredTerm {
                     term: e.clone(),
                     score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![
@@ -1144,6 +1152,13 @@ impl ExprSortMatcher {
                     meter,
                 )?,
             }),
+            Some(ExprInstance::GFloat32(value)) => Ok(ScoredTerm {
+                term: meter.clone(expr)?,
+                score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
+                    &[Score::FLOAT32 as i64, *value as i64],
+                    meter,
+                )?,
+            }),
             Some(ExprInstance::GBigInt(value)) => Ok(ScoredTerm {
                 term: meter.clone(expr)?,
                 score: score_node(
@@ -1277,6 +1292,9 @@ mod metered_tests {
         let left = new_gstring_par("left".to_owned(), Vec::new(), false);
         let right = new_gint_par(7, Vec::new(), false);
         let values = [
+            Expr {
+                expr_instance: Some(ExprInstance::GFloat32(1.5f32.to_bits())),
+            },
             Expr {
                 expr_instance: Some(ExprInstance::EPlusBody(EPlus {
                     p1: Some(left.clone()),

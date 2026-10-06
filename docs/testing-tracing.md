@@ -71,6 +71,8 @@ A short Python correlation against the trace JSON:
 
 ```python
 def find_orphan_produces(trace):
+    # random_state is unique per produce in normal execution. Deterministic replay
+    # of identical inputs can repeat it, and then one orphan can hide another.
     comm_consumed = set()
     for evt in trace["events"]:
         if evt["type"] == "comm":
@@ -87,4 +89,4 @@ For multi-hop call chains (A -> B -> C -> D), follow the response channels: each
 
 ### Limitations
 
-This is a manual workflow today: trace dumps are several MB of JSON and require correlation scripts. There is no first-class "show me the orphan sends in this block" tool. A planned improvement is to surface orphan continuations directly in deploy results — see the "How to make this easier next time" section of the bridge-deposit-orphan investigation report (in the `system-integration` repo, `docs/`).
+This is a manual workflow today: trace dumps are several MB of JSON and require correlation scripts. There is no first-class "show me the orphan sends in this block" tool.

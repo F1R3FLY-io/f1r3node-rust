@@ -78,6 +78,17 @@ impl ReportingCasper for RhoReporterCasper {
         use crate::rust::genesis::genesis::Genesis;
         use crate::rust::util::proto_util;
 
+        let legacy_deploys = block
+            .body
+            .deploys
+            .iter()
+            .map(|deploy| {
+                deploy.as_legacy().cloned().ok_or_else(|| {
+                    "offered-funded reporting requires independent native replay".to_string()
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let _replay_permit = self
             .replay_lock
             .acquire_reporting()
@@ -86,7 +97,7 @@ impl ReportingCasper for RhoReporterCasper {
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
-        let mergeable_tags = std::sync::Arc::new(Genesis::default_mergeable_tags());
+        let mergeable_tags = Genesis::default_mergeable_tags_arc();
         let mut extra_system_processes = Vec::new();
         let mut reporting_runtime = ReportingRuntime::create_reporting_runtime(
             reporting_rspace,
@@ -130,7 +141,7 @@ impl ReportingCasper for RhoReporterCasper {
         Self::replay_deploys(
             &mut reporting_runtime,
             &pre_state_hash,
-            &block.body.deploys,
+            &legacy_deploys,
             &block.body.system_deploys,
             with_cost_accounting(&block.header.parents_hash_list),
             &block_data,
@@ -397,7 +408,8 @@ impl ReportingRuntime {
             extra_system_processes,
             external_services,
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
 
         rholang::rust::interpreter::rho_runtime::bootstrap_registry(&runtime).await;
 

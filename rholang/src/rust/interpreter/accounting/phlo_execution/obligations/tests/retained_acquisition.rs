@@ -19,6 +19,8 @@ fn retained_acquisition_is_a_separate_funded_obligation_not_a_comm() {
         .unwrap();
     assert_eq!(checked.usage(), base.usage());
     assert_eq!(checked.fresh_usage(), base.fresh_usage());
+    assert_eq!(base.retained_usage(), 0);
+    assert_eq!(checked.retained_usage(), 3);
     assert_eq!(checked.witness(), base.witness());
     assert_eq!(checked.retained_acquisition_value(), 6);
     let obligations =

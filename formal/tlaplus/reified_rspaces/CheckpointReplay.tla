@@ -61,18 +61,19 @@
 (* by TLC on the full state space. The model claims no inductive form of  *)
 (* them.                                                                   *)
 (*                                                                         *)
-(* Code at HEAD 6f7a80da3 (rs = rspace++/src/rspace):                      *)
-(*   play produce/consume   rs/rspace/ops_produce.rs:31-248,               *)
+(* Code at the merge of feature/cost-accounted-rho 4d67b5ccc. Before       *)
+(* the merge, the code was HEAD 6f7a80da3 (rs = rspace++/src/rspace):      *)
+(*   play produce/consume   rs/rspace/ops_produce.rs:32-248,               *)
 (*                          rs/rspace/ops_consume.rs:31-202                *)
 (*   play counter rule      rs/rspace/ops_produce.rs:185-191,              *)
 (*                          rs/rspace/trace_log.rs:158-172                 *)
-(*   replay counter rule    rs/replay_rspace.rs:1104, 1298, 1489-1510      *)
-(*   rig, check_replay_data rs/replay_rspace.rs:390-468                    *)
-(*   remove_bindings_for    rs/replay_rspace.rs:1408-1436                  *)
-(*   checkpoint, reset      rs/rspace/ispace_impl.rs:53-107                *)
-(*   hot store primitives   rs/hot_store.rs:660-723, 819-885, 957-1053     *)
-(*   failed deploy (play)   casper/src/rust/rholang/runtime.rs:560-584     *)
-(*   status, cost (replay)  casper/src/rust/rholang/replay_runtime.rs:437-450 *)
+(*   replay counter rule    rs/replay_rspace.rs:1194, 1388, 1579-1600      *)
+(*   rig, check_replay_data rs/replay_rspace.rs:480-558                    *)
+(*   remove_bindings_for    rs/replay_rspace.rs:1498-1526                  *)
+(*   checkpoint, reset      rs/rspace/ispace_impl.rs:60-114                *)
+(*   hot store primitives   rs/hot_store.rs:720-783, 879-945, 1017-1113    *)
+(*   failed deploy (play)   casper/src/rust/rholang/runtime.rs:934-958     *)
+(*   status, cost (replay)  casper/src/rust/rholang/replay_runtime.rs:619-632 *)
 (*   sweep, verify          p1-design-report §3.1, §2.4                    *)
 (*   sweep guard (FR-9')    SpaceStoreHandle::sweep_volatile, HandleState  *)
 (*   unpaired fire (D36)    TxnCore::verify, StagedFire.recorded,          *)
@@ -254,7 +255,7 @@ Times == 0..MaxCnt
 Comms == {<<<<c, k, n1>>, <<c, v, n2>>, t>> :
             c \in Chans, k \in Konts, n1 \in Nonces, v \in Vals, n2 \in Nonces, t \in Times}
 
-\* replay_data keys: the IO events (replay_rspace.rs:64).
+\* replay_data keys: the IO events (replay_rspace.rs:71).
 \* @type: Set($iokey);
 IOKeys == {<<"C", q>> : q \in CIds} \cup {<<"P", p>> : p \in PIds}
 
@@ -339,7 +340,7 @@ Waiting(st, c, n) == {q \in CIds : q[1] = c /\ q[3] = n /\ st.conts[c][q] > 0}
 \* @type: ($store, Str, Int) => Set($id);
 Available(st, c, n) == {p \in PIds : p[1] = c /\ p[3] = n /\ st.data[c][p] > 0}
 
-\* remove_join after a non-persistent fire (hot_store.rs:1009-1053): the
+\* remove_join after a non-persistent fire (hot_store.rs:1069-1113): the
 \* join entry goes when the continuation list of the group becomes empty.
 \* @type: (Str -> Bool, Str -> ($id -> Int), Str) => (Str -> Bool);
 JoinsAfter(joins, conts, c) ==
@@ -352,7 +353,7 @@ FireCont(st, c, q) ==
     IN [data |-> st.data, conts |-> conts1, joins |-> JoinsAfter(st.joins, conts1, c)]
 
 \* The store after a park: put_continuation (dedup by identity) and put_join
-\* (ops_consume.rs:179-190, hot_store.rs:660-723, 957-980).
+\* (ops_consume.rs:179-190, hot_store.rs:720-783, 1017-1040).
 \* @type: ($store, Str, $id) => $store;
 Park(st, c, q) ==
     [data |-> st.data, conts |-> [st.conts EXCEPT ![c][q] = 1], joins |-> [st.joins EXCEPT ![c] = TRUE]]
@@ -381,7 +382,7 @@ Grants(m, staged) ==
 \* txn outside its domain.
 StageDone == IF pos > MaxTxnOps THEN TRUE ELSE txn[pos] = Nop
 
-\* One play HostStep (ops_produce.rs:31-248, ops_consume.rs:31-202) under
+\* One play HostStep (ops_produce.rs:32-248, ops_consume.rs:31-202) under
 \* the play counter rule: the COMM counts the incoming produce as κ(p) + 1
 \* (ops_produce.rs:185-191), and log_produce bumps κ(p) afterwards
 \* (trace_log.rs:158-172).
@@ -465,7 +466,7 @@ ReplayFire(st1, cnt1, log1, len1, m, cost) ==
             /\ UNCHANGED <<vOk, vStop>>
 
 \* One replay HostStep, re-stated over the staged view (design §2.2, §2.4)
-\* under the replay counter rule: increment first (replay_rspace.rs:1104),
+\* under the replay counter rule: increment first (replay_rspace.rs:1194),
 \* then count (1297).
 ReplayStage ==
     /\ phase = "replay"
@@ -524,7 +525,7 @@ Sweep(st) ==
           joins |-> [c \in Chans |-> IF c \in Vol /\ ~JoinResidue THEN FALSE ELSE st.joins[c]]]
 
 \* Checkpoint: the hot store changes become the history trie
-\* (ispace_impl.rs:53-88). RootIgnoresVolatile drops the volatile keys.
+\* (ispace_impl.rs:60-95). RootIgnoresVolatile drops the volatile keys.
 \* @type: Str => Bool;
 Persisted(c) == ~(RootIgnoresVolatile /\ c \in Vol)
 \* @type: $store => $store;
@@ -537,7 +538,7 @@ Persist(st) ==
 \* @type: $store => $store;
 RootOf(t) == IF SpacesInBlockHash THEN t ELSE EmptyStore
 
-\* rig (replay_rspace.rs:390-450): every COMM of the log is bound under each
+\* rig (replay_rspace.rs:480-540): every COMM of the log is bound under each
 \* of its IO events that the log contains. The ranges run over 1..MaxLog
 \* with the filter i <= pLen, because Apalache accepts only constant range
 \* bounds. TypeOK gives pLen <= MaxLog, so the sets equal those over 1..pLen.
@@ -617,7 +618,7 @@ PlayBegin ==
 
 \* play TxnCommit: the commit applies the fold of the staged HostSteps up to
 \* the stop. At a rejected charge the deploy fails, and the attempt counts,
-\* so the spending equals the limit (casper/src/rust/rholang/runtime.rs:560-584
+\* so the spending equals the limit (casper/src/rust/rholang/runtime.rs:934-958
 \* keeps the log of the failed deploy).
 PlayCommit ==
     /\ phase = "play"
@@ -653,7 +654,7 @@ PlayDeployEnd ==
     /\ UNCHANGED deployVars
 
 \* Checkpoint of the proposer: persist, reset the counters, reload the
-\* hot store from the history reader (ispace_impl.rs:53-88). The proposer
+\* hot store from the history reader (ispace_impl.rs:60-95). The proposer
 \* publishes its log. With Forge, it can omit the COMM of its last fire
 \* (risk R1 of decision 36).
 PlayCheckpoint ==
@@ -676,7 +677,7 @@ PlayCheckpoint ==
     /\ UNCHANGED viewVars
 
 \* Rig: the validator resets to the root before the block (reset,
-\* ispace_impl.rs:90-107) and binds the play log (replay_rspace.rs:390-450).
+\* ispace_impl.rs:97-114) and binds the play log (replay_rspace.rs:480-540).
 \* rigIO' and rigCount' get their values first, and rd' reads them. Thus
 \* the model computes LogIO and each LogCount(m) once.
 Rig ==
@@ -724,7 +725,7 @@ ReplayBegin ==
 \* under StagingDivergence) is dropped and fails the replay. Otherwise the
 \* commit applies the fold of the staged HostSteps up to the stop and
 \* removes the bindings of every pairing (remove_bindings_for,
-\* replay_rspace.rs:1408-1436, saturating). A rejected charge fails the
+\* replay_rspace.rs:1498-1526, saturating). A rejected charge fails the
 \* deploy as in play. An unpaired fire fails the replay with
 \* ReplayDivergence after the operations before it.
 ReplayCommit ==
@@ -884,7 +885,7 @@ NoVolatileResidue == NoResidue(trie) /\ NoResidue(rTrie)
 \* T6 (decision 36): an honest block (its log is the commit log of play) is
 \* never rejected, and the replayed deploy ends with the failure and the
 \* spending of play. Casper compares the status, then the cost
-\* (casper/src/rust/rholang/replay_runtime.rs:437-450).
+\* (casper/src/rust/rholang/replay_runtime.rs:619-632).
 ReplayOutcomeEqual ==
     ~forged =>
         /\ rOk

@@ -7,16 +7,31 @@ use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
 };
-use crate::rust::interpreter::accounting::native_runtime::NativeBudgetRetry;
+use crate::rust::interpreter::accounting::native_runtime::{
+    NativeBudgetRetry, NativePathTrie, PathId,
+};
 
 fn recording(decisions: &[bool]) -> NativeBudgetRecording {
+    let budget = host(1 << 40);
+    let mut paths = NativePathTrie::new(4, &budget).expect("trie fits");
+    let mut node = |segment: (u64, u64)| {
+        paths
+            .intern(PathId::ROOT, &[segment], &budget)
+            .expect("path fits")
+    };
+    let attempt_paths = (0..decisions.len())
+        .map(|index| node((index as u64, 0)))
+        .collect::<Vec<_>>();
+    let retry_paths = (0..decisions.len())
+        .map(|index| node((index as u64, 1)))
+        .collect::<Vec<_>>();
     let attempts: Vec<_> = decisions
         .iter()
         .enumerate()
         .map(|(index, granted)| NativeBudgetAttempt {
             occurrence: NativeBudgetOccurrence {
                 session: [9; 32],
-                path: vec![(index as u64, 0)],
+                path: attempt_paths[index],
                 stage: NativeAttemptStage::ProduceIntroduction,
             },
             observation: Arc::new(ByteObservation {
@@ -39,7 +54,7 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
         .map(|(index, attempt)| NativeBudgetRetry {
             occurrence: NativeBudgetOccurrence {
                 session: [9; 32],
-                path: vec![(index as u64, 1)],
+                path: retry_paths[index],
                 stage: NativeAttemptStage::ProduceIntroduction,
             },
             observation: Arc::clone(&attempt.observation),
@@ -52,6 +67,7 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
         attempts: attempts.into(),
         retries: retries.into(),
         used: 0,
+        paths: Arc::new(paths),
     }
 }
 

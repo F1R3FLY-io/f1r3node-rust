@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, CostSignature};
 use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
@@ -93,6 +94,29 @@ pub(super) fn priced_config(limit: u64, weights: [u64; 4], price: u64) -> Native
     })
 }
 
+/// The path trie of the journal test fixtures: the one-segment paths
+/// [(k, 0)] for k in 0..64, interned in order (C7b, DR-86).
+pub(super) fn fixture_paths() -> Arc<NativePathTrie> {
+    static PATHS: std::sync::LazyLock<Arc<NativePathTrie>> = std::sync::LazyLock::new(|| {
+        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+        let mut paths = NativePathTrie::new(1_024, &host).expect("fixture trie fits");
+        for id in 0..64 {
+            paths
+                .intern(PathId::ROOT, &[(id, 0)], &host)
+                .expect("fixture path fits");
+        }
+        Arc::new(paths)
+    });
+    Arc::clone(&PATHS)
+}
+
+/// The node of the fixture path [(id, 0)].
+pub(super) fn fixture_path(id: u64) -> PathId {
+    fixture_paths()
+        .find(&[(id, 0)])
+        .expect("fixture paths cover ids below 64")
+}
+
 pub(super) fn journal_limits() -> NativeOperationJournalLimits {
     NativeOperationJournalLimits {
         budget: config(100, [0, 0, 1, 0]).limits,
@@ -103,6 +127,35 @@ pub(super) fn journal_limits() -> NativeOperationJournalLimits {
         footprint_bytes: 10_000_000,
         predecessor_edges: 1_000_000,
     }
+}
+
+#[tokio::test]
+async fn native_funded_runtime_rejects_external_output_before_dispatch() {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use crate::rust::interpreter::test_utils::resources::create_runtimes;
+
+    let mut manager = InMemoryStoreManager::new();
+    let stores = manager.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+    runtime
+        .cost
+        .set_deploy_signature_funded(b"native-external-guard", Sig::Ground(vec![9]));
+    let result = runtime
+        .evaluate_with_native_phlo(
+            r#"new out(`rho:io:stdout`) in { out!("must not print") }"#,
+            HashMap::new(),
+            Blake2b512Random::create_from_bytes(b"native-external-guard"),
+            None,
+            config(1_000_000, [0; 4]),
+        )
+        .await;
+    let error = match result {
+        Ok(evaluation) => format!("{:?}", evaluation.errors),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("native funded execution forbids external service calls"));
 }
 
 pub(super) fn authority(owners: usize) -> CostAuthority {
@@ -346,7 +399,7 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
                     .collect::<Vec<_>>()
             );
             assert!(recording.attempts.iter().all(|row| {
-                row.occurrence.session == recording.session && !row.occurrence.path.is_empty()
+                row.occurrence.session == recording.session && row.occurrence.path.depth() != 0
             }));
         }
         let by_occurrence = |recording: &NativeBudgetRecording| {
@@ -355,7 +408,11 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
                 .iter()
                 .map(|row| {
                     (
-                        row.occurrence.clone(),
+                        (
+                            row.occurrence.session,
+                            recording.paths.segments(row.occurrence.path),
+                            row.occurrence.stage,
+                        ),
                         (row.observation.clone(), row.granted),
                     )
                 })
@@ -365,11 +422,11 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
         let operations = result.native_operation_recording.as_ref().unwrap();
         let replay_operations = replayed.native_operation_recording.as_ref().unwrap();
         assert!(!operations.is_empty());
-        let operation_sources = |rows: &[NativeOperationRecord]| {
+        let operation_sources = |rows: &[NativeOperationRecord], paths: &NativePathTrie| {
             rows.iter()
                 .map(|row| {
                     (
-                        (row.occurrence.session, row.occurrence.path.clone()),
+                        (row.occurrence.session, paths.segments(row.occurrence.path)),
                         (
                             row.source.clone(),
                             row.comm.as_ref().map(|comm| comm.source.clone()),
@@ -380,8 +437,8 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
                 .collect::<BTreeMap<_, _>>()
         };
         assert_eq!(
-            operation_sources(operations),
-            operation_sources(replay_operations)
+            operation_sources(operations, &recorded.paths),
+            operation_sources(replay_operations, &replay_recorded.paths)
         );
         for (rows, budget) in [(operations, recorded), (replay_operations, replay_recorded)] {
             with_contract(limit, weights, |contract| {
@@ -410,19 +467,13 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
                         NativeObservationLink::Attempt(index) => {
                             assert!(links.insert((0, index)));
                             assert!((row.budget_start..row.budget_end).contains(&index));
-                            assert_eq!(
-                                budget.attempts[index].occurrence.path.as_slice(),
-                                row.occurrence.path.as_ref()
-                            );
+                            assert_eq!(budget.attempts[index].occurrence.path, row.occurrence.path);
                         }
                         NativeObservationLink::Retry(index) => {
                             assert!(links.insert((1, index)));
                             assert!((row.budget_start..=row.budget_end)
                                 .contains(&budget.retries[index].fresh_before));
-                            assert_eq!(
-                                budget.retries[index].occurrence.path.as_slice(),
-                                row.occurrence.path.as_ref()
-                            );
+                            assert_eq!(budget.retries[index].occurrence.path, row.occurrence.path);
                         }
                     }
                 }

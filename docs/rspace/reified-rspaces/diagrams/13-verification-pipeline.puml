@@ -74,7 +74,8 @@ package "1. Sources" as SOURCES {
   rectangle SRC_HEAD $v_head [
   **HEAD Rust code**
   ordinary execution at the base
-  revision 6f7a80da3, and the HEAD suites
+  revision 4d67b5ccc (6f7a80da3 before
+  the merge), and the HEAD suites
   ]
   rectangle SRC_ROCQ $v_model [
   **Rocq models**

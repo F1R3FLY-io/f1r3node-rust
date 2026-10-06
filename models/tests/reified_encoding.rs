@@ -51,8 +51,8 @@ use serde_json::Value;
 
 const PROPERTY_SEED: u64 = 0x0E0D_2026_1004_0002;
 const ORDINARY_CORPUS: &str = "test-vectors/ordinary-execution-v1.json";
-const SCHEMA_PINS: &str = "test-vectors/protobuf-schema-head-6f7a80da3.json";
-const SCHEMA_BASE: &str = "6f7a80da335569c0c4661b7e64c0103465ea2ae9";
+const SCHEMA_PINS: &str = "test-vectors/protobuf-schema-head-4d67b5ccc.json";
+const SCHEMA_BASE: &str = "4d67b5ccc42c4e510162d075f7ed423bf8175563";
 
 /// The 32 keywords of grammar `02cef80`: its word-shaped string tokens (plan decision 27).
 const KEYWORDS_02CEF80: [&str; 32] = [

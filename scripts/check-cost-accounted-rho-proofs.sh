@@ -7,6 +7,11 @@ THEORIES="$PROOF_ROOT/theories"
 SLASHING_ROOT="$ROOT/formal/rocq/slashing"
 VALIDATOR_ROOT="$ROOT/formal/rocq/validator"
 VALIDATOR_THEORIES="$VALIDATOR_ROOT/theories"
+COST_ACCOUNTING_ONLY="${COST_ACCOUNTING_ONLY:-0}"
+if [[ "$COST_ACCOUNTING_ONLY" != 0 && "$COST_ACCOUNTING_ONLY" != 1 ]]; then
+  echo "error: COST_ACCOUNTING_ONLY must be 0 or 1" >&2
+  exit 1
+fi
 VERIFICATION_DOCS=(
   "$ROOT/docs/casper/theory/cost-accounted-rho-verification.md"
   "$ROOT/docs/casper/theory/cost-accounting-migration.md"
@@ -58,16 +63,20 @@ done
 # Validator behavioral-contract aggregation (Workstream E, stage E5): a thin
 # subtree that NAMES the contract by re-exporting already-proven obligations.
 # Subject it to the same Admitted/Axiom/incompletion-marker hygiene gate.
-for proof in "$VALIDATOR_THEORIES"/*.v; do
-  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/validator__$(basename "$proof")"
-done
+if [[ "$COST_ACCOUNTING_ONLY" == 0 ]]; then
+  for proof in "$VALIDATOR_THEORIES"/*.v; do
+    perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/validator__$(basename "$proof")"
+  done
+fi
 # Slashing development (Stage-C two-effect slash + redemption; #14): the
 # validator-contract dependency compiled below. It was previously compiled but
 # NOT axiom-gated; subject its theories to the same Admitted/Axiom/incompletion
 # hygiene scan as the cost-accounted + validator trees.
-for proof in "$SLASHING_ROOT/theories"/*.v; do
-  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/slashing__$(basename "$proof")"
-done
+if [[ "$COST_ACCOUNTING_ONLY" == 0 ]]; then
+  for proof in "$SLASHING_ROOT/theories"/*.v; do
+    perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/slashing__$(basename "$proof")"
+  done
+fi
 
 assumptions="$(mktemp "$WORK_ROOT/assumptions.XXXXXX.log")"
 trap 'rm -rf "$SANITIZED_THEORIES"; rm -f "$assumptions"' EXIT
@@ -114,29 +123,33 @@ echo "Compiling and checking Rocq theories..."
   rocqchk -Q theories CostAccountedRho "${proof_modules[@]}" >/dev/null 2>&1
 )
 
-echo "Compiling the Slashing development (validator contract dependency)..."
-(
-  cd "$SLASHING_ROOT"
-  rocq makefile -f _CoqProject -o Makefile >/dev/null
-  make -j"${ROCQ_JOBS:-2}" >/dev/null
-)
-
-echo "Compiling and checking the validator contract aggregation..."
-(
-  cd "$VALIDATOR_ROOT"
-  rocq makefile -f _CoqProject -o Makefile >/dev/null 2>&1
-  make -j"${ROCQ_JOBS:-2}" >/dev/null
-  rocqchk -Q ../cost_accounted_rho/theories CostAccountedRho \
-          -Q ../slashing/theories Slashing \
-          -Q theories Validator Validator.Contract >/dev/null 2>&1
-)
+if [[ "$COST_ACCOUNTING_ONLY" == 0 ]]; then
+  echo "Compiling the Slashing development (validator contract dependency)..."
+  (
+    cd "$SLASHING_ROOT"
+    rocq makefile -f _CoqProject -o Makefile >/dev/null
+    make -j"${ROCQ_JOBS:-2}" >/dev/null
+  )
+  echo "Compiling and checking the validator contract aggregation..."
+  (
+    cd "$VALIDATOR_ROOT"
+    rocq makefile -f _CoqProject -o Makefile >/dev/null 2>&1
+    make -j"${ROCQ_JOBS:-2}" >/dev/null
+    rocqchk -Q ../cost_accounted_rho/theories CostAccountedRho \
+            -Q ../slashing/theories Slashing \
+            -Q theories Validator Validator.Contract >/dev/null 2>&1
+  )
+else
+  echo "Cost-accounting-only mode: validator and slashing proof trees are outside this check."
+fi
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
 From CostAccountedRho Require Import CostAccountedSyntax TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement AtomicCommAccounting MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange BoundedLedger GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation CostMonad CATranslationLemmas CATranslationFaithfulness CABisimulation CASettlement CAMintingInjection CAExchange CAEconomicCapstone CALocatedPurses CAGradedAdequacy CAAdjunctions CATypeDiscipline CAOSLFSpatialModal CAGradedImageFinite CAGradedSuccPairs CAGradedCompleteness CAInternalisation CAGradedLimit CAForceSeparation CAJoinConservation CategoryInterface CACategory CACostFunctor CACostFunctorCI CACostMonadCat CAAdjunctionI CACostMonadInstances CASimulationBicat CAAdjunctionII CAProperSubcategory CAAbstractCapstone CAUntypedLambda CAUntypedLambdaCI EndToEndAuthority.
-From CostAccountedRho Require Import LocatedAuthoritySettlement RuntimeBoundAuthority PayloadSortPersistence SettlementMergeVisibility StructuralAuthorityBound RuntimeAuthorityScope StackTransferConservation StackIntroductionAtomicity EvaluationTransactionIsolation MergeableEvidenceAuthentication ParallelStackMaterialization StateBoundFrontierExpansion VaultBackedCostLifecycle AtomicVaultSettlementRefinement WalletFundedLollipop FundingSlotBootstrap PoSVaultAuthority PhysicalSettlementWorklist ReplayRootMaterialization CanonicalRevRedemption RedemptionCustodyAtomicity RedemptionMintResumption BondIssuanceLifecycle VaultBackedByteAccounting MultiShardConcurrency DeterministicParallelReduction.
+From CostAccountedRho Require Import LocatedAuthoritySettlement RuntimeBoundAuthority PayloadSortPersistence SettlementMergeVisibility StructuralAuthorityBound RuntimeAuthorityScope StackTransferConservation StackIntroductionAtomicity EvaluationTransactionIsolation MergeableEvidenceAuthentication ParallelStackMaterialization StateBoundFrontierExpansion VaultBackedCostLifecycle AtomicVaultSettlementRefinement WalletFundedLollipop FundingSlotBootstrap PoSVaultAuthority PhysicalSettlementWorklist ReplayRootMaterialization CanonicalRevRedemption RedemptionCustodyAtomicity RedemptionMintResumption BondIssuanceLifecycle VaultBackedByteAccounting MultiShardConcurrency DeterministicParallelReduction CountedDetachedBisimulation.
 From CostAccountedRho Require Import ThresholdEnvelopeAuthority ReplayAdmissionPublication CanonicalCustodyAliasing EpochMintAtomicity MintedEpochRetention ValidatorEconomicsLifecycle ValidatorEconomicsRefinement ValidatorEconomicsReplay CheckpointAdmissionRecertification.
 From CostAccountedRho Require Import StateImportClosure StateImportStorage StateImportPage StateImportCodec StateImportCursor StateImportTraversal StateImportStack StateImportExport StateImportExecution StateImportWire StateImportCold StateImportEncodedCold StateImportOccurrence StateImportOverlay StateImportReceivedCold StateImportObservations StateImportHistoryObservations StateImportReadTape StateImportOwnedPage StateImportScan StateImportCheckpoint.
 From CostAccountedRho Require Import StateImportRetry.
+From CostAccountedRho Require OfferedOnlyActivation GenesisVersionAdoption NativePathDeltaCodec MeteredComparison NativeCandidateDigestCache CandidateSourceOrder ObservationReadCoverage IncrementalTreeBacking OrderedLookupBound NativeSharedReads DetachedPathCompaction NativePathTrie AggregatedAcquisitionDemand CandidateReadCoverage ReplayAuthorityPrepareCoverage ResultBackingCoverage NativeDuplicatePrefilter FreeMapExtraction WalkerBlockCharge NestedEncodeCost.
 From CostAccountedRho Require Import RotatingMonetaryAllocation.
 From CostAccountedRho Require Import FeeCohortEligibility.
 From CostAccountedRho Require Import FeeCursorTransition.
@@ -153,6 +166,10 @@ From CostAccountedRho Require Import CheckpointLocalHandoff.
 From CostAccountedRho Require Import NativeBorrowedHistory.
 From CostAccountedRho Require Import NativeReplayAccounting.
 From CostAccountedRho Require Import NativeReplayAuthentication.
+Print Assumptions CountedDetachedBisimulation.joined_step_has_detached_match.
+Print Assumptions CountedDetachedBisimulation.detached_step_has_joined_match.
+Print Assumptions CountedDetachedBisimulation.initial_states_related.
+Print Assumptions CountedDetachedBisimulation.related_cost_accounted_replay.
 Print Assumptions NativeReplayAuthentication.authenticated_comm_exact.
 Print Assumptions NativeReplayAuthentication.authenticated_comm_preserves_every_field.
 Print Assumptions NativeReplayAuthentication.authenticated_footprint_exact.
@@ -2957,12 +2974,185 @@ Print Assumptions peer_bytes_leave_store_unchanged.
 Print Assumptions durable_proof_precedes_cache_entry.
 Print Assumptions crash_exposes_before_or_after_transaction.
 Print Assumptions validators_with_equal_artifacts_publish_equal_evidence.
+Print Assumptions OfferedOnlyActivation.active_admission_rejects_body_only.
+Print Assumptions OfferedOnlyActivation.active_selection_is_height_independent.
+Print Assumptions OfferedOnlyActivation.active_selection_contains_only_offered.
+Print Assumptions OfferedOnlyActivation.active_validation_rejects_body_only.
+Print Assumptions OfferedOnlyActivation.active_reachable_states_are_offered_only.
+Print Assumptions GenesisVersionAdoption.legacy_genesis_keeps_local_version.
+Print Assumptions GenesisVersionAdoption.policy_genesis_adopts_header_version.
+Print Assumptions GenesisVersionAdoption.adopted_policy_passes_adopt_check.
+Print Assumptions GenesisVersionAdoption.unadopted_mismatch_fails_adopt_check.
+Print Assumptions GenesisVersionAdoption.policy_genesis_version_is_node_independent.
+Print Assumptions NativePathDeltaCodec.encode_one_decodes.
+Print Assumptions NativePathDeltaCodec.decode_one_canonical.
+Print Assumptions NativePathDeltaCodec.delta_codec_round_trip.
+Print Assumptions NativePathDeltaCodec.delta_codec_canonical.
+Print Assumptions NativePathDeltaCodec.delta_encoding_unique.
+Print Assumptions MeteredComparison.chunk_scan_result.
+Print Assumptions MeteredComparison.chunk_scan_charge_bounded.
+Print Assumptions MeteredComparison.chunk_scan_equal_prefix_charges_all.
+Print Assumptions MeteredComparison.metered_lex_compare_correct.
+Print Assumptions MeteredComparison.metered_operation_compare_correct.
+Print Assumptions NativeCandidateDigestCache.cached_comparison_is_original_comparison.
+Print Assumptions NativeCandidateDigestCache.caching_preserves_candidate_order.
+Print Assumptions CandidateSourceOrder.canonical_sort_permutation.
+Print Assumptions CandidateSourceOrder.canonical_sort_sorted.
+Print Assumptions CandidateSourceOrder.sorted_permutation_unique.
+Print Assumptions CandidateSourceOrder.two_phase_is_canonical.
+Print Assumptions CandidateSourceOrder.lazy_two_phase_is_canonical.
+Print Assumptions CandidateSourceOrder.phase_one_ignores_digests.
+Print Assumptions CandidateSourceOrder.digests_only_for_ties.
+Print Assumptions CandidateSourceOrder.distinct_sources_need_no_digest.
+Print Assumptions CandidateSourceOrder.two_phase_digests_only_for_ties.
+Print Assumptions CandidateSourceOrder.two_phase_distinct_sources_need_no_digest.
+Print Assumptions CandidateSourceOrder.candidate_order_insertion_independent.
+Print Assumptions CandidateSourceOrder.filter_commutes_with_canonical_sort.
+Print Assumptions CandidateSourceOrder.index_only_key_is_insertion_dependent.
+Print Assumptions CandidateSourceOrder.source_only_key_is_insertion_dependent.
+Print Assumptions ObservationReadCoverage.trace_covered.
+Print Assumptions ObservationReadCoverage.legacy_trace_covered.
+Print Assumptions ObservationReadCoverage.trace_reads_equal_legacy_reads.
+Print Assumptions ObservationReadCoverage.legacy_excess.
+Print Assumptions ObservationReadCoverage.charge_independent_of_body_and_guard.
+Print Assumptions ObservationReadCoverage.legacy_charge_depends_on_unread_body.
+Print Assumptions IncrementalTreeBacking.incremental_charges_telescope.
+Print Assumptions IncrementalTreeBacking.incremental_bytes_from_empty.
+Print Assumptions IncrementalTreeBacking.incremental_operations_from_empty.
+Print Assumptions IncrementalTreeBacking.incremental_prefix_covers_nodes.
+Print Assumptions IncrementalTreeBacking.legacy_cumulative_quadratic.
+Print Assumptions IncrementalTreeBacking.incremental_nodes_linear.
+Print Assumptions IncrementalTreeBacking.charges_cover_retained_with_removals.
+Print Assumptions IncrementalTreeBacking.legacy_example.
+Print Assumptions OrderedLookupBound.btree_size_lower_bound.
+Print Assumptions OrderedLookupBound.btree_search_comparisons.
+Print Assumptions OrderedLookupBound.btree_height_bound.
+Print Assumptions OrderedLookupBound.search_within_size_bound.
+Print Assumptions OrderedLookupBound.linear_charge_example.
+Print Assumptions OrderedLookupBound.height_bound_monotone.
+Print Assumptions OrderedLookupBound.search_visits_le_height.
+Print Assumptions OrderedLookupBound.search_within_bound.
+Print Assumptions OrderedLookupBound.pre_operation_size_undercharges.
+Print Assumptions OrderedLookupBound.summed_size_undercharges.
+Print Assumptions NativeSharedReads.shared_selection_equals_deep_selection.
+Print Assumptions NativeSharedReads.prefetch_then_read_equals_read.
+Print Assumptions NativeSharedReads.cleanup_prepaid_preserved.
+Print Assumptions NativeSharedReads.every_release_was_prepaid.
+Print Assumptions NativeSharedReads.fill_without_prepay_releases_unpaid.
+Print Assumptions NativeSharedReads.prepaid_fill_releases_paid.
+Print Assumptions NativeSharedReads.rejected_cold_read_leaves_cache.
+Print Assumptions NativeSharedReads.accepted_cold_read_equals_read.
+Print Assumptions NativeSharedReads.insert_first_fills_cache_on_rejection.
+Print Assumptions NativeSharedReads.shared_replace_needs_no_payload_cleanup.
+Print Assumptions DetachedPathCompaction.fuse_render.
+Print Assumptions DetachedPathCompaction.render_order_isomorphism.
+Print Assumptions DetachedPathCompaction.fuse_order_isomorphism.
+Print Assumptions DetachedPathCompaction.fuse_injective.
+Print Assumptions DetachedPathCompaction.fuse_halves_participant_depth.
+Print Assumptions DetachedPathCompaction.funding_flow_depth.
+Print Assumptions DetachedPathCompaction.naive_fusion_collides.
+Print Assumptions NativePathTrie.chain_snoc.
+Print Assumptions NativePathTrie.digest_chain_correct.
+Print Assumptions NativePathTrie.occurrence_key_correct.
+Print Assumptions NativePathTrie.unchained_digest_collides.
+Print Assumptions NativePathTrie.node_identity_is_path_equality.
+Print Assumptions NativePathTrie.child_spec.
+Print Assumptions NativePathTrie.intern_spec.
+Print Assumptions NativePathTrie.path_of_ancestor.
+Print Assumptions NativePathTrie.trie_decode_denotes_paths.
+Print Assumptions NativePathTrie.trie_nodes_bounded_by_suffixes.
+Print Assumptions NativePathTrie.trie_dfs_is_lex_sort.
+Print Assumptions NativePathTrie.preorder_unique.
+Print Assumptions NativePathTrie.preorder_complete.
+Print Assumptions NativePathTrie.materialized_segments_quadratic.
+Print Assumptions NativePathTrie.materialized_segments_exceed_journal_limit.
+Print Assumptions AggregatedAcquisitionDemand.aggregate_preserves_counts.
+Print Assumptions AggregatedAcquisitionDemand.aggregate_expansion_permutation.
+Print Assumptions AggregatedAcquisitionDemand.aggregate_preserves_weighted_usage.
+Print Assumptions AggregatedAcquisitionDemand.aggregate_preserves_partition.
+Print Assumptions AggregatedAcquisitionDemand.aggregate_preserves_exhaustion.
+Print Assumptions AggregatedAcquisitionDemand.aggregate_keys_distinct.
+Print Assumptions AggregatedAcquisitionDemand.aggregated_payment_exact.
+Print Assumptions AggregatedAcquisitionDemand.occurrence_key_work_exceeds_aggregated.
+Print Assumptions CandidateReadCoverage.attempt_trace_covered.
+Print Assumptions CandidateReadCoverage.legacy_attempt_trace_covered.
+Print Assumptions CandidateReadCoverage.attempt_reads_equal_legacy_reads.
+Print Assumptions CandidateReadCoverage.legacy_attempt_excess.
+Print Assumptions CandidateReadCoverage.attempt_charge_independent_of_unread_tails.
+Print Assumptions CandidateReadCoverage.commit_trace_covered.
+Print Assumptions CandidateReadCoverage.legacy_commit_trace_covered.
+Print Assumptions CandidateReadCoverage.legacy_commit_excess.
+Print Assumptions CandidateReadCoverage.legacy_commit_reads.
+Print Assumptions CandidateReadCoverage.commit_charge_independent_of_body.
+Print Assumptions CandidateReadCoverage.commit_refs_charge_independent_of_matched_sizes.
+Print Assumptions CandidateReadCoverage.legacy_commit_charge_depends_on_unread_body.
+Print Assumptions CandidateReadCoverage.legacy_attempt_charge_depends_on_unread_tails.
+Print Assumptions CandidateReadCoverage.legacy_commit_copy_excess.
+Print Assumptions ReplayAuthorityPrepareCoverage.prepare_trace_covered.
+Print Assumptions ReplayAuthorityPrepareCoverage.legacy_prepare_trace_covered.
+Print Assumptions ReplayAuthorityPrepareCoverage.prepare_reads_equal_legacy_reads.
+Print Assumptions ReplayAuthorityPrepareCoverage.legacy_prepare_excess.
+Print Assumptions ReplayAuthorityPrepareCoverage.prepare_charge_independent_of_unread_values.
+Print Assumptions ReplayAuthorityPrepareCoverage.legacy_prepare_inspects_unread_observation.
+Print Assumptions ResultBackingCoverage.result_charge_covers_play_copies.
+Print Assumptions ResultBackingCoverage.result_charge_covers_replay_copies.
+Print Assumptions ResultBackingCoverage.legacy_result_trace_covered.
+Print Assumptions ResultBackingCoverage.result_reads_equal_legacy_reads.
+Print Assumptions ResultBackingCoverage.legacy_result_excess.
+Print Assumptions ResultBackingCoverage.shared_row_cleanup_releases_no_payload.
+Print Assumptions ResultBackingCoverage.legacy_result_charge_counts_unreturned_payloads.
+Print Assumptions NativeDuplicatePrefilter.identity_eq_implies_source_hash_eq.
+Print Assumptions NativeDuplicatePrefilter.prefiltered_duplicate_equals_scan.
+Print Assumptions NativeDuplicatePrefilter.prefilter_builds_identities_only_on_hash_ties.
+Print Assumptions NativeDuplicatePrefilter.permuted_patterns_share_hash.
+Print Assumptions FreeMapExtraction.extraction_by_move_equals_lookup.
+Print Assumptions FreeMapExtraction.legacy_extraction_charge_quadratic.
+Print Assumptions FreeMapExtraction.legacy_extraction_charge_example.
+Print Assumptions WalkerBlockCharge.visit_reads_le_block_bytes.
+Print Assumptions WalkerBlockCharge.fields_have_no_visit_reads.
+Print Assumptions WalkerBlockCharge.block_inspection_covers_walk_and_traversal.
+Print Assumptions WalkerBlockCharge.block_copy_covers_walk_and_clone.
+Print Assumptions WalkerBlockCharge.block_copy_backing_covers_allocation.
+Print Assumptions WalkerBlockCharge.block_inspection_fits_block_copy.
+Print Assumptions WalkerBlockCharge.block_charge_independent_of_sibling_order.
+Print Assumptions WalkerBlockCharge.block_trace_covered.
+Print Assumptions WalkerBlockCharge.worklist_charge_independent_of_traversal_order.
+Print Assumptions WalkerBlockCharge.worklist_charge_covers_peak.
+Print Assumptions WalkerBlockCharge.worklist_charge_covers_entries.
+Print Assumptions WalkerBlockCharge.rust_entry_constant_covers_header_moves.
+Print Assumptions WalkerBlockCharge.worklist_charge_covers_peak_for_slot.
+Print Assumptions WalkerBlockCharge.rust_depth_entry_constant_covers_header_moves.
+Print Assumptions WalkerBlockCharge.level_charge_counts_inline_bytes_per_level.
+Print Assumptions WalkerBlockCharge.nested_chain_well_formed.
+Print Assumptions WalkerBlockCharge.level_charge_example.
+Print Assumptions NestedEncodeCost.encode_work_le_height.
+Print Assumptions NestedEncodeCost.nested_encode_work_le_depth_times_visited_blocks.
+Print Assumptions NestedEncodeCost.depth_weighted_charge_covers_encode.
+Print Assumptions NestedEncodeCost.linear_charge_undercounts_deep_chain.
+Print Assumptions NestedEncodeCost.deep_chain_example.
 Quit.
 EOF
 then
   echo "error: failed to query headline theorem assumptions" >&2
   sed -n '1,160p' "$assumptions" >&2
   exit 1
+fi
+
+if [[ "$COST_ACCOUNTING_ONLY" == 1 ]]; then
+  cost_query_count="$(awk '
+    index($0, "if ! rocq repl -Q \"$THEORIES\" CostAccountedRho > \"$assumptions\"") == 1 { in_cost = 1; next }
+    in_cost && /^EOF$/ { exit }
+    in_cost && /^Print Assumptions / { count++ }
+    END { print count + 0 }
+  ' "$0")"
+  closed_count="$( (rg -o 'Closed under the global context' "$assumptions" || true) | wc -l | tr -d ' ')"
+  if [[ "$cost_query_count" == 0 || "$closed_count" != "$cost_query_count" ]]; then
+    echo "error: cost-accounted theorems have unexpected assumptions ($closed_count of $cost_query_count closed)" >&2
+    sed -n '/Print Assumptions/,$p' "$assumptions" >&2
+    exit 1
+  fi
+  echo "Cost-accounting proof hygiene passed ($proof_module_count modules; $closed_count closed assumption queries)."
+  exit 0
 fi
 
 # Validator behavioral contract (Workstream E, stage E5): assert every

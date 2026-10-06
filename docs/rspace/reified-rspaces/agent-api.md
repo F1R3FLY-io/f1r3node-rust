@@ -90,7 +90,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:570-610`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:595-635`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -169,7 +169,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 
 ### 4.3 The steps of a call
 
-`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:200-296`):
+`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:213-320`):
 
 1. When `this` is not a bare handle id, the process drops the call.
 2. The process reads the config record in a read-only space intent, which commits nothing. A missing record aborts with `DanglingHandle`, also when the message is malformed.
@@ -179,7 +179,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 6. A method name that is not one of the five methods gives the typed reply `UnknownMethod`.
 7. An argument count that is not the arity of the method gives the typed reply `BadArgument` with the argument `"arguments"`.
 8. A named param outside the schema of the method gives the typed reply `UnknownParam`. The process checks the keys in bytewise order.
-9. The method checks its arguments and runs. It sends its reply on `ret`.
+9. The method checks its arguments and runs. It sends its reply on `ret`. The reply of `produce` is the last branch of the operation, after the branches of its fires (see below).
 
 ### 4.4 The drop rule and the name rule
 
@@ -190,7 +190,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 - The second element is not exactly one string.
 - The first element is not a reply name, by the name rule below.
 
-**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:161-170`).
+**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:174-183`).
 A typed reply goes only to a reply name, so the process never sends a reply on a forged channel.
 A dropped message changes no space, but the COMMs of the forwarder and of `HANDLE_OP` stay in the log with their charges.
 
@@ -227,18 +227,22 @@ The name routes to the space by itself (rule R3), so a send or a receive on it r
 **`config`.** The reply is the map that the config record holds, with the six keys of the [specification](specification.md#11-spaces).
 For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil`.
 
-**`produce`.** The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:325-364`).
+**`produce`.** The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:349-386`).
 The key of `ch` names the collection by rule HM-1 of the specification, also when `ch` is a name of another space.
 The record gets the elements of the list `msg` as its payload, and the random state and the cost authority of the call.
-The method dispatches the fires of the operation, and it then replies `Nil`.
+The method dispatches the fires of the operation, and it replies `Nil`.
 For example, this program stores a persistent record with the payload `1` on the collection of `"jobs"`:
 
 ```rholang
 new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { for (_ <- space!?("produce", "jobs", [1]; persistent=true)) { Nil } } }
 ```
 
+The reply runs as the last branch of the operation, in a reduction participant of its own.
+A dispatch ends the participant that makes it, so the reply cannot follow the fires in that participant ([design N6](design.md#n6-scheduling)).
+So the reply and the fired bodies are parallel processes, as in the equivalent Rholang program.
+
 **`consume`.** The method accepts only the matchers of user agents, which P8 adds ([decision 34](decision-register.md#decision-34), item A9).
-It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:368-407`).
+It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:390-429`).
 A call that passes every check aborts with `AgentSpacesUnavailable` until P8.
 
 ## 6. Replies
@@ -256,7 +260,7 @@ For this reason, the code builds each reply value in canonical form, with the bi
 
 A typed reply is the reply of a call with a protocol error ([decision 34](decision-register.md#decision-34), item A23).
 The call does not abort, and the deploy continues.
-The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:173-183`):
+The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:186-196`):
 
 ```text
 ("rho:space:error", code, detail)
@@ -292,7 +296,7 @@ The values of the detail keys have these meanings:
 - `"param"` is the unknown key exactly as the call gave it.
 - `"index"` is the position of the first foreign matcher in `pairs`, from 0.
 
-*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:325-407`).*
+*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:349-429`).*
 
 | `"argument"` | Method | Trigger |
 |---|---|---|

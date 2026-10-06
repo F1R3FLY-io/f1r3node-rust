@@ -15,9 +15,12 @@
    FR-9' sends the sweep through the handle, which refuses a sweep under an
    open transaction of the same task (H13).
 
-   Code base: HEAD 6f7a80da3. Every host file that this header cites with a
-   line range is identical at e748426, the base of the design report. The
-   P1 file space_store_handle.rs is new. This header cites its items by
+   Code base: the campaign tree after the merge of feature/cost-accounted-rho
+   at 4d67b5ccc. Every host file that this header cites with a line range
+   equals that file at 4d67b5ccc, except the Reified hooks that footprint
+   policy p4 approves. Before the merge, the code base was HEAD 6f7a80da3
+   (e748426 for the cited host files).
+   The P1 file space_store_handle.rs is new. This header cites its items by
    name, because its line numbers change often.
    Design: p1-design-report §3.1 (algorithm and root neutrality), §5(a).
    Plan decision 19 (D1 placement, D5 outer-frame count). Fix rules FR-1,
@@ -52,13 +55,13 @@
                               "Cannot process duplicate actions on one
                               key."), rs/history/history_repository_impl.rs:
                               467-490 (checkpoint), rs/rspace/ispace_impl.rs:
-                              53-88
-   HotStore, touch            rs/hot_store.rs:601-658, 805-817, 927-955
+                              60-95
+   HotStore, touch            rs/hot_store.rs:661-718, 865-877, 987-1015
                               (a first read caches the key)
-   remove_datum_at            rs/hot_store.rs:852-885
-   remove_cont_at             rs/hot_store.rs:758-801
-   remove_join                rs/hot_store.rs:1009-1053
-   changes, action_of         rs/hot_store.rs:1055-1110
+   remove_datum_at            rs/hot_store.rs:912-945
+   remove_cont_at             rs/hot_store.rs:818-861
+   remove_join                rs/hot_store.rs:1069-1113
+   changes, action_of         rs/hot_store.rs:1115-1170
    chan_leb, nondecreasing,   ssh require_canonical, group_identity (FR-1':
      canonical, ck_canonical  the keys of a group must be non-decreasing,
                               else SpaceTxnError::NonCanonicalChannelOrder)
@@ -342,7 +345,7 @@ Record HotStore := mkHS {
   hs_joins : Chan -> list (list Chan);
   hs_cache : list CKey }.
 
-(* A first read or write caches the key (hot_store.rs:653, 814, 946). *)
+(* A first read or write caches the key (hot_store.rs:713, 874, 1006). *)
 Definition touch (k : CKey) (S : HotStore) : HotStore :=
   if in_dec ckey_eq_dec k (hs_cache S) then S
   else mkHS (hs_data S) (hs_conts S) (hs_joins S) (hs_cache S ++ [k]).
@@ -357,9 +360,9 @@ Definition set_joins (S : HotStore) (c : Chan) (l : list (list Chan)) : HotStore
   let S0 := touch (CJoins c) S in
   mkHS (hs_data S0) (hs_conts S0) (fun c' => if chan_eq_dec c' c then l else hs_joins S0 c') (hs_cache S0).
 
-(* remove_datum and remove_continuation by index (hot_store.rs:852-885,
-   758-801). remove_join removes a join only when the continuation list of
-   the join is empty (hot_store.rs:1009-1053). *)
+(* remove_datum and remove_continuation by index (hot_store.rs:912-945,
+   818-861). remove_join removes a join only when the continuation list of
+   the join is empty (hot_store.rs:1069-1113). *)
 Definition remove_datum_at (S : HotStore) (c : Chan) (i : nat) : HotStore :=
   set_data S c (remove_nth i (hs_data S c)).
 Definition remove_cont_at (S : HotStore) (g : list Chan) (i : nat) : HotStore :=
@@ -465,7 +468,7 @@ Definition data_leaf (l : list Datum) : Leaf := (isort bytes_leb (map ser_datum 
 Definition cont_leaf (l : list WK) : Leaf := (isort bytes_leb (map ser_wk l), 1).
 Definition joins_leaf (l : list (list Chan)) : Leaf := (isort bytes_leb (map ser_join l), 2).
 
-(* hot_store.rs:1055-1110: an empty cached list becomes a Delete, a
+(* hot_store.rs:1115-1170: an empty cached list becomes a Delete, a
    non-empty one an Insert of the sorted leaf (serializers.rs). *)
 Definition action_of (S : HotStore) (k : CKey) : Action :=
   match k with

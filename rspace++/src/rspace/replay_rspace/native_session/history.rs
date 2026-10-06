@@ -7,6 +7,7 @@ use crate::rspace::history::native_reader::{
     NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
     decode_record,
 };
+use crate::rspace::hot_store::NativeDataView;
 
 struct Meter<F>(F);
 
@@ -172,10 +173,60 @@ where
         )
     }
 
-    pub(super) fn prepare_data(&self, channel: &C) -> Result<(), RSpaceError> {
-        self.read_data_with(channel, &|operations, scanned, backing| {
+    /// The continuations of `channels` as shared views (C1, DR-81).
+    pub(super) fn read_continuation_views(
+        &self,
+        channels: &[C],
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError> {
+        let reserve =
+            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+        self.space.get_store().get_continuation_views_with_reader(
+            channels,
+            &|| {
+                self.read_records(
+                    NativeLeafKind::Continuations,
+                    channels_hash(channels, &reserve)?,
+                    &reserve,
+                )
+            },
+            &reserve,
+        )
+    }
+
+    /// Fills the continuation cache of `channels` without copying a
+    /// continuation (C1, DR-81).
+    pub(super) fn prefetch_continuations(&self, channels: &[C]) -> Result<(), RSpaceError> {
+        self.read_continuation_views(channels).map(drop)
+    }
+
+    // Disabled by C2 (DR-82): the produce path prefetches with prefetch_data,
+    // which copies no datum.
+    // pub(super) fn prepare_data(&self, channel: &C) -> Result<(), RSpaceError> {
+    //     self.read_data_with(channel, &|operations, scanned, backing| {
+    //         self.history_reserve(operations, scanned, backing)
+    //     })
+    //     .map(|_| ())
+    // }
+
+    /// A copy-free view of the cached data of `channel` (C2, DR-82).
+    pub(super) fn read_data_view_with(
+        &self,
+        channel: &C,
+        reserve: &impl SourceMeter,
+    ) -> Result<NativeDataView<C, A>, RSpaceError> {
+        self.space.get_store().get_data_view_with_reader(
+            channel,
+            &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            reserve,
+        )
+    }
+
+    /// Fills the data cache of `channel` without copying a datum
+    /// (C2, DR-82).
+    pub(super) fn prefetch_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        self.read_data_view_with(channel, &|operations, scanned, backing| {
             self.history_reserve(operations, scanned, backing)
         })
-        .map(|_| ())
+        .map(drop)
     }
 }

@@ -50,12 +50,12 @@ impl<'a> SpaceMatcher<'a> {
         Ok(self.matcher.get_metered(pattern, data, self.meter)?)
     }
 
-    /// The `where` guard of `continuation` over the bound values `matched`. A continuation
-    /// without a guard admits every match.
+    /// The `where` guard of `continuation` over the bound values `matched`, which the matcher
+    /// reads by reference. A continuation without a guard admits every match.
     pub fn admits(
         &self,
         continuation: &TaggedContinuation,
-        matched: &[ListParWithRandom],
+        matched: &[&ListParWithRandom],
     ) -> Result<bool, SpaceError> {
         self.meter.charge_call()?;
         Ok(self
@@ -74,7 +74,7 @@ impl<'a> SpaceMatcher<'a> {
         let Some(matched) = self.bind(pattern, data)? else {
             return Ok(None);
         };
-        match self.admits(continuation, std::slice::from_ref(&matched))? {
+        match self.admits(continuation, &[&matched])? {
             true => Ok(Some(matched)),
             false => Ok(None),
         }
@@ -193,7 +193,7 @@ mod tests {
         assert_eq!(candidates(), HostWorkUsage::new(1));
         assert!(host_work.usage(HostWorkDimension::SearchStateBytes) > HostWorkUsage::ZERO);
         matcher
-            .admits(&continuation(None), &[datum(5)])
+            .admits(&continuation(None), &[&datum(5)])
             .expect("the guard fits the budget");
         assert_eq!(candidates(), HostWorkUsage::new(2));
         matcher
@@ -220,7 +220,7 @@ mod tests {
             .bind(&any(), &datum(1))
             .expect("the match fits the budget")
             .is_some());
-        assert_eq!(matcher.admits(&refusing, &[datum(1)]), Ok(false));
+        assert_eq!(matcher.admits(&refusing, &[&datum(1)]), Ok(false));
         assert_eq!(matcher.matches(&any(), &datum(1), &refusing), Ok(None));
         assert!(matcher
             .matches(&any(), &datum(1), &admitting)
@@ -239,7 +239,7 @@ mod tests {
         let rejected = Some(SpaceError::Host(RSpaceError::HostWorkRejected));
         assert_eq!(matcher.bind(&any(), &datum(1)).err(), rejected);
         assert_eq!(
-            matcher.admits(&continuation(None), &[datum(1)]).err(),
+            matcher.admits(&continuation(None), &[&datum(1)]).err(),
             rejected
         );
         assert_eq!(

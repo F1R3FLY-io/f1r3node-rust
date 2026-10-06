@@ -31,6 +31,12 @@ part of the rule:
   ec-unpaired-fire-commits         an unpaired replay fire commits: H4 (and
                                    H5) break
 
+Decision 44 (the merge of feature/cost-accounted-rho) has one control:
+  ec-split-zero-child              a split appends (s, i) instead of the
+                                   DR-84 segment (s, i + 1), so a child
+                                   segment can equal an operation segment:
+                                   sched_part_nonzero (and so H8) breaks
+
 The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
   Namespace           the ephemeral KIND bit, distinct op ids, the sid
                       length check of the decoder, the name tail lengths
@@ -316,6 +322,12 @@ CONTROLS = (
       "                then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected\n"
       "                else\n"),
      ("unpaired_fire_inert", "verify_sound_complete", "commit_run_rd", "replay_pairs_each_comm_once")),
+    # ── Decision 44: the compacted split DR-84 (H8) ──────────────────────
+    ("ec-split-zero-child", "EventCorrelation",
+     "a split appends the segment (s, i), so the first child segment equals an operation segment",
+     "| sp_split : forall p s i, sched_part p -> sched_part (p ++ [(s, Datatypes.S i)]).",
+     "| sp_split : forall p s i, sched_part p -> sched_part (p ++ [(s, i)]).",
+     ("sched_part_nonzero",)),
     # ── P4: Namespace.v ──────────────────────────────────────────────────
     ("ns-ephemeral-bit-dropped", "Namespace",
      "an ephemeral id has the durable KIND byte (no bit 0x20)",

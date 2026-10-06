@@ -63,7 +63,7 @@
                             (canonical_inner_channel_bytes, then
                             CollectionKey::of_channel and from_bytes)
    byte names               rholang/src/rust/interpreter/system_processes.rs:
-                            88-92 (byte_name: a 1-byte id)
+                            89-93 (byte_name: a 1-byte id)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

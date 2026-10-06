@@ -32,7 +32,7 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use shared::rust::clone_backing::{
     self as shared_clone_backing, arc_allocation_bytes, BackingError, CloneBacking, Walker,
 };
-use shared::rust::collection_backing::tree_backing;
+use shared::rust::collection_backing::{tree_backing, tree_growth, tree_search_bound};
 
 use super::errors::InterpreterError;
 use super::host_work::HostWorkBudget;
@@ -55,13 +55,18 @@ pub mod native_phlo_rules;
 pub mod phlo_execution;
 pub mod economic_failure;
 mod native_runtime;
+/// D-M4 (DR-91): the counting-allocator helper for tests outside this module.
+#[cfg(test)]
+pub(crate) use native_runtime::clone_backing::tests::measured as measured_allocations;
 pub(crate) use native_runtime::{clone_backing, NativeAuthorityCheckpoint};
 pub use native_runtime::{
-    CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeBudgetRecording,
-    NativeBudgetRetry, NativeCommRecord, NativeCommSource, NativeConsumeSource,
-    NativeObservationLink, NativeOperationJournalError, NativeOperationJournalLimits,
-    NativeOperationOccurrence, NativeOperationRecord, NativeOperationReplay, NativeOperationSource,
-    NativeOperationTraceError, NativeOperationTraceLimits, NativeProduceSource,
+    decode_native_budget_recording, decode_native_operation_journal,
+    encode_native_budget_recording, encode_native_operation_journal, CheckedNativeOperationJournal,
+    CheckedNativeOperationTrace, NativeBudgetRecording, NativeBudgetRetry, NativeCommRecord,
+    NativeCommSource, NativeConsumeSource, NativeObservationLink, NativeOperationJournalError,
+    NativeOperationJournalLimits, NativeOperationOccurrence, NativeOperationRecord,
+    NativeOperationReplay, NativeOperationSource, NativeOperationTraceError,
+    NativeOperationTraceLimits, NativeProduceSource, NativeRecordingWireLimits,
     NativeReplayAccountingSnapshot, NativeReplayBoundary, NativeReplayCheckpoint,
     NativeReplayError, NativeReplayOutcome, NativeReplayPublication, NativeReplayReservation,
     NativeReplayRestore, NativeRuntimeConfig, NativeRuntimeReplayCheckpoint,
@@ -95,6 +100,8 @@ pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 #[derive(Clone)]
 pub struct RuntimeBudget {
     initial_tokens: Arc<AtomicI64>,
+    legacy_active: Arc<AtomicU64>,
+    legacy_cost: Arc<Mutex<LegacyCostState>>,
     // Liveness counter — tracks weights successfully claimed by parallel
     // workers via CAS. Strictly an internal runtime check used to short
     // out branches once the budget is exhausted. The consensus-relevant
@@ -143,6 +150,25 @@ pub struct RuntimeBudget {
     unmetered: Arc<AtomicU64>,
     comm_accounting_scopes: Arc<AtomicUsize>,
     authority_state: Arc<Mutex<AuthorityRuntimeState>>,
+}
+
+struct LegacyCostState {
+    initial: i64,
+    remaining: i64,
+    log: VecDeque<Cost>,
+}
+
+pub struct LegacyBudgetScope {
+    budget: RuntimeBudget,
+    previous: u64,
+}
+
+impl Drop for LegacyBudgetScope {
+    fn drop(&mut self) {
+        self.budget
+            .legacy_active
+            .store(self.previous, Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -523,9 +549,12 @@ fn reserve_registry_lookup<K>(
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
     if let Some(host) = host {
-        let comparisons = entries
-            .checked_add(1)
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-80): one comparison per entry is a linear
+        // charge for one B-tree search.
+        // let comparisons = entries
+        //     .checked_add(1)
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        let comparisons = tree_search_bound(entries);
         let bytes = comparisons
             .checked_mul(std::mem::size_of::<K>())
             .ok_or(InterpreterError::HostWorkRejected)?;
@@ -540,11 +569,16 @@ fn reserve_registry_insert(
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
     if let Some(host) = host {
-        let next = entries
-            .checked_add(1)
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-77): this charged the backing of the whole
+        // registry on every insert, a quadratic total.
+        // let next = entries
+        //     .checked_add(1)
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // let (operations, bytes) =
+        //     tree_backing::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(next)
+        //         .ok_or(InterpreterError::HostWorkRejected)?;
         let (operations, bytes) =
-            tree_backing::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(next)
+            tree_growth::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(entries, 1)
                 .ok_or(InterpreterError::HostWorkRejected)?;
         reserve_owned_backing(host, operations, 0, bytes)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
@@ -557,11 +591,15 @@ fn reserve_tree_birth<K, V>(
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
     if let Some(host) = host {
-        let next = entries
-            .checked_add(1)
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-77): this charged the backing of the whole tree
+        // on every insert, a quadratic total.
+        // let next = entries
+        //     .checked_add(1)
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // let (operations, bytes) =
+        //     tree_backing::<K, V>(next).ok_or(InterpreterError::HostWorkRejected)?;
         let (operations, bytes) =
-            tree_backing::<K, V>(next).ok_or(InterpreterError::HostWorkRejected)?;
+            tree_growth::<K, V>(entries, 1).ok_or(InterpreterError::HostWorkRejected)?;
         reserve_owned_backing(host, operations, 0, bytes)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
@@ -574,11 +612,15 @@ fn reserve_tree_batch<K, V>(
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
     if let Some(host) = host {
-        let total = entries
-            .checked_add(additional)
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-77): this charged the backing of the whole tree
+        // for a batch added to an existing tree.
+        // let total = entries
+        //     .checked_add(additional)
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // let (operations, bytes) =
+        //     tree_backing::<K, V>(total).ok_or(InterpreterError::HostWorkRejected)?;
         let (operations, bytes) =
-            tree_backing::<K, V>(total).ok_or(InterpreterError::HostWorkRejected)?;
+            tree_growth::<K, V>(entries, additional).ok_or(InterpreterError::HostWorkRejected)?;
         reserve_owned_backing(host, operations, 0, bytes)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
@@ -783,6 +825,12 @@ impl RuntimeBudget {
 
         Self {
             initial_tokens: Arc::new(AtomicI64::new(initial_value.value)),
+            legacy_active: Arc::new(AtomicU64::new(0)),
+            legacy_cost: Arc::new(Mutex::new(LegacyCostState {
+                initial: initial_value.value,
+                remaining: initial_value.value,
+                log: VecDeque::with_capacity(initial_capacity),
+            })),
             consumed_tokens: Arc::new(AtomicI64::new(0)),
             signature: Arc::new(Mutex::new(Sig::Unit)),
             deploy_id: Arc::new(Mutex::new([0; 32])),
@@ -808,6 +856,37 @@ impl RuntimeBudget {
         let budget = Self::new(Cost::unsafe_max());
         budget.unmetered.store(1, Ordering::Release);
         budget
+    }
+
+    pub fn enter_legacy_scope(&self) -> LegacyBudgetScope {
+        let previous = self.legacy_active.swap(1, Ordering::AcqRel);
+        LegacyBudgetScope {
+            budget: self.clone(),
+            previous,
+        }
+    }
+
+    pub fn is_legacy(&self) -> bool { self.legacy_active.load(Ordering::Acquire) != 0 }
+
+    pub fn charge_legacy(&self, amount: Cost) -> Result<(), InterpreterError> {
+        if !self.is_legacy() || self.unmetered.load(Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        let mut legacy = self.legacy_cost.lock().expect("legacy cost lock");
+        if legacy.remaining < 0 {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        legacy.remaining = legacy.remaining.saturating_sub(amount.value);
+        if self.max_log_entries != 0 {
+            if legacy.log.len() >= self.max_log_entries {
+                legacy.log.pop_front();
+            }
+            legacy.log.push_back(amount);
+        }
+        if legacy.remaining < 0 {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        Ok(())
     }
 
     pub fn reserve_canonical_with_cost(
@@ -868,6 +947,9 @@ impl RuntimeBudget {
         weight: u64,
         description: &'static str,
     ) -> Result<(), InterpreterError> {
+        if self.is_legacy() {
+            return Ok(());
+        }
         if !self.has_comm_accounting_scope() {
             return Ok(());
         }
@@ -969,6 +1051,11 @@ impl RuntimeBudget {
                 }
             }
             None => {
+                // C13 (DR-80): the insert searches the registry again.
+                reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+                    authorities.len(),
+                    host.as_ref(),
+                )?;
                 reserve_registry_insert(authorities.len(), host.as_ref())?;
                 authorities.insert((identity, kind), canonical);
                 Ok(())
@@ -1009,6 +1096,11 @@ impl RuntimeBudget {
             return Ok(authority.clone());
         }
         reserve_authority_clone(&fallback, host.as_ref())?;
+        // C13 (DR-80): the insert searches the registry again.
+        reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+            authorities.len(),
+            host.as_ref(),
+        )?;
         reserve_registry_insert(authorities.len(), host.as_ref())?;
         let result = fallback.clone();
         authorities.insert((identity, kind), fallback);
@@ -1154,6 +1246,8 @@ impl RuntimeBudget {
             }
             return Ok(());
         }
+        // C13 (DR-80): the final insert searches the set again.
+        reserve_registry_lookup::<([u8; 32], BillableKind)>(introductions.len(), host.as_ref())?;
         reserve_tree_birth::<([u8; 32], BillableKind), Arc<byte_receipts::ByteObservation>>(
             introductions.len(),
             host.as_ref(),
@@ -1276,24 +1370,38 @@ impl RuntimeBudget {
             cells,
         };
         let mut state = self.authority_state.lock().expect("authority state");
-        reserve_registry_lookup::<[u8; 32]>(
-            state
-                .stack_births
-                .len()
-                .checked_add(state.pending_stack_transfers.len())
-                .and_then(|count| count.checked_add(1))
-                .ok_or(InterpreterError::HostWorkRejected)?,
-            host.as_ref(),
-        )?;
-        let event_lookup_entries = state
-            .events
-            .len()
-            .checked_add(state.pending_stack_event_ids.len())
-            .and_then(|count| count.checked_add(state.pending_replay_events.len()))
-            .and_then(|count| count.checked_add(2))
-            .ok_or(InterpreterError::HostWorkRejected)?;
+        // Disabled by C13 (DR-80): one charge on the summed size covered two
+        // linear searches. A B-tree bound is charged for each searched map.
+        // reserve_registry_lookup::<[u8; 32]>(
+        //     state
+        //         .stack_births
+        //         .len()
+        //         .checked_add(state.pending_stack_transfers.len())
+        //         .and_then(|count| count.checked_add(1))
+        //         .ok_or(InterpreterError::HostWorkRejected)?,
+        //     host.as_ref(),
+        // )?;
+        reserve_registry_lookup::<[u8; 32]>(state.stack_births.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_stack_transfers.len(), host.as_ref())?;
+        // Disabled by C13 (DR-80): one charge on the summed size covered three
+        // linear searches. A B-tree bound is charged for each searched map.
+        // let event_lookup_entries = state
+        //     .events
+        //     .len()
+        //     .checked_add(state.pending_stack_event_ids.len())
+        //     .and_then(|count| count.checked_add(state.pending_replay_events.len()))
+        //     .and_then(|count| count.checked_add(2))
+        //     .ok_or(InterpreterError::HostWorkRejected)?;
+        // for _ in events.keys() {
+        //     reserve_registry_lookup::<[u8; 32]>(event_lookup_entries, host.as_ref())?;
+        // }
         for _ in events.keys() {
-            reserve_registry_lookup::<[u8; 32]>(event_lookup_entries, host.as_ref())?;
+            reserve_registry_lookup::<[u8; 32]>(state.events.len(), host.as_ref())?;
+            reserve_registry_lookup::<[u8; 32]>(
+                state.pending_stack_event_ids.len(),
+                host.as_ref(),
+            )?;
+            reserve_registry_lookup::<[u8; 32]>(state.pending_replay_events.len(), host.as_ref())?;
         }
         if state.stack_births.contains_key(&produce_hash)
             || state.pending_stack_transfers.contains_key(&produce_hash)
@@ -1429,6 +1537,16 @@ impl RuntimeBudget {
             host.as_ref(),
         )?;
         reserve_registry_lookup::<[u8; 32]>(state.pending_stack_transfers.len(), host.as_ref())?;
+        // C13 (DR-80): the commit or the abort removes this transfer from the
+        // pending map, which then also holds this transfer.
+        reserve_registry_lookup::<[u8; 32]>(
+            state
+                .pending_stack_transfers
+                .len()
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            host.as_ref(),
+        )?;
         reserve_registry_lookup::<[u8; 32]>(
             state
                 .stack_births
@@ -1603,16 +1721,22 @@ impl RuntimeBudget {
         });
         let prepared = self.prepare_native_observation(&observation)?;
         let mut state = self.authority_state.lock().expect("authority state");
-        reserve_registry_lookup::<[u8; 32]>(
-            state
-                .pending_stack_event_ids
-                .len()
-                .checked_add(state.pending_replay_events.len())
-                .and_then(|count| count.checked_add(state.events.len()))
-                .and_then(|count| count.checked_add(2))
-                .ok_or(InterpreterError::HostWorkRejected)?,
-            host.as_ref(),
-        )?;
+        // Disabled by C13 (DR-80): one charge on the summed size covered three
+        // linear searches and the inserts. A B-tree bound is charged for each
+        // searched map.
+        // reserve_registry_lookup::<[u8; 32]>(
+        //     state
+        //         .pending_stack_event_ids
+        //         .len()
+        //         .checked_add(state.pending_replay_events.len())
+        //         .and_then(|count| count.checked_add(state.events.len()))
+        //         .and_then(|count| count.checked_add(2))
+        //         .ok_or(InterpreterError::HostWorkRejected)?,
+        //     host.as_ref(),
+        // )?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_stack_event_ids.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_replay_events.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(state.events.len(), host.as_ref())?;
         if state.pending_stack_event_ids.contains(&identity)
             || state.pending_replay_events.contains_key(&identity)
         {
@@ -1648,6 +1772,8 @@ impl RuntimeBudget {
             .reserved
             .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        // C13 (DR-80): a denied COMM inserts its identity into the frontier.
+        reserve_registry_lookup::<[u8; 32]>(state.frontier.len(), host.as_ref())?;
         reserve_tree_birth::<[u8; 32], CostAuthority>(state.frontier.len(), host.as_ref())?;
         if state.enforce_allocation {
             reserve_multiset_dominates(&state.allocation, &next_reserved, host.as_ref())?;
@@ -1661,6 +1787,8 @@ impl RuntimeBudget {
             .realized
             .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        // C13 (DR-80): the event insert searches the event map again.
+        reserve_registry_lookup::<[u8; 32]>(state.events.len(), host.as_ref())?;
         reserve_tree_birth::<[u8; 32], AuthorityRuntimeEvent>(state.events.len(), host.as_ref())?;
         reserve_byte_row(&mut state.byte_observations, host.as_ref())?;
         if state.native.is_some() || !demand.0.is_empty() {
@@ -2181,6 +2309,12 @@ impl RuntimeBudget {
         if self.unmetered.load(Ordering::Acquire) != 0 {
             return Cost::unsafe_max();
         }
+        if self.is_legacy() {
+            return Cost::create(
+                self.legacy_cost.lock().expect("legacy cost lock").remaining,
+                "legacy phlo remaining",
+            );
+        }
         let initial = self.initial_tokens.load(Ordering::Acquire);
         let consumed = self.reconcile().consumed_units;
         Cost::create(initial.saturating_sub(consumed), "token budget remaining")
@@ -2220,6 +2354,12 @@ impl RuntimeBudget {
             .expect("reconciliation cache lock");
         self.initial_tokens
             .store(token.remaining_units_i64(), Ordering::Release);
+        {
+            let mut legacy = self.legacy_cost.lock().expect("legacy cost lock");
+            legacy.initial = token.remaining_units_i64();
+            legacy.remaining = legacy.initial;
+            legacy.log.clear();
+        }
         self.consumed_tokens.store(0, Ordering::Release);
         self.diagnostic_record_count.store(0, Ordering::Release);
         self.persistent_introductions
@@ -2445,6 +2585,17 @@ impl RuntimeBudget {
         if self.unmetered.load(Ordering::Acquire) != 0 {
             return Cost::create(0, "unmetered token budget");
         }
+        if self.is_legacy() {
+            let legacy = self.legacy_cost.lock().expect("legacy cost lock");
+            return Cost::create(
+                if legacy.remaining < 0 {
+                    legacy.initial
+                } else {
+                    legacy.initial.saturating_sub(legacy.remaining)
+                },
+                "legacy phlo consumed",
+            );
+        }
         Cost::create(
             self.reconcile().consumed_units,
             "consumed source-token units",
@@ -2469,6 +2620,16 @@ impl RuntimeBudget {
     /// `total_cost()`. `clear_log` empties it without affecting any
     /// consensus observable; a later `reconcile()` recompute repopulates.
     pub fn get_log(&self) -> Vec<Cost> {
+        if self.is_legacy() {
+            return self
+                .legacy_cost
+                .lock()
+                .expect("legacy cost lock")
+                .log
+                .iter()
+                .cloned()
+                .collect();
+        }
         // Ensure the diagnostic mirror reflects the canonical committed
         // set (populated by `reconcile` at finalization).
         let _ = self.reconcile();
@@ -2499,7 +2660,17 @@ impl RuntimeBudget {
     /// attempts are skipped — see `attempt_one`'s unmetered fast path).
     pub fn last_oop_event(&self) -> Option<BillableTokenEvent> { self.reconcile().oop }
 
-    pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+    pub fn clear_log(&self) {
+        if self.is_legacy() {
+            self.legacy_cost
+                .lock()
+                .expect("legacy cost lock")
+                .log
+                .clear();
+        } else {
+            self.log.lock().unwrap().clear();
+        }
+    }
 
     pub fn clear_event_log(&self) { self.event_log.lock().unwrap().clear(); }
 
@@ -3381,6 +3552,154 @@ fn token_units_to_i64(value: u64) -> i64 {
         i64::MAX
     } else {
         value as i64
+    }
+}
+
+#[cfg(test)]
+mod tree_growth_tests {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+    use shared::rust::collection_backing::{tree_backing, tree_growth};
+
+    use super::native_runtime::clone_backing::tests::measured;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// `IncrementalTreeBacking.incremental_charges_telescope`: the charges
+        /// of any sequence of batches add up to the backing of the final
+        /// tree.
+        #[test]
+        fn tree_growth_charges_telescope_to_the_final_backing(
+            batches in prop::collection::vec(0usize..40, 0..40),
+        ) {
+            let mut entries = 0usize;
+            let mut operations = 0usize;
+            let mut bytes = 0usize;
+            for additional in batches {
+                let (grown_operations, grown_bytes) =
+                    tree_growth::<[u8; 32], u64>(entries, additional).expect("tree growth");
+                operations += grown_operations;
+                bytes += grown_bytes;
+                entries += additional;
+            }
+            prop_assert_eq!(
+                (operations, bytes),
+                tree_backing::<[u8; 32], u64>(entries).expect("tree backing")
+            );
+        }
+
+        /// `IncrementalTreeBacking.incremental_prefix_covers_nodes`: at every
+        /// prefix of single inserts into a std `BTreeMap`, the bytes that the
+        /// map allocated do not exceed the cumulative incremental reservation.
+        #[test]
+        fn incremental_reservation_covers_std_btree_allocations(
+            keys in prop::collection::vec(any::<[u8; 32]>(), 1..600),
+        ) {
+            let mut map: BTreeMap<[u8; 32], u64> = BTreeMap::new();
+            let mut reserved = 0usize;
+            let mut allocated = 0usize;
+            for key in keys {
+                let (_, bytes) = tree_growth::<[u8; 32], u64>(map.len(), 1).expect("tree growth");
+                reserved += bytes;
+                let (_, used) = measured(|| {
+                    map.insert(key, 1);
+                });
+                allocated += used;
+                prop_assert!(
+                    allocated <= reserved,
+                    "allocated {} > reserved {} at {} entries",
+                    allocated,
+                    reserved,
+                    map.len()
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// `IncrementalTreeBacking.charges_cover_retained_with_removals`: with
+        /// inserts and removals on a std `BTreeMap`, an insert charges the
+        /// growth from the current size and a removal refunds nothing. At
+        /// every prefix the cumulative charge covers the backing bound of the
+        /// retained map.
+        #[test]
+        fn growth_charges_cover_retained_backing_with_removals(
+            ops in prop::collection::vec((any::<bool>(), 0u16..512), 1..800),
+        ) {
+            let mut map: BTreeMap<u16, u64> = BTreeMap::new();
+            let mut operations = 0usize;
+            let mut bytes = 0usize;
+            for (insert, key) in ops {
+                if insert {
+                    let (grown_operations, grown_bytes) =
+                        tree_growth::<u16, u64>(map.len(), 1).expect("tree growth");
+                    operations += grown_operations;
+                    bytes += grown_bytes;
+                    map.insert(key, 1);
+                } else {
+                    map.remove(&key);
+                }
+                let (retained_operations, retained_bytes) =
+                    tree_backing::<u16, u64>(map.len()).expect("tree backing");
+                prop_assert!(retained_bytes <= bytes);
+                prop_assert!(retained_operations <= operations);
+            }
+        }
+    }
+
+    /// `IncrementalTreeBacking.legacy_cumulative_quadratic`: charging the
+    /// whole tree on every insert grows quadratically, while the incremental
+    /// charges add up to one tree.
+    #[test]
+    fn legacy_whole_tree_charge_per_insert_is_quadratic() {
+        let inserts = 1_000usize;
+        let node = tree_backing::<[u8; 32], u64>(1).expect("one node").1;
+        let legacy: usize = (1..=inserts)
+            .map(|entries| {
+                tree_backing::<[u8; 32], u64>(entries)
+                    .expect("tree backing")
+                    .1
+            })
+            .sum();
+        let incremental = tree_backing::<[u8; 32], u64>(inserts)
+            .expect("tree backing")
+            .1;
+        assert!(10 * legacy >= node * inserts * (inserts + 1));
+        assert!(incremental <= node * (1 + inserts / 5));
+        assert!(legacy >= 500 * incremental);
+    }
+
+    /// C13 (DR-80; `OrderedLookupBound.search_within_bound`): a registry
+    /// lookup charges the B-tree search bound of the registry size and the
+    /// key bytes of each comparison. The shared property test
+    /// `std_btree_get_comparisons_within_bound` checks the bound against the
+    /// real `BTreeMap`.
+    #[test]
+    fn registry_lookup_charges_the_search_bound() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+        use shared::rust::collection_backing::tree_search_bound;
+
+        for entries in [0_usize, 1, 10, 11, 70, 71, 430, 431, 2_000] {
+            let host =
+                super::HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+            super::reserve_registry_lookup::<[u8; 32]>(entries, Some(&host))
+                .expect("lookup charge");
+            let comparisons = tree_search_bound(entries) as u64;
+            assert_eq!(
+                host.usage(HostWorkDimension::VerificationOperations).get(),
+                comparisons,
+                "{entries} entries"
+            );
+            assert_eq!(
+                host.usage(HostWorkDimension::VerificationBytes).get(),
+                32 * comparisons,
+                "{entries} entries"
+            );
+        }
     }
 }
 

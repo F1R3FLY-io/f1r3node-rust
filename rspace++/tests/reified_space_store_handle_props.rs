@@ -840,8 +840,17 @@ async fn sweep_exact_and_root_neutral(groups: Vec<Vec<Op>>) -> Result<(), TestCa
     Ok(())
 }
 
-// H8: sub-orders sort after their parent and before the next step, never
-// equal a reduction order, and keep a transaction's events contiguous.
+// A participant path of the deterministic scheduler: child i of a split at
+// step s appends the one segment (s, i + 1) (DR-84 of the merged
+// feature/cost-accounted-rho, deterministic_reduction.rs `split`). A second
+// component of 2 is thus a split segment as well as the tag of a sub-order.
+fn participant_path() -> impl Strategy<Value = Vec<(u64, u64)>> {
+    proptest::collection::vec((0u64..64, 1u64..5), 0..6)
+}
+
+// H8: sub-orders sort after their parent and before the next step and every
+// child of a split at the next step, never equal a reduction order of the
+// scheduler, and keep a transaction's events contiguous.
 async fn sub_orders_contiguous(
     participant: Vec<(u64, u64)>,
     step: u64,
@@ -859,11 +868,14 @@ async fn sub_orders_contiguous(
     };
     let parent = extend((step, 0));
     let next = extend((step + 1, 0));
-    let split = extend((step + 1, 1));
+    let children: Vec<OperationOrder> = (1..=3).map(|child| extend((step + 1, child))).collect();
     let subs: Vec<OperationOrder> = (0..count).map(|index| sub_order(&parent, index)).collect();
     prop_assert!(parent < subs[0]);
     prop_assert!(subs.windows(2).all(|pair| pair[0] < pair[1]));
-    prop_assert!(subs.iter().all(|sub| *sub < next && *sub < split));
+    prop_assert!(
+        subs.iter()
+            .all(|sub| *sub < next && children.iter().all(|child| sub < child))
+    );
     for reduction in reductions {
         let reduction = order(reduction);
         prop_assert!(subs.iter().all(|sub| *sub != reduction));
@@ -2414,11 +2426,14 @@ proptest! {
 
     #[test]
     fn prop_sub_orders_contiguous_and_disjoint(
-        participant in proptest::collection::vec((0u64..64, 0u64..2), 0..6),
+        participant in participant_path(),
         step in 0u64..1_000,
         count in 1usize..8,
         reductions in proptest::collection::vec(
-            proptest::collection::vec((0u64..64, 0u64..2), 0..8),
+            (participant_path(), 0u64..64).prop_map(|(mut path, step)| {
+                path.push((step, 0));
+                path
+            }),
             0..16,
         ),
     ) {

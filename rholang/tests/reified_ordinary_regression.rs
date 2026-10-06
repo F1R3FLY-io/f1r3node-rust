@@ -76,7 +76,14 @@ const R2_CONTINUATION_FIRST_SEND: &str = r#"@"rrs-r2-continuation-first"!(42)"#;
 
 const R3_SAME_CHANNEL_JOIN: &str =
     r#"for (@[y, 6] <- @"rrs-r3-greedy" & @[1, x] <- @"rrs-r3-greedy") { Nil }"#;
-const R3_GREEDY_DATA: &str = r#"@"rrs-r3-greedy"!([1, 5]) | @"rrs-r3-greedy"!([1, 6])"#;
+// The witness of greedy joins needs `[1, 6]` before the other datum in the
+// canonical candidate order, so that the bind `[1, x]` takes it first. The
+// order follows the source hashes of the two produces (DR-75). The data
+// `[1, 5]` were the witness under the digest order before the merge of
+// feature/cost-accounted-rho at 4d67b5ccc. Under the canonical order, `[1, 1]`
+// and `[1, 2]` are witnesses, and `[1, 0]`, `[1, 3]`, `[1, 4]`, `[1, 5]`,
+// `[1, 7]`, `[1, 8]` and `[1, 9]` are not (measured at 4d67b5ccc).
+const R3_GREEDY_DATA: &str = r#"@"rrs-r3-greedy"!([1, 1]) | @"rrs-r3-greedy"!([1, 6])"#;
 const R3_GREEDY_RECEIVE: &str = r#"for (@left, @right <- @"rrs-r3-greedy-names") { for (@[y, 6] <- @left & @[1, x] <- @right) { @"rrs-r3-greedy-out"!(x, y) } } | @"rrs-r3-greedy-names"!("rrs-r3-greedy", "rrs-r3-greedy")"#;
 const R3_CONTROL_DATA: &str = r#"@"rrs-r3-control"!([1, 9]) | @"rrs-r3-control"!([7, 6])"#;
 const R3_CONTROL_RECEIVE: &str = r#"for (@left, @right <- @"rrs-r3-control-names") { for (@[y, 6] <- @left & @[1, x] <- @right) { @"rrs-r3-control-out"!(x, y) } } | @"rrs-r3-control-names"!("rrs-r3-control", "rrs-r3-control")"#;
@@ -1235,20 +1242,54 @@ fn bincode_hash<T: serde::Serialize>(record: &T) -> Blake2b256Hash {
     Blake2b256Hash::new(&bincode::serialize(record).expect("bincode-serialize a candidate"))
 }
 
-// The host's candidate ranking, computed in the test: ascending
-// (Blake2b256(bincode(record)), index).
-fn bincode_rank<T: serde::Serialize>(records: &[T]) -> Vec<(Blake2b256Hash, usize)> {
-    let mut keyed: Vec<(Blake2b256Hash, usize)> = records
+// The hash of the source produce or consume of a stored candidate.
+trait CandidateSourceHash {
+    fn source_hash(&self) -> &Blake2b256Hash;
+}
+
+impl<A: Clone> CandidateSourceHash for Datum<A> {
+    fn source_hash(&self) -> &Blake2b256Hash { &self.source.hash }
+}
+
+impl<P: Clone, K: Clone> CandidateSourceHash for WaitingContinuation<P, K> {
+    fn source_hash(&self) -> &Blake2b256Hash { &self.source.hash }
+}
+
+// The host's candidate ranking, computed in the test with the rule of
+// candidate_order.rs (DR-75 of feature/cost-accounted-rho, the base since the
+// merge at 4d67b5ccc): ascending (source hash, Blake2b256(bincode(record)),
+// index). The digest decides only between equal source hashes. Each entry is
+// the digest and the store index of a record.
+fn canonical_rank<T: serde::Serialize + CandidateSourceHash>(
+    records: &[T],
+) -> Vec<(Blake2b256Hash, usize)> {
+    let mut keyed: Vec<(Blake2b256Hash, Blake2b256Hash, usize)> = records
         .iter()
         .enumerate()
-        .map(|(index, record)| (bincode_hash(record), index))
+        .map(|(index, record)| (record.source_hash().clone(), bincode_hash(record), index))
         .collect();
     keyed.sort();
     keyed
+        .into_iter()
+        .map(|(_, digest, index)| (digest, index))
+        .collect()
 }
 
+// Disabled by the merge of feature/cost-accounted-rho at 4d67b5ccc: the host
+// no longer ranks candidates by their digest alone (DR-75), so canonical_rank
+// replaces this oracle.
+// fn bincode_rank<T: serde::Serialize>(records: &[T]) -> Vec<(Blake2b256Hash, usize)> {
+//     let mut keyed: Vec<(Blake2b256Hash, usize)> = records
+//         .iter()
+//         .enumerate()
+//         .map(|(index, record)| (bincode_hash(record), index))
+//         .collect();
+//     keyed.sort();
+//     keyed
+// }
+
 fn deterministic_order(data: &[Datum<ListParWithRandom>]) -> Vec<usize> {
-    bincode_rank(data)
+    canonical_rank(data)
         .into_iter()
         .map(|(_, index)| index)
         .collect()
@@ -2138,7 +2179,7 @@ async fn deterministic_data_candidates() -> Value {
     evaluate(&mut play, DC_DATA_SOURCE, "rrs-dc-data").await;
     let stored = play.get_data(&channel).await;
     assert_eq!(stored.len(), DC_CANDIDATES, "the data step stores six data");
-    let ranked = bincode_rank(&stored);
+    let ranked = canonical_rank(&stored);
     assert!(
         !identity_order(&ranked),
         "the ranking must differ from the store order"
@@ -2165,7 +2206,7 @@ async fn deterministic_data_candidates() -> Value {
     let ranked_hashes: Vec<Blake2b256Hash> = ranked.iter().map(|(hash, _)| hash.clone()).collect();
     assert_eq!(
         taken, ranked_hashes,
-        "consumes take data in ascending bincode-hash order"
+        "consumes take data in the canonical candidate order"
     );
     json!({
         "source": DC_DATA_SOURCE,
@@ -2185,7 +2226,7 @@ async fn deterministic_continuation_candidates() -> Value {
     evaluate(&mut play, DC_CONTINUATION_SOURCE, "rrs-dc-cont").await;
     let waiting = play.get_continuations(vec![channel.clone()]).await;
     assert_eq!(waiting.len(), DC_CANDIDATES, "six receives wait");
-    let ranked = bincode_rank(&waiting);
+    let ranked = canonical_rank(&waiting);
     assert!(
         !identity_order(&ranked),
         "the ranking must differ from the store order"
@@ -2210,7 +2251,7 @@ async fn deterministic_continuation_candidates() -> Value {
     let ranked_hashes: Vec<Blake2b256Hash> = ranked.iter().map(|(hash, _)| hash.clone()).collect();
     assert_eq!(
         fired, ranked_hashes,
-        "produces fire continuations in ascending bincode-hash order"
+        "produces fire continuations in the canonical candidate order"
     );
     json!({
         "source": DC_CONTINUATION_SOURCE,
@@ -3106,7 +3147,7 @@ async fn replay_with_deploy_checkpoints(
             .await
             .map_err(|error| format!("{context}: check_replay_data failed: {error:?}"))?;
         let root = replay.create_checkpoint().await.root;
-        // rrs-finding-head-replay-checkpoint-produce-counter: RSpace::create_checkpoint resets the produce counter (ispace_impl.rs:75-76), ReplayRSpace::create_checkpoint keeps it (replay_rspace.rs:159-174).
+        // rrs-finding-head-replay-checkpoint-produce-counter: RSpace::create_checkpoint resets the produce counter (ispace_impl.rs:82-83), ReplayRSpace::create_checkpoint keeps it (replay_rspace.rs:166-181).
         replay.take_event_log().await;
         if root != deploy.root {
             return Err(format!(
@@ -3128,7 +3169,7 @@ async fn replay_with_deploy_checkpoints(
 // Protocol B: Casper's block protocol, the rule that validators run. Play
 // takes the event log of each deploy (casper runtime.rs:565) and creates one
 // checkpoint for the block. Replay resets once, discards its event log after
-// each deploy (replay_runtime.rs:63-64, 417), and creates one checkpoint.
+// each deploy (replay_runtime.rs:192-193, 599), and creates one checkpoint.
 async fn replay_with_block_checkpoint(
     sources: &[String],
     label: &str,

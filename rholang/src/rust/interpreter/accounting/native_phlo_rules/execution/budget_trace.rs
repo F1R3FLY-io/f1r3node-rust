@@ -12,6 +12,7 @@ use crate::rust::interpreter::accounting::authority::{
 };
 use crate::rust::interpreter::accounting::byte_receipts::ByteObservation;
 use crate::rust::interpreter::accounting::monetary_allocation::{reserve_work, FundingSearchError};
+use crate::rust::interpreter::accounting::native_runtime::PathId;
 use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -34,7 +35,10 @@ impl From<AuthorityByteEventKind> for NativeAttemptStage {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeBudgetOccurrence {
     pub session: [u8; 32],
-    pub path: Vec<(u64, u64)>,
+    // Changed by C7b (DR-86): an occurrence names the node of its path in the
+    // evidence's path trie instead of holding a copy of the path.
+    // pub path: Vec<(u64, u64)>,
+    pub path: PathId,
     pub stage: NativeAttemptStage,
 }
 
@@ -141,7 +145,7 @@ impl NativePhloExecutionContract<'_> {
         let mut charges = allocate(rows.len(), budget)?;
         let mut comparison_bytes = allocate(rows.len(), budget)?;
         for (index, row) in rows.iter().enumerate() {
-            if row.occurrence.path.len() > limits.path_segments {
+            if row.occurrence.path.depth() > limits.path_segments {
                 return Err(NativeBudgetTraceError::Limit);
             }
             reserve_work(budget, HostWorkDimension::VerificationOperations, 34)?;
@@ -153,17 +157,27 @@ impl NativePhloExecutionContract<'_> {
             }
             ordered.push(index);
         }
+        // Changed by C7b (DR-86): an occurrence compares its session, path id and
+        // stage, a fixed number of words.
+        // let compare = |left: usize, right: usize| {
+        //     reserve_work(
+        //         budget,
+        //         HostWorkDimension::VerificationOperations,
+        //         occurrence_work(
+        //             rows[left]
+        //                 .occurrence
+        //                 .path
+        //                 .len()
+        //                 .min(rows[right].occurrence.path.len()),
+        //         )?,
+        //     )?;
+        //     Ok(rows[left].occurrence.cmp(&rows[right].occurrence))
+        // };
         let compare = |left: usize, right: usize| {
             reserve_work(
                 budget,
                 HostWorkDimension::VerificationOperations,
-                occurrence_work(
-                    rows[left]
-                        .occurrence
-                        .path
-                        .len()
-                        .min(rows[right].occurrence.path.len()),
-                )?,
+                occurrence_work(1)?,
             )?;
             Ok(rows[left].occurrence.cmp(&rows[right].occurrence))
         };
@@ -214,11 +228,13 @@ impl CheckedNativeBudgetTrace {
         observation: &ByteObservation,
         budget: &HostWorkBudget,
     ) -> Result<NativeBudgetReplayDecision, NativeBudgetTraceError> {
-        if occurrence.path.len() > self.evidence.path_limit {
+        if occurrence.path.depth() > self.evidence.path_limit {
             return Err(NativeBudgetTraceError::Limit);
         }
         let comparisons = (usize::BITS - self.evidence.ordered.len().leading_zeros()) as usize + 1;
-        let work = occurrence_work(occurrence.path.len())?
+        // Changed by C7b (DR-86): see check_budget_evidence.
+        // let work = occurrence_work(occurrence.path.len())?
+        let work = occurrence_work(1)?
             .checked_mul(comparisons)
             .ok_or(NativeBudgetTraceError::Limit)?;
         reserve_work(budget, HostWorkDimension::VerificationOperations, work)?;

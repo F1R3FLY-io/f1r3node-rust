@@ -378,32 +378,74 @@ impl CheckedNativeOperationJournal {
             work(host, HostWorkDimension::SearchStateBytes, backing)
                 .map_err(|_| RSpaceError::HostWorkRejected)
         };
-        for operation in 0..self.operations.len() {
+        // Changed by C7b (DR-86): the slots follow a depth-first walk of the
+        // path trie that visits the children of each node by increasing
+        // segment. The walk lists the paths in sorted vector order
+        // (`NativePathTrie.trie_dfs_is_lex_sort`), which is the order of the
+        // replaced sort, because all rows share one session (check_sizes) and
+        // their paths are distinct (check_operation_journal).
+        // for operation in 0..self.operations.len() {
+        //     slots.push(TraceSlot {
+        //         operation,
+        //         events: 0..0,
+        //     });
+        // }
+        // sort(&mut slots, |left, right| {
+        //     let a = &self.operations[left.operation].occurrence;
+        //     let b = &self.operations[right.operation].occurrence;
+        //     let segments = a
+        //         .path
+        //         .len()
+        //         .checked_add(b.path.len())
+        //         .ok_or(InterpreterError::HostWorkRejected)?;
+        //     work(
+        //         host,
+        //         HostWorkDimension::VerificationOperations,
+        //         work_count(segments, 1, 1)?,
+        //     )?;
+        //     work(
+        //         host,
+        //         HostWorkDimension::VerificationBytes,
+        //         work_count(segments, 16, 64)?,
+        //     )?;
+        //     Ok(a.session.cmp(&b.session).then_with(|| a.path.cmp(&b.path)))
+        // })?;
+        let order = self.recording.paths.preorder(host)?;
+        let nodes = order
+            .len()
+            .checked_add(1)
+            .ok_or(NativeOperationTraceError::Limit)?;
+        let mut node_operation = allocate::<Option<usize>>(nodes, host)?;
+        node_operation.resize(nodes, None);
+        work(
+            host,
+            HostWorkDimension::VerificationOperations,
+            work_count(self.operations.len(), 1, order.len())?,
+        )?;
+        for (operation, row) in self.operations.iter().enumerate() {
+            *node_operation
+                .get_mut(row.occurrence.path.index())
+                .ok_or(NativeOperationTraceError::Coverage)? = Some(operation);
+        }
+        // The empty path is the root, which the walk omits. It sorts before
+        // every other path.
+        if let Some(operation) = node_operation[0] {
             slots.push(TraceSlot {
                 operation,
                 events: 0..0,
             });
         }
-        sort(&mut slots, |left, right| {
-            let a = &self.operations[left.operation].occurrence;
-            let b = &self.operations[right.operation].occurrence;
-            let segments = a
-                .path
-                .len()
-                .checked_add(b.path.len())
-                .ok_or(InterpreterError::HostWorkRejected)?;
-            work(
-                host,
-                HostWorkDimension::VerificationOperations,
-                work_count(segments, 1, 1)?,
-            )?;
-            work(
-                host,
-                HostWorkDimension::VerificationBytes,
-                work_count(segments, 16, 64)?,
-            )?;
-            Ok(a.session.cmp(&b.session).then_with(|| a.path.cmp(&b.path)))
-        })?;
+        for id in order {
+            if let Some(operation) = node_operation[id.index()] {
+                slots.push(TraceSlot {
+                    operation,
+                    events: 0..0,
+                });
+            }
+        }
+        if slots.len() != self.operations.len() {
+            return Err(NativeOperationTraceError::Coverage);
+        }
         let mut cursor = 0usize;
         for slot in &mut slots {
             let row = &self.operations[slot.operation];

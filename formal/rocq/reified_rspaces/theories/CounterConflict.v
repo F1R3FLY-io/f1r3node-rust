@@ -56,7 +56,7 @@
                             526-553, 557-579
    depends                  rspace++/src/rspace/merger/merging_logic.rs:
                             67-138
-   in_pre_state             casper/src/rust/merging/block_index.rs:35-39
+   in_pre_state             casper/src/rust/merging/block_index.rs:61-65
                             (produce_exists_in_pre_state)
    exec (the bump)          rholang/src/rust/interpreter/spaces/counter.rs:
                             118-182, 185-223 (bump, and take: the COMM has
