@@ -49,6 +49,11 @@ fn inspect_metered(
     result.map_err(|_| RSpaceError::HostWorkRejected)
 }
 
+// Kept legacy by D-O1 (DR-94) for the channel inspections (the produce
+// channel and the consume channels). The RSpace source preparation reads the
+// same channels again for the scheduler footprint and the cold-read keys
+// without reservations of its own, and the legacy per-level charge of these
+// inspections is part of what pays those reads until Stage B (D-E3).
 fn inspect_value<T: CloneBacking>(value: &T, meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
     inspect_metered(meter, |backing| clone_backing::inspect(value, backing))
 }
@@ -59,6 +64,30 @@ fn inspect_slice<T: CloneBacking>(
 ) -> Result<(), RSpaceError> {
     inspect_metered(meter, |backing| {
         clone_backing::inspect_slice(values, backing)
+    })
+}
+
+// D-O1 (DR-94): the block-mode inspections of the data, the patterns, the
+// continuation and the COMM data. Each caller's inspection prepays exactly
+// one linear traversal: the prost length computation of the byte charge, or
+// a field read and that length (DR-76). The other reads of these values have
+// their own reservations, and their releases are paid by the legacy source
+// preparation.
+fn inspect_value_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect_metered(meter, |backing| {
+        clone_backing::inspect_blocks(value, backing)
+    })
+}
+
+fn inspect_slice_blocks<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect_metered(meter, |backing| {
+        clone_backing::inspect_blocks_slice(values, backing)
     })
 }
 
@@ -166,7 +195,9 @@ pub(crate) fn produce_introduction_metered_with_identity<'a>(
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
     inspect_value(channel, meter)?;
-    inspect_value(data, meter)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // inspect_value(data, meter)?;
+    inspect_value_blocks(data, meter)?;
     Ok(MeasuredRSpaceObservation {
         event_id: identity,
         kind: AuthorityByteEventKind::ProduceIntroduction,
@@ -220,8 +251,12 @@ pub(crate) fn consume_introduction_metered_with_identity<'a>(
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
     inspect_slice(channels, meter)?;
-    inspect_slice(patterns, meter)?;
-    inspect_value(continuation, meter)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // inspect_slice(patterns, meter)?;
+    inspect_slice_blocks(patterns, meter)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // inspect_value(continuation, meter)?;
+    inspect_value_blocks(continuation, meter)?;
     Ok(MeasuredRSpaceObservation {
         event_id: identity,
         kind: AuthorityByteEventKind::ConsumeIntroduction,
@@ -271,7 +306,9 @@ pub(crate) fn comm_metered(
     // never read, so walking it charged work that no step performs.
     // inspect_value(continuation, meter)?;
     for (datum, _) in data {
-        inspect_value(*datum, meter)?;
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // inspect_value(*datum, meter)?;
+        inspect_value_blocks(*datum, meter)?;
     }
     let identity: [u8; 32] = comm
         .cost_identity_metered(meter)?

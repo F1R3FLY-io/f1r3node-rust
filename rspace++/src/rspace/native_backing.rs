@@ -100,6 +100,15 @@ pub(crate) fn inspect_slice<T: CloneBacking>(
     walk(meter, |reserve| clone_backing::inspect_slice(values, reserve))
 }
 
+/// D-O1 (DR-94): the block-mode inspection (DR-92): it prepays exactly one
+/// linear traversal of `value`.
+pub(crate) fn inspect_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_blocks(value, reserve))
+}
+
 impl CloneBacking for Blake2b256Hash {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         walker.push(&self.0)

@@ -108,9 +108,13 @@ impl COMM {
     ) -> Result<Blake2b256Hash, RSpaceError> {
         type ProduceIdentity<'a> = (&'a Blake2b256Hash, &'a Blake2b256Hash, bool, i32);
 
-        native_backing::inspect(&self.consume, meter)?;
-        native_backing::inspect(&self.peeks, meter)?;
-        native_backing::inspect(&self.times_repeated, meter)?;
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per
+        // enclosing block. native_backing::inspect(&self.consume, meter)?;
+        // native_backing::inspect(&self.peeks, meter)?;
+        // native_backing::inspect(&self.times_repeated, meter)?;
+        native_backing::inspect_blocks(&self.consume, meter)?;
+        native_backing::inspect_blocks(&self.peeks, meter)?;
+        native_backing::inspect_blocks(&self.times_repeated, meter)?;
         let map_hash_bytes = self
             .times_repeated
             .keys()
@@ -509,6 +513,48 @@ mod tests {
         let unlimited = |_: usize, _: usize, _: usize| Ok(());
         assert_eq!(original.cost_identity_metered(&unlimited).unwrap(), original.cost_identity());
         assert_eq!(reversed.cost_identity_metered(&unlimited).unwrap(), original.cost_identity());
+    }
+
+    /// D-O1 (DR-94): the metered COMM identity reserves its exact credit
+    /// before its work: it accepts the credit that it uses and rejects one
+    /// unit less in any dimension.
+    #[test]
+    fn metered_cost_identity_accepts_exact_credit() {
+        let mut value = comm();
+        let second = Produce::new(
+            Blake2b256Hash::new(b"channel-2"),
+            Blake2b256Hash::new(b"produce-2"),
+            true,
+        );
+        value.produces.push(second.clone());
+        value.times_repeated.insert(second, 3);
+        value.peeks.insert(0);
+        let run = |limit: [usize; 3]| {
+            let used = std::cell::Cell::new([0_usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let [total_operations, total_scanned, total_backing] = used.get();
+                let next = [
+                    total_operations + operations,
+                    total_scanned + scanned,
+                    total_backing + backing,
+                ];
+                if next.iter().zip(limit).any(|(total, bound)| *total > bound) {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                used.set(next);
+                Ok(())
+            };
+            value.cost_identity_metered(&meter).map(|_| used.get())
+        };
+        let exact = run([usize::MAX; 3]).expect("unlimited");
+        assert_eq!(run(exact).expect("exact"), exact);
+        for dimension in 0..3 {
+            if exact[dimension] > 0 {
+                let mut smaller = exact;
+                smaller[dimension] -= 1;
+                assert!(matches!(run(smaller), Err(RSpaceError::HostWorkRejected)));
+            }
+        }
     }
 
     #[test]

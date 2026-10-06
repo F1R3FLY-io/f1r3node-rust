@@ -63,6 +63,12 @@ pub trait CloneBacking {
     where Self: Sized {
         false
     }
+
+    /// D-O1 (DR-94): true when `children` would push nothing and reserve
+    /// nothing, as for an empty container. A block-mode walk then charges the
+    /// value as an inline field: its bytes lie in the enclosing block, and the
+    /// walker reads only its length or discriminant there.
+    fn walk_is_empty(&self) -> bool { false }
 }
 
 /// D-O1 (DR-92): block-accounting constants. A worklist entry is one fat
@@ -313,6 +319,9 @@ impl<'a> Walker<'a> {
     /// entry constants, which also pay the worklist's chunks and the moves of
     /// its chunk headers (D-B3).
     fn push_block_entry<T: CloneBacking>(&mut self, value: &'a T) -> Result<(), BackingError> {
+        if !self.is_inline::<T>() && value.walk_is_empty() {
+            return self.meter.reserve(3, BLOCK_FIELD_SCANNED, 0);
+        }
         if self.is_inline::<T>() {
             let header = if self.copy_payload && T::shared_header() {
                 BLOCK_SHARED_HEADER_SCANNED
@@ -360,6 +369,18 @@ impl<'a> Walker<'a> {
         if self.is_inline::<T>() {
             // D-O1 (DR-92): the elements are not visited (legacy: same charge).
             self.opaque_allocation(bytes)?;
+            // D-O1 (DR-94): a block-mode copy of shared pointers also updates
+            // each pointer's strong count, as a pushed shared pointer does.
+            if self.blocks && self.copy_payload && T::shared_header() {
+                self.meter.reserve(
+                    0,
+                    values
+                        .len()
+                        .checked_mul(BLOCK_SHARED_HEADER_SCANNED)
+                        .ok_or(BackingError::Overflow)?,
+                    0,
+                )?;
+            }
         } else {
             self.allocation(bytes)?;
             for value in values {
@@ -696,6 +717,7 @@ impl<T: CloneBacking> CloneBacking for Vec<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         walker.slice(self)
     }
+    fn walk_is_empty(&self) -> bool { self.is_empty() }
 }
 impl<T: CloneBacking> CloneBacking for Option<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
@@ -704,6 +726,7 @@ impl<T: CloneBacking> CloneBacking for Option<T> {
         }
         Ok(())
     }
+    fn walk_is_empty(&self) -> bool { self.is_none() }
 }
 impl<T: CloneBacking> CloneBacking for Box<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
@@ -721,6 +744,7 @@ impl CloneBacking for String {
         // D-O1 (DR-92): string bytes are not visited (legacy: same charge).
         walker.opaque_allocation(self.len())
     }
+    fn walk_is_empty(&self) -> bool { self.is_empty() }
 }
 impl<K: CloneBacking, V: CloneBacking> CloneBacking for BTreeMap<K, V> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
@@ -732,6 +756,7 @@ impl<K: CloneBacking, V: CloneBacking> CloneBacking for BTreeMap<K, V> {
         }
         Ok(())
     }
+    fn walk_is_empty(&self) -> bool { self.is_empty() }
 }
 impl<T: CloneBacking> CloneBacking for BTreeSet<T> {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
@@ -743,6 +768,7 @@ impl<T: CloneBacking> CloneBacking for BTreeSet<T> {
         }
         Ok(())
     }
+    fn walk_is_empty(&self) -> bool { self.is_empty() }
 }
 impl<K: CloneBacking, V: CloneBacking, S: BuildHasher + CloneBacking> CloneBacking
     for HashMap<K, V, S>

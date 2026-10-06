@@ -13,9 +13,13 @@
    message, computing that message's length for the length prefix and
    encoding it:
      encode_work m = own m + sum of (len_work c + encode_work c).
-   A site that encodes a message first computes its length to size the
-   output buffer: site_work m = len_work m + encode_work m. The writes of
-   the output are its encoded length, which the site reserves separately.
+   Prost's Message::encode (and encode_to_vec) computes the top-level
+   length first and then runs encode_raw: site_work m = len_work m +
+   encode_work m is the work of Message::encode. The writes of the output
+   are its encoded length, which the site reserves separately. (Correction
+   by DR-94: an earlier version of this comment read the first term as the
+   site's own call that sizes its buffer. A site that makes that call reads
+   the value once more, and the site's own inspection prepays that read.)
 
    Results:
    - encode_work_le_height: encode_work m <= (1 + height m) * len_work m;

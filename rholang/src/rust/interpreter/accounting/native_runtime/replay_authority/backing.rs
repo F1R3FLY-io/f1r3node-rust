@@ -128,9 +128,13 @@ pub(super) fn reserve_event_copies(
     host: &HostWorkBudget,
 ) -> Result<(), InterpreterError> {
     for (event_id, event) in &state.events {
-        clone_backing::reserve_copy_and_cleanup(event_id, host)?;
-        clone_backing::reserve_copy_and_cleanup(&event.authority, host)?;
-        clone_backing::reserve_copy_and_cleanup(&event.debit, host)?;
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // clone_backing::reserve_copy_and_cleanup(event_id, host)?;
+        // clone_backing::reserve_copy_and_cleanup(&event.authority, host)?;
+        // clone_backing::reserve_copy_and_cleanup(&event.debit, host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(event_id, host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&event.authority, host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&event.debit, host)?;
     }
     Ok(())
 }

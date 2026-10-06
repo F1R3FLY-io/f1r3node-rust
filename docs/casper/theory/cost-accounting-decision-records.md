@@ -6373,6 +6373,11 @@ Tests elsewhere:
 - `block_clones_and_inspections_charge_the_walker_block_charges` in
   `models/src/rust/rholang/sorter/metered.rs`.
 
+**Amendment (DR-94).** In block mode an empty container is charged as an
+inline field, not as a worklist entry. A block-mode copy of a slice of
+shared pointers charges each pointer's strong-count update. See DR-94
+decisions 5 and 6.
+
 **Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
 releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
 `ofp-2-cap-d-b3-worklist-charge`.
@@ -6492,4 +6497,191 @@ Tests:
   the three metered paths charge quadratically in the depth, and their
   results equal the unmetered conversions.
 
+**Correction (DR-94).** The Context above undercounts by one length
+computation. In prost 0.14.4, `Message::encode` computes the top-level
+length itself before `encode_raw`. Thus `encode_raw` reads the value up to
+`1 + h` times, `Message::encode` reads it up to `2 + h` times, and a site
+that also calls `encoded_len()` to size its buffer reads it up to `3 + h`
+times. The implementation is sound as committed. The site's inspection,
+which stays, prepays the extra length computation, and
+`reserve_nested_encode` covers `Message::encode`. `NestedEncodeCost.v`
+proves the bound for `Message::encode` (its `site_work`), and DR-94
+corrects that file's comment.
+
 **Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.
+
+## DR-94 — Stage A walker sites in block mode
+
+**Status.** Implemented 2026-10-06 for Phase D item D-B4 of epic 8946 (D-O1
+Stage A of the Phase D plan).
+
+**Context.** DR-92 added the block mode of the clone-backing walker, and
+DR-93 added the depth charge for nested prost encodes. The block mode is
+sound at a call site only under a precondition: the site's inspection
+prepays exactly one linear traversal of the value, or the site's copy
+prepays one clone and, with cleanup, one release. A read-only audit traced
+every Stage A walker call to the reads that follow it, and an independent
+arbitration checked the audit against the code.
+
+The audit found three kinds of sites that the precondition does not cover:
+
+- A site drops an owned temporary after the inspected comparison. The legacy
+  per-level charge also pays that release. A block inspection pays only the
+  comparison.
+- The RSpace source preparation reads each value once for the source. It
+  then reads the channels again for the scheduler footprint and the
+  cold-read keys, and it drops all the values at the end of the operation.
+  None of these later reads has a reservation of its own.
+- The legacy inspections of the channels in observation construction are
+  part of what pays those later channel reads.
+
+**Decision.**
+
+1. These sites switch to block mode. In each, the inspected value is
+   borrowed, the copy prepays its own release, or the value's release is
+   paid elsewhere:
+   - observation construction for the produce data, the consume patterns,
+     the consume continuation and the COMM data;
+   - the borrowed sides of the authority comparisons, and the authority
+     copies;
+   - the replay-authority prepare comparisons and copies, and the result
+     backing;
+   - the authority copies and the borrowed comparison sides in the
+     accounting module;
+   - the copy of the mergeable map for the replay result;
+   - the COMM cost identity.
+   Each old call stays in the source, commented out with its reason.
+2. These sites stay legacy, each with a comment that gives the reason:
+   - Sites that drop an owned temporary after the comparison: the canonical
+     signature, the sorted Par in the signature validation, the owned
+     signature in the region map, the canonical authorities in the
+     accounting module, and the nested-encode sites with an owned value
+     (the quoted and named Par, and the sorted lane channel).
+   - The produce channel and the consume channels in observation
+     construction, because of the RSpace coupling above.
+3. The RSpace source preparation (`prepare_produce_source`,
+   `prepare_consume_source`) stays legacy. It moves to Stage B (D-E3), where
+   the later reads get reservations of their own.
+4. One redundant inspection is commented out: the inspection of a region
+   before its copy in `merge_authorities_metered`, because the copy's
+   copy-and-cleanup reservation prepays the same reads.
+5. Walker: a block-mode copy of a slice of shared pointers also charges the
+   strong-count update of each pointer, `BLOCK_SHARED_HEADER_SCANNED` per
+   element, as DR-92 decision 2 states for a pushed shared pointer. The legacy
+   mode is unchanged.
+6. Walker: in block mode, an empty container (an empty vector, string,
+   B-tree map or B-tree set, or a `None`) is charged as an inline field,
+   `BLOCK_FIELD_SCANNED` and no backing, not as a worklist entry. Its
+   `children` would push nothing and reserve nothing, and the walker reads
+   only its length or discriminant, which lies in the enclosing block. The
+   new trait method `CloneBacking::walk_is_empty` reports this condition.
+   The first measurement of this item showed the need: without this rule,
+   the block-mode observation inspections charged about 21 MB of
+   SearchStateBytes per gateway validator replay, against about 2 MB in the
+   legacy mode. Most of the entries were the empty vector fields of each
+   `Par`. `WalkerBlockCharge.v` models such a value as an `Empty` node whose
+   walker read is at most its own bytes.
+7. The arbitration found the counting error in DR-93: a site does one more
+   length computation than DR-93 counts. DR-93 carries a correction note,
+   and the comment in `NestedEncodeCost.v` is corrected. The DR-93 sites were
+   already sound, so the code does not change.
+8. The replay-authority checkpoint copies and the checkpoint copy of the
+   mergeable map are not Stage A sites. They stay legacy until Stage B.
+
+**Audit.**
+
+| Site | Value | Prepaid work | Mode |
+|------|-------|--------------|------|
+| `observation_construction.rs`, produce channel | borrowed `Par` | length; RSpace channel reads lean on it | legacy |
+| `observation_construction.rs`, produce data | borrowed `ListParWithRandom` | one length computation | block |
+| `observation_construction.rs`, consume channels | borrowed `[Par]` | lengths; RSpace channel reads lean on it | legacy |
+| `observation_construction.rs`, consume patterns | borrowed `[BindPattern]` | one length computation each | block |
+| `observation_construction.rs`, consume continuation | borrowed `TaggedContinuation` | one length computation | block |
+| `observation_construction.rs`, COMM data | borrowed `ListParWithRandom` | a field read and one length computation (DR-76) | block |
+| `authority.rs`, `canonical_cost_signature_metered`, canonical side | owned `CostSignature` | comparison; release on the error path | legacy |
+| `authority.rs`, `canonical_cost_signature_metered`, input side | borrowed `CostSignature` | comparison | block |
+| `authority.rs`, signature validation, input `Par` | borrowed | comparison | block |
+| `authority.rs`, signature validation, sorted `Par` | owned | comparison and release | legacy |
+| `authority.rs`, region map, existing side | borrowed | comparison | block |
+| `authority.rs`, region map, new side | owned `CostSignature` | comparison and release | legacy |
+| `authority.rs`, region map, instance id copy | copy | clone and release | block copy |
+| `authority.rs`, `merge_authorities_metered`, region inspection | borrowed | nothing (redundant) | commented out |
+| `authority.rs`, `merge_authorities_metered`, region copy | copy | clone and release | block copy |
+| `authority.rs`, `cost_atom_to_sig_metered`, Quote and Name | owned `Par` | length and release | legacy |
+| `authority.rs`, `cost_signature_lane_metered`, atom | borrowed `Par` | one length computation | block |
+| `authority.rs`, `cost_signature_lane_metered`, channel | owned sorted `Par` | length and release | legacy |
+| `replay_authority.rs`, retry comparison (both sides) | borrowed `ByteObservation` | comparison | block |
+| `replay_authority.rs`, granted and frontier copies | copy and shared pointer | clone and release, pointer copy | block copy |
+| `replay_authority.rs`, result backing | copies, shared-pointer rows | clones and releases, pointer copies | block copy |
+| `accounting/mod.rs`, `reserve_authority_clone` | copy | clone and release | block copy |
+| `accounting/mod.rs`, identity checks, existing sides | borrowed `CostAuthority` | comparison | block |
+| `accounting/mod.rs`, identity checks, canonical sides | owned `CostAuthority` | comparison and release | legacy |
+| `accounting/mod.rs`, `inspect_observation` | borrowed, or a payload whose release is prepaid at birth | comparison | block |
+| `rho_runtime.rs`, replay result mergeable map | copy | clone and release | block copy |
+| `trace/event.rs`, `cost_identity_metered` | borrowed fields | one bincode pass and a key fold | block |
+| `session/operations.rs`, source preparation | operation values | source pass, footprint, cold-read keys, release | legacy (D-E3) |
+
+**Soundness.** Each block-mode site prepays exactly one linear traversal or
+one copy with its release, so DR-92's proofs apply. The sites that stay
+legacy keep the charge that pays their extra reads. The audit and the
+arbitration recorded the evidence for each row. The source preparation of
+the produce data, the consume patterns and the consume continuation pays
+their releases under the legacy charge: its per-level charge counts each
+inline byte at least three times (the walker, the source pass and the
+release). The observation construction of these values therefore needs one
+traversal only.
+
+**Recorded gaps outside this item.** The audit and the arbitration found
+the following. This item does not change them:
+
+- The metered sorter's score trees are released without a VerificationBytes
+  charge. The owned-backing convention of DR-83 and DR-89 prepays releases
+  in operations only.
+- The RSpace footprint encoding and the cold-read key hashes read the
+  channels without reservations of their own. D-E3 must add them before the
+  source preparation switches.
+- The replay-authority checkpoint's cleanup walks the shared observation
+  payloads, although the copy holds only pointers. Its copy of the
+  generation pointer is not charged.
+- `cost_region_metered` copies the region preimage before it reserves
+  VerificationBytes for the copy.
+
+**Scope.** Cost-accounting work. Host-work reservations change, and no
+encoding, root or event changes.
+
+**Verification.** Tests:
+
+- `block_mode_authority_sites_accept_exact_credit` (`authority.rs`): the
+  conversion, region, demand and merge paths accept their exact credit and
+  reject one unit less in each dimension.
+- `metered_cost_identity_accepts_exact_credit` (`trace/event.rs`).
+- `block_slice_copy_of_shared_pointers_charges_each_strong_count`
+  (`clone_backing/tests.rs`).
+- The existing exact-credit and allocation tests of the observation
+  construction, the replay-authority prepare and the result backing pass
+  with the block charges.
+
+**Measurement.** The exact-usage probe ran the gateway funding test with
+counting caps, and this item is compared with the probe of group A
+(787a1a2fb). The figures include D-B1 to D-B3. Those items change production
+charges only through the five nested-encode reservations of DR-93.
+
+| Budget | VerificationBytes | SearchStateBytes |
+|--------|------------------:|-----------------:|
+| Gateway block, validator replay | 3,522.9 → 3,390.1 MB (−132.8 MB) | 973.5 → 979.5 MB (+5.9 MB) |
+| Gateway block, producer execution | 325.3 → 189.8 MB (−135.6 MB) | 111.7 → 122.4 MB (+10.7 MB) |
+| Small blocks, validator replay | +0.4 MB | +0.7 MB |
+
+Producer execution of the gateway block is now under the original
+VerificationBytes cap of 268,435,456 bytes. It stays under the original
+SearchStateBytes cap of 134,217,728 bytes. The remaining SearchStateBytes
+increase is the worklist backing of block-mode entries, four slots per
+entry. The legacy mode charged worklist backing only when the worklist grew.
+Without decision 6, the first measurement showed SearchStateBytes increases
+of 23.7 MB for the validator and 21.5 MB for the producer. The deferred
+RSpace source preparation, about 130 MB of validator VerificationBytes,
+accounts for most of the difference from the plan's projection of 258 MB
+for this cluster.
+
+**Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93. Leaf
+`ofp-2-cap-d-b4-walker-stage-a`.

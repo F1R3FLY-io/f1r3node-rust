@@ -1786,7 +1786,9 @@ impl NativeReplayEnvironment {
         let result = async {
             let evidence = self.session.completed_evidence().await?;
             let mergeable = self.merge_chs.read().await;
-            super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
+            // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+            // super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
+            super::accounting::clone_backing::reserve_blocks_copy_and_cleanup(&*mergeable, &host)?;
             let mergeable = mergeable.clone();
             if host.is_rejected() {
                 return Err(InterpreterError::HostWorkRejected);

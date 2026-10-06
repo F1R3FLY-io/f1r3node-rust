@@ -651,6 +651,11 @@ impl ParBlockOracle {
     /// A vector: its header is an entry and its buffer a block; the walker
     /// visits the elements of a buffer of non-inline values.
     fn vector<T>(&mut self, values: &[T], visited: bool, mut element: impl FnMut(&mut Self, &T)) {
+        // D-O1 (DR-94): an empty container is charged as an inline field.
+        if values.is_empty() {
+            self.field();
+            return;
+        }
         self.entry();
         self.add([2 * values.len(), 0, 0]);
         self.block(std::mem::size_of_val(values), visited, true);
@@ -665,10 +670,13 @@ impl ParBlockOracle {
     fn bytes(&mut self, bytes: &[u8]) { self.vector(bytes, false, |_, _| {}); }
 
     fn optional_par(&mut self, value: &Option<Par>) {
-        self.entry();
-        if let Some(par) = value {
-            self.entry();
-            self.par(par);
+        match value {
+            None => self.field(),
+            Some(par) => {
+                self.entry();
+                self.entry();
+                self.par(par);
+            }
         }
     }
 
@@ -740,9 +748,13 @@ impl ParBlockOracle {
         } = new;
         self.field();
         self.optional_par(p);
-        self.vector(uri, true, |oracle, text| {
-            oracle.block(text.len(), false, true)
-        });
+        assert!(uri.is_empty(), "term() has no uris");
+        self.vector(uri, true, |_, _| unreachable!("term() has no uris"));
+        if injections.is_empty() {
+            self.field();
+            self.bytes(locally_free);
+            return;
+        }
         self.entry();
         let (operations, bytes) =
             shared::rust::collection_backing::tree_backing::<String, Par>(injections.len())
@@ -760,12 +772,15 @@ impl ParBlockOracle {
 
     fn expr(&mut self, expr: &Expr) {
         let Expr { expr_instance } = expr;
-        self.entry();
-        if let Some(instance) = expr_instance {
-            self.entry();
-            match instance {
-                expr::ExprInstance::GByteArray(bytes) => self.bytes(bytes),
-                _ => unreachable!("term() has only byte-array expressions"),
+        match expr_instance {
+            None => self.field(),
+            Some(instance) => {
+                self.entry();
+                self.entry();
+                match instance {
+                    expr::ExprInstance::GByteArray(bytes) => self.bytes(bytes),
+                    _ => unreachable!("term() has only byte-array expressions"),
+                }
             }
         }
     }

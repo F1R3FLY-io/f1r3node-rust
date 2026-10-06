@@ -512,13 +512,36 @@ fn reserve_authority_clone(
     if let Some(host) = host {
         let backing =
             |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
-        shared_clone_backing::reserve_copy_and_cleanup(authority, &backing)
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // shared_clone_backing::reserve_copy_and_cleanup(authority, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::reserve_blocks_copy_and_cleanup(authority, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
     Ok(())
 }
 
 fn inspect_authority(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // shared_clone_backing::inspect(authority, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::inspect_blocks(authority, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+/// D-O1 (DR-94): the legacy inspection of an owned authority that the site
+/// drops after the comparison. The legacy per-level charge also pays that
+/// release; the block mode would pay only the comparison, so these sites stay
+/// legacy until Stage B (D-E3) decides how releases are prepaid.
+fn inspect_owned_authority(
     authority: &CostAuthority,
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
@@ -538,7 +561,10 @@ fn inspect_observation(
     if let Some(host) = host {
         let backing =
             |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
-        shared_clone_backing::inspect(observation, &backing)
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // shared_clone_backing::inspect(observation, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::inspect_blocks(observation, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
     Ok(())
@@ -1041,7 +1067,8 @@ impl RuntimeBudget {
         match authorities.get(&(identity, kind)) {
             Some(existing) => {
                 inspect_authority(existing, host.as_ref())?;
-                inspect_authority(&canonical, host.as_ref())?;
+                // Kept legacy by D-O1 (DR-94): `canonical` is dropped here.
+                inspect_owned_authority(&canonical, host.as_ref())?;
                 if existing == &canonical {
                     Ok(())
                 } else {
@@ -1749,7 +1776,8 @@ impl RuntimeBudget {
                 return self.record_native_retry(&mut state, prepared.as_ref());
             }
             inspect_authority(&existing.authority, host.as_ref())?;
-            inspect_authority(&canonical_authority, host.as_ref())?;
+            // Kept legacy by D-O1 (DR-94): `canonical_authority` is dropped here.
+            inspect_owned_authority(&canonical_authority, host.as_ref())?;
             if let Some(row) = existing.byte_observation.as_ref() {
                 inspect_observation(row, host.as_ref())?;
             }

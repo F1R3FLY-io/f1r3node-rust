@@ -140,7 +140,11 @@ pub fn canonical_cost_signature_metered(
         .term;
     validate_cost_signature_metered(&canonical, &meter)?;
     meter.inspect(&canonical).map_err(authority_backing_error)?;
-    meter.inspect(signature).map_err(authority_backing_error)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // meter.inspect(signature).map_err(authority_backing_error)?;
+    meter
+        .inspect_blocks(signature)
+        .map_err(authority_backing_error)?;
     if &canonical != signature {
         return Err(AuthorityError::NonCanonicalSignature);
     }
@@ -170,7 +174,12 @@ fn validate_cost_signature_metered(
             Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
                 let sorted = ParSortMatcher::sort_match_metered(par, meter)
                     .map_err(authority_backing_error)?;
-                meter.inspect(par).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                // meter.inspect(par).map_err(authority_backing_error)?;
+                meter.inspect_blocks(par).map_err(authority_backing_error)?;
+                // Kept legacy by D-O1 (DR-94): the owned `sorted` is dropped at
+                // the end of this arm, and the legacy per-level charge also pays
+                // that release.
                 meter
                     .inspect(&sorted.term)
                     .map_err(authority_backing_error)?;
@@ -444,7 +453,14 @@ pub fn canonical_authority_metered(
             .map_err(authority_backing_error)?;
         match regions.get(&region.instance_id) {
             Some(existing) => {
-                meter.inspect(existing).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                // meter.inspect(existing).map_err(authority_backing_error)?;
+                meter
+                    .inspect_blocks(existing)
+                    .map_err(authority_backing_error)?;
+                // Kept legacy by D-O1 (DR-94): the owned `signature` is dropped
+                // at the end of this iteration, and the legacy per-level charge
+                // also pays that release.
                 meter.inspect(&signature).map_err(authority_backing_error)?;
                 if existing != &signature {
                     return Err(AuthorityError::RegionIdentityConflict);
@@ -452,8 +468,12 @@ pub fn canonical_authority_metered(
             }
             None => {
                 reserve_authority_tree_insert::<Vec<u8>, CostSignature>(&meter, regions.len())?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                // let instance_id = meter
+                //     .clone(&region.instance_id)
+                //     .map_err(authority_backing_error)?;
                 let instance_id = meter
-                    .clone(&region.instance_id)
+                    .clone_blocks(&region.instance_id)
                     .map_err(authority_backing_error)?;
                 regions.insert(instance_id, signature);
             }
@@ -515,8 +535,15 @@ where
             .reserve(1, std::mem::size_of::<CostAuthority>(), 0)
             .map_err(authority_backing_error)?;
         for region in &authority.regions {
-            meter.inspect(region).map_err(authority_backing_error)?;
-            let copied = meter.clone(region).map_err(authority_backing_error)?;
+            // Disabled by D-O1 (DR-94): nothing reads `region` before the copy
+            // below, whose copy-and-cleanup reservation prepays its own reads
+            // and the release of the copy.
+            // meter.inspect(region).map_err(authority_backing_error)?;
+            // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+            // let copied = meter.clone(region).map_err(authority_backing_error)?;
+            let copied = meter
+                .clone_blocks(region)
+                .map_err(authority_backing_error)?;
             meter
                 .push(&mut merged.regions, copied)
                 .map_err(authority_backing_error)?;
@@ -592,7 +619,11 @@ fn cost_signature_lane_metered(
                 append_signature_channel_atom_metered(bytes, &mut channel, meter)?;
             }
             Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
-                meter.inspect(par).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes
+                // once per enclosing block. `par` is borrowed, and the
+                // inspection prepays only the length computation below.
+                // meter.inspect(par).map_err(authority_backing_error)?;
+                meter.inspect_blocks(par).map_err(authority_backing_error)?;
                 let encoded_len = par.encoded_len();
                 let mut bytes = meter
                     .vec::<u8>(encoded_len)
@@ -5576,6 +5607,84 @@ mod tests {
                 cost_region_metered(&signature, b"identity", 0, &|_, _, _| Ok(())).unwrap(),
                 cost_region(&signature, b"identity", 0).unwrap()
             );
+        }
+    }
+    /// The usage that `charge` reserves when every running total must stay
+    /// within `limit`.
+    fn run_within(
+        limit: [usize; 3],
+        charge: &dyn Fn(&dyn BackingMeter) -> Result<(), AuthorityError>,
+    ) -> Result<[usize; 3], AuthorityError> {
+        let used = std::cell::Cell::new([0_usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [total_operations, total_scanned, total_backing] = used.get();
+            let next = [
+                total_operations + operations,
+                total_scanned + scanned,
+                total_backing + backing,
+            ];
+            if next.iter().zip(limit).any(|(total, bound)| *total > bound) {
+                return Err(BackingError::Rejected);
+            }
+            used.set(next);
+            Ok(())
+        };
+        charge(&meter)?;
+        Ok(used.get())
+    }
+
+    fn assert_exact_credit(
+        site: &str,
+        charge: &dyn Fn(&dyn BackingMeter) -> Result<(), AuthorityError>,
+    ) {
+        let exact = run_within([usize::MAX; 3], charge).expect("unlimited");
+        assert_eq!(run_within(exact, charge).expect("exact"), exact, "{site}");
+        for dimension in 0..3 {
+            if exact[dimension] > 0 {
+                let mut smaller = exact;
+                smaller[dimension] -= 1;
+                assert!(
+                    matches!(
+                        run_within(smaller, charge),
+                        Err(AuthorityError::HostWorkRejected)
+                    ),
+                    "{site}: dimension {dimension}"
+                );
+            }
+        }
+    }
+
+    /// D-O1 (DR-94): the block-mode authority sites reserve their exact
+    /// credit before their work: each accepts the credit that it uses and
+    /// rejects one unit less in any dimension.
+    #[test]
+    fn block_mode_authority_sites_accept_exact_credit() {
+        for depth in [0, 2, 5] {
+            let signature = quoted_chain(depth);
+            let authority = CostAuthority {
+                regions: vec![
+                    CostRegion {
+                        instance_id: vec![1; 32],
+                        signature: Some(signature.clone()),
+                    },
+                    CostRegion {
+                        instance_id: vec![2; 32],
+                        signature: Some(signature.clone()),
+                    },
+                ],
+            };
+            assert_exact_credit("conversion", &|meter| {
+                cost_signature_to_sig_metered(&signature, meter).map(drop)
+            });
+            assert_exact_credit("region", &|meter| {
+                cost_region_metered(&signature, b"identity", 0, meter).map(drop)
+            });
+            assert_exact_credit("demand", &|meter| {
+                authority_demand_metered(&authority, meter).map(drop)
+            });
+            assert_exact_credit("merge", &|meter| {
+                merge_authorities_metered([&authority, &authority], meter).map(drop)
+            });
         }
     }
 }
