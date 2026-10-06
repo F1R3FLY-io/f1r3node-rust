@@ -64,7 +64,7 @@ const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 // execution the way the now-removed LmdbKeyValueStore mutex used to
 // serialize history reads).
 struct TimedGuard<'a, T: ?Sized> {
-    guard: MutexGuard<'a, T>,
+    guard: Option<MutexGuard<'a, T>>,
     acquired: Instant,
     site: &'static LockSiteMetrics,
 }
@@ -72,13 +72,19 @@ struct TimedGuard<'a, T: ?Sized> {
 impl<T: ?Sized> Deref for TimedGuard<'_, T> {
     type Target = T;
 
-    fn deref(&self) -> &T { &self.guard }
+    fn deref(&self) -> &T {
+        self.guard
+            .as_deref()
+            .expect("TimedGuard holds its lock until drop")
+    }
 }
 
 impl<T: ?Sized> Drop for TimedGuard<'_, T> {
     fn drop(&mut self) {
+        let held = self.acquired.elapsed();
+        drop(self.guard.take());
         metrics::counter!(self.site.hold_ns, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-            .increment(self.acquired.elapsed().as_nanos() as u64);
+            .increment(held.as_nanos() as u64);
     }
 }
 
@@ -98,7 +104,7 @@ fn timed_lock<'a, T: ?Sized>(
     metrics::counter!(site.wait_ns, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(wait_ns);
     metrics::counter!(site.calls, "source" => HISTORY_RSPACE_METRICS_SOURCE).increment(1);
     TimedGuard {
-        guard,
+        guard: Some(guard),
         acquired,
         site,
     }
@@ -555,6 +561,9 @@ where
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         debug!("[HistoryRepositoryImpl] reset to {}", root);
 
+        // The roots lock is released before the history lock is taken. This is
+        // safe because roots are only added, never removed, so a root that
+        // passes validate_root stays valid until history.reset uses it.
         lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RESET_SITE)
             .validate_root(root)?;
 
