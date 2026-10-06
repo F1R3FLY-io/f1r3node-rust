@@ -89,6 +89,8 @@ pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-ap
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC: &str = "block.replay.runtime.lock-wait.time";
+pub const BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC: &str =
+    "block.replay.runtime.reporting-deferred";
 pub const BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC: &str = "block.replay.runtime.execute.time";
 pub const BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC: &str =
     "block.replay.runtime.save-mergeable.time";
