@@ -28,7 +28,7 @@ use models::rust::utils::new_gbool_par;
 
 use super::factory::{ContractArgs, FactoryProcess};
 use super::handle::{typed_error, HandleProcess};
-use super::runtime::{ReifiedRuntime, ReifiedRuntimeMode};
+use super::runtime::ReifiedRuntime;
 use super::scope::{classify_space_ref, SpaceRef};
 use super::system_channels::{
     SystemChannel, ASSERT_EQUAL_PROCESS, GET_SPACE_AGENT_PROCESS, HANDLE_OP_PROCESS,
@@ -196,13 +196,16 @@ async fn read_config(
     space: NativeSpace,
     authority: Option<CostAuthority>,
 ) -> Result<Result<Par, SpaceError>, InterpreterError> {
-    match runtime.mode() {
-        ReifiedRuntimeMode::Host => {}
-        ReifiedRuntimeMode::Detached => return Err(SpaceError::RuntimeUnavailable.into()),
-        ReifiedRuntimeMode::NativeReplay => {
-            return Err(SpaceError::SpacesUnsupportedInNativeReplay.into())
-        }
-    }
+    // Replaced by decision 46: the mode alone does not decide availability, because a host
+    // runtime is unavailable in native play too.
+    // match runtime.mode() {
+    //     ReifiedRuntimeMode::Host => {}
+    //     ReifiedRuntimeMode::Detached => return Err(SpaceError::RuntimeUnavailable.into()),
+    //     ReifiedRuntimeMode::NativeReplay => {
+    //         return Err(SpaceError::SpacesUnsupportedInNativeReplay.into())
+    //     }
+    // }
+    runtime.ensure_available()?;
     let runtime = Arc::clone(runtime);
     let agent = Arc::clone(agent);
     submit_space(SpaceRequest {
@@ -665,7 +668,7 @@ mod tests {
     async fn space_system_ops_fail_closed_without_a_host_runtime() {
         for (runtime, code) in [
             (unavailable(), "RuntimeUnavailable"),
-            (native_replay(), "SpacesUnsupportedInNativeReplay"),
+            (native_replay(), "SpacesUnsupportedInNativeExecution"),
         ] {
             let fixture = Fixture::with_runtime(runtime).await;
             let ret = reply_name(1);

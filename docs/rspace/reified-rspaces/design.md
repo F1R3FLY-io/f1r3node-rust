@@ -1957,7 +1957,7 @@ Two more rules complete the routing:
 - **R7.** `RoutingExecution` (`reified/execution.rs:110-127`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
 
 A channel of an ordinary program routes to the default space, and the hooks then make the baseline call with identical arguments.
-The headline `ordinary_channels_route_default` (`SpaceRefs.v:700`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
+The headline `ordinary_channels_route_default` (`SpaceRefs.v:710`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
 Mergeable-channel detection runs on the final routed channel, and it never classifies a Reified channel as mergeable (consensus checklist item 19).
 
 Figure N5 shows the decision.
@@ -2140,10 +2140,14 @@ Without a budget, the meter accepts every charge and skips every walk, as `reser
 
 | Mode | Made by | A space operation |
 |---|---|---|
-| `Host` | `for_host`, at the start of `create_rho_env` | runs one space intent over the handle of the host space |
+| `Host` | `for_host`, at the start of `create_rho_env` | runs one space intent over the handle of the host space, and fails with `SpacesUnsupportedInNativeExecution` while its budget runs a native deploy ([decision 46](decision-register.md#decision-46)) |
 | `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
-| `NativeReplay` | `native_replay`, in the native replay environment | fails with `SpacesUnsupportedInNativeReplay` ([decision I-13](decision-register.md#i-13)) |
+| `NativeReplay` | `native_replay`, in the native replay environment | fails with `SpacesUnsupportedInNativeExecution` ([decision I-13](decision-register.md#i-13)) |
 
+Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:83-92, 96`).
+`run_op`, `create_space`, and `read_config` check it before `submit_space`, so a failing check takes no operation order and makes no observer call.
+So native play and native replay reject a space deploy at one point.
+Native replay then reproduces the failure of play (`SpaceRefs.v`, `native_execution_fails_closed`).
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
@@ -2292,10 +2296,10 @@ Figure N7 shows the lifecycle of a native handle, from the factory call to a rep
 
 A Reified failure is either an abort of the deploy or a [typed reply](glossary.md#typed-reply).
 An abort is the error `InterpreterError::ReduceError` with the text `reified:<Code>: <message>`, which the soft checkpoint of the deploy then reverts.
-A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:121-128`).
+A host error keeps its own class: `SpaceError::Host` converts with `InterpreterError::from`, so `OutOfPhlogistonsError` and `HostWorkRejected` stay what they are (`spaces/errors.rs:127-134`).
 The message text is not consensus state, but the code names the failure for tests and for users.
 
-The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:107-115`):
+The substrate errors map explicitly, never through the text of `RSpaceError` (readiness review S8, `spaces/errors.rs:113-121`):
 
 - `SpaceTxnError::Host` becomes `SpaceError::Host`, which keeps the class of the host error.
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
@@ -2317,7 +2321,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `OrderedJoinUnsupported` | A join whose binds route to one queue space, until P5. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
 
-*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-70`).*
+*Table N8.2. The abort codes of the space operations (`spaces/errors.rs:18-76`).*
 
 | Code | Trigger |
 |---|---|
@@ -2327,7 +2331,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `PositionalParamsUnsupported` | Positional params on a factory, on a handle call, or on a space channel. |
 | `QualifierUnavailable`, `TheoryUnavailable` | A `temp` or `seq` qualifier, or a theory, until P7. |
 | `FamilyUnavailable` | A family that this phase does not register or run. |
-| `RuntimeUnavailable`, `SpacesUnsupportedInNativeReplay` | A space operation in a detached runtime, or in the native replay environment. |
+| `RuntimeUnavailable`, `SpacesUnsupportedInNativeExecution` | A space operation in a detached runtime, or in native play or native replay ([decision 46](decision-register.md#decision-46)). |
 | `DanglingHandle`, `DanglingName` | A space without its config record, reached through a handle or through a space name. |
 | `CounterOverflow` | An `ord` counter at `i64::MAX`. |
 | `Inconsistent` | A malformed record, a second counter or config record, a persistent counter record, a collection in a join, or a receipt that differs from its staged operation. |

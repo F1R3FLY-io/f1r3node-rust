@@ -115,7 +115,7 @@ mod tests {
             SpaceError::DanglingHandle,
             SpaceError::DanglingName,
             SpaceError::CounterOverflow,
-            SpaceError::SpacesUnsupportedInNativeReplay,
+            SpaceError::SpacesUnsupportedInNativeExecution,
         ]
         .iter()
         .map(SpaceError::code)

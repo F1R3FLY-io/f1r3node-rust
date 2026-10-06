@@ -2,7 +2,7 @@
   "schema": "reified-rspaces-model-map/2",
   "phase": "P4",
   "title": "Reified RSpaces P4: the Rust items of the hashmap:queue slice and the formal models that cover them",
-  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it)",
+  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it), and decision 46 (SpaceRefs.v native_execution_fails_closed: spaces fail closed in native play and native replay)",
   "code_base": "The items are in the P4 commit of this repository. The I-20 refresh and the normalizers are as of the P3b commit. The line numbers below are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -418,6 +418,12 @@
       "name": "unprepaid_trace_uncovered",
       "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
       "statement": "Decision 42 (negative control): without the prepaid reservations, the reads of the outcome after the commit break prefix coverage."
+    },
+    "Q67": {
+      "kind": "rocq",
+      "name": "native_execution_fails_closed",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "Decision 46: native play and native replay reject a space entry at one point, with no staged operation and one error; outside native execution a host runtime runs the job unchanged."
     },
     "U1": {
       "kind": "tla",
@@ -2769,16 +2775,18 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "create_space",
-      "line": 128,
+      "line": 139,
       "role": "One Intent::Space job for a creation.",
       "rocq": [
-        "prepare_create"
+        "prepare_create",
+        "space_entry"
       ],
       "tla": [
         "Create"
       ],
       "covers": [
-        "Q55"
+        "Q55",
+        "Q67"
       ]
     },
     {
@@ -2788,13 +2796,17 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "read_config",
-      "line": 161,
+      "line": 172,
       "role": "The read-only config job of a handle call.",
       "tla": [
         "Call"
       ],
       "covers": [
-        "U6"
+        "U6",
+        "Q67"
+      ],
+      "rocq": [
+        "space_entry"
       ]
     },
     {
@@ -3382,6 +3394,39 @@
       ],
       "covers": [
         "Q59"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::host",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "host",
+      "line": 83,
+      "role": "The availability check of every space entry: a detached runtime, native play and native replay fail before any space work (decision 46).",
+      "rocq": [
+        "ensure_available",
+        "space_entry"
+      ],
+      "covers": [
+        "Q67"
+      ]
+    },
+    {
+      "item": "ReifiedRuntime::ensure_available",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+      "scope": "ReifiedRuntime",
+      "kind": "fn",
+      "name": "ensure_available",
+      "line": 96,
+      "role": "The availability check of getSpaceAgent, which reads the config without a job of its own.",
+      "rocq": [
+        "ensure_available"
+      ],
+      "covers": [
+        "Q67"
       ]
     }
   ]

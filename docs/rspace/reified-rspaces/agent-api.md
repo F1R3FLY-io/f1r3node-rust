@@ -273,7 +273,7 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:136-148`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:142-154`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -342,7 +342,7 @@ Like the factories and `assertEqual`, the process applies no name rule to `ret`.
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:223-237`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:226-240`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 

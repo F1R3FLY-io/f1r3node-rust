@@ -76,13 +76,24 @@ impl ReifiedRuntime {
         }
     }
 
+    // The store and the budget of a host runtime. Native play and native replay both fail
+    // closed (decision 46): a host runtime whose budget runs a native deploy rejects a space
+    // operation with the code of the native replay runtime, before any space work, so a space
+    // deploy fails at one point in play and in replay.
     fn host(&self) -> Result<(ParSpaceStore, RuntimeBudget), SpaceError> {
         match &self.state {
+            RuntimeState::Host { budget, .. } if budget.native_execution_active() => {
+                Err(SpaceError::SpacesUnsupportedInNativeExecution)
+            }
             RuntimeState::Host { store, budget } => Ok((store.clone(), budget.clone())),
             RuntimeState::Detached => Err(SpaceError::RuntimeUnavailable),
-            RuntimeState::NativeReplay => Err(SpaceError::SpacesUnsupportedInNativeReplay),
+            RuntimeState::NativeReplay => Err(SpaceError::SpacesUnsupportedInNativeExecution),
         }
     }
+
+    /// Fails as every space entry point fails when this runtime cannot run a space job: in a
+    /// detached runtime, and in native play and native replay (decision 46).
+    pub fn ensure_available(&self) -> Result<(), SpaceError> { self.host().map(drop) }
 
     /// The environment of a space job. `host_work` is the host-work budget of the deploy that
     /// the scheduler captured for the job.
@@ -403,6 +414,10 @@ mod tests {
             runtime.space_env(None).err(),
             Some(SpaceError::RuntimeUnavailable)
         );
+        assert_eq!(
+            runtime.ensure_available(),
+            Err(SpaceError::RuntimeUnavailable)
+        );
         fails_closed(runtime, "RuntimeUnavailable").await;
     }
 
@@ -412,9 +427,20 @@ mod tests {
         assert_eq!(runtime.mode(), ReifiedRuntimeMode::NativeReplay);
         assert_eq!(
             runtime.space_env(None).err(),
-            Some(SpaceError::SpacesUnsupportedInNativeReplay)
+            Some(SpaceError::SpacesUnsupportedInNativeExecution)
         );
-        fails_closed(runtime, "SpacesUnsupportedInNativeReplay").await;
+        assert_eq!(
+            runtime.ensure_available(),
+            Err(SpaceError::SpacesUnsupportedInNativeExecution)
+        );
+        fails_closed(runtime, "SpacesUnsupportedInNativeExecution").await;
+    }
+
+    #[tokio::test]
+    async fn host_runtime_is_available_outside_native_execution() {
+        let runtime = for_host(rspace().await, budget());
+        assert_eq!(runtime.ensure_available(), Ok(()));
+        assert!(runtime.space_env(None).is_ok());
     }
 
     #[tokio::test]

@@ -55,6 +55,9 @@ The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
   Encoding (I-20)     the refresh, the derived tuple flag, the strict flag
                       check
 
+Decision 46 (SpaceRefs.v) has one control: a host runtime runs space jobs in
+native play, so native play and native replay disagree.
+
 Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
 the metering rule: a step that reads before it reserves, a fire that does not
 prepay the decode of its continuation, an operation that does not prepay the
@@ -494,6 +497,12 @@ CONTROLS = (
      "  if tuple_flags_eqb (ft_flags x) (derived_flags (ft_construct x)) then decode (ferase x) else None.",
      "  decode (ferase x).",
      ("refresh_strict_decode_erase",)),
+    # ── Decision 46: SpaceRefs.v ─────────────────────────────────────────
+    ("sr-native-play-runs-spaces", "SpaceRefs",
+     "a host runtime runs space jobs in native play, as before decision 46",
+     "  | RtHost => if native then Some SpacesUnsupportedInNativeExecution else None",
+     "  | RtHost => None",
+     ("native_execution_fails_closed",)),
     # ── Decision 42: AgentReadCoverage.v ─────────────────────────────────
     ("arc-read-before-reserve", "AgentReadCoverage",
      "a step reads before it reserves (the P4 order: copy, then charge)",

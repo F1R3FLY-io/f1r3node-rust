@@ -1914,7 +1914,7 @@ mod tests {
                     .reified_produce(name.clone(), datum(vec![int(1)]), false, authority())
                     .await
             ),
-            expected("SpacesUnsupportedInNativeReplay")
+            expected("SpacesUnsupportedInNativeExecution")
         );
 
         let hosted = hosted().await;

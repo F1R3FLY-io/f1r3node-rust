@@ -94,7 +94,7 @@ This conclusion holds at every depth, for the constants of the configuration.
 Each later phase adds one section for each new model or suite, and it adds its rows to the tables of sections 2 and 8.
 Phase P4 keeps its rows of those tables in its own section [11](#11-phase-p4-the-hashmapqueue-slice).
 The Rocq gate also checks the module `Encoding.v` of phase P2, the six modules of phase P4, and the module `AgentReadCoverage.v` of decision 42.
-So its total count of closed headlines is 101 over 10 modules, not 23.
+So its total count of closed headlines is 102 over 10 modules, not 23.
 The section of phase P2 documents the 12 headlines of P2 in `Encoding.v`, and section 11 documents the 3 headlines that P4 adds to it.
 
 ## 2. Acceptance categories
@@ -156,8 +156,8 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 101 over 10 modules. It holds 23 headlines of P1, 15 of `Encoding.v`, 55 of the six P4 modules (section [11.3](#113-rocq-models-of-p4)), and 8 of `AgentReadCoverage.v` (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 28 mutants of section [6.1](#61-rocq-mutants), the 29 P4 mutants of section [11.5](#115-negative-controls-of-p4), and the 5 mutants of section [11.10](#1110-metering-of-decision-42) fail in their expected declarations. The 10 pristine modules compile first.
+6. **Total.** The count of closed headlines is 102 over 10 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 56 (sections [11.3](#113-rocq-models-of-p4) and [11.11](#1111-native-execution-of-decision-46)), and `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** The 63 mutants fail in their expected declarations: 28 of section [6.1](#61-rocq-mutants), 29 of section [11.5](#115-negative-controls-of-p4), 5 of section [11.10](#1110-metering-of-decision-42), and 1 of section [11.11](#1111-native-execution-of-decision-46). The 10 pristine modules compile first.
 
 The last host run printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
 The `Print Assumptions` lines are [lines 7578 to 7594 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L7578-L7594) and [lines 1744 to 1749 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1744-L1749).
@@ -420,9 +420,12 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 ### 6.1 Rocq mutants
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 62 mutants: 28 in Table 12, 29 in Table 39 of section [11.5](#115-negative-controls-of-p4), and 5 in Table 45 of section [11.10](#1110-metering-of-decision-42).
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 63 mutants.
+Table 12 holds 28 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
+Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decision-46) holds 1.
 Each mutant replaces text that must occur exactly once in a scratch copy of its module, so a stale mutant fails.
 The control passes only when the mutated copy fails to compile and the first error lies inside one of the expected declarations.
+
 The pristine modules must compile first. The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants of that time (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 
@@ -1248,7 +1251,7 @@ Each gate writes its logs under `target/verification/reified-rspaces/` and never
 
 ### 10.2 Formal gates
 
-1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 62 mutants.
+1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 63 mutants.
 2. Confirm the last line `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0`.
 3. Run `scripts/check-reified-rspaces-tla-invariants.sh` for the TLC, Unsafe, complement, and Apalache legs.
 4. Confirm the last line `reified-rspaces tla: PASS=114 FAIL=0 SKIP=0`.
@@ -1305,7 +1308,7 @@ The [design](design.md#native-spaces) describes the code, the [specification](sp
 
 ### 11.1 What P4 proves
 
-P4 proves seven groups of claims, with 66 Rocq headlines (Q1 to Q66) and 8 TLA+ invariants (U1 to U8):
+P4 proves eight groups of claims, with 67 Rocq headlines (Q1 to Q67) and 8 TLA+ invariants (U1 to U8):
 
 - **Ids and records.** The Reified ids are injective, disjoint from every other name, and total to decode. The record envelopes round-trip, and their decoders accept only the image of their encoders (Q1 to Q19).
 - **Counters and merges.** Two branches that use one queue race on its counter in merge check 1, and two deploys of one block form one chain. A merge without a race is a serial run (Q20 to Q28, U4).
@@ -1314,6 +1317,7 @@ P4 proves seven groups of claims, with 66 Rocq headlines (Q1 to Q66) and 8 TLA+ 
 - **Factories and handles.** The family indices, the constructors, the space ids, and the creation are deterministic. A persistent call aborts, and handle calls merge like contract calls (Q48 to Q55, U5 to U8).
 - **The refresh of I-20.** The strict decode of a refreshed marker tuple is the decode of the model, and it commutes with substitution (Q56 to Q58).
 - **Metering.** An operation reserves each read and copy before it makes it, and no reservation follows its commit. Its charges do not depend on the list order of the store or on unread payloads (Q59 to Q66, section [11.10](#1110-metering-of-decision-42)).
+- **Native execution.** Native play and native replay reject a space deploy at one point, before any space work (Q67, section [11.11](#1111-native-execution-of-decision-46)).
 
 The [invariant map](glossary.md#invariant-map) phase `P4` names at least one property test for each id.
 The [model map](glossary.md#model-map) of P4 ties each id to its Rust items.
@@ -1327,11 +1331,11 @@ The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decisi
 
 | Category | Evidence in P4 | Local gate |
 |---|---|---|
-| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 176 items of the P4 model map, all of them required, and its 74 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
-| Formal verification passes | The 101 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 62 Rocq mutants fail in their expected declarations. TLC explores 3 P4 safe configurations completely, 4 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` and `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
-| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q66 and U1 to U8: 69 properties in `reified_p4_props.rs` and 3 properties of `Encoding.v`. It also names 15 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
+| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 178 items of the P4 model map, all of them required, and its 75 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
+| Formal verification passes | The 102 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 63 Rocq mutants fail in their expected declarations. TLC explores 3 P4 safe configurations completely, 4 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` and `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
+| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q67 and U1 to U8: 69 properties in `reified_p4_props.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 15 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
 | Implementation complete | `check-complete.py --phase p4` finds the 60 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
-| Thoroughly tested | The 11 P4 suites of section [11.7](#117-integration-suites) with 156 tests, the 179 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
+| Thoroughly tested | The 12 P4 suites of section [11.7](#117-integration-suites) with 159 tests, the 180 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
 | Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document, and `render.sh --check` finds each SVG byte-identical to a fresh render. | `python3 scripts/verify-reified/doc_lint.py`, `docs/rspace/reified-rspaces/diagrams/render.sh --check` |
 
 ### 11.3 Rocq models of P4
@@ -1359,10 +1363,10 @@ Its last leg ran 72 negative checks: the 10 pristine modules and 62 mutants.
 | [RecordEnvelope.v](../../../formal/rocq/reified_rspaces/theories/RecordEnvelope.v) | 8 | P4 |
 | [CounterConflict.v](../../../formal/rocq/reified_rspaces/theories/CounterConflict.v) | 9 | P4 |
 | [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 9 | P4 |
-| [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 10 | P4 |
+| [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 11 | P4 (10) and decision 46 (1) |
 | [SpaceFactory.v](../../../formal/rocq/reified_rspaces/theories/SpaceFactory.v) | 8 | P4 |
 | [AgentReadCoverage.v](../../../formal/rocq/reified_rspaces/theories/AgentReadCoverage.v) | 8 | Decision 42 |
-| Total | 101 | |
+| Total | 102 | |
 
 Each headline of the tables below has no assumption: `Print Assumptions` reports `Closed under the global context`.
 The last column gives the property tests that the invariant map names for the headline.
@@ -1448,16 +1452,16 @@ SpaceRefs.v models the classification of space references, the routing rules R1 
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q38 | `classify_space_ref_total_deterministic` (`SpaceRefs.v:439`) | Every space reference meets exactly one of the five rules of `classify_space_ref`. | `prop_classify_space_ref_total` |
-| Q39 | `handle_requires_write_flag` (`SpaceRefs.v:470`) | A reference names a native space only as a bare handle or as a writable bundle of one. | `prop_handle_requires_write_flag` |
-| Q40 | `reified_non_handle_not_a_space_ref` (`SpaceRefs.v:501`) | A Reified id that is not a handle is `NotASpaceRef`, never an agent. | `prop_reified_non_handle_not_a_space_ref` |
-| Q41 | `route_total_deterministic` (`SpaceRefs.v:590`) | A route fails only on the key, and it depends on the context only through its native space. | `prop_route_total` |
-| Q42 | `route_rules` (`SpaceRefs.v:614`) | The routing rules R1 to R5. | `prop_route_rules` |
-| Q43 | `space_name_route_ignores_ctx` (`SpaceRefs.v:635`) | A space name routes to its own space under every context. | `prop_space_name_route_ignores_ctx` |
-| Q44 | `r7_route_ignores_ctx` (`SpaceRefs.v:678`) | The R7 backend agrees with the reducer on every channel that is not forged. | `prop_r7_route_ignores_ctx` |
-| Q45 | `ordinary_channels_route_default` (`SpaceRefs.v:700`) | The channels of an ordinary program route to the default space, and the fast path is exact. | `prop_ordinary_channels_route_default` |
-| Q46 | `use_wrapper_restores_ctx` (`SpaceRefs.v:796`) | A body that the reducer stores under a context runs in that context when it fires. | `prop_use_wrapper_restores_ctx` |
-| Q47 | `handle_dispatch_total` (`SpaceRefs.v:962`) | The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name. | `prop_handle_dispatch_total` |
+| Q38 | `classify_space_ref_total_deterministic` (`SpaceRefs.v:449`) | Every space reference meets exactly one of the five rules of `classify_space_ref`. | `prop_classify_space_ref_total` |
+| Q39 | `handle_requires_write_flag` (`SpaceRefs.v:480`) | A reference names a native space only as a bare handle or as a writable bundle of one. | `prop_handle_requires_write_flag` |
+| Q40 | `reified_non_handle_not_a_space_ref` (`SpaceRefs.v:511`) | A Reified id that is not a handle is `NotASpaceRef`, never an agent. | `prop_reified_non_handle_not_a_space_ref` |
+| Q41 | `route_total_deterministic` (`SpaceRefs.v:600`) | A route fails only on the key, and it depends on the context only through its native space. | `prop_route_total` |
+| Q42 | `route_rules` (`SpaceRefs.v:624`) | The routing rules R1 to R5. | `prop_route_rules` |
+| Q43 | `space_name_route_ignores_ctx` (`SpaceRefs.v:645`) | A space name routes to its own space under every context. | `prop_space_name_route_ignores_ctx` |
+| Q44 | `r7_route_ignores_ctx` (`SpaceRefs.v:688`) | The R7 backend agrees with the reducer on every channel that is not forged. | `prop_r7_route_ignores_ctx` |
+| Q45 | `ordinary_channels_route_default` (`SpaceRefs.v:710`) | The channels of an ordinary program route to the default space, and the fast path is exact. | `prop_ordinary_channels_route_default` |
+| Q46 | `use_wrapper_restores_ctx` (`SpaceRefs.v:806`) | A body that the reducer stores under a context runs in that context when it fires. | `prop_use_wrapper_restores_ctx` |
+| Q47 | `handle_dispatch_total` (`SpaceRefs.v:972`) | The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name. | `prop_handle_dispatch_total` |
 
 #### 11.3.7 Headlines of SpaceFactory.v
 
@@ -1631,7 +1635,7 @@ A property that evaluates deploys on a Rholang runtime runs 16 cases.
 Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:146-171`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
 
-*Table 40. The 72 properties of phase P4 in the invariant map.*
+*Table 40. The 75 properties of phase P4 in the invariant map.*
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
@@ -1644,6 +1648,7 @@ So a run has the same cases on every host, and it writes nothing to the source t
 | Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:5620-5989` | Q48 to Q55 |
 | TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:6255-6831` | U1 to U8 |
 | Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:7240-7513` | Q47 to Q51, Q55 |
+| Native execution | `reified_native_play_rejects_a_space_deploy_before_any_space_work`, `reified_native_replay_reproduces_the_rejection_of_play`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:280-309` | Q67 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
 
 *Table 41. The 15 witness tests of phase P4.*
@@ -1666,9 +1671,9 @@ So a run has the same cases on every host, and it writes nothing to the source t
 | `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:227` | Q59 |
 | `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:723` | Q61 |
 
-After [decision 42](decision-register.md#decision-42), the invariant-map checker printed `invariant-map: PASS=209 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=329` for all phases (`target/verification/reified-rspaces/d42/invariant-map-p4.log`, `invariant-map-all.log`).
+After [decision 46](decision-register.md#decision-46), the invariant-map checker printed `invariant-map: PASS=213 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=333` for all phases (`target/verification/reified-rspaces/d46/invariant-map-p4.log`, `invariant-map-all.log`).
 The P4 entries of the map have the test status `required`, because every P4 test exists and passes.
-The model-map checker printed `model-map: PASS=187 FAIL=0 PENDING=0` for the P1 map and `model-map: PASS=437 FAIL=0 PENDING=0` for the P4 map (`model-map-p1.log`, `model-map-p4.log` of the same directory).
+The model-map checker printed `model-map: PASS=187 FAIL=0 PENDING=0` for the P1 map and `model-map: PASS=442 FAIL=0 PENDING=0` for the P4 map (`model-map-p1.log`, `model-map-p4.log` of the same directory).
 
 ### 11.7 Integration suites
 
@@ -1690,9 +1695,10 @@ Each run printed `test result: ok` with 0 failures (`target/verification/reified
 | `rholang/tests/reified_queue_source.rs` | 1 | A source program end to end |
 | `rholang/tests/reified_p4_props.rs` | 69 | The properties of section [11.6](#116-property-based-tests) |
 | `rholang/tests/reified_p4_smoke.rs` | 1 | A smoke test of play and replay |
+| `rholang/tests/reified_native_fail_closed.rs` | 3 | Native play and native replay of a space deploy and of a host program (section [11.11](#1111-native-execution-of-decision-46)) |
 
 The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 6 tests.
-The P4 modules hold 179 unit tests: 172 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
+The P4 modules hold 180 unit tests: 173 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
 Two of them came with the merge of [decision 44](decision-register.md#decision-44) (section [8.8](#88-the-merge-of-featurecost-accounted-rho)).
 [Decision 42](decision-register.md#decision-42) replaced four unit tests that pinned the old meter and added eight (section [11.10](#1110-metering-of-decision-42)).
 At the P4 milestone, the library run of `rholang` printed `test result: ok. 1660 passed; 0 failed; 3 ignored`, with the 166 P4 tests of that time (`gate-rholang-lib.log` of the same directory).
@@ -1804,6 +1810,34 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 Decision 42 changes no state, no event, and no outcome of an operation.
 So the models of sections [11.3](#113-rocq-models-of-p4) and [11.4](#114-tla-models-of-p4) do not change.
 The suites of Table 42 pass with their earlier assertions.
+
+### 11.11 Native execution of decision 46
+
+[Decision 46](decision-register.md#decision-46) makes spaces fail closed in native execution.
+Native play and native replay reject the first space operation of a deploy with `SpacesUnsupportedInNativeExecution`, before any space work.
+The headline Q67, `native_execution_fails_closed` of `SpaceRefs.v`, states the rule.
+A space entry in native play equals the same entry in native replay, for every staged list and every replay state.
+Both stage no operation and give one error.
+Outside native execution, a host runtime runs the job unchanged.
+
+*Table 47. The Rocq mutant of decision 46.*
+
+| Id | What the mutant changes | Must fail in |
+|---|---|---|
+| `sr-native-play-runs-spaces` | A host runtime runs space jobs in native play, as before the decision. | `native_execution_fails_closed` |
+
+*Table 48. The tests of decision 46.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `reified_native_play_rejects_a_space_deploy_before_any_space_work` | `reified_native_fail_closed.rs:280` | A native play of a factory call fails with the code, and no channel of a space enters the hot store (Q67). |
+| `reified_native_replay_reproduces_the_rejection_of_play` | `reified_native_fail_closed.rs:290` | The native replay environment replays the play journal: the same error, a complete journal, the phlo usage of play, and equal authority events and byte observations (Q67). |
+| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:309` | A program without spaces plays and replays natively without an error, with a complete journal and equal usage (Q67). |
+| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:440` | A host runtime runs space jobs when its budget runs no native deploy. |
+
+**The hazard without the rule.** A run of the suite with the guard of `ReifiedRuntime::host` removed (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows it.
+Native play then ran the space operation without an error, and native replay failed with `native replay has incomplete operations`.
+That is the divergence that the proposer's self-certification turned into a quarantine before the decision.
 
 ## References
 

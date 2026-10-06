@@ -88,9 +88,12 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 39](#decision-39) | P5 design choices F1 to F17 and F20, without F21 | 2026-10-05 | In force, vetoable value of F9 |
 | [Decision 40](#decision-40) | Space charging follows the cost-accounted-rho policy | 2026-10-05 | In force. Applied in P5 |
 | [Decision 41](#decision-41) | Bag and set spaces order candidates by source hash | 2026-10-05 | In force. Applied in P5a |
-| [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implementation pending |
+| [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implemented |
 | [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implementation pending |
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
+| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Implementation pending |
+| [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
+| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after decision 43 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -108,7 +111,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [I-10](#i-10) | Optional priority bound | 2026-10-04 | In force |
 | [I-11](#i-11) | Per-space scheduler footprint | 2026-10-04 | In force |
 | [I-12](#i-12) | Charging rules | 2026-10-04 | In force, revised 2026-10-04 |
-| [I-13](#i-13) | Native replay fails closed for spaces | 2026-10-04 | In force |
+| [I-13](#i-13) | Native replay fails closed for spaces | 2026-10-04 | In force, amended 2026-10-06 by decision 46 |
 | [I-14](#i-14) | Unchanged empty-state hash | 2026-10-04 | In force, revised 2026-10-04 |
 | [I-15](#i-15) | Self-describing matchers | 2026-10-04 | In force |
 | [I-16](#i-16) | No multi-channel join in synthesized machinery | 2026-10-04 | In force |
@@ -774,7 +777,7 @@ The plan also records two items under this decision:
 
 **Reason.** The user classifies the rollout as an operations problem that is not part of this campaign.
 
-## User decisions 28 to 39
+## User decisions 28 to 47
 
 The P4 design pass and its arbitration found more places where the plan did not fit the code.
 The user approved each recommended option on 2026-10-04, as decisions 28 to 35.
@@ -832,7 +835,7 @@ A join into an ordered collection needs an envelope with several `ord` values an
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force, consume-side clause amended 2026-10-06 by [decision 45](#decision-45) |
 | Supersedes | The storing of the incoming datum of a produce-side peek fire in the P1 design (decision 19, P1 design §6) |
 | Related | [Decision 19](#decision-19), [retention](glossary.md#retention), [re-offer](glossary.md#re-offer), [substrate design](design.md#s58-peek-re-offer-fr-10) |
 
@@ -843,7 +846,7 @@ A join into an ordered collection needs an envelope with several `ord` values an
 - The agent keeps the datum in flight, and it offers the datum to the next waiter as the next sub-operation.
 - The re-offer has the produce identity (`Produce::create`), the observer sequence, the counter step, and the authority of the re-produce of the baseline.
 - If no waiter matches, the re-offer stores the datum.
-- A consume-side peek still leaves the stored record in place.
+- A consume-side peek still leaves the stored record in place. [Decision 45](#decision-45) amends this clause: the COMM removes the record, and the same transaction stores it again, as the second send of the baseline does.
 - The fire receipt does not mark the incoming datum as retained.
 
 **User's words.** "Offer to next waiter (Recommended)"
@@ -954,7 +957,7 @@ The two-argument call of the FIPS is pseudo-code.
 - A16: the record of a handle produce uses the random state of the call.
 - A17: the runtime captures the host at the start of `create_rho_env`.
 - A18: R7 lands in P4, and it never packs arguments.
-- A19: the code names are `RuntimeUnavailable` and `SpacesUnsupportedInNativeReplay`.
+- A19: the code names are `RuntimeUnavailable` and `SpacesUnsupportedInNativeReplay`. [Decision 46](#decision-46) replaces the second name with `SpacesUnsupportedInNativeExecution`.
 - A20: the record tags and the shape of the config record.
 - A22: the errors of `getSpaceAgent` are typed replies.
 - A23: the format of typed replies, and the rule "is a name".
@@ -1234,6 +1237,75 @@ A design pass decides where a re-issued element takes its FIFO place before the 
 **Reason.** Decisions 40 to 43 take their rules from that branch, and the branch changes the host that the spaces must match.
 With the merge, the spaces and the host share one candidate order, one dispatcher, and one charging policy.
 The tests compare them on one base.
+
+### <a id="decision-45"></a>Decision 45: Space operations pay the legacy storage charges of the host
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-06 |
+| Status | In force. The implementation is pending. |
+| Amends | [Decision 30](#decision-30), its consume-side clause |
+| Related | [Decision 40](#decision-40), [M-3](#m-3) |
+
+**Statement.** In a legacy deploy, each staged space operation pays the storage and event charges that `ChargingRSpace` makes for the equivalent host call.
+The agent makes the pre-charge of an operation in its `before_observe` callback.
+It carries the post-charges of the operation to the callback of the next operation.
+It makes the post-charges of the last operation after the commit.
+
+A peek is charged as the branch charges a peek on a channel.
+A study of the branch at `393d6791a` found the rule of the host.
+The COMM of a host peek removes the record, and the reducer sends the record again (`produce_peeks`).
+The branch charges that second send in full, and never as a free retry (DR-47).
+In legacy mode it is one more event fee, and in native mode it is a new introduction.
+
+So a consume-side peek on a space removes the record in its COMM (Rule E).
+The same transaction then stores the record again, with its envelope and its order.
+The events and the charges then equal those of the branch in both modes.
+This amends the consume-side clause of [decision 30](#decision-30) and the retention rule FR-10 of the substrate.
+
+**User's words.** On peeks: "Charge how the feature/cost-accounted-rho branch charges peeks on bags/channels". On the study's rule: "Re-store as the host (Recommended)".
+
+**Reason.** [Decision 40](#decision-40) makes space charging follow the policy of `feature/cost-accounted-rho`.
+For a legacy deploy, that policy is the charges of `ChargingRSpace`, and the substrate of the spaces bypasses it today.
+
+### <a id="decision-46"></a>Decision 46: Spaces fail closed in native execution
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-06 |
+| Status | In force |
+| Amends | [I-13](#i-13), and the code names of item A19 of [decision 34](#decision-34) |
+| Related | [Decision 44](#decision-44), [decision 47](#decision-47) |
+
+**Statement.** Native play and native replay both reject the first space operation of a deploy, before any space work.
+The error code is `SpacesUnsupportedInNativeExecution`, and it replaces `SpacesUnsupportedInNativeReplay`.
+The change touches campaign files only, and it makes no edit in Casper.
+
+**User's words.** "Land Stage 1 now (Recommended)".
+
+**Reason.** Since the merge of [decision 44](#decision-44), proposer self-certification and validator replay run every offered deploy in the native replay environment.
+That environment rejects every space operation, while native play ran it.
+So the proposer did the play work of a space deploy and then quarantined the deploy.
+One rule for play and replay makes the deploy fail in play, and native replay reproduces that failure.
+
+### <a id="decision-47"></a>Decision 47: Full native support for spaces is its own phase
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-06 |
+| Status | In force. The phase is planned after [decision 43](#decision-43). |
+| Amends | [M-3](#m-3), for one accessor |
+| Related | [Decision 46](#decision-46) |
+
+**Statement.** Spaces get full support on the native path in their own phase, after [decision 43](#decision-43).
+The phase starts with a design pass, and then it delivers code, formal models, and tests.
+It adds one accessor of about 20 lines to `accounting/native_runtime/checked_operations/trace/replay/session/execution.rs`.
+That accessor is the only exception to [M-3](#m-3).
+
+**User's words.** "Plan it after decision 43 (Recommended)".
+
+**Reason.** The native path is the default of protocol version 6.
+A space backend over the tickets of the native replay session needs the space store of the session, and the session keeps its store private.
 
 ## Minimal-footprint revision: M-1 to M-5
 
@@ -1571,13 +1643,18 @@ The column "Amends" of the plan names the contract text that each decision chang
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force, amended 2026-10-06 by [decision 46](#decision-46) |
 | Amends | None |
-| Related | [Decision 19](#decision-19) |
+| Related | [Decision 19](#decision-19), [decision 47](#decision-47) |
 
-**Statement.** `create_native_replay_env` fails closed for spaces (`SpacesUnsupportedInNativeReplay`).
+**Statement.** Spaces fail closed in native execution.
+Native play and native replay reject the first space operation of a deploy before any space work, with `SpacesUnsupportedInNativeExecution`.
+The 2026-10-04 text covered native replay only, with the code `SpacesUnsupportedInNativeReplay`.
 
-**Reason.** Only tests use that path, as the plan verified. Casper production replay uses `ReplayRSpace`.
+**Reason.** The 2026-10-04 reason was that only tests use `create_native_replay_env`.
+That premise is false since the merge of [decision 44](#decision-44): proposer self-certification and validator replay run every offered deploy there.
+One rule for play and replay makes a native space deploy fail in play, and native replay reproduces the failure.
+[Decision 47](#decision-47) plans the full native support.
 
 ### <a id="i-14"></a>I-14: Unchanged empty-state hash
 

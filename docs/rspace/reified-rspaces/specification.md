@@ -393,7 +393,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1396`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
-| SM-10 | `route_rules` (`SpaceRefs.v:614`), `space_name_route_ignores_ctx` (`SpaceRefs.v:635`), `ordinary_channels_route_default` (`SpaceRefs.v:700`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
+| SM-10 | `route_rules` (`SpaceRefs.v:624`), `space_name_route_ignores_ctx` (`SpaceRefs.v:645`), `ordinary_channels_route_default` (`SpaceRefs.v:710`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:895`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |

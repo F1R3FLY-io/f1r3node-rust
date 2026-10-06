@@ -72,6 +72,13 @@
                             84-93, 96-102
    call, run                rholang/src/rust/interpreter/reified/handle.rs:
                             213-268, 270-320
+   ensure_available, space_entry
+                            rholang/src/rust/interpreter/reified/runtime.rs
+                            (ReifiedRuntime::host, ensure_available, and
+                            run_op, create_space and read_config, which call
+                            host before submit_space), reified/
+                            system_processes.rs (read_config of
+                            getSpaceAgent)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -116,6 +123,9 @@
     9. use_wrapper_restores_ctx           a stored body runs in its context
    10. handle_dispatch_total              the handle process drops, aborts or
                                           replies on a reply name
+   11. native_execution_fails_closed      native play and native replay reject
+                                          a space entry at one point, before
+                                          any space work (decision 46)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -991,6 +1001,54 @@ Section HandleDispatch.
   Qed.
 End HandleDispatch.
 
+(* ── 7. Availability in native execution (runtime.rs, decision 46) ───── *)
+
+(* The state of the Reified runtime of a reducer: a host runtime over the
+   space of the runtime, a detached runtime, or the runtime of the native
+   replay environment. A host runtime also sees whether its budget runs a
+   native deploy (RuntimeBudget::native_execution_active). *)
+Inductive runtime_state : Type := RtHost | RtDetached | RtNativeReplay.
+
+Inductive availability_error : Type :=
+| RuntimeUnavailable
+| SpacesUnsupportedInNativeExecution.
+
+(* ReifiedRuntime::host and ensure_available: the first check of every space
+   entry point (run_op, create_space, read_config, getSpaceAgent). *)
+Definition ensure_available (st : runtime_state) (native : bool)
+    : option availability_error :=
+  match st with
+  | RtHost => if native then Some SpacesUnsupportedInNativeExecution else None
+  | RtDetached => Some RuntimeUnavailable
+  | RtNativeReplay => Some SpacesUnsupportedInNativeExecution
+  end.
+
+(* A space entry point: when the runtime is unavailable it stages nothing
+   and fails with the error of the check, before any space work; otherwise
+   it runs its job, which stages the operations ops. *)
+Definition space_entry {Op : Type} (st : runtime_state) (native : bool) (ops : list Op)
+    : list Op * option availability_error :=
+  match ensure_available st native with
+  | Some e => ([], Some e)
+  | None => (ops, None)
+  end.
+
+(* Headline 11. In native execution, native play (a host runtime whose budget
+   runs a native deploy) and native replay (the runtime of the native replay
+   environment) give the same result for every space entry: no staged
+   operation and the error SpacesUnsupportedInNativeExecution. Outside native
+   execution a host runtime runs the job unchanged. So a space deploy fails
+   at one point in play and in replay, and replay reproduces play. *)
+Theorem native_execution_fails_closed :
+  forall (Op : Type) (ops : list Op) (replay_native : bool),
+    space_entry RtHost true ops = space_entry RtNativeReplay replay_native ops /\
+    space_entry RtHost true ops = ([], Some SpacesUnsupportedInNativeExecution) /\
+    space_entry RtHost false ops = (ops, None).
+Proof.
+  intros Op ops replay_native. unfold space_entry, ensure_available.
+  destruct replay_native; repeat split; reflexivity.
+Qed.
+
 (* ── Headline assumptions ────────────────────────────────────────────── *)
 Print Assumptions classify_space_ref_total_deterministic.
 Print Assumptions handle_requires_write_flag.
@@ -1002,3 +1060,4 @@ Print Assumptions r7_route_ignores_ctx.
 Print Assumptions ordinary_channels_route_default.
 Print Assumptions use_wrapper_restores_ctx.
 Print Assumptions handle_dispatch_total.
+Print Assumptions native_execution_fails_closed.

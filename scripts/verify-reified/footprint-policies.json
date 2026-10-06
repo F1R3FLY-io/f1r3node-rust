@@ -1232,6 +1232,7 @@
         "rholang/tests/reified_merge.rs",
         "rholang/tests/reified_ordinary_regression.rs",
         "rholang/tests/reified_p4_props.rs",
+        "rholang/tests/reified_native_fail_closed.rs",
         "rholang/tests/reified_p4_smoke.rs",
         "rholang/tests/reified_queue.rs",
         "rholang/tests/reified_queue_replay.rs",
