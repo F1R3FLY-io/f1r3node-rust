@@ -186,6 +186,49 @@ const _: () = assert!(
 
 crate::register_consensus_constant!(order = 7, name = MAX_CHUNK_ITEMS, u64_be);
 
+/// Per-call cap on `fs_entries` output size — prevents a malicious
+/// caller pointing the native at a million-entry directory and
+/// OOMing the node.  Rholang-side alternative for large directories
+/// is `entriesStreamOpen` / `_Next` / `_Close`.  Consensus-
+/// observable (divergent caps fork at the `FSERR_QUOTA_EXCEEDED`
+/// boundary); folded at order 16.
+pub const MAX_ENTRIES: usize = 65_536;
+
+// Compile-time floor: entry cap below 4096 would surface
+// FSERR_QUOTA_EXCEEDED on legitimate medium directories and fork
+// consensus at every well-formed enumerate workload.
+const _: () = assert!(
+    MAX_ENTRIES >= 4096,
+    "MAX_ENTRIES below 4096 — a divergent lower cap forks consensus \
+     at legitimate medium-directory enumerate workloads"
+);
+
+crate::register_consensus_constant!(order = 16, name = MAX_ENTRIES, u64_be);
+
+/// Per-call byte cap on `fs_write` / `fs_write_at` — spec §Efficiency
+/// + §Cost accounting.  A write request larger than this surfaces
+/// `FSERR_QUOTA_EXCEEDED`.  Pre-WAL gate: oversize writes must NOT
+/// consume a WAL slot (M-R3 review round 2) — the pre_syscall hook
+/// returns the FSERR before `journal_write_via_table` runs.
+///
+/// # CONSENSUS-OBSERVABLE
+///
+/// A divergent cap produces different `FSERR_QUOTA_EXCEEDED`
+/// distributions on identical inputs and forks the tuplespace.
+/// Folded into the runtime fingerprint at order 17.
+pub const MAX_WRITE_BYTES: u64 = 64 * 1024 * 1024;
+
+// Compile-time floor: writes below 1 MiB would surface
+// FSERR_QUOTA_EXCEEDED on any legitimate large write.  Tripwire for
+// a Cost FIP miscalibration by a factor of 64+.
+const _: () = assert!(
+    MAX_WRITE_BYTES >= 1024 * 1024,
+    "MAX_WRITE_BYTES below 1 MiB — a divergent lower cap forks \
+     consensus at every legitimate large-write workload"
+);
+
+crate::register_consensus_constant!(order = 17, name = MAX_WRITE_BYTES, u64_be);
+
 /// Composition-time nonce embedded into the composed fs_genesis
 /// source (`new_gint_par(FS_NONCE, ...)` in the signed-registry
 /// insertion).  A drift is caught by the composed-source golden
@@ -227,6 +270,7 @@ mod tests {
         assert_eq!(MAX_TRUNCATE_BYTES, 16 * 1024 * 1024 * 1024);
         assert_eq!(MAX_OPEN_FDS, 1024);
         assert_eq!(MAX_CHUNK_ITEMS, 65_536);
+        assert_eq!(MAX_WRITE_BYTES, 64 * 1024 * 1024);
     }
 
     /// String pins on the CMODE Rholang-boundary tags.  A rename
