@@ -51,14 +51,12 @@ for metric in \
     history_checkpoint_leaf_write_time \
     history_checkpoint_history_lock_wait_time \
     history_checkpoint_history_process_time \
-    history_checkpoint_roots_lock_wait_time \
     history_checkpoint_root_commit_time \
     history_checkpoint_actions \
     history_checkpoint_serialized_bytes \
     history_repository_current_history_lock_wait_ns \
     history_repository_roots_repository_lock_wait_ns \
     history_repository_roots_repository_reset_hold_ns \
-    history_repository_roots_repository_checkpoint_wait_ns \
     history_repository_current_history_history_reader_calls \
     history_roots_store_write_ns \
     history_roots_store_writes \
