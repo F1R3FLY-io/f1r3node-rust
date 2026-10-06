@@ -1,7 +1,7 @@
 # Release Process and Deployment Train Strategy
 
-**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments)  
-**Last updated:** 2026-08-19
+**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments). Section 12 carries a proposed amendment dated 2026-10-06 that is pending ratification.  
+**Last updated:** 2026-10-06
 
 ## 1. Purpose
 
@@ -49,10 +49,12 @@ flowchart LR
     D --> F[Slashing test suite]
     D --> G[Feature-specific gates]
     D --> H[60h stability soak]
+    H -->|pass| T[Test net candidate]
+    T --> S[Shard soak-in on the test net]
     E --> I{All exact-SHA gates pass}
     F --> I
     G --> I
-    H --> I
+    S --> I
     I -->|yes| J[Immutable stable tag]
     J --> K[Promote candidate artifacts]
     K --> L[Stable GitHub Release]
@@ -63,6 +65,8 @@ flowchart LR
 A full CI run creates a canary only when the source version is release-eligible. Section 5 defines release eligibility.
 
 The 60h stability soak is the final stable-release gate. A successful soak starts automatic promotion when all other gates pass.
+
+**Proposed amendment (2026-10-06, pending ratification):** A passing 60h stability soak makes the candidate a test net candidate. The Shard soak-in then becomes the final stable-release gate. Section 12 defines this order. The diagram above shows the amended order.
 
 If another gate is incomplete, promotion enters a held state. Promotion resumes automatically after the missing gate passes.
 
@@ -224,6 +228,7 @@ The promotion controller evaluates gates against `source_sha` from the candidate
 | 60h stability soak | Soak artifact and workflow run | The exact candidate completes the full 60-hour profile |
 | Regression verdict (advisory) | `verdict.json` | A `pass` verdict satisfies the gate directly. A `regress` verdict requires documented maintainer review before promotion |
 | Feature gates | Train gate evidence | Every manifest gate succeeds |
+| Shard soak-in (proposed, Section 12) | Shard soak-in evidence | The test net candidate completes its soak period in a test net of its consensus model |
 
 Optional and nightly slashing jobs do not block a release. The required slashing job catalog remains version-controlled.
 
@@ -356,19 +361,75 @@ Promotions run one at a time. `release.yml` uses one concurrency group without c
 
 ## 12. Shard soak-in
 
-A Shard soak-in adds each weekly stable release to the test net, the continuously running network of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
+A Shard soak-in adds each weekly release to the test net, the continuously running network of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
 
-New stable nodes enter a soak period inside or adjacent to the test net. The Soak-in measures how the new nodes behave with the current test net members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
+New nodes enter a soak period inside or adjacent to the test net. The Soak-in measures how the new nodes behave with the current test net members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
 
 A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the test net.
 
-Enrollment has its own schedule. Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
+The test net is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans the test net: long-lived OCI instances reuse the existing fleet tooling and serve select partners and customers. A follow-on branch carries that work. This document only requires that the test net exists before Phase 6 completes.
 
-Three parameters are deferred to Phase 6, when the test net exists and real behavior can inform them: the soak-in period length, the measurable Anchor promotion criteria, and the test net composition. The scheduling rule, the trigger, and the soaking-node versus Anchor distinction are binding now.
+**Ratified rule (2026-08-19), superseded by the proposed amendment below:** Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
 
-The test net is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans the test net: long-lived OCI instances run stable releases, reuse the existing fleet tooling, and serve select partners and customers. A follow-on branch carries that work; this document only requires that the test net exists before Phase 6 completes.
+### 12.1 Proposed amendment (2026-10-06, pending ratification)
 
-**Follow-on:** a future change will separate the Casper consensus into its own repository. The test net will then consume consensus releases from that repository.
+The amendment changes the entry point of the Shard soak-in. It also defines the shard composition and the consensus model scope of a test net. Section 19 lists the amendment as a ratification item. The ratified rule above stays in force until a maintainer ratifies the amendment.
+
+```mermaid
+flowchart LR
+    C[Canary release] --> W[60h stability soak]
+    W -->|pass| TC[Test net candidate]
+    TC --> M{Consensus model}
+    M -->|CBC Casper| TN1[CBC Casper test net]
+    M -->|future model| TN2[Test net of that model]
+    TN1 --> K{Compatible with the current shard?}
+    K -->|yes| J[Join a mixed-release shard as a soaking node]
+    K -->|no| G[Start a new shard with a fresh genesis]
+    J --> A[Soak period complete: Anchor role]
+    G --> A
+    A --> P[Stable promotion gate passes]
+```
+
+#### Test net candidate
+
+A test net candidate is a canary release that passed the 60h stability soak (Section 10) on its exact candidate image digest. Only a test net candidate can enroll in the test net.
+
+Enrollment happens before stable promotion. The Shard soak-in result becomes a stable promotion gate (Section 8). Stable promotion therefore waits for the soak period of the test net candidate.
+
+#### Mixed-release shards
+
+A test net shard runs validators on more than one release at the same time. Anchors run earlier releases. Soaking nodes run the test net candidate.
+
+The Shard soak-in therefore tests cross-version compatibility. A test net candidate must interoperate with the Anchors of its shard. Interoperation includes block exchange, block validation, finalization, and state replay.
+
+#### One consensus model per test net
+
+All shards in one test net use the same consensus and state machine replication (SMR) model. Today, the only implemented model is CBC Casper, so one CBC Casper test net exists.
+
+The roadmap modularizes consensus behind a consensus-neutral boundary (branch `feature/consensus-neutral-boundary`, and `docs/artifacts/f1r3fly-consensus-neutral-sm.md`). Each additional model gets its own test net. A test net candidate enrolls only in the test net of its own model. A test net never mixes models, even across shards.
+
+The candidate evidence must identify the consensus model of the candidate. The exact field name is set during implementation.
+
+#### Incompatible releases
+
+A test net candidate can be incompatible with the current shard state or wire format. That candidate starts a new shard in the same test net with a fresh genesis. Its nodes soak in that new shard.
+
+Existing shards keep running on their releases. A retirement policy removes old shards. Phase 6 sets that policy.
+
+#### Deferred parameters
+
+Phase 6 sets these parameters, when the test net exists and real behavior can inform them:
+
+1. The soak-in period length. This length also sets the delay between the 60h stability soak and stable promotion.
+2. The measurable Anchor promotion criteria.
+3. The test net composition: the number of shards, the validators per shard, and the release mix per shard.
+4. The compatibility check that decides between a mixed-release shard and a new shard.
+5. The retirement policy for shards and Anchors on old releases.
+6. Whether other Section 8 gates, such as full OCI validation and the slashing tests, must also pass before test net entry.
+
+The test net candidate entry point, the mixed-release shard rule, the one-model-per-test-net rule, and the new-shard rule for incompatible releases become binding at ratification. The soaking-node versus Anchor distinction stays binding now.
+
+**Follow-on:** a future change can separate the Casper consensus into its own repository. The CBC Casper test net will then consume consensus releases from that repository.
 
 ## 13. Deployment Trains
 
@@ -556,6 +617,8 @@ The first planned use is the cost-accounting train from pull request #216.
 | Stack member closes without a merge | Cancel the train |
 | Integration branch advances past the stack head before the `master` merge | Continue with the immutable candidate; the head stays reachable |
 | Stable version becomes unavailable | Assign a new version and create a new candidate |
+| Shard soak-in fails (proposed, Section 12.1) | Do not promote. Remove the soaking nodes from the test net |
+| Test net candidate is incompatible with its shard (proposed, Section 12.1) | Start a new shard with a fresh genesis in the test net of the same consensus model |
 | Promotion stops after tag creation | Resume idempotently and verify every existing object |
 
 No override can replace failed exact-SHA evidence.
@@ -621,6 +684,8 @@ flowchart TD
     RP -- "release: published<br/>(stable tag)" --> SI["soak-in.yml<br/>Shard soak-in enrollment"]
     SI --> TN["Test net<br/>soaking node becomes an Anchor"]
 ```
+
+The diagram shows the ratified chain. Under the proposed Section 12.1 amendment, a passing 60h stability soak triggers `soak-in.yml` for the test net candidate. The Shard soak-in result then feeds `release.yml` as a gate, and stable publication no longer triggers enrollment.
 
 Pull-request runs add a parallel coverage matrix after lint. The matrix measures every in-crate test target with cargo-llvm-cov over nextest, the same runner as the test matrix. The measured denominator excludes src-shipped test scaffolding and node's process bootstrap and wiring (the exact file set is the shared regex in `scripts/coverage.sh` and ci.yml).
 
@@ -714,6 +779,16 @@ The manifest validator and the stack checks (Section 13.2 steps 4 to 6) depend o
 3. Promote soaked nodes to the Anchor role after the soak period.
 4. Document the Shard soak-in enrollment and Anchor promotion evidence.
 
+If maintainers ratify the Section 12.1 amendment, these steps replace steps 1 to 4:
+
+1. Stand up the CBC Casper test net with mixed-release shards.
+2. Record the consensus model in the candidate evidence.
+3. Enroll each test net candidate after its 60h stability soak passes.
+4. Start a new shard with a fresh genesis for an incompatible test net candidate.
+5. Promote soaked nodes to the Anchor role after the soak period.
+6. Publish Shard soak-in evidence and add the Shard soak-in gate to `release.yml`.
+7. Set the Section 12.1 deferred parameters.
+
 ## 19. Ratification checklist
 
 Maintainers must ratify these decisions before stable automation is enabled. All items were ratified on 2026-08-19; amendments are recorded inline and in the affected sections.
@@ -731,3 +806,4 @@ Maintainers must ratify these decisions before stable automation is enabled. All
 - [x] Version reservation and ordering rules — ratified 2026-08-19
 - [x] First Deployment Train selection — ratified 2026-08-19: cost-accounting (PR #216), after the Phase 5 non-publishing rehearsal
 - [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and test net composition deferred to Phase 6
+- [ ] Section 12.1 amendment — proposed 2026-10-06: test net candidate entry after the 60h stability soak, Shard soak-in as a stable promotion gate, mixed-release shards, one consensus model per test net, and a new shard for an incompatible release

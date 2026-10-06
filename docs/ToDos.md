@@ -2448,6 +2448,7 @@ tasks:
     blocked_by: [EPIC-014]
     notes:
       - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 test net exists."
+      - "2026-10-06: the proposed release-process Section 12.1 amendment moves enrollment to the test net candidate (after a passing 60h stability soak) and makes the Shard soak-in a stable promotion gate. If ratified, the stable-publication trigger is replaced (TASK-014-6)."
     acceptance:
       - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
       - "The deferred parameters (soak-in period length, Anchor criteria, test net composition) are set and ratified"
@@ -2466,26 +2467,54 @@ epic_id: EPIC-014
 title: "Test Net (Continuously Running Shards)"
 status: pending
 priority: p2
-user_story: null
+user_story: US-010
 blocked_by: [EPIC-013]
 created_at: 2026-08-19
+branch: ci/testnet-deployment
+design_intent:
+  source: "docs/release-process.md Section 12.1 (proposed amendment, 2026-10-06, pending ratification)"
+  test_net_candidate: "A canary release that passed the 60h stability soak on its exact image digest. Only a test net candidate enrolls."
+  promotion_order: "60h stability soak -> test net candidate -> Shard soak-in -> stable promotion. The Shard soak-in result is a stable promotion gate."
+  shard_composition: "Mixed-release shards: Anchors run earlier releases and soaking nodes run the test net candidate, so the soak-in tests cross-version compatibility."
+  consensus_scope: "One consensus/SMR model per test net. Today: the CBC Casper test net. Each model from the consensus-neutral boundary roadmap (feature/consensus-neutral-boundary) gets its own test net."
+  incompatible_release: "A test net candidate that cannot interoperate with its shard starts a new shard with a fresh genesis in the same test net. Old shards run until a retirement policy removes them."
 tasks:
   - id: TASK-014-1
     title: "Design the test net (topology, lifecycle, upgrade path)"
     status: pending
+    acceptance:
+      - "A design record under docs/designs/ covers mixed-release shards, the one-model-per-test-net rule, the new-shard path for an incompatible release, and shard retirement"
+      - "The design proposes values for the six Section 12.1 deferred parameters"
+      - "The design defines the compatibility check that decides between joining a shard and starting a new shard"
   - id: TASK-014-2
-    title: "Stand up the test net on OCI from existing fleet tooling"
+    title: "Stand up the CBC Casper test net on OCI from existing fleet tooling"
     status: pending
   - id: TASK-014-3
     title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
     status: pending
+    acceptance:
+      - "A test net candidate joins a mixed-release shard as a soaking node, or starts a new shard when the compatibility check fails"
+      - "A soaking node gains the Anchor role only after the soak period and the Anchor criteria pass"
   - id: TASK-014-4
     title: "Open selected test net shards to partners and customers"
     status: pending
+  - id: TASK-014-5
+    title: "Ratify the release-process Section 12.1 amendment"
+    status: pending
+    acceptance:
+      - "A maintainer ratifies or amends the Section 12.1 items and checks the Section 19 entry"
+  - id: TASK-014-6
+    title: "Gate stable promotion on the Shard soak-in"
+    status: pending
+    blocked_by: [TASK-014-5]
+    acceptance:
+      - "Candidate evidence records the consensus model of the candidate"
+      - "soak-in.yml enrolls a test net candidate after its 60h stability soak passes, instead of after stable publication"
+      - "The Shard soak-in publishes Section 8.1 gate evidence, and release.yml holds promotion until that gate passes"
 ---
 ```
 
-**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent; a follow-on branch/PR carries the design):** long-lived OCI instances run test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Under the proposed Section 12.1 amendment, each weekly test net candidate (a canary that passed the 60h stability soak) enrolls new nodes through the Shard soak-in. The new nodes join mixed-release shards beside the Anchors of earlier releases, or start a new shard with a fresh genesis when the candidate is incompatible. Nodes that complete the soak period gain the Anchor role, and the Shard soak-in result gates stable promotion. Each test net runs one consensus/SMR model. The CBC Casper test net comes first, and the consensus-neutral boundary roadmap adds one test net per further model. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires. The deferred Shard soak-in parameters are set here.
 
 ---
 
