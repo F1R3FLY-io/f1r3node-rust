@@ -259,3 +259,56 @@ impl Genesis {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin that default_blessed_terms includes a deploy signed by
+    /// FS_GENERATOR_PK — the fs_generator deploy that publishes the
+    /// shared Fs cap at genesis.  A regression that silently drops
+    /// fs_generator from the deploy list would leave the Fs cap
+    /// unpublished at `fs_genesis_uri(FS_GENERATOR_PUB_KEY)` and
+    /// every deploy's `rl!(fs_genesis_uri)` lookup would stall.
+    #[test]
+    fn default_blessed_terms_includes_fs_generator_deploy() {
+        use super::super::contracts::standard_deploys;
+        use super::super::contracts::validator::Validator;
+
+        let pos_params = ProofOfStake {
+            minimum_bond: 1,
+            maximum_bond: i64::MAX,
+            validators: vec![Validator {
+                pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
+                stake: 100,
+            }],
+            epoch_length: 10,
+            quarantine_length: 20,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 100_000,
+            max_parent_depth: 1,
+            deploy_lifespan: 1,
+            min_phlo_price: 1,
+            pos_multi_sig_public_keys: vec![hex::encode(
+                &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
+            )],
+            pos_multi_sig_quorum: 1,
+        };
+        let deploys =
+            Genesis::default_blessed_terms(&pos_params, &vec![], 0, "root", "F1R3CAP", "F1R3", 18);
+        let fs_pk = &*standard_deploys::FS_GENERATOR_PUB_KEY;
+        let found = deploys.iter().any(|d| d.pk.bytes == fs_pk.bytes);
+        assert!(
+            found,
+            "default_blessed_terms must include a deploy signed by \
+             FS_GENERATOR_PK; otherwise the Fs cap never gets published \
+             at genesis and every rl!(fs_genesis_uri) lookup stalls.  \
+             Found {} deploys with signer pubkeys: {:?}",
+            deploys.len(),
+            deploys
+                .iter()
+                .map(|d| hex::encode(&d.pk.bytes))
+                .collect::<Vec<_>>()
+        );
+    }
+}
