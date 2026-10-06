@@ -586,6 +586,121 @@ fn rholang_string_escape(s: &str) -> String {
     out
 }
 
+/// Nonce used in the FsGenesis signed-registry insertion.  MAX_LONG
+/// so nobody can overwrite the entry once published.
+///
+/// X-1 / CONS-4 (2026-09-12): source-of-truth moved to
+/// `rholang::rust::interpreter::io::FS_NONCE` so the fingerprint-
+/// fold registration lives alongside the other consensus constants
+/// (all fingerprint entries must live in a single crate for the
+/// `linkme::distributed_slice` collection to be complete in every
+/// linkage context, including rholang-lib-only tests).  Re-exported
+/// here for backwards compatibility with existing casper call
+/// sites; the value is guaranteed identical by the const-eq
+/// assertion below.
+pub const FS_NONCE: i64 = rholang::rust::interpreter::io::FS_NONCE;
+const _: () = assert!(
+    FS_NONCE == i64::MAX,
+    "CONS-4: FS_NONCE canonical value is i64::MAX; a drift here is \
+     a hard-fork event.  See rholang::rust::interpreter::io::FS_NONCE."
+);
+
+/// URN prefix shared between the runtime's `fs_native_def` registrations
+/// and this module's composed FsGenesis source.  A future Phase 1 hotfix
+/// bumping to `1.0.1` must edit HERE only, and both the runtime
+/// (`rho_runtime.rs`) and the composed source rebuild from this constant.
+pub const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:1.0.0/";
+
+/// Native URN suffixes that this module binds into the FsGenesis
+/// new-scope.  Combined with `FS_NATIVE_URN_PREFIX` to form the full
+/// URN.  Kept as a constant so a slice-drift assertion in the test
+/// suite can cross-check against the runtime's registered set
+/// (`rho::interpreter::rho_runtime::fs_native_def` call sites).
+///
+/// Order matches the `new`-clause below (documentation aid only).
+///
+/// # Cross-file drift discipline
+///
+/// Any new fs-native URN MUST be added in FIVE places (only the first
+/// three are drift-checked by existing tests; the last two require
+/// manual attention):
+///
+/// 1. **This constant** (`FS_NATIVE_URN_SUFFIXES`) — checked by
+///    `fs_native_urn_suffixes_covers_composed_source` +
+///    `composed_source_urns_covered_by_fs_native_urn_suffixes`
+///    against the composed source below.
+/// 2. **The composed source's top-level `new` clause** below (the
+///    `fs<Xyz>(...` bindings) — checked by the same two drift tests.
+/// 3. **The arity golden table** in
+///    `fs_native_def_arities_match_golden_table` — cross-checks the
+///    `fs_native_def(...)` call sites in
+///    `rholang::interpreter::rho_runtime::std_system_processes`.
+/// 4. **The `all_fs_native_suffixes_are_rejected` iteration list**
+///    in `rholang/tests/fs_native_urn_filter_spec.rs` — HARDCODED,
+///    not auto-iterated over this constant.  A new suffix added
+///    here without adding it there will pass the drift checks but
+///    won't be verified for URN-filter rejection under state-execution.
+///    (The `filter_catches_unknown_fs_native_urn_prefix` test provides
+///    prefix-based defense-in-depth, so the suffix IS rejected in
+///    practice — but not directly asserted.)
+/// 5. **`rho_runtime::std_system_processes`'s `fs_native_def` call**
+///    for that suffix, wiring URN → `BodyRefs::FS_<XYZ>` →
+///    handler.  The arity drift-check in (3) catches missing
+///    entries; but the handler itself must also be added to
+///    `handlers.rs` and the FixedChannel to `system_processes.rs`.
+///    Compilation catches missing pieces.
+pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
+    "open",
+    "close",
+    "read",
+    "readAt",
+    "write",
+    "writeAt",
+    "seek",
+    "tell",
+    "size",
+    "flush",
+    "stat",
+    "exists",
+    "truncate",
+    "chmod",
+    "chown",
+    "removeFile",
+    "removeDir",
+    "rename",
+    "copyFile",
+    "entries",
+    // M-3 fix (2026-08-06): quarantine had `fs_native_def`
+    // registration in rho_runtime.rs but was NOT bound in the
+    // composed new-clause below.  The bidirectional drift check
+    // `fs_native_urn_suffixes_matches_composed_source_bidirectionally`
+    // pins the correspondence in both directions.
+    //
+    // A8-M-1 (2026-09-03): the bulk "entriesStream" URN was
+    // retired alongside its handler stub — per-fd variants at
+    // `entriesStreamOpen` / `_Next` / `_Close` are the live surface.
+    "quarantine",
+    // Phase 8 slice 8a — range-lock natives.  File.rho binds these
+    // via lexical `new` capture the same way it binds fsRead/fsWrite/etc.
+    "lockRange",
+    "lockSequential",
+    "releaseLock",
+    // Phase 8 slice 8a step-4 — File.close sweep native (X-1 §901).
+    // Invoked inside File.close before dispatching fs_close so a cap
+    // that still holds locks at close time doesn't strand them until
+    // deploy-end auto-release fires.  Scoped by HolderId — cross-cap
+    // locks on the same (dev, inode) survive.
+    "releaseAllForHolder",
+    // Streaming-backing slice (2026-08-25) — per-fd directory-entries
+    // streaming primitive.  Open allocates a stream fd; Next yields
+    // one entry per call; Close releases the fd.  See implementation-
+    // plan.md §"Streaming-backing slice" for the full design.  Replaces
+    // the retired bulk `entriesStream` URN (A8-M-1, 2026-09-03).
+    "entriesStreamOpen",
+    "entriesStreamNext",
+    "entriesStreamClose",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,5 +959,86 @@ mod tests {
         // Upstream validators should reject before reaching this fn;
         // panic confirms the defense-in-depth guard.
         let _ = rholang_string_escape("\0");
+    }
+
+    /// Single-source pin: FS_NONCE re-exports from
+    /// `rholang::rust::interpreter::io::FS_NONCE`.  The const-eq
+    /// `const _: () = assert!(FS_NONCE == i64::MAX)` catches a
+    /// rename or value drift at compile time; this runtime
+    /// assertion is defense-in-depth for the pin.
+    #[test]
+    fn fs_nonce_matches_rholang_source_of_truth() {
+        assert_eq!(FS_NONCE, i64::MAX);
+        assert_eq!(FS_NONCE, rholang::rust::interpreter::io::FS_NONCE);
+    }
+
+    #[test]
+    fn fs_native_urn_prefix_pinned() {
+        assert_eq!(FS_NATIVE_URN_PREFIX, "rho:io:fs:native:1.0.0/");
+    }
+
+    /// LOAD-BEARING: FS_NATIVE_URN_SUFFIXES is the single source of
+    /// truth for which native URNs the composed FsGenesis source
+    /// binds into the top-level `new` scope.  A new native URN
+    /// requires updating this list AND the composed source's `new`
+    /// clause (yet to land, slice 5.14+); the drift tests will
+    /// enforce correspondence once compose_fs_genesis_source
+    /// lands.  This pin asserts the current content.
+    #[test]
+    fn fs_native_urn_suffixes_pinned() {
+        // Current migration-complete set: 27 suffixes (fs_remove_dir
+        // is trait-exempt but IS registered as a native URN).
+        let expected: &[&str] = &[
+            "open",
+            "close",
+            "read",
+            "readAt",
+            "write",
+            "writeAt",
+            "seek",
+            "tell",
+            "size",
+            "flush",
+            "stat",
+            "exists",
+            "truncate",
+            "chmod",
+            "chown",
+            "removeFile",
+            "removeDir",
+            "rename",
+            "copyFile",
+            "entries",
+            "quarantine",
+            "lockRange",
+            "lockSequential",
+            "releaseLock",
+            "releaseAllForHolder",
+            "entriesStreamOpen",
+            "entriesStreamNext",
+            "entriesStreamClose",
+        ];
+        assert_eq!(
+            FS_NATIVE_URN_SUFFIXES, expected,
+            "FS_NATIVE_URN_SUFFIXES drifted — a native URN was added \
+             or removed.  Update this pin AND the composed FsGenesis \
+             `new` clause (yet to land) + the arity golden table + \
+             the all_fs_native_suffixes_are_rejected list in \
+             rholang/tests/fs_native_urn_filter_spec.rs."
+        );
+    }
+
+    /// Suffixes must be unique.  A dup would silently double-bind in
+    /// the composed source's `new` clause and either shadow or raise
+    /// a lexical-redecl error at parse time.
+    #[test]
+    fn fs_native_urn_suffixes_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for s in FS_NATIVE_URN_SUFFIXES {
+            assert!(
+                seen.insert(*s),
+                "FS_NATIVE_URN_SUFFIXES contains duplicate: `{s}`"
+            );
+        }
     }
 }
