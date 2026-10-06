@@ -57,6 +57,13 @@ pub const STACK_PK: &str = "c94e647de6876c954ebb7b64c40a220227770f9be003635edfe3
 pub const TOKEN_METADATA_PK: &str =
     "8f9a1c3b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a";
 
+// File I/O FIP fs_generator deploy signing key.  Treat any change as
+// a Genesis hard-fork — alters FS_GENERATOR_PUB_KEY, the FsGenesis
+// registry URI, and the deploy signature.  Validators must agree on
+// it byte-for-byte (same pattern as REGISTRY_PK, LIST_OPS_PK, etc.).
+pub const FS_GENERATOR_PK: &str =
+    "7d85dc0b95f8cff6a762f2ed4006f70b9da847d09f025bc324ccdac27920fa23";
+
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
 pub const VERSIONED_REGISTRY_TIMESTAMP: i64 = 1781568000000;
@@ -69,6 +76,7 @@ pub const MULTI_SIG_SYSTEM_VAULT_TIMESTAMP: i64 = 1571408470880;
 pub const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 pub const STACK_TIMESTAMP: i64 = 1751539590099;
 pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
+pub const FS_GENERATOR_TIMESTAMP: i64 = 1785600000000;
 
 lazy_static! {
     pub static ref REGISTRY_PUB_KEY: PublicKey = to_public(REGISTRY_PK);
@@ -84,6 +92,7 @@ lazy_static! {
     pub static ref VAULTS_GENERATOR_PUB_KEY: PublicKey = to_public(VAULTS_GENERATOR_PK);
     pub static ref STACK_PUB_KEY: PublicKey = to_public(STACK_PK);
     pub static ref TOKEN_METADATA_PUB_KEY: PublicKey = to_public(TOKEN_METADATA_PK);
+    pub static ref FS_GENERATOR_PUB_KEY: PublicKey = to_public(FS_GENERATOR_PK);
 }
 
 pub fn system_public_keys() -> Vec<&'static PublicKey> {
@@ -101,6 +110,7 @@ pub fn system_public_keys() -> Vec<&'static PublicKey> {
         &VAULTS_GENERATOR_PUB_KEY,
         &STACK_PUB_KEY,
         &TOKEN_METADATA_PUB_KEY,
+        &FS_GENERATOR_PUB_KEY,
     ]
 }
 
