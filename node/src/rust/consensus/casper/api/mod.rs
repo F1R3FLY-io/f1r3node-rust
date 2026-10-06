@@ -5,3 +5,4 @@ pub mod propose_grpc_service_v1;
 pub mod serde_types;
 pub mod web_api;
 pub mod servers;
+mod query_stream;

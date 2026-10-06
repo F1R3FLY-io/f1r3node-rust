@@ -37,6 +37,7 @@ use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
 use tracing::error;
 
+use super::query_stream::{query_stream, QueryStream};
 use crate::rust::api::version_info::get_version_info_str;
 
 trait IntoServiceError {
@@ -242,19 +243,11 @@ impl DeployGrpcServiceV1Impl {
 
 #[async_trait::async_trait]
 impl DeployService for DeployGrpcServiceV1Impl {
-    type showMainChainStream = tokio_stream::wrappers::ReceiverStream<
-        std::result::Result<BlockInfoResponse, tonic::Status>,
-    >;
+    type showMainChainStream = QueryStream<BlockInfoResponse>;
 
-    type visualizeDagStream = tokio_stream::wrappers::ReceiverStream<
-        std::result::Result<VisualizeBlocksResponse, tonic::Status>,
-    >;
-    type getBlocksStream = tokio_stream::wrappers::ReceiverStream<
-        std::result::Result<BlockInfoResponse, tonic::Status>,
-    >;
-    type getBlocksByHeightsStream = tokio_stream::wrappers::ReceiverStream<
-        std::result::Result<BlockInfoResponse, tonic::Status>,
-    >;
+    type visualizeDagStream = QueryStream<VisualizeBlocksResponse>;
+    type getBlocksStream = QueryStream<BlockInfoResponse>;
+    type getBlocksByHeightsStream = QueryStream<BlockInfoResponse>;
 
     /// Deploy a contract
     #[tracing::instrument(level = "info", skip(self, request))]
@@ -341,11 +334,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
             show_justification_lines: request.show_justification_lines,
         };
         let start_block_number = request.start_block_number;
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
         let key_value_block_store = self.key_value_block_store.clone();
 
-        tokio::spawn(async move {
+        let stream = query_stream(async move {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let ser: Arc<dyn GraphSerializer> = Arc::new(ListSerializer::new(sender));
 
@@ -373,6 +365,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             .await
             {
                 Ok(content) => {
+                    let mut responses = Vec::with_capacity(content.len());
                     for content_string in content {
                         let response = VisualizeBlocksResponse {
                             message: Some(
@@ -381,20 +374,15 @@ impl DeployService for DeployGrpcServiceV1Impl {
                                 ),
                             ),
                         };
-                        if tx.send(Ok(response)).await.is_err() {
-                            break;
-                        }
+                        responses.push(response);
                     }
+                    Ok(responses)
                 }
-                Err(e) => {
-                    let _ = tx.send(Err(tonic::Status::internal(e.to_string()))).await;
-                }
+                Err(e) => Err(tonic::Status::internal(e.to_string())),
             }
         });
 
-        Ok(tonic::Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
+        Ok(tonic::Response::new(stream))
     }
 
     /// Get machine verifiable DAG
@@ -432,29 +420,26 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<BlocksQuery>,
     ) -> Result<tonic::Response<Self::showMainChainStream>, tonic::Status> {
         let request = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
 
         let api_max_blocks_limit = self.api_max_blocks_limit;
-        tokio::spawn(async move {
+        let stream = query_stream(async move {
             let blocks =
                 BlockAPI::show_main_chain(&engine_cell, request.depth, api_max_blocks_limit).await;
 
+            let mut responses = Vec::with_capacity(blocks.len());
             for block_info in blocks {
                 let response = BlockInfoResponse {
                     message: Some(models::casper::v1::block_info_response::Message::BlockInfo(
                         block_info,
                     )),
                 };
-                if tx.send(Ok(response)).await.is_err() {
-                    break;
-                }
+                responses.push(response);
             }
+            Ok(responses)
         });
 
-        Ok(tonic::Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
+        Ok(tonic::Response::new(stream))
     }
 
     /// Get blocks
@@ -463,13 +448,13 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<BlocksQuery>,
     ) -> Result<tonic::Response<Self::getBlocksStream>, tonic::Status> {
         let request = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
         let api_max_blocks_limit = self.api_max_blocks_limit;
 
-        tokio::spawn(async move {
+        let stream = query_stream(async move {
             match BlockAPI::get_blocks(&engine_cell, request.depth, api_max_blocks_limit).await {
                 Ok(blocks) => {
+                    let mut responses = Vec::with_capacity(blocks.len());
                     for block_info in blocks {
                         let response = BlockInfoResponse {
                             message: Some(
@@ -478,21 +463,18 @@ impl DeployService for DeployGrpcServiceV1Impl {
                                 ),
                             ),
                         };
-                        if tx.send(Ok(response)).await.is_err() {
-                            break;
-                        }
+                        responses.push(response);
                     }
+                    Ok(responses)
                 }
                 Err(e) => {
                     error!("Deploy service method error get_blocks: {}", e);
-                    let _ = tx.send(Err(tonic::Status::internal(e.to_string()))).await;
+                    Err(tonic::Status::internal(e.to_string()))
                 }
             }
         });
 
-        Ok(tonic::Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
+        Ok(tonic::Response::new(stream))
     }
 
     /// Get data at name
@@ -978,11 +960,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<BlocksQueryByHeight>,
     ) -> Result<tonic::Response<Self::getBlocksByHeightsStream>, tonic::Status> {
         let request = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
         let api_max_blocks_limit = self.api_max_blocks_limit;
 
-        tokio::spawn(async move {
+        let stream = query_stream(async move {
             match BlockAPI::get_blocks_by_heights(
                 &engine_cell,
                 request.start_block_number,
@@ -992,6 +973,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             .await
             {
                 Ok(blocks) => {
+                    let mut responses = Vec::with_capacity(blocks.len());
                     for block_info in blocks {
                         let response = BlockInfoResponse {
                             message: Some(
@@ -1000,21 +982,18 @@ impl DeployService for DeployGrpcServiceV1Impl {
                                 ),
                             ),
                         };
-                        if tx.send(Ok(response)).await.is_err() {
-                            break;
-                        }
+                        responses.push(response);
                     }
+                    Ok(responses)
                 }
                 Err(e) => {
                     error!("Deploy service method error get_blocks_by_heights: {}", e);
-                    let _ = tx.send(Err(tonic::Status::internal(e.to_string()))).await;
+                    Err(tonic::Status::internal(e.to_string()))
                 }
             }
         });
 
-        Ok(tonic::Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
+        Ok(tonic::Response::new(stream))
     }
 
     /// Get status
