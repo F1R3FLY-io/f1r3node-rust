@@ -24,12 +24,13 @@ use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::history::native_checkpoint::{NativeCheckpoint, NativeCheckpointBacking};
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::hot_store_action::DeleteAction::{DeleteContinuations, DeleteData, DeleteJoins};
-use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_action::InsertAction::{InsertContinuations, InsertData, InsertJoins};
+use crate::rspace::hot_store_action::{HotStoreAction, NativeExportAction};
 use crate::rspace::hot_store_trie_action::{
     HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
     TrieInsertAction, TrieInsertConsume, TrieInsertJoins, TrieInsertProduce,
 };
+use crate::rspace::internal::WaitingContinuation;
 use crate::rspace::metrics_constants::{
     HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
     HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
@@ -91,6 +92,62 @@ where
     A: Clone + Send + Sync + Serialize,
     K: Clone + Send + Sync + Serialize,
 {
+    /// D-C3 (D-S3, DR-97): stages a native checkpoint whose cold and history
+    /// actions `prepare` builds: the atomic-root check, the radix
+    /// preparation, the root reservation and the backing, in the order of
+    /// the owned checkpoint.
+    fn stage_native_checkpoint(
+        &self,
+        prepare: impl FnOnce() -> Result<NativeCheckpoint, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError> {
+        meter.reserve(1, 0, 0)?;
+        if !self
+            .roots_repository
+            .lock()
+            .expect("root lock")
+            .supports_atomic_record()
+        {
+            return Err(RSpaceError::InterpreterError(
+                "native checkpoint requires atomic root recording".to_owned(),
+            ));
+        }
+        let mut prepared = prepare()?;
+        meter.reserve(8, 0, 0)?;
+        if !prepared.history_actions.is_empty() {
+            let history = self.current_history.lock().expect("history lock");
+            prepared.prepared_history =
+                Some(history.prepare_native(std::mem::take(&mut prepared.history_actions), meter)?);
+        }
+        if let Some(staged) = &prepared.prepared_history {
+            let root = staged.next.root_ref();
+            self.roots_repository
+                .lock()
+                .expect("root lock")
+                .reserve_native_commit(root, meter)?;
+            meter.reserve(1, root.0.len(), root.0.len())?;
+            prepared.root = Some(root.clone());
+        }
+        let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
+            .checked_add(if prepared.prepared_history.is_some() {
+                size_of::<Mutex<Box<dyn History>>>()
+                    .checked_add(2 * size_of::<usize>())
+                    .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn History>>>() * 2))
+                    .ok_or(RSpaceError::HostWorkRejected)?
+            } else {
+                0
+            })
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(2, 0, result_backing)?;
+        prepared.backing = Some(NativeCheckpointBacking {
+            history: self.current_history.clone(),
+            roots: self.roots_repository.clone(),
+            leaves: self.leaf_store.clone(),
+            nodes: self.node_store.clone(),
+        });
+        Ok(prepared)
+    }
+
     fn checkpoint_noop_clone(
         &self,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>
@@ -355,56 +412,74 @@ where
     A: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     K: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
 {
+    // Changed by D-C3 (D-S3, DR-97): the owned and the borrowed checkpoints
+    // share the staging in `stage_native_checkpoint`; the body below moved
+    // there unchanged, with the preparation as its closure.
+    // fn prepare_native_checkpoint(
+    //     &self,
+    //     actions: Vec<HotStoreAction<C, P, A, K>>,
+    //     meter: &dyn SourceMeter,
+    // ) -> Result<NativeCheckpoint, RSpaceError> {
+    //     meter.reserve(1, 0, 0)?;
+    //     if !self
+    //         .roots_repository
+    //         .lock()
+    //         .expect("root lock")
+    //         .supports_atomic_record()
+    //     {
+    //         return Err(RSpaceError::InterpreterError(
+    //             "native checkpoint requires atomic root recording".to_owned(),
+    //         ));
+    //     }
+    //     let mut prepared = NativeCheckpoint::prepare(actions, meter)?;
+    //     meter.reserve(8, 0, 0)?;
+    //     if !prepared.history_actions.is_empty() {
+    //         let history = self.current_history.lock().expect("history lock");
+    //         prepared.prepared_history =
+    //             Some(history.prepare_native(std::mem::take(&mut
+    // prepared.history_actions), meter)?);     }
+    //     if let Some(staged) = &prepared.prepared_history {
+    //         let root = staged.next.root_ref();
+    //         self.roots_repository
+    //             .lock()
+    //             .expect("root lock")
+    //             .reserve_native_commit(root, meter)?;
+    //         meter.reserve(1, root.0.len(), root.0.len())?;
+    //         prepared.root = Some(root.clone());
+    //     }
+    //     let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
+    //         .checked_add(if prepared.prepared_history.is_some() {
+    //             size_of::<Mutex<Box<dyn History>>>()
+    //                 .checked_add(2 * size_of::<usize>())
+    //                 .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn
+    // History>>>() * 2))                 .ok_or(RSpaceError::HostWorkRejected)?
+    //         } else {
+    //             0
+    //         })
+    //         .ok_or(RSpaceError::HostWorkRejected)?;
+    //     meter.reserve(2, 0, result_backing)?;
+    //     prepared.backing = Some(NativeCheckpointBacking {
+    //         history: self.current_history.clone(),
+    //         roots: self.roots_repository.clone(),
+    //         leaves: self.leaf_store.clone(),
+    //         nodes: self.node_store.clone(),
+    //     });
+    //     Ok(prepared)
+    // }
     fn prepare_native_checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
         meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        if !self
-            .roots_repository
-            .lock()
-            .expect("root lock")
-            .supports_atomic_record()
-        {
-            return Err(RSpaceError::InterpreterError(
-                "native checkpoint requires atomic root recording".to_owned(),
-            ));
-        }
-        let mut prepared = NativeCheckpoint::prepare(actions, meter)?;
-        meter.reserve(8, 0, 0)?;
-        if !prepared.history_actions.is_empty() {
-            let history = self.current_history.lock().expect("history lock");
-            prepared.prepared_history =
-                Some(history.prepare_native(std::mem::take(&mut prepared.history_actions), meter)?);
-        }
-        if let Some(staged) = &prepared.prepared_history {
-            let root = staged.next.root_ref();
-            self.roots_repository
-                .lock()
-                .expect("root lock")
-                .reserve_native_commit(root, meter)?;
-            meter.reserve(1, root.0.len(), root.0.len())?;
-            prepared.root = Some(root.clone());
-        }
-        let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
-            .checked_add(if prepared.prepared_history.is_some() {
-                size_of::<Mutex<Box<dyn History>>>()
-                    .checked_add(2 * size_of::<usize>())
-                    .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn History>>>() * 2))
-                    .ok_or(RSpaceError::HostWorkRejected)?
-            } else {
-                0
-            })
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(2, 0, result_backing)?;
-        prepared.backing = Some(NativeCheckpointBacking {
-            history: self.current_history.clone(),
-            roots: self.roots_repository.clone(),
-            leaves: self.leaf_store.clone(),
-            nodes: self.node_store.clone(),
-        });
-        Ok(prepared)
+        self.stage_native_checkpoint(|| NativeCheckpoint::prepare(actions, meter), meter)
+    }
+
+    fn prepare_native_checkpoint_borrowed(
+        &self,
+        actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError> {
+        self.stage_native_checkpoint(|| NativeCheckpoint::prepare_borrowed(actions, meter), meter)
     }
 
     fn commit_native_checkpoint(

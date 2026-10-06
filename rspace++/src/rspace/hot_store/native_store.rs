@@ -15,11 +15,12 @@ use shared::rust::clone_backing::CloneBacking;
 
 use super::native::{buffer, continuation_identity_metered, merge};
 use super::native_index::{
-    DigestShard, DigestShards, DigestSnapshot, KeyLimit, NATIVE_STORE_KEY_BOUND, ORD_CHUNK,
-    StoreKey, ord_levels_bound, ord_node_bytes, view_charge,
+    DigestShard, DigestShards, DigestSnapshot, KeyLimit, NATIVE_STORE_KEY_BOUND, NativeEntry,
+    ORD_CHUNK, StoreKey, ord_levels_bound, ord_node_bytes, view_charge,
 };
 use super::*;
 use crate::rspace::hashing::native_source::GroupKeys;
+use crate::rspace::hot_store_action::NativeExportAction;
 use crate::rspace::native_backing::{self, arc_allocation_bytes};
 use crate::rspace::rspace_interface::RSpaceResult;
 
@@ -208,6 +209,117 @@ fn update_buffer<T>(count: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSp
         .try_reserve_exact(count)
         .map_err(|_| RSpaceError::HostWorkRejected)?;
     Ok(updates)
+}
+
+/// D-C3 (D-S3, DR-97): the entries of the exported maps that a publishing
+/// write changed since the session began, each map in digest order. The
+/// pointers share the entries with the store, so the export reads the values
+/// by reference.
+pub(crate) struct NativeDirtyEntries<C, P: Clone, A: Clone, K: Clone> {
+    continuations: Vec<Arc<NativeEntry<Vec<C>, Continuations<P, K>>>>,
+    data: Vec<Arc<NativeEntry<C, Vec<Datum<A>>>>>,
+    joins: Vec<Arc<NativeEntry<C, Vec<Vec<C>>>>>,
+}
+
+/// D-C3 (D-S3, DR-97): the dirty entries of one map, in digest order. The
+/// pointer vector has room for every key of the map. Each visited entry
+/// charges its visit and the read of its flag, and each dirty entry one
+/// pointer copy.
+fn dirty_of<KV, V>(
+    index: &DigestShards<KV, V>,
+    meter: &dyn SourceMeter,
+) -> Result<Vec<Arc<NativeEntry<KV, V>>>, RSpaceError> {
+    let keys = index.key_count();
+    let bytes = keys
+        .checked_mul(size_of::<Arc<NativeEntry<KV, V>>>())
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(
+        keys.checked_mul(2)
+            .and_then(|work| work.checked_add(1))
+            .ok_or(RSpaceError::HostWorkRejected)?,
+        bytes,
+        bytes,
+    )?;
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(keys)
+        .map_err(|_| RSpaceError::HostWorkRejected)?;
+    for shard_index in 0..NUM_SHARDS {
+        let shard = index.read_shard(shard_index);
+        reserve_iteration(shard.len(), meter)?;
+        for entry in shard.values() {
+            meter.reserve(1, 1, 0)?;
+            if entry.dirty {
+                if entries.len() == entries.capacity() {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                view_charge().reserve(meter)?;
+                entries.push(Arc::clone(entry));
+            }
+        }
+    }
+    Ok(entries)
+}
+
+impl<C, P: Clone, A: Clone, K: Clone> NativeDirtyEntries<C, P, A, K> {
+    /// The export's changes by reference: continuations, data and joins,
+    /// each map in digest order. An empty value is a deletion.
+    pub(crate) fn actions(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>>, RSpaceError>
+    {
+        let count = self
+            .continuations
+            .len()
+            .checked_add(self.data.len())
+            .and_then(|count| count.checked_add(self.joins.len()))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let mut actions = buffer(count, meter)?;
+        let continuation_entry = size_of::<NativeEntry<Vec<C>, Continuations<P, K>>>();
+        for entry in &self.continuations {
+            meter.reserve(1, continuation_entry, 0)?;
+            actions.push(if entry.value.is_empty() {
+                NativeExportAction::DeleteContinuations {
+                    channels: entry.key.as_slice(),
+                }
+            } else {
+                NativeExportAction::InsertContinuations {
+                    channels: entry.key.as_slice(),
+                    continuations: &entry.value,
+                }
+            });
+        }
+        let data_entry = size_of::<NativeEntry<C, Vec<Datum<A>>>>();
+        for entry in &self.data {
+            meter.reserve(1, data_entry, 0)?;
+            actions.push(if entry.value.is_empty() {
+                NativeExportAction::DeleteData {
+                    channel: entry.key.as_ref(),
+                }
+            } else {
+                NativeExportAction::InsertData {
+                    channel: entry.key.as_ref(),
+                    data: &entry.value,
+                }
+            });
+        }
+        let join_entry = size_of::<NativeEntry<C, Vec<Vec<C>>>>();
+        for entry in &self.joins {
+            meter.reserve(1, join_entry, 0)?;
+            actions.push(if entry.value.is_empty() {
+                NativeExportAction::DeleteJoins {
+                    channel: entry.key.as_ref(),
+                }
+            } else {
+                NativeExportAction::InsertJoins {
+                    channel: entry.key.as_ref(),
+                    joins: &entry.value,
+                }
+            });
+        }
+        Ok(actions)
+    }
 }
 
 pub(crate) struct NativeHotStore<C, P: Clone, A: Clone, K: Clone> {
@@ -1322,10 +1434,29 @@ where
         Ok(())
     }
 
+    /// D-C3 (D-S3, DR-97): the dirty entries of the exported maps, for the
+    /// export by reference. The session's exclusive gate serializes the
+    /// export with every write.
+    pub(crate) fn dirty_entries(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeDirtyEntries<C, P, A, K>, RSpaceError> {
+        meter.reserve(NUM_SHARDS * 3, 0, 0)?;
+        Ok(NativeDirtyEntries {
+            continuations: dirty_of(&self.continuations, meter)?,
+            data: dirty_of(&self.data, meter)?,
+            joins: dirty_of(&self.joins, meter)?,
+        })
+    }
+
+    // Changed by D-C3 (D-S3, DR-97): the export borrows cached values and emits
+    // dirty keys only (`dirty_entries`). The full export of deep copies stays
+    // as the test oracle of the root-equality tests.
     /// The store's changes for the history: every continuation, data and
     /// join entry, each map in digest order (port of
     /// `InMemHotStore::native_changes`). The session's exclusive gate
     /// serializes the export with every write.
+    #[cfg(test)]
     pub(crate) fn changes(
         &self,
         meter: &dyn SourceMeter,

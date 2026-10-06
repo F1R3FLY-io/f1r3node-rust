@@ -406,6 +406,46 @@ async fn malformed_authenticated_records_never_publish_a_partial_cache_or_fall_b
     }
 }
 
+/// D-S3 (D-C3, DR-97): clean cold fills are not exported. The full export of
+/// the same entries re-inserts the stored leaves and deletes an absent key,
+/// which keeps the root. The dirty export has no action, and the session's
+/// export keeps the root.
+#[tokio::test]
+async fn clean_cold_fill_is_not_exported() {
+    let history = retained_history().await;
+    let root = history.root();
+    let session = isolated(history.clone());
+    for kind in 0..3 {
+        query(&session, kind).await.expect("a cold fill");
+    }
+    let absent = session
+        .get_data(&"absent".to_owned())
+        .await
+        .expect("an empty cold fill");
+    assert!(absent.is_empty());
+    let counts = session.store.entry_counts();
+    assert_eq!([counts[0], counts[1], counts[3]], [2, 1, 1]);
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    let dirty = session.store.dirty_entries(&free).expect("a free meter");
+    let actions = dirty.actions(&free).expect("a free meter");
+    assert!(actions.is_empty());
+    let full = session.store.changes(&free).expect("a free meter");
+    assert_eq!(full.len(), 4);
+    let prepared = history
+        .prepare_native_checkpoint(full, &free)
+        .expect("the full export");
+    assert_eq!(prepared.cold_actions.len(), 3);
+    assert_eq!(prepared.root, Some(root.clone()));
+    let borrowed = history
+        .prepare_native_checkpoint_borrowed(&actions, &free)
+        .expect("the dirty export");
+    assert!(borrowed.cold_actions.is_empty());
+    assert!(borrowed.prepared_history.is_none());
+    let export = session.export().await.expect("the export");
+    assert_eq!(export.root(), &root);
+    assert_eq!(history.root(), root);
+}
+
 fn digest_bytes(digest: Blake2b256Hash) -> [u8; 32] {
     digest.0.as_slice().try_into().expect("a 32-byte digest")
 }

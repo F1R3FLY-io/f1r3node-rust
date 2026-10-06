@@ -396,14 +396,22 @@ where
             //         .changes_metered(&|operations, scanned, backing| {
             //             self.history_reserve(operations, scanned, backing)
             //         })?;
-            let changes = self.store.changes(&|operations, scanned, backing| {
-                self.history_reserve(operations, scanned, backing)
-            })?;
+            // Changed by D-C3 (D-S3, DR-97): the export borrows cached values
+            // and emits dirty keys only.
+            // let changes = self.store.changes(&|operations, scanned, backing| {
+            //     self.history_reserve(operations, scanned, backing)
+            // })?;
+            // let history = self.space.get_history_repository();
+            // let prepared = history
+            //     .prepare_native_checkpoint(changes, &|operations, scanned, backing| {
+            //         self.history_reserve(operations, scanned, backing)
+            //     })?;
+            let reserve =
+                |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+            let dirty = self.store.dirty_entries(&reserve)?;
+            let changes = dirty.actions(&reserve)?;
             let history = self.space.get_history_repository();
-            let prepared = history
-                .prepare_native_checkpoint(changes, &|operations, scanned, backing| {
-                    self.history_reserve(operations, scanned, backing)
-                })?;
+            let prepared = history.prepare_native_checkpoint_borrowed(&changes, &reserve)?;
             let root = prepared
                 .root
                 .as_ref()

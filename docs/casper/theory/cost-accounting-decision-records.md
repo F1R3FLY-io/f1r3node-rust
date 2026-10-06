@@ -7313,3 +7313,149 @@ consume.
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,
 `ofp-2-cap-d-c2d-digest-cold-fill-export` and
 `ofp-2-cap-d-c2e-key-bound-collisions`.
+
+## DR-97 — Dirty-key export of the native session store by reference
+
+**Status.** Implemented for Phase D item D-C3 of epic 8946 (D-S3 of the
+Phase D plan) on 2026-10-06.
+
+**Context.** At the end of a replay, the native session exported every
+cached entry of its store. The export made a deep copy of each entry,
+including the entries that a cold fill read from the history only for
+matching. The checkpoint then encoded and hashed every exported entry
+again. In the gateway funding probe, each validator replay paid about
+131 MB of VerificationBytes for the export. The checkpoint preparation cost
+another 26 MB of VerificationBytes and 12 MB of SearchStateBytes.
+
+A measurement before the change (H4) counted the entries of the gateway
+block's export. 306 of the 641 entries are clean, and they carry 70.3 MB of
+the 124 MB of copy charges. Most of it is in clean continuation groups:
+63 entries with 66.8 MB.
+
+**Decision.**
+
+1. The store exports only dirty entries. A cold fill inserts a clean entry,
+   and every publishing write replaces the entry with a dirty one
+   (`DigestShards::replace`, DR-96 part 2). Checkpoints and restores copy
+   whole entries, so they keep the flags.
+2. The export reads the entries by reference.
+   - `NativeHotStore::dirty_entries` collects pointer copies of the dirty
+     entries of the three exported maps, each map in digest order.
+   - `NativeDirtyEntries::actions` builds `NativeExportAction` views of
+     them. A non-empty value is an insertion, and an empty value a deletion.
+   - The session holds its exclusive gate during the export, and a
+     published entry never changes. So the pointers are a stable snapshot.
+3. `HistoryRepository::prepare_native_checkpoint_borrowed` prepares the
+   views. `NativeCheckpoint::prepare` and `prepare_borrowed` share one body,
+   `prepare_views`. The owned path reads its actions through the same views
+   and keeps its reservations.
+4. Serde's `rc` feature serializes an `Arc<WaitingContinuation>` as its
+   value. So a shared continuation encodes the same bytes with the same
+   writes as an owned one.
+5. The full export of deep copies (`NativeHotStore::changes`) stays as the
+   oracle of the root-equality tests (`#[cfg(test)]`).
+6. The charges of the export:
+   - the pointer vector of each map: two operations and 8 bytes per key;
+   - the iteration of every shard, as before;
+   - one operation and one scanned byte per visited entry, for the visit
+     and the flag;
+   - one pointer copy per dirty entry, and one entry read per view.
+
+   The export no longer copies any entry. The checkpoint no longer encodes,
+   hashes or commits clean entries.
+
+**Soundness.** The dirty export gives the root of the full export because
+of three premises.
+
+- A clean entry holds what the history holds. A cold fill reads the leaf
+  at the session's root, and nothing else inserts a clean entry into an
+  exported map. Writing that content again changes nothing: the radix tree
+  returns no update when an insertion writes the same leaf hash, or when a
+  deletion finds no key (`radix_tree/native.rs`, `update` and `delete`).
+- A cold fill re-encodes to exactly the stored leaf. A stored leaf is the
+  sorted list of encoded rows (`records`), and every writer sorts its rows.
+  The bincode encoding of the rhoapi types is stable under decode and
+  encode: `locally_free` encodes as empty bytes, and peek sets are ordered.
+- The export applies the dirty changes on top of the session's root, which
+  the cold fills read. The session's history repository does not change
+  during a session.
+
+**Behavior changes.**
+
+- Two cached continuation groups that are permutations of each other share
+  one history projection (DR-96 part 4). The full export failed with a
+  duplicate-key error when both were cached. The dirty export fails only
+  when both are dirty. Normalized Rholang cannot create such a pair, and
+  every validator reaches the same result.
+- An export with only clean entries prepares no history action, so it does
+  not commit a checkpoint. The session's root is already recorded, and the
+  export root is the same.
+- The export no longer writes clean leaves into the cold store again.
+
+**Verification.** `NativeDirtyExport.v` proves without axioms:
+
+- `leaf_reencodes`, `clean_cold_fill_round_trips` and
+  `written_history_fills_round_trip`: with an encoding that is stable under
+  decode and encode, a cold fill re-encodes to the stored leaf, and an
+  empty value to no leaf.
+- `unsorted_leaf_reencodes_differently` (premise control): a leaf whose
+  rows are not sorted does not re-encode to itself.
+- `update_idempotent`: writing the value that a key holds keeps the map.
+- `dirty_export_equals_full_export`: for a store with distinct keys whose
+  clean entries hold history values, the two exports give the same map.
+- `dirty_invariant_preserved` and
+  `reachable_dirty_export_equals_full_export`: cold fills, writes,
+  checkpoints and restores keep that property.
+- Negative control `write_without_dirty_changes_root`: a write that keeps
+  the clean flag makes the two exports differ.
+
+`NativeDirtyExport.tla` checks the same agreement with TLC: 24,084 states,
+3,141 of them distinct, and no error. Its mutations `write_without_dirty`
+and `restore_drops_dirty` are refuted, as expected.
+
+Tests:
+
+- `dirty_export_root_equals_full_export_root` (128 cases): random sequences
+  of operations, checkpoints and restores over a history that holds what
+  the fake reads return. The two roots agree after every step.
+- `dirty_export_needs_the_cold_fill_history` (negative control): over an
+  empty history, the two roots differ.
+- `borrowed_export_encodes_identical_leaves` (64 cases): owned actions and
+  borrowed views give the same cold actions, history actions, reservation
+  sequence and root. The borrowed checkpoint allocates at most what it
+  reserved.
+- `restore_restores_dirty_flags` and `every_dirty_export_cut_preserves_state`.
+- `clean_cold_fill_is_not_exported` (native session): the dirty export is
+  empty, the full export keeps the root, and the session's export keeps the
+  root.
+- `clean_cold_fill_reencodes_to_stored_leaf` (rholang, 32 cases with
+  generated rhoapi terms): the stored rows are sorted, the decoded rows
+  re-encode byte for byte, and the owned and borrowed re-exports keep the
+  root.
+- `permuted_groups_fail_both_exports_alike` also asserts that the dirty
+  export of two clean permuted groups succeeds.
+
+**Measurement.** The gateway funding probe ran once before and once after
+this change on 2026-10-06, with the provisional caps.
+
+| Budget | Dimension | Before | After | Change |
+|--------|-----------|-------:|------:|-------:|
+| Validator replay | VerificationBytes | 1,881,249,841 | 1,734,139,891 | −147,109,950 (−7.8 %) |
+| Validator replay | SearchStateBytes | 204,173,979 | 190,414,879 | −13,759,100 (−6.7 %) |
+| Producer self-replay | VerificationBytes | 1,894,361,996 | 1,747,364,364 | −146,997,632 |
+
+- The plan predicted about −147 MB of VerificationBytes and −14 MB of
+  SearchStateBytes.
+- Against the original caps, the validator replay goes from 7.01 to 6.46
+  times the VerificationBytes cap. It goes from 1.52 to 1.42 times the
+  SearchStateBytes cap.
+- The sampled attribution confirms the source. The export fell from 131 MB
+  of VerificationBytes to less than 8 MB. The checkpoint preparation fell
+  from 26 MB to 11 MB of VerificationBytes, and from 12 MB to 4 MB of
+  SearchStateBytes.
+- Earlier runs of one build differ by 2.6 MB, so the change is far above
+  the variation between runs. Producer execution, which this change does
+  not touch, stays within its spread.
+
+**Cross-refs.** DR-95, DR-96 (parts 2 to 4). Leaf
+`ofp-2-cap-d-c3-dirty-export`.

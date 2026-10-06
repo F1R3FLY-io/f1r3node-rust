@@ -15,8 +15,9 @@ use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
 use crate::rspace::history::native_reader::NativeHistoryReader;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
-use crate::rspace::hot_store_action::HotStoreAction;
+use crate::rspace::hot_store_action::{HotStoreAction, NativeExportAction};
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
+use crate::rspace::internal::WaitingContinuation;
 use crate::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use crate::rspace::state::instances::rspace_importer_store::RSpaceImporterStore;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
@@ -37,6 +38,14 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn prepare_native_checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>;
+
+    /// D-C3 (D-S3, DR-97): the checkpoint of the native export's changes,
+    /// borrowed from the native store.
+    fn prepare_native_checkpoint_borrowed(
+        &self,
+        actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
         meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError>;
 

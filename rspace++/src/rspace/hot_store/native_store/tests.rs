@@ -11,8 +11,12 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::channel_key;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
+use crate::rspace::history::native_checkpoint::NativeCheckpoint;
 use crate::rspace::history::native_reader::measure_allocations;
-use crate::rspace::hot_store_action::{DeleteAction, InsertAction};
+use crate::rspace::hot_store_action::{
+    DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, InsertAction, InsertContinuations,
+    InsertData, InsertJoins, NativeExportAction,
+};
 use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use crate::rspace::trace::event::Consume;
 
@@ -547,11 +551,53 @@ fn permuted_groups_fail_both_exports_alike() {
         export_root(history.as_ref(), legacy.changes_metered(&free()).expect("the legacy export"));
     assert!(digest.is_err());
     assert_eq!(digest, oracle);
+    // D-C3 (D-S3, DR-97): the two groups are clean cold fills, so the dirty
+    // export has no action and succeeds.
+    let dirty = store.dirty_entries(&free()).expect("a free meter");
+    let actions = dirty.actions(&free()).expect("a free meter");
+    assert!(actions.is_empty());
+    assert!(
+        history
+            .prepare_native_checkpoint_borrowed(&actions, &free())
+            .is_ok()
+    );
 }
 
 /// The observable state of a store: its entry counts and its export.
-fn observed(store: &Store) -> ([usize; 5], Result<Vec<String>, RSpaceError>) {
-    (store.entry_counts(), store.changes(&free()).map(export_multiset))
+// Changed by D-C3 (D-S3, DR-97): the observable state includes the dirty
+// keys, which decide the export.
+// fn observed(store: &Store) -> ([usize; 5], Result<Vec<String>, RSpaceError>)
+// {     (store.entry_counts(), store.changes(&free()).map(export_multiset))
+// }
+type Observed = ([usize; 5], Result<Vec<String>, RSpaceError>, Result<Vec<String>, RSpaceError>);
+
+fn observed(store: &Store) -> Observed {
+    (store.entry_counts(), store.changes(&free()).map(export_multiset), dirty_keys(store))
+}
+
+/// The keys of the dirty entries of the exported maps, in export order.
+fn dirty_keys(store: &Store) -> Result<Vec<String>, RSpaceError> {
+    let dirty = store.dirty_entries(&free())?;
+    let mut keys = Vec::new();
+    keys.extend(
+        dirty
+            .continuations
+            .iter()
+            .map(|entry| format!("continuations {:?}", entry.key)),
+    );
+    keys.extend(
+        dirty
+            .data
+            .iter()
+            .map(|entry| format!("data {:?}", entry.key)),
+    );
+    keys.extend(
+        dirty
+            .joins
+            .iter()
+            .map(|entry| format!("joins {:?}", entry.key)),
+    );
+    Ok(keys)
 }
 
 /// A store with cached data, continuations and joins for the group
@@ -1001,4 +1047,309 @@ fn digest_collision_is_detected() {
         collision()
     );
     assert_eq!(observed(&store), before);
+}
+
+/// The history of the fake reads of these tests, committed to an empty
+/// history: the data of "a" and "bb", the joins of "a", and the stored
+/// continuation of ["a", "bb"].
+fn fixture_history() -> Box<dyn HistoryRepository<String, String, String, String> + Send + Sync> {
+    let history = empty_history();
+    let a = channel(0);
+    let bb = channel(1);
+    let pair = group(&[0, 1]);
+    let actions = vec![
+        HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+            channel: a.clone(),
+            data: history_data(&a),
+        })),
+        HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+            channel: bb.clone(),
+            data: history_data(&bb),
+        })),
+        HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+            channel: a.clone(),
+            joins: history_joins(&a),
+        })),
+        HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+            channels: pair.clone(),
+            continuations: history_continuations(&pair),
+        })),
+    ];
+    let prepared = history
+        .prepare_native_checkpoint(actions, &free())
+        .expect("the fixture checkpoint");
+    history
+        .commit_native_checkpoint(prepared)
+        .expect("the fixture commit")
+}
+
+#[derive(Clone, Debug)]
+enum Step {
+    Op(Op),
+    Checkpoint,
+    Restore,
+}
+
+fn step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        8 => op().prop_map(canonical).prop_map(Step::Op),
+        1 => Just(Step::Checkpoint),
+        1 => Just(Step::Restore),
+    ]
+}
+
+/// The roots of the full export and of the dirty export of `store` over
+/// `history`. A checkpoint without history actions keeps the root.
+fn export_roots(
+    store: &Store,
+    history: &(dyn HistoryRepository<String, String, String, String> + Send + Sync),
+) -> (Result<Blake2b256Hash, RSpaceError>, Result<Blake2b256Hash, RSpaceError>) {
+    let full = store
+        .changes(&free())
+        .and_then(|actions| history.prepare_native_checkpoint(actions, &free()))
+        .map(|prepared| prepared.root.unwrap_or_else(|| history.root()));
+    let dirty = store
+        .dirty_entries(&free())
+        .and_then(|dirty| {
+            let actions = dirty.actions(&free())?;
+            history.prepare_native_checkpoint_borrowed(&actions, &free())
+        })
+        .map(|prepared| prepared.root.unwrap_or_else(|| history.root()));
+    (full, dirty)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// D-S3 (D-C3, DR-97): over a history that holds what the fake reads
+    /// return, the dirty export and the full export give the same root after
+    /// every step of random operations, checkpoints and restores.
+    #[test]
+    fn dirty_export_root_equals_full_export_root(steps in prop::collection::vec(step(), 0..24)) {
+        let history = fixture_history();
+        let store = Store::new();
+        let legacy = legacy();
+        let mut saved = None;
+        for step in &steps {
+            match step {
+                Step::Op(op) => apply(&store, &legacy, op)?,
+                Step::Checkpoint => saved = Some((store.snapshot(), legacy.snapshot())),
+                Step::Restore => {
+                    if let Some((digest, oracle)) = saved.take() {
+                        store.restore(digest);
+                        legacy.set_state(oracle);
+                    }
+                }
+            }
+            let (full, dirty) = export_roots(&store, history.as_ref());
+            prop_assert!(full.is_ok(), "{:?}", full);
+            prop_assert_eq!(full, dirty);
+        }
+    }
+}
+
+/// A meter that records every reservation in order.
+#[derive(Default)]
+struct Recording(RefCell<Vec<(usize, usize, usize)>>);
+
+impl SourceMeter for Recording {
+    fn reserve(
+        &self,
+        operations: usize,
+        scanned: usize,
+        backing: usize,
+    ) -> Result<(), RSpaceError> {
+        self.0.borrow_mut().push((operations, scanned, backing));
+        Ok(())
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// D-S3 (D-C3, DR-97): owned actions and borrowed views with shared
+    /// continuations encode the same leaves with the same reservations, give
+    /// the same root, and the borrowed checkpoint allocates at most what it
+    /// reserved.
+    #[test]
+    fn borrowed_export_encodes_identical_leaves(
+        data in prop::collection::vec(("[a-c]{0,3}", any::<bool>()), 0..4),
+        bodies in prop::collection::vec(("[a-c]{0,3}", any::<bool>(), any::<bool>()), 0..4),
+        joins in prop::collection::vec(prop::collection::vec(0usize..3, 1..3), 0..3),
+    ) {
+        let a = channel(0);
+        let bb = channel(1);
+        let pair = group(&[0, 1]);
+        let data: Vec<Datum<String>> = data
+            .into_iter()
+            .map(|(value, persist)| Datum::create(&a, value, persist))
+            .collect();
+        let continuations: Vec<Waiting> = bodies
+            .into_iter()
+            .map(|(body, persist, peek)| waiting(&pair, &body, persist, peek))
+            .collect();
+        let joins: Vec<Vec<String>> = joins.iter().map(|indices| group(indices)).collect();
+        let shared: Vec<Arc<Waiting>> = continuations.iter().cloned().map(Arc::new).collect();
+        let owned = vec![
+            if data.is_empty() {
+                HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel: a.clone() }))
+            } else {
+                HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+                    channel: a.clone(),
+                    data: data.clone(),
+                }))
+            },
+            if continuations.is_empty() {
+                HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
+                    channels: pair.clone(),
+                }))
+            } else {
+                HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+                    channels: pair.clone(),
+                    continuations: continuations.clone(),
+                }))
+            },
+            if joins.is_empty() {
+                HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins { channel: bb.clone() }))
+            } else {
+                HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+                    channel: bb.clone(),
+                    joins: joins.clone(),
+                }))
+            },
+        ];
+        let views = [
+            if data.is_empty() {
+                NativeExportAction::DeleteData { channel: &a }
+            } else {
+                NativeExportAction::InsertData { channel: &a, data: &data }
+            },
+            if shared.is_empty() {
+                NativeExportAction::DeleteContinuations { channels: &pair }
+            } else {
+                NativeExportAction::InsertContinuations { channels: &pair, continuations: &shared }
+            },
+            if joins.is_empty() {
+                NativeExportAction::DeleteJoins { channel: &bb }
+            } else {
+                NativeExportAction::InsertJoins { channel: &bb, joins: &joins }
+            },
+        ];
+        let owned_meter = Recording::default();
+        let borrowed_meter = Recording::default();
+        let from_owned =
+            NativeCheckpoint::prepare(owned.clone(), &owned_meter).expect("a free meter");
+        let from_views =
+            NativeCheckpoint::prepare_borrowed(&views, &borrowed_meter).expect("a free meter");
+        prop_assert_eq!(&from_owned.cold_actions, &from_views.cold_actions);
+        prop_assert_eq!(
+            format!("{:?}", from_owned.history_actions),
+            format!("{:?}", from_views.history_actions)
+        );
+        prop_assert_eq!(owned_meter.0.into_inner(), borrowed_meter.0.into_inner());
+        let history = empty_history();
+        let owned_root = history
+            .prepare_native_checkpoint(owned, &free())
+            .map(|prepared| prepared.root);
+        let meter = Meter::default();
+        let (borrowed_root, allocated) = measure_allocations(|| {
+            history
+                .prepare_native_checkpoint_borrowed(&views, &meter)
+                .map(|prepared| prepared.root)
+        });
+        prop_assert_eq!(owned_root, borrowed_root);
+        prop_assert!(allocated <= meter.used.get()[2]);
+    }
+}
+
+/// A store with dirty entries: `prepared()`, a publication on "a", and a
+/// stored consume on ["a", "bb"].
+fn dirty_store() -> Store {
+    let store = prepared();
+    let a = channel(0);
+    store
+        .put_datum(&a, key(&a), Datum::create(&a, "put".to_owned(), false), &free())
+        .expect("a free meter");
+    let pair = group(&[0, 1]);
+    store
+        .store_consume(&pair, &keys(&pair), waiting(&pair, "new", false, true), &free())
+        .expect("a free meter");
+    store
+}
+
+/// D-S3 (D-C3, DR-97): a restore returns the dirty flags of its checkpoint,
+/// and a write that changes nothing keeps an entry clean.
+#[test]
+fn restore_restores_dirty_flags() {
+    let store = prepared();
+    let a = channel(0);
+    let bb = channel(1);
+    let pair = group(&[0, 1]);
+    assert_eq!(dirty_keys(&store), Ok(Vec::new()));
+    let clean = store.snapshot();
+    store
+        .put_datum(&a, key(&a), Datum::create(&a, "put".to_owned(), false), &free())
+        .expect("a free meter");
+    let data_a = vec![format!("data {:?}", Arc::new(a.clone()))];
+    assert_eq!(dirty_keys(&store), Ok(data_a.clone()));
+    let written = store.snapshot();
+    store
+        .store_consume(&pair, &keys(&pair), waiting(&pair, "new", false, true), &free())
+        .expect("a free meter");
+    let consumed = dirty_keys(&store).expect("a free meter");
+    assert!(consumed.contains(&format!("continuations {:?}", Arc::new(pair.clone()))));
+    assert!(consumed.contains(&format!("joins {:?}", Arc::new(bb.clone()))));
+    // The joins of "a" already held the group, so the consume left them clean.
+    assert!(!consumed.contains(&format!("joins {:?}", Arc::new(a.clone()))));
+    store.restore(written);
+    assert_eq!(dirty_keys(&store), Ok(data_a));
+    let dirty = store.dirty_entries(&free()).expect("a free meter");
+    assert_eq!(dirty.data.len(), 1);
+    assert_eq!(dirty.data[0].value[0].a, "put");
+    store.restore(clean);
+    assert_eq!(dirty_keys(&store), Ok(Vec::new()));
+}
+
+/// D-S3 (D-C3, DR-97): the export by reference reserves before it
+/// allocates: at every reservation cut it returns the host error, allocates
+/// at most what it reserved, and leaves the store unchanged.
+#[test]
+fn every_dirty_export_cut_preserves_state() {
+    let history = empty_history();
+    let export = |store: &Store, meter: &Meter| -> Result<(), RSpaceError> {
+        let dirty = store.dirty_entries(meter)?;
+        let actions = dirty.actions(meter)?;
+        history
+            .prepare_native_checkpoint_borrowed(&actions, meter)
+            .map(drop)
+    };
+    let baseline = Meter::default();
+    export(&dirty_store(), &baseline).expect("a free meter");
+    let before = observed(&dirty_store());
+    for cut in 0..baseline.calls.get() {
+        let store = dirty_store();
+        let meter = Meter::rejecting(cut);
+        let (result, allocated) = measure_allocations(|| export(&store, &meter));
+        assert_eq!(result, Err(RSpaceError::HostWorkRejected), "cut {cut}");
+        assert!(
+            allocated <= meter.used.get()[2],
+            "cut {cut}: allocated {allocated}, reserved {}",
+            meter.used.get()[2]
+        );
+        assert_eq!(observed(&store), before, "cut {cut}");
+    }
+}
+
+/// D-S3 (D-C3, DR-97), negative control: the dirty export keeps the root only
+/// over the history that the cold fills read. Over an empty history, the
+/// full export of the clean cold fills writes their values, and the dirty
+/// export does not.
+#[test]
+fn dirty_export_needs_the_cold_fill_history() {
+    let store = prepared();
+    assert_eq!(dirty_keys(&store), Ok(Vec::new()));
+    let (full, dirty) = export_roots(&store, empty_history().as_ref());
+    assert_ne!(full.expect("the full export"), dirty.expect("the dirty export"));
+    let (full, dirty) = export_roots(&store, fixture_history().as_ref());
+    assert_eq!(full.expect("the full export"), dirty.expect("the dirty export"));
 }
