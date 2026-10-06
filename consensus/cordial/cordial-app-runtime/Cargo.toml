@@ -1,9 +1,0 @@
-[package]
-name = "cordial-app-runtime"
-description = "Generic application runtime interface over Cordial Miners finalized ordered output"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-serde = { workspace = true, features = ["derive"] }
-thiserror = "2"

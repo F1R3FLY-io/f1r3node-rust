@@ -132,7 +132,6 @@ fn casper_application(
 ) -> &node::rust::consensus::casper::api_compat::PreparedApplication {
     match application {
         node::rust::runtime::setup::PreparedApplication::CbcCasper(application) => application,
-        _ => panic!("Casper configuration selected another application"),
     }
 }
 

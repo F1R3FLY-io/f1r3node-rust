@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-consensus-api = { path = "../api" }
+consensus-api = { path = "../consensus-api" }
 tokio = { workspace = true }
 futures = { workspace = true }
 
