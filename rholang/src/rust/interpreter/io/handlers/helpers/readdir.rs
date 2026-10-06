@@ -57,6 +57,11 @@ use crate::rust::interpreter::rho_type::RhoBoolean;
 pub unsafe fn errno_reset() { *libc::__error() = 0; }
 
 /// See [`errno_reset`] macOS variant.
+///
+/// # Safety
+///
+/// Writes zero to the platform's per-thread errno location.  Safe
+/// on any thread; the TLS access is thread-local by construction.
 #[cfg(target_os = "linux")]
 pub unsafe fn errno_reset() { *libc::__errno_location() = 0; }
 
