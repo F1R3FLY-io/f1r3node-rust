@@ -767,6 +767,45 @@ impl Sortable<Expr> for ExprSortMatcher {
                         Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
                     ]),
                 },
+
+                ExprInstance::GUint64(u) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::UINT64, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(u.to_be_bytes().to_vec()),
+                    ]),
+                },
+
+                ExprInstance::GInt32(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::INT32 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint32(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT32 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint16(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT16 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint8(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT8 as i64,
+                        *x as i64,
+                    ]),
+                },
             },
 
             // TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional - OLD
@@ -1194,6 +1233,44 @@ impl ExprSortMatcher {
                     meter,
                 )?,
             }),
+            Some(ExprInstance::GUint64(value)) => Ok(ScoredTerm {
+                term: meter.clone(expr)?,
+                score: score_node(
+                    Score::UINT64,
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(
+                        meter.clone_slice(&value.to_be_bytes())?,
+                    ),
+                    meter,
+                )?,
+            }),
+            Some(ExprInstance::GInt32(value)) => Ok(ScoredTerm {
+                term: meter.clone(expr)?,
+                score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
+                    &[Score::INT32 as i64, i64::from(*value)],
+                    meter,
+                )?,
+            }),
+            Some(ExprInstance::GUint32(value)) => Ok(ScoredTerm {
+                term: meter.clone(expr)?,
+                score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
+                    &[Score::UINT32 as i64, i64::from(*value)],
+                    meter,
+                )?,
+            }),
+            Some(ExprInstance::GUint16(value)) => Ok(ScoredTerm {
+                term: meter.clone(expr)?,
+                score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
+                    &[Score::UINT16 as i64, i64::from(*value)],
+                    meter,
+                )?,
+            }),
+            Some(ExprInstance::GUint8(value)) => Ok(ScoredTerm {
+                term: meter.clone(expr)?,
+                score: Tree::<ScoreAtom>::create_node_from_i64s_metered(
+                    &[Score::UINT8 as i64, i64::from(*value)],
+                    meter,
+                )?,
+            }),
             None => Ok(ScoredTerm {
                 term: meter.clone(expr)?,
                 score: Tree::<ScoreAtom>::create_node_from_i32_metered(
@@ -1340,6 +1417,29 @@ mod metered_tests {
         for value in values {
             assert_eq!(
                 ExprSortMatcher::sort_match_metered(&value, &meter).unwrap(),
+                ExprSortMatcher::sort_match(&value)
+            );
+        }
+    }
+
+    #[test]
+    fn metered_expr_sort_matches_sized_integer_scores() {
+        let values = [0, 1, u64::MAX]
+            .map(ExprInstance::GUint64)
+            .into_iter()
+            .chain([i32::MIN, -1, 0, i32::MAX].map(ExprInstance::GInt32))
+            .chain([0, 1, u32::MAX].map(ExprInstance::GUint32))
+            .chain([0, u32::from(u16::MAX)].map(ExprInstance::GUint16))
+            .chain([0, u32::from(u8::MAX)].map(ExprInstance::GUint8));
+        let reserve = |_: usize, _: usize, _: usize| Ok(());
+        let meter = SorterMeter::new(&reserve);
+        for expr_instance in values {
+            let value = Expr {
+                expr_instance: Some(expr_instance),
+            };
+            assert_eq!(
+                ExprSortMatcher::sort_match_metered(&value, &meter)
+                    .expect("a sized integer sorts within an unbounded meter"),
                 ExprSortMatcher::sort_match(&value)
             );
         }

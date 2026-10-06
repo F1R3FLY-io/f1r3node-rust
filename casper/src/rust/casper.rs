@@ -173,6 +173,16 @@ pub trait Casper {
 
 #[async_trait]
 pub trait MultiParentCasper: Casper + Send + Sync {
+    fn attach_observer(
+        &self,
+        _binding: crate::rust::soak_observer::ObserverBinding,
+    ) -> Result<
+        crate::rust::soak_observer::CaptureEndpoint,
+        crate::rust::soak_observer::AttachmentError,
+    > {
+        Err(crate::rust::soak_observer::AttachmentError::Unsupported)
+    }
+
     async fn fetch_dependencies(&self) -> Result<(), CasperError>;
 
     // This is the weight of faults that have been accumulated so far.
@@ -442,6 +452,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         .is_some_and(|policy| policy.offered_funded_v6_active());
 
     Ok(MultiParentCasperImpl {
+        observer: std::sync::OnceLock::new(),
         divergence_monitor: std::sync::Arc::new(
             crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
         ),

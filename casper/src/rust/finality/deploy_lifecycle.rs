@@ -49,10 +49,11 @@ use block_storage::rust::dag::deploy_lifecycle_types::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
+use super::block_facts::{block_facts, LineageNext};
 use super::floor::{in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
 
@@ -153,153 +154,6 @@ fn effect_in_state_of_above(
     }
 }
 
-/// Where a lineage step leads.
-enum LineageNext {
-    /// Next block on the state lineage.
-    Base(BlockHash),
-    /// Genesis: the lineage is exhausted.
-    Genesis,
-    /// Multi-parent block without a recorded `merge_base`: malformed. The
-    /// walk refuses when it must STEP through such a block; readers of the
-    /// block's own facts (its rejection records) are unaffected, exactly
-    /// like the reference loaders.
-    MalformedMultiParent,
-}
-
-/// One cached lineage step: everything the batched walk (and the
-/// rejection-record loader) needs from a block without re-reading its
-/// body. Content-addressed by block hash, so an entry can never go stale.
-struct LineageStep {
-    block_number: i64,
-    next: LineageNext,
-    /// The block's applied-sig facts: sigs of its non-failed `deploys`
-    /// entries plus its `applied_from_scope` list.
-    sigs: std::sync::Arc<HashSet<Bytes>>,
-    /// The block's kept rejection records, verbatim from
-    /// `body.rejected_deploys` — the per-block input to
-    /// `scope_prior_rejection_counts`.
-    rejected: std::sync::Arc<Vec<RejectedDeploy>>,
-}
-
-/// Byte budget for the per-block lineage-step cache, tracked from each
-/// entry's measured sig bytes (an entry-count cap understates fat blocks:
-/// 128 sigs × ~70B is ~9KB for one entry). On overflow the cache is
-/// cleared rather than evicted piecewise — entries are pure functions of
-/// immutable bodies, so losing them costs only a re-read. Repeated
-/// clear-rebuild thrash would need one walk's entries to approach the
-/// budget, and walk depth is bounded far below it by the deterministic
-/// floor-distance merge backstop (`merge_scope_backstop_exceeded`).
-const LINEAGE_STEP_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
-
-/// Per-entry overhead estimate added to the measured sig bytes: map slot,
-/// `Arc` headers, hash key.
-const LINEAGE_STEP_ENTRY_OVERHEAD_BYTES: usize = 128;
-
-#[derive(Default)]
-struct LineageStepCache {
-    map: HashMap<BlockHash, std::sync::Arc<LineageStep>>,
-    approx_bytes: usize,
-}
-
-impl LineageStepCache {
-    fn insert(&mut self, hash: BlockHash, step: std::sync::Arc<LineageStep>) {
-        let entry_bytes = LINEAGE_STEP_ENTRY_OVERHEAD_BYTES
-            + step.sigs.iter().map(Bytes::len).sum::<usize>()
-            + step
-                .rejected
-                .iter()
-                .map(|r| r.sig.len() + r.carrier.len() + 16)
-                .sum::<usize>();
-        if self.approx_bytes + entry_bytes > LINEAGE_STEP_CACHE_MAX_BYTES {
-            self.map.clear();
-            self.approx_bytes = 0;
-        }
-        self.approx_bytes += entry_bytes;
-        self.map.insert(hash, step);
-    }
-}
-
-fn lineage_step_cache() -> &'static parking_lot::Mutex<LineageStepCache> {
-    static CACHE: std::sync::OnceLock<parking_lot::Mutex<LineageStepCache>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| parking_lot::Mutex::new(LineageStepCache::default()))
-}
-
-#[cfg(test)]
-fn lineage_step_cache_bytes() -> usize { lineage_step_cache().lock().approx_bytes }
-
-/// The cached lineage step for one block, revalidated against the
-/// SUPPLIED store. The cache is process-global and keyed by hash alone,
-/// while every caller's answer must be a function of its own store: a hit
-/// is revalidated with a raw key-existence check (no decompression, no
-/// decode), so a block this store does not hold is `BlockNotHeld` exactly
-/// as on the cold path — availability semantics survive the cache, and
-/// one process serving several stores (tests) cannot cross-answer.
-fn lineage_step_of(
-    block_store: &KeyValueBlockStore,
-    block_hash: &BlockHash,
-) -> Result<std::sync::Arc<LineageStep>, CasperError> {
-    let cached = lineage_step_cache().lock().map.get(block_hash).cloned();
-    if let Some(step) = cached {
-        if block_store.contains_key(block_hash)? {
-            return Ok(step);
-        }
-        return Err(CasperError::BlockNotHeld(
-            block_hash.clone(),
-            MissingBlockContext::new("lineage-step cache revalidation"),
-        ));
-    }
-    // Miss path: two short lock acquisitions (lookup above, insert below)
-    // are deliberate — the store read between them is I/O and must not run
-    // under the lock.
-    let Some(block) = block_store.get(block_hash)? else {
-        return Err(CasperError::BlockNotHeld(
-            block_hash.clone(),
-            MissingBlockContext::new("lineage-step body read"),
-        ));
-    };
-    let next = if !block.body.merge_base.is_empty() {
-        LineageNext::Base(block.body.merge_base.clone())
-    } else {
-        match block.header.parents_hash_list.as_slice() {
-            [] => LineageNext::Genesis,
-            [parent] => LineageNext::Base(parent.clone()),
-            _ => LineageNext::MalformedMultiParent,
-        }
-    };
-    let mut sigs: HashSet<Bytes> = block
-        .body
-        .deploys
-        .iter()
-        .filter(|pd| !pd.is_failed())
-        .map(|pd| pd.identity_bytes().to_vec().into())
-        .collect();
-    sigs.extend(block.body.applied_from_scope.iter().cloned());
-    let step = std::sync::Arc::new(LineageStep {
-        block_number: block.body.state.block_number,
-        next,
-        sigs: std::sync::Arc::new(sigs),
-        rejected: std::sync::Arc::new(block.body.rejected_deploys),
-    });
-    lineage_step_cache()
-        .lock()
-        .insert(block_hash.clone(), step.clone());
-    Ok(step)
-}
-
-/// The block's kept rejection records (`body.rejected_deploys`) through
-/// the lineage-step cache: the batched form of the per-merge
-/// `records_of` loader that previously decoded the full body per visible
-/// block per merge. Absence is `BlockNotHeld`, exactly like the reference
-/// loader; a malformed multi-parent block still serves its own records —
-/// only STEPPING through it is refused, and this reader does not step.
-pub(crate) fn rejected_records_of(
-    block_store: &KeyValueBlockStore,
-    block_hash: &BlockHash,
-) -> Result<std::sync::Arc<Vec<RejectedDeploy>>, CasperError> {
-    Ok(lineage_step_of(block_store, block_hash)?.rejected.clone())
-}
-
 /// One walk, every sig: the applied-sig union of `block_hash`'s state
 /// lineage down to `min_height` — the batched form of
 /// [`effect_in_state_of`] (CLAIM-FINALITY-001, C2:
@@ -326,13 +180,13 @@ pub(crate) fn settled_sigs_of_lineage(
     let mut walked = 0usize;
     let mut cur = block_hash.clone();
     loop {
-        let step = lineage_step_of(block_store, &cur)?;
-        if step.block_number < min_height {
+        let facts = block_facts(block_store, &cur, "settled-lineage body read")?;
+        if facts.block_number < min_height {
             return Ok((settled, walked));
         }
         walked += 1;
-        settled.extend(step.sigs.iter().cloned());
-        match &step.next {
+        settled.extend(facts.applied_sigs.iter().cloned());
+        match &facts.lineage_next {
             LineageNext::Base(base) => cur = base.clone(),
             LineageNext::Genesis => return Ok((settled, walked)),
             LineageNext::MalformedMultiParent => {
@@ -758,7 +612,7 @@ fn write_terminal(
 #[cfg(test)]
 mod tests {
     use models::rust::block_implicits::get_random_block;
-    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -1338,7 +1192,7 @@ mod tests {
     /// `applied_from_scope` sig, decoy sigs living only on a non-base
     /// parent, and absent sigs, across low/mid/above-tip bounds. Each
     /// (lineage, bound) runs twice so the second pass exercises the
-    /// lineage-step cache-hit path against the same oracle.
+    /// block-facts cache-hit path against the same oracle.
     #[tokio::test]
     async fn batched_walk_matches_the_reference_walk_on_generated_lineages() {
         let store = store().await;
@@ -1425,8 +1279,9 @@ mod tests {
             }
         }
         assert!(
-            lineage_step_cache_bytes() <= LINEAGE_STEP_CACHE_MAX_BYTES,
-            "lineage-step cache must respect its byte budget"
+            crate::rust::finality::block_facts::cache_bytes()
+                <= crate::rust::finality::block_facts::MAX_CACHE_BYTES,
+            "block-facts cache must respect its byte budget"
         );
     }
 
@@ -1507,15 +1362,16 @@ mod tests {
         );
     }
 
-    /// The cached rejection-record loader serves `body.rejected_deploys`
-    /// verbatim, refuses an absent block typed, still serves the records
-    /// of a malformed multi-parent block (only STEPPING is refused — the
-    /// reference loader never read the lineage structure), and stays a
-    /// function of the supplied store across the cache: a second store
-    /// that does not hold a cached block gets `BlockNotHeld`, not the
-    /// other store's cached answer.
+    /// Cached facts serve `body.rejected_deploys` verbatim, refuse an absent
+    /// block typed, still serve a malformed multi-parent block's records
+    /// (only stepping through it is refused), and stay a function of the
+    /// supplied store: a store that does not hold a cached block gets
+    /// `BlockNotHeld` under the cache-revalidation label.
     #[tokio::test]
     async fn rejected_records_load_through_the_cache_per_store() {
+        let rejected_records_of = |store: &KeyValueBlockStore, hash: &BlockHash| {
+            block_facts(store, hash, "test").map(|facts| facts.rejected.clone())
+        };
         let store = store().await;
         let genesis = block_at(0, vec![], 320);
         let record = RejectedDeploy {
@@ -1552,12 +1408,25 @@ mod tests {
         let absent = block_at(3, vec![], 323);
         let err =
             rejected_records_of(&store, &absent.block_hash).expect_err("absence must refuse typed");
-        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash));
+        assert!(matches!(
+            err,
+            CasperError::BlockNotHeld(ref h, ref site)
+                if *h == absent.block_hash && site.accessor() == "test"
+        ));
 
         let other_store = store_fn_second().await;
         let err = rejected_records_of(&other_store, &a.block_hash)
             .expect_err("a store that does not hold the block must refuse despite the cache");
-        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == a.block_hash));
+        assert!(
+            matches!(
+                err,
+                CasperError::BlockNotHeld(ref h, ref site)
+                    if *h == a.block_hash && site.accessor() == "block-facts cache revalidation"
+            ),
+            "a cache hit the caller's store does not hold must be labelled apart from plain \
+             absence; got: {}",
+            err
+        );
     }
 
     async fn store_fn_second() -> KeyValueBlockStore {

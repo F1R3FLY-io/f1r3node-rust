@@ -32,6 +32,7 @@ use crate::rust::casper::{
 };
 use crate::rust::engine::block_retriever::AdmitHashReason;
 use crate::rust::errors::CasperError;
+use crate::rust::safety::initial_fault;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -151,6 +152,24 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImpl<T> {
+    fn attach_observer(
+        &self,
+        binding: crate::rust::soak_observer::ObserverBinding,
+    ) -> Result<
+        crate::rust::soak_observer::CaptureEndpoint,
+        crate::rust::soak_observer::AttachmentError,
+    > {
+        self.observer
+            .set(binding)
+            .map_err(|_| crate::rust::soak_observer::AttachmentError::AlreadyAttached)?;
+        Ok(crate::rust::soak_observer::CaptureEndpoint::new(
+            self.block_dag_storage.clone(),
+            self.block_store.clone(),
+            &self.casper_shard_conf,
+            &self.approved_block,
+        ))
+    }
+
     async fn fetch_dependencies(&self) -> Result<(), CasperError> {
         // Get pendants from CasperBuffer
         let pendants = self.casper_buffer_storage.get_pendants();
@@ -195,20 +214,20 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             self.block_dag_storage
                 .access_equivocations_tracker(|tracker| {
                     let equivocation_records = tracker.data()?;
-                    let equivocating_weight: u64 = equivocation_records
-                        .iter()
-                        .map(|record| &record.equivocator)
-                        .filter_map(|equivocator| weights.get(equivocator))
-                        .sum();
+                    let equivocating_weight = initial_fault::equivocating_weight(
+                        &weights,
+                        equivocation_records
+                            .iter()
+                            .map(|record| &record.equivocator),
+                    );
                     Ok(equivocating_weight)
                 })?;
 
-        let total_weight: u64 = weights.values().sum();
-        if total_weight == 0 {
-            Ok(0.0)
-        } else {
-            Ok(equivocating_weight as f32 / total_weight as f32)
-        }
+        let total_weight = initial_fault::total_weight(&weights);
+        Ok(initial_fault::normalized_initial_fault(
+            equivocating_weight,
+            total_weight,
+        ))
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {

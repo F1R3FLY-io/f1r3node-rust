@@ -1909,7 +1909,10 @@ impl BlockAPI {
             .collect();
 
         let initial_fault = casper.normalized_initial_fault(weights_u64)?;
-        let fault_tolerance = normalized_fault_tolerance - initial_fault;
+        let fault_tolerance = crate::rust::safety::initial_fault::display_projection(
+            normalized_fault_tolerance,
+            initial_fault,
+        );
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)

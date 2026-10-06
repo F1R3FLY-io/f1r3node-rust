@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-version-phlo-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-version-phlo-20260919-01.metadata.tar.gz",
+   "sha256": "e3a3fd763416ece13be201efb90d9245a3e389b4ee1dbbcad24b05f0a94d9d11",
+   "bytes": 2384,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

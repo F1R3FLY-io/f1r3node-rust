@@ -41,6 +41,7 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod delta_sigma;
 pub mod has_cost;
+pub mod noop;
 pub mod lexical;
 pub mod oslf;
 pub mod resource_logic;

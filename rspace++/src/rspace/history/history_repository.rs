@@ -85,7 +85,7 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_>;
 
     /// Record a root hash in the roots store so that subsequent `reset` calls
-    /// can find it via `validate_and_set_current_root`. This is needed during
+    /// can find it via `validate_root`. This is needed during
     /// LFS bootstrap to register `emptyStateHashFixed` before genesis replay.
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError>;
 

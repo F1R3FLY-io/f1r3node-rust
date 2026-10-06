@@ -255,7 +255,12 @@ variants!(
     GFloat32,
     GBigInt,
     GBigRat,
-    GFixedPoint
+    GFixedPoint,
+    GUint64,
+    GInt32,
+    GUint32,
+    GUint16,
+    GUint8
 );
 variants!(
     connective::ConnectiveInstance,

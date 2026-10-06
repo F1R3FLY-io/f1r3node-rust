@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "status": "blocked",
+  "generated_at": "2026-09-22T16:33:31Z",
+  "claims": [
+    "CLAIM-CASPER-NODE-OBSERVATION-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-002"
+  ],
+  "source_revision": "6ea6bf029dc57caf1e5fb512a0eba88a846e959a",
+  "host_metadata_revisions": [
+    "314368bfb7ec48c34e5eb7e5534fd1959152d346",
+    "4561e064a70b495fe07cbcf779bff375d636aaad"
+  ],
+  "metadata_only_paths": [
+    "docs/ToDos.md",
+    "docs/work-logs/task-019-4-node-claim-verification.md"
+  ],
+  "source_manifest": {
+    "path": "sources.sha256",
+    "sha256": "fc77118904ca0f6b3a6d6a5a06bb1b0374bd7b47b82177148717f59b610b535c"
+  },
+  "source_archive": {
+    "path": "target/node-claim-gate-6ea6bf029-gQCpO2/source.tar",
+    "sha256": "a9592eab1f4d40e5d1b4f549da4922687d1a87d91c71dedb306b24d204e58558"
+  },
+  "bulk_manifest": {
+    "path": "target/node-claim-gate-6ea6bf029-gQCpO2/artifacts.sha256",
+    "sha256": "484a0ad7443b1259e4b9b5e8aa87089c944ffeabe1f621fc667b17263ecf0d1d"
+  },
+  "recorder": {
+    "path": "target/node-claim-gate-6ea6bf029-gQCpO2/record-report.sh",
+    "sha256": "99c48ce30b080d87052461a5b6e56df117c717f4478b37431e434e3d44e91cd0"
+  },
+  "source_identity": {
+    "inventory_files": 18,
+    "mandatory_files": 7,
+    "source_identity_matches": 18,
+    "existing_records": 7,
+    "record_source_mismatches": 0,
+    "record_claim_mismatches": 0
+  },
+  "strict_audit": {
+    "scope": "both-explicit-claim-inventories",
+    "exit_code": 4,
+    "result": {
+      "total": 7,
+      "gaps": 7,
+      "items": [
+        {
+          "status": "pending",
+          "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs"
+        },
+        {
+          "status": "pending",
+          "path": "block-storage/src/rust/dag/soak_snapshot.rs"
+        },
+        {
+          "status": "pending",
+          "path": "block-storage/tests/soak_snapshot.rs"
+        },
+        {
+          "status": "pending",
+          "path": "node/src/rust/soak_observer.rs"
+        },
+        {
+          "status": "pending",
+          "path": "node/tests/soak_observer.rs"
+        },
+        {
+          "status": "pending",
+          "path": "shared/src/rust/store/soak_snapshot.rs"
+        },
+        {
+          "status": "pending",
+          "path": "shared/tests/soak_snapshot.rs"
+        }
+      ]
+    }
+  },
+  "isolated_rebuild": {
+    "compilation": "passed",
+    "tests": "failed",
+    "platform": "linux/arm64",
+    "toolchain": "nightly-2026-02-09",
+    "base_image": "rust:bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922",
+    "final_tool_image": "sha256:70e057d54eb606661197319a1fedcd6e824b3abdb2cd9162225fa104d62d4623",
+    "host_built_project_artifacts_imported": false,
+    "target_resume": {
+      "from_attempt": 3,
+      "to_attempt": 4,
+      "retained_files_checked": 4880,
+      "same_source_archive": true,
+      "same_rust_compiler": true,
+      "added_packages": [
+        "libprotobuf-dev",
+        "libprotobuf-lite32"
+      ]
+    },
+    "build_controls": {
+      "network": "none",
+      "root_filesystem": "read-only",
+      "uid": 1001,
+      "linux_capabilities": "none",
+      "no_new_privileges": true,
+      "memory_bytes": 4294967296,
+      "swap_bytes": 0,
+      "cpu_quota_cores": 2,
+      "pids": 512,
+      "cargo_jobs": 1,
+      "per_attempt_timeout_seconds": 2700
+    },
+    "all_containers_stopped": true,
+    "non_interface_passed": 556,
+    "storage_passed": 301,
+    "capture_passed": 24,
+    "reader_passed": 19,
+    "node_library_passed": 255,
+    "raw_interface": {
+      "passed": 6,
+      "failed": 12,
+      "ignored": 1,
+      "bytes": 551120080,
+      "limit_bytes": 536870912,
+      "reason": "oversized-debug-executable-refused"
+    },
+    "derived_interface": {
+      "transform": "objcopy --strip-debug",
+      "bytes": 18853968,
+      "allocated_sections_unchanged": true,
+      "program_headers_unchanged": true,
+      "whole_file_identity_unchanged": false,
+      "parallel": {
+        "passed": 17,
+        "failed": 1,
+        "ignored": 1
+      },
+      "serial": {
+        "passed": 17,
+        "failed": 1,
+        "ignored": 1
+      }
+    },
+    "all_recorded_top_level_results": {
+      "passed": 596,
+      "failed": 14,
+      "ignored": 3
+    },
+    "results_path": "target/node-claim-gate-6ea6bf029-gQCpO2/test-results.json"
+  },
+  "findings": [
+    {
+      "id": "B1-lock-deadline-overflow",
+      "kind": "source-counterexample",
+      "claim": "CLAIM-CASPER-NODE-OBSERVATION-002",
+      "properties": [
+        1,
+        2
+      ],
+      "source": "block-storage/src/rust/dag/soak_snapshot.rs",
+      "symbol": "CaptureLimits::validate",
+      "input": "Duration::MAX",
+      "validation": "accepted",
+      "deadline": "not-representable",
+      "dependency_effect": "parking_lot uses an untimed slow path",
+      "compile_exit": 0,
+      "probe_exit": 101,
+      "wrapper_exit": 0,
+      "blocking_lock_operation_executed": false,
+      "evidence": "target/node-claim-gate-6ea6bf029-gQCpO2/lock-probe-output/run.log"
+    },
+    {
+      "id": "A-fixture-hash-deadline",
+      "kind": "test-fixture-finding",
+      "claim": "CLAIM-CASPER-NODE-OBSERVATION-001",
+      "source": "node/tests/soak_observer.rs",
+      "symbol": "capabilities_are_bound_and_never_claim_live_qualification",
+      "fixture_deadline_ms": 500,
+      "hash_only_measurements_ms": [
+        2442,
+        2441,
+        2439
+      ],
+      "result": "UnexpectedEof",
+      "production_deadline_not_weakened": true,
+      "evidence": "target/node-claim-gate-6ea6bf029-gQCpO2/hash-timing-output/run.log"
+    }
+  ],
+  "formal_verification": {
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "pending",
+    "adapter": null,
+    "observer_specific_inputs_registered": false,
+    "proof_execution": false
+  },
+  "acceptance": {
+    "status": "pending",
+    "eligible_maintainers": [
+      "spreston8",
+      "dylon",
+      "metaweta",
+      "jeffrey-l-turner",
+      "jltatbeach"
+    ],
+    "proposed_reviewer": "jltatbeach",
+    "review_request_sent": false,
+    "accepted_by": null,
+    "record": null,
+    "historical_approval_revision": "799e2136adc6e0100b289945d9a5a6851e81c91f",
+    "current_permissions_query": "HTTP 403"
+  },
+  "controls": {
+    "claims_changed": false,
+    "existing_evidence_records_changed": false,
+    "tags_changed": false,
+    "production_source_changed": false,
+    "waivers_added": false,
+    "b2_planning": "blocked",
+    "live_qualification": false,
+    "campaign_execution": false
+  },
+  "limitations": [
+    "Compilation and source identity are not correctness proofs.",
+    "The isolated test gate did not pass.",
+    "The archive has no Git metadata.",
+    "The derived executable has a different measured identity.",
+    "Test counts include repeated executions.",
+    "Existing CLAIM-FINALITY-002 obligations remain unchanged.",
+    "An early image-timeout exit annotation was inferred and is not observed exit evidence."
+  ]
+}
