@@ -2516,4 +2516,70 @@ mod tests {
         );
         println!("compose_fs_genesis_source (sort-tie bundle) hash = {hex}");
     }
+
+    /// Slice 9c-iii pin: Buffer.rho's `gatherChunks` helper MUST use
+    /// divide-and-conquer pairwise merge (Θ(ℓ log ν) cost per
+    /// §Cost accounting > Buffers), NOT right-fold / left-fold /
+    /// List.fold refactors (all Θ(ℓν)).
+    ///
+    /// Signature of the correct shape: midpoint split `(lo + hi) / 2`.
+    /// A refactor that keeps the balanced merge but uses a different
+    /// split (e.g., `(hi - lo) / 2 + lo`) would need the pin updated
+    /// but is asymptotically equivalent.
+    ///
+    /// Negative-shape detection catches three regression classes:
+    ///   1. Right-fold: `recurse(lo + 1, hi)` after concatting
+    ///      chunks[lo] with the tail.  Pre-9c-iii shape.
+    ///   2. Left-fold: `recurse(lo, hi - 1)` mirror.
+    ///   3. `List.fold(concatBytes)` — subtly cleaner-looking
+    ///      rewrite that's still Θ(ℓν).
+    ///
+    /// A cost-regression here would silently quadruple cost between
+    /// ν=64 and ν=512 chunks.
+    #[test]
+    fn buffer_gather_chunks_uses_divide_and_conquer_pairwise_merge() {
+        let src = include_str!("../../../main/resources/Buffer.rho");
+        let fn_start = src
+            .find("contract gatherChunks(")
+            .expect("Buffer.rho missing gatherChunks definition");
+        // Bound the window at the next `contract` or EOF.
+        let after = &src[fn_start..];
+        let fn_end = after
+            .split("contract ")
+            .nth(1)
+            .map(|_| after.find("contract ").unwrap() + 8)
+            .and_then(|s| after[s..].find("contract ").map(|off| s + off))
+            .unwrap_or(after.len());
+        let body = &after[..fn_end];
+
+        // Positive-shape assertion: midpoint split is present.
+        assert!(
+            body.contains("(lo + hi) / 2"),
+            "gatherChunks must use divide-and-conquer with midpoint \
+             split `(lo + hi) / 2` for Θ(ℓ log ν) cost.  Refactor \
+             detection: right-fold or List.fold shape has Θ(ℓν) cost — \
+             would silently quadruple cost between ν=64 and ν=512.  \
+             Body window scanned:\n{body}",
+        );
+
+        // Negative-shape assertions: the known-bad shapes.
+        assert!(
+            !body.contains("gatherChunks!(privateName, chunkPName, lo + 1, hi,"),
+            "gatherChunks must NOT use right-fold `recurse(lo+1, hi)` \
+             shape — Θ(ℓν) cost regression.  Pre-9c-iii shape."
+        );
+        assert!(
+            !body.contains("gatherChunks!(privateName, chunkPName, lo, hi - 1,"),
+            "gatherChunks must NOT use left-fold `recurse(lo, hi-1)` \
+             shape — Θ(ℓν) cost regression."
+        );
+        assert!(
+            !body.contains("List.fold("),
+            "gatherChunks must NOT use `List.fold(concatBytes)` shape \
+             — cost-equivalent to right-fold (Θ(ℓν)).  If a future \
+             refactor introduces List.fold FOR A DIFFERENT PURPOSE \
+             elsewhere in the helper, tighten this pin to be a \
+             positional regex on the reduce operator."
+        );
+    }
 }
