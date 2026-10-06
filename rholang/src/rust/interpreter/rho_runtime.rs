@@ -1045,9 +1045,7 @@ fn fs_handlers_to_definitions(dispatcher: RhoDispatch, space: RhoISpace) -> Vec<
     use super::io::handle_table::FileHandleTable;
     use super::io::handler_trait::fs_processes::FsProcesses;
     use super::io::handler_trait::FS_HANDLERS;
-    use super::io::ConsensusMode;
-
-    const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:1.0.0/";
+    use super::io::{ConsensusMode, FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX};
 
     let fs_handles = FileHandleTable::new();
     let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
@@ -1615,12 +1613,15 @@ pub async fn create_runtime_from_kv_store(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::rust::interpreter::io::handler_trait::{EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS};
-    use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
-    use crate::rust::interpreter::matcher::r#match::Matcher;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+    use crate::rust::interpreter::io::handler_trait::{
+        EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS,
+    };
+    use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
 
     async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
@@ -1631,12 +1632,11 @@ mod tests {
 
         let mut kvm = InMemoryStoreManager::new();
         let store = kvm.r_space_stores().await.unwrap();
-        let space =
-            RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
-                store,
-                Arc::new(Box::new(Matcher)),
-            )
-            .unwrap();
+        let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
+            store,
+            Arc::new(Box::new(Matcher)),
+        )
+        .unwrap();
         let rspace: RhoISpace = Arc::new(Box::new(space));
 
         (dispatcher, rspace)
