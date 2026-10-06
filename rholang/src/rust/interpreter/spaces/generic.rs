@@ -39,7 +39,10 @@
 //! The datum is spent when it is not persistent and `W` does not peek, and `W` stays when it is
 //! persistent. The consume plan is symmetric: the continuation waits behind earlier waiters, then
 //! meets the head records one by one. It is spent when it is not persistent, and the head stays
-//! when it is persistent or the consume peeks. A divergent pair re-issues after one round (A10),
+//! when it is persistent or the consume peeks. A peek fire removes a non-persistent head record,
+//! as the host COMM does, and the plan stores the same record again right after the fire, as the
+//! host reducer's `produce_peeks` does (decision 45, Rule E). The re-store registers the record's
+//! own authority and bumps no counter. A divergent pair re-issues after one round (A10),
 //! and a chain re-issues after `FIRE_ROUND_CAP` rounds (I-21). Each round makes at most two
 //! metered matcher calls, and the bump makes one more.
 //!
@@ -339,6 +342,41 @@ impl<'a> Plan<'a> {
         })?;
         self.staged.push(Staged::Park);
         Ok(())
+    }
+
+    /// Stages the re-store of a record that a consume-side peek removed (decision 45, Rule E):
+    /// the same record bytes, so the same produce identity, stored again as a non-persistent
+    /// record, as the host reducer's `produce_peeks` sends a peeked datum again. The staged
+    /// produce registers the record's own cost authority, and the operation bumps no counter for
+    /// it.
+    fn restore(
+        &mut self,
+        txn: &mut ParSpaceTxn,
+        record: ListParWithRandom,
+    ) -> Result<(), SpaceError> {
+        let meter = self.meter();
+        let introduction = self.introduction.for_record(&record, meter)?;
+        txn.produce(SpaceProduce {
+            channel: meter.copy(self.data)?,
+            data: record,
+            persist: false,
+            outcome: ProduceOutcome::Store,
+            before_observe: Some(record::register_introduction(&introduction, meter)?),
+        })?;
+        self.staged.push(Staged::Store);
+        Ok(())
+    }
+
+    /// Stages the re-store of `restored`, the record that a peek fire removed, when there is one.
+    fn restore_peeked(
+        &mut self,
+        txn: &mut ParSpaceTxn,
+        restored: Option<ListParWithRandom>,
+    ) -> Result<(), SpaceError> {
+        match restored {
+            Some(record) => self.restore(txn, record),
+            None => Ok(()),
+        }
     }
 
     /// The one-channel group of the collection, with its buffer and its copy reserved.
@@ -762,6 +800,12 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
             let view_index = i32::try_from(index)
                 .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
             record::prepay_continuation_unwrap(&continuation, meter)?;
+            // Rule E (decision 45): the peek fire removes a non-persistent record, as the host
+            // COMM does, and the record is stored again right after the fire.
+            let restored = match op.peek && !head.persist {
+                true => Some(meter.copy(&head.a)?),
+                false => None,
+            };
             let fire = ReceiveFire {
                 head,
                 matched,
@@ -771,13 +815,16 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
                 FireStep::Continue => {
                     let fired = meter.copy(&continuation)?;
                     plan.fire_receive(txn, &op, fire, fired, meter.copy(&peeks)?)?;
+                    plan.restore_peeked(txn, restored)?;
                 }
                 FireStep::Done => {
                     plan.fire_receive(txn, &op, fire, continuation, peeks)?;
+                    plan.restore_peeked(txn, restored)?;
                     return Ok(None);
                 }
                 FireStep::Reissue(cause) => {
                     plan.fire_receive(txn, &op, fire, continuation, peeks)?;
+                    plan.restore_peeked(txn, restored)?;
                     return Ok(Some(SpaceReissue {
                         op: SpaceOp::Consume(ConsumeOp {
                             reissued_ord: op.persistent.then_some(ord),
@@ -1403,7 +1450,7 @@ mod tests {
     /// The records of a collection as `(ord, payload, persistent)`, by `ord`.
     async fn records_on(space: &ParRSpace, channel: &Par) -> Vec<(i64, Vec<Par>, bool)> {
         let mut records: Vec<_> = space
-            .get_data(&channels_of(channel).data())
+            .get_data(channels_of(channel).data())
             .await
             .into_iter()
             .map(|datum| {
@@ -1516,7 +1563,7 @@ mod tests {
             "consume H"
         ]);
         let ch = channels();
-        let config_records = space.get_data(&ch.config()).await;
+        let config_records = space.get_data(ch.config()).await;
         assert_eq!(config_records.len(), 1);
         assert!(config_records[0].persist);
         assert_eq!(record::config_map(&config_records[0].a), Ok(&config()));
@@ -1526,8 +1573,8 @@ mod tests {
                 .derive(&creation(config()).random)
                 .to_bytes()
         );
-        let counters = space.get_data(&ch.space_counter()).await;
-        assert_eq!(counter(&space, &ch.space_counter()).await, vec![0]);
+        let counters = space.get_data(ch.space_counter()).await;
+        assert_eq!(counter(&space, ch.space_counter()).await, vec![0]);
         assert!(!counters[0].persist);
         assert_eq!(
             counters[0].a.random_state,
@@ -1552,7 +1599,7 @@ mod tests {
             .await;
         assert_eq!(again.err(), Some(SpaceError::SpaceAlreadyExists));
         assert!(space.take_event_log().await.is_empty());
-        assert_eq!(space.get_data(&ch.config()).await.len(), 1);
+        assert_eq!(space.get_data(ch.config()).await.len(), 1);
     }
 
     #[tokio::test]
@@ -1582,7 +1629,7 @@ mod tests {
             assert_eq!(prepared.err(), Some(expected));
         }
         assert!(space.take_event_log().await.is_empty());
-        assert!(space.get_data(&channels().config()).await.is_empty());
+        assert!(space.get_data(channels().config()).await.is_empty());
         assert_eq!(
             Queue::default().read_config(&env, SPACE).await,
             Err(SpaceError::DanglingHandle)
@@ -1601,8 +1648,8 @@ mod tests {
             "produce K",
             "produce D"
         ]);
-        assert_eq!(counter(&space, &ch.space_counter()).await, vec![1]);
-        assert_eq!(counter(&space, &ch.counter()).await, vec![1]);
+        assert_eq!(counter(&space, ch.space_counter()).await, vec![1]);
+        assert_eq!(counter(&space, ch.counter()).await, vec![1]);
         assert_eq!(records(&space).await, vec![(0, vec![int(1)], false)]);
 
         produce(&env, send(2)).await;
@@ -1610,8 +1657,8 @@ mod tests {
             labels(&space.take_event_log().await),
             bumped(&["produce D"])
         );
-        assert_eq!(counter(&space, &ch.counter()).await, vec![2]);
-        assert_eq!(counter(&space, &ch.space_counter()).await, vec![1]);
+        assert_eq!(counter(&space, ch.counter()).await, vec![2]);
+        assert_eq!(counter(&space, ch.space_counter()).await, vec![1]);
         assert_eq!(records(&space).await, vec![
             (0, vec![int(1)], false),
             (1, vec![int(2)], false)
@@ -1619,11 +1666,11 @@ mod tests {
 
         let other = string("other");
         produce(&env, send_on(&other, 3, false)).await;
-        assert_eq!(counter(&space, &ch.space_counter()).await, vec![2]);
-        assert_eq!(counter(&space, &channels_of(&other).counter()).await, vec![
+        assert_eq!(counter(&space, ch.space_counter()).await, vec![2]);
+        assert_eq!(counter(&space, channels_of(&other).counter()).await, vec![
             1
         ]);
-        assert_eq!(counter(&space, &ch.counter()).await, vec![2]);
+        assert_eq!(counter(&space, ch.counter()).await, vec![2]);
         assert_eq!(records_on(&space, &other).await, vec![(
             0,
             vec![int(3)],
@@ -1761,17 +1808,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn space_queue_peek_keeps_the_head_record() {
+    async fn space_queue_peek_restores_the_head_record() {
         let Fixture { space, env } = fixture().await;
         produce(&env, send(5)).await;
-        space.take_event_log().await;
+        let stored = data_produces(&space.take_event_log().await);
+        assert_eq!(stored.len(), 1);
         let peeked = consume(&env, peek("p")).await;
         assert_eq!(fired(&peeked), vec![delivery("p", 5)]);
-        assert!(peeked.fires[0].results[0].persistent);
+        assert!(
+            !peeked.fires[0].results[0].persistent,
+            "the result keeps the flag of the host"
+        );
         assert_eq!(peeked.reissue, None);
+        let log = space.take_event_log().await;
         assert_eq!(
-            labels(&space.take_event_log().await),
-            bumped(&["consume D", "comm D peek"])
+            labels(&log),
+            bumped(&["consume D", "comm D peek", "produce D"]),
+            "the peek fire removes the record, and the re-store produces it again (Rule E)"
+        );
+        assert_eq!(
+            data_produces(&log),
+            stored,
+            "the re-store has the identity of the first produce"
         );
         assert_eq!(records(&space).await, vec![(0, vec![int(5)], false)]);
         assert!(waiters(&space).await.is_empty());
@@ -1780,6 +1838,62 @@ mod tests {
             delivery("t", 5)
         ]);
         assert!(records(&space).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn space_queue_peek_restore_registers_the_record_authority() {
+        let space = play().await;
+        let budget = budget();
+        let _scope = budget.enter_comm_accounting_scope();
+        let env = env_over(space.clone(), &budget);
+        create(&env, creation(config())).await;
+        let mut sending = send(5);
+        sending.authority = region(2);
+        sending.data.cost_authority = Some(region(2));
+        produce(&env, sending).await;
+        space.take_event_log().await;
+        let peeking = ConsumeOp {
+            introduction_authority: region(4),
+            ..peek("p")
+        };
+        consume(&env, peeking).await;
+        let log = space.take_event_log().await;
+        let restore = log
+            .iter()
+            .rev()
+            .find(|event| matches!(event, Event::IoEvent(IOEvent::Produce(_))))
+            .expect("the re-store produces the record again");
+        assert_eq!(
+            registered(&budget, restore),
+            Some(region(2)),
+            "the re-store registers the authority of the record, not of the peek"
+        );
+        let peek_consume = log
+            .iter()
+            .find(|event| match event {
+                Event::IoEvent(IOEvent::Consume(consume)) => {
+                    consume.channel_hashes == vec![stable_hash_provider::hash(channels().data())]
+                }
+                _ => false,
+            })
+            .expect("the peek consume");
+        assert_eq!(registered(&budget, peek_consume), Some(region(4)));
+    }
+
+    #[tokio::test]
+    async fn space_queue_peek_of_a_persistent_record_restores_nothing() {
+        let Fixture { space, env } = fixture().await;
+        produce(&env, send_forever(5)).await;
+        space.take_event_log().await;
+        let peeked = consume(&env, peek("p")).await;
+        assert_eq!(fired(&peeked), vec![delivery("p", 5)]);
+        assert!(peeked.fires[0].results[0].persistent);
+        assert_eq!(
+            labels(&space.take_event_log().await),
+            bumped(&["consume D", "comm D peek"]),
+            "the fire keeps a persistent record, so nothing is stored again"
+        );
+        assert_eq!(records(&space).await, vec![(0, vec![int(5)], true)]);
     }
 
     #[tokio::test]
@@ -1883,7 +1997,7 @@ mod tests {
             }),
             "every round keeps the order of the first round"
         );
-        assert_eq!(counter(&space, &channels().counter()).await, vec![3]);
+        assert_eq!(counter(&space, channels().counter()).await, vec![3]);
 
         let Fixture { space, env } = fixture().await;
         assert_eq!(
@@ -2059,7 +2173,7 @@ mod tests {
         );
         assert_eq!(records(&space).await, vec![(first, vec![int(1)], true)]);
         assert_eq!(
-            counter(&space, &channels().counter()).await,
+            counter(&space, channels().counter()).await,
             vec![first + 2],
             "each round bumps the counter"
         );
@@ -2269,7 +2383,7 @@ mod tests {
             vec![(0, vec![int(5)], false)],
             "a failed operation changes nothing"
         );
-        assert_eq!(counter(&space, &channels().counter()).await, vec![1]);
+        assert_eq!(counter(&space, channels().counter()).await, vec![1]);
     }
 
     /// Runs `op`, then runs its re-issues while `rounds` allows, and returns every outcome.
@@ -2402,7 +2516,7 @@ mod tests {
         let Fixture { space, env } = fixture().await;
         let ch = channels();
         produce(&env, send(1)).await;
-        assert_eq!(counter(&space, &ch.counter()).await, vec![1]);
+        assert_eq!(counter(&space, ch.counter()).await, vec![1]);
         space.take_event_log().await;
         let operations = [
             SpaceOp::Consume(peek("p")),
@@ -2415,9 +2529,9 @@ mod tests {
             let log = labels(&space.take_event_log().await);
             assert_eq!(&log[..3], &BUMP.map(str::to_string), "operation {index}");
             let expected = i64::try_from(index).expect("a small index") + 2;
-            assert_eq!(counter(&space, &ch.counter()).await, vec![expected]);
+            assert_eq!(counter(&space, ch.counter()).await, vec![expected]);
         }
-        assert_eq!(counter(&space, &ch.space_counter()).await, vec![1]);
+        assert_eq!(counter(&space, ch.space_counter()).await, vec![1]);
     }
 
     #[tokio::test]
@@ -2449,7 +2563,7 @@ mod tests {
             Err(SpaceError::DanglingHandle)
         );
         assert!(space.take_event_log().await.is_empty());
-        assert!(space.get_data(&channels().space_counter()).await.is_empty());
+        assert!(space.get_data(channels().space_counter()).await.is_empty());
     }
 
     // Stages `config_records` on `C(sid)` and the space counter 0, outside the agent.
@@ -2697,11 +2811,9 @@ mod tests {
         })
         .await;
         assert_registered(&budget, &space.take_event_log().await, &region(1));
-        assert_eq!(space.get_data(&ch.config()).await[0].a.cost_authority, None);
+        assert_eq!(space.get_data(ch.config()).await[0].a.cost_authority, None);
         assert_eq!(
-            space.get_data(&ch.space_counter()).await[0]
-                .a
-                .cost_authority,
+            space.get_data(ch.space_counter()).await[0].a.cost_authority,
             Some(region(1))
         );
         let handles = space.get_waiting_continuations(vec![handle()]).await;
@@ -2713,10 +2825,10 @@ mod tests {
         produce(&env, sending.clone()).await;
         let log = space.take_event_log().await;
         assert_registered(&budget, &log, &region(2));
-        let records = space.get_data(&ch.data()).await;
+        let records = space.get_data(ch.data()).await;
         assert_eq!(records[0].a.cost_authority, Some(region(2)));
         assert_eq!(
-            space.get_data(&ch.counter()).await[0].a.cost_authority,
+            space.get_data(ch.counter()).await[0].a.cost_authority,
             Some(region(2))
         );
         let opening = Consume::create(
@@ -2746,7 +2858,7 @@ mod tests {
             .await;
         assert_eq!(parked[0].continuation.cost_authority, Some(region(3)));
         assert_eq!(
-            space.get_data(&ch.counter()).await[0].a.cost_authority,
+            space.get_data(ch.counter()).await[0].a.cost_authority,
             Some(region(4))
         );
         let bump = Consume::create(

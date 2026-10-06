@@ -2,9 +2,12 @@
 // accounting observer, a pattern matcher, space constructors, and the
 // host-guided agent that turns a host operation's outcome into the staged
 // space operation with the same outcome. After a peek fire the agent follows
-// HEAD's peek path (`head_peek_path`): the space keeps the stored records,
-// and a non-persistent incoming datum is offered again as the next produce
-// of the transaction, as the reducer produces it again (FR-10).
+// HEAD's peek path (`head_peek_path`). The fire removes every bound
+// non-persistent record, as the host COMM does. Each non-persistent result
+// is then produced again as a next produce of the transaction, as the
+// reducer's `produce_peeks` produces it again: the agent stores a removed
+// record again (the re-store, decision 45, Rule E), and it offers a
+// non-persistent incoming datum again (the re-offer, FR-10, decision 30).
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +18,7 @@ use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances};
-use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::internal::{ConsumeCandidate, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::operation_context::OperationOrder;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
@@ -752,76 +755,125 @@ pub fn plan_from_host(txn: &mut Txn, op: &Op, outcome: &HostOutcome) -> Planned 
     }
 }
 
-/// The most produces that one operation may start: itself and its
-/// re-offers. Every re-offer follows a fire that removed a non-persistent
-/// peek waiter, so the generated operations stay far below this bound.
-pub const REOFFER_ROUNDS: usize = 64;
+/// The most host operations that one operation may start: itself and its
+/// re-produces. A re-produce follows a peek fire. That fire is the operation
+/// itself (a consume) or removes a non-persistent peek waiter (a produce),
+/// and it binds at most three records (two channels, one of them repeated).
+/// A run of the generated groups has at most 32 operations, so at most 32
+/// parked peek waiters, and one operation starts at most
+/// 1 + 3 * (1 + 32) = 100 host operations, below this bound.
+pub const REPRODUCE_ROUNDS: usize = 128;
 
-/// HEAD's peek path after `op` ran on `host` with `outcome`
-/// (reduce.rs:776-803 and 973-1008). The host removed every bound
-/// non-persistent record of a peek fire, and the reducer produces each one
-/// again (`produce_peeks`). The space keeps the stored records (retention),
-/// so the oracle puts them back into the host store without events or
-/// observer calls. It returns the re-produce of a non-persistent incoming
-/// datum: the host runs it as the reducer does, and the space agent stages
-/// it as the next produce of the transaction, with the same identity
-/// (FR-10). A persistent incoming datum is produced again by the
-/// persistent-send loop, as after every persistent fire, which no oracle
-/// of these tests models.
-pub fn head_peek_path(host: &Space, op: &Op, outcome: &HostOutcome) -> Option<Op> {
-    let (results, incoming_at) = match (op, outcome) {
-        (
-            Op::Produce {
-                channel,
-                data,
-                persist,
-            },
-            HostOutcome::Produced(Some((cont, results, _))),
-        ) if cont.peek => (results, incoming_position(results, channel, data, *persist)),
-        (Op::Consume { .. }, HostOutcome::Consumed(Some((cont, results)))) if cont.peek => {
-            (results, None)
+// Disabled by decision 45 (Rule E): the space keeps no peeked record, so the
+// oracle produces every non-persistent result again instead of putting the
+// stored records back into the host without events.
+//
+// ```
+// /// The most produces that one operation may start: itself and its
+// /// re-offers. Every re-offer follows a fire that removed a non-persistent
+// /// peek waiter, so the generated operations stay far below this bound.
+// pub const REOFFER_ROUNDS: usize = 64;
+//
+// /// HEAD's peek path after `op` ran on `host` with `outcome`
+// /// (reduce.rs:776-803 and 973-1008). The host removed every bound
+// /// non-persistent record of a peek fire, and the reducer produces each one
+// /// again (`produce_peeks`). The space keeps the stored records (retention),
+// /// so the oracle puts them back into the host store without events or
+// /// observer calls. It returns the re-produce of a non-persistent incoming
+// /// datum: the host runs it as the reducer does, and the space agent stages
+// /// it as the next produce of the transaction, with the same identity
+// /// (FR-10). A persistent incoming datum is produced again by the
+// /// persistent-send loop, as after every persistent fire, which no oracle
+// /// of these tests models.
+// pub fn head_peek_path(host: &Space, op: &Op, outcome: &HostOutcome) -> Option<Op> {
+//     let (results, incoming_at) = match (op, outcome) {
+//         (
+//             Op::Produce {
+//                 channel,
+//                 data,
+//                 persist,
+//             },
+//             HostOutcome::Produced(Some((cont, results, _))),
+//         ) if cont.peek => (results, incoming_position(results, channel, data, *persist)),
+//         (Op::Consume { .. }, HostOutcome::Consumed(Some((cont, results)))) if cont.peek => {
+//             (results, None)
+//         }
+//         _ => return None,
+//     };
+//     let store = host.get_store();
+//     let mut reproduce = None;
+//     for (index, result) in results.iter().enumerate() {
+//         match (incoming_at == Some(index), result.persistent) {
+//             (true, false) => {
+//                 reproduce = Some(Op::produce(&result.channel, &result.removed_datum, false));
+//             }
+//             (false, false) => store.put_datum(&result.channel, Datum {
+//                 a: result.removed_datum.clone(),
+//                 persist: false,
+//                 source: Produce::create(&result.channel, &result.removed_datum, false),
+//             }),
+//             (_, true) => {}
+//         }
+//     }
+//     reproduce
+// }
+// ```
+
+/// HEAD's peek path after `op` ran with `outcome` (reduce.rs
+/// `continue_produce_process` and `continue_consume_process`, which call
+/// `produce_peeks`, reduce.rs:981-1016). The host COMM of a peek fire
+/// removed every bound non-persistent record, and the reducer produces each
+/// non-persistent result again, in result order, with the removed data and
+/// `persist = false`. Returns these re-produces. The host runs each one as
+/// the reducer does. The space agent stages each one as a next produce of
+/// the transaction, with the same identity: the re-store of a removed record
+/// (decision 45, Rule E) or the re-offer of a non-persistent incoming datum
+/// (FR-10, decision 30). The guided agent stages the host's outcome of each
+/// re-produce: a store, or a fire when the re-produce completes a match. A
+/// persistent result is not produced again: the fire does not remove a
+/// persistent record, and the persistent-send loop produces a persistent
+/// incoming datum again, as after every persistent fire, which no oracle of
+/// these tests models.
+pub fn head_peek_path(op: &Op, outcome: &HostOutcome) -> Vec<Op> {
+    let results = match (op, outcome) {
+        (Op::Produce { .. }, HostOutcome::Produced(Some((cont, results, _)))) if cont.peek => {
+            results
         }
-        _ => return None,
+        (Op::Consume { .. }, HostOutcome::Consumed(Some((cont, results)))) if cont.peek => results,
+        _ => return Vec::new(),
     };
-    let store = host.get_store();
-    let mut reproduce = None;
-    for (index, result) in results.iter().enumerate() {
-        match (incoming_at == Some(index), result.persistent) {
-            (true, false) => {
-                reproduce = Some(Op::produce(&result.channel, &result.removed_datum, false));
-            }
-            (false, false) => store.put_datum(&result.channel, Datum {
-                a: result.removed_datum.clone(),
-                persist: false,
-                source: Produce::create(&result.channel, &result.removed_datum, false),
-            }),
-            (_, true) => {}
-        }
-    }
-    reproduce
+    results
+        .iter()
+        .filter(|result| !result.persistent)
+        .map(|result| Op::produce(&result.channel, &result.removed_datum, false))
+        .collect()
 }
 
 /// Runs `op` on `host` and stages the same outcome in `txn`, then follows
-/// HEAD's peek path: each re-produce of a non-persistent incoming datum runs
-/// on the host and is staged as the next produce of `txn`.
+/// HEAD's peek path: each re-produce runs on the host and is staged with the
+/// host's outcome as a next produce of `txn`. The re-produces of an
+/// operation come right after it, in result order, each one followed by its
+/// own peek path (depth first).
 pub async fn guide_op(host: &Space, txn: &mut Txn, op: &Op, planned: &mut Vec<Planned>) {
-    let mut next = Some(op.clone());
+    let mut pending = Vec::with_capacity(REPRODUCE_ROUNDS);
+    pending.push(op.clone());
     let mut rounds = 0usize;
-    while let Some(op) = next.take() {
+    while let Some(op) = pending.pop() {
         rounds += 1;
-        assert!(rounds <= REOFFER_ROUNDS, "the re-offers of one operation do not end");
+        assert!(rounds <= REPRODUCE_ROUNDS, "the re-produces of one operation do not end");
         let outcome = run_host(host, &op).await.expect("run the host operation");
         let plan = plan_from_host(txn, &op, &outcome);
         plan.stage(txn, None).expect("stage the planned operation");
         planned.push(plan);
-        next = head_peek_path(host, &op, &outcome);
+        pending.extend(head_peek_path(&op, &outcome).into_iter().rev());
     }
 }
 
 /// Runs `groups` on `host` one host operation at a time and on `txn_space`
 /// as one transaction per group, staged from the host outcomes. A peek fire
 /// follows HEAD's peek path (`head_peek_path`), so a group's plans include
-/// the re-offers. Returns the plans and each group's commit result.
+/// the re-produces: the re-stores and the re-offers. Returns the plans and
+/// each group's commit result.
 pub async fn run_guided(
     host: &Space,
     txn_space: &Space,

@@ -758,7 +758,7 @@ mod space_queue_head_only {
         assert_eq!(
             session.records(space.space, &space.a).await,
             vec![(0, vec![gint(5)], false), (1, vec![gint(6)], false)],
-            "a peek removes no record"
+            "after each peek the record is back at its place (Rule E)"
         );
         assert_eq!(
             session.counter(space.space, &space.a).await,
@@ -767,8 +767,8 @@ mod space_queue_head_only {
         );
         assert_eq!(
             space.labels().signature(&first.log),
-            vec!["C S:a", "M S:a", "P S:a", "C D:a", "M D:a peek"],
-            "a peek fires with peeks and keeps the record (P4 design B.6, E5)"
+            vec!["C S:a", "M S:a", "P S:a", "C D:a", "M D:a peek", "P D:a"],
+            "a peek fires with peeks, removes the record, and stores it again (decision 45, Rule E)"
         );
         session
             .run(
@@ -848,8 +848,8 @@ mod space_real_events {
         }
         assert_eq!(
             on_space,
-            4 + 5 + 5,
-            "an enqueue, a dequeue and a peek of the queues"
+            4 + 5 + 6,
+            "an enqueue, a dequeue and a peek of the queues, with the re-store of the peek"
         );
         assert_eq!(
             space.labels().signature(&deploy.log).len(),
@@ -914,6 +914,7 @@ mod space_real_events {
                 "P S:a",
                 "C D:a",
                 "M D:a peek",
+                "P D:a",
             ]),
             ("for (@3 <- a) { Nil }", vec![
                 "C S:a", "M S:a", "P S:a", "C D:a",
@@ -1336,8 +1337,8 @@ mod space_real_events {
         // The accounting observer sees each space event exactly as it sees a host event:
         // one introduction row for each non-persistent produce or consume, one row for each
         // identity of a persistent one, and one row for each COMM. The data-channel events of
-        // each queue operation also equal the host events of the same program, except the
-        // re-produce that the host reducer adds after a consume-side peek.
+        // each queue operation also equal the host events of the same program, the re-produce
+        // after a consume-side peek included (decision 45, Rule E).
         let steps = [
             ("enqueue", "a!(1)"),
             ("dequeue", "for (@x <- a) { Nil }"),
@@ -1378,13 +1379,15 @@ mod space_real_events {
                 .filter(|event| event.contains("D:"))
                 .collect();
             let mut host_events = host_labels.signature(&host.log);
-            if label == "peek" {
-                assert_eq!(
-                    host_events.pop().as_deref(),
-                    Some("P D:a"),
-                    "the host reducer produces the peeked datum again"
-                );
-            }
+            // Disabled by decision 45 (Rule E): the space now stores the peeked record again, as
+            // the host reducer produces the peeked datum again, so no host event is dropped.
+            // if label == "peek" {
+            //     assert_eq!(
+            //         host_events.pop().as_deref(),
+            //         Some("P D:a"),
+            //         "the host reducer produces the peeked datum again"
+            //     );
+            // }
             space_events.sort();
             host_events.sort();
             assert_eq!(

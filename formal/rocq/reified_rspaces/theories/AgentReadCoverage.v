@@ -25,8 +25,8 @@
      (42.1 the policy of the branch, 42.3 every site, 42.6 this model).
      Decision 42 of docs/rspace/reified-rspaces/decision-register.md.
    - Code: the commit of decision 42 in this repository, with the re-entry
-     of decision 43. The line numbers below are the line numbers of the
-     commit of decision 43.
+     of decision 43 and the re-store of decision 45 (Rule E). The line
+     numbers below are the line numbers of the commit of decision 45.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -34,30 +34,36 @@
    step                     reified/costs.rs:97-102, 106-111, 123-126
                             (ScanMeter::inspect, reserve_copy, copy:
                             reserve, then work)
-   scan                     spaces/generic.rs:548-564, 568-580, 584-596
+   scan                     spaces/generic.rs:586-602, 606-618, 622-634
                             (scan_head, head_waiter, head_datum: the
                             buffer, one envelope decode for each entry, the
                             head copy) and
                             spaces/disciplines/queue.rs:39-57, 86-121
                             (head_metered: one comparison for each entry
                             after the first)
-   round_staged             spaces/generic.rs:658-721, 729-791 (offer and
+   round_staged             spaces/generic.rs:696-759, 767-838 (offer and
                             receive: the scan, the payload decode of a
                             receive, the metered match, the prepaid unwrap,
-                            the staged fire)
-   round_after_commit       spaces/generic.rs:864-899 (outcome: the moves of
+                            the staged fire). For a peek receive of a
+                            non-persistent record, the staging of the round
+                            also holds the re-store of decision 45: the
+                            reserved copy of the record and the steps of
+                            Plan::restore (spaces/generic.rs:347-380: the
+                            channel copy, Introduction::for_record and
+                            register_introduction), each self-metered
+   round_after_commit       spaces/generic.rs:911-946 (outcome: the moves of
                             into_continuation, prepaid by
                             spaces/record.rs:721-730)
-   operation_trace          spaces/generic.rs:933-1001 (prepare_produce and
+   operation_trace          spaces/generic.rs:980-1048 (prepare_produce and
                             prepare_consume: the channels, the config, the
                             matcher handle, the introduction, the bump, the
                             record, the rounds and the prepaid outcome
                             buffer). The checks of a re-entry (decision 43)
                             are self-metered steps of prepare: the two
                             comparisons of operation_ord
-                            (spaces/generic.rs:809-821), and the scan of
-                            head_ord and at_head (spaces/generic.rs:600-617,
-                            625-650: the buffer and the envelope decodes of
+                            (spaces/generic.rs:856-868), and the scan of
+                            head_ord and at_head (spaces/generic.rs:638-655,
+                            663-688: the buffer and the envelope decodes of
                             scan_head, with no copy) with the comparison of
                             the two orders and QueueDiscipline::precedes
                             (spaces/disciplines/queue.rs:63-72)

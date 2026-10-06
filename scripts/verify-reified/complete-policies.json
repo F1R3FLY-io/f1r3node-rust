@@ -77,6 +77,7 @@
         {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub fn begin_evaluation_scope("},
         {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "fn sweep_volatile("},
         {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "fn root_leaf_record_count("},
+        {"file": "rspace++/src/rspace/space_store_handle.rs", "pattern": "pub(crate) fn check_peeks("},
         {"file": "rspace++/src/rspace/rspace/space_play.rs", "pattern": "SpaceTxnHost<C, P, A, K> for RSpace<C, P, A, K>"},
         {"file": "rspace++/src/rspace/replay_rspace/space_replay.rs", "pattern": "SpaceTxnHost<C, P, A, K> for ReplayRSpace<C, P, A, K>"},
         {"file": "rspace++/src/rspace/replay_rspace/space_replay.rs", "pattern": "SpaceTxnHost<C, P, A, K> for ReportingRspace<C, P, A, K>"}
@@ -271,6 +272,9 @@
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn operation_ord("},
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn at_head("},
         {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn head_ord("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn restore("},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "fn restore_peeked("},
+        {"file": "rholang/src/rust/interpreter/spaces/record.rs", "pattern": "pub fn for_record("},
         {"file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs", "pattern": "fn precedes("},
         {"file": "rholang/src/rust/interpreter/spaces/agent.rs", "pattern": "pub reissued_ord: Option<i64>,"},
         {"file": "rholang/src/rust/interpreter/spaces/outer/hashmap.rs", "pattern": "pub struct HashMapOuter;"},

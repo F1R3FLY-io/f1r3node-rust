@@ -556,6 +556,12 @@
       "name": "LeaveOrder",
       "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
       "statement": "Records that are not persistent leave in increasing ord, each older than every such record that stays."
+    },
+    "Q78": {
+      "kind": "rocq",
+      "name": "queue_restore_realizes_plan",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 45 (Rule E): for a consume, a produce and a re-entry, the staged operations of the code (the plan with the re-store after each peek fire of a non-persistent record) give the records of the logical plan under the substrate effects of Rule E, up to list order."
     }
   },
   "items": [
@@ -1635,7 +1641,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_waiter",
-      "line": 568,
+      "line": 606,
       "role": "The head of the waiting continuations.",
       "rocq": [
         "waiter_head",
@@ -1660,7 +1666,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_datum",
-      "line": 584,
+      "line": 622,
       "role": "The head of the records.",
       "rocq": [
         "record_head",
@@ -1685,7 +1691,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "offer",
-      "line": 658,
+      "line": 696,
       "role": "The produce plan: a fresh datum joins the tail and a re-issued persistent datum re-enters at its place (decision 43), head-only fires, re-offer, the round cap.",
       "rocq": [
         "offer",
@@ -1729,13 +1735,15 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "receive",
-      "line": 729,
-      "role": "The consume plan: a fresh waiter joins the tail and a re-issued persistent waiter re-enters at its place (decision 43).",
+      "line": 767,
+      "role": "The consume plan: a fresh waiter joins the tail and a re-issued persistent waiter re-enters at its place (decision 43). After a peek fire of a non-persistent head record it stages the re-store (decision 45).",
       "rocq": [
         "receive",
         "receive_loop",
         "round_staged",
-        "reenter_receive"
+        "reenter_receive",
+        "code_of",
+        "code_ops"
       ],
       "tla": [
         "Consume",
@@ -1761,7 +1769,8 @@
         "U9",
         "U10",
         "U11",
-        "U12"
+        "U12",
+        "Q78"
       ]
     },
     {
@@ -1770,7 +1779,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "operation_ord",
-      "line": 809,
+      "line": 856,
       "role": "Decision 43: the kept first-round ord of a re-issued persistent operation, checked against the counter, or the bump value.",
       "rocq": [
         "operation_ord"
@@ -1792,7 +1801,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "scan_head",
-      "line": 548,
+      "line": 586,
       "role": "The head of one side and its ord: the buffer and one envelope decode for each entry are reserved first, and nothing is copied.",
       "rocq": [
         "record_head",
@@ -1816,7 +1825,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_ord",
-      "line": 600,
+      "line": 638,
       "role": "Decision 43: the ord of the head of one side, with no copy.",
       "rocq": [
         "reentry_at_head"
@@ -1836,7 +1845,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "at_head",
-      "line": 625,
+      "line": 663,
       "role": "Decision 43: a fresh element reaches the head only of an empty side; a re-issued persistent element re-enters at the head when its side is empty or its ord precedes the head; an equal ord is Inconsistent.",
       "rocq": [
         "reentry_at_head"
@@ -1925,7 +1934,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_produce",
-      "line": 933,
+      "line": 980,
       "role": "Bump, then the produce plan.",
       "rocq": [
         "produce",
@@ -1954,7 +1963,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_consume",
-      "line": 968,
+      "line": 1015,
       "role": "Bump, then the consume plan. A peek bumps too (A2).",
       "rocq": [
         "consume",
@@ -2017,7 +2026,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_create",
-      "line": 1003,
+      "line": 1050,
       "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
       "rocq": [
         "prepare_create",
@@ -2039,7 +2048,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "read_config",
-      "line": 1083,
+      "line": 1130,
       "role": "A missing config record is DanglingHandle.",
       "tla": [
         "Call"
@@ -2408,7 +2417,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "routes_to_default_without_context",
-      "line": 537,
+      "line": 539,
       "role": "Every class but a space name and an agent name.",
       "rocq": [
         "routes_to_default_without_context"
@@ -3090,7 +3099,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "struct",
       "name": "Field",
-      "line": 710,
+      "line": 712,
       "role": "Value, List, Map, Annotations, NewBody.",
       "rocq": [
         "field_flags"
@@ -3105,7 +3114,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "marker_fields",
-      "line": 724,
+      "line": 726,
       "role": "The fields of each marker.",
       "rocq": [
         "derived_flags"
@@ -3120,7 +3129,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "derived_flag",
-      "line": 817,
+      "line": 819,
       "role": "The flag that the encoder derives for a field.",
       "rocq": [
         "derived_flags"
@@ -3136,7 +3145,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_field",
-      "line": 883,
+      "line": 885,
       "role": "Recompute the derived flags of a field.",
       "rocq": [
         "refresh"
@@ -3151,7 +3160,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple",
-      "line": 954,
+      "line": 956,
       "role": "Recompute the derived flags of a marker tuple.",
       "rocq": [
         "refresh"
@@ -3166,7 +3175,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_tuple",
-      "line": 965,
+      "line": 967,
       "role": "A current tuple is not copied.",
       "rocq": [
         "refresh",
@@ -3183,7 +3192,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple_par",
-      "line": 986,
+      "line": 988,
       "role": "The tuple and its holder Par.",
       "rocq": [
         "refresh"
@@ -3198,7 +3207,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_marker_par",
-      "line": 1012,
+      "line": 1014,
       "role": "H4: the QUERY source before it fails closed.",
       "rocq": [
         "refresh"
@@ -3214,7 +3223,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "trailing_params",
-      "line": 1025,
+      "line": 1027,
       "role": "H3: refresh, then split_trailing_params.",
       "rocq": [
         "sdecode"
@@ -3536,7 +3545,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "register_introduction",
-      "line": 854,
+      "line": 869,
       "role": "The callback of a staged operation: one reserved copy of a shared pointer.",
       "rocq": [
         "step"
@@ -3552,7 +3561,7 @@
       "scope": "CollectionChannels",
       "kind": "fn",
       "name": "new_metered",
-      "line": 228,
+      "line": 231,
       "role": "The channels of an operation, with their ids reserved first.",
       "rocq": [
         "step"
@@ -3567,7 +3576,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "prepay_outcome",
-      "line": 858,
+      "line": 905,
       "role": "Prepays the buffer of the fires of the outcome before the commit.",
       "rocq": [
         "staged_trace"
@@ -3583,7 +3592,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "outcome",
-      "line": 864,
+      "line": 911,
       "role": "Step 7 after the commit: moves only, prepaid at staging.",
       "rocq": [
         "round_after_commit"
@@ -3599,7 +3608,7 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "fire_offer",
-      "line": 362,
+      "line": 400,
       "role": "Stages a produce-side fire with reserved copies, and moves the record on the last round.",
       "rocq": [
         "round_staged"
@@ -3615,10 +3624,63 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "fire_receive",
-      "line": 398,
+      "line": 436,
       "role": "Stages a consume-side fire with reserved copies, and moves the head copy into the candidate.",
       "rocq": [
         "round_staged"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "Plan::restore",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Plan",
+      "kind": "fn",
+      "name": "restore",
+      "line": 352,
+      "role": "Decision 45 (Rule E): stages the re-store of a record that a consume-side peek removed: the same record bytes and so the same identity, the outcome Store, persist false, the record's own cost authority, and no counter bump. Its channel copy and its introduction are reserved.",
+      "rocq": [
+        "code_of",
+        "sub_step",
+        "round_staged",
+        "step"
+      ],
+      "covers": [
+        "Q78",
+        "Q59"
+      ]
+    },
+    {
+      "item": "Plan::restore_peeked",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Plan",
+      "kind": "fn",
+      "name": "restore_peeked",
+      "line": 371,
+      "role": "Decision 45 (Rule E): stages the re-store of the record that a peek fire removed, when there is one.",
+      "rocq": [
+        "code_of",
+        "code_ops"
+      ],
+      "covers": [
+        "Q78"
+      ]
+    },
+    {
+      "item": "Introduction::for_record",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "scope": "Introduction",
+      "kind": "fn",
+      "name": "for_record",
+      "line": 851,
+      "role": "Decision 45 (Rule E): the introduction of a re-stored record: the budget of the operation and the record's own cost authority, or the empty authority, as produce_peeks registers it. The copies are reserved as in Introduction::new.",
+      "rocq": [
+        "step"
       ],
       "covers": [
         "Q59"

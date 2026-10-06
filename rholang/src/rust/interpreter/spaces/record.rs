@@ -843,6 +843,21 @@ impl Introduction {
 
     /// The introduction authority.
     pub fn authority(&self) -> &CostAuthority { &self.authority }
+
+    /// The introduction of a re-stored record (decision 45, Rule E): the budget of this
+    /// introduction and the record's own cost authority, or the empty authority when the record
+    /// has none. The host reducer's `produce_peeks` registers the same authority when it sends a
+    /// peeked datum again. The copies are reserved as in [`Introduction::new`].
+    pub fn for_record(
+        &self,
+        record: &ListParWithRandom,
+        meter: &ScanMeter,
+    ) -> Result<Arc<Introduction>, RSpaceError> {
+        match &record.cost_authority {
+            Some(authority) => Introduction::new(&self.budget, authority, meter),
+            None => Introduction::new(&self.budget, &CostAuthority::default(), meter),
+        }
+    }
 }
 
 /// The `before_observe` callback of a staged operation of the operation of `introduction`.

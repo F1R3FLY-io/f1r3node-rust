@@ -43,7 +43,7 @@
 (* rs = rspace++/src/rspace):                                              *)
 (*   the counter bump     spaces/counter.rs:163-231, 235-292 (the          *)
 (*                        counter COMM has no peeks)                       *)
-(*   the plans            spaces/generic.rs:658-721, 729-791, 933-1001      *)
+(*   the plans            spaces/generic.rs:696-759, 767-838, 980-1048      *)
 (*   the peek COMM        rs/merger/event_log_index.rs:253-272 (a COMM     *)
 (*                        with peeks files its produces under              *)
 (*                        produces_peeked)                                 *)

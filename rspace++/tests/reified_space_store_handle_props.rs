@@ -239,12 +239,12 @@ fn op_groups(peeks: bool, odd: f64) -> impl Strategy<Value = Vec<Vec<Op>>> {
         .prop_map(binds_incoming_once)
 }
 
-// Groups for the peek property (H11, FR-10). Waiters outnumber sends two to
-// one, and most waiters peek. So peek fires on one channel and on joins,
-// re-offers that store or fire the next waiter, re-offers that fire a
-// further peek waiter, and persistent sends that fire a peek waiter all
-// occur over the fixed seed. Groups may be odd or repeat a channel, as in
-// `op_groups`.
+// Groups for the peek property (H11, FR-10, decision 45). Waiters outnumber
+// sends two to one, and most waiters peek. So peek fires on one channel and
+// on joins, re-stores of the records that they remove, re-offers that store
+// or fire the next waiter, re-offers that fire a further peek waiter, and
+// persistent sends that fire a peek waiter all occur over the fixed seed.
+// Groups may be odd or repeat a channel, as in `op_groups`.
 fn peek_op_groups() -> impl Strategy<Value = Vec<Vec<Op>>> {
     let op = prop_oneof![
         1 => produce_op(&CHANNELS, &VALUES),
@@ -702,8 +702,10 @@ async fn replay_divergence_typed_at_commit(groups: Vec<Vec<Op>>) -> Result<(), T
 }
 
 // H6: what a transaction reads after staging equals the store after commit.
-// The groups include peek fires and their re-offers (FR-10): a peek fire
-// never puts its incoming datum into the view.
+// The groups include peek fires with their re-stores and re-offers (FR-10,
+// decision 45, Rule E): a peek fire removes its stored non-persistent
+// records from the view, as the host does, and never puts its incoming
+// datum into the view.
 async fn view_equals_committed_store(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let plans = plan_groups(&groups).await;
     let space = play_space().await;
@@ -1081,34 +1083,31 @@ async fn coverage_holds(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-// FR-10: the receipt of a peek fire reports a retained stored record as
-// persistent and every other result with its own flag, so the incoming
-// datum of a produce fire is never reported retained. A fire that does not
-// peek reports every own flag. A rejected plan has no receipt.
+// Decision 45 (Rule E): the receipt of a fire reports every result with the
+// flag of the host's `wrap_result`, the own flag of its record, also for a
+// peek fire. So a stored non-persistent record of a peek fire is reported
+// non-persistent, because the fire removes it, and the incoming datum of a
+// produce fire keeps its own flag. A rejected plan has no receipt.
 fn check_receipt_flags(plans: &[Vec<Planned>], receipts: &[Receipt]) -> Result<(), TestCaseError> {
     prop_assert_eq!(plans.len(), receipts.len());
     for (group, receipt) in plans.iter().zip(receipts) {
         let committed: Vec<&Planned> = group.iter().filter(|plan| !plan.is_rejected()).collect();
         prop_assert_eq!(committed.len(), receipt.ops.len());
         for (plan, op) in committed.into_iter().zip(&receipt.ops) {
-            let (candidates, retain) = match plan {
+            let candidates = match plan {
                 Planned::Produce {
-                    outcome:
-                        ProduceOutcome::Fire {
-                            continuation, data, ..
-                        },
+                    outcome: ProduceOutcome::Fire { data, .. },
                     ..
-                } => (data, !continuation.peeks.is_empty()),
+                } |
                 Planned::Consume {
-                    peeks,
                     outcome: ConsumeOutcome::Fire { data },
                     ..
-                } => (data, !peeks.is_empty()),
+                } => data,
                 _ => continue,
             };
             let expected: Vec<bool> = candidates
                 .iter()
-                .map(|candidate| (retain && candidate.datum_index >= 0) || candidate.datum.persist)
+                .map(|candidate| candidate.datum.persist)
                 .collect();
             match op {
                 SpaceOpReceipt::Fired { results, .. } => {
@@ -1127,15 +1126,17 @@ fn check_receipt_flags(plans: &[Vec<Planned>], receipts: &[Receipt]) -> Result<(
     Ok(())
 }
 
-// H11 (FR-10): a peek fire has the observer calls and events of HEAD's peek
-// path, including the reducer's re-produce of a non-persistent incoming
-// datum, which the agent stages as the next produce of the transaction
-// (`run_guided`, `head_peek_path`). The space keeps the stored records of a
-// peek fire; the oracle puts them back into the host without events, so the
-// states are equal as multisets and the roots are equal. Only retained
-// stored records are reported persistent. The same transactions, re-offers
-// included, replay and report from the play log.
-async fn peek_retention(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
+// H11 (FR-10, decision 45, Rule E): a peek fire has the observer calls and
+// events of HEAD's peek path. The reducer produces each non-persistent result
+// of a peek fire again (`produce_peeks`), and the agent stages these
+// re-produces as next produces of the transaction (`run_guided`,
+// `head_peek_path`): the re-store of each removed stored record and the
+// re-offer of a non-persistent incoming datum. The fire removes what the host
+// removes, so the committed state equals the host's exactly, in list order,
+// and so do the events and the root. Every result keeps the host's flag. The
+// same transactions, re-stores and re-offers included, replay and report
+// from the play log.
+async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let host = play_space().await;
     let host_recorder = Recorder::new();
     observed(&host, &host_recorder);
@@ -1147,7 +1148,7 @@ async fn peek_retention(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let receipts = assert_committed(receipts)?;
     check_receipt_flags(&plans, &receipts)?;
     prop_assert_eq!(txn_recorder.calls(), host_recorder.calls());
-    prop_assert_eq!(logical_state(&txn).sorted(), logical_state(&host).sorted());
+    prop_assert_eq!(logical_state(&txn), logical_state(&host));
     let host_checkpoint = checkpoint(&host).await;
     let txn_checkpoint = checkpoint(&txn).await;
     prop_assert_eq!(event_bytes(&txn_checkpoint.log), event_bytes(&host_checkpoint.log));
@@ -2451,8 +2452,8 @@ proptest! {
     }
 
     #[test]
-    fn prop_space_txn_peek_retention(groups in peek_op_groups()) {
-        runtime().block_on(peek_retention(groups))?;
+    fn prop_space_txn_peek_restore(groups in peek_op_groups()) {
+        runtime().block_on(peek_restore(groups))?;
     }
 
     #[test]

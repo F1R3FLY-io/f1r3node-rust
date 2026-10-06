@@ -94,7 +94,7 @@ This conclusion holds at every depth, for the constants of the configuration.
 Each later phase adds one section for each new model or suite, and it adds its rows to the tables of sections 2 and 8.
 Phase P4 keeps its rows of those tables in its own section [11](#11-phase-p4-the-hashmapqueue-slice).
 The Rocq gate also checks the module `Encoding.v` of phase P2, the six modules of phase P4, and the module `AgentReadCoverage.v` of decision 42.
-So its total count of closed headlines is 112 over 10 modules, not 23.
+So its total count of closed headlines is 113 over 10 modules, not 23.
 The section of phase P2 documents the 12 headlines of P2 in `Encoding.v`, and section 11 documents the 3 headlines that P4 adds to it.
 
 ## 2. Acceptance categories
@@ -112,8 +112,8 @@ So this dossier names the planned recipe ids and step keys, without recipe hashe
 | Formally modeled | `check-model-map.py` checks the 70 items of the [model map](glossary.md#model-map), 32 of them required. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. Each of the 29 headlines (H1 to H23, T1 to T6) names an existing theorem or operator, and each fix rule names its items and headlines. The checker also checks each Rust line citation of the formal files. `check-closure.py modeled` checks the model items of the realignment leaves. | `python3 scripts/verify-reified/check-model-map.py` and `check-closure.py modeled` | `rrs-p1-checks`: `p1-model-map`, `p1-closure-modeled` |
 | Formal verification passes | The 23 Rocq headlines close under the global context, and `rocqchk` accepts each module. The 27 Rocq mutants of P1 fail in their expected declarations. TLC explores 3 safe configurations completely. Each of 8 Unsafe configurations refutes exactly one invariant, and its complement violates no other invariant. Apalache proves BASE and STEP of `IndInv` and `LockIndInv`, and 4 Error controls break them in the expected conjunct. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` | `rrs-p1-rocq-ec`: `fresh-kernel`. `rrs-p1-rocq-vs`: `fresh-kernel`. `rrs-p1-rocq-negative`: `p1-rocq-negative`. `rrs-p1-tla-checkpoint`: its 18 steps (section [5.2](#52-checkpointreplaytla)). `rrs-p1-tla-lock`: its 9 steps (section [5.3](#53-txnlockcoveragetla)). |
 | Every invariant extracted as a property-based test | The [invariant map](glossary.md#invariant-map) names at least one property test for each of the 29 P1 ids and for the checklist entry O1. The 25 P1 properties and `prop_ordinary_play_replay_equal` run 64 cases with a fixed seed. `check-closure.py invariants` checks the headlines of the realignment leaves. | `check-invariant-map.py --phase P1`, `check-invariant-map.py --phase ORD`, and the cargo targets of section [10.3](#103-rust-suites) | `rrs-p1-checks`: `p1-invariant-map`, `p1-invariant-map-ord`, `p1-closure-invariants`. `rrs-p1-rspace`: `p1-props`. `rrs-p1-regression`: `p1-regression-ordinary`. |
-| Implementation complete | `check-complete.py --phase p1` finds the 10 entry points of P1 and no forbidden token in the 3 P1 sources. It also finds no ignored test and no `/tmp` path in the P1 tests, and each property file sets `failure_persistence: None`. `check-complete.py --production-scan` finds none of the 24 consensus tokens in production code. `check-footprint.py` passes the policies `p1` and `p1-realign`. `check-consensus-checklist.py --milestone p1` and `check-closure.py entry-points` pass. | `python3 scripts/verify-reified/check-complete.py` and the other checkers | `rrs-p1-checks`: `p1-complete`, `p1-production-scan`, `p1-footprint`, `p1-footprint-realign`, `p1-consensus-checklist`, `p1-closure-entry-points`. For the formal leaves: `rrs-p1-rocq-ec`: `fresh-kernel`, and `rrs-p1-tla-checkpoint`: `p1-tla-safe-mc-checkpointreplay-twoblock`. |
-| Thoroughly tested | The substrate suites (18 library tests, 80 integration tests, 4 golden-corpus tests, 3 tests over `Par`, 1 host-bounds test), the whole `rspace++` suite, the regression suite of section [8](#8-regression-checks-for-ordinary-execution), the HEAD suites, the 273 checker self-tests, the audit harness, and the ledger-copy controls. | `cargo test` (section [10.3](#103-rust-suites)) and `python3 scripts/verify-reified/run-checker-tests.py` | `rrs-p1-rspace`: `p1-lib`, `p1-integration`, `p1-legacy-golden`. `rrs-p1-rspace-full`: `p1-full-rspace`. `rrs-p1-rholang`: `p1-rholang-par`, `p1-rholang-host-bounds`. `rrs-p1-regression`: its 10 steps (section [8.1](#81-consensus-preservation-checklist)). `rrs-p1-head-rspace`: `p1-head-storage`, `p1-head-replay`, `p1-head-observer`, `p1-head-history`, `p1-head-lib-history`. `rrs-p1-rholang-matcher`: `p1-head-rholang-matcher`. `rrs-p1-checks`: `p1-checker-tests`, `p1-audit-rocq`, `p1-audit-source`, `p1-ledger-copy`, `p1-ledger-copy-controls`. `rrs-p1-rocq-negative`: `p1-rocq-negative` (for `rrs-fv-event-correlation`). |
+| Implementation complete | `check-complete.py --phase p1` finds the 11 entry points of P1 and no forbidden token in the 3 P1 sources. It also finds no ignored test and no `/tmp` path in the P1 tests, and each property file sets `failure_persistence: None`. `check-complete.py --production-scan` finds none of the 24 consensus tokens in production code. `check-footprint.py` passes the policies `p1` and `p1-realign`. `check-consensus-checklist.py --milestone p1` and `check-closure.py entry-points` pass. | `python3 scripts/verify-reified/check-complete.py` and the other checkers | `rrs-p1-checks`: `p1-complete`, `p1-production-scan`, `p1-footprint`, `p1-footprint-realign`, `p1-consensus-checklist`, `p1-closure-entry-points`. For the formal leaves: `rrs-p1-rocq-ec`: `fresh-kernel`, and `rrs-p1-tla-checkpoint`: `p1-tla-safe-mc-checkpointreplay-twoblock`. |
+| Thoroughly tested | The substrate suites (18 library tests, 82 integration tests, 4 golden-corpus tests, 3 tests over `Par`, 1 host-bounds test), the whole `rspace++` suite, the regression suite of section [8](#8-regression-checks-for-ordinary-execution), the HEAD suites, the 273 checker self-tests, the audit harness, and the ledger-copy controls. | `cargo test` (section [10.3](#103-rust-suites)) and `python3 scripts/verify-reified/run-checker-tests.py` | `rrs-p1-rspace`: `p1-lib`, `p1-integration`, `p1-legacy-golden`. `rrs-p1-rspace-full`: `p1-full-rspace`. `rrs-p1-rholang`: `p1-rholang-par`, `p1-rholang-host-bounds`. `rrs-p1-regression`: its 10 steps (section [8.1](#81-consensus-preservation-checklist)). `rrs-p1-head-rspace`: `p1-head-storage`, `p1-head-replay`, `p1-head-observer`, `p1-head-history`, `p1-head-lib-history`. `rrs-p1-rholang-matcher`: `p1-head-rholang-matcher`. `rrs-p1-checks`: `p1-checker-tests`, `p1-audit-rocq`, `p1-audit-source`, `p1-ledger-copy`, `p1-ledger-copy-controls`. `rrs-p1-rocq-negative`: `p1-rocq-negative` (for `rrs-fv-event-correlation`). |
 | Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document. `render.sh --check` finds each SVG byte-identical to a fresh render. The 83 unit tests of `doc_lint.py` pass. `check-closure.py docs` finds the headings, references, and anchors of the closure policy. | `python3 scripts/verify-reified/doc_lint.py`, `docs/rspace/reified-rspaces/diagrams/render.sh --check` | `rrs-p1-docs`: `p1-docs-lint`, `p1-docs-render`, `p1-docs-selftests`. `rrs-p1-checks`: `p1-doc-lint`, `p1-closure-docs`. |
 
 Table 4 shows how the leaves that cite this dossier bind the six categories.
@@ -156,8 +156,8 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 112 over 10 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 66 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decision-46) and [11.12](#1112-re-entry-of-decision-43)), and `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 66 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 28 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decision-46) and [11.12](#1112-re-entry-of-decision-43) hold 5, 1 and 3. The 10 pristine modules compile first.
+6. **Total.** The count of closed headlines is 113 over 10 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)), and `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** The 70 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45) hold 5, 1, 3 and 3. The 10 pristine modules compile first.
 
 The last host run printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
 The `Print Assumptions` lines are [lines 7578 to 7594 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L7578-L7594) and [lines 1744 to 1749 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1744-L1749).
@@ -177,23 +177,23 @@ The last column gives the property tests that the [invariant map](glossary.md#in
 
 | Id | Theorem | Statement | Assumptions | Property tests |
 |---|---|---|---|---|
-| H1 | `commit_trace_eq_host` (`EventCorrelation.v:4785`) | A commit of the staged operations makes exactly the observer calls, events, status, and replay bindings of the host run of the same operations. | None | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H2 | `commit_state_eq_host` (`EventCorrelation.v:4807`) | Without peek retention, the committed store equals the host store: equal continuations, joins, and counters, and each data list a permutation of the host list. | None | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H3 | `counter_timing_play_replay` (`EventCorrelation.v:5269`) | The play counter closure and the replay rule give the same COMM. A rejected replay fire rolls its increment back exactly, and the staged counter view advances as the host counter does. | None | `prop_counter_timing_play_equals_replay` |
-| H4 | `verify_sound_complete` (`EventCorrelation.v:5359`) | `verify` pairs a COMM exactly when the log holds the trigger event and an unpaired recorded occurrence remains, and `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, with no pairing and no change of the bindings (conjunct 3, `stage_without_trigger_unpaired`). An unpaired fire never commits: it emits no event and no effect, and it keeps the bindings and the store (conjunct 6, `unpaired_fire_inert`). | None | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` (`EventCorrelation.v:5563`) | `rig` sets up the binding invariant from the play log. A replay transaction never pairs a COMM more often than the log records it, and its commit removes exactly the committed pairings. | None | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_retention` |
-| H6 | `view_commit_coherent` (`EventCorrelation.v:4839`) | The staged view is the committed store. The commit stops at the first rejected operation, and the store then equals the view after the operations before it. | None | `prop_space_txn_view_equals_committed_store` |
-| H7 | `joins_lockstep_preserved` (`EventCorrelation.v:4862`) | Staging and commit keep the join entries in lockstep with the waiting continuations. | None | `prop_space_txn_joins_lockstep` |
-| H8 | `sub_order_between` (`EventCorrelation.v:7127`) | A sub-order sorts after its parent and before every later scheduler order. The sub-orders of one parent strictly increase, and no scheduler order equals a sub-order. | None | `prop_sub_orders_contiguous_and_disjoint` |
-| H9 | `abort_inert` (`EventCorrelation.v:6228`) | A dropped transaction, also after access errors, and a commit after a store swap change no store, binding, observer call, event, or generation. The checkpoint then gives the same history map. | None | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H10 | `coverage_total` (`EventCorrelation.v:5150`) | For every committed operation, an event of the same operation covers each store change, and every COMM follows its trigger event. | None | `prop_event_coverage_holds_for_generated_commits` |
-| H11 | `peek_retention_trace_eq_host` (`EventCorrelation.v:4907`) | With the re-offer as the next operation (FR-10), a commit makes the observer calls, events, status, and bindings of the host run. A peek fire keeps its stored records and never stores its incoming datum. | None | `prop_space_txn_peek_retention` |
-| H12 | `reporting_trace_is_replay_trace` (`EventCorrelation.v:6313`) | Reporting stages and commits exactly as replay does, and its host operations are those of replay. | None | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_retention` |
-| H17 | `non_canonical_fails_closed` (`EventCorrelation.v:6170`) | A group that is not non-decreasing fails with `NonCanonicalChannelOrder` before any store or cache effect. A non-decreasing group passes, also when it repeats a channel, and the sorted list is the only canonical member of its permutation class. | None | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H19 | `directive_fails_closed` (`EventCorrelation.v:6353`) | In replay and reporting, a replay directive rejects the operation with no change of store, bindings, events, or effects, and the commit stops there. | None | `prop_space_txn_replay_directive_fails_closed` |
-| H20 | `parent_order_single_txn` (`EventCorrelation.v:7400`) | `sub_order` is injective. A second commit under one parent in one evaluation scope fails before any effect, and a scope reset, a store swap, and a session change each reset the tracker. | None | `prop_space_txn_parent_order_single_commit` |
-| H21 | `view_identity_is_store_identity` (`EventCorrelation.v:7521`) | View lookups and the installed guard respect the store identity, and the staged view agrees with the committed store. A view keyed by the Rust ordering disagrees for two channels with one store identity. | None | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
-| H23 | `replay_reproduces_play_run` (`EventCorrelation.v:6903`) | Play and replay stage the same operations from the same view, and replay is rigged with the commit log of play. Then replay stages exactly the operations of play, and its commit makes the observer calls of play without the directive queries, the events of play, the status of play, and the store of play. So an operation that play rejects, for example for lack of phlo, fails replay at the same call, after the same prefix (decision 36). | None. The statement takes two premises: the observer ignores the directive queries, and it gives no directive. `replay_premises_satisfiable` shows the observer of a phlo limit that meets both. | `prop_space_txn_replay_reproduces_play_rejection` |
+| H1 | `commit_trace_eq_host` (`EventCorrelation.v:5472`) | A commit of the staged operations makes exactly the observer calls, events, status, and replay bindings of the host run of the same operations. | None | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H2 | `commit_state_eq_host` (`EventCorrelation.v:5530`) | The committed store equals the host store: equal continuations, joins, and counters, and each data list a permutation of the host list. Since [decision 45](decision-register.md#decision-45), the statement has no premise on peeks. | None | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H3 | `counter_timing_play_replay` (`EventCorrelation.v:6171`) | The play counter closure and the replay rule give the same COMM. A rejected replay fire rolls its increment back exactly, and the staged counter view advances as the host counter does. | None | `prop_counter_timing_play_equals_replay` |
+| H4 | `verify_sound_complete` (`EventCorrelation.v:6261`) | `verify` pairs a COMM exactly when the log holds the trigger event and an unpaired recorded occurrence remains, and `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, with no pairing and no change of the bindings (conjunct 3, `stage_without_trigger_unpaired`). An unpaired fire never commits: it emits no event and no effect, and it keeps the bindings and the store (conjunct 6, `unpaired_fire_inert`). | None | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
+| H5 | `replay_pairs_each_comm_once` (`EventCorrelation.v:6465`) | `rig` sets up the binding invariant from the play log. A replay transaction never pairs a COMM more often than the log records it, and its commit removes exactly the committed pairings. | None | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
+| H6 | `view_commit_coherent` (`EventCorrelation.v:5557`) | The staged view is the committed store. The commit stops at the first rejected operation, and the store then equals the view after the operations before it. | None | `prop_space_txn_view_equals_committed_store` |
+| H7 | `joins_lockstep_preserved` (`EventCorrelation.v:5580`) | Staging and commit keep the join entries in lockstep with the waiting continuations. | None | `prop_space_txn_joins_lockstep` |
+| H8 | `sub_order_between` (`EventCorrelation.v:8029`) | A sub-order sorts after its parent and before every later scheduler order. The sub-orders of one parent strictly increase, and no scheduler order equals a sub-order. | None | `prop_sub_orders_contiguous_and_disjoint` |
+| H9 | `abort_inert` (`EventCorrelation.v:7130`) | A dropped transaction, also after access errors, and a commit after a store swap change no store, binding, observer call, event, or generation. The checkpoint then gives the same history map. | None | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H10 | `coverage_total` (`EventCorrelation.v:6053`) | For every committed operation, an event of the same operation covers each store change, and every COMM follows its trigger event. | None | `prop_event_coverage_holds_for_generated_commits` |
+| H11 | `peek_reproduces_trace_eq_host` (`EventCorrelation.v:5807`) | With the re-offer (FR-10) and the re-stores ([decision 45](decision-register.md#decision-45)) as the next operations, a commit makes the observer calls, events, status, and bindings of the host run, whose reducer sends the peeked data again, and the stores are equal. A fire never stores a datum, its receipt carries the stored persist flags, and the re-stores are exactly the sends of `produce_peeks`, each with the identity of its record. | None | `prop_space_txn_peek_restore` |
+| H12 | `reporting_trace_is_replay_trace` (`EventCorrelation.v:7215`) | Reporting stages and commits exactly as replay does, and its host operations are those of replay. | None | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
+| H17 | `non_canonical_fails_closed` (`EventCorrelation.v:7072`) | A group that is not non-decreasing fails with `NonCanonicalChannelOrder` before any store or cache effect. A non-decreasing group passes, also when it repeats a channel, and the sorted list is the only canonical member of its permutation class. | None | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H19 | `directive_fails_closed` (`EventCorrelation.v:7255`) | In replay and reporting, a replay directive rejects the operation with no change of store, bindings, events, or effects, and the commit stops there. | None | `prop_space_txn_replay_directive_fails_closed` |
+| H20 | `parent_order_single_txn` (`EventCorrelation.v:8302`) | `sub_order` is injective. A second commit under one parent in one evaluation scope fails before any effect, and a scope reset, a store swap, and a session change each reset the tracker. | None | `prop_space_txn_parent_order_single_commit` |
+| H21 | `view_identity_is_store_identity` (`EventCorrelation.v:8423`) | View lookups and the installed guard respect the store identity, and the staged view agrees with the committed store. A view keyed by the Rust ordering disagrees for two channels with one store identity. | None | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
+| H23 | `replay_reproduces_play_run` (`EventCorrelation.v:7805`) | Play and replay stage the same operations from the same view, and replay is rigged with the commit log of play. Then replay stages exactly the operations of play, and its commit makes the observer calls of play without the directive queries, the events of play, the status of play, and the store of play. So an operation that play rejects, for example for lack of phlo, fails replay at the same call, after the same prefix (decision 36). | None. The statement takes two premises: the observer ignores the directive queries, and it gives no directive. `replay_premises_satisfiable` shows the observer of a phlo limit that meets both. | `prop_space_txn_replay_reproduces_play_rejection` |
 
 Since [decision 36](decision-register.md#decision-36), H1, H2, and H11 assume in replay that every staged fire paired (the premise `fire_paired`).
 A successful staging implied this premise before decision 36, and H4 and H23 now cover the unpaired fire.
@@ -420,18 +420,19 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 ### 6.1 Rocq mutants
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 66 mutants.
-Table 12 holds 28 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 70 mutants.
+Table 12 holds 29 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
 Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decision-46) holds 1.
-Table 50 of section [11.12](#1112-re-entry-of-decision-43) holds 3.
+Table 50 of section [11.12](#1112-re-entry-of-decision-43) holds 3, and Table 55 of section [11.13](#1113-peek-re-store-of-decision-45) holds 3.
 Each mutant replaces text that must occur exactly once in a scratch copy of its module, so a stale mutant fails.
 The control passes only when the mutated copy fails to compile and the first error lies inside one of the expected declarations.
 
 The pristine modules must compile first. The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants of that time (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d43/gates/proofs.log`).
+The run of [decision 45](decision-register.md#decision-45) passed all 70 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d45/gates/proofs.log`).
 
-*Table 12. The 28 Rocq mutants of the P1 modules. EC is EventCorrelation.v, and VS is VolatileSweep.v.*
+*Table 12. The 29 Rocq mutants of the P1 modules. EC is EventCorrelation.v, and VS is VolatileSweep.v.*
 
 | Id | Module | What the mutant changes | Must fail in | Rule it shows |
 |---|---|---|---|---|
@@ -453,10 +454,11 @@ The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants
 | `ec-parent-reuse-admitted` | EC | A second commit under one parent in one scope is admitted. | `run_calls_scope` | FR-5' |
 | `ec-two-evaluations-claim-fr5` | EC | The two-evaluation lemma claims that the second evaluation fails after a scope reset. | `two_evaluations_commit` | FR-5' |
 | `ec-no-reset-claims-commit` | EC | The two-evaluation lemma claims that a commit without a reset reuses the parent. | `two_evaluations_commit` | FR-5' |
-| `ec-fire-stores-incoming` | EC | A peek fire stores its non-persistent incoming datum again, in the view and in both commits. | `peek_fire_keeps_data` | FR-10 |
-| `ec-kept-includes-incoming` | EC | The kept records of a produce-side peek fire include its incoming datum. | `retained_stored` | FR-10 |
-| `ec-h11-claims-incoming-stored` | EC | H11 claims that a committed produce-side peek fire stores its incoming datum. | `peek_retention_trace_eq_host` | FR-10 |
-| `ec-h11-claims-p1-deviation` | EC | H11 claims that the kept records replace every re-produce of HEAD, the incoming datum included. | `peek_retention_trace_eq_host` | FR-10 |
+| `ec-fire-stores-incoming` | EC | A peek fire stores its non-persistent incoming datum again, in the view and in both commits. | `fire_stores_no_datum` | FR-10 |
+| `ec-h11-claims-incoming-stored` | EC | H11 claims that a committed non-persistent produce-side peek fire stores its incoming datum. | `peek_reproduces_trace_eq_host` | FR-10 |
+| `ec-peek-retains` | EC | A consume-side peek fire keeps its stored records, in the view and in both commits (the retention of FR-10). | `fire_view_removes` | Decision 45 |
+| `ec-restore-skipped` | EC | The agent stages no re-store after a consume-side peek fire. | `restores_are_produce_peeks` | Decision 45 |
+| `ec-restore-wrong-identity` | EC | The re-store sends the matched value instead of the stored record, so it takes another produce identity. | `restore_same_identity` | Decision 45 |
 | `ec-plan-stores-incoming` | EC | The head-only plan stores the datum after a peek fire instead of the re-offer. | `offer_keeps_no_pending_match` | FR-10 |
 | `ec-reoffer-due-without-a10` | EC | The re-offer is also due after a persistent waiter. | `offer_ops_reoffers` | FR-10 |
 | `ec-replay-fire-fails-at-staging` | EC | An unpaired replay fire fails at staging, which is the rule of decision 19, so replay stages fewer operations than play. | `replay_stage_sim` | Decision 36 |
@@ -464,7 +466,10 @@ The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants
 | `ec-unpaired-fire-commits` | EC | An unpaired replay fire commits: it logs, applies its effects, and unbinds a COMM that staging did not pair. | `unpaired_fire_inert` | Decision 36 |
 | `ec-split-zero-child` | EC | A split appends the segment $`(s, i)`$ instead of the DR-84 segment $`(s, i + 1)`$, so a child segment can equal an operation segment. | `sched_part_nonzero` | Decision 44 |
 
-Eleven mutants cover FR-1 and FR-1', six cover FR-5', one covers FR-9', six cover FR-10, three cover decision 36, and one covers decision 44.
+Eleven mutants cover FR-1 and FR-1', six cover FR-5', and one covers FR-9'.
+Four cover FR-10, three cover decision 36, one covers decision 44, and three cover decision 45.
+[Decision 45](decision-register.md#decision-45) disabled the FR-10 controls `ec-kept-includes-incoming` and `ec-h11-claims-p1-deviation`, because Rule E removes the kept records that they mutate.
+The script keeps both controls as comments with that reason.
 
 ### 6.2 TLA+ and Apalache controls
 
@@ -476,10 +481,10 @@ The Error controls are `step-doublepair-unsafe` (marker `vStaged[`), `step-joinr
 
 The substrate suites hold five negative controls:
 
-- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:3004`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:3020`) show that the event correlation of the commit rejects a defect.
-- `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2149`) pins the HEAD behavior that `JoinResidueUnsafe` models.
-- `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2460`) shows that the host refuses a checkpoint with one channel set under two orders.
-- `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3353`) shows that host replay of a repeated channel can compute another COMM than the play log.
+- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:3069`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:3085`) show that the event correlation of the commit rejects a defect.
+- `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2199`) pins the HEAD behavior that `JoinResidueUnsafe` models.
+- `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2510`) shows that the host refuses a checkpoint with one channel set under two orders.
+- `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3439`) shows that host replay of a repeated channel can compute another COMM than the play log.
 
 The P4 suite `rholang/tests/reified_queue_replay.rs` holds the control of [decision 36](decision-register.md#decision-36), `space_queue_out_of_phlo_sweep_replays_equal` (`reified_queue_replay.rs:821`).
 It plays a space deploy out of phlo at many limits, and it replays each play log as Casper does.
@@ -523,58 +528,60 @@ Where a property allows peeks, a generated consume peeks with the probability 0.
 
 | # | Property | Location | Covers | What it checks |
 |---|---|---|---|---|
-| 1 | `prop_space_txn_play_trace_equals_host` | `reified_space_store_handle_props.rs:2388` | H1 | A commit of staged operations gives the observer calls and events of the host. |
-| 2 | `prop_space_txn_play_root_equals_host` | `reified_space_store_handle_props.rs:2393` | H2, T2 | The committed state, and so the checkpoint root, equals the host state. |
-| 3 | `prop_space_txn_replay_pairs_play_log` | `reified_space_store_handle_props.rs:2398` | H5, T1 | Replay pairs every COMM of the play log once and reaches the play root. |
-| 4 | `prop_space_txn_cross_replay_with_host` | `reified_space_store_handle_props.rs:2403` | T1 | A host play log replays through transactions, a transaction play log replays through the host, and both logs are equal. |
-| 5 | `prop_space_txn_replay_divergence_typed_at_commit` | `reified_space_store_handle_props.rs:2408` | H4, T3 | A replay fire whose COMM the log does not hold stages as in play, with no host call, and stays unpaired. The commit applies the operations before it, makes the calls of the fire through its COMM call, and fails with `ReplayDivergence`. Nothing of the fire or after it is logged, applied, or unbound. |
-| 6 | `prop_space_txn_view_equals_committed_store` | `reified_space_store_handle_props.rs:2413` | H6 | The reads after staging equal the store after the commit, also with peek fires and their re-offers. |
-| 7 | `prop_space_txn_joins_lockstep` | `reified_space_store_handle_props.rs:2418` | H7 | Join entries and continuations change in lockstep, in the view and in the committed store. |
-| 8 | `prop_sweep_volatile_exact_and_root_neutral` | `reified_space_store_handle_props.rs:2423` | H13, H14, H15, T4 | The sweep removes exactly the volatile records, continuations, and joins, keeps the durable state, and does not move the root. |
-| 9 | `prop_sub_orders_contiguous_and_disjoint` | `reified_space_store_handle_props.rs:2428` | H8 | Sub-orders sort between their parent and the next step, never equal a reduction order, and keep the events of a transaction together. |
-| 10 | `prop_space_txn_abort_inert` | `reified_space_store_handle_props.rs:2444` | H9 | A transaction that drops without a commit leaves no event, observer call, write, or counter change, and it releases its locks. |
-| 11 | `prop_event_coverage_holds_for_generated_commits` | `reified_space_store_handle_props.rs:2449` | H10 | Each committed store change has its event, and each COMM follows its trigger event. |
-| 12 | `prop_space_txn_peek_retention` | `reified_space_store_handle_props.rs:2454` | H5, H11, H12 | A peek fire has the calls and events of the HEAD peek path, with the re-offer as the next produce, and it replays and reports from the play log. |
-| 13 | `prop_space_txn_reporting_equals_replay` | `reified_space_store_handle_props.rs:2459` | H12 | Reporting replays exactly as replay does, and it reports what the host reporting space reports. |
-| 14 | `prop_root_leaf_record_count_matches_history` | `reified_space_store_handle_props.rs:2464` | H16 | The root leaf record count is the number of records in the leaf. |
-| 15 | `prop_counter_timing_play_equals_replay` | `reified_space_store_handle_props.rs:2469` | H3 | Play counts the fired produce, replay increments before it matches, and both give the COMMs of the host. |
-| 16 | `prop_space_txn_replay_requires_trigger_event` | `reified_space_store_handle_props.rs:2474` | H4 | Without the trigger event in the log, the fire stages unpaired, and the commit fails with `ReplayDivergence` after the calls of the fire, with the operations before it applied. With the complete log, the same fire pairs and commits. |
-| 17 | `prop_space_txn_non_canonical_inputs_fail_closed` | `reified_space_store_handle_props.rs:2490` | H9, H17, H22 | A group that is not canonical fails before any store or cache effect, and the checkpoint root equals the reference. |
-| 18 | `prop_space_txn_reads_root_neutral` | `reified_space_store_handle_props.rs:2500` | H18 | Reads of canonical keys never change the checkpoint root. |
-| 19 | `prop_space_txn_replay_directive_fails_closed` | `reified_space_store_handle_props.rs:2510` | H19 | A native replay directive rejects its operation with no effect, and the operations before it stay applied. |
-| 20 | `prop_space_txn_parent_order_single_commit` | `reified_space_store_handle_props.rs:2518` | H20 | At most one transaction commits under one parent order, and a second commit fails with `ParentOrderReused` and no effect. |
-| 21 | `prop_space_txn_store_identity_ignores_ord_only_fields` | `reified_space_store_handle_props.rs:2523` | H21 | Channels that differ only in a field of the Rust ordering are one channel for every decision of the substrate. |
-| 22 | `prop_space_txn_rejects_uncovered_channels` | `reified_space_store_handle_props.rs:2530` | T5 | An operation on a channel without its stripe fails with `UnlockedChannel` and no effect, and the final state equals a serial order. |
+| 1 | `prop_space_txn_play_trace_equals_host` | `reified_space_store_handle_props.rs:2389` | H1 | A commit of staged operations gives the observer calls and events of the host. |
+| 2 | `prop_space_txn_play_root_equals_host` | `reified_space_store_handle_props.rs:2394` | H2, T2 | The committed state, and so the checkpoint root, equals the host state. |
+| 3 | `prop_space_txn_replay_pairs_play_log` | `reified_space_store_handle_props.rs:2399` | H5, T1 | Replay pairs every COMM of the play log once and reaches the play root. |
+| 4 | `prop_space_txn_cross_replay_with_host` | `reified_space_store_handle_props.rs:2404` | T1 | A host play log replays through transactions, a transaction play log replays through the host, and both logs are equal. |
+| 5 | `prop_space_txn_replay_divergence_typed_at_commit` | `reified_space_store_handle_props.rs:2409` | H4, T3 | A replay fire whose COMM the log does not hold stages as in play, with no host call, and stays unpaired. The commit applies the operations before it, makes the calls of the fire through its COMM call, and fails with `ReplayDivergence`. Nothing of the fire or after it is logged, applied, or unbound. |
+| 6 | `prop_space_txn_view_equals_committed_store` | `reified_space_store_handle_props.rs:2414` | H6 | The reads after staging equal the store after the commit, also with peek fires and their re-offers. |
+| 7 | `prop_space_txn_joins_lockstep` | `reified_space_store_handle_props.rs:2419` | H7 | Join entries and continuations change in lockstep, in the view and in the committed store. |
+| 8 | `prop_sweep_volatile_exact_and_root_neutral` | `reified_space_store_handle_props.rs:2424` | H13, H14, H15, T4 | The sweep removes exactly the volatile records, continuations, and joins, keeps the durable state, and does not move the root. |
+| 9 | `prop_sub_orders_contiguous_and_disjoint` | `reified_space_store_handle_props.rs:2429` | H8 | Sub-orders sort between their parent and the next step, never equal a reduction order, and keep the events of a transaction together. |
+| 10 | `prop_space_txn_abort_inert` | `reified_space_store_handle_props.rs:2445` | H9 | A transaction that drops without a commit leaves no event, observer call, write, or counter change, and it releases its locks. |
+| 11 | `prop_event_coverage_holds_for_generated_commits` | `reified_space_store_handle_props.rs:2450` | H10 | Each committed store change has its event, and each COMM follows its trigger event. |
+| 12 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | H5, H11, H12 | A peek fire has the calls, events, and state of the HEAD peek path, with the re-offer and the re-stores as the next produces, and it replays and reports from the play log. |
+| 13 | `prop_space_txn_reporting_equals_replay` | `reified_space_store_handle_props.rs:2460` | H12 | Reporting replays exactly as replay does, and it reports what the host reporting space reports. |
+| 14 | `prop_root_leaf_record_count_matches_history` | `reified_space_store_handle_props.rs:2465` | H16 | The root leaf record count is the number of records in the leaf. |
+| 15 | `prop_counter_timing_play_equals_replay` | `reified_space_store_handle_props.rs:2470` | H3 | Play counts the fired produce, replay increments before it matches, and both give the COMMs of the host. |
+| 16 | `prop_space_txn_replay_requires_trigger_event` | `reified_space_store_handle_props.rs:2475` | H4 | Without the trigger event in the log, the fire stages unpaired, and the commit fails with `ReplayDivergence` after the calls of the fire, with the operations before it applied. With the complete log, the same fire pairs and commits. |
+| 17 | `prop_space_txn_non_canonical_inputs_fail_closed` | `reified_space_store_handle_props.rs:2491` | H9, H17, H22 | A group that is not canonical fails before any store or cache effect, and the checkpoint root equals the reference. |
+| 18 | `prop_space_txn_reads_root_neutral` | `reified_space_store_handle_props.rs:2501` | H18 | Reads of canonical keys never change the checkpoint root. |
+| 19 | `prop_space_txn_replay_directive_fails_closed` | `reified_space_store_handle_props.rs:2511` | H19 | A native replay directive rejects its operation with no effect, and the operations before it stay applied. |
+| 20 | `prop_space_txn_parent_order_single_commit` | `reified_space_store_handle_props.rs:2519` | H20 | At most one transaction commits under one parent order, and a second commit fails with `ParentOrderReused` and no effect. |
+| 21 | `prop_space_txn_store_identity_ignores_ord_only_fields` | `reified_space_store_handle_props.rs:2524` | H21 | Channels that differ only in a field of the Rust ordering are one channel for every decision of the substrate. |
+| 22 | `prop_space_txn_rejects_uncovered_channels` | `reified_space_store_handle_props.rs:2531` | T5 | An operation on a channel without its stripe fails with `UnlockedChannel` and no effect, and the final state equals a serial order. |
 | 23 | `prop_space_txn_par_identity_ignores_locally_free` | `reified_space_store_handle_par.rs:356` | H21 | `Par` channels that differ only in `locally_free` stage, read, commit, and checkpoint as one channel. |
-| 24 | `prop_space_txn_repeated_channel_groups_equal_host` | `reified_space_store_handle_props.rs:2535` | H1, H2, H5, H17, T1 | Sorted groups that repeat a channel give the calls, events, state, and root of the host, and they replay to the play root. |
-| 25 | `prop_space_txn_replay_reproduces_play_rejection` | `reified_space_store_handle_props.rs:2482` | H23, T6 | Play rejects its n-th fallible observer call, as a deploy that runs out of phlo there, and keeps its log. Replay with that log fails at the same call, with the outcome, the observer calls without the directive queries, and the state of play, and it uses every recorded event. |
+| 24 | `prop_space_txn_repeated_channel_groups_equal_host` | `reified_space_store_handle_props.rs:2536` | H1, H2, H5, H17, T1 | Sorted groups that repeat a channel give the calls, events, state, and root of the host, and they replay to the play root. |
+| 25 | `prop_space_txn_replay_reproduces_play_rejection` | `reified_space_store_handle_props.rs:2483` | H23, T6 | Play rejects its n-th fallible observer call, as a deploy that runs out of phlo there, and keeps its log. Replay with that log fails at the same call, with the outcome, the observer calls without the directive queries, and the state of play, and it uses every recorded event. |
 
-### 7.3 The 17 witness tests
+### 7.3 The 19 witness tests
 
 A [witness test](glossary.md#witness-test) is a deterministic test of one case of a headline or a rule.
-The invariant map lists 17 witness tests for P1.
+The invariant map lists 19 witness tests for P1.
 The test `space_store_handle_commit_checks_cost_changed_entries` covers no headline, because the models do not include cost.
 
-*Table 15. The 17 witness tests of phase P1.*
+*Table 15. The 19 witness tests of phase P1.*
 
 | Test | Location | Rule | Covers | What it shows |
 |---|---|---|---|---|
-| `space_store_handle_repeated_group_consume_fire_binds_distinct_records` | `reified_space_store_handle.rs:3122` | FR-1' | H1, H2, H17 | A consume on a group that repeats a channel binds one record for each occurrence. |
-| `space_store_handle_repeated_group_produce_fire_binds_incoming_once` | `reified_space_store_handle.rs:3198` | FR-1' | H1, H2, H9, H17 | A produce-side fire binds the incoming datum exactly once, and a fire that binds it twice fails closed. |
-| `space_store_handle_unsorted_repeat_fails_closed` | `reified_space_store_handle.rs:3285` | FR-1' | H9, H17, H18 | A repeat out of sorted order fails before any access, and the checkpoint keeps the reference root. |
-| `space_store_handle_evaluation_scope_resets_parent_orders` | `reified_space_store_handle.rs:3411` | FR-5' | H20 | After `begin_evaluation_scope`, a second evaluation of one deploy commits under the same parent order. |
-| `space_store_handle_store_reset_resets_parent_orders` | `reified_space_store_handle.rs:3446` | FR-5' | H20 | A reset or a revert starts a new tracking scope. |
-| `space_store_handle_sweep_in_open_transaction_fails_closed` | `reified_space_store_handle.rs:3481` | FR-9' | H13 | A sweep in an open transaction of the same task fails with `NestedTransaction` before it takes a lock. |
-| `space_store_handle_commit_checks_cost_changed_entries` | `reified_space_store_handle.rs:3665` | FR-7' | none | The always-on checks copy as many records for 1 stored record as for 32. |
-| `space_store_handle_retained_produce_fire_leaves_incoming_unstored` | `reified_space_store_handle.rs:3887` | FR-10 | H5, H6, H11 | A produce-side peek fire never stores its incoming datum, in the view or in the store. |
-| `space_store_handle_peek_reoffer_fires_next_waiter` | `reified_space_store_handle.rs:3967` | FR-10 | H3, H6, H11 | The re-offer fires the next waiter, and the counter steps once for each produce. |
-| `space_store_handle_peek_reoffer_stores_without_waiter` | `reified_space_store_handle.rs:4066` | FR-10 | H1, H3, H11 | With no second waiter, the re-offer stores the datum, as the HEAD re-produce does. |
-| `space_store_handle_peek_reoffer_equals_head_reproduce` | `reified_space_store_handle.rs:4133` | FR-10 | H1, H11 | The re-offer has the calls, events, contents, and root of the HEAD re-produce. |
-| `space_store_handle_peek_reoffer_authority_conflict_fails_at_reoffer` | `reified_space_store_handle.rs:4223` | FR-10 | H1, H6, H11 | A conflicting authority fails the commit at the re-offer, and the peek fire stays applied. |
-| `space_store_handle_peek_reoffer_replay_and_report` | `reified_space_store_handle.rs:4264` | FR-10 | H1, H4, H5, H11, H12, T1 | A peek fire and its re-offer replay and report from their play log with the play root. |
-| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4383` | FR-10 | H1, H11 | A peek fire reports its retained stored records as persistent, and the incoming datum keeps its own flag. |
-| `space_store_handle_receipt_marks_only_retained_stored_results` | `space_store_handle.rs:3376` | FR-10 | H11 | The receipt marks only retained stored results as persistent. |
-| `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1947` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
+| `space_store_handle_repeated_group_consume_fire_binds_distinct_records` | `reified_space_store_handle.rs:3208` | FR-1' | H1, H2, H17 | A consume on a group that repeats a channel binds one record for each occurrence. |
+| `space_store_handle_repeated_group_produce_fire_binds_incoming_once` | `reified_space_store_handle.rs:3284` | FR-1' | H1, H2, H9, H17 | A produce-side fire binds the incoming datum exactly once, and a fire that binds it twice fails closed. |
+| `space_store_handle_unsorted_repeat_fails_closed` | `reified_space_store_handle.rs:3371` | FR-1' | H9, H17, H18 | A repeat out of sorted order fails before any access, and the checkpoint keeps the reference root. |
+| `space_store_handle_evaluation_scope_resets_parent_orders` | `reified_space_store_handle.rs:3497` | FR-5' | H20 | After `begin_evaluation_scope`, a second evaluation of one deploy commits under the same parent order. |
+| `space_store_handle_store_reset_resets_parent_orders` | `reified_space_store_handle.rs:3532` | FR-5' | H20 | A reset or a revert starts a new tracking scope. |
+| `space_store_handle_sweep_in_open_transaction_fails_closed` | `reified_space_store_handle.rs:3567` | FR-9' | H13 | A sweep in an open transaction of the same task fails with `NestedTransaction` before it takes a lock. |
+| `space_store_handle_commit_checks_cost_changed_entries` | `reified_space_store_handle.rs:3751` | FR-7' | none | The always-on checks copy as many records for 1 stored record as for 32. |
+| `space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored` | `reified_space_store_handle.rs:3978` | FR-10 | H5, H6, H11 | A produce-side peek join removes its stored non-persistent record and never stores its incoming datum, in the view or in the store ([decision 45](decision-register.md#decision-45)). |
+| `space_store_handle_peek_reoffer_fires_next_waiter` | `reified_space_store_handle.rs:4072` | FR-10 | H3, H6, H11 | The re-offer fires the next waiter, and the counter steps once for each produce. |
+| `space_store_handle_peek_reoffer_stores_without_waiter` | `reified_space_store_handle.rs:4171` | FR-10 | H1, H3, H11 | With no second waiter, the re-offer stores the datum, as the HEAD re-produce does. |
+| `space_store_handle_peek_reoffer_equals_head_reproduce` | `reified_space_store_handle.rs:4238` | FR-10 | H1, H11 | The re-offer has the calls, events, contents, and root of the HEAD re-produce. |
+| `space_store_handle_peek_reoffer_authority_conflict_fails_at_reoffer` | `reified_space_store_handle.rs:4328` | FR-10 | H1, H6, H11 | A conflicting authority fails the commit at the re-offer, and the peek fire stays applied. |
+| `space_store_handle_peek_reoffer_replay_and_report` | `reified_space_store_handle.rs:4369` | FR-10 | H1, H4, H5, H11, H12, T1 | A peek fire and its re-offer replay and report from their play log with the play root. |
+| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4492` | FR-10 | H1, H11 | Every result of a peek fire keeps the persist flag of the host, and the re-store and the re-offer report Stored with the identities of their records. |
+| `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | FR-10 | H1, H2, H11, H12 | A peek and its re-stores have the events, observer calls, state, and root of the HEAD program, whose reducer sends the peeked data again, in play, replay, and reporting. |
+| `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:3440` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
+| `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1997` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:821` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
 ### 7.4 Deterministic substrate suites
@@ -584,13 +591,13 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | Suite | Tests | Subject | Recipe: step |
 |---|---|---|---|
 | `rspace++/tests/reified_space_store_handle.rs`, group A | 22 | Host parity of every operation shape against a twin host. | `rrs-p1-rspace`: `p1-integration` |
-| Group B | 5 | Checkpoints, history read-through, and the LMDB round trip `space_store_handle_lmdb_checkpoint_round_trip` (`reified_space_store_handle.rs:1274`). | The same step |
+| Group B | 5 | Checkpoints, history read-through, and the LMDB round trip `space_store_handle_lmdb_checkpoint_round_trip` (`reified_space_store_handle.rs:1324`). | The same step |
 | Group C | 11 | Replay lookup parity with host replay, the typed divergence at commit, and the replay of a rejection of play ([decision 36](decision-register.md#decision-36)). | The same step |
 | Group D | 7 | The volatile sweep. | The same step |
 | Group E | 3 | Reporting delegation. | The same step |
 | Group F | 15 | The review regressions: canonical order, store identity, trigger-key pairing, lock coverage, parent orders, nested begin, sweep bookkeeping, and peeks in replay. | The same step |
 | Group G | 10 | The round-2 rules FR-1', FR-5', FR-7', and FR-9'. | The same step |
-| Group H | 7 | The round-3 rule FR-10: the peek re-offer and the receipt flags. | The same step |
+| Group H | 9 | The round-3 rule FR-10 and Rule E of [decision 45](decision-register.md#decision-45): the peek re-offer, the re-store, and the receipt flags. | The same step |
 | Library tests of `space_store_handle.rs` (16), `space_play.rs` (1), and `space_replay.rs` (1) | 18 | Sub-orders, view rules, event correlation, store identity, canonical groups, lock stripes, the parent tracker, receipts, counter overflow, and the replay estimate of the sweep. | `rrs-p1-rspace`: `p1-lib` |
 | `rspace++/tests/legacy_golden_corpus.rs` | 4 | Channel hashes, event identities, the empty radix root, and a non-empty root with its event. | `rrs-p1-rspace`: `p1-legacy-golden` |
 | `rholang/tests/reified_space_store_handle_par.rs` | 3 | Property 23 and two tests of `Par` identity and continuation dedup. | `rrs-p1-rholang`: `p1-rholang-par` |
@@ -632,7 +639,7 @@ The prefix `rs/` stands for `rspace++/src/rspace/`, and `ri/` stands for `rholan
 
 | # | Item | Checks: test or checker, step, category | Assertion |
 |---|---|---|---|
-| 1 | COMM produce sort | `reified_ordinary_regression_r1_comm_produce_sort` (`reified_ordinary_regression.rs:1081`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>`prop_space_txn_play_trace_equals_host` (`reified_space_store_handle_props.rs:2388`), `p1-regression-substrate-props` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `rs/replay_rspace/**`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C) | Join COMMs list their produces in the order of `COMM::new`, as at HEAD, and the substrate logs the same event bytes as the host. |
+| 1 | COMM produce sort | `reified_ordinary_regression_r1_comm_produce_sort` (`reified_ordinary_regression.rs:1081`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>`prop_space_txn_play_trace_equals_host` (`reified_space_store_handle_props.rs:2389`), `p1-regression-substrate-props` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `rs/replay_rspace/**`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C) | Join COMMs list their produces in the order of `COMM::new`, as at HEAD, and the substrate logs the same event bytes as the host. |
 | 2 | No retention of peeked or matched-persistent data | `reified_ordinary_regression_r2_peek_removes_and_reproduces` (`reified_ordinary_regression.rs:1228`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r8_state_dump` (`reified_ordinary_regression.rs:1981`), `p1-regression-ordinary` (T)<br>`producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:323`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:370`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_persistent_flag_should_return_continuation_and_data_and_not_insert_persistent_data` (`storage_actions_test.rs:414`), `p1-regression-head-storage` (T)<br>`peek_removal_does_not_refund_or_recharge_an_introduction` (`comm_observer_tests.rs:470`), `p1-regression-head-observer` (T)<br>`creating_a_comm_event_with_peek_consume_first_should_replay_correctly` (`replay_rspace_tests.rs:472`), `p1-regression-head-replay` (T)<br>`creating_a_comm_event_with_peek_produce_first_should_replay_correctly` (`replay_rspace_tests.rs:545`), `p1-regression-head-replay` (T)<br>`creating_comm_events_on_many_channels_with_peek_should_replay_correctly` (`replay_rspace_tests.rs:607`), `p1-regression-head-replay` (T)<br>Footprint `byte_identical`: `rspace++/tests/storage_actions_test.rs`, `rspace++/tests/replay_rspace_tests.rs`, `rspace++/tests/comm_observer_tests.rs`, `rspace++/tests/comm_observer_tests/**`, `rs/rspace/ops_consume.rs`, `rs/rspace/ops_produce.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `ri/reduce.rs`, `p1-footprint` (C) | A peek removes the datum and the reducer produces it again with the same identity, and the six HEAD peek tests of decision 19 pass unchanged. |
 | 3 | Greedy joins | `reified_ordinary_regression_r3_greedy_join_first_match` (`reified_ordinary_regression.rs:1424`), `p1-regression-ordinary` (T)<br>`joined_consume_with_same_channel_given_twice_followed_by_produce_should_not_error` (`storage_actions_test.rs:914`), `p1-regression-head-storage` (T)<br>Production scan, key `production_scan.patterns`: `datum_index_key`, `search_data_candidates`, `p1-production-scan` (C)<br>Phase scan of `p1`, key `forbidden_anywhere`: the same tokens, `p1-complete` (C)<br>Footprint `byte_identical`: `rs/match.rs`, `rs/space_matcher.rs`, `ri/matcher/**`, `p1-footprint` (C) | The greedy matcher leaves a join unmatched where a backtracking search would match it, and no arity index or backtracking search exists. |
 | 4 | No production EventCoverage | Footprint `byte_identical`: `casper/src/rust/merging/block_index.rs`, `casper/src/rust/merging/mod.rs`, key `no_new_files`: `casper/src/**`, `p1-footprint` (C)<br>Production scan: `event_coverage`, `p1-production-scan` (C)<br>Phase scan of `p1`: `event_coverage`, `p1-complete` (C) | Both merging files equal HEAD, `casper/src` gains no file, and no source holds the token. |
@@ -643,7 +650,7 @@ The prefix `rs/` stands for `rspace++/src/rspace/`, and `ri/` stands for `rholan
 | 9 | Merger unchanged | Footprint `byte_identical`: `rs/merger/**`, `casper/src/rust/merging/**`, key `no_new_files`: `rs/merger/**`, `casper/src/**`, `p1-footprint` (C) | Both merger trees equal HEAD byte for byte and gain no file. |
 | 10 | Host replay acceptance | `reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2070`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3262`), `p1-regression-ordinary` (T, P)<br>`ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3273`), `p1-regression-ordinary` (T)<br>`ordinary_program_generator_covers_every_construct` (`reified_ordinary_regression.rs:3461`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `rs/replay_rspace/**`, `casper/src/rust/rholang/replay_runtime.rs`, `p1-footprint` (C) | Replay of a fixed program and of 64 generated programs reaches the play roots with the play costs, and the property rejects both replay mutants. |
 | 11 | Cost and host-work accounting | `reified_ordinary_regression_r6_cost_vectors` (`reified_ordinary_regression.rs:1890`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2070`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3262`), `p1-regression-ordinary` (T, P)<br>Footprint `byte_identical`: `ri/accounting/**`, `ri/host_work.rs`, `models/src/rust/host_work.rs`, `rs/rspace/accounting.rs`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The cost and host-work vectors equal the corpus, and play and replay charge the same cost. |
-| 12 | Hot-store dedup identity | `space_store_handle_parity_continuation_dedup` (`reified_space_store_handle.rs:430`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical`: `rs/hot_store.rs`, `rs/hot_store/**`, `rs/internal.rs`, `models/src/main/protobuf/**`, `models/build.rs`, key `no_new_files`: `rs/hot_store/**`, `p1-footprint` (C) | The host keeps one of two identical continuations, and the code of that identity equals HEAD. |
+| 12 | Hot-store dedup identity | `space_store_handle_parity_continuation_dedup` (`reified_space_store_handle.rs:462`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical`: `rs/hot_store.rs`, `rs/hot_store/**`, `rs/internal.rs`, `models/src/main/protobuf/**`, `models/build.rs`, key `no_new_files`: `rs/hot_store/**`, `p1-footprint` (C) | The host keeps one of two identical continuations, and the code of that identity equals HEAD. |
 | 13 | Checkpoint root | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1477`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2070`), `p1-regression-ordinary` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_empty_radix_root` (`legacy_golden_corpus.rs:59`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/history/**`, `rs/hashing/**`, `rs/hot_store.rs`, `rs/hot_store_action.rs`, `rs/hot_store_trie_action.rs`, `rs/rspace/ispace_impl.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, `p1-footprint` (C) | The empty-state root, the fixed-term root, and the checkpoint roots equal their HEAD constants and corpora. |
 | 14 | Scheduler footprints | Footprint `approved_edits`: `ri/deterministic_reduction.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `p1-footprint` (C) | The scheduler code and the prost encoding of channel keys hold only approved edits, and P1 approves none. |
 | 15 | System byte names | Footprint `byte_identical`: `ri/system_processes.rs`, `p1-footprint` (C) | The byte names and the fixed channels of the system processes equal HEAD. |
@@ -651,9 +658,9 @@ The prefix `rs/` stands for `rspace++/src/rspace/`, and `ri/` stands for `rholan
 | 17 | `ISpace` implementors | `reified_space_txn_host_bounds_hold_for_par_hosts` (`reified_space_txn_host_bounds.rs:40`), `p1-regression-host-bounds` (T)<br>Production scan: `suffix_key`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `rs/rspace_interface.rs`, `rs/replay_rspace_interface.rs`, `rs/tuplespace_interface.rs`, `rs/rspace/ispace_impl.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `rs/reporting_rspace.rs`, `ri/deterministic_reduction.rs`, `p1-footprint` (C) | The `rspace++` implementors compile and serve as `Par` hosts, and the traits equal HEAD. |
 | 18 | No synthesized multi-channel join | Footprint `byte_identical` until p1: `ri/reduce.rs`, key `no_new_files`: `rholang/src/**`, `p1-footprint` (C)<br>Scheduled from p4 (owner P4): `reified_handle_cross_block_merge_no_conflict` and its control `reified_handle_cross_block_merge_join_handle_conflicts` in `rholang/tests/reified_merge.rs`, step `reified-merge` | P1 adds no file under `rholang/src` and leaves `reduce.rs` unchanged, so no synthesized machinery exists. |
 | 19 | Namespaced channels never mergeable | Footprint `byte_identical` until p1: `ri/reduce.rs`, key `no_new_files`: `rholang/src/**`, `p1-footprint` (C)<br>Scheduled from p4 (owner P4): `reified_namespaced_channels_never_mergeable` in `rholang/tests/reified_queue.rs`, step `reified-queue` | P1 has no routing, and the detection of mergeable channels still matches only tagged tuples. |
-| 20 | Volatile sweep scope | `prop_sweep_volatile_exact_and_root_neutral` (`reified_space_store_handle_props.rs:2423`), `p1-regression-substrate-props` (T)<br>`space_store_handle_sweep_in_open_transaction_fails_closed` (`reified_space_store_handle.rs:3481`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical` until p1: `ri/reduce.rs`, `p1-footprint` (C)<br>Scheduled from p7 (owner P7): `reified_volatile_sweep_skips_ordinary_channels` in `rholang/tests/reified_volatile_sweep.rs`, step `reified-volatile-sweep` | The sweep removes exactly the listed volatile channels, and no production code calls it in P1. |
+| 20 | Volatile sweep scope | `prop_sweep_volatile_exact_and_root_neutral` (`reified_space_store_handle_props.rs:2424`), `p1-regression-substrate-props` (T)<br>`space_store_handle_sweep_in_open_transaction_fails_closed` (`reified_space_store_handle.rs:3567`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical` until p1: `ri/reduce.rs`, `p1-footprint` (C)<br>Scheduled from p7 (owner P7): `reified_volatile_sweep_skips_ordinary_channels` in `rholang/tests/reified_volatile_sweep.rs`, step `reified-volatile-sweep` | The sweep removes exactly the listed volatile channels, and no production code calls it in P1. |
 | 21 | Protected runtime files | Footprint `byte_identical`: `ri/contract_call.rs`, `ri/dispatch.rs`, `rs/rspace/ispace_impl.rs`, `ri/accounting/**`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The four protected paths equal HEAD byte for byte. |
-| 22 | Parser conservative extension | `ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`ordinary_float_forms_unchanged` (`reified_source_normalization.rs:510`), `p1-regression-source` (T)<br>`reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:1917`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `ri/compiler/**`, `p1-footprint` (C) | Every source and every float form that HEAD accepts keeps its bytes. |
+| 22 | Parser conservative extension | `ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`ordinary_float_forms_unchanged` (`reified_source_normalization.rs:507`), `p1-regression-source` (T)<br>`reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:1917`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `ri/compiler/**`, `p1-footprint` (C) | Every source and every float form that HEAD accepts keeps its bytes. |
 
 *Table 18. The 10 steps of the recipe `rrs-p1-regression` and their exact counts.*
 
@@ -667,7 +674,7 @@ The prefix `rs/` stands for `rspace++/src/rspace/`, and `ri/` stands for `rholan
 | `p1-regression-head-observer` | `-p rspace_plus_plus --test comm_observer_tests` | 27 |
 | `p1-regression-legacy-golden` | `-p rspace_plus_plus --test legacy_golden_corpus` | 4 |
 | `p1-regression-substrate-props` | `-p rspace_plus_plus --test reified_space_store_handle_props` | 24 |
-| `p1-regression-substrate-integration` | `-p rspace_plus_plus --test reified_space_store_handle` | 80 |
+| `p1-regression-substrate-integration` | `-p rspace_plus_plus --test reified_space_store_handle` | 82 |
 | `p1-regression-host-bounds` | `-p rholang --test reified_space_txn_host_bounds` | 1 |
 
 The HEAD suites `storage_actions_test`, `replay_rspace_tests`, and `comm_observer_tests` hold the six HEAD peek tests of [decision 19](decision-register.md#decision-19).
@@ -678,7 +685,7 @@ They are the HEAD history tests (`--test mod -- history::`, 24 tests, and `--lib
 ### 8.2 Corpora and provenance
 
 A [regression corpus](glossary.md#regression-corpus) holds the expected outputs of a capture run.
-A capture run writes into a capture directory, and the captures of ordinary execution and of float forms require that directory under `target/` (`reified_ordinary_regression.rs:318-340`, `reified_source_normalization.rs:378-432`).
+A capture run writes into a capture directory, and the captures of ordinary execution and of float forms require that directory under `target/` (`reified_ordinary_regression.rs:318-340`, `reified_source_normalization.rs:375-429`).
 A separate merge or copy then puts the result into `test-vectors/`, so a normal test run never writes to the source tree.
 
 *Table 19. The corpora of P1, with their provenance and capture commands.*
@@ -1253,7 +1260,7 @@ Each gate writes its logs under `target/verification/reified-rspaces/` and never
 
 ### 10.2 Formal gates
 
-1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 66 mutants.
+1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 70 mutants.
 2. Confirm the last line `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0`.
 3. Run `scripts/check-reified-rspaces-tla-invariants.sh` for the TLC, Unsafe, complement, and Apalache legs.
 4. Confirm the last line `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0`.
@@ -1266,7 +1273,7 @@ The TLA+ gate takes the longest time: `MC_TxnLockCoverage.cfg` takes about 6.5 m
 ### 10.3 Rust suites
 
 1. Run `cargo test -p rspace_plus_plus --lib space_store_handle` for the 18 library tests.
-2. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle` for the 80 integration tests.
+2. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle` for the 82 integration tests.
 3. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle_props` for the 24 properties.
 4. Run `cargo test -p rspace_plus_plus --test legacy_golden_corpus` for the 4 golden-corpus tests.
 5. Run `cargo test -p rholang --test reified_space_store_handle_par --test reified_space_txn_host_bounds` for 3 and 1 tests.
@@ -1334,9 +1341,9 @@ The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decisi
 | Category | Evidence in P4 | Local gate |
 |---|---|---|
 | Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 185 items of the P4 model map, all of them required, and its 89 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
-| Formal verification passes | The 112 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 66 Rocq mutants fail in their expected declarations. TLC explores 4 P4 safe configurations completely, 7 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` (with and without re-issues) and of `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
-| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q77 and U1 to U12: 77 properties in `reified_p4_props.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 15 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
-| Implementation complete | `check-complete.py --phase p4` finds the 66 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
+| Formal verification passes | The 113 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 70 Rocq mutants fail in their expected declarations. TLC explores 4 P4 safe configurations completely, 7 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` (with and without re-issues) and of `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
+| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q78 and U1 to U12: 78 properties in `reified_p4_props.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 17 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
+| Implementation complete | `check-complete.py --phase p4` finds the 69 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
 | Thoroughly tested | The 12 P4 suites of section [11.7](#117-integration-suites) with 169 tests, the 188 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
 | Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document, and `render.sh --check` finds each SVG byte-identical to a fresh render. | `python3 scripts/verify-reified/doc_lint.py`, `docs/rspace/reified-rspaces/diagrams/render.sh --check` |
 
@@ -1364,11 +1371,11 @@ Its last leg ran 72 negative checks: the 10 pristine modules and 62 mutants.
 | [Namespace.v](../../../formal/rocq/reified_rspaces/theories/Namespace.v) | 11 | P4 |
 | [RecordEnvelope.v](../../../formal/rocq/reified_rspaces/theories/RecordEnvelope.v) | 8 | P4 |
 | [CounterConflict.v](../../../formal/rocq/reified_rspaces/theories/CounterConflict.v) | 9 | P4 |
-| [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 19 | P4 (9) and decision 43 (10) |
+| [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 20 | P4 (9), decision 43 (10), and decision 45 (1) |
 | [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 11 | P4 (10) and decision 46 (1) |
 | [SpaceFactory.v](../../../formal/rocq/reified_rspaces/theories/SpaceFactory.v) | 8 | P4 |
 | [AgentReadCoverage.v](../../../formal/rocq/reified_rspaces/theories/AgentReadCoverage.v) | 8 | Decision 42 |
-| Total | 112 | |
+| Total | 113 | |
 
 Each headline of the tables below has no assumption: `Print Assumptions` reports `Closed under the global context`.
 The last column gives the property tests that the invariant map names for the headline.
@@ -1436,15 +1443,15 @@ HeadOnlyDisciplines.v models the plans of the queue for every matcher, with pers
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q29 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:480`) | The head of each side has the least order and bytes. | `prop_queue_candidates_head_only` |
-| Q30 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:878`) | A produce keeps INV: no pending match between the heads. | `prop_queue_produce_preserves_invariant` |
-| Q31 | `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:898`) | A consume keeps INV. | `prop_queue_consume_preserves_invariant` |
-| Q32 | `queue_fifo` (`HeadOnlyDisciplines.v:1085`) | Records leave in arrival order. | `prop_queue_fifo` |
-| Q33 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1168`) | A head that does not match blocks the entries behind it. | `prop_queue_head_blocks` |
-| Q34 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1330`) | A plan stages at most `FIRE_ROUND_CAP` fires, and at most one more fire than the queue holds, or it re-issues. | `prop_queue_loop_bounded` |
-| Q35 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:996`) | The order of an operation is new in its collection. | `prop_queue_ord_fresh` |
-| Q36 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1502`) | The plan ignores the list order of the staged view. | `prop_queue_plan_permutation_invariant` |
-| Q37 | `legacy_scan_violates_head_blocks` (`HeadOnlyDisciplines.v:3159`) | The legacy waiter scan breaks head-only matching, as a computed example. | `prop_legacy_scan_breaks_head_blocks` |
+| Q29 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | The head of each side has the least order and bytes. | `prop_queue_candidates_head_only` |
+| Q30 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:928`) | A produce keeps INV: no pending match between the heads. | `prop_queue_produce_preserves_invariant` |
+| Q31 | `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:948`) | A consume keeps INV. | `prop_queue_consume_preserves_invariant` |
+| Q32 | `queue_fifo` (`HeadOnlyDisciplines.v:1135`) | Records leave in arrival order. | `prop_queue_fifo` |
+| Q33 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) | A head that does not match blocks the entries behind it. | `prop_queue_head_blocks` |
+| Q34 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | A plan stages at most `FIRE_ROUND_CAP` fires, and at most one more fire than the queue holds, or it re-issues. | `prop_queue_loop_bounded` |
+| Q35 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | The order of an operation is new in its collection. | `prop_queue_ord_fresh` |
+| Q36 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | The plan ignores the list order of the staged view. | `prop_queue_plan_permutation_invariant` |
+| Q37 | `legacy_scan_violates_head_blocks` (`HeadOnlyDisciplines.v:3457`) | The legacy waiter scan breaks head-only matching, as a computed example. | `prop_legacy_scan_breaks_head_blocks` |
 
 #### 11.3.6 Headlines of SpaceRefs.v
 
@@ -1611,10 +1618,11 @@ A restriction that removed the longer run would have to stop other elements from
 
 ### 11.5 Negative controls of P4
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 66 mutants. Tables 12, 39, 45, 47 and 50 hold 28, 29, 5, 1 and 3 of them.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 70 mutants. Tables 12, 39, 45, 47, 50 and 55 hold 29, 29, 5, 1, 3 and 3 of them.
 The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants, after the 9 pristine modules compiled (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d43/gates/proofs.log`).
+The run of [decision 45](decision-register.md#decision-45) passed all 70 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d45/gates/proofs.log`).
 
 *Table 39. The 29 Rocq mutants of P4.*
 
@@ -1660,30 +1668,31 @@ A property that evaluates deploys on a Rholang runtime runs 16 cases.
 Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:151-176`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
 
-*Table 40. The 83 properties of phase P4 in the invariant map.*
+*Table 40. The 84 properties of phase P4 in the invariant map.*
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
 | Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:536-930` | Q1 to Q11 |
 | Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1404-1739` | Q12 to Q19 |
-| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2072`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5312-5736` | Q20 to Q28 |
-| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3021-3470` | Q29 to Q37, Q62 and Q63 for `prop_queue_plan_permutation_invariant`, and U10 for `prop_queue_loop_bounded` |
-| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4525-4641` | Q59 to Q61, Q64 to Q66 |
-| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6091-6379` | Q38 to Q46 |
-| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6618-6987` | Q48 to Q55 |
-| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7253-7829` | U1 to U8, and U12 |
-| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8238-8511` | Q47 to Q51, Q55 |
-| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3778-4361` | Q68 to Q77, U1 to U3, and U9 to U12 |
-| Native execution | `reified_native_play_rejects_a_space_deploy_before_any_space_work`, `reified_native_replay_reproduces_the_rejection_of_play`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:280-309` | Q67 |
+| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2072`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5441-5865` | Q20 to Q28 |
+| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3016-3465` | Q29 to Q37, Q62 and Q63 for `prop_queue_plan_permutation_invariant`, and U10 for `prop_queue_loop_bounded` |
+| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4513-4629` | Q59 to Q61, Q64 to Q66 |
+| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6220-6508` | Q38 to Q46 |
+| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6747-7116` | Q48 to Q55 |
+| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7382-7958` | U1 to U8, and U12 |
+| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8367-8640` | Q47 to Q51, Q55 |
+| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3773-4349` | Q68 to Q77, U1 to U3, and U9 to U12 |
+| Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4701` | Q78 |
+| Native execution | `reified_native_play_rejects_a_space_deploy_before_any_space_work`, `reified_native_replay_reproduces_the_rejection_of_play`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:287-320` | Q67 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
 
-*Table 41. The 15 witness tests of phase P4.*
+*Table 41. The 17 witness tests of phase P4.*
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1525` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1304` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1352` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1527` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1306` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1354` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:192` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:207` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
@@ -1696,6 +1705,8 @@ So a run has the same cases on every host, and it writes nothing to the source t
 | `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:388` | Q59 |
 | `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:227` | Q59 |
 | `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:723` | Q61 |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:1811` | Q78 |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:1884` | Q78 |
 
 After [decision 46](decision-register.md#decision-46), the invariant-map checker printed `invariant-map: PASS=213 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=333` for all phases (`target/verification/reified-rspaces/d46/invariant-map-p4.log`, `invariant-map-all.log`).
 The P4 entries of the map have the test status `required`, because every P4 test exists and passes.
@@ -1741,7 +1752,7 @@ The suites of ordinary execution of section 8 also passed in the same run.
 | # | Item | Check | Assertion |
 |---|---|---|---|
 | 18 | No synthesized multi-channel join | `reified_handle_cross_block_merge_no_conflict` (`reified_merge.rs:515`) and its control `reified_handle_cross_block_merge_join_handle_conflicts` (`reified_merge.rs:571`), step `reified-merge` | Handle calls on disjoint collections merge like contract calls. A join of the handle with a descriptor channel makes every pair of calls conflict. |
-| 19 | Namespaced channels never mergeable | `reified_namespaced_channels_never_mergeable` (`reified_queue.rs:1883`), step `reified-queue` | A tuple channel with a mergeable tag routes to the space inside a `use` block, and only the control channel outside is mergeable. No channel with the tag `0xE0` is mergeable. |
+| 19 | Namespaced channels never mergeable | `reified_namespaced_channels_never_mergeable` (`reified_queue.rs:1886`), step `reified-queue` | A tuple channel with a mergeable tag routes to the space inside a `use` block, and only the control channel outside is mergeable. No channel with the tag `0xE0` is mergeable. |
 
 The checklist checker printed `consensus-checklist (milestone p4): ITEMS=22 CHECKS=118 PASS=112 FAIL=0 SCHEDULED=1 RETIRED=5` (`target/verification/reified-rspaces/p4/fx-c/gate-consensus-checklist-p4.log`).
 The scheduled check is the P7 sweep test of item 20.
@@ -1751,7 +1762,7 @@ It holds one cumulative edit for each base file that P1, P2, and P4 change, such
 Each new file must be an exact path of its list `allowed_new_files`.
 The check passes with `footprint policy p4: checked <n> files, 0 violations`.
 
-**The completeness phase `p4`.** The phase lists the 34 P4 sources, 60 entry points, 11 test files, and the property file.
+**The completeness phase `p4`.** The phase lists the 34 P4 sources, 69 entry points, 12 test files, and the property file.
 `check-complete.py --phase p4` finds each entry point and no forbidden token, and it printed `complete phase p4: 242401 checks, 0 findings` (`target/verification/reified-rspaces/p4/pc/gate-complete-p4.log`).
 The production scan printed `complete production scan: 826 files, 0 findings`.
 
@@ -1820,11 +1831,11 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4525` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
-| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4576` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
-| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4641` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
-| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3419` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
-| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3021` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
+| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4513` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
+| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4564` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
+| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4629` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
+| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3414` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
+| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3016` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
 | `scan_meter_maps_amounts_to_the_branch_dimensions` | `reified/costs.rs:335` | A reservation charges VerificationOperations, VerificationBytes, and SearchStateBytes, and no other dimension. |
 | `scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension` | `reified/costs.rs:359` | The exact credit suffices, and one unit less in any dimension rejects. |
 | `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:388` | A reserved copy charges the triple of the copy walk of the branch (Q59). |
@@ -1858,9 +1869,9 @@ Outside native execution, a host runtime runs the job unchanged.
 
 | Test | Location | What it checks |
 |---|---|---|
-| `reified_native_play_rejects_a_space_deploy_before_any_space_work` | `reified_native_fail_closed.rs:280` | A native play of a factory call fails with the code, and no channel of a space enters the hot store (Q67). |
-| `reified_native_replay_reproduces_the_rejection_of_play` | `reified_native_fail_closed.rs:290` | The native replay environment replays the play journal: the same error, a complete journal, the phlo usage of play, and equal authority events and byte observations (Q67). |
-| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:309` | A program without spaces plays and replays natively without an error, with a complete journal and equal usage (Q67). |
+| `reified_native_play_rejects_a_space_deploy_before_any_space_work` | `reified_native_fail_closed.rs:287` | A native play of a factory call fails with the code, and no channel of a space enters the hot store (Q67). |
+| `reified_native_replay_reproduces_the_rejection_of_play` | `reified_native_fail_closed.rs:297` | The native replay environment replays the play journal: the same error, a complete journal, the phlo usage of play, and equal authority events and byte observations (Q67). |
+| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:320` | A program without spaces plays and replays natively without an error, with a complete journal and equal usage (Q67). |
 | `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:441` | A host runtime runs space jobs when its budget runs no native deploy. |
 
 **The hazard without the rule.** A run of the suite with the guard of `ReifiedRuntime::host` removed (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows it.
@@ -1873,8 +1884,8 @@ That is the divergence that the proposer's self-certification turned into a quar
 The element re-enters at its place.
 It is at the head of its side when that side is empty or its order precedes the head.
 Otherwise it rests behind the head and fires nothing.
-`operation_ord` (`spaces/generic.rs:809-821`) checks the kept order against the counter.
-`GenericSpace::at_head` (`spaces/generic.rs:625-650`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:63-72`) compares two orders.
+`operation_ord` (`spaces/generic.rs:856-868`) checks the kept order against the counter.
+`GenericSpace::at_head` (`spaces/generic.rs:663-688`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:63-72`) compares two orders.
 
 `HeadOnlyDisciplines.v` adds the 10 headlines of Table 49, with no axiom.
 The module defines the elements in flight $`F`$ and the re-entry plans.
@@ -1891,16 +1902,16 @@ The module compiles in 6 s, prints `Closed under the global context` for all 19 
 
 | Id | Headline | Claim |
 |---|---|---|
-| Q68 | `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2292`) | A re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place. |
-| Q69 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2323`) | A re-issued persistent element keeps the order of its first round, and its round bumps the counter by one and keeps $`\mathrm{wf}'`$. |
-| Q70 | `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2662`) | Every fresh operation and every re-entry keeps $`\mathrm{wf}'`$ and SHADOW. |
-| Q71 | `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2731`) | SHADOW with no element in flight is INV, and every run of rounds keeps SHADOW and has INV whenever no element is in flight. |
-| Q72 | `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2896`) | Over runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays. |
-| Q73 | `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:2971`) | A re-entry behind an older head rests at its place and fires nothing, and a fire meets the head of the other side. |
-| Q74 | `queue_reentry_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:3039`) | A re-entry stages at most `FIRE_ROUND_CAP` fires, and a re-issue carries the first order exactly for a persistent element. |
-| Q75 | `queue_reentry_permutation_invariant` (`HeadOnlyDisciplines.v:3099`) | A re-entry depends on the entries of the collection, not on their list order. |
-| Q76 | `fresh_ord_reissue_loses_first_round_place` (`HeadOnlyDisciplines.v:3205`) | Negative control C0: with a fresh order, a re-issued persistent element rests behind a younger record. |
-| Q77 | `nonpersistent_first_ord_reentry_breaks_quiescent_inv` (`HeadOnlyDisciplines.v:3258`) | Negative control C1: an element that is not persistent and keeps its order leaves a pending match with nothing in flight. |
+| Q68 | `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`) | A re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place. |
+| Q69 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`) | A re-issued persistent element keeps the order of its first round, and its round bumps the counter by one and keeps $`\mathrm{wf}'`$. |
+| Q70 | `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2712`) | Every fresh operation and every re-entry keeps $`\mathrm{wf}'`$ and SHADOW. |
+| Q71 | `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2781`) | SHADOW with no element in flight is INV, and every run of rounds keeps SHADOW and has INV whenever no element is in flight. |
+| Q72 | `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2946`) | Over runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays. |
+| Q73 | `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`) | A re-entry behind an older head rests at its place and fires nothing, and a fire meets the head of the other side. |
+| Q74 | `queue_reentry_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:3089`) | A re-entry stages at most `FIRE_ROUND_CAP` fires, and a re-issue carries the first order exactly for a persistent element. |
+| Q75 | `queue_reentry_permutation_invariant` (`HeadOnlyDisciplines.v:3149`) | A re-entry depends on the entries of the collection, not on their list order. |
+| Q76 | `fresh_ord_reissue_loses_first_round_place` (`HeadOnlyDisciplines.v:3503`) | Negative control C0: with a fresh order, a re-issued persistent element rests behind a younger record. |
+| Q77 | `nonpersistent_first_ord_reentry_breaks_quiescent_inv` (`HeadOnlyDisciplines.v:3556`) | Negative control C1: an element that is not persistent and keeps its order leaves a pending match with nothing in flight. |
 
 Two proof strategies failed, and the module header records them.
 An `injection` or `inversion` on an equation of `Some (offer_loop ...)` ran out of memory, so the proofs use the lemmas `some_injective` and `triple_injective` instead.
@@ -1941,29 +1952,29 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:1856` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
-| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:1913` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
-| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:2028` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:2069` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
-| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:2100` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
-| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:2140` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
-| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:2185` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
-| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:2215` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
-| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:2249` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
-| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:2338` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
-| `space_queue_reissue_persistent_send` | `reified_queue.rs:1042` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1113` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
-| `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1162` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
-| `space_queue_divergent_pair_exhausts_phlo` | `reified_queue.rs:1269` | A divergent pair repeats one produce identity and one COMM, and the counter bumps of its rounds spend the phlo. |
-| `prop_queue_loop_bounded` | `reified_p4_props.rs:3310` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
-| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3778` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
-| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3825` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
-| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3867` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
-| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3927` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
-| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4090` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
-| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4171` | Two list orders of one collection give the same re-entry: outcomes, events, entries, and host work (Q75). |
-| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4268` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
-| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4361` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
+| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:1970` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
+| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:2027` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
+| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:2142` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:2183` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
+| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:2214` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
+| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:2254` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
+| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:2299` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
+| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:2329` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
+| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:2363` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
+| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:2452` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
+| `space_queue_reissue_persistent_send` | `reified_queue.rs:1043` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1114` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
+| `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1163` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
+| `space_queue_divergent_pair_exhausts_phlo` | `reified_queue.rs:1270` | A divergent pair repeats one produce identity and one COMM, and the counter bumps of its rounds spend the phlo. |
+| `prop_queue_loop_bounded` | `reified_p4_props.rs:3305` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
+| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3773` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
+| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3820` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
+| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3862` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
+| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3922` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
+| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4085` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
+| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4166` | Two list orders of one collection give the same re-entry: outcomes, events, entries, and host work (Q75). |
+| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4263` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
+| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4349` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
 
 Each property must fail when the rule that it checks is broken.
 The script `.reified-rspaces-work/d43/run_mutants.py` applies five mutants to `spaces/generic.rs`, runs the unit tests of the agent and the P4 properties, and restores the file.
@@ -1984,6 +1995,93 @@ So the accounting registers its introduction once in each deploy, as the host do
 Each round pays its counter bump.
 A divergent pair also repeats one COMM identity, so each later round pays only its bump.
 The pair still ends when the phlo runs out.
+
+### 11.13 Peek re-store of decision 45
+
+[Decision 45](decision-register.md#decision-45) (Rule E) makes a peek fire on a space remove what the host removes.
+The substrate keeps no record for a peek, also not the stored candidates of a produce-side peek join.
+`check_peeks` (`rspace++/src/rspace/space_store_handle.rs:866-881`) only admits the peek set, and `removed_records` (`rspace++/src/rspace/space_store_handle.rs:939-972`) returns every stored non-persistent candidate of a fire.
+`fired_receipt` (`rspace++/src/rspace/space_store_handle.rs:2499-2535`) keeps the persist flags of the host's `wrap_result`.
+The play and replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`.
+
+The agent then makes a [re-store](glossary.md#re-store).
+`GenericSpace::receive` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:803-808`).
+Right after the fire, `Plan::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:347-368`) stages a produce of the same record bytes with the outcome Store and `persist = false`.
+`Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:847-860`) gives the re-store the cost authority of the record, as `produce_peeks` does.
+The re-store bumps no counter, and the record keeps its envelope, its order, and its place at the head.
+
+The substrate change and the re-store land in one commit.
+The hot store does not deduplicate data, so a re-store over the old substrate would store a second copy.
+A removal without the re-store would lose the record.
+
+The P4 queue has no joins.
+A peek receive fires only when no waiter is queued, so the plain Store of the re-store is exact.
+The substrate tests found that a re-store in a produce-side peek join can fire another waiter, in 2 of 24 generated runs.
+So P5 must offer such a re-store through the produce plan.
+
+*Table 54. The Rocq results of decision 45.*
+
+| Id | Headline | Claim |
+|---|---|---|
+| H2 | `commit_state_eq_host` (`EventCorrelation.v:5530`) | The committed store equals the host store, with no premise on peeks. |
+| H11 | `peek_reproduces_trace_eq_host` (`EventCorrelation.v:5807`) | A transaction with the re-stores right after a peek fire commits with the calls, events, status, bindings, and store of the host program, whose reducer sends the peeked data again. A fire never stores a datum, and the re-stores are exactly the sends of `produce_peeks`. |
+| Q78 | `queue_restore_realizes_plan` (`HeadOnlyDisciplines.v:3402`) | For a consume, a produce, and a re-entry, the staged operations of the code, with the re-store, give the records of the logical plan under the substrate effects of Rule E, up to list order. |
+
+`HeadOnlyDisciplines.v` also proves two computed counterexamples with no assumption.
+In `restore_over_retention_duplicates` (`HeadOnlyDisciplines.v:3594`), the re-store over the old retention duplicates the peeked record.
+In `removal_without_restore_loses_record` (`HeadOnlyDisciplines.v:3624`), the removal without the re-store loses it.
+`EventCorrelation.v` keeps its 17 headlines, and `HeadOnlyDisciplines.v` now has 20.
+
+*Table 55. The Rocq mutants of decision 45 in HeadOnlyDisciplines.v.*
+
+| Id | What the mutant changes | Must fail in |
+|---|---|---|
+| `ho-restore-skipped` | The code stages no re-store after a peek fire of a record that is not persistent. | `restore_fire_step`, `queue_restore_realizes_plan` |
+| `ho-peek-retains` | A peek fire keeps the records that it binds, as the retention before decision 45 did. | `restore_fire_step`, `queue_restore_realizes_plan` |
+| `ho-restore-persistent` | The code also re-stores a peeked persistent record, which the fire keeps. | `restore_fire_step`, `queue_restore_realizes_plan` |
+
+The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-peek-retains`, `ec-restore-skipped`, and `ec-restore-wrong-identity`.
+
+*Table 56. The tests of decision 45.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `space_store_handle_peek_events_equal_host_and_restores` | `reified_space_store_handle.rs:661` | A peek and its re-store have the events, calls, contents, and root of the host, also with a produce-side peek and its re-offer. |
+| `space_store_handle_peek_fires_replay_and_report` | `reified_space_store_handle.rs:3006` | A peek fire and its re-store replay and report from their play log, and the play log and root equal the HEAD program. |
+| `space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored` | `reified_space_store_handle.rs:3978` | A produce-side peek join removes its stored record and never stores its incoming datum. |
+| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4492` | Every result of a peek fire keeps the persist flag of the host. |
+| `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | A peek and its re-stores equal the HEAD program in play, replay, and reporting: events, calls, counters, state, and root. |
+| `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
+| `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:3440` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:1811` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
+| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:1844` | The re-store registers the authority of the record, and the peek registers its own. |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:1884` | A peek of a persistent record removes nothing and stores nothing again. |
+| `space_queue_observer_parity` | `reified_queue.rs:1336` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
+| `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4701` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
+
+The script `.reified-rspaces-work/d45/run_mutants.py` applies three mutants to `spaces/generic.rs`, runs the unit tests of the agent and the property `prop_queue_restore_realizes_plan`, and restores the file.
+Each mutant made at least one of its expected tests fail (`target/verification/reified-rspaces/d45/mutants.log`).
+
+*Table 57. The Rust mutants of decision 45.*
+
+| Mutant | What it breaks | Tests that fail |
+|---|---|---|
+| `restore-skipped` | A peek fire of a record that is not persistent stages no re-store. | `prop_queue_restore_realizes_plan`, `space_queue_peek_restores_the_head_record`, `space_queue_peek_restore_registers_the_record_authority` |
+| `restore-persistent-too` | A peek of a persistent record also stores the record again. | `prop_queue_restore_realizes_plan`, `space_queue_peek_of_a_persistent_record_restores_nothing` |
+| `restore-with-peek-authority` | The re-store registers the authority of the peek, not of the record. | `space_queue_peek_restore_registers_the_record_authority` |
+
+**Gate.** The gate of decision 45 built the workspace with no warning, and `cargo clippy -p rholang -p rspace_plus_plus --all-targets -- -D warnings` passes.
+`cargo fmt --all -- --check` passes after three earlier test files of the campaign were formatted and 29 clippy findings in campaign tests were fixed.
+The substrate suites, the agent and queue suites, the P4 properties, the ordinary regression, and both empty-state-hash tests of Casper pass.
+The Rocq gate printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0`, with 113 closed headlines and 80 negative checks (`target/verification/reified-rspaces/d45/gates/proofs.log`).
+The map checkers, the closure checks, the completeness phases, the document lint, and the render check pass (`target/verification/reified-rspaces/d45/gates/summary.txt`).
+
+The audit `scripts/audit/check-rocq-line-refs.sh` reports 7 mismatches, all in Casper documents outside the campaign, and it reported the same 7 at the commit of decision 43.
+
+**Charges.** A consume-side peek of a record that is not persistent now makes one more produce, as the host program does.
+The accounting observer charges it as a new introduction of the record, with the record's own authority.
+The legacy storage charges of `ChargingRSpace` follow in Option P of decision 45.
 
 ## References
 

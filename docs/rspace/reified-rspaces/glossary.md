@@ -15,26 +15,26 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Outer store](#outer-store) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Pairing](#pairing) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Par](#par) | 1 |
-| [Agent](#agent) | 1 | [Path](#path) | 2 |
-| [Binding](#binding) | 2 | [Path marker](#path-marker) | 2 |
-| [Block](#block) | 1 | [Pattern](#pattern) | 1 |
-| [Body channel](#body-channel) | 2 | [Peek](#peek) | 1 |
-| [Bundle](#bundle) | 1 | [Persistent](#persistent) | 1 |
-| [Canonical form](#canonical-form) | 2 | [pgmcp](#pgmcp) | 1 |
-| [Canonical group](#canonical-group) | 2 | [Phlo](#phlo) | 1 |
-| [Channel](#channel) | 1 | [Play](#play) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Collection](#collection) | 2 | [Process](#process) | 1 |
-| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
-| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
-| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-issue](#re-issue) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Re-offer](#re-offer) | 2 |
-| [Continuation](#continuation) | 1 | [Re-rooting](#re-rooting) | 2 |
+| [Acceptance category](#acceptance-category) | 2 | [Pairing](#pairing) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Par](#par) | 1 |
+| [Admission verdict](#admission-verdict) | 2 | [Path](#path) | 2 |
+| [Agent](#agent) | 1 | [Path marker](#path-marker) | 2 |
+| [Binding](#binding) | 2 | [Pattern](#pattern) | 1 |
+| [Block](#block) | 1 | [Peek](#peek) | 1 |
+| [Body channel](#body-channel) | 2 | [Persistent](#persistent) | 1 |
+| [Bundle](#bundle) | 1 | [pgmcp](#pgmcp) | 1 |
+| [Canonical form](#canonical-form) | 2 | [Phlo](#phlo) | 1 |
+| [Canonical group](#canonical-group) | 2 | [Play](#play) | 1 |
+| [Channel](#channel) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Checkpoint](#checkpoint) | 1 | [Process](#process) | 1 |
+| [Collection](#collection) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Collection counter](#collection-counter) | 2 | [Property-based test](#property-based-test) | 1 |
+| [Collection key](#collection-key) | 2 | [Qualifier](#qualifier) | 2 |
+| [COMM event](#comm-event) | 1 | [Random state](#random-state) | 1 |
+| [Config record](#config-record) | 2 | [Re-issue](#re-issue) | 2 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-offer](#re-offer) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Continuation](#continuation) | 1 | [Re-store](#re-store) | 2 |
 | [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
 | [Datum](#datum) | 1 | [Recognized position](#recognized-position) | 2 |
 | [Deploy](#deploy) | 1 | [Record envelope](#record-envelope) | 2 |
@@ -81,6 +81,7 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Op channel](#op-channel) | 2 | [Waiter](#waiter) | 2 |
 | [Operation order](#operation-order) | 2 | [Witness test](#witness-test) | 2 |
 | [Outcome](#outcome) | 2 | [Write skew](#write-skew) | 2 |
+| [Outer store](#outer-store) | 2 |  |  |
 
 ## Part 1: background terms
 
@@ -959,11 +960,11 @@ The operations before it stay applied by [prefix atomicity](#prefix-atomicity).
 
 ### Retention
 
-Retention keeps a stored record in place after a peek binds it in a COMM event ([decision 19](decision-register.md#decision-19)).
+*Superseded by [decision 45](decision-register.md#decision-45) (Rule E).* The term names the earlier rule of the substrate, which the formal history and the older decisions cite.
+Retention kept a stored record in place after a peek bound it in a COMM event ([decision 19](decision-register.md#decision-19)).
 The host never retains a peeked datum: it removes the datum, and the reducer sends the data again.
-A space retains each stored record that a peek fire binds, on the consume side and on the produce side.
-The receipt of the fire reports such a record as persistent, so nothing sends it again.
-A peek fire never stores the incoming datum of a send ([decision 30](decision-register.md#decision-30)).
+A space retained each stored record that a peek fire bound, and the receipt reported such a record as persistent.
+Since decision 45, a peek fire removes its stored non-persistent records as the host does, and the agent makes a [re-store](#re-store).
 
 ### Volatile channel
 
@@ -1026,6 +1027,15 @@ A non-persistent send can fire a waiter that peeks and is not persistent.
 Then the space agent stages the same produce again, as the next operation of the transaction.
 The re-offer has the identity, the observer calls, the counter step, and the authority of the re-produce of the host reducer.
 It fires the next matching waiter, or it stores the datum when no waiter matches.
+
+### Re-store
+
+A re-store is the second store of a stored record that a peek fire removed ([decision 45](decision-register.md#decision-45), Rule E).
+A peek fire removes each stored non-persistent record that it binds, on the consume side and in a produce-side join, as a host COMM does.
+The space agent then stages a produce of the same record bytes in the same transaction.
+So the re-store has the produce identity of the first send, and the record keeps its envelope and its order.
+It registers the cost authority of the record, as the host reducer's `produce_peeks` does, and it does not bump a counter.
+*Distinguish from* a [re-offer](#re-offer), which sends the incoming datum of a produce-side peek fire again.
 
 ### Re-issue
 

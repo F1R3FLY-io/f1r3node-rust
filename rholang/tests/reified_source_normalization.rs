@@ -312,12 +312,9 @@ fn float_form_outcome(source: &str) -> Map<String, Value> {
         Value::Object(map) => map,
         other => panic!("normalization produced a non-object observation: {other}"),
     };
-    match outcome.get("outcome").and_then(Value::as_str) {
-        Some("error") => {
-            let variant = rejection_variant_on_large_stack(source.to_string());
-            outcome.insert("error_variant".to_string(), Value::from(variant));
-        }
-        _ => {}
+    if let Some("error") = outcome.get("outcome").and_then(Value::as_str) {
+        let variant = rejection_variant_on_large_stack(source.to_string());
+        outcome.insert("error_variant".to_string(), Value::from(variant));
     }
     outcome
 }

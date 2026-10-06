@@ -113,7 +113,8 @@ while (next staged operation i, in staging order?) is (yes)
       :log the produce or consume event, then the COMM event
       (play: the event log, replay: the logger); <<$rrs_host>>
       :remove a non-persistent continuation (produce side)
-      remove the stored non-persistent records, unless the fire retains
+      remove the stored non-persistent records,
+      also for a peek fire (decision 45)
       remove the fired joins
       the incoming datum is never stored (FR-10); <<$rrs_storage>>
       :replay and reporting: remove_bindings_for(COMM); <<$rrs_host>>

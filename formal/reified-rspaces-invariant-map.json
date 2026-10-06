@@ -66,7 +66,7 @@
           "tests": [
             "prop_space_txn_replay_pairs_play_log",
             "prop_space_txn_repeated_channel_groups_equal_host",
-            "prop_space_txn_peek_retention"
+            "prop_space_txn_peek_restore"
           ]
         },
         "H6": {
@@ -112,10 +112,10 @@
         },
         "H11": {
           "kind": "rocq",
-          "name": "peek_retention_trace_eq_host",
+          "name": "peek_reproduces_trace_eq_host",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_peek_retention"
+            "prop_space_txn_peek_restore"
           ]
         },
         "H12": {
@@ -124,7 +124,7 @@
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
             "prop_space_txn_reporting_equals_replay",
-            "prop_space_txn_peek_retention"
+            "prop_space_txn_peek_restore"
           ]
         },
         "H13": {
@@ -365,7 +365,7 @@
         },
         {
           "number": 12,
-          "test": "prop_space_txn_peek_retention",
+          "test": "prop_space_txn_peek_restore",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
             "H5",
@@ -549,7 +549,7 @@
           "unmodeled": "FR-7' bounds the cost of the always-on checks. The models do not include cost. H6 and H10 show that the checks never fail for a staged transaction."
         },
         {
-          "test": "space_store_handle_retained_produce_fire_leaves_incoming_unstored",
+          "test": "space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored",
           "file": "rspace++/tests/reified_space_store_handle.rs",
           "rule": "FR-10",
           "covers": [
@@ -620,7 +620,27 @@
           ]
         },
         {
-          "test": "space_store_handle_receipt_marks_only_retained_stored_results",
+          "test": "space_store_handle_peek_restore_equals_head_reproduce",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H1",
+            "H2",
+            "H11",
+            "H12"
+          ]
+        },
+        {
+          "test": "space_store_handle_restore_without_removal_duplicates_record",
+          "file": "rspace++/tests/reified_space_store_handle.rs",
+          "rule": "FR-10",
+          "covers": [
+            "H2",
+            "H11"
+          ]
+        },
+        {
+          "test": "space_store_handle_receipt_keeps_the_host_flags",
           "file": "rspace++/src/rspace/space_store_handle.rs",
           "rule": "FR-10",
           "covers": [
@@ -892,7 +912,7 @@
         "models/tests/reified_encoding.rs",
         "rholang/tests/reified_native_fail_closed.rs"
       ],
-      "expected_properties": 83,
+      "expected_properties": 84,
       "formal": {
         "Q1": {
           "kind": "rocq",
@@ -1708,6 +1728,15 @@
             "prop_queue_fifo_any_schedule",
             "prop_queue_fifo_with_reentries"
           ]
+        },
+        "Q78": {
+          "kind": "rocq",
+          "name": "queue_restore_realizes_plan",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 45 (Rule E): the staged operations of a plan, with the re-store after each peek fire of a record that is not persistent, give the records of the logical plan under the Rule E effects of the substrate, up to list order.",
+          "tests": [
+            "prop_queue_restore_realizes_plan"
+          ]
         }
       },
       "properties": [
@@ -2394,6 +2423,14 @@
             "Q69",
             "U11"
           ]
+        },
+        {
+          "number": 84,
+          "test": "prop_queue_restore_realizes_plan",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q78"
+          ]
         }
       ],
       "witness_tests": [
@@ -2500,6 +2537,20 @@
           "file": "rholang/src/rust/interpreter/reified/costs.rs",
           "covers": [
             "Q59"
+          ]
+        },
+        {
+          "test": "space_queue_peek_restores_the_head_record",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "covers": [
+            "Q78"
+          ]
+        },
+        {
+          "test": "space_queue_peek_of_a_persistent_record_restores_nothing",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "covers": [
+            "Q78"
           ]
         }
       ]

@@ -30,7 +30,7 @@ The comments of the code and the model maps cite the rules by these names, and T
 | FR-7, FR-7' | The commit checks run in every build profile, and their cost grows only with the changed entries. | [S5.2](#s52-commit), [S10](#s10-limits) |
 | FR-8 | The sweep counts what it removes and keeps the replay bookkeeping. | [S5.4](#s54-sweep) |
 | FR-9, FR-9' | A nested transaction or sweep in one task fails closed. | [S7](#s7-locking-and-ordering) |
-| FR-10 | A peek fire does not store the sent value, and the agent re-offers it ([decision 30](decision-register.md#decision-30)). | [S5.8](#s58-peek-re-offer-fr-10) |
+| FR-10 | A peek fire does not store the sent value, and the agent re-offers it ([decision 30](decision-register.md#decision-30)). Since [decision 45](decision-register.md#decision-45), a peek fire also removes its stored records as the host does, and the agent stores them again. | [S5.8](#s58-peek-re-offer-fr-10) |
 
 ### S1. Purpose and the rule of no new ISpace surface
 
@@ -109,8 +109,9 @@ Each term links to its glossary entry, which gives the full definition.
 | [Operation order](glossary.md#operation-order) and [sub-order](glossary.md#sub-order) | The scheduler key of an RSpace operation, and the key $`\mathit{parent} \mathbin{+\!\!+} [(i, 2)]`$ of operation $`i`$ of a transaction. |
 | [Binding](glossary.md#binding) | An entry of the replay table that links an IO event of the play log to a COMM of that log. |
 | [Pairing](glossary.md#pairing) | The replay step that matches a fire with one free recorded occurrence of its COMM, under the trigger key. |
-| [Retention](glossary.md#retention) | A peek fire keeps the stored records that it binds in place. |
+| [Retention](glossary.md#retention) | Superseded by [decision 45](decision-register.md#decision-45). A peek fire kept the stored records that it binds in place. |
 | [Re-offer](glossary.md#re-offer) | The second produce of a datum that a peek fire did not store. |
+| [Re-store](glossary.md#re-store) | The second store of a stored record that a peek fire removed, in the same transaction ([decision 45](decision-register.md#decision-45)). |
 | [Volatile channel](glossary.md#volatile-channel) | A storage channel with a lowercase KIND, which lives for one deploy. |
 | [Sweep](glossary.md#sweep) | The removal of the volatile channels of a deploy at its end. |
 | [Canonical group](glossary.md#canonical-group) | A channel group whose store identities are non-decreasing. |
@@ -175,8 +176,8 @@ Table S3.1 gives the play steps of `PlayBackend` in `rspace/space_play.rs`, over
 | 5, Fire | `observe_comm` with the COMM whose counter closure counts the produce itself. | `rspace/ops_produce.rs:185-198` | `observe_comm` with the COMM of the plain counters. | `rspace/ops_consume.rs:126-135` |
 | 6, Fire | `log_produce`, then `log_comm` with `PRODUCE_COMM_LABEL`. | `rspace/ops_produce.rs:199-200` | `log_consume`, then `log_comm` with `CONSUME_COMM_LABEL`. | `rspace/ops_consume.rs:136-137` |
 | 7, Fire | Remove a non-persistent continuation at its live index. | `rspace/ops_produce.rs:202-205` | None. | |
-| 8, Fire | `remove_matched_datum_and_join`: in descending index order, remove each stored non-persistent record, and then the fired join of its channel. A retaining fire removes only the joins. | `rspace/ops_produce.rs:207`, `228-248` | `store_persistent_data`: in descending index order, remove each stored non-persistent record. A retaining fire removes nothing. | `rspace/ops_consume.rs:138`, `192-202` |
-| 9, Fire | The receipt from `wrap_result`. A retained stored result is reported persistent ([S5.8](#s58-peek-re-offer-fr-10)). | `rspace/ops_consume.rs:204-229` | The same. | `rspace/ops_consume.rs:204-229` |
+| 8, Fire | `remove_matched_datum_and_join`: in descending index order, remove each stored non-persistent record, and then the fired join of its channel. A peek fire does the same ([decision 45](decision-register.md#decision-45)). | `rspace/ops_produce.rs:207`, `228-248` | `store_persistent_data`: in descending index order, remove each stored non-persistent record. A peek fire does the same. | `rspace/ops_consume.rs:138`, `192-202` |
+| 9, Fire | The receipt from `wrap_result`. Each result keeps the persist flag of the host ([S5.8](#s58-peek-re-offer-fr-10)). | `rspace/ops_consume.rs:204-229` | The same. | `rspace/ops_consume.rs:204-229` |
 | 10 | `observe_operation_finish` with `Stored`, `Matched`, or `Rejected`. | `rspace/ops_produce.rs:62-65` | The same. | `rspace/ops_consume.rs:55-58` |
 
 The play store steps `store_data`, `remove_matched_datum_and_join`, `store_waiting_continuation`, and `store_persistent_data` are private to their sibling modules.
@@ -198,7 +199,7 @@ Its HEAD columns cite `replay_rspace.rs`.
 | 7a, unpaired Fire | Stop with `ReplayDivergence` after `observe_comm` accepts ([decision 36](decision-register.md#decision-36)). The fire logs no event, changes no store entry or binding, and step 13 rolls its counter step back. | None | The same, with no counter step. | None |
 | 8, Fire | `log_produce`, then `log_comm` with the label `comm.produce`. | `1314-1321` | `log_consume`, then `log_comm` with the label `comm.consume`. | `952-966` |
 | 9, Fire | Remove a non-persistent continuation. In both cases, call `mark_replay_waiting_continuation_match`. | `1323-1329` | None. | |
-| 10, Fire | `remove_matched_datum_and_join`, or only the fired joins when the fire retains. | `1331`, `1707-1727` | `store_persistent_data`, unless the fire retains. | `968`, `1595-1605` |
+| 10, Fire | `remove_matched_datum_and_join`, also for a peek fire. | `1331`, `1707-1727` | `store_persistent_data`, also for a peek fire. | `968`, `1595-1605` |
 | 11, Fire | `remove_bindings_for` the COMM. | `1332`, `1407-1435` | The same. | `969` |
 | 12, Fire | The receipt from `wrap_result`. Its produce is the copy that the paired COMM recorded. | `1150-1161`, `1679-1705` | The receipt from `wrap_result`. | `971` |
 | 13 | After a failed fire, `rollback_produce_counter`. | `1163-1165`, `1496-1509` | None. | |
@@ -221,16 +222,21 @@ Table S3.3 gives the reporting steps.
 | Calls | The steps of Table S3.2, through `ReplayBackend`. | `replay_rspace.rs`, as Table S3.2 cites it |
 | Report | The inner replay space carries the `ReportingLogger`. So the calls `log_produce`, `log_consume`, and `log_comm` of steps 6 and 8 add the events `ReportingProduce`, `ReportingConsume`, and `ReportingComm` to the report, in commit order. | `reporting_rspace.rs:162-185`, `481-569` |
 
-**Differences by decision.** The substrate differs from the host in five places, and a decision covers each one.
+**Differences by decision.** The substrate differs from the host in four places, and a decision covers each one.
 
-1. Retention. A peek fire keeps its stored records in place, and the host removes them and the reducer produces them again. The stores then differ only by these kept records (decision 19, headline H11). Ordinary channels never meet this rule, because only agents reach storage channels.
-2. Directives. A native replay directive fails the operation closed ([I-13](decision-register.md#i-13), decision 19 D4).
-3. Divergence. Replay pairs each fire at staging, and it resolves an [unpaired fire](glossary.md#unpaired-fire) at commit ([decision 36](decision-register.md#decision-36)). The commit makes the calls of play first, so a rejected call gives the error and the cost of play. Otherwise the fire fails with the typed error `ReplayDivergence`, not with a panic, and it stores and parks nothing.
-4. Candidate choice. The agent chooses the continuation and the candidates, and the substrate validates any choice. The host takes the first match of its deterministic shuffle.
-5. Consume-side pairing. A consume-side fire pairs only under its trigger key, which is stricter than host replay ([S10](#s10-limits)).
+1. Directives. A native replay directive fails the operation closed ([I-13](decision-register.md#i-13), decision 19 D4).
+2. Divergence. Replay pairs each fire at staging, and it resolves an [unpaired fire](glossary.md#unpaired-fire) at commit ([decision 36](decision-register.md#decision-36)). The commit makes the calls of play first, so a rejected call gives the error and the cost of play. Otherwise the fire fails with the typed error `ReplayDivergence`, not with a panic, and it stores and parks nothing.
+3. Candidate choice. The agent chooses the continuation and the candidates, and the substrate validates any choice. The host takes the first match of its deterministic shuffle.
+4. Consume-side pairing. A consume-side fire pairs only under its trigger key, which is stricter than host replay ([S10](#s10-limits)).
 
-The incoming datum of a produce-side peek fire is not a difference.
-Neither the host nor the substrate stores it: the host reducer produces it again, and the agent re-offers it ([S5.8](#s58-peek-re-offer-fr-10)).
+[Retention](glossary.md#retention) was a fifth difference until [decision 45](decision-register.md#decision-45).
+A peek fire kept its stored records in place, while the host removes them and the reducer produces them again.
+Since decision 45, a peek fire removes them as the host does, and the agent stores each one again ([S5.8](#s58-peek-re-offer-fr-10)).
+
+The peek results are not a difference.
+Neither the host nor the substrate stores the incoming datum of a produce-side peek fire.
+The host reducer produces it again, and the agent re-offers it.
+Both remove the stored non-persistent records that a peek fire binds, and the reducer or the agent sends them again.
 
 ### S4. Counter timing
 
@@ -323,14 +329,14 @@ It must not belong to an installed system process.
 
 ⟨Admit the fired group and the candidates⟩.
 The fired group passes the group checks of [S5.5](#s55-canonical-order-fr-1) with phase-B coverage, and it must contain the produce channel.
-The peeks of the waiting continuation must be empty, or they must cover every bind, which means retention.
+The peeks of the waiting continuation must be empty, or they must cover every bind.
 Candidate $`j`$ must bind channel $`j`$ of the group.
 Exactly one candidate must have the index $`-1`$ and carry the produced record: its channel, its source, its data, and its persist flag.
 
 ```text
         group ← ADMIT-GROUP(channels, |wk.patterns|, Joined)     ▷ S5.5
         require key ∈ group                                      ▷ InvalidOperation
-        retain ← PEEK-RETENTION(|channels|, wk.peeks)            ▷ MixedArrowJoin
+        CHECK-PEEKS(|channels|, wk.peeks)                         ▷ MixedArrowJoin
         require |candidates| = |group|, and candidate j binds group[j]    ▷ InvalidOperation
         require no index is below −1, and exactly one candidate has the index −1
             and carries (channel, src, data, persist)            ▷ InvalidOperation
@@ -380,7 +386,7 @@ The fire never stores the incoming datum ([S5.8](#s58-peek-re-offer-fr-10)).
             with t(p) = κ_v(p) + [¬persist ∧ p = src]            ▷ CounterOverflow
         recorded ← VERIFY(comm, Produce(src))    ▷ none in play, and for an unpaired fire
         δ′ ← NEXT-DELTA(src, persist)                            ▷ CounterOverflow
-        removed ← REMOVED-RECORDS(candidates, positions, retain)
+        removed ← REMOVED-RECORDS(candidates, positions)
         effects ← APPLY-FIRE-TO-VIEW(group, wk, candidates, removed)
         if δ′ ≠ none: δ(src) ← δ′
         if recorded ≠ none: paired ← paired ++ [comm]
@@ -394,7 +400,7 @@ The outline of a consume has two named steps.
 STAGE-CONSUME(channels, patterns, k, persist, peeks, outcome, before_observe):
     require the transaction is open                              ▷ Finished
     group ← ADMIT-GROUP(channels, |patterns|, Consumed)          ▷ S5.5
-    retain ← PEEK-RETENTION(|channels|, peeks)                   ▷ MixedArrowJoin
+    CHECK-PEEKS(|channels|, peeks)                               ▷ MixedArrowJoin
     src ← Consume::create(channels, patterns, k, persist)
     if outcome is Park:
         ⟨Stage a park⟩
@@ -428,7 +434,7 @@ These are the list rules of `put_continuation` and `put_join` (`hot_store.rs:720
 A consume-side fire binds stored records only.
 The COMM uses the plain view counters, because a consume steps no counter.
 Verification follows the rule of a produce-side fire, under the trigger key of the consume.
-A retaining fire removes nothing.
+A peek fire removes its stored non-persistent records too, as the host does ([decision 45](decision-register.md#decision-45)).
 
 ```text
         require |candidates| = |group|, and candidate j binds group[j]    ▷ InvalidOperation
@@ -438,7 +444,7 @@ A retaining fire removes nothing.
         positions ← CLAIM-POSITIONS(group, candidates)
         comm ← COMM::new(candidates, src, peeks, κ_v)            ▷ CounterOverflow
         recorded ← VERIFY(comm, Consume(src))    ▷ none in play, and for an unpaired fire
-        removed ← REMOVED-RECORDS(candidates, positions, retain)
+        removed ← REMOVED-RECORDS(candidates, positions)
         effects ← REMOVE-RECORDS(group, candidates, removed)
         if recorded ≠ none: paired ← paired ++ [comm]
         append (the operation with its fire and recorded, before_observe, effects)
@@ -457,8 +463,7 @@ NEXT-DELTA(src, persist):
     require κ_v(src) + 1 ≤ 2^31 − 1                              ▷ CounterOverflow
     return δ(src) + 1
 
-REMOVED-RECORDS(candidates, positions, retain):
-    if retain: return []
+REMOVED-RECORDS(candidates, positions):
     return [(j, positions[j]) for each stored non-persistent candidate j]
 
 APPLY-FIRE-TO-VIEW(group, wk, candidates, removed):
@@ -484,17 +489,19 @@ A view change that fails after validation leaves the view unusable.
 So the transaction closes at once and releases its locks, and the error names the failed step, for example `Inconsistent`.
 Such a failure is a defect of the substrate.
 
-The peeks rule decides retention:
+The peeks rule admits a peek set. It decides nothing about the removal, because every fire removes its stored non-persistent records ([decision 45](decision-register.md#decision-45)):
 
 ```rust
-/// Peeks rule of an operation with `binds` channels: `Ok(false)` for no
-/// peeks, `Ok(true)` for `{0..binds-1}` (retention), `MixedArrowJoin`
-/// otherwise.
-pub(crate) fn peek_retention(binds: usize, peeks: &BTreeSet<i32>) -> Result<bool, SpaceTxnError> {
+/// Peeks rule of an operation with `binds` channels: no peeks, or
+/// `{0..binds-1}` (every bind peeks). Any other set is `MixedArrowJoin`. A peek
+/// fire removes the same records as any other fire, because the host COMM
+/// removes every stored non-persistent candidate whatever its peeks (decision
+/// 45, Rule E).
+pub(crate) fn check_peeks(binds: usize, peeks: &BTreeSet<i32>) -> Result<(), SpaceTxnError> {
     let all_binds = || i32::try_from(binds).is_ok_and(|binds| peeks.iter().copied().eq(0..binds));
     match peeks.is_empty() {
-        true => Ok(false),
-        false if all_binds() => Ok(true),
+        true => Ok(()),
+        false if all_binds() => Ok(()),
         false => Err(SpaceTxnError::MixedArrowJoin {
             binds,
             peeks: peeks.clone(),
@@ -597,7 +604,7 @@ It rolls the step back when its fire fails (step 13).
     if mode ≠ Play and op.fire.recorded = none:
         fail ReplayDivergence(op.fire.comm)   ▷ no event, no store change, no binding change
     log the IO event, then the COMM event
-    remove the fired continuation, and the bound records unless the fire retains them
+    remove the fired continuation and the bound non-persistent records
     if mode ≠ Play: remove the bindings of the COMM
     return Fired
 ```
@@ -622,7 +629,7 @@ The cost is $`O(e \cdot v)`$ for $`e`$ staged effects and $`v`$ events of one op
 
 Figure S5.2 shows the commit as an activity diagram, with the steps of the backends and the place of each error.
 
-![Commit of a space transaction as an activity. The commit refuses a finished transaction with Finished, takes the locks and the registration, and clears the paired COMM events and the counter delta. It refuses a swapped hot store with StoreSwapped and a reused parent order with ParentOrderReused, both with no effect. Then a loop runs each staged operation i in staging order under sub_order(parent, i): the read-only checks (joins unchanged, counter room, live COMM equal to the staged COMM, removed entries at their staged positions), the before_observe callback, the observer start, in replay the directive check, the observe call, in replay the counter step, and then the outcome: Store, Park, or Fire. A fire makes the observe_comm call. In replay, an unpaired fire then fails with ReplayDivergence, after the observer calls of play and with no event, no store change, and no binding change (decision 36). Any other fire logs the produce or consume event and the COMM event, removes the continuation, removes the records unless the fire retains, and in replay removes the bindings. The observer finish follows, and then the event correlation. An error in operation i leaves the operations before it applied. At the end the commit releases the locks and then the registration and returns the receipts.](diagrams/06-space-txn-commit.svg)
+![Commit of a space transaction as an activity. The commit refuses a finished transaction with Finished, takes the locks and the registration, and clears the paired COMM events and the counter delta. It refuses a swapped hot store with StoreSwapped and a reused parent order with ParentOrderReused, both with no effect. Then a loop runs each staged operation i in staging order under sub_order(parent, i): the read-only checks (joins unchanged, counter room, live COMM equal to the staged COMM, removed entries at their staged positions), the before_observe callback, the observer start, in replay the directive check, the observe call, in replay the counter step, and then the outcome: Store, Park, or Fire. A fire makes the observe_comm call. In replay, an unpaired fire then fails with ReplayDivergence, after the observer calls of play and with no event, no store change, and no binding change (decision 36). Any other fire logs the produce or consume event and the COMM event, removes the continuation and the bound non-persistent records, also for a peek fire (decision 45), and in replay removes the bindings. The observer finish follows, and then the event correlation. An error in operation i leaves the operations before it applied. At the end the commit releases the locks and then the registration and returns the receipts.](diagrams/06-space-txn-commit.svg)
 
 *Figure S5.2. Source: [diagrams/06-space-txn-commit.puml](diagrams/06-space-txn-commit.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -714,7 +721,7 @@ The staging core applies the rule as follows:
 
 The literal rule of the design pass compared $`b`$ with the paired copies, without the division.
 For a COMM that lists one produce twice, that rule pairs one recorded occurrence two times.
-The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:4436`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
+The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:5135`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
 
 The commit removes all bindings of a paired COMM with `remove_bindings_for` (Table S3.2, step 11).
 A binding that no operation pairs fails the deploy at `check_replay_data` with `UnusedCommEvent`, as in host replay (`replay_rspace.rs:542-558`).
@@ -860,7 +867,7 @@ pub(crate) fn require_canonical(keys: &[Blake2b256Hash]) -> Result<(), SpaceTxnE
 
 The comparison of byte strings is a total order, and it is antisymmetric.
 So each multiset of keys has exactly one non-decreasing arrangement: its sorted list.
-The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:6142`) proves this, also when the list repeats a key.
+The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:7044`) proves this, also when the list repeats a key.
 Headline H22 uses it to show that canonical cache keys have distinct history keys.
 
 The check runs before the hot-store access of its group.
@@ -999,34 +1006,32 @@ A commit without an operation context is not tracked, because it emits no sub-or
 A peek reads a value and leaves it available to other receives.
 The host gets this effect in two steps: RSpace removes the peeked data, and the reducer produces each non-persistent result again (`produce_peeks`, `rholang/src/rust/interpreter/reduce.rs:981-1016`).
 [Decision 30](decision-register.md#decision-30) gives spaces the same behavior for the incoming datum.
-It keeps [retention](glossary.md#retention) for the stored records that a peek binds ([decision 19](decision-register.md#decision-19)).
+[Decision 45](decision-register.md#decision-45) (Rule E) gives them the same behavior for the stored records that a peek binds.
+It replaces the [retention](glossary.md#retention) of [decision 19](decision-register.md#decision-19), under which the substrate kept these records in place.
 
 The substrate keeps four rules:
 
 1. A produce-side fire never stores its incoming datum, in the staged view and at commit, in every mode.
-2. A peek fire keeps the stored records that it binds in place. This holds on the consume side, and on the produce side for joins and repeated-channel groups.
-3. The receipt reports a retained stored result as persistent, and the incoming result keeps its own persist flag. So the non-persistent results of a peek fire are exactly the incoming datum of a non-persistent send.
-4. Staging accepts a second produce with the same identity in one transaction, and each produce steps the counter by one.
+2. Every fire removes the stored non-persistent records that it binds, as the host does. This holds for a peek fire too, on the consume side, and on the produce side for joins and repeated-channel groups.
+3. The receipt keeps the persist flag of the host's `wrap_result` for every result. So the non-persistent results of a peek fire are the records that it removed and the incoming datum of a non-persistent send.
+4. Staging accepts a second produce with the same identity in one transaction, and each non-persistent produce steps the counter by one.
 
-The receipt rule of item 3:
+The receipt rule of item 3 checks only that the results line up with the candidates:
 
 ```rust
-/// The results of a fire that its receipt reports as retained: when the fire
-/// retains (peeks), the results of its stored candidates. The incoming
-/// candidate of a produce fire is never retained, because the fire does not
-/// store it (FR-10).
-pub(crate) fn retained_results<C, A: Clone>(
-    candidates: &[ConsumeCandidate<C, A>],
-    retain: bool,
-) -> Vec<bool> {
-    candidates
-        .iter()
-        .map(|candidate| retain && candidate.datum_index >= 0)
-        .collect()
-}
+/// Receipt of a fire from the host's `wrap_result`, whose result `i` belongs
+/// to candidate `i` of the `candidates` candidates of the fire. Each result
+/// keeps the flag of the host, so a non-persistent result tells the agent that
+/// the fire removed or spent its datum (decision 45, Rule E).
+pub(crate) fn fired_receipt<C, P, A, K>(
+    comm: COMM,
+    wrapped: MaybeConsumeResult<C, P, A, K>,
+    candidates: usize,
+    produce: Option<Produce>,
+) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
 ```
 
-When the send and the fired waiter are both non-persistent, the agent re-offers the datum as the next operation of the same transaction.
+**The re-offer.** When the send and the fired waiter are both non-persistent, the agent re-offers the datum as the next operation of the same transaction.
 The re-offer is a `SpaceProduce` with the identity of `Produce::create`, the same observer sequence, a counter step of one, and the same authority.
 These are the properties of the re-produce of the host reducer.
 The P4 plan of a head-only queue does this in its produce loop:
@@ -1060,16 +1065,35 @@ Without $`W_2`$, operation 1 has the outcome Store, and the space holds one copy
 
 Under the P1 rule before decision 30, operation 0 stored $`d`$, and $`W_2`$ then matched the stored $`d`$.
 That pending match breaks the no-pending-match invariant of the queue.
-The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:3338`) shows the break.
-The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:3300`) shows that the plan with the re-offer keeps the invariant.
+The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:4014`) shows the break.
+The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:3976`) shows that the plan with the re-offer keeps the invariant.
 
 The re-offer registers its introduction authority under the identity of the peek fire.
 The registry accepts an equal authority for an identity that it holds (`rholang/src/rust/interpreter/accounting/mod.rs:1041-1046`).
 It refuses another authority with an identity conflict, and the commit then fails at the re-offer, with the peek fire applied.
 
-The stores of the host and of the substrate differ only by the stored records that a peek keeps in place.
-The host reducer also produces these records again, and the substrate keeps them instead.
-On each channel, the re-produces that the substrate replaces send exactly the values of the kept records (headline H11, part 3).
+**The re-store.** A peek fire removes each stored non-persistent record that it binds, and the agent stores each one again in the same transaction ([re-store](glossary.md#re-store)).
+The re-store is a `SpaceProduce` of the same record bytes, with the outcome Store and `persist = false`.
+So it has the produce identity of the first send, and the record keeps its envelope and its order.
+Its `before_observe` callback registers the cost authority of the record, because `produce_peeks` sends each result with its own authority.
+The re-store steps the produce counter by one, as the second send of the host does, and it bumps no collection counter.
+
+The P4 plan of a head-only queue stages the re-store right after the fire of a peek receive (`Plan::restore`, `Plan::restore_peeked`):
+
+```text
+RECEIVE-ROUND(op, h):                          ▷ one round of the consume plan of a queue, P4
+    stage Fire(op, h)                          ▷ the COMM removes h unless h is persistent
+    if op peeks and h is not persistent:
+        stage Store(h), with the authority of h        ▷ the re-store (decision 45)
+```
+
+The removal and the re-store must land together.
+The hot store does not deduplicate data, because `put_datum` inserts every datum.
+So a re-store over a substrate that kept the record would hold two copies, and a removal without a re-store would lose the record.
+
+The stores of the host and of the substrate are then equal after each peek.
+The host removes a peeked record and its reducer sends it again, and the substrate removes it and the agent stores it again.
+Both second sends have the same identity, the same counter step, and the same authority (headline H11).
 
 ### S6. Errors
 
@@ -1196,7 +1220,7 @@ Table S8 maps the checklist items to the reason and to the gate that shows it.
 | Item | Checklist item | Why P1 keeps it | Gate |
 |---|---|---|---|
 | 1 | The COMM produce sort is unchanged. | The substrate builds every COMM with `COMM::new`, and `trace/` is frozen. | R1, footprint `p1`, legacy golden corpus |
-| 2 | The host never retains peeked or matched-persistent data. | The host code is unchanged, and retention is a rule of spaces only. | R2, the six HEAD peek tests |
+| 2 | The host never retains peeked or matched-persistent data. | The host code is unchanged. Since [decision 45](decision-register.md#decision-45), spaces do not retain peeked records either. | R2, the six HEAD peek tests |
 | 3 | Joins stay greedy, and `Match` is unchanged. | The matcher modules are frozen. | R3, footprint `p1` |
 | 4 | No production EventCoverage exists. | `casper/src` is frozen. The substrate correlates events only inside its own commit. | Footprint `p1` |
 | 5 | Leaf, serializer, and event-struct formats are unchanged, and host structs too. | `internal.rs`, `serializers/`, and `trace/` are frozen. | R4, R5, footprint `p1` |
@@ -1245,35 +1269,35 @@ Each one closes under the global context, with no axiom, no parameter, and no ad
 
 | Id | Headline | Citation | Statement | Property tests |
 |---|---|---|---|---|
-| H1 | `commit_trace_eq_host` | `EventCorrelation.v:4785` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H2 | `commit_state_eq_host` | `EventCorrelation.v:4807` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H3 | `counter_timing_play_replay` | `EventCorrelation.v:5269` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
-| H4 | `verify_sound_complete` | `EventCorrelation.v:5359` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:5563` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_retention` |
-| H6 | `view_commit_coherent` | `EventCorrelation.v:4839` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
-| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:4862` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
-| H8 | `sub_order_between` | `EventCorrelation.v:7127` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
-| H9 | `abort_inert` | `EventCorrelation.v:6228` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H10 | `coverage_total` | `EventCorrelation.v:5150` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
-| H11 | `peek_retention_trace_eq_host` | `EventCorrelation.v:4907` | With the re-offer as the next operation, a commit makes the calls, events, status, and bindings of the host run. The stores differ only by the kept stored records. | `prop_space_txn_peek_retention` |
-| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:6313` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_retention` |
+| H1 | `commit_trace_eq_host` | `EventCorrelation.v:5472` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H2 | `commit_state_eq_host` | `EventCorrelation.v:5530` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H3 | `counter_timing_play_replay` | `EventCorrelation.v:6171` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
+| H4 | `verify_sound_complete` | `EventCorrelation.v:6261` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
+| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:6465` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
+| H6 | `view_commit_coherent` | `EventCorrelation.v:5557` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
+| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:5580` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
+| H8 | `sub_order_between` | `EventCorrelation.v:8029` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
+| H9 | `abort_inert` | `EventCorrelation.v:7130` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H10 | `coverage_total` | `EventCorrelation.v:6053` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
+| H11 | `peek_reproduces_trace_eq_host` | `EventCorrelation.v:5807` | With the re-offer and the re-stores as the next operations, a commit makes the calls, events, status, and bindings of the host run, whose reducer sends the peeked data again. The stores are equal ([decision 45](decision-register.md#decision-45)). | `prop_space_txn_peek_restore` |
+| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:7215` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
 | H13 | `sweep_exact` | `VolatileSweep.v:879` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H14 | `delete_absent_identity` | `VolatileSweep.v:956` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H15 | `sweep_root_neutral` | `VolatileSweep.v:1251` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H16 | `leaf_count_is_length` | `VolatileSweep.v:1314` | The root leaf record count is the length of the data list. | `prop_root_leaf_record_count_matches_history` |
-| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:6170` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:7072` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
 | H18 | `canonical_reads_root_neutral` | `VolatileSweep.v:1429` | Reads of canonical keys leave the checkpoint root unchanged. | `prop_space_txn_reads_root_neutral` |
-| H19 | `directive_fails_closed` | `EventCorrelation.v:6353` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
-| H20 | `parent_order_single_txn` | `EventCorrelation.v:7400` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
-| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:7521` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
+| H19 | `directive_fails_closed` | `EventCorrelation.v:7255` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
+| H20 | `parent_order_single_txn` | `EventCorrelation.v:8302` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
+| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:8423` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
 | H22 | `checkpoint_rejects_duplicate_key_actions` | `VolatileSweep.v:1613` | The checkpoint refuses two actions on one history key, and canonical cache keys have distinct history keys. | `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:6903` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
+| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:7805` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
 
 The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, H19 to H21, and H23, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
 Since [decision 36](decision-register.md#decision-36), H1, H2, and H11 assume in replay that every staged fire paired, which a successful staging implied before.
 H4 and H23 cover the unpaired fire.
 H23 assumes that the observer ignores the stateless directive queries and gives no directive.
-The lemma `replay_premises_satisfiable` (`EventCorrelation.v:7598`) shows that the observer of a phlo limit meets both premises.
+The lemma `replay_premises_satisfiable` (`EventCorrelation.v:8500`) shows that the observer of a phlo limit meets both premises.
 
 **TLA+ invariants.** Table S9.2 lists the invariants of the two TLA+ modules [[Lam94](#ref-lam94)].
 TLC explores the complete state space of each safe configuration.
@@ -1311,14 +1335,14 @@ They also make sorted groups that repeat a channel, which the substrate must acc
 | Group E | 3 | Reporting delegation. |
 | Group F | 15 | The review regressions: canonical order, store identity, trigger-key pairing, lock coverage, one commit per parent order, nested begin, sweep bookkeeping, and peeks in replay. |
 | Group G | 10 | The round-2 rules: repeated channels, parent tracking per scope, the cost of the commit checks, and the nested guard of the sweep. |
-| Group H | 7 | The round-3 rule: the peek re-offer, the queue scenario, host parity of the re-offer, replay, reporting, and the receipt flags. |
+| Group H | 9 | The round-3 rule and Rule E of [decision 45](decision-register.md#decision-45): the peek re-offer, the re-store, the queue scenario, host parity, replay, reporting, the receipt flags, and the control of a re-store without the removal. |
 | Unit tests in `space_store_handle.rs`, `space_play.rs`, and `space_replay.rs` | 18 | The order of sub-orders, the list rules of the view, the event correlation, the peeks rule, the store identity, canonical groups, lock stripes, the parent tracker, the registration, claimed positions, receipt flags, counter overflow, and the replay estimate of the sweep. |
 | `rholang/tests/reified_space_txn_host_bounds.rs` | 1 | The `Par` instance of `SpaceTxnHost` for the three hosts. |
 | `rholang/tests/reified_space_store_handle_par.rs` | 3 | The dedup of `TaggedContinuation`, the store identity of `Par` channels that differ only in `locally_free`, and the property `prop_space_txn_par_identity_ignores_locally_free`. |
 
 **Negative controls.** Each control shows that a check or a proof depends on the rule that it covers:
 
-- The script [rocq-negative-controls.py](../../../scripts/verify-reified/rocq-negative-controls.py) runs 27 mutants of the P1 models. Eleven cover FR-1 and FR-1', six cover FR-5', one covers FR-9', six cover FR-10, and three cover decision 36. Each mutant must fail to compile inside its expected lemma.
+- The script [rocq-negative-controls.py](../../../scripts/verify-reified/rocq-negative-controls.py) runs 29 mutants of the P1 models. Eleven cover FR-1 and FR-1', six cover FR-5', and one covers FR-9'. Four cover FR-10, three cover decision 36, one covers decision 44, and three cover Rule E of [decision 45](decision-register.md#decision-45). Each mutant must fail to compile inside its expected lemma.
 - Eight unsafe TLC configurations each refute exactly their invariant, and four Apalache step controls each break their inductive invariant.
 - The P4 test `space_queue_out_of_phlo_sweep_replays_equal` is the control of decision 36. On the code before the fix, 143 of its 232 deploys replayed to another outcome than play.
 - The unit tests `correlation_rejects_datum_without_produce_event` and `correlation_rejects_comm_before_trigger` show that the event correlation rejects a defect.
@@ -1572,8 +1596,8 @@ For a queue space with the default qualifier, the map is `{"spaceId": GByteArray
 The decoder `SpaceConfig::from_par` accepts only the exact image of `to_par`, and in P4 the theory must be `Nil`.
 Each read of a config record also requires that its `spaceId` is the space id of the space, otherwise the operation fails with `Inconsistent`.
 
-**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:820-846`).
-Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:854-876`).
+**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:820-861`).
+Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:869-891`).
 Table N2.4 gives the authorities of each record (P4 design B.7).
 
 *Table N2.4. The authorities of the records.*
@@ -1706,18 +1730,18 @@ Figure N3 shows the merge flow of the counter conflict.
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:193-196`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+`GenericSpace<S, D>` (`spaces/generic.rs:196-199`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 P4 instantiates it once, as `GenericSpace<HashMapOuter, QueueDiscipline>`, and `native_agent` returns it (`reified/system_processes.rs:56-58`).
 Two traits separate the parts of a family:
 
-- `OuterStore` (`spaces/generic.rs:105-121`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
-- `Discipline` (`spaces/generic.rs:142-189`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
+- `OuterStore` (`spaces/generic.rs:108-124`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
+- `Discipline` (`spaces/generic.rs:145-192`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
 
 `HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:22-52`).
 `QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:32-73`).
-In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:487-505`).
+In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:525-543`).
 
-**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:933-1001`) stage one operation in one transaction.
+**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:980-1048`) stage one operation in one transaction.
 The job then commits the transaction exactly once (`spaces/agent.rs:273-283`).
 
 ```text
@@ -1817,7 +1841,7 @@ A re-issued persistent element re-enters at its place.
 It meets the other side only when it precedes the head of its own side.
 Otherwise it is stored or parked behind the head, and it fires nothing.
 
-**The produce plan.** `offer` (`spaces/generic.rs:658-721`) is the plan of a send.
+**The produce plan.** `offer` (`spaces/generic.rs:696-759`) is the plan of a send.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
@@ -1844,7 +1868,7 @@ A head waiter that does not match blocks every waiter behind it, and the datum i
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive` (`spaces/generic.rs:729-791`) is the plan of a receive, and it mirrors OFFER.
+**The consume plan.** `receive` (`spaces/generic.rs:767-838`) is the plan of a receive, and it mirrors OFFER.
 
 ```text
 RECEIVE(op, ord):                              ▷ GenericSpace::receive
@@ -1856,6 +1880,7 @@ RECEIVE(op, ord):                              ▷ GenericSpace::receive
         (i, h) ← the head record and its view index, or PARK(K, peeks) and return no re-issue
         m ← MATCH(op.pattern, UNWRAP-DATUM(h).payload, K), or PARK(K, peeks) and return no re-issue
         stage consume([D], [op.pattern], K, op.persistent, peeks, Fire([BIND(D, h, m, i)]))
+        if op.peek ∧ ¬h.persist: RE-STORE(h)      ▷ the COMM removed h (decision 45)
         spent ← ¬op.persistent
         stays ← h.persist ∨ op.peek
         case AFTER-FIRE(rounds, spent, stays) of
@@ -1864,7 +1889,13 @@ RECEIVE(op, ord):                              ▷ GenericSpace::receive
             Reissue(cause):  return Reissue(op with reissued_ord ← (ord if op.persistent), cause)
 ```
 
-A peek `<<-` keeps the head record in place, and the substrate reports the record as persistent ([retention](glossary.md#retention)).
+A peek `<<-` keeps the head record by a [re-store](glossary.md#re-store) ([decision 45](decision-register.md#decision-45), Rule E).
+Its COMM removes a non-persistent head record, as the host COMM does.
+`RE-STORE` then stages a produce of the same record bytes with the outcome Store, right after the fire (`Plan::restore`).
+So the record keeps its identity, its envelope and its order, and it stays the head.
+The re-store registers the cost authority of the record (`Introduction::for_record`), and it bumps no counter.
+A peek of a persistent record removes nothing, so it stages no re-store.
+
 A persistent receive `<=` drains the head records one after another and parks when no head record matches.
 This drain is the persistent drain of the queue.
 
@@ -1921,7 +1952,7 @@ So one operation makes at most $`2(\mathtt{FIRE\_ROUND\_CAP} + 1) = 130`$ metere
 A fresh OFFER meets a waiter only when $`R = \emptyset`$, and it stores the datum only when no head waiter matches.
 A fresh RECEIVE meets a record only when $`W = \emptyset`$, and it parks only when no head record matches.
 A re-issue stages neither the datum nor the continuation of the operation, so the element is in flight until it re-enters.
-So a fresh operation keeps INV, which the headlines `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:878`) and `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:898`) prove.
+So a fresh operation keeps INV, which the headlines `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:928`) and `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:948`) prove.
 
 Between two rounds, other operations can store younger entries on the side of an element in flight.
 Then the two heads can match while the element is in flight.
@@ -1940,9 +1971,9 @@ A datum that is not persistent keeps no order.
 With a kept order, it could re-enter ahead of two matching heads, fire an older partner, and be spent.
 Then the matching heads would stay with nothing in flight.
 
-The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1085`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1168`) prove the order of delivery and the blocking of a head.
+The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1135`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) prove the order of delivery and the blocking of a head.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:864-899`) turns the receipts into a `SpaceOutcome`.
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:911-946`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
 
@@ -1960,14 +1991,15 @@ A fire that play did not commit stays unpaired, and the replay commit stops at i
 | a send `!!` fires two waiters `<-` | 2: Fire, 3: Fire, 4: Store | Produce, COMM, Produce, COMM, Produce |
 | a send `!!` fires a waiter `<=` | 2: Fire, then a re-issue | Produce, COMM, then a new space intent |
 | a receive fires with the head record | 2: Fire | Consume, COMM |
-| a peek fires with the head record | 2: Fire, the record stays | Consume, COMM with peeks |
+| a peek fires with the head record | 2: Fire, 3: Store (the re-store) | Consume, COMM with peeks, Produce |
+| a peek fires with a persistent head record | 2: Fire, the record stays | Consume, COMM with peeks |
 | a receive parks | 2: Park | Consume |
 | a receive `<=` drains two records | 2: Fire, 3: Fire, 4: Park | Consume, COMM, Consume, COMM, Consume |
 
 The first operation on a collection stages three counter operations instead of two. They are the take and the put of the space counter, and the put of the collection counter.
 Figure N4 shows the states of one queue collection.
 
-![State machine of one queue collection. The collection starts unopened; its first operation consumes the space counter S(sid), produces it again, opens S(sid,k) = 1 and takes the order 0. Every later operation bumps S(sid,k) from v to v + 1 and takes the order v, except that a re-issued persistent operation keeps the order of its first round and re-enters at its place. The open collection has four states: Empty, Records queued, Waiters queued, and Blocked, in which both sides hold entries but the head waiter does not match the head record. A send in a state with records joins the tail. A send without records meets the head waiter: on no match it is stored; on a match it fires; a peek waiter or a persistent send leaves the datum alive and the next round re-offers it to the next head waiter; a persistent send that fires a persistent receive re-issues as a new space intent. A receive in a state with waiters joins the tail. A receive without waiters meets the head record: on no match it parks; on a match it fires; a peek keeps the head record; a persistent receive drains the next head; a persistent receive that meets a persistent record re-issues. After 64 fires in one transaction the rest re-issues. A re-entry ahead of a head can fire in the Blocked state. The invariant INV holds at the end of every deploy: no pending match between the two heads.](diagrams/05-head-only-queue.svg)
+![State machine of one queue collection. The collection starts unopened; its first operation consumes the space counter S(sid), produces it again, opens S(sid,k) = 1 and takes the order 0. Every later operation bumps S(sid,k) from v to v + 1 and takes the order v, except that a re-issued persistent operation keeps the order of its first round and re-enters at its place. The open collection has four states: Empty, Records queued, Waiters queued, and Blocked, in which both sides hold entries but the head waiter does not match the head record. A send in a state with records joins the tail. A send without records meets the head waiter: on no match it is stored; on a match it fires; a peek waiter or a persistent send leaves the datum alive and the next round re-offers it to the next head waiter; a persistent send that fires a persistent receive re-issues as a new space intent. A receive in a state with waiters joins the tail. A receive without waiters meets the head record: on no match it parks; on a match it fires; a peek removes a non-persistent head record in its COMM and stores the same record again in the same transaction (decision 45); a persistent receive drains the next head; a persistent receive that meets a persistent record re-issues. After 64 fires in one transaction the rest re-issues. A re-entry ahead of a head can fire in the Blocked state. The invariant INV holds at the end of every deploy: no pending match between the two heads.](diagrams/05-head-only-queue.svg)
 
 *Figure N4. Source: [diagrams/05-head-only-queue.puml](diagrams/05-head-only-queue.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -2109,7 +2141,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:954-974`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:956-976`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2211,7 +2243,7 @@ Native replay then reproduces the failure of play (`SpaceRefs.v`, `native_execut
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:456-506`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:458-508`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome

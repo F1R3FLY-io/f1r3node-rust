@@ -64,9 +64,9 @@ DEFAULT_MAP = REPO_ROOT / "formal" / "reified-rspaces-model-map.json"
 # fix rules add the guards and the typed errors of FR-1 to FR-9. The round-2
 # rules remove DuplicateChannelInGroup (FR-1') and add
 # begin_evaluation_scope (FR-5'). The round-3 rule FR-10 adds the receipt
-# items retained_results and fired_receipt: the receipt sets the persist flag
-# only of a retained stored result, and every other result keeps its own
-# flag.
+# item fired_receipt. Decision 45 (Rule E) retires retention: check_peeks
+# replaces peek_retention, retained_results has no caller, and the receipt
+# keeps the persist flag of the host for every result.
 REQUIRED_ITEMS = (
     "TxnCore::stage_produce",
     "TxnCore::stage_consume",
@@ -93,7 +93,10 @@ REQUIRED_ITEMS = (
     "TxnRegistration::register",
     "counter_room",
     "SpaceStoreHandle::begin_evaluation_scope",
-    "retained_results",
+    # Disabled by decision 45 (Rule E): retained_results is commented out in
+    # space_store_handle.rs, because no fire retains a record.
+    # "retained_results",
+    "check_peeks",
     "fired_receipt",
     "SpaceTxnError::NonCanonicalChannelOrder",
     "SpaceTxnError::UnlockedChannel",

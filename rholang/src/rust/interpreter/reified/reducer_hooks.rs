@@ -440,8 +440,10 @@ impl ReducerCore {
     /// Dispatches the fires of a committed space operation, runs its re-issue and then the
     /// work `then` of the caller (P4 design C.3, readiness review H6).
     ///
-    /// Each fire dispatches its continuation with the matched data, as a HEAD COMM does. The
-    /// substrate keeps a peeked record, so no fire produces a datum again.
+    /// Each fire dispatches its continuation with the matched data, as a HEAD COMM does. A peek
+    /// fire removes its non-persistent records, and the agent stores each one again in the same
+    /// transaction (decision 45, Rule E). So a dispatch never produces a datum again, and it
+    /// makes no `produce_peeks` call.
     ///
     /// In a reduction, a dispatch ends the participant that makes it: `eval_continuation`
     /// moves the participant to the detached task of the body. So the participant can make no

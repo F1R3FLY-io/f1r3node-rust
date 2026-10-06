@@ -2792,7 +2792,7 @@ impl AgentRig {
     async fn view(&self) -> QueueState {
         let mut records: Vec<RecordSpec> = self
             .host
-            .get_data(&self.channels.data())
+            .get_data(self.channels.data())
             .await
             .into_iter()
             .map(|datum| {
@@ -2826,12 +2826,7 @@ impl AgentRig {
             })
             .collect();
         waiters.sort_by_key(|waiter| waiter.ord);
-        let counter = match self
-            .host
-            .get_data(&self.channels.counter())
-            .await
-            .as_slice()
-        {
+        let counter = match self.host.get_data(self.channels.counter()).await.as_slice() {
             [] => None,
             [datum] => Some(counter_value(&datum.a).expect("a counter record")),
             more => panic!("a collection has {} counter records", more.len()),
@@ -2846,7 +2841,7 @@ impl AgentRig {
     async fn space_counter(&self) -> i64 {
         match self
             .host
-            .get_data(&self.channels.space_counter())
+            .get_data(self.channels.space_counter())
             .await
             .as_slice()
         {
@@ -4266,15 +4261,11 @@ async fn queue_reentry_permutation_invariant_case(
 /// lose the place of its first round.
 #[test]
 fn prop_fresh_ord_reissue_loses_first_round_place() {
-    check(
-        pure_config(),
-        (0i64..4, 1i64..4),
-        |(value, offset)| {
-            tokio_runtime().block_on(fresh_ord_reissue_loses_first_round_place_case(
-                value, offset,
-            ))
-        },
-    );
+    check(pure_config(), (0i64..4, 1i64..4), |(value, offset)| {
+        tokio_runtime().block_on(fresh_ord_reissue_loses_first_round_place_case(
+            value, offset,
+        ))
+    });
 }
 
 /// One case of `prop_fresh_ord_reissue_loses_first_round_place`.
@@ -4319,10 +4310,7 @@ async fn fresh_ord_reissue_loses_first_round_place_case(
             }),
             (_, op) => op,
         };
-        let outcome = rig
-            .run_space_op(again)
-            .await
-            .expect("the re-entry commits");
+        let outcome = rig.run_space_op(again).await.expect("the re-entry commits");
         let after = rig.view().await;
         let head = after.head_record().map(|record| (record.ord, record.value));
         match fresh {
@@ -4664,6 +4652,147 @@ async fn agent_reserves_its_own_work_case(
             matcher,
             usage
         );
+    }
+    Ok(())
+}
+
+// ─── Peek re-store (decision 45) ─────────────────────────────────────────────────────────────
+
+/// An operation that peeks often: sends, plain receives that match every value, and peeks that
+/// match every value or one value.
+fn arb_peek_op() -> BoxedStrategy<QueueOp> {
+    prop_oneof![
+        3 => (0i64..4, prop_oneof![3 => Just(false), 1 => Just(true)])
+            .prop_map(|(value, persist)| QueueOp::Produce { value, persist }),
+        1 => Just(QueueOp::Consume { pat: Pat::Any, persist: false, peek: false, guard: None }),
+        3 => Just(QueueOp::Consume { pat: Pat::Any, persist: false, peek: true, guard: None }),
+        1 => (0i64..4).prop_map(|value| QueueOp::Consume {
+            pat: Pat::Lit(value),
+            persist: false,
+            peek: true,
+            guard: None,
+        }),
+    ]
+    .boxed()
+}
+
+/// The events of `log` on the data channel `data`: its produces, its consumes and the COMM
+/// events of its consumes.
+fn data_events<'a>(log: &'a [Event], data: &Blake2b256Hash) -> Vec<&'a Event> {
+    log.iter()
+        .filter(|event| match event {
+            Event::IoEvent(IOEvent::Produce(produce)) => produce.channel_hash == *data,
+            Event::IoEvent(IOEvent::Consume(consume)) => {
+                consume.channel_hashes == std::slice::from_ref(data)
+            }
+            Event::Comm(comm) => comm.consume.channel_hashes == std::slice::from_ref(data),
+        })
+        .collect()
+}
+
+/// `queue_restore_realizes_plan` (decision 45, Rule E): over a run of operations that peeks
+/// often, the staged operations of the agent realize the logical plan. A peek that fires with
+/// the head record leaves the records of the collection as they were. Its receipt keeps the
+/// persist flag of the record. For a record that is not persistent, the COMM of the peek
+/// removes the record, and the next event on the data channel produces the same record again:
+/// the re-store, with the identity of the stored record. A peek of a persistent record removes
+/// nothing and produces nothing.
+#[test]
+fn prop_queue_restore_realizes_plan() {
+    check(
+        pure_config(),
+        (arb_queue_state(5), vec(arb_peek_op(), 2..12)),
+        |(state, ops)| tokio_runtime().block_on(queue_restore_realizes_plan_case(state, ops)),
+    );
+}
+
+/// One case of `prop_queue_restore_realizes_plan`.
+async fn queue_restore_realizes_plan_case(
+    state: QueueState,
+    ops: Vec<QueueOp>,
+) -> Result<(), TestCaseError> {
+    let mut state = state;
+    state.waiters.clear();
+    let rig = AgentRig::of(&state).await;
+    let data = stable_hash(rig.channels.data());
+    for (salt, op) in (1u64..).zip(&ops) {
+        let before = rig.view().await;
+        let stored: Vec<Datum<ListParWithRandom>> = rig.host.get_data(rig.channels.data()).await;
+        let outcome = rig.run(op, salt).await.expect("the operation commits");
+        let log = rig.host.take_event_log().await;
+        let after = rig.view().await;
+        let QueueOp::Consume {
+            pat, peek: true, ..
+        } = *op
+        else {
+            continue;
+        };
+        let head = match before.waiters.is_empty() {
+            true => before
+                .head_record()
+                .copied()
+                .filter(|head| pat.fits(head.value)),
+            false => None,
+        };
+        let Some(head) = head else {
+            prop_assert!(
+                outcome.fires.is_empty(),
+                "a peek without a head match fires nothing"
+            );
+            prop_assert_eq!(&after.records, &before.records);
+            continue;
+        };
+        prop_assert_eq!(
+            &after.records,
+            &before.records,
+            "a peek keeps the records of the plan"
+        );
+        let [fire] = outcome.fires.as_slice() else {
+            panic!("a peek with a matching head fires once");
+        };
+        let [result] = fire.results.as_slice() else {
+            panic!("a queue fire binds one record");
+        };
+        prop_assert_eq!(
+            result.persistent,
+            head.persist,
+            "the receipt keeps the persist flag of the record"
+        );
+        let peeked = stored
+            .iter()
+            .find(|datum| datum_ord(&datum.a) == Ok(head.ord))
+            .expect("the head record is stored");
+        let events = data_events(&log, &data);
+        let [Event::IoEvent(IOEvent::Consume(_)), Event::Comm(comm), rest @ ..] = events.as_slice()
+        else {
+            panic!("a peek fire logs its consume and its COMM: {events:?}");
+        };
+        prop_assert_eq!(&comm.peeks, &BTreeSet::from([0]));
+        prop_assert_eq!(
+            comm.produces.as_slice(),
+            std::slice::from_ref(&peeked.source)
+        );
+        match (head.persist, rest) {
+            (true, []) => {}
+            (false, [Event::IoEvent(IOEvent::Produce(restored))]) => prop_assert_eq!(
+                restored,
+                &peeked.source,
+                "the re-store has the identity of the record"
+            ),
+            (persist, other) => {
+                return Err(TestCaseError::fail(format!(
+                    "a peek of a record with persist = {persist} logged {other:?} after its COMM"
+                )));
+            }
+        }
+        let copies = rig
+            .host
+            .get_data(rig.channels.data())
+            .await
+            .iter()
+            .filter(|datum| datum.source == peeked.source && datum.a == peeked.a)
+            .count();
+        prop_assert_eq!(copies, 1, "the store holds the peeked record once");
     }
     Ok(())
 }

@@ -37,8 +37,7 @@ use proptest::sample::select;
 use proptest::test_runner::RngSeed;
 use prost::Message;
 use reified_strategies::{
-    bound_var, contains_marker, expr_par, gbool, gint, gstring, list, new_term, send, sorted,
-    tuple,
+    bound_var, contains_marker, expr_par, gbool, gint, gstring, list, new_term, send, sorted, tuple,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::util::prepend_new;
@@ -338,10 +337,7 @@ fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
         ),
         (
             r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?("default")) { for (_ <- space!?("produce", "jobs", [1]; persistent=true)) { Nil } } }"#,
-            vec![params_model(Vec::new(), vec![(
-                "persistent",
-                gbool(true),
-            )])],
+            vec![params_model(Vec::new(), vec![("persistent", gbool(true))])],
         ),
         (
             r#"new hmq(`rho:space:hashmap:queue`) in { for (space <- hmq!?(free Nat())) { Nil } }"#,

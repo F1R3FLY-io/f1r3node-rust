@@ -23,7 +23,9 @@
            re-issue at FIRE_ROUND_CAP fires (I-21)
            else offer to the next head
    The consume plan (receive) is symmetric: the continuation waits behind
-   earlier waiters, then meets the head records one by one.
+   earlier waiters, then meets the head records one by one. After a peek
+   fire of a non-persistent record, the code also stages the re-store of
+   that record (decision 45, Rule E: code_ops).
    The round of a re-issued persistent element (decision 43, QD-9):
      bump the counter, keep the first-round ord             (operation_ord)
      if an older entry is the head of its side: store or park the element
@@ -37,13 +39,18 @@
    - Design: the P4 design report B.4 (plans, the invariant INV, the loop
      bound) and E.1 (the headlines of this module, the queue part). The
      design addendum of decision 43, sections 43.2 to 43.4 and 43.9 (the
-     placement rule, the scope rule, SHADOW, L1 to L4 and T1 to T4).
+     placement rule, the scope rule, SHADOW, L1 to L4 and T1 to T4). The
+     design report of decision 45: sections C.1, C.7 and C.8 (the staged
+     operations of a peek, the hot store and the queue) and E.5.
    - Plan: decisions 11 (head-only), 30 (re-offer of a surviving datum), 31
      (every operation bumps the counter) and 43 (a re-issued persistent
      operation keeps its first-round ord), and revision I-21
-     (FIRE_ROUND_CAP = 64).
-   - Code: the commit of decision 43 in this repository. The line numbers
-     below are the line numbers of that commit.
+     (FIRE_ROUND_CAP = 64). Decision 45 (Rule E): a peek fire removes each
+     non-persistent record that it binds, and the agent stores the record
+     again.
+   - Code: the commit of decision 45 (Rule E) in this repository, which
+     keeps the plans of decision 43 and adds the re-store of a peeked
+     record. The line numbers below are the line numbers of that commit.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -56,14 +63,16 @@
    fire_round_cap, after_fire
                             reified/costs.rs:43, 299-310 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:658-721 (GenericSpace::offer)
-   receive, receive_loop    spaces/generic.rs:729-791 (GenericSpace::receive)
-   head_waiter, head_record spaces/generic.rs:548-564, 568-580, 584-596
+   offer, offer_loop        spaces/generic.rs:696-759 (GenericSpace::offer)
+   receive, receive_loop    spaces/generic.rs:767-838 (GenericSpace::receive.
+                            The row of code_ops covers its re-store of
+                            decision 45.)
+   head_waiter, head_record spaces/generic.rs:586-602, 606-618, 622-634
                             (scan_head, head_waiter, head_datum)
    bump                     spaces/counter.rs:163-231 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:933-1001 (prepare_produce and
+   produce, consume         spaces/generic.rs:980-1048 (prepare_produce and
                             prepare_consume: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
@@ -72,35 +81,60 @@
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
-   operation_ord            spaces/generic.rs:809-821 (the check
+   operation_ord            spaces/generic.rs:856-868 (the check
                             0 <= reissued_ord < bump.ord, else
                             Inconsistent, and the bump value for a fresh
                             operation)
    ord_precedes             spaces/disciplines/queue.rs:63-72
                             (QueueDiscipline::precedes: ord < head)
-   reentry_at_head          spaces/generic.rs:625-650, 600-617
+   reentry_at_head          spaces/generic.rs:663-688, 638-655
                             (GenericSpace::at_head and
                             GenericSpace::head_ord: an empty side, or an
                             ord that precedes the head, and Inconsistent on
                             an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:658-721, 729-791
+                            spaces/generic.rs:696-759, 767-838
                             (GenericSpace::offer and GenericSpace::receive:
                             store or park at its place when not at the
                             head, else the loop)
    reenter_produce, reenter_consume
-                            spaces/generic.rs:933-966, 968-1001
+                            spaces/generic.rs:980-1013, 1015-1048
                             (prepare_produce and prepare_consume with a
                             reissued_ord: bump, then operation_ord, then the
                             plan)
    reissued_ord, flight_after
-                            spaces/generic.rs:713, 783 (GenericSpace::offer
+                            spaces/generic.rs:751, 830 (GenericSpace::offer
                             and GenericSpace::receive: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
-   round, run_rounds        reified/reducer_hooks.rs:456-506
+   round, run_rounds        reified/reducer_hooks.rs:458-508
                             (dispatch_space_outcome: a re-issue is a new
                             Intent::Space, the last dispatch branch of the
                             same deploy)
+   code_staged, code_of, code_ops
+                            spaces/generic.rs:347-380, 803-808 and 814-836
+                            (Plan::restore and Plan::restore_peeked stage a
+                            Store of the same record bytes with persist =
+                            false. GenericSpace::receive copies the record
+                            of a peek fire when the record is not
+                            persistent. Each FireStep branch calls
+                            fire_receive, then restore_peeked.)
+   remove_key, sub_step, sub_records
+                            rspace/space_play.rs:136, 196, 294, 369-386,
+                            389-413 and 456-472,
+                            replay_rspace/space_replay.rs:186, 288-289 and
+                            430, and hot_store.rs:879-897 (a Store calls
+                            store_data, which calls put_datum. put_datum
+                            inserts at index 0 with no deduplication. A
+                            fire always calls remove_matched_datum_and_join
+                            or store_persistent_data, which remove each
+                            bound stored record that is not persistent.
+                            The incoming datum of a produce-side fire has
+                            no index, so no stored record leaves.)
+   retention_step, retention_records
+                            rspace/space_play.rs:186-195, 285-293 and
+                            replay_rspace/space_replay.rs:272-287, 421-429
+                            (the retention before decision 45, kept as
+                            comments: a peek fire kept its records)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -116,6 +150,17 @@
      plan_permutation_invariant_instance discharges it.
    - The staged view of a collection is a record list and a waiter list. A
      fire removes the fired partner at its view index unless it stays.
+   - A peek fire of a non-persistent record removes the record in the
+     substrate, and the code stores the same record again right after the
+     fire (decision 45, Rule E: Plan::restore). o_ops is the logical plan.
+     It keeps the peeked record in o_state, and it has no re-store.
+     code_ops adds the re-store after each such fire. sub_records applies
+     the Rule E effects of code_ops to the records of the view. The
+     re-stored record goes to the front of its list.
+     queue_restore_realizes_plan proves that the result holds the records
+     of o_state, up to the list order. queue_plan_permutation_invariant
+     shows that the list order does not change a plan. EventCorrelation.v
+     (H11) models the removal and the re-store in the substrate.
    - The ord is a nat. The code checks i64 overflow with CounterOverflow
      (spaces/counter.rs:185, 209), so every ord of the code is a nat.
    - An element in flight is a record or a waiter with the ord of its first
@@ -170,6 +215,11 @@
                                          C1: a non-persistent element that
                                          keeps its ord breaks INV at a
                                          deploy boundary
+   Decision 45 (Rule E: a peek fire removes the record that it binds, and
+   the code stores the record again):
+   20. queue_restore_realizes_plan       the Rule E effects of the code
+                                         operations give the records of the
+                                         plan, up to the list order
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -3141,9 +3191,257 @@ Section Queue.
         split; [exact Hpr | split; [apply perm_skip; exact Hpw | first [reflexivity | rewrite Hc; reflexivity]]].
       + exact I.
   Qed.
+
+  (* ── 25. Decision 45: headline 20 (the re-store of a peek) ─────────── *)
+
+  (* Rule E (decision 45). The COMM of a peek fire removes each stored
+     non-persistent record that it binds, as the host COMM does. Right
+     after the fire, the code stages a produce of the same record bytes
+     with outcome Store and persist = false: the re-store. The record keeps
+     its bytes, its identity and its ord, so it stays the head. o_ops is
+     the logical plan. It keeps the peeked record in o_state, and it has no
+     re-store. code_ops is the list of the staged operations of the code,
+     and sub_records applies their substrate effects to the records. *)
+
+  (* A staged operation of the code is an operation of the plan or the
+     re-store of a peeked record (Plan::restore). *)
+  Inductive code_staged : Type :=
+  | CStaged : staged -> code_staged
+  | CRestore : record -> code_staged.
+
+  (* code_of gives the code operations of one plan operation. The re-store
+     of a record comes right after each consume fire that peeks at the
+     record, when the record is not persistent. This is
+     Plan::restore_peeked after Plan::fire_receive, in each FireStep branch
+     of GenericSpace::receive. *)
+  Definition code_of (s : staged) : list code_staged :=
+    match s with
+    | SFireConsume k h =>
+        if w_peek k && negb (r_pers h) then [CStaged s; CRestore h] else [CStaged s]
+    | _ => [CStaged s]
+    end.
+
+  Definition code_ops (ops : list staged) : list code_staged := flat_map code_of ops.
+
+  (* remove_key removes the first record with the key (o, rk). The
+     substrate removes the stored record that a fire binds, at the index of
+     the record in the hot store. The model names that record by its key
+     (ord, rank) instead. A key needs no decidable equality on V. A key also
+     names the record in any permutation of the plan view. A view index
+     does not, and a re-store moves its record to the front of the
+     substrate list. Under wf, no two records share an ord, so the key
+     names exactly one entry of the list (remove_key_perm). *)
+  Fixpoint remove_key (o rk : nat) (l : list record) : list record :=
+    match l with
+    | [] => []
+    | x :: rest => if (r_ord x =? o) && (r_rank x =? rk) then rest else x :: remove_key o rk rest
+    end.
+
+  (* sub_step applies one code operation to the records of the substrate
+     view (Rule E). A store and a re-store insert the record at the front
+     (put_datum). A park and a produce-side fire change no record. The
+     incoming datum of a produce-side fire is never stored, and a queue
+     waiter binds no stored record. A consume fire removes the record that
+     it binds when the record is not persistent, also when the fire
+     peeks. *)
+  Definition sub_step (l : list record) (c : code_staged) : list record :=
+    match c with
+    | CStaged (SStore r) => r :: l
+    | CStaged (SPark _) => l
+    | CStaged (SFireProduce _ _) => l
+    | CStaged (SFireConsume _ h) => if r_pers h then l else remove_key (r_ord h) (r_rank h) l
+    | CRestore h => h :: l
+    end.
+
+  (* sub_records applies the code operations cs, in their order, to the
+     records l of the substrate view. *)
+  Definition sub_records (cs : list code_staged) (l : list record) : list record :=
+    fold_left sub_step cs l.
+
+  (* retention_step is the substrate before decision 45 (retention): a
+     peek fire keeps the records that it binds. Only the negative control
+     restore_over_retention_duplicates uses it. *)
+  Definition retention_step (l : list record) (c : code_staged) : list record :=
+    match c with
+    | CStaged (SFireConsume k _) => if w_peek k then l else sub_step l c
+    | _ => sub_step l c
+    end.
+
+  Definition retention_records (cs : list code_staged) (l : list record) : list record :=
+    fold_left retention_step cs l.
+
+  Lemma sub_records_app :
+    forall c1 c2 l, sub_records (c1 ++ c2) l = sub_records c2 (sub_records c1 l).
+  Proof. intros c1 c2 l. unfold sub_records. apply fold_left_app. Qed.
+
+  Lemma sub_records_code_cons :
+    forall s ops l,
+      sub_records (code_ops (s :: ops)) l = sub_records (code_ops ops) (sub_records (code_of s) l).
+  Proof. intros s ops l. unfold code_ops. cbn [flat_map]. apply sub_records_app. Qed.
+
+  Lemma sub_records_code_one :
+    forall s l, sub_records (code_ops [s]) l = sub_records (code_of s) l.
+  Proof. intros s l. rewrite sub_records_code_cons. reflexivity. Qed.
+
+  (* With unique keys, the removal by the key of an entry h of a list
+     removes h itself. *)
+  Lemma remove_key_perm :
+    forall l h, In h l -> keys_unique r_ord r_rank l ->
+      Permutation l (h :: remove_key (r_ord h) (r_rank h) l).
+  Proof.
+    induction l as [| x rest IH]; intros h Hin Hk; [destruct Hin |].
+    cbn [remove_key].
+    destruct ((r_ord x =? r_ord h) && (r_rank x =? r_rank h)) eqn:E.
+    - apply andb_true_iff in E as [E1 E2]. apply Nat.eqb_eq in E1. apply Nat.eqb_eq in E2.
+      rewrite (Hk x h (or_introl eq_refl) Hin E1 E2). reflexivity.
+    - destruct Hin as [-> | Hin].
+      + rewrite !Nat.eqb_refl in E. discriminate E.
+      + assert (Hk' : keys_unique r_ord r_rank rest)
+          by (apply (keys_unique_incl record r_ord r_rank (x :: rest));
+              [intros y Hy; right; exact Hy | exact Hk]).
+        eapply perm_trans; [apply perm_skip; exact (IH h Hin Hk') | apply perm_swap].
+  Qed.
+
+  (* restore_fire_step covers one consume fire. Its code operations are
+     the fire, then the re-store after a peek at a non-persistent record.
+     They take a permutation of the plan view to a permutation of the plan
+     view after the fire. *)
+  Lemma restore_fire_step :
+    forall st hi h k l,
+      NoDup (map r_ord (q_records st)) -> nth_error (q_records st) hi = Some h ->
+      Permutation l (q_records st) ->
+      Permutation (sub_records (code_of (SFireConsume k h)) l)
+        (q_records (if r_pers h || w_peek k then st
+                    else mkQ (remove_at hi (q_records st)) (q_waiters st) (q_counter st))).
+  Proof.
+    intros st hi h k l Hnd Hnth Hp.
+    assert (Hin : In h l)
+      by (apply (Permutation_in h (Permutation_sym Hp)); exact (nth_error_In _ _ Hnth)).
+    assert (Hk : keys_unique r_ord r_rank l).
+    { apply (keys_unique_incl record r_ord r_rank (q_records st)); [| apply nodup_keys_unique; exact Hnd].
+      intros y Hy. exact (Permutation_in y Hp Hy). }
+    pose proof (remove_key_perm l h Hin Hk) as Hl.
+    unfold code_of, sub_records.
+    destruct (r_pers h) eqn:Ep; destruct (w_peek k) eqn:Ek;
+      cbn [andb negb orb fold_left sub_step q_records]; rewrite ?Ep; cbn [andb negb orb].
+    - (* a persistent record stays, and nothing is re-stored *)
+      exact Hp.
+    - (* a persistent record and no peek: the same *)
+      exact Hp.
+    - (* a peek: the fire removes h, and the re-store puts h back *)
+      exact (perm_trans (Permutation_sym Hl) Hp).
+    - (* a plain fire: the fire removes h, as the plan does *)
+      apply (Permutation_cons_inv (a := h)).
+      eapply perm_trans; [exact (Permutation_sym Hl) |].
+      eapply perm_trans; [exact Hp | exact (remove_at_perm record hi _ h Hnth)].
+  Qed.
+
+  (* receive_loop_restore covers the receive loop from any staged view
+     whose ords are distinct. Its code operations, with the Rule E effects,
+     take a permutation of the plan view to a permutation of the records of
+     its outcome. A peek fire stays, so the loop stops after it. So its
+     re-store is the last code operation of the loop. *)
+  Lemma receive_loop_restore :
+    forall fuel fired st k l,
+      NoDup (map r_ord (q_records st)) -> Permutation l (q_records st) ->
+      Permutation (sub_records (code_ops (o_ops (receive_loop fuel fired st k))) l)
+                  (q_records (o_state (receive_loop fuel fired st k))).
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st k l Hnd Hp;
+      unfold receive_loop; fold receive_loop;
+      destruct (head_index r_ord r_rank (q_records st)) as [[hi h] |] eqn:Eh.
+    2, 4: cbn [o_ops o_state park_waiter q_records]; rewrite sub_records_code_one; exact Hp.
+    all: destruct (head_index_head record r_ord r_rank _ _ _ Eh) as [_ Hnth].
+    all: destruct (fits (w_pat k) (r_val h)) eqn:Efit; cbn [negb].
+    2, 4: cbn [o_ops o_state park_waiter q_records]; rewrite sub_records_code_one; exact Hp.
+    all: pose proof (restore_fire_step st hi h k l Hnd Hnth Hp) as Hstep.
+    all: destruct (after_fire (S fired) (negb (w_pers k)) (r_pers h || w_peek k)).
+    (* fuel S, FContinue: the loop goes on with the next head *)
+    6: { cbn [o_ops o_state]. rewrite sub_records_code_cons.
+         apply IH; [| exact Hstep].
+         destruct (r_pers h || w_peek k); cbn [q_records]; [exact Hnd |].
+         apply remove_at_nodup. exact Hnd. }
+    all: cbn [o_ops o_state]; rewrite sub_records_code_one; exact Hstep.
+  Qed.
+
+  (* offer_loop_restore covers the offer loop from any staged view. A
+     produce-side fire changes no record, and a store inserts the datum at
+     the front, as the plan does. *)
+  Lemma offer_loop_restore :
+    forall fuel fired st r l,
+      Permutation l (q_records st) ->
+      Permutation (sub_records (code_ops (o_ops (offer_loop fuel fired st r))) l)
+                  (q_records (o_state (offer_loop fuel fired st r))).
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st r l Hp;
+      unfold offer_loop; fold offer_loop;
+      destruct (head_index w_ord w_rank (q_waiters st)) as [[wi w] |] eqn:Eh.
+    2, 4: cbn [o_ops o_state store_record q_records]; rewrite sub_records_code_one;
+          apply perm_skip; exact Hp.
+    all: destruct (fits (w_pat w) (r_val r)) eqn:Efit; cbn [negb].
+    2, 4: cbn [o_ops o_state store_record q_records]; rewrite sub_records_code_one;
+          apply perm_skip; exact Hp.
+    all: assert (Hp1 : Permutation l (q_records (if w_pers w then st
+                                                 else mkQ (q_records st) (remove_at wi (q_waiters st)) (q_counter st))))
+           by (destruct (w_pers w); exact Hp).
+    all: destruct (after_fire (S fired) (negb (r_pers r) && negb (w_peek w)) (w_pers w)).
+    (* fuel S, FContinue: the loop goes on with the next head *)
+    6: { cbn [o_ops o_state]. rewrite sub_records_code_cons. apply IH. exact Hp1. }
+    all: cbn [o_ops o_state]; rewrite sub_records_code_one; exact Hp1.
+  Qed.
+
+  (* Headline 20 (decision 45, Rule E). Take a well-formed collection and a
+     plan: a fresh consume, a fresh produce or a re-entry. Apply the code
+     operations of the plan to the records of the view, with the substrate
+     effects of Rule E. A consume fire removes the non-persistent record
+     that it binds, also on a peek. A store and a re-store insert their
+     record at the front. The result holds the records of the logical plan
+     (o_state), up to the list order. So the removal and the re-store of a
+     peek together keep the peeked record, as the plan does. The list order
+     does not change a plan (queue_plan_permutation_invariant). *)
+  Theorem queue_restore_realizes_plan :
+    forall st, wf st ->
+      (forall rank pat pers peek,
+         Permutation (sub_records (code_ops (o_ops (consume st rank pat pers peek))) (q_records (bumped st)))
+                     (q_records (o_state (consume st rank pat pers peek)))) /\
+      (forall rank v pers,
+         Permutation (sub_records (code_ops (o_ops (produce st rank v pers))) (q_records (bumped st)))
+                     (q_records (o_state (produce st rank v pers)))) /\
+      (forall f o, reenter st f = Some o ->
+         Permutation (sub_records (code_ops (o_ops o)) (q_records (bumped st))) (q_records (o_state o))).
+  Proof.
+    intros st [Hndr _].
+    split; [| split].
+    - (* a fresh consume *)
+      intros rank pat pers peek. unfold consume, receive.
+      destruct (q_waiters (bumped st)) as [| w ws].
+      + apply receive_loop_restore; [exact Hndr | apply Permutation_refl].
+      + cbn [o_ops o_state park_waiter q_records]. rewrite sub_records_code_one.
+        apply Permutation_refl.
+    - (* a fresh produce *)
+      intros rank v pers. unfold produce, offer.
+      destruct (q_records (bumped st)) as [| x xs] eqn:Er.
+      + apply offer_loop_restore. rewrite Er. apply perm_nil.
+      + cbn [o_ops o_state store_record q_records]. rewrite sub_records_code_one, Er.
+        apply Permutation_refl.
+    - (* a re-entry *)
+      intros f o Ho. destruct f as [r | k]; cbn [reenter] in Ho.
+      + unfold reenter_produce in Ho.
+        destruct (operation_ord (Some (r_ord r)) (bump_ord (q_counter st))) as [n |]; [| discriminate Ho].
+        destruct (reenter_offer_shape _ _ o Ho) as [-> | ->].
+        * apply offer_loop_restore. apply Permutation_refl.
+        * cbn [o_ops o_state store_record q_records]. rewrite sub_records_code_one.
+          apply Permutation_refl.
+      + unfold reenter_consume in Ho.
+        destruct (operation_ord (Some (w_ord k)) (bump_ord (q_counter st))) as [n |]; [| discriminate Ho].
+        destruct (reenter_receive_shape _ _ o Ho) as [-> | ->].
+        * apply receive_loop_restore; [exact Hndr | apply Permutation_refl].
+        * cbn [o_ops o_state park_waiter q_records]. rewrite sub_records_code_one.
+          apply Permutation_refl.
+  Qed.
 End Queue.
 
-(* ── 25. Headline 9: the legacy scan breaks head-only ────────────────── *)
+(* ── 26. Headline 9: the legacy scan breaks head-only ────────────────── *)
 
 (* A pattern matches a value when they are equal. The head waiter w1 (ord
    0) waits for 7. The younger waiter w2 (ord 1) waits for 5. The datum is
@@ -3179,7 +3477,7 @@ Proof.
   intros V P st [Hr [Hw _]]. split; apply nodup_keys_unique; assumption.
 Qed.
 
-(* ── 26. Decision 43: headlines 18 and 19 (C0 and C1) ──────────────────── *)
+(* ── 27. Decision 43: headlines 18 and 19 (C0 and C1) ──────────────────── *)
 
 (* The patterns of the examples: None matches every value, and Some n
    matches the value n only. *)
@@ -3276,7 +3574,66 @@ Proof.
   intros H. destruct (H eq_refl) as [f [[] _]].
 Qed.
 
-(* ── 27. Assumption audit ──────────────────────────────────────────────── *)
+(* ── 28. Decision 45: the negative controls of headline 20 ──────────────── *)
+
+(* A queue holds one non-persistent record h (ord 0) with the value 5, and
+   no waiter. A peek receive for any value takes the ord 1. It fires h and
+   is spent, so the plan stops, and h stays in the plan view. *)
+Definition peek_h : record nat := mkRecord nat 0 0 5 false.
+Definition peek_k : waiter (option nat) := mkWaiter (option nat) 1 0 None false true.
+Definition peek_st : qstate nat (option nat) := mkQ nat (option nat) [peek_h] [] (Some 1).
+Definition peek_plan : outcome nat (option nat) :=
+  consume nat (option nat) pattern_fits peek_st 0 None false true.
+
+(* This control puts the re-store on the substrate before decision 45. A
+   peek fire kept its record (retention). With the re-store on top of
+   retention, the substrate view holds h twice, because the hot store does
+   not deduplicate data. So the permutation of headline 20 fails. Rule E
+   removes h and stores it again, so the view holds h once. The collection
+   is well formed, so headline 20 applies to it. *)
+Lemma restore_over_retention_duplicates :
+  wf nat (option nat) peek_st /\
+  o_ops nat (option nat) peek_plan = [SFireConsume nat (option nat) peek_k peek_h] /\
+  q_records nat (option nat) (o_state nat (option nat) peek_plan) = [peek_h] /\
+  code_ops nat (option nat) (o_ops nat (option nat) peek_plan) =
+    [CStaged nat (option nat) (SFireConsume nat (option nat) peek_k peek_h);
+     CRestore nat (option nat) peek_h] /\
+  sub_records nat (option nat) (code_ops nat (option nat) (o_ops nat (option nat) peek_plan))
+    (q_records nat (option nat) (bumped nat (option nat) peek_st)) = [peek_h] /\
+  retention_records nat (option nat) (code_ops nat (option nat) (o_ops nat (option nat) peek_plan))
+    (q_records nat (option nat) (bumped nat (option nat) peek_st)) = [peek_h; peek_h] /\
+  ~ Permutation
+      (retention_records nat (option nat) (code_ops nat (option nat) (o_ops nat (option nat) peek_plan))
+         (q_records nat (option nat) (bumped nat (option nat) peek_st)))
+      (q_records nat (option nat) (o_state nat (option nat) peek_plan)).
+Proof.
+  split.
+  { unfold wf, peek_st, peek_h. cbn [q_records q_waiters q_counter map bump_ord r_ord].
+    split; [apply NoDup_cons; [intros [] | constructor] |].
+    split; [constructor |].
+    split; [intros r [<- | []]; cbn [r_ord]; lia | intros w []]. }
+  split; [reflexivity |]. split; [reflexivity |]. split; [reflexivity |].
+  split; [reflexivity |]. split; [reflexivity |].
+  intros H. apply Permutation_length in H. discriminate H.
+Qed.
+
+(* This control applies the removal of Rule E without the re-store: each
+   plan operation is staged alone. The peek fire removes h, and nothing
+   stores h again. The substrate view loses h, so the permutation of
+   headline 20 fails. *)
+Lemma removal_without_restore_loses_record :
+  sub_records nat (option nat) (map (CStaged nat (option nat)) (o_ops nat (option nat) peek_plan))
+    (q_records nat (option nat) (bumped nat (option nat) peek_st)) = [] /\
+  ~ Permutation
+      (sub_records nat (option nat) (map (CStaged nat (option nat)) (o_ops nat (option nat) peek_plan))
+         (q_records nat (option nat) (bumped nat (option nat) peek_st)))
+      (q_records nat (option nat) (o_state nat (option nat) peek_plan)).
+Proof.
+  split; [reflexivity |].
+  intros H. apply Permutation_length in H. discriminate H.
+Qed.
+
+(* ── 29. Assumption audit ──────────────────────────────────────────────── *)
 
 Print Assumptions queue_head_is_min_ord.
 Print Assumptions queue_produce_preserves_inv.
@@ -3297,3 +3654,4 @@ Print Assumptions queue_reentry_loop_bounded_or_reissues.
 Print Assumptions queue_reentry_permutation_invariant.
 Print Assumptions fresh_ord_reissue_loses_first_round_place.
 Print Assumptions nonpersistent_first_ord_reentry_breaks_quiescent_inv.
+Print Assumptions queue_restore_realizes_plan.

@@ -36,9 +36,8 @@ use crate::rspace::space_store_handle::{
     BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
     ReadyProduce, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost,
     StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport,
-    TxnBackend, TxnRegistration, by_descending_index, completion, fired_receipt,
-    installed_channels, ready_consume, ready_produce, retained_results, root_leaf_records,
-    run_before_observe, sweep_channels, sweep_volatile_channels,
+    TxnBackend, TxnRegistration, completion, fired_receipt, installed_channels, ready_consume,
+    ready_produce, root_leaf_records, run_before_observe, sweep_channels, sweep_volatile_channels,
 };
 use crate::rspace::striped_locks;
 use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
@@ -208,12 +207,11 @@ where
     // matching, then observe_comm. An unpaired fire stops there with
     // `ReplayDivergence`, and `produce_observed` rolls the counter back. A
     // paired fire logs the produce and the COMM, removes the continuation
-    // unless persistent, retires the candidates, and removes the COMM's
-    // bindings. The incoming datum is never stored. A retained (peeked) fire
-    // keeps the stored records and removes only the fired joins; the agent
-    // offers a non-persistent incoming datum again as the next produce
-    // (FR-10). The receipt carries the produce as recorded in the paired
-    // COMM.
+    // unless persistent, retires the candidates (also for a peek, decision
+    // 45, Rule E), and removes the COMM's bindings. The incoming datum is
+    // never stored; the agent offers a non-persistent incoming datum of a
+    // peek fire again as the next produce (FR-10, decision 30). The receipt
+    // carries the produce as recorded in the paired COMM.
     fn produce_fire(
         &self,
         store: &dyn HotStore<C, P, A, K>,
@@ -229,7 +227,6 @@ where
                     channels,
                     continuation,
                     candidates,
-                    retain,
                     recorded,
                     ..
                 },
@@ -272,16 +269,24 @@ where
             }
             None => self.space.mark_replay_waiting_continuation_match(),
         }
-        match retain {
-            false => self
-                .space
-                .remove_matched_datum_and_join(&channels, &committed),
-            true => {
-                for candidate in by_descending_index(&committed) {
-                    store.remove_join(&candidate.channel, &channels);
-                }
-            }
-        }
+        // Disabled by decision 45 (Rule E, "Apply everywhere"): a retaining
+        // (peek) fire only unjoined its candidates. Every fire now removes its
+        // stored non-persistent records, as the host does.
+        //
+        // ```
+        // match retain {
+        //     false => self
+        //         .space
+        //         .remove_matched_datum_and_join(&channels, &committed),
+        //     true => {
+        //         for candidate in by_descending_index(&committed) {
+        //             store.remove_join(&candidate.channel, &channels);
+        //         }
+        //     }
+        // }
+        // ```
+        self.space
+            .remove_matched_datum_and_join(&channels, &committed);
         self.space.remove_bindings_for(comm.clone());
 
         let produce = recorded
@@ -290,11 +295,11 @@ where
             .find(|produce| produce.hash == source.hash)
             .unwrap_or(source);
         let consume_ref = continuation.source.clone();
-        let retained = retained_results(&candidates, retain);
+        let fired = candidates.len();
         let wrapped = self
             .space
             .wrap_result(channels, continuation, consume_ref, candidates);
-        fired_receipt(comm, wrapped, &retained, Some(produce))
+        fired_receipt(comm, wrapped, fired, Some(produce))
     }
 
     // replay_rspace.rs `locked_consume`: start with the consume channels and
@@ -325,7 +330,8 @@ where
     // the introduction, then park, or fire: observe_comm, after which an
     // unpaired fire stops with `ReplayDivergence`, and a paired fire logs
     // the consume and the COMM, removes the stored non-persistent records
-    // unless retaining, and removes the COMM's bindings.
+    // (also for a peek, decision 45, Rule E), and removes the COMM's
+    // bindings.
     fn consume_observed(
         &self,
         consume: ReadyConsume<C, P, A, K>,
@@ -379,7 +385,6 @@ where
                 fire:
                     StagedConsumeFire {
                         candidates,
-                        retain,
                         recorded,
                         ..
                     },
@@ -413,15 +418,22 @@ where
                     "comm.consume",
                 );
                 events.push(Event::Comm(comm.clone()));
-                if !retain {
-                    self.space.store_persistent_data(&committed);
-                }
+                // Disabled by decision 45 (Rule E, "Apply everywhere"): a
+                // retaining (peek) fire kept its records. Every fire now removes
+                // its stored non-persistent records, as the host does.
+                //
+                // ```
+                // if !retain {
+                //     self.space.store_persistent_data(&committed);
+                // }
+                // ```
+                self.space.store_persistent_data(&committed);
                 self.space.remove_bindings_for(comm.clone());
-                let retained = retained_results(&candidates, retain);
+                let fired = candidates.len();
                 let wrapped = self
                     .space
                     .wrap_result(channels, wk, consume_ref, candidates);
-                fired_receipt(comm, wrapped, &retained, None)
+                fired_receipt(comm, wrapped, fired, None)
             }
         }
     }

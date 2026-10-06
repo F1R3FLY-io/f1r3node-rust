@@ -28,9 +28,8 @@ use crate::rspace::space_store_handle::{
     BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
     ReadyProduce, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost,
     StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport,
-    TxnBackend, TxnRegistration, by_descending_index, completion, fired_receipt,
-    installed_channels, ready_consume, ready_produce, retained_results, root_leaf_records,
-    run_before_observe, sweep_channels, sweep_volatile_channels,
+    TxnBackend, TxnRegistration, completion, fired_receipt, installed_channels, ready_consume,
+    ready_produce, root_leaf_records, run_before_observe, sweep_channels, sweep_volatile_channels,
 };
 use crate::rspace::striped_locks;
 use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
@@ -143,10 +142,10 @@ where
 
     // ops_produce.rs `process_match_found`: observe_comm with the COMM that
     // counts the produce being fired, log the produce and the COMM, remove
-    // the continuation unless persistent, and retire the candidates. The
-    // incoming datum is never stored. A retained (peeked) fire keeps the
-    // stored records and removes only the fired joins; the agent offers a
-    // non-persistent incoming datum again as the next produce (FR-10).
+    // the continuation unless persistent, and retire the candidates, also
+    // for a peek (decision 45, Rule E). The incoming datum is never stored;
+    // the agent offers a non-persistent incoming datum of a peek fire again
+    // as the next produce (FR-10, decision 30).
     fn produce_fire(
         &self,
         store: &dyn HotStore<C, P, A, K>,
@@ -162,7 +161,6 @@ where
                     channels,
                     continuation,
                     candidates,
-                    retain,
                     ..
                 },
             comm,
@@ -185,14 +183,21 @@ where
         if let Some(index) = continuation_index {
             store.remove_continuation(&channels, index);
         }
-        match retain {
-            false => remove_matched_datum_and_join(store, &channels, &committed),
-            true => remove_joins(store, &channels, &committed),
-        }
+        // Disabled by decision 45 (Rule E, "Apply everywhere"): a retaining
+        // (peek) fire only unjoined its candidates. Every fire now removes its
+        // stored non-persistent records, as the host does.
+        //
+        // ```
+        // match retain {
+        //     false => remove_matched_datum_and_join(store, &channels, &committed),
+        //     true => remove_joins(store, &channels, &committed),
+        // }
+        // ```
+        remove_matched_datum_and_join(store, &channels, &committed);
         let wrapped = self
             .space
             .wrap_result(&channels, &continuation, &candidates);
-        fired_receipt(comm, wrapped, &retained_results(&candidates, retain), Some(source))
+        fired_receipt(comm, wrapped, candidates.len(), Some(source))
     }
 
     // ops_consume.rs `locked_consume`: start with the consume channels and no
@@ -262,10 +267,7 @@ where
                 Ok(SpaceOpReceipt::Parked { consume: source })
             }
             Some(ReadyConsumeFire {
-                fire:
-                    StagedConsumeFire {
-                        candidates, retain, ..
-                    },
+                fire: StagedConsumeFire { candidates, .. },
                 comm,
                 committed,
             }) => {
@@ -280,11 +282,18 @@ where
                 events.push(Event::IoEvent(IOEvent::Consume(source.clone())));
                 self.space.log_comm(comm.clone(), CONSUME_COMM_LABEL);
                 events.push(Event::Comm(comm.clone()));
-                if !retain {
-                    store_persistent_data(store, &committed);
-                }
+                // Disabled by decision 45 (Rule E, "Apply everywhere"): a
+                // retaining (peek) fire kept its records. Every fire now removes
+                // its stored non-persistent records, as the host does.
+                //
+                // ```
+                // if !retain {
+                //     store_persistent_data(store, &committed);
+                // }
+                // ```
+                store_persistent_data(store, &committed);
                 let wrapped = self.space.wrap_result(&channels, &wk, &candidates);
-                fired_receipt(comm, wrapped, &retained_results(&candidates, retain), None)
+                fired_receipt(comm, wrapped, candidates.len(), None)
             }
         }
     }
@@ -403,22 +412,28 @@ fn remove_matched_datum_and_join<C, P, A, K>(
     }
 }
 
-// The retained (peek) form of `remove_matched_datum_and_join`: the records
-// stay and only the joins of the fired group follow the continuation.
-fn remove_joins<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
-    channels: &[C],
-    data_candidates: &[ConsumeCandidate<C, A>],
-) where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    for consume_candidate in by_descending_index(data_candidates) {
-        store.remove_join(&consume_candidate.channel, channels);
-    }
-}
+// Disabled by decision 45 (Rule E, "Apply everywhere"): no fire keeps its
+// records, so the retained form of `remove_matched_datum_and_join` has no
+// caller.
+//
+// ```
+// // The retained (peek) form of `remove_matched_datum_and_join`: the records
+// // stay and only the joins of the fired group follow the continuation.
+// fn remove_joins<C, P, A, K>(
+//     store: &dyn HotStore<C, P, A, K>,
+//     channels: &[C],
+//     data_candidates: &[ConsumeCandidate<C, A>],
+// ) where
+//     C: Clone + Hash + Eq,
+//     P: Clone,
+//     A: Clone,
+//     K: Clone,
+// {
+//     for consume_candidate in by_descending_index(data_candidates) {
+//         store.remove_join(&consume_candidate.channel, channels);
+//     }
+// }
+// ```
 
 // ops_consume.rs `store_waiting_continuation`.
 fn store_waiting_continuation<C, P, A, K>(

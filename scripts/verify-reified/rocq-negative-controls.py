@@ -22,6 +22,20 @@ The controls cover the round-2 rules and the round-3 rule
 and two FR-1 controls that the round-2 rules keep (the sweep validates the
 stored join groups, and a rejected read does not touch the cache).
 
+Decision 45 (Rule E) has three controls. Each reverts one part of the rule:
+  ec-peek-retains            a consume-side peek fire keeps its stored
+                             records (the retention of FR-10):
+                             fire_view_removes, and so H11, breaks
+  ec-restore-skipped         the agent stages no re-store after a
+                             consume-side peek fire:
+                             restores_are_produce_peeks, and so H11, breaks
+  ec-restore-wrong-identity  the re-store sends the matched value, so it
+                             takes another produce identity:
+                             restore_same_identity, and so H11, breaks
+Rule E removes the kept records, so the FR-10 controls
+ec-kept-includes-incoming and ec-h11-claims-p1-deviation have no site. They
+are disabled.
+
 Decision 36 (replay reproduces play) has three controls. Each reverts one
 part of the rule:
   ec-replay-fire-fails-at-staging  an unpaired replay fire fails at staging
@@ -73,6 +87,20 @@ of the rule that a re-issued persistent operation keeps its first-round ord:
                               so the SHADOW headline, breaks
   ho-nonpersistent-keeps-ord  a re-issued non-persistent element keeps its
                               ord (the scope rule): queue_quiescent_inv breaks
+
+Decision 45 (HeadOnlyDisciplines.v) has three controls. Each reverts one part
+of Rule E, under which the substrate removes a peeked record and the agent
+stores it again:
+  ho-restore-skipped     the code stages no re-store after a peek fire of a
+                         non-persistent record, so the record is lost:
+                         restore_fire_step, and so queue_restore_realizes_plan,
+                         breaks
+  ho-peek-retains        a peek fire keeps the records that it binds (the
+                         retention before decision 45), so the re-store
+                         duplicates the record: restore_fire_step breaks
+  ho-restore-persistent  the code also re-stores a peeked persistent record,
+                         which the fire keeps, so the record is duplicated:
+                         restore_fire_step breaks
 
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
@@ -226,54 +254,84 @@ CONTROLS = (
     ("ec-fire-stores-incoming", "EventCorrelation",
      "a peek fire stores its non-persistent incoming datum again (the P1 rule before FR-10) "
      "in the view and both commits",
-     ("  let retain := negb (nullb (w_peeks wk)) in\n"
-      "  vpf_loop V1 chs retain (sort_desc vkey cands).",
+     ("  vpf_loop V1 chs (sort_desc vkey cands).",
       "                  mkRes (fst p2) rd (obs ++ [oc; ObFinish s Matched])\n"
       "                        [EvProduce src; EvComm ProduceSide cm] (snd p1 ++ snd p2) StOk",
       "                  mkRes (fst p2) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])\n"
       "                        [EvProduce src; EvComm ProduceSide cm] (snd p1 ++ snd p2) StOk"),
-     ("  let retain := negb (nullb (w_peeks wk)) in\n"
-      "  let V2 := vpf_loop V1 chs retain (sort_desc vkey cands) in\n"
-      "  if retain && negb persist\n"
+     ("  let V2 := vpf_loop V1 chs (sort_desc vkey cands) in\n"
+      "  if negb (nullb (w_peeks wk)) && negb persist\n"
       "  then vput_datum V2 ch (mkDatum v persist (produce_id ch v persist)) else V2.",
-      "                  let p3 := if retain && negb persist\n"
+      "                  let p3 := if negb (nullb (w_peeks wk)) && negb persist\n"
       "                            then put_datum (fst p2) ch (mkDatum v persist src) else (fst p2, []) in\n"
       "                  mkRes (fst p3) rd (obs ++ [oc; ObFinish s Matched])\n"
       "                        [EvProduce src; EvComm ProduceSide cm] (snd p1 ++ snd p2 ++ snd p3) StOk",
-      "                  let p3 := if retain && negb persist\n"
+      "                  let p3 := if negb (nullb (w_peeks wk)) && negb persist\n"
       "                            then put_datum (fst p2) ch (mkDatum v persist src) else (fst p2, []) in\n"
       "                  mkRes (fst p3) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])\n"
       "                        [EvProduce src; EvComm ProduceSide cm] (snd p1 ++ snd p2 ++ snd p3) StOk"),
-     ("peek_fire_keeps_data",)),
-    ("ec-kept-includes-incoming", "EventCorrelation",
-     "the kept records of a produce-side peek fire include its incoming datum (the P1 retained)",
-     "  | OProduce _ _ _ (PFire _ wk _ cands) =>\n"
-     "      if negb (nullb (w_peeks wk)) then fun c => np_recs c cands else fun _ => []",
-     "  | OProduce ch v persist (PFire _ wk _ cands) =>\n"
-     "      if negb (nullb (w_peeks wk))\n"
-     "      then fun c => np_recs c cands\n"
-     "                    ++ (if negb persist && chan_eqb ch c\n"
-     "                        then [mkDatum v persist (produce_id ch v persist)] else [])\n"
-     "      else fun _ => []",
-     ("retained_stored",)),
+     ("fire_stores_no_datum",)),
+    # Disabled by decision 45 (Rule E): the kept records (retained) are gone, so this rule has no site.
+    # ("ec-kept-includes-incoming", "EventCorrelation",
+    #  "the kept records of a produce-side peek fire include its incoming datum (the P1 retained)",
+    #  "  | OProduce _ _ _ (PFire _ wk _ cands) =>\n"
+    #  "      if negb (nullb (w_peeks wk)) then fun c => np_recs c cands else fun _ => []",
+    #  "  | OProduce ch v persist (PFire _ wk _ cands) =>\n"
+    #  "      if negb (nullb (w_peeks wk))\n"
+    #  "      then fun c => np_recs c cands\n"
+    #  "                    ++ (if negb persist && chan_eqb ch c\n"
+    #  "                        then [mkDatum v persist (produce_id ch v persist)] else [])\n"
+    #  "      else fun _ => []",
+    #  ("retained_stored",)),
     ("ec-h11-claims-incoming-stored", "EventCorrelation",
      "H11 claims the P1 rule: a committed non-persistent produce-side peek fire stores its incoming datum",
-     "  (forall m H S rd sg, retaining (sg_op sg) = true ->\n"
-     "     forall c, s_data (r_st (commit_op m H S rd sg)) c = s_data S c) /\\",
-     "  (forall m H S rd ch v chs wk kidx cands j0 scomm,\n"
+     "  (forall m H S rd sg, is_fire (sg_op sg) = true ->\n"
+     "     forall c x, count_occ datum_eq_dec (s_data (r_st (commit_op m H S rd sg)) c) x <=\n"
+     "                 count_occ datum_eq_dec (s_data S c) x) /\\",
+     "  (forall m H S rd ch v chs wk kidx cands j0 scomm sp,\n"
      "     w_peeks wk <> [] ->\n"
-     "     let r := commit_op m H S rd (mkStaged (OProduce ch v false (PFire chs wk kidx cands)) j0 scomm) in\n"
+     "     let r := commit_op m H S rd (mkStaged (OProduce ch v false (PFire chs wk kidx cands)) j0 scomm sp) in\n"
      "     r_status r = StOk ->\n"
      "     s_data (r_st r) ch = mkDatum v false (produce_id ch v false) :: s_data S ch) /\\",
-     ("peek_retention_trace_eq_host",)),
-    ("ec-h11-claims-p1-deviation", "EventCorrelation",
-     "H11 claims the P1 accounting: the kept records replace every re-produce of HEAD, "
-     "the incoming datum included",
-     "  (forall op c, retaining op = true ->\n"
-     "     values_on c (kept_reproduces (fire_cands op)) = map d_val (retained op c)) /\\",
-     "  (forall op c, retaining op = true ->\n"
-     "     values_on c (head_reproduces (fire_cands op)) = map d_val (retained op c)) /\\",
-     ("peek_retention_trace_eq_host",)),
+     ("peek_reproduces_trace_eq_host",)),
+    # Disabled by decision 45 (Rule E): no kept record replaces a re-produce of HEAD, so this claim has no site.
+    # ("ec-h11-claims-p1-deviation", "EventCorrelation",
+    #  "H11 claims the P1 accounting: the kept records replace every re-produce of HEAD, "
+    #  "the incoming datum included",
+    #  "  (forall op c, retaining op = true ->\n"
+    #  "     values_on c (kept_reproduces (fire_cands op)) = map d_val (retained op c)) /\\",
+    #  "  (forall op c, retaining op = true ->\n"
+    #  "     values_on c (head_reproduces (fire_cands op)) = map d_val (retained op c)) /\\",
+    #  ("peek_retention_trace_eq_host",)),
+    # ── Decision 45, Rule E: no retention, and the re-store (H11, H2) ─────
+    ("ec-peek-retains", "EventCorrelation",
+     "a consume-side peek fire keeps its stored records (the retention of FR-10) in the view and "
+     "both commits, so the records that the receipt reports non-persistent stay in the store",
+     ("          stage_fire T (vcf_effects V cands) (KConsume src) cm (mkStaged op [] (Some cm))",
+      "                  let p := space_cf_loop S (sort_desc vkey cands) in\n"
+      "                  mkRes (fst p) rd (obs ++ [oc; ObFinish s Matched])",
+      "                  let p := space_cf_loop S (sort_desc vkey cands) in\n"
+      "                  mkRes (fst p) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])"),
+     ("          stage_fire T (if nullb peeks then vcf_effects V cands else V) (KConsume src) cm\n"
+      "                     (mkStaged op [] (Some cm))",
+      "                  let p := if nullb peeks then space_cf_loop S (sort_desc vkey cands) else (S, []) in\n"
+      "                  mkRes (fst p) rd (obs ++ [oc; ObFinish s Matched])",
+      "                  let p := if nullb peeks then space_cf_loop S (sort_desc vkey cands) else (S, []) in\n"
+      "                  mkRes (fst p) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])"),
+     ("fire_view_removes",)),
+    ("ec-restore-skipped", "EventCorrelation",
+     "the agent stages no re-store after a consume-side peek fire, so its operations are not "
+     "HEAD's produce_peeks",
+     "  | OConsume _ _ _ _ peeks (CFire cands) =>\n"
+     "      if nullb peeks then [] else map restore_of (filter removable cands)\n",
+     "  | OConsume _ _ _ _ peeks (CFire cands) => []\n",
+     ("restores_are_produce_peeks",)),
+    ("ec-restore-wrong-identity", "EventCorrelation",
+     "the re-store sends the matched value instead of the stored record (the payload without its "
+     "envelope), so it takes another produce identity",
+     "  OProduce (cd_chan cd) (d_val (cd_rec cd)) false PStore.",
+     "  OProduce (cd_chan cd) (cd_matched cd) false PStore.",
+     ("restore_same_identity",)),
     ("ec-plan-stores-incoming", "EventCorrelation",
      "the head-only plan stores the datum after a peek fire (the P1 rule) instead of the re-offer",
      "            else if w_persist w then (ws, [])\n"
@@ -446,6 +504,22 @@ CONTROLS = (
      "    if flight_pers x then Some (flight_ord x) else None.",
      "    Some (flight_ord x).",
      ("queue_quiescent_inv",)),
+    # ── Decision 45: HeadOnlyDisciplines.v (Rule E: the re-store of a peek) ─
+    ("ho-restore-skipped", "HeadOnlyDisciplines",
+     "the code stages no re-store after a peek fire of a non-persistent record",
+     "then [CStaged s; CRestore h]",
+     "then [CStaged s]",
+     ("restore_fire_step", "queue_restore_realizes_plan")),
+    ("ho-peek-retains", "HeadOnlyDisciplines",
+     "a peek fire keeps the records that it binds (the retention before decision 45)",
+     "    | CStaged (SFireConsume _ h) => if r_pers h then l else remove_key (r_ord h) (r_rank h) l",
+     "    | CStaged (SFireConsume k h) => if r_pers h || w_peek k then l else remove_key (r_ord h) (r_rank h) l",
+     ("restore_fire_step", "queue_restore_realizes_plan")),
+    ("ho-restore-persistent", "HeadOnlyDisciplines",
+     "the code also re-stores a peeked persistent record, which the fire keeps",
+     "if w_peek k && negb (r_pers h) then",
+     "if w_peek k then",
+     ("restore_fire_step", "queue_restore_realizes_plan")),
     # ── P4: SpaceRefs.v (C.1, C.2, A23) ──────────────────────────────────
     ("sr-handle-ignores-write-flag", "SpaceRefs",
      "a handle under a bundle without the write flag is a native space",

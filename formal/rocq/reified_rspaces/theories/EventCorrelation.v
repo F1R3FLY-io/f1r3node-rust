@@ -15,6 +15,18 @@
    its incoming datum. The agent re-offers that datum as the next operation
    of the transaction, with the same produce identity (H11).
 
+   Decision 45 (Rule E, with the scope "Apply everywhere") removes the
+   retention of FR-10. The substrate keeps no record for any peek. Each fire
+   removes every stored non-persistent candidate, as the host does, also
+   when its peeks cover every bind. The receipt keeps the persist flags
+   that the host gives the results. The agent then stores each record that
+   a consume-side peek removed again, in the same transaction, with the
+   same bytes and so the same produce identity. This re-store is the
+   produce that the host reducer makes in produce_peeks. So H2 holds with
+   no premise about peeks, and H11 states that a peek fire followed by its
+   re-stores makes the trace, the observer calls and the store of the host
+   peek COMM followed by produce_peeks.
+
    Decision 36 (it amends decision 19) changes replay pairing. A replay fire
    with no free recorded occurrence stages unpaired: its view effects are
    the effects of play, and it adds no pairing. Its commit makes the calls
@@ -34,7 +46,9 @@
    replay_rspace/space_replay.rs are new. This header cites their items by
    name, because their line numbers change often. Decision 36 changes
    TxnCore::verify, StagedConsumeFire and the replay commit of a fire
-   (ReplayBackend::produce_fire and consume_observed).
+   (ReplayBackend::produce_fire and consume_observed). The rows of decision
+   45 also cite lines. These lines are those of the tree of decision 45:
+   HEAD bc7783417 with the Rule E change of the substrate and the agent.
    Design: p1-design-report §1.3-§1.4 (staging rules), §2.1-§2.4 (host call
    order and replay pairing), §5(a). Plan decision 19 (D1-D7). Fix rules
    FR-1 to FR-9 (prompts/p1-fix-rules.md), which close the defects D1-D8 of
@@ -42,6 +56,10 @@
    FR-9', and the round-3 rule FR-10 of the same file (plan decision 30).
    FR-10 supersedes the storing of the incoming datum of P1 §6 (decision
    19). The head-only plan of a queue is p4-design-report B.4 (decision 11).
+   Decision 45 (Rule E) supersedes the retention part of FR-10 and the
+   deviation of decision 19. Its design report gives the retention sites
+   (§B), the identity of a re-store (§C.3), play and replay (§C.5), FR-10
+   after Rule E (§C.10) and this formal plan (§E.5).
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -129,8 +147,18 @@
                              (casper/src/rust/rholang/replay_runtime.rs:619-632)
    space_prelude, commit_*   design §2.1 (play) and §2.2 (replay) tables,
                              ssh commit_operation and commit_staged
-   space_pf_loop,            design §2.1 row 6 (record removal by equality,
-     space_cf_loop           peek retention)
+   space_pf_loop,            design §2.1 row 6 (record removal by equality).
+     space_cf_loop,          Decision 45 (Rule E): no loop has a retain flag,
+     vpf_loop, vcf_loop      so a peek fire removes its stored
+                             non-persistent records. Each commit of a fire
+                             calls remove_matched_datum_and_join
+                             (rs/rspace/space_play.rs:196,
+                             rs/replay_rspace/space_replay.rs:289) or
+                             store_persistent_data
+                             (rs/rspace/space_play.rs:294,
+                             rs/replay_rspace/space_replay.rs:430). ssh
+                             removed_records (rs/space_store_handle.rs:942)
+                             stages the same records
    backend                   design §2.3 (ReportingRspace delegates)
    sub_order, sched_part     rholang/src/rust/interpreter/
                              deterministic_reduction.rs:84-135,
@@ -184,39 +212,90 @@
    sid, view_get, overlay,   ssh channel_key, group_identity, the TxnView
      installed_by_sid        maps keyed by Blake2b256Hash, and the installed
                              set of TxnCore (FR-2)
-   vpf_effects,              FR-10: ssh TxnCore::stage_produce and
-     commit_play_produce,    apply_fire_to_view, rs/rspace/space_play.rs
-     commit_replay_produce   (PlayBackend::produce_fire) and rs/
-                             replay_rspace/space_replay.rs (ReplayBackend::
-                             produce_fire). A fire never stores its
-                             incoming datum
-   retained, retaining,      ssh peek_retention and removed_records: a peek
-     peek_fire_keeps_data    fire keeps its stored records in place
-   retained_result,          ssh retained_results and fired_receipt (FR-10:
-     receipt_persistent      the receipt sets the persist flag only of a
-                             retained stored result, and every other result
-                             keeps its own flag). fired_receipt fails with
-                             Inconsistent when the results do not line up
-                             with the candidates. wrap_result gives one
+   peeks_ok                  ssh check_peeks (rs/space_store_handle.rs:871):
+                             no peeks, or every bind peeks, else
+                             MixedArrowJoin. Decision 45: it only checks the
+                             peek set (peek_retention is disabled)
+   vpf_effects, vcf_effects, FR-10 and decision 45: ssh TxnCore::stage_produce
+     commit_play_produce,    (rs/space_store_handle.rs:1729),
+     commit_replay_produce,  apply_fire_to_view (rs/space_store_handle.rs:1882)
+     commit_play_consume,    and TxnCore::stage_consume
+     commit_replay_consume   (rs/space_store_handle.rs:1943), PlayBackend::
+                             produce_fire and consume_observed
+                             (rs/rspace/space_play.rs:149 and 230), and
+                             ReplayBackend::produce_fire and consume_observed
+                             (rs/replay_rspace/space_replay.rs:215 and 335).
+                             A fire never stores its incoming datum, and a
+                             peek fire removes the records of any fire
+   fire_stores_no_datum,     FR-10 after decision 45 (design report §C.10):
+     fire_view_removes       a fire removes exactly what the host removes,
+                             and it never stores a datum
+   wrap_flags,               ssh fired_receipt (rs/space_store_handle.rs:2503)
+     fired_receipt           keeps the flags of wrap_result
+                             (rs/rspace/ops_consume.rs:204-229). It fails
+                             with Inconsistent when the results do not line
+                             up with the candidates. wrap_result gives one
                              result per candidate, and the model maps each
                              candidate, so that check never fails here
-   kept_reproduces,          the re-produces of HEAD that the substrate
-     values_on               replaces with the kept stored records (the
-                             deviation of decision 19)
    reoffer_due, reoffer_of,  FR-10: the agent re-offers the datum of a peek
      reoffers                fire as the next operation of the transaction,
                              with the same Produce::create identity
-   head_reproduces           rholang/src/rust/interpreter/reduce.rs:780-807
-                             (a non-persistent produce fires a peek
-                             waiter), 709-775 (a persistent produce),
-                             901-928 (a consume), 973-1008 (produce_peeks);
-                             rs/util.rs:57-70 and rs/rspace/ops_consume.rs:
-                             204-229 (the data_list tuples), rs/
-                             space_matcher.rs:72-90 (removed_datum)
+                             (decision 30)
+   restore_of,               decision 45: receive
+     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:767)
+                             copies the head record when a peek fires on a
+                             non-persistent record
+                             (rholang/src/rust/interpreter/spaces/generic.rs:805).
+                             Plan::restore_peeked and Plan::restore
+                             (rholang/src/rust/interpreter/spaces/generic.rs:371
+                             and 352) stage a Store of that record with
+                             persist = false right after the fire. The model
+                             does not include the record authority that the
+                             re-store registers (Introduction::for_record,
+                             rholang/src/rust/interpreter/spaces/record.rs:851)
+   host_produce_peeks,       produce_peeks
+     head_reproduces,        (rholang/src/rust/interpreter/reduce.rs:981-1016)
+     restore_reproduces      produces the removed value of each result whose
+                             persist flag is false, not persistent. The
+                             reducer calls it after a consume with a peek
+                             fires (rholang/src/rust/interpreter/reduce.rs:909-936),
+                             after a non-persistent produce fires a peek
+                             waiter (rholang/src/rust/interpreter/reduce.rs:784-811)
+                             and after a persistent produce
+                             (rholang/src/rust/interpreter/reduce.rs:776-781).
+                             rs/util.rs:57-70 and rs/rspace/ops_consume.rs:204-229
+                             give the data_list tuples, and
+                             rs/space_matcher.rs:72-90 gives removed_datum
+   stored_sources,           Produce::create (rs/trace/event.rs:238-249)
+     restore_same_identity   hashes the channel, the data and the persist
+                             flag. ssh stage_produce gives a staged produce
+                             that identity (rs/space_store_handle.rs:1745). So
+                             a re-store of the bytes of a record has the
+                             identity of the source produce of the record
+   restore_store_staged,     a re-store is a staged Store. put_datum inserts
+     restores_stage,         at index 0 (rs/hot_store.rs:879-897), so the
+     peek_restore_keeps_data record moves to the front, and each data list
+                             keeps its multiset (design report §C.7)
+   peek_restores_sim         the transaction of a peek with its re-stores
+                             against the host program of the peek COMM and
+                             produce_peeks (design report §C.5)
    no_pending_match, offer,  the produce plan of a head-only queue with the
      offer_ops, offer_p1     re-offer (p4-design-report B.4, invariant INV).
                              offer_p1 is the same plan under the P1 rule
                              before FR-10. P4 has no code for it yet
+   (disabled)                decision 45 disables retained, retaining,
+                             retained_nonretaining, retained_stored,
+                             space_pf_loop_retain_data, space_cf_loop_retain,
+                             peek_fire_keeps_data, retained_result,
+                             receipt_persistent, receipt_reports_reoffer,
+                             kept_reproduces, head_reproduces_consume,
+                             values_on, kept_reproduces_values,
+                             kept_reproduces_retained, kept_after,
+                             store_rel_kept_perm, the store_rel and the
+                             rel_after_loops with kept records, and the
+                             H11 peek_retention_trace_eq_host. They modeled
+                             ssh peek_retention and retained_results, which
+                             the code disables too
 
    ─────────────────────────────────────────────────────────────────────────
    Modeling notes
@@ -291,21 +370,36 @@
      operation of the transaction (reoffers): a produce with the same
      channel, value and persist flag. So the re-offer has the produce
      identity, the observer calls and the counter step of HEAD's re-produce
-     (reduce.rs:977-1012). The re-offer fires the next waiter or stores the
+     (reduce.rs:981-1016). The re-offer fires the next waiter or stores the
      datum. When the fired waiter is persistent, it stays at the head, and
      the P4 plan re-issues the datum in a new transaction (p4-design-report
      A10, a divergent pair). The model does not include the authority value
      that before_observe registers.
-   - HEAD's reducer re-produces each non-persistent datum of a peek fire
-     (produce_peeks). The substrate keeps the stored records of a peek fire
-     in place (decision 19): on the consume side, and on the produce side
-     for joins and repeated-channel groups. So HEAD's re-produces are the
-     re-offer of the incoming datum and the kept stored records
-     (head_reproduces_produce, head_reproduces_consume). The trace equality
-     with HEAD covers the re-offer. The kept stored records are the
-     deviation of decision 19: the model compares the stores of the two
-     sides up to them, and on each channel the replaced re-produces send
-     exactly their values (kept_reproduces_values).
+   - Decision 45 (Rule E, "Apply everywhere"): HEAD's reducer re-produces
+     each non-persistent result of a peek fire (produce_peeks). The
+     substrate keeps no record of a peek fire. A fire removes each stored
+     non-persistent candidate, on the consume side and on the produce side
+     (joins and repeated-channel groups), as the host does. So the stores
+     of the substrate and the host are equal up to the order of each data
+     list (store_rel, H2), and the receipt keeps the host flags (wrap_flags,
+     fired_receipt). HEAD's re-produces are the re-offer of the incoming
+     datum (decision 30) and the re-stores of the removed stored records
+     (head_reproduces_produce, restores_are_produce_peeks). The agent
+     stages the re-stores of a consume-side peek fire right after the fire
+     (restores_after). A P4 produce-side fire removes no stored record,
+     because its one-channel group binds only the incoming datum.
+   - A re-store sends the bytes of the record, so its identity is
+     Produce::create of the channel, the value and persist = false. This is
+     the source of the record when each stored source is the
+     Produce::create identity of its record (stored_sources). Staging keeps
+     that property (stage_keeps_stored_sources), and every staged Store and
+     every host produce stores such a source. The model gives the re-store
+     the outcome Store, as in P4: the queue fires a receive only at its
+     head when no waiter is parked, so the re-produce meets no waiter. In
+     replay, a re-store is a staged Store, so replay stages it as play does
+     (H23), and the log holds its Produce event.
+   - The deviation of decision 19 (the kept stored records) is gone. The
+     disabled definitions and lemmas stay in the module as comments.
    - In replay, a native directive sends the host to replay_native_produce or
      replay_native_consume. The model stops the host there (StNative). The
      substrate fails closed (decision D4, H19). H1 assumes that the observer
@@ -338,7 +432,8 @@
    Headlines (each is closed under the global context)
    ─────────────────────────────────────────────────────────────────────────
    H1  commit_trace_eq_host            same observer calls, events, status
-   H2  commit_state_eq_host            same store (data up to permutation)
+   H2  commit_state_eq_host            same store (data up to permutation).
+                                       Decision 45: no premise about peeks
    H3  counter_timing_play_replay      play closure = replay increment rule
    H4  verify_sound_complete           trigger-key pairing (FR-3) is sound
                                        and complete. Decision 36: a fire
@@ -353,14 +448,21 @@
                                        leaves the checkpointed store
                                        unchanged (FR-1)
    H10 coverage_total                  every change has its event
-   H11 peek_retention_trace_eq_host    peeks (FR-10): the host trace, also
-                                       for the re-offer of the incoming
-                                       datum (HEAD's re-produce). Stored
-                                       records stay in place (decision 19),
-                                       and the stores differ exactly by
-                                       them. A peek fire changes no data
-                                       list. The re-offer keeps the
-                                       head-only no-pending-match invariant
+   H11 peek_reproduces_trace_eq_host   peeks (FR-10, decision 45 Rule E): a
+                                       consume-side peek fire followed by
+                                       the re-stores of the agent makes the
+                                       trace, the observer calls and the
+                                       store of the host peek COMM followed
+                                       by produce_peeks. A fire stores no
+                                       datum, its view loses exactly its
+                                       non-persistent records, and its
+                                       receipt keeps the host flags. A
+                                       re-store is a staged Store with the
+                                       identity of its record, and the peek
+                                       with its re-stores keeps each data
+                                       list up to permutation. The re-offer
+                                       (decision 30) keeps the head-only
+                                       no-pending-match invariant
    H12 reporting_trace_is_replay_trace reporting delegates to replay
    H17 non_canonical_fails_closed      FR-1' rejects a group that is not
                                        non-decreasing before any store or
@@ -410,6 +512,17 @@
      also folds the body of the local definition src.
    - `f_equal` closes `erase_dir [o0; a; od] = erase_dir [o0; a]` by
      conversion, so a later tactic finds no goal.
+   - Decision 45: a control that makes only the two consume commits retain
+     the records of a peek fire cannot fail first in op_sim or H2. It fails
+     first in coh_consume_fire, which restates the commit expression of a
+     consume fire (tested). The control ec-peek-retains also makes the view
+     retain, and it fails in the H11 lemma fire_view_removes, which comes
+     before the commit lemmas.
+   - Decision 45: a leaf tactic of fire_stores_no_datum that names the loop
+     of each commit fails under the control ec-peek-retains, although the
+     statement stays true there (tested). The same tactic proves the
+     pristine lemma. Split each unknown boolean test of the leaf first
+     (destruct_ifs), then close each case.
    ═══════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import List PeanoNat Bool Lia Permutation Sorting.Sorted Arith.
@@ -897,11 +1010,24 @@ Definition store_eq (S1 S2 : Store) : Prop :=
   (forall c, s_joins S1 c = s_joins S2 c) /\
   (forall p, s_count S1 p = s_count S2 p).
 
+(* Disabled by decision 45 (Rule E): no fire keeps a record, so no kept records separate the two stores.
 (* The store of the substrate and the store of the host agree, except for
    the [kept] records. The substrate holds these records and the host does
    not. *)
 Definition store_rel (Sc Sh : Store) (kept : Chan -> list Datum) : Prop :=
   (forall c, Permutation (s_data Sc c) (s_data Sh c ++ kept c)) /\
+  (forall g, s_conts Sc g = s_conts Sh g) /\
+  (forall c, s_joins Sc c = s_joins Sh c) /\
+  (forall p, s_count Sc p = s_count Sh p).
+*)
+
+(* The store of the substrate and the store of the host agree. Each data
+   list of the substrate is a permutation of the data list of the host, and
+   the continuations, the joins and the counters are equal. Decision 45
+   (Rule E): a fire removes the records that the host removes, so no kept
+   record separates the two stores. *)
+Definition store_rel (Sc Sh : Store) : Prop :=
+  (forall c, Permutation (s_data Sc c) (s_data Sh c)) /\
   (forall g, s_conts Sc g = s_conts Sh g) /\
   (forall c, s_joins Sc c = s_joins Sh c) /\
   (forall p, s_count Sc p = s_count Sh p).
@@ -1106,28 +1232,36 @@ Fixpoint host_spd_loop (S : Store) (cs : list Cand) : Store * list Fx :=
       let p2 := host_spd_loop (fst p1) rest in (fst p2, snd p1 ++ snd p2)
   end.
 
-(* Substrate produce-side loop (design §2.1 row 6, §2.2). *)
-Fixpoint space_pf_loop (S : Store) (chs : list Chan) (retain : bool) (cs : list Cand)
+(* Substrate produce-side loop (design §2.1 row 6, §2.2). Decision 45 (Rule
+   E): the loop has no retain flag. A peek fire removes each stored
+   non-persistent candidate, as the host loop host_rm_loop does. *)
+Fixpoint space_pf_loop (S : Store) (chs : list Chan) (cs : list Cand)
     : Store * list Fx :=
   match cs with
   | [] => (S, [])
   | cd :: rest =>
       let p1 :=
-        if negb retain && removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd)
+        (* Disabled by decision 45 (Rule E): a retaining (peek) fire removed no record.
+        if negb retain && removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) *)
+        if removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd)
         else (S, []) in
       let p2 := remove_join (fst p1) (cd_chan cd) chs in
-      let p3 := space_pf_loop (fst p2) chs retain rest in (fst p3, snd p1 ++ snd p2 ++ snd p3)
+      let p3 := space_pf_loop (fst p2) chs rest in (fst p3, snd p1 ++ snd p2 ++ snd p3)
   end.
 
-(* Substrate consume-side loop (design §2.1 row 6, §2.2). *)
-Fixpoint space_cf_loop (S : Store) (retain : bool) (cs : list Cand) : Store * list Fx :=
+(* Substrate consume-side loop (design §2.1 row 6, §2.2). Decision 45 (Rule
+   E): the loop has no retain flag. A peek fire removes each stored
+   non-persistent candidate, as the host loop host_spd_loop does. *)
+Fixpoint space_cf_loop (S : Store) (cs : list Cand) : Store * list Fx :=
   match cs with
   | [] => (S, [])
   | cd :: rest =>
       let p1 :=
-        if negb retain && negb (d_persist (cd_rec cd))
+        (* Disabled by decision 45 (Rule E): a retaining (peek) fire removed no record.
+        if negb retain && negb (d_persist (cd_rec cd)) *)
+        if negb (d_persist (cd_rec cd))
         then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, []) in
-      let p2 := space_cf_loop (fst p1) retain rest in (fst p2, snd p1 ++ snd p2)
+      let p2 := space_cf_loop (fst p1) rest in (fst p2, snd p1 ++ snd p2)
   end.
 
 Definition nullb {A : Type} (l : list A) : bool :=
@@ -1391,38 +1525,54 @@ Fixpoint vput_joins (V : View) (cs : list Chan) (g : list Chan) : View :=
 Definition vstore_wk (V : View) (chs : list Chan) (w : WK) : View :=
   vput_joins (vput_continuation V chs w) chs chs.
 
-Fixpoint vpf_loop (V : View) (chs : list Chan) (retain : bool) (cs : list Cand) : View :=
+(* Decision 45 (Rule E): the view loops have no retain flag. *)
+Fixpoint vpf_loop (V : View) (chs : list Chan) (cs : list Cand) : View :=
   match cs with
   | [] => V
   | cd :: rest =>
-      let V1 := if negb retain && removable cd then vremove_datum V (cd_chan cd) (cd_rec cd) else V in
-      vpf_loop (vremove_join V1 (cd_chan cd) chs) chs retain rest
+      (* Disabled by decision 45 (Rule E): a retaining (peek) fire removed no record.
+      let V1 := if negb retain && removable cd then vremove_datum V (cd_chan cd) (cd_rec cd) else V in *)
+      let V1 := if removable cd then vremove_datum V (cd_chan cd) (cd_rec cd) else V in
+      vpf_loop (vremove_join V1 (cd_chan cd) chs) chs rest
   end.
 
-Fixpoint vcf_loop (V : View) (retain : bool) (cs : list Cand) : View :=
+Fixpoint vcf_loop (V : View) (cs : list Cand) : View :=
   match cs with
   | [] => V
   | cd :: rest =>
-      let V1 := if negb retain && negb (d_persist (cd_rec cd))
+      (* Disabled by decision 45 (Rule E): a retaining (peek) fire removed no record.
+      let V1 := if negb retain && negb (d_persist (cd_rec cd)) *)
+      let V1 := if negb (d_persist (cd_rec cd))
                 then vremove_datum V (cd_chan cd) (cd_rec cd) else V in
-      vcf_loop V1 retain rest
+      vcf_loop V1 rest
   end.
 
 (* vpf_effects gives the view effects of a produce-side fire (design §2.1
    row 6). The fire removes a non-persistent continuation. Then it removes
    the records that it consumes and the fired join of each candidate
-   channel. A peek fire (retain) removes no stored record. FR-10: the fire
-   never stores its incoming datum, so the channel, value and persist flag
-   of the produce do not change the view. A peek fire leaves the datum to
-   the agent, which re-offers it as the next operation (reoffers). *)
+   channel. Decision 45 (Rule E): a peek fire removes the same records as
+   any other fire, as the host does. FR-10: the fire never stores its
+   incoming datum, so the channel, value and persist flag of the produce do
+   not change the view. A peek fire leaves the datum to the agent, which
+   re-offers it as the next operation (reoffers). *)
 Definition vpf_effects (V : View) (ch : Chan) (v : Val) (persist : bool)
     (chs : list Chan) (wk : WK) (cands : list Cand) : View :=
   let V1 := if w_persist wk then V else vremove_continuation V chs wk in
+  (* Disabled by decision 45 (Rule E): a peek fire (retain) removed no stored record.
   let retain := negb (nullb (w_peeks wk)) in
-  vpf_loop V1 chs retain (sort_desc vkey cands).
+  vpf_loop V1 chs retain (sort_desc vkey cands). *)
+  vpf_loop V1 chs (sort_desc vkey cands).
 
+(* vcf_effects gives the view effects of a consume-side fire: it removes the
+   stored non-persistent candidates. Decision 45 (Rule E): the effects do not
+   depend on the peeks, so a peek fire removes the same records as any other
+   fire. The agent then re-stores each removed record (restores_after). *)
+(* Disabled by decision 45 (Rule E): the peeks of a fire no longer select a retaining loop.
 Definition vcf_effects (V : View) (peeks : list nat) (cands : list Cand) : View :=
   vcf_loop V (negb (nullb peeks)) (sort_desc vkey cands).
+*)
+Definition vcf_effects (V : View) (cands : list Cand) : View :=
+  vcf_loop V (sort_desc vkey cands).
 
 (* ── Staging (design §1.4) ────────────────────────────────────────────── *)
 
@@ -1567,7 +1717,9 @@ Definition stage (T : Txn) (op : Op) : option Txn :=
       | CFire cands =>
           if negb (cfire_ok T chs cands) then None else
           let cm := mk_comm cands src peeks (counters_of (vcount V)) in
-          stage_fire T (vcf_effects V peeks cands) (KConsume src) cm (mkStaged op [] (Some cm))
+          (* Disabled by decision 45 (Rule E): the peeks no longer select the view effect.
+          stage_fire T (vcf_effects V peeks cands) (KConsume src) cm (mkStaged op [] (Some cm)) *)
+          stage_fire T (vcf_effects V cands) (KConsume src) cm (mkStaged op [] (Some cm))
       end
   end.
 
@@ -1609,8 +1761,10 @@ Definition commit_play_produce (H : list Obs) (S : Store) (rd : Bindings)
                 else
                   let S1 := bump S src persist in
                   let p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk in
+                  (* Disabled by decision 45 (Rule E): a peek fire removed only the fired joins.
                   let retain := negb (nullb (w_peeks wk)) in
-                  let p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands) in
+                  let p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands) in *)
+                  let p2 := space_pf_loop (fst p1) chs (sort_desc vkey cands) in
                   mkRes (fst p2) rd (obs ++ [oc; ObFinish s Matched])
                         [EvProduce src; EvComm ProduceSide cm] (snd p1 ++ snd p2) StOk
           end
@@ -1641,7 +1795,9 @@ Definition commit_play_consume (H : list Obs) (S : Store) (rd : Bindings)
                 if negb (ob_accept (H ++ obs) oc)
                 then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StRejected
                 else
-                  let p := space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands) in
+                  (* Disabled by decision 45 (Rule E): a peek fire kept its stored records.
+                  let p := space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands) in *)
+                  let p := space_cf_loop S (sort_desc vkey cands) in
                   mkRes (fst p) rd (obs ++ [oc; ObFinish s Matched])
                         [EvConsume src; EvComm ConsumeSide cm] (snd p) StOk
           end
@@ -1681,8 +1837,10 @@ Definition commit_replay_produce (H : list Obs) (S : Store) (rd : Bindings)
                 then mkRes (unbump S1 src persist) rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged
                 else
                   let p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk in
+                  (* Disabled by decision 45 (Rule E): a peek fire removed only the fired joins.
                   let retain := negb (nullb (w_peeks wk)) in
-                  let p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands) in
+                  let p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands) in *)
+                  let p2 := space_pf_loop (fst p1) chs (sort_desc vkey cands) in
                   mkRes (fst p2) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])
                         [EvProduce src; EvComm ProduceSide cm] (snd p1 ++ snd p2) StOk
           end
@@ -1715,7 +1873,9 @@ Definition commit_replay_consume (H : list Obs) (S : Store) (rd : Bindings)
                 else if negb paired
                 then mkRes S rd (obs ++ [oc; ObFinish s Rejected]) [] [] StDiverged
                 else
-                  let p := space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands) in
+                  (* Disabled by decision 45 (Rule E): a peek fire kept its stored records.
+                  let p := space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands) in *)
+                  let p := space_cf_loop S (sort_desc vkey cands) in
                   mkRes (fst p) (unbind rd cm) (obs ++ [oc; ObFinish s Matched])
                         [EvConsume src; EvComm ConsumeSide cm] (snd p) StOk
           end
@@ -1767,24 +1927,26 @@ Proof.
   repeat split; intros; [rewrite Hd | rewrite Hc | rewrite Hj | rewrite Hn]; auto.
 Qed.
 
+(* Decision 45 (Rule E): store_rel has no kept records, so these lemmas
+   have no kept parameter. *)
 Lemma store_rel_eq_l :
-  forall S1 S2 Sh kept, store_eq S1 S2 -> store_rel S2 Sh kept -> store_rel S1 Sh kept.
+  forall S1 S2 Sh, store_eq S1 S2 -> store_rel S2 Sh -> store_rel S1 Sh.
 Proof.
-  intros S1 S2 Sh kept (Hd & Hc & Hj & Hn) (Rd & Rc & Rj & Rn).
+  intros S1 S2 Sh (Hd & Hc & Hj & Hn) (Rd & Rc & Rj & Rn).
   repeat split; intros; [rewrite Hd; apply Rd | rewrite Hc; apply Rc
                         | rewrite Hj; apply Rj | rewrite Hn; apply Rn].
 Qed.
 
 Lemma store_rel_eq_r :
-  forall Sc S1 S2 kept, store_eq S1 S2 -> store_rel Sc S2 kept -> store_rel Sc S1 kept.
+  forall Sc S1 S2, store_eq S1 S2 -> store_rel Sc S2 -> store_rel Sc S1.
 Proof.
-  intros Sc S1 S2 kept (Hd & Hc & Hj & Hn) (Rd & Rc & Rj & Rn).
+  intros Sc S1 S2 (Hd & Hc & Hj & Hn) (Rd & Rc & Rj & Rn).
   repeat split; intros; [rewrite Hd; apply Rd | rewrite Hc; apply Rc
                         | rewrite Hj; apply Rj | rewrite Hn; apply Rn].
 Qed.
 
-Lemma store_rel_self : forall S, store_rel S S (fun _ => []).
-Proof. intros S. repeat split; intros; try reflexivity. rewrite app_nil_r. reflexivity. Qed.
+Lemma store_rel_self : forall S, store_rel S S.
+Proof. intros S. repeat split; intros; reflexivity. Qed.
 
 Lemma bump_unbump_eq : forall S src persist, store_eq (unbump (bump S src persist) src persist) S.
 Proof.
@@ -1909,35 +2071,35 @@ Proof.
 Qed.
 
 Lemma space_pf_loop_cong :
-  forall cs S1 S2 chs r, store_eq S1 S2 ->
-    store_eq (fst (space_pf_loop S1 chs r cs)) (fst (space_pf_loop S2 chs r cs)) /\
-    snd (space_pf_loop S1 chs r cs) = snd (space_pf_loop S2 chs r cs).
+  forall cs S1 S2 chs, store_eq S1 S2 ->
+    store_eq (fst (space_pf_loop S1 chs cs)) (fst (space_pf_loop S2 chs cs)) /\
+    snd (space_pf_loop S1 chs cs) = snd (space_pf_loop S2 chs cs).
 Proof.
-  induction cs as [| cd rest IH]; intros S1 S2 chs r E; simpl; [split; [exact E | reflexivity] |].
-  assert (A : store_eq (fst (if negb r && removable cd then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])))
-                       (fst (if negb r && removable cd then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))) /\
-              snd (if negb r && removable cd then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])) =
-              snd (if negb r && removable cd then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))).
-  { destruct (negb r && removable cd); [apply space_remove_datum_cong, E | split; [exact E | reflexivity]]. }
+  induction cs as [| cd rest IH]; intros S1 S2 chs E; simpl; [split; [exact E | reflexivity] |].
+  assert (A : store_eq (fst (if removable cd then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])))
+                       (fst (if removable cd then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))) /\
+              snd (if removable cd then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])) =
+              snd (if removable cd then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))).
+  { destruct (removable cd); [apply space_remove_datum_cong, E | split; [exact E | reflexivity]]. }
   destruct A as [E1 F1].
   destruct (remove_join_cong _ _ (cd_chan cd) chs E1) as [E2 F2].
-  destruct (IH _ _ chs r E2) as [E3 F3].
+  destruct (IH _ _ chs E2) as [E3 F3].
   split; [exact E3 | rewrite F1, F2, F3; reflexivity].
 Qed.
 
 Lemma space_cf_loop_cong :
-  forall cs S1 S2 r, store_eq S1 S2 ->
-    store_eq (fst (space_cf_loop S1 r cs)) (fst (space_cf_loop S2 r cs)) /\
-    snd (space_cf_loop S1 r cs) = snd (space_cf_loop S2 r cs).
+  forall cs S1 S2, store_eq S1 S2 ->
+    store_eq (fst (space_cf_loop S1 cs)) (fst (space_cf_loop S2 cs)) /\
+    snd (space_cf_loop S1 cs) = snd (space_cf_loop S2 cs).
 Proof.
-  induction cs as [| cd rest IH]; intros S1 S2 r E; simpl; [split; [exact E | reflexivity] |].
-  assert (A : store_eq (fst (if negb r && negb (d_persist (cd_rec cd)) then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])))
-                       (fst (if negb r && negb (d_persist (cd_rec cd)) then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))) /\
-              snd (if negb r && negb (d_persist (cd_rec cd)) then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])) =
-              snd (if negb r && negb (d_persist (cd_rec cd)) then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))).
-  { destruct (negb r && negb (d_persist (cd_rec cd))); [apply space_remove_datum_cong, E | split; [exact E | reflexivity]]. }
+  induction cs as [| cd rest IH]; intros S1 S2 E; simpl; [split; [exact E | reflexivity] |].
+  assert (A : store_eq (fst (if negb (d_persist (cd_rec cd)) then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])))
+                       (fst (if negb (d_persist (cd_rec cd)) then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))) /\
+              snd (if negb (d_persist (cd_rec cd)) then space_remove_datum S1 (cd_chan cd) (cd_rec cd) else (S1, [])) =
+              snd (if negb (d_persist (cd_rec cd)) then space_remove_datum S2 (cd_chan cd) (cd_rec cd) else (S2, []))).
+  { destruct (negb (d_persist (cd_rec cd))); [apply space_remove_datum_cong, E | split; [exact E | reflexivity]]. }
   destruct A as [E1 F1].
-  destruct (IH _ _ r E1) as [E2 F2].
+  destruct (IH _ _ E1) as [E2 F2].
   split; [exact E2 | rewrite F1, F2; reflexivity].
 Qed.
 
@@ -2068,25 +2230,25 @@ Proof.
 Qed.
 
 Lemma view_pf_loop :
-  forall cs V S chs r, store_eq (view_store V) S ->
-    store_eq (view_store (vpf_loop V chs r cs)) (fst (space_pf_loop S chs r cs)).
+  forall cs V S chs, store_eq (view_store V) S ->
+    store_eq (view_store (vpf_loop V chs cs)) (fst (space_pf_loop S chs cs)).
 Proof.
-  induction cs as [| cd rest IH]; intros V S chs r E; simpl; [exact E |].
+  induction cs as [| cd rest IH]; intros V S chs E; simpl; [exact E |].
   apply IH.
   eapply store_eq_trans; [apply view_remove_join |].
   apply remove_join_cong.
-  destruct (negb r && removable cd); simpl; [| exact E].
+  destruct (removable cd); simpl; [| exact E].
   eapply store_eq_trans; [apply view_remove_datum |].
   apply space_remove_datum_cong. exact E.
 Qed.
 
 Lemma view_cf_loop :
-  forall cs V S r, store_eq (view_store V) S ->
-    store_eq (view_store (vcf_loop V r cs)) (fst (space_cf_loop S r cs)).
+  forall cs V S, store_eq (view_store V) S ->
+    store_eq (view_store (vcf_loop V cs)) (fst (space_cf_loop S cs)).
 Proof.
-  induction cs as [| cd rest IH]; intros V S r E; simpl; [exact E |].
+  induction cs as [| cd rest IH]; intros V S E; simpl; [exact E |].
   apply IH.
-  destruct (negb r && negb (d_persist (cd_rec cd))); simpl; [| exact E].
+  destruct (negb (d_persist (cd_rec cd))); simpl; [| exact E].
   eapply store_eq_trans; [apply view_remove_datum |].
   apply space_remove_datum_cong. exact E.
 Qed.
@@ -2189,33 +2351,34 @@ Proof.
     apply (count_occ_not_In datum_eq_dec) in Hn. rewrite Hn. reflexivity.
 Qed.
 
+(* Decision 45 (Rule E): the loops have no retain flag, so the closed forms
+   always subtract the removed records. *)
 Lemma space_pf_loop_spec :
-  forall cs S chs r,
-    let S' := fst (space_pf_loop S chs r cs) in
+  forall cs S chs,
+    let S' := fst (space_pf_loop S chs cs) in
     (forall c x, count_occ datum_eq_dec (s_data S' c) x =
-       count_occ datum_eq_dec (s_data S c) x
-       - (if r then 0 else count_occ datum_eq_dec (np_recs c cs) x)) /\
+       count_occ datum_eq_dec (s_data S c) x - count_occ datum_eq_dec (np_recs c cs) x) /\
     (forall g, s_conts S' g = s_conts S g) /\
     (forall c, s_joins S' c = rj_closed S chs cs c) /\
     (forall p, s_count S' p = s_count S p).
 Proof.
-  induction cs as [| cd rest IH]; intros S chs r; simpl.
+  induction cs as [| cd rest IH]; intros S chs; simpl.
   - repeat split; intros; try reflexivity.
-    + destruct r; simpl; lia.
+    + simpl. lia.
     + unfold rj_closed. destruct (s_conts S chs); reflexivity.
-  - set (p1 := if negb r && removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])).
+  - set (p1 := if removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])).
     set (S1 := fst p1).
     set (S2 := fst (remove_join S1 (cd_chan cd) chs)).
-    destruct (IH S2 chs r) as (Id & Ic & Ij & In_).
+    destruct (IH S2 chs) as (Id & Ic & Ij & In_).
     assert (F1 : (forall c x, count_occ datum_eq_dec (s_data S1 c) x =
                    count_occ datum_eq_dec (s_data S c) x
-                   - (if negb r && removable cd
+                   - (if removable cd
                       then (if chan_eq_dec c (cd_chan cd)
                             then (if datum_eq_dec (cd_rec cd) x then 1 else 0) else 0) else 0)) /\
                  (forall g, s_conts S1 g = s_conts S g) /\
                  (forall c, s_joins S1 c = s_joins S c) /\
                  (forall p, s_count S1 p = s_count S p)).
-    { subst S1 p1. destruct (negb r && removable cd).
+    { subst S1 p1. destruct (removable cd).
       - apply space_remove_datum_fields.
       - simpl. repeat split; intros; lia || reflexivity. }
     destruct F1 as (F1d & F1c & F1j & F1n).
@@ -2223,7 +2386,6 @@ Proof.
     fold S2 in F2d, F2c, F2j, F2n.
     repeat split; intros.
     + rewrite Id, F2d, F1d, np_recs_cons.
-      destruct r; simpl; [lia |].
       destruct (removable cd) eqn:Er; simpl; [| lia].
       unfold chan_eqb. destruct (chan_eq_dec c (cd_chan cd)) as [E | N];
         destruct (chan_eq_dec (cd_chan cd) c) as [E' | N']; try congruence; lia.
@@ -2241,38 +2403,36 @@ Proof.
 Qed.
 
 Lemma space_cf_loop_spec :
-  forall cs S r,
+  forall cs S,
     (forall cd, In cd cs -> cd_incoming cd = false) ->
-    let S' := fst (space_cf_loop S r cs) in
+    let S' := fst (space_cf_loop S cs) in
     (forall c x, count_occ datum_eq_dec (s_data S' c) x =
-       count_occ datum_eq_dec (s_data S c) x
-       - (if r then 0 else count_occ datum_eq_dec (np_recs c cs) x)) /\
+       count_occ datum_eq_dec (s_data S c) x - count_occ datum_eq_dec (np_recs c cs) x) /\
     (forall g, s_conts S' g = s_conts S g) /\
     (forall c, s_joins S' c = s_joins S c) /\
     (forall p, s_count S' p = s_count S p).
 Proof.
-  induction cs as [| cd rest IH]; intros S r Hinc; simpl.
-  - repeat split; intros; try reflexivity. destruct r; simpl; lia.
+  induction cs as [| cd rest IH]; intros S Hinc; simpl.
+  - repeat split; intros; try reflexivity. simpl. lia.
   - assert (Hcd : cd_incoming cd = false) by (apply Hinc; left; reflexivity).
     assert (Hr : forall cd', In cd' rest -> cd_incoming cd' = false) by (intros; apply Hinc; right; assumption).
-    set (p1 := if negb r && negb (d_persist (cd_rec cd)) then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])).
-    destruct (IH (fst p1) r Hr) as (Id & Ic & Ij & In_).
+    set (p1 := if negb (d_persist (cd_rec cd)) then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])).
+    destruct (IH (fst p1) Hr) as (Id & Ic & Ij & In_).
     assert (F1 : (forall c x, count_occ datum_eq_dec (s_data (fst p1) c) x =
                    count_occ datum_eq_dec (s_data S c) x
-                   - (if negb r && negb (d_persist (cd_rec cd))
+                   - (if negb (d_persist (cd_rec cd))
                       then (if chan_eq_dec c (cd_chan cd)
                             then (if datum_eq_dec (cd_rec cd) x then 1 else 0) else 0) else 0)) /\
                  (forall g, s_conts (fst p1) g = s_conts S g) /\
                  (forall c, s_joins (fst p1) c = s_joins S c) /\
                  (forall p, s_count (fst p1) p = s_count S p)).
-    { subst p1. destruct (negb r && negb (d_persist (cd_rec cd))).
+    { subst p1. destruct (negb (d_persist (cd_rec cd))).
       - apply space_remove_datum_fields.
       - simpl. repeat split; intros; lia || reflexivity. }
     destruct F1 as (F1d & F1c & F1j & F1n).
     repeat split; intros.
     + rewrite Id, F1d, np_recs_cons.
       unfold removable. rewrite Hcd. simpl.
-      destruct r; simpl; [lia |].
       destruct (d_persist (cd_rec cd)); simpl; [lia |].
       unfold chan_eqb. destruct (chan_eq_dec c (cd_chan cd)) as [E | N];
         destruct (chan_eq_dec (cd_chan cd) c) as [E' | N']; try congruence; lia.
@@ -2882,7 +3042,7 @@ Proof.
   destruct (Hall cd Hin Hi) as [_ Hr]. rewrite Hr. reflexivity.
 Qed.
 
-(* ═════════════ FR-10: peek fires and the re-offer (H11, round 3) ════════════ *)
+(* ════ FR-10 and decision 45: peek fires, the re-offer and the re-store (H11) ════ *)
 
 (* fire_cands gives the candidates of a fire. *)
 Definition fire_cands (op : Op) : list Cand :=
@@ -2892,6 +3052,7 @@ Definition fire_cands (op : Op) : list Cand :=
   | _ => []
   end.
 
+(* Disabled by decision 45 (Rule E): no fire keeps a record, so no fire has retained records.
 (* retained gives the stored records that a retaining (peek) fire keeps in
    place and that the host removes. These are its non-persistent stored
    candidates. HEAD's reducer re-produces them (head_reproduces). FR-10: a
@@ -2905,7 +3066,9 @@ Definition retained (op : Op) : Chan -> list Datum :=
       if negb (nullb peeks) then fun c => np_recs c cands else fun _ => []
   | _ => fun _ => []
   end.
+*)
 
+(* Disabled by decision 45 (Rule E): no fire retains, so the retention test of a fire is gone.
 (* retaining holds for a fire whose waiter peeks (retention, ssh
    peek_retention). *)
 Definition retaining (op : Op) : bool :=
@@ -2914,7 +3077,9 @@ Definition retaining (op : Op) : bool :=
   | OConsume _ _ _ _ peeks (CFire _) => negb (nullb peeks)
   | _ => false
   end.
+*)
 
+(* Disabled by decision 45 (Rule E): retained and retaining are gone.
 Lemma retained_nonretaining : forall op c, retaining op = false -> retained op c = [].
 Proof.
   intros op c H. destruct op as [ch v p [| chs wk kidx cands] | chs pats k p peeks [| cands]];
@@ -2922,7 +3087,9 @@ Proof.
   - rewrite H. reflexivity.
   - rewrite H. reflexivity.
 Qed.
+*)
 
+(* Disabled by decision 45 (Rule E): no fire keeps a record, so no kept record needs a source.
 (* Each kept record is a stored non-persistent candidate of its fire, on
    its channel. It is never the incoming datum (FR-10). *)
 Lemma retained_stored :
@@ -2941,6 +3108,7 @@ Proof.
   - destruct (negb (nullb (w_peeks wk))); [apply Hnp, Hin | simpl in Hin; contradiction].
   - destruct (negb (nullb peeks)); [apply Hnp, Hin | simpl in Hin; contradiction].
 Qed.
+*)
 
 Lemma host_remove_continuation_data :
   forall S g i, (forall c, s_data (fst (host_remove_continuation S g i)) c = s_data S c) /\
@@ -2960,6 +3128,7 @@ Proof.
   destruct (in_dec wk_eq_dec w (s_conts S g)); simpl; repeat split; reflexivity.
 Qed.
 
+(* Disabled by decision 45 (Rule E): the loops have no retain flag, so no loop retains the records.
 (* A retaining produce-side loop removes no record. It removes only the
    fired join of each candidate channel. *)
 Lemma space_pf_loop_retain_data :
@@ -2968,14 +3137,18 @@ Proof.
   induction cs as [| cd rest IH]; intros S chs c; simpl; [reflexivity |].
   rewrite IH. destruct (remove_join_fields S (cd_chan cd) chs) as (Rd & _). apply Rd.
 Qed.
+*)
 
+(* Disabled by decision 45 (Rule E): the loops have no retain flag, so no loop retains the records.
 (* A retaining consume-side loop changes nothing. *)
 Lemma space_cf_loop_retain : forall cs S, space_cf_loop S true cs = (S, []).
 Proof.
   induction cs as [| cd rest IH]; intros S; simpl; [reflexivity |].
   rewrite IH. reflexivity.
 Qed.
+*)
 
+(* Disabled by decision 45 (Rule E): a peek fire now removes its records, so it changes data lists.
 (* FR-10 and retention: a peek fire changes no data list, in play, replay
    and reporting, and also when it is rejected. It removes no stored record,
    and it never stores its incoming datum. The agent re-offers that datum as
@@ -3000,6 +3173,164 @@ Proof.
       [unfold commit_play_consume | unfold commit_replay_consume | unfold commit_replay_consume];
       destruct scomm as [cm |]; commit_split; cbn zeta; cbn [r_st];
       first [reflexivity | rewrite Hr, space_cf_loop_retain; reflexivity].
+Qed.
+*)
+
+(* ── FR-10 restated: a fire stores no datum (decision 45, C.10) ──────── *)
+
+(* A removal loop never adds a record. *)
+Lemma space_pf_loop_data_le :
+  forall cs S chs c x,
+    count_occ datum_eq_dec (s_data (fst (space_pf_loop S chs cs)) c) x <=
+    count_occ datum_eq_dec (s_data S c) x.
+Proof.
+  intros cs S chs c x. destruct (space_pf_loop_spec cs S chs) as (Ld & _). rewrite Ld. lia.
+Qed.
+
+Lemma space_cf_loop_data_le :
+  forall cs S c x,
+    count_occ datum_eq_dec (s_data (fst (space_cf_loop S cs)) c) x <=
+    count_occ datum_eq_dec (s_data S c) x.
+Proof.
+  induction cs as [| cd rest IH]; intros S c x; simpl; [lia |].
+  eapply Nat.le_trans; [apply IH |].
+  destruct (negb (d_persist (cd_rec cd))).
+  - destruct (space_remove_datum_fields S (cd_chan cd) (cd_rec cd)) as (Fd & _).
+    rewrite Fd. lia.
+  - cbn [fst]. lia.
+Qed.
+
+(* destruct_ifs splits each boolean test of the goal whose value is not
+   known. *)
+Ltac destruct_ifs :=
+  repeat match goal with
+  | |- context [if ?b then _ else _] =>
+      lazymatch b with true => fail | false => fail | _ => destruct b end
+  end.
+
+(* FR-10 after decision 45 (Rule E): the commit of a fire never stores a
+   datum, in play, replay and reporting, and also when it is rejected. It
+   only removes records, so no data list gains a record. A produce-side
+   fire never stores its incoming datum: the agent re-offers that datum as
+   the next operation (reoffers). A consume-side peek fire removes its
+   non-persistent records, and the agent stores each of them again as the
+   next operations (restores_after). *)
+Lemma fire_stores_no_datum :
+  forall m H S rd sg, is_fire (sg_op sg) = true ->
+    forall c x, count_occ datum_eq_dec (s_data (r_st (commit_op m H S rd sg)) c) x <=
+                count_occ datum_eq_dec (s_data S c) x.
+Proof.
+  intros m H S rd [op j0 scomm sp] Hf c x. unfold commit_op.
+  cbn [sg_op sg_joins0 sg_comm sg_paired] in *.
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+    cbn [is_fire] in Hf; try discriminate;
+    destruct (backend m);
+    unfold commit_play_produce, commit_replay_produce, commit_play_consume, commit_replay_consume;
+    cbn zeta; destruct scomm as [cm |]; commit_split; cbn [r_st];
+    destruct_ifs; cbn [fst];
+    first
+      [ apply Nat.eq_le_incl; reflexivity
+      | eapply Nat.le_trans; [apply space_pf_loop_data_le |];
+        first [ apply Nat.eq_le_incl; reflexivity
+              | rewrite (proj1 (space_remove_continuation_data _ _ _));
+                apply Nat.eq_le_incl; reflexivity ]
+      | apply space_cf_loop_data_le ].
+Qed.
+
+(* ── The records that a fire removes (decision 45, Rule E) ──────────── *)
+
+(* The data of the view after a produce-side fire: each stored
+   non-persistent candidate loses one copy of its record. The incoming
+   datum is never stored (FR-10). *)
+Lemma vpf_effects_data :
+  forall V ch v persist chs wk cands c x,
+    count_occ datum_eq_dec (vdata (vpf_effects V ch v persist chs wk cands) c) x =
+    count_occ datum_eq_dec (vdata V c) x - count_occ datum_eq_dec (np_recs c cands) x.
+Proof.
+  intros V ch v persist chs wk cands c x. unfold vpf_effects. cbv zeta.
+  set (V1 := if w_persist wk then V else vremove_continuation V chs wk).
+  assert (E1 : vdata V1 c = vdata V c) by (subst V1; destruct (w_persist wk); reflexivity).
+  destruct (view_pf_loop (sort_desc vkey cands) V1 (view_store V1) chs (store_eq_refl _)) as (Ed & _).
+  destruct (space_pf_loop_spec (sort_desc vkey cands) (view_store V1) chs) as (Ld & _).
+  change (vdata (vpf_loop V1 chs (sort_desc vkey cands)) c)
+    with (s_data (view_store (vpf_loop V1 chs (sort_desc vkey cands))) c).
+  rewrite Ed, Ld. change (s_data (view_store V1) c) with (vdata V1 c). rewrite E1.
+  rewrite (np_recs_perm c (sort_desc vkey cands) cands x (sort_desc_perm _ vkey cands)).
+  reflexivity.
+Qed.
+
+(* The data of the view after a consume-side fire: each stored
+   non-persistent candidate loses one copy of its record, also when the
+   fire peeks. *)
+Lemma vcf_effects_data :
+  forall V cands, (forall cd, In cd cands -> cd_incoming cd = false) ->
+    forall c x, count_occ datum_eq_dec (vdata (vcf_effects V cands) c) x =
+                count_occ datum_eq_dec (vdata V c) x - count_occ datum_eq_dec (np_recs c cands) x.
+Proof.
+  intros V cands Hinc c x. unfold vcf_effects.
+  assert (Hinc' : forall cd, In cd (sort_desc vkey cands) -> cd_incoming cd = false).
+  { intros cd Hin. apply Hinc. eapply Permutation_in; [apply sort_desc_perm | exact Hin]. }
+  destruct (view_cf_loop (sort_desc vkey cands) V (view_store V) (store_eq_refl _)) as (Ed & _).
+  destruct (space_cf_loop_spec (sort_desc vkey cands) (view_store V) Hinc') as (Ld & _).
+  change (vdata (vcf_loop V (sort_desc vkey cands)) c)
+    with (s_data (view_store (vcf_loop V (sort_desc vkey cands))) c).
+  rewrite Ed, Ld. change (s_data (view_store V) c) with (vdata V c).
+  rewrite (np_recs_perm c (sort_desc vkey cands) cands x (sort_desc_perm _ vkey cands)).
+  reflexivity.
+Qed.
+
+(* stored_ok bounds the records that a fire removes: on each channel, the
+   view holds each removed record at least as often as the fire removes
+   it. *)
+Lemma stored_ok_np_le :
+  forall V cands, stored_ok V cands = true ->
+    forall c x, count_occ datum_eq_dec (np_recs c cands) x <= count_occ datum_eq_dec (vdata V c) x.
+Proof.
+  intros V cands Hso c x.
+  destruct (count_occ datum_eq_dec (np_recs c cands) x) as [| n] eqn:E0; [lia |].
+  assert (Hin : In x (np_recs c cands)) by (apply (count_occ_In datum_eq_dec); lia).
+  unfold np_recs in Hin. apply in_map_iff in Hin as (cd & Hx & Hf).
+  apply filter_In in Hf as [Hcd Hb]. apply andb_true_iff in Hb as [Hr Hc].
+  unfold chan_eqb in Hc. destruct (chan_eq_dec (cd_chan cd) c) as [Ec | _]; [| discriminate].
+  unfold stored_ok in Hso. rewrite forallb_forall in Hso. specialize (Hso cd Hcd).
+  cbv beta in Hso.
+  unfold removable in Hr. apply andb_true_iff in Hr as [Hi Hp].
+  apply negb_true_iff in Hi. apply negb_true_iff in Hp.
+  rewrite Hi, Hp in Hso. cbv beta iota in Hso. apply Nat.leb_le in Hso.
+  rewrite <- E0. subst c x. exact Hso.
+Qed.
+
+(* H11 (decision 45, Rule E): the view of a staged fire loses exactly the
+   records that the fire removes. These are its stored non-persistent
+   candidates (np_recs), on both sides and also for a peek. The host
+   removes the same records (host_rm_loop, host_spd_loop). A produce-side
+   fire never stores its incoming datum (FR-10). *)
+Lemma fire_view_removes :
+  forall T op T1, stage T op = Some T1 -> is_fire op = true ->
+    forall c x, count_occ datum_eq_dec (vdata (t_view T1) c) x
+                + count_occ datum_eq_dec (np_recs c (fire_cands op)) x
+                = count_occ datum_eq_dec (vdata (t_view T) c) x.
+Proof.
+  intros T op T1 Hst Hf c x.
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+    cbn [is_fire] in Hf; try discriminate; cbn [fire_cands].
+  - unfold stage in Hst.
+    destruct (t_installed T ch); [discriminate |].
+    destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T1. cbn [t_view txn_push].
+    destruct (pfire_ok_spec T ch v persist chs wk cands Hok) as (_ & _ & _ & _ & _ & _ & _ & Hso).
+    rewrite vpf_effects_data.
+    assert (Hb : forall c', vdata (vbump (t_view T) (produce_id ch v persist) persist) c' =
+                            vdata (t_view T) c')
+      by (intros c'; unfold vbump; destruct persist; reflexivity).
+    rewrite Hb. pose proof (stored_ok_np_le (t_view T) cands Hso c x). lia.
+  - unfold stage in Hst.
+    destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T1. cbn [t_view txn_push].
+    destruct (cfire_ok_spec T chs cands Hcf) as (_ & Hinc & Hso).
+    rewrite (vcf_effects_data (t_view T) cands Hinc).
+    pose proof (stored_ok_np_le (t_view T) cands Hso c x). lia.
 Qed.
 
 (* ── The re-offer ─────────────────────────────────────────────────────── *)
@@ -3049,10 +3380,10 @@ Proof.
 Qed.
 
 Lemma vpf_loop_counts :
-  forall cs V chs r p, vcount (vpf_loop V chs r cs) p = vcount V p.
+  forall cs V chs p, vcount (vpf_loop V chs cs) p = vcount V p.
 Proof.
-  induction cs as [| cd rest IH]; intros V chs r p; simpl; [reflexivity |].
-  rewrite IH. destruct (negb r && removable cd); unfold vremove_join;
+  induction cs as [| cd rest IH]; intros V chs p; simpl; [reflexivity |].
+  rewrite IH. destruct (removable cd); unfold vremove_join;
     destruct (vconts _ chs); reflexivity.
 Qed.
 
@@ -3101,16 +3432,47 @@ Qed.
 
 (* ── The fire receipt ────────────────────────────────────────────────── *)
 
+(* Disabled by decision 45 (Rule E): no fire retains a result, so the receipt marks no result retained.
 (* ssh retained_results: the receipt retains a result when the fire retains
    (peeks) and the result is a stored candidate. FR-10: the incoming datum is
    never retained, because the fire does not store it. *)
 Definition retained_result (retain : bool) (cd : Cand) : bool := retain && negb (cd_incoming cd).
+*)
 
+(* Disabled by decision 45 (Rule E): the receipt keeps the host flag of each result and rewrites none.
 (* ssh fired_receipt: the receipt reports a retained result as persistent,
    because the store keeps its record. Every other result keeps the flag of
    its record, as wrap_result reports it (rs/rspace/ops_consume.rs:204-229). *)
 Definition receipt_persistent (retain : bool) (cd : Cand) : bool :=
   retained_result retain cd || d_persist (cd_rec cd).
+*)
+
+(* wrap_result (rs/rspace/ops_consume.rs:204-229, rs/util.rs:57-70) gives one
+   result for each candidate. The persist flag of a result is the persist
+   flag of its record (persistent = datum.persist): the stored record, or
+   the incoming datum of a produce-side fire. *)
+Definition wrap_flags (cands : list Cand) : list bool :=
+  map (fun cd => d_persist (cd_rec cd)) cands.
+
+(* ssh fired_receipt: the receipt of a fire takes the results of
+   wrap_result. It fails (None, SpaceTxnError::Inconsistent) when the
+   results do not line up with the candidates. wrap_result gives one result
+   for each candidate, so that check never fails here. Decision 45 (Rule E):
+   the receipt rewrites no flag. *)
+Definition fired_receipt (n : nat) (flags : list bool) : option (list bool) :=
+  if Nat.eqb (length flags) n then Some flags else None.
+
+(* H11 (decision 45, Rule E): the receipt of a fire reports the persist flag
+   of the record of each result, as the host reports it. So a result that
+   is not persistent is a record that the fire removed, or the incoming
+   datum of a non-persistent produce. These are the data that HEAD's
+   produce_peeks sends again (head_reproduces). *)
+Lemma receipt_flags_are_persist :
+  forall cands,
+    fired_receipt (length cands) (wrap_flags cands) = Some (map (fun cd => d_persist (cd_rec cd)) cands).
+Proof.
+  intros cands. unfold fired_receipt, wrap_flags. rewrite length_map, Nat.eqb_refl. reflexivity.
+Qed.
 
 Lemma pfire_ok_one_incoming :
   forall T ch v persist chs wk cands, pfire_ok T ch v persist chs wk cands = true ->
@@ -3139,6 +3501,7 @@ Proof.
   exists cd0. auto.
 Qed.
 
+(* Disabled by decision 45 (Rule E): the receipt no longer reports the stored results of a peek persistent.
 (* H11 (FR-10): the receipt of a staged produce-side peek fire reports every
    stored result persistent. It reports the incoming result with the persist
    flag of the produce. So the results that are not persistent are the
@@ -3171,45 +3534,59 @@ Proof.
   destruct persist; simpl; [reflexivity |].
   rewrite Hch0, Hrec0. reflexivity.
 Qed.
+*)
 
 (* ── HEAD's re-produces ─────────────────────────────────────────────── *)
 
 (* head_reproduces lists the channel and the value of each produce that HEAD
    re-produces after a fire whose waiter peeks. The function produce_peeks
-   (reduce.rs:977-1012) takes each result of wrap_result whose persist flag
-   is false (rs/util.rs:57-70). It re-produces the removed value of that
-   result (rs/space_matcher.rs:72-90) on its channel, as a non-persistent
-   produce. The reducer calls produce_peeks after a non-persistent produce
-   (reduce.rs:780-807) and after a non-persistent consume (901-928). After a
-   persistent produce, the reducer calls it and also re-issues that produce
-   (709-775). *)
+   (rholang/src/rust/interpreter/reduce.rs:981-1016) takes each result of
+   wrap_result whose persist flag is false (rs/util.rs:57-70, wrap_flags).
+   It re-produces the removed value of that result (rs/space_matcher.rs:72-90)
+   on its channel, as a non-persistent produce. The reducer calls
+   produce_peeks after a non-persistent produce fires a peek waiter
+   (rholang/src/rust/interpreter/reduce.rs:784-811) and after a consume with
+   a peek fires (rholang/src/rust/interpreter/reduce.rs:909-936). After a
+   persistent produce, the reducer calls it too
+   (rholang/src/rust/interpreter/reduce.rs:776-781). *)
 Definition head_reproduces (cands : list Cand) : list (Chan * Val) :=
   map (fun cd => (cd_chan cd, d_val (cd_rec cd)))
       (filter (fun cd => negb (d_persist (cd_rec cd))) cands).
 
+(* Disabled by decision 45 (Rule E): the substrate keeps no record, so no re-produce of HEAD is replaced.
 (* kept_reproduces lists the re-produces of HEAD that the substrate
    replaces: the stored records that a peek fire keeps in place. *)
 Definition kept_reproduces (cands : list Cand) : list (Chan * Val) :=
   map (fun cd => (cd_chan cd, d_val (cd_rec cd))) (filter removable cands).
+*)
 
-(* H11 (FR-10): after a produce-side fire, HEAD re-produces two kinds of
-   data. The first is the incoming datum of a non-persistent produce, which
-   the agent re-offers. The second is the stored records that the substrate
-   keeps in place. *)
+(* restore_reproduces lists the channel and the value of each record that a
+   fire removes (decision 45, Rule E): its stored non-persistent candidates.
+   The agent stores each of these records again (restores_after). *)
+Definition restore_reproduces (cands : list Cand) : list (Chan * Val) :=
+  map (fun cd => (cd_chan cd, d_val (cd_rec cd))) (filter removable cands).
+
+(* H11 (FR-10 and decision 45): after a produce-side fire, HEAD re-produces
+   two kinds of data. The first is the incoming datum of a non-persistent
+   produce, which the agent re-offers (reoffers). The second is the stored
+   records that the fire removes (restore_reproduces). A P4 produce-side
+   fire has none of them, because its one-channel group binds only the
+   incoming datum. A join re-stores them, as the consume side does. *)
 Lemma head_reproduces_produce :
   forall T ch v persist chs wk cands, pfire_ok T ch v persist chs wk cands = true ->
     Permutation (head_reproduces cands)
-                ((if persist then [] else [(ch, v)]) ++ kept_reproduces cands).
+                ((if persist then [] else [(ch, v)]) ++ restore_reproduces cands).
 Proof.
   intros T ch v persist chs wk cands Hok.
   destruct (pfire_ok_incoming T ch v persist chs wk cands Hok) as (cd0 & Ef & _ & Hch0 & Hrec0).
-  unfold head_reproduces, kept_reproduces.
+  unfold head_reproduces, restore_reproduces.
   eapply perm_trans; [apply Permutation_map, (filter_split Cand cd_incoming) |].
   rewrite map_app, (filter_and Cand cd_incoming (fun cd => negb (d_persist (cd_rec cd)))), Ef.
   cbn [filter]. rewrite Hrec0. destruct persist; simpl; [reflexivity |].
   rewrite Hch0, Hrec0. reflexivity.
 Qed.
 
+(* Disabled by decision 45 (Rule E): restores_are_produce_peeks states the consume side with the re-stores.
 (* After a consume-side fire, HEAD re-produces exactly the stored records
    that the substrate keeps. *)
 Lemma head_reproduces_consume :
@@ -3219,12 +3596,16 @@ Proof.
   unfold head_reproduces, kept_reproduces. f_equal. apply filter_ext_in. intros cd Hin.
   unfold removable. rewrite (Hinc cd Hin). reflexivity.
 Qed.
+*)
 
+(* Disabled by decision 45 (Rule E): values_on served only the deviation of decision 19, which is gone.
 (* values_on gives the values that a list of re-produces sends on the
    channel c, in order. *)
 Definition values_on (c : Chan) (rps : list (Chan * Val)) : list Val :=
   map snd (filter (fun p => chan_eqb (fst p) c) rps).
+*)
 
+(* Disabled by decision 45 (Rule E): the substrate keeps no record, so the deviation of decision 19 is gone.
 (* The deviation of decision 19 is exact. On each channel, the re-produces
    of HEAD that the substrate replaces send the values of the kept stored
    records (np_recs, the records of retained). *)
@@ -3236,7 +3617,9 @@ Proof.
   cbn [filter]. destruct (removable cd); cbn [andb]; [| exact IH].
   cbn [map filter fst]. destruct (chan_eqb (cd_chan cd) c); cbn [map snd]; [f_equal |]; exact IH.
 Qed.
+*)
 
+(* Disabled by decision 45 (Rule E): no fire retains a record, so no re-produce of HEAD is replaced.
 (* For every retaining fire, on each channel, the re-produces of HEAD that
    the substrate replaces send exactly the values of the retained records. *)
 Lemma kept_reproduces_retained :
@@ -3247,6 +3630,299 @@ Proof.
   destruct op as [ch v p [| chs wk kidx cands] | chs pats k p peeks [| cands]];
     cbn [retaining] in Hr; try discriminate; cbn [retained fire_cands]; rewrite Hr;
     apply kept_reproduces_values.
+Qed.
+*)
+
+(* ── The re-store (decision 45, Rule E) ─────────────────────────────── *)
+
+(* restore_of gives the re-store of a candidate: a Store of the record that
+   the fire removed, on its channel, with the value of the record and
+   persist = false (generic.rs Plan::restore). HEAD's produce_peeks makes
+   the same produce: the removed value on its channel, not persistent. *)
+Definition restore_of (cd : Cand) : Op :=
+  OProduce (cd_chan cd) (d_val (cd_rec cd)) false PStore.
+
+(* restores_after gives the operations that the agent stages right after a
+   fire. After a consume-side peek fire, it stages the re-store of each
+   record that the fire removes (generic.rs receive and
+   Plan::restore_peeked). A fire that does not peek, and a produce-side
+   fire, stage no re-store here. The agent re-offers the incoming datum of a
+   produce-side peek fire instead (reoffers). *)
+Definition restores_after (op : Op) : list Op :=
+  match op with
+  | OConsume _ _ _ _ peeks (CFire cands) =>
+      if nullb peeks then [] else map restore_of (filter removable cands)
+  | _ => []
+  end.
+
+(* host_produce_peeks gives the produces that HEAD's produce_peeks makes
+   after a consume-side fire whose waiter peeks: a non-persistent produce of
+   each result whose persist flag is false, on its channel, with its
+   removed value. The model gives each produce the outcome Store, as in P4:
+   the queue fires a receive only at its head, when no waiter is parked,
+   so the re-produce meets no waiter. *)
+Definition host_produce_peeks (op : Op) : list Op :=
+  match op with
+  | OConsume _ _ _ _ peeks (CFire cands) =>
+      if nullb peeks then []
+      else map (fun p => OProduce (fst p) (snd p) false PStore) (head_reproduces cands)
+  | _ => []
+  end.
+
+(* stored_sources holds when the source of each record of the view is the
+   Produce::create identity of its channel, value and persist flag
+   (rs/trace/event.rs:238-249). A staged Store and a host produce store
+   exactly that identity, and staging keeps the property
+   (stage_keeps_stored_sources). *)
+Definition stored_sources (V : View) : Prop :=
+  forall c d, In d (vdata V c) -> d_src d = produce_id c (d_val d) (d_persist d).
+
+Lemma chan_eqb_refl : forall c, chan_eqb c c = true.
+Proof. intros c. unfold chan_eqb. destruct (chan_eq_dec c c); [reflexivity | contradiction]. Qed.
+
+Lemma chan_eqb_neq : forall a b, a <> b -> chan_eqb a b = false.
+Proof. intros a b N. unfold chan_eqb. destruct (chan_eq_dec a b); [contradiction | reflexivity]. Qed.
+
+(* H11 (decision 45, Rule E): a re-store has the identity of the produce
+   that stored the record. Its trigger key is the source of the record, and
+   the datum that it stores is the record itself. So the re-store and
+   HEAD's re-produce have one Produce identity. *)
+Lemma restore_same_identity :
+  forall V cd, stored_sources V -> In (cd_rec cd) (vdata V (cd_chan cd)) -> removable cd = true ->
+    trigger_key (restore_of cd) = KProduce (d_src (cd_rec cd)) /\
+    mkDatum (d_val (cd_rec cd)) false (produce_id (cd_chan cd) (d_val (cd_rec cd)) false) = cd_rec cd.
+Proof.
+  intros V cd Hsrc Hin Hr.
+  assert (Hp : d_persist (cd_rec cd) = false).
+  { unfold removable in Hr. apply andb_true_iff in Hr as [_ Hp]. apply negb_true_iff, Hp. }
+  assert (Hs : d_src (cd_rec cd) = produce_id (cd_chan cd) (d_val (cd_rec cd)) false).
+  { rewrite <- Hp. apply Hsrc, Hin. }
+  unfold restore_of. cbn [trigger_key]. split; [rewrite Hs; reflexivity |].
+  rewrite <- Hs, <- Hp. destruct (cd_rec cd); reflexivity.
+Qed.
+
+(* H11 (decision 45, Rule E): the re-stores that the agent stages after a
+   consume-side fire are exactly the produces of HEAD's produce_peeks, in
+   order: one for each result whose persist flag is false. The fire has no
+   incoming candidate, so these results are the records that it removes. *)
+Lemma restores_are_produce_peeks :
+  forall T chs pats k persist peeks cands T1,
+    stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+    restores_after (OConsume chs pats k persist peeks (CFire cands)) =
+    host_produce_peeks (OConsume chs pats k persist peeks (CFire cands)).
+Proof.
+  intros T chs pats k persist peeks cands T1 Hst.
+  unfold stage in Hst.
+  destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+  destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
+  destruct (cfire_ok_spec T chs cands Hcf) as (_ & Hinc & _).
+  assert (E : filter removable cands = filter (fun cd => negb (d_persist (cd_rec cd))) cands).
+  { apply filter_ext_in. intros cd Hin. unfold removable. rewrite (Hinc cd Hin). reflexivity. }
+  unfold restores_after, host_produce_peeks, head_reproduces.
+  destruct (nullb peeks); [reflexivity |].
+  rewrite E, map_map. reflexivity.
+Qed.
+
+(* The facts of a staged consume-side fire about a record that it removes:
+   the channel of the record is not installed after the fire, the record is
+   in the view before the fire, and (under stored_sources) the re-store
+   stores the record itself. *)
+Lemma consume_fire_removed :
+  forall T chs pats k persist peeks cands T1,
+    stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+    stored_sources (t_view T) ->
+    forall cd, In cd cands -> removable cd = true ->
+      t_installed T1 (cd_chan cd) = false /\
+      In (cd_rec cd) (vdata (t_view T) (cd_chan cd)) /\
+      mkDatum (d_val (cd_rec cd)) false (produce_id (cd_chan cd) (d_val (cd_rec cd)) false) = cd_rec cd.
+Proof.
+  intros T chs pats k persist peeks cands T1 Hst Hsrc cd Hin Hr.
+  unfold stage in Hst.
+  destruct (consume_args_ok T chs pats peeks) eqn:Hargs; cbn [negb] in Hst; [| discriminate].
+  destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
+  apply stage_fire_some in Hst. subst T1.
+  destruct (cfire_ok_spec T chs cands Hcf) as (Hmap & _ & Hso).
+  assert (Hv : In (cd_rec cd) (vdata (t_view T) (cd_chan cd))).
+  { pose proof (stored_ok_np_le (t_view T) cands Hso (cd_chan cd) (cd_rec cd)) as Hle.
+    assert (Hnp : In (cd_rec cd) (np_recs (cd_chan cd) cands)).
+    { unfold np_recs. apply in_map. apply filter_In. split; [exact Hin |].
+      rewrite Hr, chan_eqb_refl. reflexivity. }
+    apply (count_occ_In datum_eq_dec) in Hnp. apply (count_occ_In datum_eq_dec). lia. }
+  split; [| split; [exact Hv | exact (proj2 (restore_same_identity (t_view T) cd Hsrc Hv Hr))]].
+  cbn [t_installed txn_push].
+  unfold consume_args_ok in Hargs. repeat rewrite andb_true_iff in Hargs.
+  destruct Hargs as (((_ & _) & Hnot) & _).
+  apply (not_installed_true T chs Hnot). rewrite <- Hmap. apply in_map, Hin.
+Qed.
+
+(* H11 (decision 45, Rule E): after a staged consume-side fire, the re-store
+   of each record that the fire removes is a staged Store. Staging accepts
+   it, also when the transaction already holds a produce of that identity.
+   It stores the record itself at the head of the list of its channel
+   (put_datum inserts at index 0, rs/hot_store.rs:879-897). It steps the
+   counter of the identity by one, as log_produce does for HEAD's
+   re-produce. *)
+Lemma restore_store_staged :
+  forall T chs pats k persist peeks cands T1 cd,
+    stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+    In cd cands -> removable cd = true -> stored_sources (t_view T) ->
+    exists T2, stage T1 (restore_of cd) = Some T2 /\
+      trigger_key (restore_of cd) = KProduce (d_src (cd_rec cd)) /\
+      vdata (t_view T2) (cd_chan cd) = cd_rec cd :: vdata (t_view T1) (cd_chan cd) /\
+      vcount (t_view T2) (d_src (cd_rec cd)) = S (vcount (t_view T1) (d_src (cd_rec cd))).
+Proof.
+  intros T chs pats k persist peeks cands T1 cd Hst Hin Hr Hsrc.
+  destruct (consume_fire_removed T chs pats k persist peeks cands T1 Hst Hsrc cd Hin Hr)
+    as (Hni & Hv & Hrec).
+  destruct (restore_same_identity (t_view T) cd Hsrc Hv Hr) as (Hkey & _).
+  assert (Hs : d_src (cd_rec cd) = produce_id (cd_chan cd) (d_val (cd_rec cd)) false)
+    by (rewrite <- Hrec; reflexivity).
+  eexists. split; [unfold stage, restore_of; rewrite Hni; reflexivity |].
+  split; [exact Hkey |].
+  cbn [t_view txn_push]. split.
+  - unfold vput_datum. rewrite vdata_set.
+    destruct (chan_eq_dec (cd_chan cd) (cd_chan cd)) as [_ | C]; [| contradiction].
+    rewrite Hrec. reflexivity.
+  - rewrite Hs. exact (vbump_count_self _ _).
+Qed.
+
+(* Staging the re-stores of removed records: each re-store is a staged
+   Store, and it puts its record back on its channel. *)
+Lemma restores_stage :
+  forall F T1,
+    (forall cd, In cd F -> t_installed T1 (cd_chan cd) = false /\
+       mkDatum (d_val (cd_rec cd)) false (produce_id (cd_chan cd) (d_val (cd_rec cd)) false) = cd_rec cd) ->
+    exists T2, stage_all T1 (map restore_of F) = Some T2 /\
+      forall c x, count_occ datum_eq_dec (vdata (t_view T2) c) x =
+                  count_occ datum_eq_dec (vdata (t_view T1) c) x
+                  + count_occ datum_eq_dec (map cd_rec (filter (fun cd => chan_eqb (cd_chan cd) c) F)) x.
+Proof.
+  induction F as [| cd rest IH]; intros T1 Hall.
+  - exists T1. split; [reflexivity |]. intros c x. cbn [filter map count_occ]. lia.
+  - destruct (Hall cd (or_introl eq_refl)) as (Hni & Hrec).
+    assert (Hst1 : exists T1', stage T1 (restore_of cd) = Some T1' /\
+                     t_installed T1' = t_installed T1 /\
+                     forall c, vdata (t_view T1') c =
+                               if chan_eq_dec c (cd_chan cd) then cd_rec cd :: vdata (t_view T1) c
+                               else vdata (t_view T1) c).
+    { eexists. split; [unfold stage, restore_of; rewrite Hni; reflexivity |].
+      split; [reflexivity |].
+      intros c. cbn [t_view txn_push]. unfold vput_datum. rewrite vdata_set, Hrec.
+      destruct (chan_eq_dec c (cd_chan cd)) as [E | N]; [subst c |]; reflexivity. }
+    destruct Hst1 as (T1' & H1 & Hi1 & Hd1).
+    destruct (IH T1') as (T2 & H2 & Hd2).
+    { intros cd' Hin'. rewrite Hi1. apply Hall. right. exact Hin'. }
+    exists T2. split; [cbn [map stage_all]; rewrite H1; exact H2 |].
+    intros c x. rewrite Hd2, Hd1.
+    destruct (chan_eq_dec c (cd_chan cd)) as [E | N].
+    + subst c. cbn [filter]. rewrite chan_eqb_refl. cbn [map count_occ].
+      destruct (datum_eq_dec (cd_rec cd) x); lia.
+    + cbn [filter]. rewrite (chan_eqb_neq (cd_chan cd) c) by congruence. reflexivity.
+Qed.
+
+(* H11 (decision 45, Rule E): a consume-side peek fire followed by its
+   re-stores leaves each data list a permutation of the list before the
+   fire. The fire removes each non-persistent record, and the re-store puts
+   the same record back, so no record is lost and none is duplicated. The
+   host has the same net effect: its COMM removes the records and
+   produce_peeks produces them again. With the retention of FR-10, the
+   re-store would duplicate each record. So the substrate change and the
+   agent change must land together (design report, recommendation 2). *)
+Lemma peek_restore_keeps_data :
+  forall T chs pats k persist peeks cands T1,
+    stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+    peeks <> [] -> stored_sources (t_view T) ->
+    exists T2,
+      stage_all T1 (restores_after (OConsume chs pats k persist peeks (CFire cands))) = Some T2 /\
+      forall c, Permutation (vdata (t_view T2) c) (vdata (t_view T) c).
+Proof.
+  intros T chs pats k persist peeks cands T1 Hst Hpk Hsrc.
+  pose proof (fire_view_removes T _ T1 Hst eq_refl) as Hrm. cbn [fire_cands] in Hrm.
+  assert (Hall : forall cd, In cd (filter removable cands) ->
+            t_installed T1 (cd_chan cd) = false /\
+            mkDatum (d_val (cd_rec cd)) false (produce_id (cd_chan cd) (d_val (cd_rec cd)) false) = cd_rec cd).
+  { intros cd Hin. apply filter_In in Hin as [Hin Hr].
+    destruct (consume_fire_removed T chs pats k persist peeks cands T1 Hst Hsrc cd Hin Hr)
+      as (Hni & _ & Hrec).
+    split; [exact Hni | exact Hrec]. }
+  destruct (restores_stage (filter removable cands) T1 Hall) as (T2 & H2 & Hd2).
+  exists T2. split.
+  - unfold restores_after. destruct peeks as [| p ps]; [contradiction |]. cbn [nullb]. exact H2.
+  - intros c. apply (Permutation_count_occ datum_eq_dec). intros x.
+    rewrite Hd2. specialize (Hrm c x).
+    rewrite <- (filter_and Cand removable (fun cd => chan_eqb (cd_chan cd) c) cands) in *.
+    unfold np_recs in Hrm. lia.
+Qed.
+
+(* ── stored_sources is an invariant of staging ───────────────────────── *)
+
+Lemma vremove_datum_incl :
+  forall V c0 d0 c d, In d (vdata (vremove_datum V c0 d0) c) -> In d (vdata V c).
+Proof.
+  intros V c0 d0 c d Hin. unfold vremove_datum in Hin. rewrite vdata_set in Hin.
+  destruct (chan_eq_dec c c0) as [E | N]; [subst c; eapply remove_first_incl; exact Hin | exact Hin].
+Qed.
+
+Lemma vremove_join_data : forall V c0 g c, vdata (vremove_join V c0 g) c = vdata V c.
+Proof. intros V c0 g c. unfold vremove_join. destruct (vconts V g); reflexivity. Qed.
+
+Lemma vpf_loop_incl :
+  forall cs V chs c d, In d (vdata (vpf_loop V chs cs) c) -> In d (vdata V c).
+Proof.
+  induction cs as [| cd rest IH]; intros V chs c d Hin; cbn [vpf_loop] in Hin; [exact Hin |].
+  apply IH in Hin. rewrite vremove_join_data in Hin.
+  destruct (removable cd); [eapply vremove_datum_incl; exact Hin | exact Hin].
+Qed.
+
+Lemma vcf_loop_incl :
+  forall cs V c d, In d (vdata (vcf_loop V cs) c) -> In d (vdata V c).
+Proof.
+  induction cs as [| cd rest IH]; intros V c d Hin; cbn [vcf_loop] in Hin; [exact Hin |].
+  apply IH in Hin.
+  destruct (negb (d_persist (cd_rec cd))); [eapply vremove_datum_incl; exact Hin | exact Hin].
+Qed.
+
+Lemma vput_joins_data : forall cs V g c, vdata (vput_joins V cs g) c = vdata V c.
+Proof.
+  induction cs as [| c0 rest IH]; intros V g c; cbn [vput_joins]; [reflexivity |].
+  rewrite IH. unfold vput_join. destruct (in_dec lc_eq_dec g (vjoins V c0)); reflexivity.
+Qed.
+
+Lemma vstore_wk_data : forall V chs w c, vdata (vstore_wk V chs w) c = vdata V c.
+Proof.
+  intros V chs w c. unfold vstore_wk. rewrite vput_joins_data.
+  unfold vput_continuation. destruct (existsb (ident_eqb w) (vconts V chs)); reflexivity.
+Qed.
+
+(* H11 (decision 45, Rule E): staging keeps stored_sources. A staged Store
+   stores the Produce::create identity of its record, and every other
+   effect removes records or leaves the data alone. So the premise of
+   restore_same_identity holds for each view that staging reaches from a
+   store whose records came from produces. *)
+Lemma stage_keeps_stored_sources :
+  forall T op T1, stage T op = Some T1 -> stored_sources (t_view T) -> stored_sources (t_view T1).
+Proof.
+  intros T op T1 Hst Hsrc c d Hin. unfold stored_sources in Hsrc.
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]];
+    unfold stage in Hst.
+  - destruct (t_installed T ch); [discriminate |]. injection Hst as <-.
+    cbn [t_view txn_push] in Hin. unfold vput_datum in Hin. rewrite vdata_set in Hin.
+    destruct (chan_eq_dec c ch) as [E | N].
+    + subst c. destruct Hin as [<- | Hin]; [reflexivity |].
+      apply Hsrc. unfold vbump in Hin. destruct persist; exact Hin.
+    + apply Hsrc. unfold vbump in Hin. destruct persist; exact Hin.
+  - destruct (t_installed T ch); [discriminate |].
+    destruct (pfire_ok T ch v persist chs wk cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T1. cbn [t_view txn_push] in Hin.
+    apply Hsrc. unfold vpf_effects in Hin. cbv zeta in Hin. apply vpf_loop_incl in Hin.
+    destruct (w_persist wk); unfold vbump in Hin; destruct persist; exact Hin.
+  - destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    injection Hst as <-. cbn [t_view txn_push] in Hin.
+    apply Hsrc. rewrite vstore_wk_data in Hin. exact Hin.
+  - destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands); cbn [negb] in Hst; [| discriminate].
+    apply stage_fire_some in Hst. subst T1. cbn [t_view txn_push] in Hin.
+    apply Hsrc. unfold vcf_effects in Hin. apply vcf_loop_incl in Hin. exact Hin.
 Qed.
 
 (* ── FR-10 on a head-only waiter list (p4-design-report B.4) ─────────── *)
@@ -3539,14 +4215,13 @@ Lemma coh_produce_fire :
                (mkStaged (OProduce ch v persist (PFire chs wk kidx cands)) j0 (Some cm) sp) in
     let S1 := bump Sc src persist in
     let p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk in
-    let retain := negb (nullb (w_peeks wk)) in
-    let p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands) in
+    let p2 := space_pf_loop (fst p1) chs (sort_desc vkey cands) in
     (r_status r = StOk /\ r_st r = fst p2 /\ r_rd r = rd_after m StOk (Some cm) rd /\
      r_ev r = [EvProduce src; EvComm ProduceSide cm] /\ r_fx r = snd p1 ++ snd p2)
     \/ (r_status r <> StOk /\ r_status r <> StPanic /\ r_status r <> StNative /\
         store_eq (r_st r) Sc /\ r_rd r = rd /\ r_ev r = [] /\ r_fx r = []).
 Proof.
-  intros m H Sc rd ch v persist chs wk kidx cands j0 cm sp src Hcm r S1 p1 retain p2.
+  intros m H Sc rd ch v persist chs wk kidx cands j0 cm sp src Hcm r S1 p1 p2.
   subst r. unfold commit_op. cbn [sg_op sg_joins0 sg_comm sg_paired]. unfold rd_after.
   destruct (backend m) eqn:Hb;
     [unfold commit_play_produce | unfold commit_replay_produce | unfold commit_replay_produce];
@@ -3558,7 +4233,7 @@ Lemma coh_consume_fire :
     let src := consume_id chs pats k persist in
     cm = mk_comm cands src peeks (counters_of (s_count Sc)) ->
     let r := commit_op m H Sc rd (mkStaged (OConsume chs pats k persist peeks (CFire cands)) [] (Some cm) sp) in
-    let p := space_cf_loop Sc (negb (nullb peeks)) (sort_desc vkey cands) in
+    let p := space_cf_loop Sc (sort_desc vkey cands) in
     (r_status r = StOk /\ r_st r = fst p /\ r_rd r = rd_after m StOk (Some cm) rd /\
      r_ev r = [EvConsume src; EvComm ConsumeSide cm] /\ r_fx r = snd p)
     \/ (r_status r <> StOk /\ r_status r <> StPanic /\ r_status r <> StNative /\
@@ -3674,7 +4349,7 @@ Proof.
         { subst V1. destruct (w_persist wk); simpl; [exact E0 |].
           eapply store_eq_trans; [apply view_remove_continuation |].
           apply space_remove_continuation_cong. exact E0. }
-        exact (view_pf_loop (sort_desc vkey cands) V1 _ chs (negb (nullb (w_peeks wk))) E1).
+        exact (view_pf_loop (sort_desc vkey cands) V1 _ chs E1).
       * split; [exact Hs2 |]. split; [exact Hs3 |].
         split; [rewrite Hrd; symmetry; apply rd_after_not_ok; exact Hs1 |].
         split; [intros C; contradiction |].
@@ -3752,6 +4427,7 @@ Proof.
     exfalso; exact (Hnd _ _ E).
 Qed.
 
+(* Disabled by decision 45 (Rule E): store_rel has no kept records to permute.
 Lemma store_rel_kept_perm :
   forall Sc Sh k1 k2, store_rel Sc Sh k1 -> (forall c, Permutation (k1 c) (k2 c)) ->
     store_rel Sc Sh k2.
@@ -3759,36 +4435,39 @@ Proof.
   intros Sc Sh k1 k2 (Rd & Rc & Rj & Rn) Hk. repeat split; auto.
   intros c. eapply perm_trans; [apply Rd |]. apply Permutation_app_head, Hk.
 Qed.
+*)
 
+(* Decision 45 (Rule E): store_rel has no kept records, so the relation
+   lemmas below have no kept parameter. *)
 Lemma rel_bump :
-  forall Sc Sh k src p, store_rel Sc Sh k -> store_rel (bump Sc src p) (bump Sh src p) k.
+  forall Sc Sh src p, store_rel Sc Sh -> store_rel (bump Sc src p) (bump Sh src p).
 Proof.
-  intros Sc Sh k src p (Rd & Rc & Rj & Rn). unfold bump, upd_count, incr.
+  intros Sc Sh src p (Rd & Rc & Rj & Rn). unfold bump, upd_count, incr.
   repeat split; intros; simpl; auto. rewrite Rn. reflexivity.
 Qed.
 
 Lemma rel_unbump :
-  forall Sc Sh k src p, store_rel Sc Sh k -> store_rel (unbump Sc src p) (unbump Sh src p) k.
+  forall Sc Sh src p, store_rel Sc Sh -> store_rel (unbump Sc src p) (unbump Sh src p).
 Proof.
-  intros Sc Sh k src p (Rd & Rc & Rj & Rn). unfold unbump, upd_count, rollback.
+  intros Sc Sh src p (Rd & Rc & Rj & Rn). unfold unbump, upd_count, rollback.
   repeat split; intros; simpl; auto. rewrite Rn. reflexivity.
 Qed.
 
 Lemma rel_put_datum :
-  forall Sc Sh k c d, store_rel Sc Sh k ->
-    store_rel (fst (put_datum Sc c d)) (fst (put_datum Sh c d)) k.
+  forall Sc Sh c d, store_rel Sc Sh ->
+    store_rel (fst (put_datum Sc c d)) (fst (put_datum Sh c d)).
 Proof.
-  intros Sc Sh k c d (Rd & Rc & Rj & Rn). unfold put_datum, upd_data. simpl.
+  intros Sc Sh c d (Rd & Rc & Rj & Rn). unfold put_datum, upd_data. simpl.
   repeat split; intros; simpl; auto.
   destruct (chan_eq_dec c0 c) as [E | N]; [subst | apply Rd].
   simpl. apply perm_skip, Rd.
 Qed.
 
 Lemma rel_swc :
-  forall Sc Sh k chs w, store_rel Sc Sh k ->
-    store_rel (fst (store_waiting_continuation Sc chs w)) (fst (store_waiting_continuation Sh chs w)) k.
+  forall Sc Sh chs w, store_rel Sc Sh ->
+    store_rel (fst (store_waiting_continuation Sc chs w)) (fst (store_waiting_continuation Sh chs w)).
 Proof.
-  intros Sc Sh k chs w (Rd & Rc & Rj & Rn). unfold store_waiting_continuation. simpl.
+  intros Sc Sh chs w (Rd & Rc & Rj & Rn). unfold store_waiting_continuation. simpl.
   destruct (put_continuation_fields Sc chs w) as (Pd & Pc & Pj & Pn).
   destruct (put_continuation_fields Sh chs w) as (Pd' & Pc' & Pj' & Pn').
   destruct (put_joins_fields chs (fst (put_continuation Sc chs w)) chs) as (Qd & Qc & Qj & Qn).
@@ -3801,12 +4480,12 @@ Proof.
 Qed.
 
 Lemma rel_remove_continuation :
-  forall Sc Sh k g w i,
-    store_rel Sc Sh k -> In w (s_conts Sc g) -> nth_error (s_conts Sh g) i = Some w ->
+  forall Sc Sh g w i,
+    store_rel Sc Sh -> In w (s_conts Sc g) -> nth_error (s_conts Sh g) i = Some w ->
     NoDup (s_conts Sh g) ->
-    store_rel (fst (space_remove_continuation Sc g w)) (fst (host_remove_continuation Sh g i)) k.
+    store_rel (fst (space_remove_continuation Sc g w)) (fst (host_remove_continuation Sh g i)).
 Proof.
-  intros Sc Sh k g w i (Rd & Rc & Rj & Rn) Hin Hnth Hnd.
+  intros Sc Sh g w i (Rd & Rc & Rj & Rn) Hin Hnth Hnd.
   unfold space_remove_continuation, host_remove_continuation.
   destruct (in_dec wk_eq_dec w (s_conts Sc g)) as [_ | Cn]; [| contradiction].
   rewrite Hnth. unfold upd_conts. simpl.
@@ -3816,13 +4495,13 @@ Proof.
 Qed.
 
 Lemma rel_nonpersist_cont :
-  forall Sc Sh k (persist : bool) g w i,
-    store_rel Sc Sh k -> In w (s_conts Sc g) ->
+  forall Sc Sh (persist : bool) g w i,
+    store_rel Sc Sh -> In w (s_conts Sc g) ->
     (persist = false -> nth_error (s_conts Sh g) i = Some w) -> NoDup (s_conts Sh g) ->
     store_rel (fst (if persist then (Sc, []) else space_remove_continuation Sc g w))
-              (fst (if persist then (Sh, []) else host_remove_continuation Sh g i)) k.
+              (fst (if persist then (Sh, []) else host_remove_continuation Sh g i)).
 Proof.
-  intros Sc Sh k persist g w i R Hin Hnth Hnd.
+  intros Sc Sh persist g w i R Hin Hnth Hnd.
   destruct persist; simpl; [exact R |].
   apply rel_remove_continuation; auto.
 Qed.
@@ -3834,6 +4513,7 @@ Proof.
   intros cd Hin Hr. rewrite E. apply Hv; assumption.
 Qed.
 
+(* Disabled by decision 45 (Rule E): the substrate loop no longer retains, so no kept records arise.
 (* The data arithmetic that relates the two removal loops. The substrate
    loop removes the records R unless it retains them, and the host loop
    always removes them. FR-10: neither loop adds a record, because a fire
@@ -3860,6 +4540,30 @@ Proof.
   specialize (Hh c x).
   destruct retain; simpl; lia.
 Qed.
+*)
+
+(* The data arithmetic that relates the two removal loops. Decision 45
+   (Rule E): the substrate loop removes the records R, as the host loop
+   does, also for a peek. FR-10: neither loop adds a record, because a fire
+   never stores its incoming datum. *)
+Lemma rel_after_loops :
+  forall Sc1 Sh1 Sc2 Sh2 (R : Chan -> list Datum),
+    store_rel Sc1 Sh1 ->
+    (forall c x, count_occ datum_eq_dec (s_data Sc2 c) x =
+                 count_occ datum_eq_dec (s_data Sc1 c) x - count_occ datum_eq_dec (R c) x) ->
+    (forall c x, count_occ datum_eq_dec (s_data Sh2 c) x + count_occ datum_eq_dec (R c) x =
+                 count_occ datum_eq_dec (s_data Sh1 c) x) ->
+    (forall g, s_conts Sc2 g = s_conts Sh2 g) ->
+    (forall c, s_joins Sc2 c = s_joins Sh2 c) ->
+    (forall p, s_count Sc2 p = s_count Sh2 p) ->
+    store_rel Sc2 Sh2.
+Proof.
+  intros Sc1 Sh1 Sc2 Sh2 R (Rd & Rc & Rj & Rn) Hc Hh Ec Ej En.
+  repeat split; auto.
+  intros c. apply (Permutation_count_occ datum_eq_dec). intros x.
+  specialize (Rd c). apply (Permutation_count_occ datum_eq_dec) with (x := x) in Rd.
+  rewrite Hc, Rd. specialize (Hh c x). lia.
+Qed.
 
 (* ═════════════════ Host simulation of one operation ═══════════════════════ *)
 
@@ -3873,10 +4577,12 @@ Definition host_valid_op (S : Store) (op : Op) : Prop :=
   | _ => True
   end.
 
+(* Disabled by decision 45 (Rule E): no operation keeps a record, so the kept records never grow.
 (* kept_after gives the kept records after an operation: the records before
    it and the stored records that it retains (retained, FR-10). *)
 Definition kept_after (op : Op) (kept : Chan -> list Datum) : Chan -> list Datum :=
   fun c => kept c ++ retained op c.
+*)
 
 (* In replay, the host asserts that the recorded bindings contain the COMM
    (replay_rspace.rs:1026-1033, 1396-1401).  The run-level theorems discharge
@@ -3891,14 +4597,17 @@ Lemma count_occ_cons_split :
     count_occ eqd (a :: l) x = (if eqd a x then 1 else 0) + count_occ eqd l x.
 Proof. intros. simpl. destruct (eqd a x); reflexivity. Qed.
 
+(* Disabled by decision 45 (Rule E): op_sim has five conjuncts, so split5 replaces this tactic.
 Ltac split6 := split; [| split; [| split; [| split; [| split]]]].
+*)
+Ltac split5 := split; [| split; [| split; [| split]]].
 
 Lemma op_sim :
-  forall T op T' H Sc Sh rd kept,
+  forall T op T' H Sc Sh rd,
     no_dir_some ->
     stage T op = Some T' ->
     store_eq (view_store (t_view T)) Sc ->
-    store_rel Sc Sh kept ->
+    store_rel Sc Sh ->
     WF Sc ->
     host_valid_op Sh op ->
     bound_ok T op rd ->
@@ -3908,11 +4617,9 @@ Lemma op_sim :
       let rc := commit_op (t_mode T) H Sc rd sg in
       let rh := host_op (t_mode T) H Sh rd op in
       r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\
-      r_rd rc = r_rd rh /\
-      (r_status rc = StOk -> store_rel (r_st rc) (r_st rh) (kept_after op kept)) /\
-      (r_status rc <> StOk -> store_rel (r_st rc) (r_st rh) kept).
+      r_rd rc = r_rd rh /\ store_rel (r_st rc) (r_st rh).
 Proof.
-  intros T op T' H Sc Sh rd kept Hnd Hst Heq Hrel Hwf Hhv Hbo Hfp.
+  intros T op T' H Sc Sh rd Hnd Hst Heq Hrel Hwf Hhv Hbo Hfp.
   pose proof Heq as (Ed & Ec & Ej & En).
   pose proof Hrel as (Rd & Rc & Rj & Rn).
   assert (Hpre : forall m s a b, space_prelude m H s a b = host_prelude m H s a b)
@@ -3932,27 +4639,24 @@ Proof.
       eexists. split; [reflexivity |]. cbv zeta.
       unfold commit_op, host_op. simpl. rewrite Hj0.
       assert (Hok : store_rel (fst (put_datum (bump Sc src persist) ch (mkDatum v persist src)))
-                              (fst (put_datum (bump Sh src persist) ch (mkDatum v persist src)))
-                              (kept_after (OProduce ch v persist PStore) kept)).
-      { apply store_rel_kept_perm with (k1 := kept).
-        - apply rel_put_datum, rel_bump, Hrel.
-        - intros c. unfold kept_after. simpl. rewrite app_nil_r. reflexivity. }
+                              (fst (put_datum (bump Sh src persist) ch (mkDatum v persist src))))
+        by (apply rel_put_datum, rel_bump, Hrel).
       destruct (backend (t_mode T)).
       * unfold commit_play_produce, host_play_produce. fold src. rewrite Hpre.
         destruct (host_prelude Play H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- simpl. split6; try reflexivity; [intros _; exact Hok | intros C; contradiction].
+           split5; try reflexivity; exact Hrel.
+        -- simpl. split5; try reflexivity; exact Hok.
       * unfold commit_replay_produce, host_replay_produce. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- simpl. split6; try reflexivity; [intros _; exact Hok | intros C; contradiction].
+           split5; try reflexivity; exact Hrel.
+        -- simpl. split5; try reflexivity; exact Hok.
       * unfold commit_replay_produce, host_replay_produce. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- simpl. split6; try reflexivity; [intros _; exact Hok | intros C; contradiction].
+           split5; try reflexivity; exact Hrel.
+        -- simpl. split5; try reflexivity; exact Hok.
     + (* produce, Fire *)
       pose proof (commit_op_coherent T _ T' H Sc rd Hst Heq) as (sg0 & Hsg0 & _ & _ & _ & _ & _ & Hpair0 & _).
       pose proof (Hfp sg0 Hsg0) as Hfp0. unfold fire_paired in Hfp0.
@@ -3984,11 +4688,10 @@ Proof.
       assert (Hcm_rh : mk_comm cands (w_src wk) (w_peeks wk) (counters_of (s_count (bump Sh src persist))) = cm).
       { rewrite <- Hcm_h. unfold mk_comm. f_equal. rewrite play_closure_is_replay_closure. reflexivity. }
       (* the relation after the accepted COMM *)
-      set (retain := negb (nullb (w_peeks wk))).
       set (S1c := bump Sc src persist). set (S1h := bump Sh src persist).
       set (p1c := if w_persist wk then (S1c, []) else space_remove_continuation S1c chs wk).
       set (p1h := if w_persist wk then (S1h, []) else host_remove_continuation S1h chs kidx).
-      assert (R1 : store_rel (fst p1c) (fst p1h) kept).
+      assert (R1 : store_rel (fst p1c) (fst p1h)).
       { subst p1c p1h. apply rel_nonpersist_cont.
         - apply rel_bump, Hrel.
         - subst S1c. simpl. rewrite <- Ec. exact Hwk.
@@ -4000,13 +4703,13 @@ Proof.
       assert (D1h : forall c, s_data (fst p1h) c = s_data Sh c).
       { intros c. subst p1h S1h. destruct (w_persist wk); [reflexivity |].
         destruct (host_remove_continuation_data (bump Sh src persist) chs kidx) as (X & _). apply X. }
-      set (p2c := space_pf_loop (fst p1c) chs retain (sort_desc vkey cands)).
+      set (p2c := space_pf_loop (fst p1c) chs (sort_desc vkey cands)).
       set (p2h := host_rm_loop (fst p1h) chs (sort_desc hkey cands)).
-      (* FR-10: the substrate store after the fire is the host store with
-         the stored records that a peek fire retains. The incoming datum is
-         in neither store. *)
-      assert (Rfinal : store_rel (fst p2c) (fst p2h) (kept_after (OProduce ch v persist (PFire chs wk kidx cands)) kept)).
-      { destruct (space_pf_loop_spec (sort_desc vkey cands) (fst p1c) chs retain) as (Ld & Lc & Lj & Ln).
+      (* Decision 45 (Rule E): the substrate store after the fire is the
+         host store, also for a peek fire. FR-10: the incoming datum is in
+         neither store. *)
+      assert (Rfinal : store_rel (fst p2c) (fst p2h)).
+      { destruct (space_pf_loop_spec (sort_desc vkey cands) (fst p1c) chs) as (Ld & Lc & Lj & Ln).
         fold p2c in Ld, Lc, Lj, Ln.
         assert (Hvh : host_rm_valid (fst p1h) (sort_desc hkey cands)).
         { apply host_rm_valid_perm with (cs := cands).
@@ -4016,56 +4719,54 @@ Proof.
           as (Hd & Hc & Hj & Hn).
         fold p2h in Hd, Hc, Hj, Hn.
         pose proof R1 as (R1d & R1c & R1j & R1n).
-        apply store_rel_kept_perm with (k1 := fun c => kept c ++ (if retain then np_recs c cands else [])).
-        - apply rel_after_loops with (Sc1 := fst p1c) (Sh1 := fst p1h).
-          + exact R1.
-          + intros c x. rewrite (Ld c x).
-            rewrite (np_recs_perm c (sort_desc vkey cands) cands x (sort_desc_perm _ vkey cands)).
-            reflexivity.
-          + intros c x. rewrite <- (np_recs_perm c (sort_desc hkey cands) cands x (sort_desc_perm _ hkey cands)).
-            apply Hd.
-          + intros g. rewrite Lc, Hc. apply R1c.
-          + intros c. rewrite Lj, Hj. unfold rj_closed.
-            rewrite R1c, (chan_count_perm c (sort_desc vkey cands) cands (sort_desc_perm _ vkey cands)),
-                    (chan_count_perm c (sort_desc hkey cands) cands (sort_desc_perm _ hkey cands)), !R1j.
-            reflexivity.
-          + intros p. rewrite Ln, Hn. apply R1n.
-        - intros c. unfold kept_after, retained. fold retain.
-          destruct retain; reflexivity. }
+        apply rel_after_loops with (Sc1 := fst p1c) (Sh1 := fst p1h) (R := fun c => np_recs c cands).
+        - exact R1.
+        - intros c x. cbv beta. rewrite (Ld c x).
+          rewrite (np_recs_perm c (sort_desc vkey cands) cands x (sort_desc_perm _ vkey cands)).
+          reflexivity.
+        - intros c x. cbv beta.
+          rewrite <- (np_recs_perm c (sort_desc hkey cands) cands x (sort_desc_perm _ hkey cands)).
+          apply Hd.
+        - intros g. rewrite Lc, Hc. apply R1c.
+        - intros c. rewrite Lj, Hj. unfold rj_closed.
+          rewrite R1c, (chan_count_perm c (sort_desc vkey cands) cands (sort_desc_perm _ vkey cands)),
+                  (chan_count_perm c (sort_desc hkey cands) cands (sort_desc_perm _ hkey cands)), !R1j.
+          reflexivity.
+        - intros p. rewrite Ln, Hn. apply R1n. }
       unfold commit_op, host_op. simpl. rewrite Hj0.
       destruct (backend (t_mode T)) eqn:Hb.
       * unfold commit_play_produce, host_play_produce. fold src. rewrite Hpre.
         destruct (host_prelude Play H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           split5; try reflexivity; exact Hrel.
         -- rewrite Hcm_c, Hcm_h, comm_eqb_refl. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
-           ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
-           ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           ++ split5; try reflexivity; exact Rfinal.
+           ++ split5; try reflexivity; exact Hrel.
       * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
         assert (Hb' : bound rd (KProduce src) cm = true).
         { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_produce, host_replay_produce. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           split5; try reflexivity; exact Hrel.
         -- rewrite Hcm_rc, Hcm_rh, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
-           ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
-           ++ split6; try reflexivity; [intros C; discriminate |].
-              intros _. apply rel_unbump, rel_bump, Hrel.
+           ++ split5; try reflexivity; exact Rfinal.
+           ++ split5; try reflexivity.
+              apply rel_unbump, rel_bump, Hrel.
       * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
         assert (Hb' : bound rd (KProduce src) cm = true).
         { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_produce, host_replay_produce. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcP src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           split5; try reflexivity; exact Hrel.
         -- rewrite Hcm_rc, Hcm_rh, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm (w_kont wk) (w_persist wk) (comm_data cands))); simpl.
-           ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
-           ++ split6; try reflexivity; [intros C; discriminate |].
-              intros _. apply rel_unbump, rel_bump, Hrel.
+           ++ split5; try reflexivity; exact Rfinal.
+           ++ split5; try reflexivity.
+              apply rel_unbump, rel_bump, Hrel.
   - set (src := consume_id chs pats k persist).
     destruct out as [| cands].
     + (* consume, Park *)
@@ -4075,27 +4776,24 @@ Proof.
       eexists. split; [reflexivity |]. cbv zeta.
       unfold commit_op, host_op. simpl.
       assert (Hok' : store_rel (fst (store_waiting_continuation Sc chs (mkWK pats k persist peeks src)))
-                               (fst (store_waiting_continuation Sh chs (mkWK pats k persist peeks src)))
-                               (kept_after (OConsume chs pats k persist peeks CPark) kept)).
-      { apply store_rel_kept_perm with (k1 := kept).
-        - apply rel_swc, Hrel.
-        - intros c. unfold kept_after. simpl. rewrite app_nil_r. reflexivity. }
+                               (fst (store_waiting_continuation Sh chs (mkWK pats k persist peeks src))))
+        by (apply rel_swc, Hrel).
       destruct (backend (t_mode T)).
       * unfold commit_play_consume, host_play_consume. fold src. rewrite Hpre.
         destruct (host_prelude Play H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- simpl. split6; try reflexivity; [intros _; exact Hok' | intros C; contradiction].
+           split5; try reflexivity; exact Hrel.
+        -- simpl. split5; try reflexivity; exact Hok'.
       * unfold commit_replay_consume, host_replay_consume. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- simpl. split6; try reflexivity; [intros _; exact Hok' | intros C; contradiction].
+           split5; try reflexivity; exact Hrel.
+        -- simpl. split5; try reflexivity; exact Hok'.
       * unfold commit_replay_consume, host_replay_consume. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
-        -- simpl. split6; try reflexivity; [intros _; exact Hok' | intros C; contradiction].
+           split5; try reflexivity; exact Hrel.
+        -- simpl. split5; try reflexivity; exact Hok'.
     + (* consume, Fire *)
       pose proof (commit_op_coherent T _ T' H Sc rd Hst Heq) as (sg0 & Hsg0 & _ & _ & _ & _ & _ & Hpair0 & _).
       pose proof (Hfp sg0 Hsg0) as Hfp0. unfold fire_paired in Hfp0.
@@ -4119,79 +4817,79 @@ Proof.
       { subst cm. apply mk_comm_counters_ext. intros p. symmetry. apply En. }
       assert (Hcm_h : mk_comm cands src peeks (counters_of (s_count Sh)) = cm).
       { rewrite <- Hcm_c. apply mk_comm_counters_ext. intros p. symmetry. apply Rn. }
-      set (retain := negb (nullb peeks)).
-      set (pc := space_cf_loop Sc retain (sort_desc vkey cands)).
+      set (pc := space_cf_loop Sc (sort_desc vkey cands)).
       set (ph := host_spd_loop Sh (sort_desc hkey cands)).
-      assert (Rfinal : store_rel (fst pc) (fst ph) (kept_after (OConsume chs pats k persist peeks (CFire cands)) kept)).
+      assert (Rfinal : store_rel (fst pc) (fst ph)).
       { assert (Hnoinc_v : forall cd, In cd (sort_desc vkey cands) -> cd_incoming cd = false).
         { intros cd Hin. apply Hnoinc. eapply Permutation_in; [apply sort_desc_perm | exact Hin]. }
         assert (Hnoinc_h : forall cd, In cd (sort_desc hkey cands) -> cd_incoming cd = false).
         { intros cd Hin. apply Hnoinc. eapply Permutation_in; [apply sort_desc_perm | exact Hin]. }
-        destruct (space_cf_loop_spec (sort_desc vkey cands) Sc retain Hnoinc_v) as (Ld & Lc & Lj & Ln).
+        destruct (space_cf_loop_spec (sort_desc vkey cands) Sc Hnoinc_v) as (Ld & Lc & Lj & Ln).
         fold pc in Ld, Lc, Lj, Ln.
         assert (Hvh : host_rm_valid Sh (sort_desc hkey cands)).
         { apply host_rm_valid_perm with (cs := cands); [apply Permutation_sym, sort_desc_perm | exact Hhv]. }
         destruct (host_spd_loop_spec (sort_desc hkey cands) Sh (sort_desc_sorted _ hkey cands) Hnoinc_h Hvh)
           as (Hd & Hc & Hj & Hn).
         fold ph in Hd, Hc, Hj, Hn.
-        apply store_rel_kept_perm with (k1 := fun c => kept c ++ (if retain then np_recs c cands else [])).
-        - apply rel_after_loops with (Sc1 := Sc) (Sh1 := Sh).
-          + exact Hrel.
-          + intros c x. rewrite Ld.
-            rewrite (np_recs_perm c (sort_desc vkey cands) cands x (sort_desc_perm _ vkey cands)).
-            reflexivity.
-          + intros c x. rewrite <- (np_recs_perm c (sort_desc hkey cands) cands x (sort_desc_perm _ hkey cands)).
-            apply Hd.
-          + intros g. rewrite Lc, Hc. apply Rc.
-          + intros c. rewrite Lj, Hj. apply Rj.
-          + intros p. rewrite Ln, Hn. apply Rn.
-        - intros c. unfold kept_after, retained. fold retain.
-          destruct retain; reflexivity. }
+        apply rel_after_loops with (Sc1 := Sc) (Sh1 := Sh) (R := fun c => np_recs c cands).
+        - exact Hrel.
+        - intros c x. cbv beta. rewrite Ld.
+          rewrite (np_recs_perm c (sort_desc vkey cands) cands x (sort_desc_perm _ vkey cands)).
+          reflexivity.
+        - intros c x. cbv beta.
+          rewrite <- (np_recs_perm c (sort_desc hkey cands) cands x (sort_desc_perm _ hkey cands)).
+          apply Hd.
+        - intros g. rewrite Lc, Hc. apply Rc.
+        - intros c. rewrite Lj, Hj. apply Rj.
+        - intros p. rewrite Ln, Hn. apply Rn. }
       unfold commit_op, host_op. simpl.
       destruct (backend (t_mode T)) eqn:Hb.
       * unfold commit_play_consume, host_play_consume. fold src. rewrite Hpre.
         destruct (host_prelude Play H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           split5; try reflexivity; exact Hrel.
         -- rewrite Hcm_c, Hcm_h, comm_eqb_refl. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl.
-           ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
-           ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           ++ split5; try reflexivity; exact Rfinal.
+           ++ split5; try reflexivity; exact Hrel.
       * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
         assert (Hb' : bound rd (KConsume src) cm = true).
         { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_consume, host_replay_consume. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           split5; try reflexivity; exact Hrel.
         -- rewrite Hcm_c, Hcm_h, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl.
-           ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
-           ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           ++ split5; try reflexivity; exact Rfinal.
+           ++ split5; try reflexivity; exact Hrel.
       * destruct (Hver ltac:(first [discriminate | rewrite Hb; discriminate])) as [Hv Hsp1].
         assert (Hb' : bound rd (KConsume src) cm = true).
         { apply (Hbo ltac:(first [discriminate | rewrite Hb; discriminate]) cm Hv Htrig). }
         unfold commit_replay_consume, host_replay_consume. fold src. rewrite Hpre.
         destruct (host_prelude Replay H (SrcC src) _ _) as [obs st | obs] eqn:Ep.
         -- apply Hstop in Ep. subst st. simpl.
-           split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           split5; try reflexivity; exact Hrel.
         -- rewrite Hcm_c, Hcm_h, comm_eqb_refl, Hb'. rewrite ?Hsp1. simpl.
            destruct (ob_accept (H ++ obs) (ObComm cm k persist (comm_data cands))); simpl.
-           ++ split6; try reflexivity; [intros _; exact Rfinal | intros C; contradiction].
-           ++ split6; try reflexivity; [intros C; discriminate | intros _; exact Hrel].
+           ++ split5; try reflexivity; exact Rfinal.
+           ++ split5; try reflexivity; exact Hrel.
 Qed.
 
 (* ══════════════ The store effect of one staged operation ══════════════════ *)
 
 (* pf_effect gives the store effect of a produce-side fire. FR-10: the
-   effect never stores the incoming datum. *)
+   effect never stores the incoming datum. Decision 45 (Rule E): a peek
+   fire removes the same records as any other fire. *)
 Definition pf_effect (S : Store) (ch : Chan) (v : Val) (persist : bool)
     (chs : list Chan) (wk : WK) (cands : list Cand) : Store :=
   let src := produce_id ch v persist in
   let S1 := bump S src persist in
   let p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk in
+  (* Disabled by decision 45 (Rule E): a peek fire removed only the fired joins.
   let retain := negb (nullb (w_peeks wk)) in
-  fst (space_pf_loop (fst p1) chs retain (sort_desc vkey cands)).
+  fst (space_pf_loop (fst p1) chs retain (sort_desc vkey cands)). *)
+  fst (space_pf_loop (fst p1) chs (sort_desc vkey cands)).
 
 Definition effect (S : Store) (op : Op) : Store :=
   match op with
@@ -4202,7 +4900,9 @@ Definition effect (S : Store) (op : Op) : Store :=
   | OConsume chs pats k persist peeks CPark =>
       fst (store_waiting_continuation S chs (mkWK pats k persist peeks (consume_id chs pats k persist)))
   | OConsume chs pats k persist peeks (CFire cands) =>
-      fst (space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands))
+      (* Disabled by decision 45 (Rule E): a peek fire kept its stored records.
+      fst (space_cf_loop S (negb (nullb peeks)) (sort_desc vkey cands)) *)
+      fst (space_cf_loop S (sort_desc vkey cands))
   end.
 
 Lemma effect_cong : forall S1 S2 op, store_eq S1 S2 -> store_eq (effect S1 op) (effect S2 op).
@@ -4217,9 +4917,9 @@ Proof.
                                 else space_remove_continuation (bump S2 (produce_id ch v persist) persist) chs wk))).
     { destruct (w_persist wk); simpl; [apply bump_cong, E |].
       apply (proj1 (space_remove_continuation_cong _ _ _ _ (bump_cong _ _ _ _ E))). }
-    exact (proj1 (space_pf_loop_cong (sort_desc vkey cands) _ _ chs (negb (nullb (w_peeks wk))) E1)).
+    exact (proj1 (space_pf_loop_cong (sort_desc vkey cands) _ _ chs E1)).
   - apply (proj1 (store_waiting_continuation_cong _ _ _ _ E)).
-  - apply (proj1 (space_cf_loop_cong _ _ _ _ E)).
+  - apply (proj1 (space_cf_loop_cong _ _ _ E)).
 Qed.
 
 Lemma stage_effect :
@@ -4244,7 +4944,7 @@ Proof.
                                 else space_remove_continuation (bump (view_store V) src persist) chs wk))).
     { destruct (w_persist wk); simpl; [exact E0 |].
       eapply store_eq_trans; [apply view_remove_continuation | apply (proj1 (space_remove_continuation_cong _ _ _ _ E0))]. }
-    exact (view_pf_loop (sort_desc vkey cands) _ _ chs (negb (nullb (w_peeks wk))) E1).
+    exact (view_pf_loop (sort_desc vkey cands) _ _ chs E1).
   - unfold stage in Hst. fold V in Hst.
     destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
     injection Hst as <-. simpl. apply view_store_wk, store_eq_refl.
@@ -4276,15 +4976,15 @@ Proof.
 Qed.
 
 Lemma space_cf_loop_cj :
-  forall cs S r,
-    (forall g, s_conts (fst (space_cf_loop S r cs)) g = s_conts S g) /\
-    (forall c, s_joins (fst (space_cf_loop S r cs)) c = s_joins S c).
+  forall cs S,
+    (forall g, s_conts (fst (space_cf_loop S cs)) g = s_conts S g) /\
+    (forall c, s_joins (fst (space_cf_loop S cs)) c = s_joins S c).
 Proof.
-  induction cs as [| cd rest IH]; intros S r; simpl; [split; reflexivity |].
-  set (p1 := if negb r && negb (d_persist (cd_rec cd)) then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])).
-  destruct (IH (fst p1) r) as [Ic Ij].
+  induction cs as [| cd rest IH]; intros S; simpl; [split; reflexivity |].
+  set (p1 := if negb (d_persist (cd_rec cd)) then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])).
+  destruct (IH (fst p1)) as [Ic Ij].
   assert (F : (forall g, s_conts (fst p1) g = s_conts S g) /\ (forall c, s_joins (fst p1) c = s_joins S c)).
-  { subst p1. destruct (negb r && negb (d_persist (cd_rec cd))); [| split; reflexivity].
+  { subst p1. destruct (negb (d_persist (cd_rec cd))); [| split; reflexivity].
     destruct (space_remove_datum_fields S (cd_chan cd) (cd_rec cd)) as (_ & X & Y & _). split; assumption. }
   destruct F as [Fc Fj]. split; intros; [rewrite Ic; apply Fc | rewrite Ij; apply Fj].
 Qed.
@@ -4299,9 +4999,8 @@ Proof.
     set (src := produce_id ch v persist).
     set (S1 := bump S src persist).
     set (p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk).
-    set (retain := negb (nullb (w_peeks wk))).
-    set (p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands)).
-    destruct (space_pf_loop_spec (sort_desc vkey cands) (fst p1) chs retain) as (Ld & Lc & Lj & Ln).
+    set (p2 := space_pf_loop (fst p1) chs (sort_desc vkey cands)).
+    destruct (space_pf_loop_spec (sort_desc vkey cands) (fst p1) chs) as (Ld & Lc & Lj & Ln).
     fold p2 in Ld, Lc, Lj, Ln.
     assert (C1 : forall g, s_conts (fst p1) g =
                    if w_persist wk then s_conts S g
@@ -4326,7 +5025,7 @@ Proof.
       * eapply Permutation_in; [apply Permutation_map, Permutation_sym, sort_desc_perm | exact Hin].
       * eapply Permutation_in; [apply Permutation_map, sort_desc_perm | exact Hin].
   - apply swc_WF, Hwf.
-  - destruct (space_cf_loop_cj (sort_desc vkey cands) S (negb (nullb peeks))) as (Lc & Lj).
+  - destruct (space_cf_loop_cj (sort_desc vkey cands) S) as (Lc & Lj).
     apply WF_same_cj with (S := S); assumption.
 Qed.
 
@@ -4544,6 +5243,15 @@ Proof.
     exists (sg :: new). split; [rewrite Hnew, Hsg, <- app_assoc; reflexivity | simpl; lia].
 Qed.
 
+(* Staging a concatenation stages the first list, then the second. *)
+Lemma stage_all_app :
+  forall l1 l2 T, stage_all T (l1 ++ l2) =
+    match stage_all T l1 with Some T1 => stage_all T1 l2 | None => None end.
+Proof.
+  induction l1 as [| op rest IH]; intros l2 T; cbn [app stage_all]; [reflexivity |].
+  destruct (stage T op) as [T1 |]; [apply IH | reflexivity].
+Qed.
+
 Lemma skipn_len_app : forall (A : Type) (l1 l2 : list A), skipn (length l1) (l1 ++ l2) = l2.
 Proof. intros A l1 l2. induction l1 as [| x t IH]; simpl; [reflexivity | exact IH]. Qed.
 
@@ -4633,12 +5341,15 @@ Definition replay_pre (T : Txn) (rd : Bindings) (io : list IOKey) (rem : Comm ->
   binding_inv (t_rd T) io rem /\ rd = fold_left unbind (t_paired T) (t_rd T) /\
   Forall (fun op => In (trigger_key op) io) ops.
 
+(* The host simulation of a run of staged operations. Decision 45 (Rule
+   E): after each operation the two stores are related by store_rel, with
+   no kept records. *)
 Lemma run_sim_gen :
-  forall ops T T' H Sc Sh rd kept io rem,
+  forall ops T T' H Sc Sh rd io rem,
     no_dir_some ->
     stage_all T ops = Some T' ->
     store_eq (view_store (t_view T)) Sc ->
-    store_rel Sc Sh kept ->
+    store_rel Sc Sh ->
     WF (view_store (t_view T)) ->
     host_valid_run (t_mode T) H Sh rd ops ->
     replay_pre T rd io rem ops ->
@@ -4646,17 +5357,12 @@ Lemma run_sim_gen :
     let rc := commit_run (t_mode T) H Sc rd (skipn (length (t_staged T)) (t_staged T')) in
     let rh := host_run (t_mode T) H Sh rd ops in
     r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
-    exists kept',
-      store_rel (r_st rc) (r_st rh) kept' /\
-      (forall c d, In d (kept' c) -> In d (kept c) \/
-         exists op, In op ops /\ retaining op = true /\ In d (retained op c)) /\
-      ((forall op c, In op ops -> retained op c = []) -> forall c, Permutation (kept' c) (kept c)).
+    store_rel (r_st rc) (r_st rh).
 Proof.
-  induction ops as [| op rest IH]; intros T T' H Sc Sh rd kept io rem Hnd Hst Heq Hrel Hwf Hhv Hpre Hfps;
+  induction ops as [| op rest IH]; intros T T' H Sc Sh rd io rem Hnd Hst Heq Hrel Hwf Hhv Hpre Hfps;
     simpl in Hst.
   - injection Hst as <-. cbv zeta. rewrite skipn_len_self.
-    simpl. repeat split; try reflexivity.
-    exists kept. split; [exact Hrel |]. split; [intros c d Hin; left; exact Hin | intros _ c; reflexivity].
+    simpl. split5; try reflexivity; exact Hrel.
   - destruct (stage T op) as [T1 |] eqn:H1; [| discriminate].
     assert (HwfSc : WF Sc) by (eapply WF_store_eq; [exact Heq | exact Hwf]).
     destruct Hhv as [Hhv0 Hhvr].
@@ -4670,15 +5376,15 @@ Proof.
     inversion Hfps as [| sg0 rest0 Hfp0 Hfps1 E0]; subst sg0 rest0.
     assert (Hfp_op : forall sg0, t_staged T1 = t_staged T ++ [sg0] -> fire_paired (t_mode T) sg0).
     { intros sg0 Hsg0. rewrite Hsg' in Hsg0. apply app_inj_tail in Hsg0 as [_ <-]. exact Hfp0. }
-    destruct (op_sim T op T1 H Sc Sh rd kept Hnd H1 Heq Hrel HwfSc Hhv0 Hbo Hfp_op)
-      as (sg & Hsg & Hobs & Hev & Hstatus & Hrd & Hrok & Hrnok).
+    destruct (op_sim T op T1 H Sc Sh rd Hnd H1 Heq Hrel HwfSc Hhv0 Hbo Hfp_op)
+      as (sg & Hsg & Hobs & Hev & Hstatus & Hrd & Hrel1).
     rewrite Hsg in Hsg'. apply app_inj_tail in Hsg' as [_ <-].
     cbv zeta. rewrite (skipn_step T T1 T' sg Hsg (ex_intro _ new Hnew)).
     simpl (commit_run _ _ _ _ (sg :: _)). simpl (host_run _ _ _ _ (op :: _)).
     rewrite <- Hstatus.
     destruct (r_status (commit_op (t_mode T) H Sc rd sg)) eqn:Hs.
     + (* the operation committed: continue with the rest *)
-      specialize (Hok eq_refl). specialize (Hrok eq_refl).
+      specialize (Hok eq_refl).
       assert (HwfT1 : WF (view_store (t_view T1))).
       { apply WF_store_eq with (S1 := effect (view_store (t_view T)) op).
         - apply store_eq_sym, stage_effect, H1.
@@ -4701,37 +5407,24 @@ Proof.
       { rewrite Hmode, Hobs, Hrd. apply Hhvr. rewrite <- Hstatus. first [reflexivity | exact Hs]. }
       destruct (IH T1 T' (H ++ r_obs (commit_op (t_mode T) H Sc rd sg))
                    (r_st (commit_op (t_mode T) H Sc rd sg)) (r_st (host_op (t_mode T) H Sh rd op))
-                   (r_rd (commit_op (t_mode T) H Sc rd sg)) (kept_after op kept) io rem
-                   Hnd Hst (store_eq_sym _ _ Hok) Hrok HwfT1 Hhv1 Hpre1
+                   (r_rd (commit_op (t_mode T) H Sc rd sg)) io rem
+                   Hnd Hst (store_eq_sym _ _ Hok) Hrel1 HwfT1 Hhv1 Hpre1
                    ltac:(rewrite Hmode; exact Hfps1))
-        as (Iobs & Iev & Ist & Ird & kept'' & Irel & Ik1 & Ik2).
+        as (Iobs & Iev & Ist & Ird & Irel).
       rewrite Hmode in Iobs, Iev, Ist, Ird, Irel.
       rewrite <- Hobs, <- Hrd in *.
       simpl. split; [rewrite Iobs; reflexivity |].
       split; [rewrite Hev, Iev; reflexivity |].
-      split; [exact Ist |]. split; [exact Ird |].
-      exists kept''. split; [exact Irel |]. split.
-      * intros c d Hin. destruct (Ik1 c d Hin) as [Hk | (op' & Hop' & Hr' & Hd')].
-        -- unfold kept_after in Hk. apply in_app_or in Hk as [Hk | Hk]; [left; exact Hk |].
-           right. exists op. split; [left; reflexivity |].
-           split; [| exact Hk].
-           destruct (retaining op) eqn:Er; [reflexivity |].
-           rewrite retained_nonretaining in Hk by exact Er. contradiction.
-        -- right. exists op'. split; [right; exact Hop' | split; assumption].
-      * intros Hnr c. eapply perm_trans; [apply Ik2; intros op' c' Hin'; apply Hnr; right; exact Hin' |].
-        unfold kept_after. rewrite (Hnr op c (or_introl eq_refl)).
-        rewrite app_nil_r. reflexivity.
+      split; [exact Ist |]. split; [exact Ird | exact Irel].
     + (* rejected *)
-      simpl. split; [exact Hobs |]. split; [exact Hev |]. split; [congruence |]. split; [exact Hrd |].
-      exists kept. split; [apply Hrnok; congruence |].
-      split; [intros c d Hin; left; exact Hin | intros _ c; reflexivity].
+      simpl. split; [exact Hobs |]. split; [exact Hev |]. split; [congruence |].
+      split; [exact Hrd | exact Hrel1].
     + exfalso. apply Hnp. reflexivity.
     + exfalso. apply Hnn. reflexivity.
     + (* diverged: the proof of the rejected case applies. The host never
          diverges, so op_sim excludes this case *)
-      simpl. split; [exact Hobs |]. split; [exact Hev |]. split; [congruence |]. split; [exact Hrd |].
-      exists kept. split; [apply Hrnok; congruence |].
-      split; [intros c d Hin; left; exact Hin | intros _ c; reflexivity].
+      simpl. split; [exact Hobs |]. split; [exact Hev |]. split; [congruence |].
+      split; [exact Hrd | exact Hrel1].
 Qed.
 
 (* ═════════════════════════ Headline theorems ═════════════════════════════ *)
@@ -4757,24 +5450,18 @@ Lemma run_sim_fresh :
     let rc := commit_run (t_mode T0) H S rd (t_staged T) in
     let rh := host_run (t_mode T0) H S rd ops in
     r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
-    exists kept',
-      store_rel (r_st rc) (r_st rh) kept' /\
-      (forall c d, In d (kept' c) -> exists op, In op ops /\ retaining op = true /\ In d (retained op c)) /\
-      ((forall op c, In op ops -> retained op c = []) -> forall c, kept' c = []).
+    store_rel (r_st rc) (r_st rh).
 Proof.
   intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp.
   assert (Hwfv : WF (view_store (t_view T0))) by (eapply WF_store_eq; [apply store_eq_sym, Heq | exact Hwf]).
   assert (Hpre : replay_pre T0 rd io rem ops).
   { intros Hnp. destruct (Hctx Hnp) as (Hrd & Hinv & Htr).
     split; [rewrite <- Hrd; exact Hinv |]. split; [rewrite Hp0; exact Hrd | exact Htr]. }
-  destruct (run_sim_gen ops T0 T H S S rd (fun _ => []) io rem Hnd Hst Heq (store_rel_self S) Hwfv Hhv Hpre
+  destruct (run_sim_gen ops T0 T H S S rd io rem Hnd Hst Heq (store_rel_self S) Hwfv Hhv Hpre
               ltac:(rewrite Hs0; exact Hfp))
-    as (A & B & C & D & kept' & Rel & K1 & K2).
+    as (A & B & C & D & Rel).
   rewrite Hs0 in A, B, C, D, Rel. simpl in A, B, C, D, Rel.
-  split; [exact A |]. split; [exact B |]. split; [exact C |]. split; [exact D |].
-  exists kept'. split; [exact Rel |]. split.
-  - intros c d Hin. destruct (K1 c d Hin) as [Hk | Hop]; [contradiction | exact Hop].
-  - intros Hnr c. apply Permutation_nil, Permutation_sym, (K2 Hnr).
+  split; [exact A |]. split; [exact B |]. split; [exact C |]. split; [exact D | exact Rel].
 Qed.
 
 (* H1: committing the staged operations makes exactly the observer calls,
@@ -4801,6 +5488,7 @@ Proof.
     as (A & B & C & D & _). auto.
 Qed.
 
+(* Disabled by decision 45 (Rule E): H2 no longer needs the premise that no operation retains.
 (* H2: without peek retention, the committed store equals the host store:
    continuations, joins and counters are equal, and every data list is a
    permutation of the host list (leaf encodings sort records). *)
@@ -4831,6 +5519,36 @@ Proof.
   split; [| split; [exact Rc | split; [exact Rj | split; [exact Rn | exact D]]]].
   intros c. rewrite <- (app_nil_r (s_data (r_st (host_run (t_mode T0) H S rd ops)) c)).
   rewrite <- (K2 Hnk c). apply Rd.
+Qed.
+*)
+
+(* H2: the committed store equals the host store: continuations, joins and
+   counters are equal, and every data list is a permutation of the host
+   list (leaf encodings sort records). Decision 45 (Rule E): H2 has no
+   premise about peeks. A peek fire removes the records that the host
+   removes, so H2 holds for every staged transaction. *)
+Theorem commit_state_eq_host :
+  forall ops T0 T H S rd io rem,
+    no_dir_some ->
+    t_staged T0 = [] -> t_paired T0 = [] ->
+    stage_all T0 ops = Some T ->
+    store_eq (view_store (t_view T0)) S ->
+    WF S ->
+    host_valid_run (t_mode T0) H S rd ops ->
+    replay_ctx T0 rd io rem ops ->
+    Forall (fire_paired (t_mode T0)) (t_staged T) ->
+    let rc := commit_run (t_mode T0) H S rd (t_staged T) in
+    let rh := host_run (t_mode T0) H S rd ops in
+    (forall c, Permutation (s_data (r_st rc) c) (s_data (r_st rh) c)) /\
+    (forall g, s_conts (r_st rc) g = s_conts (r_st rh) g) /\
+    (forall c, s_joins (r_st rc) c = s_joins (r_st rh) c) /\
+    (forall p, s_count (r_st rc) p = s_count (r_st rh) p) /\
+    r_rd rc = r_rd rh.
+Proof.
+  intros ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp.
+  destruct (run_sim_fresh ops T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp)
+    as (_ & _ & _ & D & (Rd & Rc & Rj & Rn)).
+  split; [exact Rd |]. split; [exact Rc |]. split; [exact Rj |]. split; [exact Rn | exact D].
 Qed.
 
 (* H6: the staged view is the committed store.  Commit is prefix-atomic
@@ -4874,6 +5592,7 @@ Proof.
   eapply stage_all_WF; eassumption.
 Qed.
 
+(* Disabled by decision 45 (Rule E): H11 is restated as peek_reproduces_trace_eq_host, with no kept records.
 (* H11 (FR-10): peek fires against HEAD.
    1. A committed transaction makes the observer calls, the events, the
       status and the bindings of the host run of the same operations. By
@@ -5003,6 +5722,190 @@ Proof.
   split; [exact offer_scenarios |].
   exact offer_p1_breaks_no_pending_match.
 Qed.
+*)
+
+(* H11 (decision 45, Rule E), the trace part: a transaction in which a
+   consume-side peek fire is followed by its re-stores commits as the host
+   runs the same program with the produces of HEAD's produce_peeks in place
+   of the re-stores. The commit makes the observer calls, the events, the
+   status and the bindings of that host run, and the two stores are equal
+   (data lists up to permutation). The operations before and after the
+   peek are arbitrary. *)
+Lemma peek_restores_sim :
+  forall pre post chs pats k persist peeks cands T0 T H S rd io rem,
+    let fire := OConsume chs pats k persist peeks (CFire cands) in
+    let hops := pre ++ fire :: host_produce_peeks fire ++ post in
+    no_dir_some ->
+    t_staged T0 = [] -> t_paired T0 = [] ->
+    stage_all T0 (pre ++ fire :: restores_after fire ++ post) = Some T ->
+    store_eq (view_store (t_view T0)) S ->
+    WF S ->
+    host_valid_run (t_mode T0) H S rd hops ->
+    replay_ctx T0 rd io rem hops ->
+    Forall (fire_paired (t_mode T0)) (t_staged T) ->
+    let rc := commit_run (t_mode T0) H S rd (t_staged T) in
+    let rh := host_run (t_mode T0) H S rd hops in
+    r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
+    (forall c, Permutation (s_data (r_st rc) c) (s_data (r_st rh) c)) /\
+    (forall g, s_conts (r_st rc) g = s_conts (r_st rh) g) /\
+    (forall c, s_joins (r_st rc) c = s_joins (r_st rh) c) /\
+    (forall p, s_count (r_st rc) p = s_count (r_st rh) p).
+Proof.
+  intros pre post chs pats k persist peeks cands T0 T H S rd io rem fire hops
+         Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp rc rh.
+  subst rc rh hops fire.
+  assert (Hops : pre ++ OConsume chs pats k persist peeks (CFire cands)
+                   :: restores_after (OConsume chs pats k persist peeks (CFire cands)) ++ post =
+                 pre ++ OConsume chs pats k persist peeks (CFire cands)
+                   :: host_produce_peeks (OConsume chs pats k persist peeks (CFire cands)) ++ post).
+  { pose proof Hst as Hst1. rewrite stage_all_app in Hst1.
+    destruct (stage_all T0 pre) as [T1 |]; [| discriminate].
+    cbn [stage_all] in Hst1.
+    destruct (stage T1 (OConsume chs pats k persist peeks (CFire cands))) as [T2 |] eqn:H2;
+      [| discriminate].
+    rewrite (restores_are_produce_peeks T1 chs pats k persist peeks cands T2 H2). reflexivity. }
+  rewrite Hops in Hst.
+  destruct (run_sim_fresh _ T0 T H S rd io rem Hnd Hs0 Hp0 Hst Heq Hwf Hhv Hctx Hfp)
+    as (A & B & C & D & (Rd & Rc & Rj & Rn)).
+  split; [exact A |]. split; [exact B |]. split; [exact C |]. split; [exact D |].
+  split; [exact Rd |]. split; [exact Rc |]. split; [exact Rj | exact Rn].
+Qed.
+
+(* H11 (FR-10 and decision 45, Rule E): peek fires against HEAD.
+   1. A consume-side peek fire followed by the re-stores of the agent has
+      the observer calls, the events, the status, the bindings and the
+      store (data lists up to permutation) of HEAD's peek COMM followed by
+      produce_peeks, inside any transaction (peek_restores_sim).
+   2. FR-10: the commit of a fire never stores a datum, in every mode and
+      also when it is rejected. A produce-side fire never stores its
+      incoming datum.
+   3. The receipt of a fire keeps the persist flag of the record of each
+      result, as wrap_result gives it. No flag is rewritten.
+   4. The view of a staged fire loses exactly its stored non-persistent
+      records, on both sides and also for a peek, as the host does.
+   5. The re-stores that the agent stages after a consume-side fire are
+      exactly the produces of HEAD's produce_peeks.
+   6. A re-store has the identity of the source produce of its record,
+      when each stored source is the Produce::create identity of its bytes.
+   7. Each re-store is a staged Store of the record itself at the head of
+      its channel, and it steps the counter of that identity by one.
+   8. A consume-side peek fire followed by its re-stores leaves each data
+      list a permutation of the list before the fire: no record is lost
+      and none is duplicated.
+   9. Staging keeps the premise of 6 (stored_sources).
+   10. After a produce-side fire, HEAD's re-produces are the re-offer of
+      the incoming datum and the re-stores of the removed stored records.
+   11. Decision 30, kept as before: the re-offer has the trigger key of the
+      fire. Staging accepts it as a second produce of the identity, and each
+      produce steps the counter by one. With no next waiter, the re-offer
+      stores the datum. On a head-only waiter list, the plan with the
+      re-offer keeps the no-pending-match invariant and stages each due
+      re-offer as the next operation. In the queue scenario (a peek waiter,
+      then a consuming waiter), the plan stores nothing, and with no second
+      waiter the re-offer stores the datum. The P1 rule (the fire stores
+      the datum) breaks the invariant in the queue scenario. *)
+Theorem peek_reproduces_trace_eq_host :
+  (forall pre post chs pats k persist peeks cands T0 T H S rd io rem,
+     let fire := OConsume chs pats k persist peeks (CFire cands) in
+     let hops := pre ++ fire :: host_produce_peeks fire ++ post in
+     no_dir_some ->
+     t_staged T0 = [] -> t_paired T0 = [] ->
+     stage_all T0 (pre ++ fire :: restores_after fire ++ post) = Some T ->
+     store_eq (view_store (t_view T0)) S ->
+     WF S ->
+     host_valid_run (t_mode T0) H S rd hops ->
+     replay_ctx T0 rd io rem hops ->
+     Forall (fire_paired (t_mode T0)) (t_staged T) ->
+     let rc := commit_run (t_mode T0) H S rd (t_staged T) in
+     let rh := host_run (t_mode T0) H S rd hops in
+     r_obs rc = r_obs rh /\ r_ev rc = r_ev rh /\ r_status rc = r_status rh /\ r_rd rc = r_rd rh /\
+     (forall c, Permutation (s_data (r_st rc) c) (s_data (r_st rh) c)) /\
+     (forall g, s_conts (r_st rc) g = s_conts (r_st rh) g) /\
+     (forall c, s_joins (r_st rc) c = s_joins (r_st rh) c) /\
+     (forall p, s_count (r_st rc) p = s_count (r_st rh) p)) /\
+  (forall m H S rd sg, is_fire (sg_op sg) = true ->
+     forall c x, count_occ datum_eq_dec (s_data (r_st (commit_op m H S rd sg)) c) x <=
+                 count_occ datum_eq_dec (s_data S c) x) /\
+  (forall cands,
+     fired_receipt (length cands) (wrap_flags cands) = Some (map (fun cd => d_persist (cd_rec cd)) cands)) /\
+  (forall T op T1, stage T op = Some T1 -> is_fire op = true ->
+     forall c x, count_occ datum_eq_dec (vdata (t_view T1) c) x
+                 + count_occ datum_eq_dec (np_recs c (fire_cands op)) x
+                 = count_occ datum_eq_dec (vdata (t_view T) c) x) /\
+  (forall T chs pats k persist peeks cands T1,
+     stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+     restores_after (OConsume chs pats k persist peeks (CFire cands)) =
+     host_produce_peeks (OConsume chs pats k persist peeks (CFire cands))) /\
+  (forall V cd, stored_sources V -> In (cd_rec cd) (vdata V (cd_chan cd)) -> removable cd = true ->
+     trigger_key (restore_of cd) = KProduce (d_src (cd_rec cd)) /\
+     mkDatum (d_val (cd_rec cd)) false (produce_id (cd_chan cd) (d_val (cd_rec cd)) false) = cd_rec cd) /\
+  (forall T chs pats k persist peeks cands T1 cd,
+     stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+     In cd cands -> removable cd = true -> stored_sources (t_view T) ->
+     exists T2, stage T1 (restore_of cd) = Some T2 /\
+       trigger_key (restore_of cd) = KProduce (d_src (cd_rec cd)) /\
+       vdata (t_view T2) (cd_chan cd) = cd_rec cd :: vdata (t_view T1) (cd_chan cd) /\
+       vcount (t_view T2) (d_src (cd_rec cd)) = S (vcount (t_view T1) (d_src (cd_rec cd)))) /\
+  (forall T chs pats k persist peeks cands T1,
+     stage T (OConsume chs pats k persist peeks (CFire cands)) = Some T1 ->
+     peeks <> [] -> stored_sources (t_view T) ->
+     exists T2,
+       stage_all T1 (restores_after (OConsume chs pats k persist peeks (CFire cands))) = Some T2 /\
+       forall c, Permutation (vdata (t_view T2) c) (vdata (t_view T) c)) /\
+  (forall T op T1, stage T op = Some T1 -> stored_sources (t_view T) -> stored_sources (t_view T1)) /\
+  (forall T ch v persist chs wk kidx cands T1,
+     stage T (OProduce ch v persist (PFire chs wk kidx cands)) = Some T1 ->
+     Permutation (head_reproduces cands) ((if persist then [] else [(ch, v)]) ++ restore_reproduces cands)) /\
+  (forall op next, reoffer_of op next -> trigger_key next = trigger_key op) /\
+  (forall T ch v chs wk kidx cands T1,
+     stage T (OProduce ch v false (PFire chs wk kidx cands)) = Some T1 ->
+     let src := produce_id ch v false in
+     exists T2, stage T1 (OProduce ch v false PStore) = Some T2 /\
+       vcount (t_view T1) src = S (vcount (t_view T) src) /\
+       vcount (t_view T2) src = S (vcount (t_view T1) src) /\
+       vdata (t_view T2) ch = mkDatum v false src :: vdata (t_view T1) ch) /\
+  (forall wmatch ws rs d, no_pending_match wmatch ws rs ->
+     no_pending_match wmatch (fst (offer wmatch ws rs d)) (snd (offer wmatch ws rs d))) /\
+  (forall wmatch kidx_of cands_of ch v persist ws rs,
+     reoffers (offer_ops wmatch kidx_of cands_of ch v persist ws rs)) /\
+  (forall wmatch kidx_of cands_of ch v w1 w2,
+     let d := mkDatum v false (produce_id ch v false) in
+     let fire1 := OProduce ch v false (PFire [ch] w1 (kidx_of w1) (cands_of w1)) in
+     let fire2 := OProduce ch v false (PFire [ch] w2 (kidx_of w2) (cands_of w2)) in
+     w_persist w1 = false -> w_peeks w1 <> [] -> w_persist w2 = false -> w_peeks w2 = [] ->
+     wmatch w1 d = true -> wmatch w2 d = true ->
+     offer wmatch [w1; w2] [] d = ([], []) /\
+     offer_ops wmatch kidx_of cands_of ch v false [w1; w2] [] = [fire1; fire2] /\
+     offer wmatch [w1] [] d = ([], [d]) /\
+     offer_ops wmatch kidx_of cands_of ch v false [w1] [] = [fire1; OProduce ch v false PStore]) /\
+  (forall wmatch w1 w2 d,
+     d_persist d = false -> w_persist w1 = false -> w_peeks w1 <> [] ->
+     wmatch w1 d = true -> wmatch w2 d = true ->
+     no_pending_match wmatch [w1; w2] [] /\
+     offer_p1 wmatch [w1; w2] [] d = ([w2], [d]) /\
+     ~ no_pending_match wmatch [w2] [d]).
+Proof.
+  split; [exact peek_restores_sim |].
+  split; [exact fire_stores_no_datum |].
+  split; [exact receipt_flags_are_persist |].
+  split; [exact fire_view_removes |].
+  split; [exact restores_are_produce_peeks |].
+  split; [exact restore_same_identity |].
+  split; [exact restore_store_staged |].
+  split; [exact peek_restore_keeps_data |].
+  split; [exact stage_keeps_stored_sources |].
+  split.
+  { intros T ch v persist chs wk kidx cands T1 Hst.
+    unfold stage in Hst. destruct (t_installed T ch); [discriminate |].
+    destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+    exact (head_reproduces_produce T ch v persist chs wk cands Hok). }
+  split; [exact reoffer_same_identity |].
+  split; [exact reoffer_store_staged |].
+  split; [exact offer_keeps_no_pending_match |].
+  split; [exact offer_ops_reoffers |].
+  split; [exact offer_scenarios |].
+  exact offer_p1_breaks_no_pending_match.
+Qed.
 
 (* ═══════════════════ Event coverage (H10, design §1.4) ════════════════════ *)
 
@@ -5097,18 +6000,18 @@ Proof.
 Qed.
 
 Lemma space_pf_loop_fx :
-  forall cs S chs r f, In f (snd (space_pf_loop S chs r cs)) ->
+  forall cs S chs f, In f (snd (space_pf_loop S chs cs)) ->
     (exists cd, In cd cs /\ f = FxRemoveDatum (cd_chan cd) (cd_rec cd)) \/
     (exists c, f = FxRemoveJoin c chs /\ s_conts S chs = []).
 Proof.
-  induction cs as [| cd rest IH]; intros S chs r f Hin; simpl in Hin; [contradiction |].
-  set (p1 := if negb r && removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])) in Hin.
+  induction cs as [| cd rest IH]; intros S chs f Hin; simpl in Hin; [contradiction |].
+  set (p1 := if removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])) in Hin.
   assert (C1 : forall g, s_conts (fst p1) g = s_conts S g).
-  { intros g. subst p1. destruct (negb r && removable cd); [| reflexivity].
+  { intros g. subst p1. destruct (removable cd); [| reflexivity].
     destruct (space_remove_datum_fields S (cd_chan cd) (cd_rec cd)) as (_ & X & _). apply X. }
   apply in_app_or in Hin as [Hin | Hin].
   - left. exists cd. split; [left; reflexivity |]. subst p1.
-    destruct (negb r && removable cd); [| contradiction].
+    destruct (removable cd); [| contradiction].
     unfold space_remove_datum in Hin. destruct (in_dec datum_eq_dec (cd_rec cd) (s_data S (cd_chan cd)));
       simpl in Hin; [destruct Hin as [E | []]; symmetry; exact E | contradiction].
   - apply in_app_or in Hin as [Hin | Hin].
@@ -5116,7 +6019,7 @@ Proof.
       destruct (s_conts (fst p1) chs) as [| w ws] eqn:Ec; [| contradiction].
       destruct (in_dec lc_eq_dec chs (s_joins (fst p1) (cd_chan cd))); simpl in Hin; [| contradiction].
       destruct Hin as [E | []]. exists (cd_chan cd). split; [symmetry; exact E | rewrite <- C1; exact Ec].
-    + destruct (IH _ chs r f Hin) as [(cd' & Hcd' & Ef) | (c & Ef & Ec)].
+    + destruct (IH _ chs f Hin) as [(cd' & Hcd' & Ef) | (c & Ef & Ec)].
       * left. exists cd'. split; [right; exact Hcd' | exact Ef].
       * right. exists c. split; [exact Ef |].
         destruct (remove_join_fields (fst p1) (cd_chan cd) chs) as (_ & Rc & _).
@@ -5124,16 +6027,16 @@ Proof.
 Qed.
 
 Lemma space_cf_loop_fx :
-  forall cs S r f, In f (snd (space_cf_loop S r cs)) ->
+  forall cs S f, In f (snd (space_cf_loop S cs)) ->
     exists cd, In cd cs /\ f = FxRemoveDatum (cd_chan cd) (cd_rec cd).
 Proof.
-  induction cs as [| cd rest IH]; intros S r f Hin; simpl in Hin; [contradiction |].
+  induction cs as [| cd rest IH]; intros S f Hin; simpl in Hin; [contradiction |].
   apply in_app_or in Hin as [Hin | Hin].
   - exists cd. split; [left; reflexivity |].
-    destruct (negb r && negb (d_persist (cd_rec cd))); [| contradiction].
+    destruct (negb (d_persist (cd_rec cd))); [| contradiction].
     unfold space_remove_datum in Hin. destruct (in_dec datum_eq_dec (cd_rec cd) (s_data S (cd_chan cd)));
       simpl in Hin; [destruct Hin as [E | []]; symmetry; exact E | contradiction].
-  - destruct (IH _ r f Hin) as (cd' & Hcd' & Ef). exists cd'. split; [right; exact Hcd' | exact Ef].
+  - destruct (IH _ f Hin) as (cd' & Hcd' & Ef). exists cd'. split; [right; exact Hcd' | exact Ef].
 Qed.
 
 Lemma cand_src_in_comm :
@@ -5185,15 +6088,14 @@ Proof.
     assert (Hwk' : In wk (s_conts S chs)) by (rewrite <- Ec; exact Hwk).
     set (S1 := bump S src persist).
     set (p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk).
-    set (retain := negb (nullb (w_peeks wk))).
-    set (p2 := space_pf_loop (fst p1) chs retain (sort_desc vkey cands)).
+    set (p2 := space_pf_loop (fst p1) chs (sort_desc vkey cands)).
     assert (Hsrc : In src (c_produces cm)) by (subst cm; apply incoming_src_in_produces; assumption).
     assert (Fp1 : forall f, In f (snd p1) -> f = FxRemoveCont chs wk).
     { intros f Hf. subst p1. destruct (w_persist wk); [contradiction |].
       unfold space_remove_continuation in Hf. destruct (in_dec wk_eq_dec wk (s_conts S1 chs)); simpl in Hf;
         [destruct Hf as [E | []]; symmetry; exact E | contradiction]. }
     assert (Rjoin : forall c, In (FxRemoveJoin c chs) (snd p2) -> In (FxRemoveCont chs wk) (snd p1)).
-    { intros c Hf. destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & _ & E) | (c' & _ & Ec0)]; [discriminate |].
+    { intros c Hf. destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & _ & Ec0)]; [discriminate |].
       subst p1. destruct (w_persist wk) eqn:Ep.
       - exfalso. simpl in Ec0. subst S1. unfold bump, upd_count in Ec0. simpl in Ec0. rewrite Ec0 in Hwk'. contradiction.
       - unfold space_remove_continuation. subst S1. unfold bump, upd_count. cbn [s_conts snd].
@@ -5202,21 +6104,21 @@ Proof.
        removal (p1) and the loop of row 6 (p2). *)
     split; [| split; [| split; [| split; [| split; [| split]]]]].
     + intros c d Hf. apply in_app_or in Hf as [Hf | Hf]; [apply Fp1 in Hf; discriminate |].
-      destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
     + intros c d Hf. apply in_app_or in Hf as [Hf | Hf]; [apply Fp1 in Hf; discriminate |].
-      destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & Hcd & E) | (c' & E & _)]; [| discriminate].
+      destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & Hcd & E) | (c' & E & _)]; [| discriminate].
       injection E as _ Hd. subst d. exists ProduceSide, cm. split; [right; left; reflexivity |].
       subst cm. apply cand_src_in_comm. eapply Permutation_in; [apply sort_desc_perm | exact Hcd].
     + intros g w Hf. apply in_app_or in Hf as [Hf | Hf]; [apply Fp1 in Hf; discriminate |].
-      destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
     + intros g w Hf. apply in_app_or in Hf as [Hf | Hf].
       * apply Fp1 in Hf. injection Hf as Hg Hw. subst g w. exists ProduceSide, cm. split; [right; left; reflexivity |].
         subst cm. reflexivity.
-      * destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      * destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
     + intros c g Hf. apply in_app_or in Hf as [Hf | Hf]; [apply Fp1 in Hf; discriminate |].
-      destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
     + intros c g Hf. apply in_app_or in Hf as [Hf | Hf]; [apply Fp1 in Hf; discriminate |].
-      destruct (space_pf_loop_fx _ _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; [discriminate |].
+      destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; [discriminate |].
       injection E as Hc Hg. subst c' g. exists wk. apply in_or_app. left. apply (Rjoin c). exact Hf.
     + apply cat_two; [exact I |]. exists src. split; [exact Hsrc | left; reflexivity].
   - (* consume, Park *)
@@ -5251,14 +6153,14 @@ Proof.
                 (snd (pair_step T (KConsume (consume_id chs pats k persist)) cm)) Hcm)
       as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx; [| apply covered_nil].
     split; [| split; [| split; [| split; [| split; [| split]]]]].
-    + intros c d Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & _ & E). discriminate.
-    + intros c d Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & Hcd & E).
+    + intros c d Hf. destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E). discriminate.
+    + intros c d Hf. destruct (space_cf_loop_fx _ _ _ Hf) as (cd & Hcd & E).
       injection E as _ Hd. subst d. exists ConsumeSide, cm. split; [right; left; reflexivity |].
       subst cm. apply cand_src_in_comm. eapply Permutation_in; [apply sort_desc_perm | exact Hcd].
-    + intros g w Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & _ & E). discriminate.
-    + intros g w Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & _ & E). discriminate.
-    + intros c g Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & _ & E). discriminate.
-    + intros c g Hf. destruct (space_cf_loop_fx _ _ _ _ Hf) as (cd & _ & E). discriminate.
+    + intros g w Hf. destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E). discriminate.
+    + intros g w Hf. destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E). discriminate.
+    + intros c g Hf. destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E). discriminate.
+    + intros c g Hf. destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E). discriminate.
     + apply cat_two; [exact I |]. subst cm. left. reflexivity.
 Qed.
 
@@ -5999,16 +6901,16 @@ Proof.
 Qed.
 
 Lemma vloops_base :
-  (forall cs V chs r, v_base (vpf_loop V chs r cs) = v_base V) /\
-  (forall cs V r, v_base (vcf_loop V r cs) = v_base V) /\
+  (forall cs V chs, v_base (vpf_loop V chs cs) = v_base V) /\
+  (forall cs V, v_base (vcf_loop V cs) = v_base V) /\
   (forall cs V g, v_base (vput_joins V cs g) = v_base V).
 Proof.
   split; [| split].
-  - induction cs as [| cd rest IH]; intros V chs r; simpl; [reflexivity |].
+  - induction cs as [| cd rest IH]; intros V chs; simpl; [reflexivity |].
     rewrite IH. unfold vremove_join. destruct (vconts _ chs); [| ];
-      destruct (negb r && removable cd); reflexivity.
-  - induction cs as [| cd rest IH]; intros V r; simpl; [reflexivity |].
-    rewrite IH. destruct (negb r && negb (d_persist (cd_rec cd))); reflexivity.
+      destruct (removable cd); reflexivity.
+  - induction cs as [| cd rest IH]; intros V; simpl; [reflexivity |].
+    rewrite IH. destruct (negb (d_persist (cd_rec cd))); reflexivity.
   - induction cs as [| c rest IH]; intros V g; simpl; [reflexivity |].
     rewrite IH. unfold vput_join. destruct (in_dec lc_eq_dec g (vjoins V c)); reflexivity.
 Qed.
@@ -6545,7 +7447,7 @@ Proof.
               { destruct (w_persist wk); cbn [fst];
                   [apply bump_cong, ES
                   | apply (proj1 (space_remove_continuation_cong _ _ _ _ (bump_cong _ _ _ _ ES)))]. }
-              exact (proj1 (space_pf_loop_cong (sort_desc vkey cands) _ _ chs (negb (nullb (w_peeks wk))) E1)).
+              exact (proj1 (space_pf_loop_cong (sort_desc vkey cands) _ _ chs E1)).
            ++ (* the observer rejects the COMM *) sim_reject ES P1 P2.
         -- (* the staged COMM is not the live COMM *) sim_reject ES P1 P2.
       * (* a fire with no COMM *) sim_reject ES P1 P2.
@@ -6603,7 +7505,7 @@ Proof.
               intros _ Hsp. rewrite Hsp. cbn [negb r_status r_obs r_ev r_st].
               split; [reflexivity |]. split; [erase_simpl; rewrite P1; reflexivity |].
               split; [reflexivity |].
-              exact (proj1 (space_cf_loop_cong (sort_desc vkey cands) _ _ (negb (nullb peeks)) ES)).
+              exact (proj1 (space_cf_loop_cong (sort_desc vkey cands) _ _ ES)).
            ++ sim_reject ES P1 P2.
         -- sim_reject ES P1 P2.
       * sim_reject ES P1 P2.
@@ -7619,7 +8521,10 @@ Print Assumptions joins_lockstep_preserved.
 Print Assumptions sub_order_between.
 Print Assumptions abort_inert.
 Print Assumptions coverage_total.
+(* Disabled by decision 45 (Rule E): H11 is peek_reproduces_trace_eq_host.
 Print Assumptions peek_retention_trace_eq_host.
+*)
+Print Assumptions peek_reproduces_trace_eq_host.
 Print Assumptions reporting_trace_is_replay_trace.
 Print Assumptions non_canonical_fails_closed.
 Print Assumptions directive_fails_closed.

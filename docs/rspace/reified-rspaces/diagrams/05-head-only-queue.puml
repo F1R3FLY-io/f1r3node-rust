@@ -44,7 +44,7 @@ state "Open collection" as OPEN $ca_pkg_indigo {
   EMPTY --> RECORDS : send, no waiter:\nstore the record
   EMPTY --> WAITERS : receive, no record:\npark the waiter
 
-  RECORDS --> RECORDS : send: store at the tail\nreceive that fires with the head:\nthe head leaves, or stays for a peek\nor a persistent record
+  RECORDS --> RECORDS : send: store at the tail\nreceive that fires with the head:\nthe head leaves, or stays: a peek\nstores it again (decision 45),\na persistent record is kept
   RECORDS --> EMPTY : receive that fires\nwith the last record
   RECORDS --> BLOCKED : receive that does not\nmatch the head record:\npark the waiter
   RECORDS --> WAITERS : persistent receive <=\ndrains every record, then parks
@@ -79,6 +79,9 @@ note right of OPEN
   **Fire rounds** in one transaction:
   Re-offer: a peek waiter leaves the datum alive,
   and the next round offers it to the next head waiter.
+  Re-store: a peek receive removes a non-persistent
+  head record in its COMM, and the same transaction
+  stores the same record again (decision 45).
   Drain: a persistent receive meets the next head record.
   Re-issue: a divergent pair (a send !! with a receive <=,
   or a receive <= with a record of !!) re-issues after

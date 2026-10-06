@@ -837,14 +837,42 @@ where
     Ok(None)
 }
 
-/// Peeks rule of an operation with `binds` channels: `Ok(false)` for no
-/// peeks, `Ok(true)` for `{0..binds-1}` (retention), `MixedArrowJoin`
-/// otherwise.
-pub(crate) fn peek_retention(binds: usize, peeks: &BTreeSet<i32>) -> Result<bool, SpaceTxnError> {
+// Disabled by decision 45 (Rule E, "Apply everywhere"): the substrate keeps no
+// record for a peek. A fire removes every stored non-persistent candidate, as
+// the host does, and the space agent stores a peeked record again.
+// `check_peeks` keeps the rule on the peek set.
+//
+// ```
+// /// Peeks rule of an operation with `binds` channels: `Ok(false)` for no
+// /// peeks, `Ok(true)` for `{0..binds-1}` (retention), `MixedArrowJoin`
+// /// otherwise.
+// pub(crate) fn peek_retention(
+//     binds: usize,
+//     peeks: &BTreeSet<i32>,
+// ) -> Result<bool, SpaceTxnError> {
+//     let all_binds =
+//         || i32::try_from(binds).is_ok_and(|binds| peeks.iter().copied().eq(0..binds));
+//     match peeks.is_empty() {
+//         true => Ok(false),
+//         false if all_binds() => Ok(true),
+//         false => Err(SpaceTxnError::MixedArrowJoin {
+//             binds,
+//             peeks: peeks.clone(),
+//         }),
+//     }
+// }
+// ```
+
+/// Peeks rule of an operation with `binds` channels: no peeks, or
+/// `{0..binds-1}` (every bind peeks). Any other set is `MixedArrowJoin`. A peek
+/// fire removes the same records as any other fire, because the host COMM
+/// removes every stored non-persistent candidate whatever its peeks (decision
+/// 45, Rule E).
+pub(crate) fn check_peeks(binds: usize, peeks: &BTreeSet<i32>) -> Result<(), SpaceTxnError> {
     let all_binds = || i32::try_from(binds).is_ok_and(|binds| peeks.iter().copied().eq(0..binds));
     match peeks.is_empty() {
-        true => Ok(false),
-        false if all_binds() => Ok(true),
+        true => Ok(()),
+        false if all_binds() => Ok(()),
         false => Err(SpaceTxnError::MixedArrowJoin {
             binds,
             peeks: peeks.clone(),
@@ -908,36 +936,56 @@ where
     Ok(positions)
 }
 
-/// The records that a fire removes (its stored non-persistent candidates,
-/// unless it retains them), as `(candidate, position)` pairs.
+/// The records that a fire removes (its stored non-persistent candidates),
+/// as `(candidate, position)` pairs. A peek fire removes them too, as the
+/// host does (decision 45, Rule E).
 pub(crate) fn removed_records<C, A: Clone>(
     candidates: &[ConsumeCandidate<C, A>],
     positions: &[Option<usize>],
-    retain: bool,
 ) -> Vec<(usize, usize)> {
-    match retain {
-        true => Vec::new(),
-        false => candidates
-            .iter()
-            .zip(positions)
-            .enumerate()
-            .filter_map(|(index, (candidate, position))| match candidate.datum.persist {
-                true => None,
-                false => position.map(|position| (index, position)),
-            })
-            .collect(),
-    }
+    // Disabled by decision 45 (Rule E, "Apply everywhere"): a retaining
+    // (peek) fire removed nothing. The `false` arm is the removal below.
+    //
+    // ```
+    // match retain {
+    //     true => Vec::new(),
+    //     false => candidates
+    //         .iter()
+    //         .zip(positions)
+    //         .enumerate()
+    //         .filter_map(|(index, (candidate, position))| match candidate.datum.persist {
+    //             true => None,
+    //             false => position.map(|position| (index, position)),
+    //         })
+    //         .collect(),
+    // }
+    // ```
+    candidates
+        .iter()
+        .zip(positions)
+        .enumerate()
+        .filter_map(|(index, (candidate, position))| match candidate.datum.persist {
+            true => None,
+            false => position.map(|position| (index, position)),
+        })
+        .collect()
 }
 
-// The host removes and unjoins candidates in descending `datum_index` order
-// (ops_produce.rs, ops_consume.rs, replay_rspace.rs).
-pub(crate) fn by_descending_index<C, A: Clone>(
-    candidates: &[ConsumeCandidate<C, A>],
-) -> Vec<&ConsumeCandidate<C, A>> {
-    let mut sorted: Vec<_> = candidates.iter().collect();
-    sorted.sort_by_key(|candidate| Reverse(candidate.datum_index));
-    sorted
-}
+// Disabled by decision 45 (Rule E, "Apply everywhere"): only the retaining
+// fire unjoined its candidates without removing them, so this helper has no
+// caller.
+//
+// ```
+// // The host removes and unjoins candidates in descending `datum_index` order
+// // (ops_produce.rs, ops_consume.rs, replay_rspace.rs).
+// pub(crate) fn by_descending_index<C, A: Clone>(
+//     candidates: &[ConsumeCandidate<C, A>],
+// ) -> Vec<&ConsumeCandidate<C, A>> {
+//     let mut sorted: Vec<_> = candidates.iter().collect();
+//     sorted.sort_by_key(|candidate| Reverse(candidate.datum_index));
+//     sorted
+// }
+// ```
 
 /// Keys of every channel of every install key; touching one fails with
 /// `InstalledChannel`.
@@ -1346,7 +1394,12 @@ pub(crate) struct StagedFire<C, P: Clone, A: Clone, K: Clone> {
     pub(crate) continuation: WaitingContinuation<P, K>,
     pub(crate) candidates: Vec<ConsumeCandidate<C, A>>,
     pub(crate) comm: COMM,
-    pub(crate) retain: bool,
+    // Disabled by decision 45 (Rule E, "Apply everywhere"): a fire no
+    // longer retains its records.
+    //
+    // ```
+    // pub(crate) retain: bool,
+    // ```
     /// The paired COMM of the log. `None` in play, and for an unpaired fire
     /// in replay or reporting.
     pub(crate) recorded: Option<COMM>,
@@ -1364,14 +1417,19 @@ pub(crate) struct StagedProduce<C, P: Clone, A: Clone, K: Clone> {
 }
 
 /// A staged fire of a consume: the key of its group, the candidates, the
-/// staged COMM, retention, and the recorded COMM in replay. `removed` holds
-/// the `(candidate, position)` pairs of the records that the fire removes,
-/// in the staged lists before the fire.
+/// staged COMM, and the recorded COMM in replay. `removed` holds the
+/// `(candidate, position)` pairs of the records that the fire removes, in the
+/// staged lists before the fire.
 pub(crate) struct StagedConsumeFire<C, A: Clone> {
     pub(crate) group: Vec<Blake2b256Hash>,
     pub(crate) candidates: Vec<ConsumeCandidate<C, A>>,
     pub(crate) comm: COMM,
-    pub(crate) retain: bool,
+    // Disabled by decision 45 (Rule E, "Apply everywhere"): a fire no
+    // longer retains its records.
+    //
+    // ```
+    // pub(crate) retain: bool,
+    // ```
     pub(crate) removed: Vec<(usize, usize)>,
     /// The paired COMM of the log. `None` in play, and for an unpaired fire
     /// in replay or reporting.
@@ -1699,10 +1757,10 @@ where
                         "the produce channel is not a channel of the fired join",
                     ));
                 }
-                let retain = peek_retention(channels.len(), &continuation.peeks)?;
+                check_peeks(channels.len(), &continuation.peeks)?;
                 check_lined_up(&group, &candidates)?;
                 check_incoming(&candidates, &key, &source, &data, persist)?;
-                Some((group, channels, continuation, candidates, retain))
+                Some((group, channels, continuation, candidates))
             }
         };
         let joins_at_start = {
@@ -1748,7 +1806,7 @@ where
                     comm: None,
                 })
             }
-            Some((group, channels, continuation, candidates, retain)) => {
+            Some((group, channels, continuation, candidates)) => {
                 self.load_group(&group, &channels)?;
                 let entry = self
                     .view
@@ -1773,7 +1831,7 @@ where
                 );
                 let recorded = self.verify(backend, &comm, &IOEvent::Produce(source.clone()));
                 let delta = self.next_delta(backend, &source, persist)?;
-                let removed = removed_records(&candidates, &positions, retain);
+                let removed = removed_records(&candidates, &positions);
                 let applied = self.apply_fire_to_view(&group, &continuation, &candidates, &removed);
                 let (effects, continuation_position) = match applied {
                     Ok(applied) => applied,
@@ -1798,7 +1856,6 @@ where
                             continuation,
                             candidates,
                             comm: comm.clone(),
-                            retain,
                             recorded,
                             removed,
                             continuation_position,
@@ -1819,9 +1876,9 @@ where
     // View effects of a produce-triggered fire, in the host order: remove a
     // non-persistent continuation, then the records that the fire removes
     // (`removed`) and the fired join of every candidate channel. The incoming
-    // datum is never stored, also when retaining: a peek fire leaves it to
-    // the agent, which offers it again (FR-10). Returns the staged effects and
-    // the position of the removed continuation.
+    // datum is never stored: a peek fire leaves it to the agent, which offers
+    // it again (FR-10, decision 30). Returns the staged effects and the
+    // position of the removed continuation.
     fn apply_fire_to_view(
         &mut self,
         group: &[Blake2b256Hash],
@@ -1899,7 +1956,7 @@ where
             before_observe,
         } = op;
         let group = self.admit_group(&channels, patterns.len(), LockUse::Consumed)?;
-        let retain = peek_retention(channels.len(), &peeks)?;
+        check_peeks(channels.len(), &peeks)?;
         let source = Consume::create(&channels, &patterns, &continuation, persist);
         let index = self.staged.len();
         match outcome {
@@ -1961,7 +2018,7 @@ where
                     lookup_counters(&counters, produces)
                 });
                 let recorded = self.verify(backend, &comm, &IOEvent::Consume(source.clone()));
-                let removed = removed_records(&candidates, &positions, retain);
+                let removed = removed_records(&candidates, &positions);
                 let effects = match self.view.remove_records(&group, &candidates, &removed) {
                     Ok(effects) => effects,
                     Err(error) => return Err(self.poison(error)),
@@ -1981,7 +2038,6 @@ where
                             group,
                             candidates,
                             comm: comm.clone(),
-                            retain,
                             removed,
                             recorded,
                         }),
@@ -2421,43 +2477,52 @@ pub(crate) fn completion<C, P, A, K>(
     }
 }
 
-/// The results of a fire that its receipt reports as retained: when the fire
-/// retains (peeks), the results of its stored candidates. The incoming
-/// candidate of a produce fire is never retained, because the fire does not
-/// store it (FR-10).
-pub(crate) fn retained_results<C, A: Clone>(
-    candidates: &[ConsumeCandidate<C, A>],
-    retain: bool,
-) -> Vec<bool> {
-    candidates
-        .iter()
-        .map(|candidate| retain && candidate.datum_index >= 0)
-        .collect()
-}
+// Disabled by decision 45 (Rule E, "Apply everywhere"): no fire retains a
+// record, so every result keeps the flag of the host's `wrap_result`.
+//
+// ```
+// /// The results of a fire that its receipt reports as retained: when the fire
+// /// retains (peeks), the results of its stored candidates. The incoming
+// /// candidate of a produce fire is never retained, because the fire does not
+// /// store it (FR-10).
+// pub(crate) fn retained_results<C, A: Clone>(
+//     candidates: &[ConsumeCandidate<C, A>],
+//     retain: bool,
+// ) -> Vec<bool> {
+//     candidates
+//         .iter()
+//         .map(|candidate| retain && candidate.datum_index >= 0)
+//         .collect()
+// }
+// ```
 
 /// Receipt of a fire from the host's `wrap_result`, whose result `i` belongs
-/// to candidate `i`. A retained result (`retained_results`) is reported
-/// persistent, because the store keeps its record. Every other result keeps
-/// its own flag, so the result of a non-persistent incoming datum tells the
-/// agent to offer that datum again.
+/// to candidate `i` of the `candidates` candidates of the fire. Each result
+/// keeps the flag of the host, so a non-persistent result tells the agent that
+/// the fire removed or spent its datum (decision 45, Rule E).
 pub(crate) fn fired_receipt<C, P, A, K>(
     comm: COMM,
     wrapped: MaybeConsumeResult<C, P, A, K>,
-    retained: &[bool],
+    candidates: usize,
     produce: Option<Produce>,
 ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
     match wrapped {
-        Some((continuation, mut results)) => {
-            if results.len() != retained.len() {
+        Some((continuation, results)) => {
+            if results.len() != candidates {
                 return Err(SpaceTxnError::Inconsistent(
                     "the host fire results do not line up with the candidates",
                 ));
             }
-            for (result, retained) in results.iter_mut().zip(retained) {
-                if *retained {
-                    result.persistent = true;
-                }
-            }
+            // Disabled by decision 45 (Rule E, "Apply everywhere"): a
+            // retained result was reported persistent.
+            //
+            // ```
+            // for (result, retained) in results.iter_mut().zip(retained) {
+            //     if *retained {
+            //         result.persistent = true;
+            //     }
+            // }
+            // ```
             Ok(SpaceOpReceipt::Fired {
                 comm,
                 continuation,
@@ -3045,12 +3110,12 @@ mod tests {
     // arrow join.
     #[test]
     fn peeks_rule_accepts_only_empty_or_all_binds() {
-        assert_eq!(peek_retention(2, &BTreeSet::new()), Ok(false));
-        assert_eq!(peek_retention(2, &BTreeSet::from([0, 1])), Ok(true));
-        assert_eq!(peek_retention(1, &BTreeSet::from([0])), Ok(true));
+        assert_eq!(check_peeks(2, &BTreeSet::new()), Ok(()));
+        assert_eq!(check_peeks(2, &BTreeSet::from([0, 1])), Ok(()));
+        assert_eq!(check_peeks(1, &BTreeSet::from([0])), Ok(()));
         for peeks in [BTreeSet::from([0]), BTreeSet::from([1]), BTreeSet::from([0, 2])] {
             assert_eq!(
-                peek_retention(2, &peeks),
+                check_peeks(2, &peeks),
                 Err(SpaceTxnError::MixedArrowJoin {
                     binds: 2,
                     peeks: peeks.clone()
@@ -3353,8 +3418,7 @@ mod tests {
         )
         .expect("claim the positions");
         assert_eq!(positions, vec![Some(1), Some(3), Some(2), Some(2), None, Some(0)]);
-        assert_eq!(removed_records(&candidates, &positions, false), vec![(0, 1), (1, 3), (5, 0)]);
-        assert_eq!(removed_records(&candidates, &positions, true), Vec::new());
+        assert_eq!(removed_records(&candidates, &positions), vec![(0, 1), (1, 3), (5, 0)]);
 
         let third_x = vec![bind("a", &x, 1), bind("a", &x, 3), bind("a", &x, 1)];
         assert_eq!(
@@ -3368,13 +3432,13 @@ mod tests {
         );
     }
 
-    // FR-10: the receipt of a peek fire reports its retained stored records
-    // as persistent. The incoming datum keeps its own flag, because the fire
-    // does not store it, and a fire that does not peek keeps every flag.
-    // Results that do not line up with the candidates fail closed.
+    // Decision 45 (Rule E): the receipt of a fire keeps the flag of the host's
+    // `wrap_result` for every result, also for a peek fire, because the fire
+    // removes its stored non-persistent records as the host does. Results
+    // that do not line up with the candidates fail closed.
     #[test]
-    fn space_store_handle_receipt_marks_only_retained_stored_results() {
-        let candidates = vec![
+    fn space_store_handle_receipt_keeps_the_host_flags() {
+        let candidates = [
             bind_candidate("a".to_string(), &record("a", "x", false), "x".to_string(), 0),
             incoming_candidate(
                 "b".to_string(),
@@ -3385,9 +3449,6 @@ mod tests {
             ),
             bind_candidate("c".to_string(), &record("c", "p", true), "p".to_string(), 1),
         ];
-        assert_eq!(retained_results(&candidates, true), vec![true, false, true]);
-        assert_eq!(retained_results(&candidates, false), vec![false, false, false]);
-
         let continuation = ContResult {
             continuation: "k".to_string(),
             persistent: false,
@@ -3418,12 +3479,12 @@ mod tests {
             peeks: BTreeSet::from([0, 1, 2]),
             times_repeated: BTreeMap::new(),
         };
-        let flags = |retained: &[bool]| -> Result<Vec<bool>, SpaceTxnError> {
+        let flags = |fired: usize| -> Result<Vec<bool>, SpaceTxnError> {
             let wrapped = Some((continuation.clone(), results.clone()));
             match fired_receipt::<String, String, String, String>(
                 comm.clone(),
                 wrapped,
-                retained,
+                fired,
                 None,
             )? {
                 SpaceOpReceipt::Fired { results, .. } => {
@@ -3432,16 +3493,15 @@ mod tests {
                 _ => Err(SpaceTxnError::Inconsistent("not a fire receipt")),
             }
         };
-        assert_eq!(flags(&retained_results(&candidates, true)), Ok(vec![true, false, true]));
-        assert_eq!(flags(&retained_results(&candidates, false)), Ok(vec![false, false, true]));
+        assert_eq!(flags(candidates.len()), Ok(vec![false, false, true]));
         assert_eq!(
-            flags(&[true, false]),
+            flags(2),
             Err(SpaceTxnError::Inconsistent(
                 "the host fire results do not line up with the candidates"
             ))
         );
         assert_eq!(
-            fired_receipt::<String, String, String, String>(comm, None, &[], None),
+            fired_receipt::<String, String, String, String>(comm, None, 0, None),
             Err(SpaceTxnError::Inconsistent("the host returned no fire result"))
         );
     }

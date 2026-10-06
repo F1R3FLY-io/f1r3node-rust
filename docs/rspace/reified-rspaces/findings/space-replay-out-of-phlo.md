@@ -84,8 +84,8 @@ Figure F1 shows the three runs side by side.
 ### 4.1 Play
 
 Staging makes no host call.
-The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:2501-2544`).
-For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:132-138` and `173-183`).
+The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:2566-2609`).
+For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:131-137` and `171-181`).
 When a charge of operation $`k`$ rejects, the commit stops at operation $`k`$.
 The operations before $`k`$ stay applied and logged (D6), and operation $`k`$ leaves no event.
 
@@ -175,21 +175,21 @@ The fix changes only two substrate files. Casper, the host, and the P4 agents do
 
 | Part | Change | Code |
 |---|---|---|
-| `TxnCore::verify` | It returns `Option<COMM>` and never fails: the recorded COMM of a paired fire, or `None` in play and for an unpaired fire. | `rspace++/src/rspace/space_store_handle.rs:1585-1612` |
-| `TxnCore::stage_produce`, `TxnCore::stage_consume` | The two calls of `verify` no longer pass an error on, and only a paired fire adds its COMM to `paired`. | `rspace++/src/rspace/space_store_handle.rs:1774`, `1785-1787`, `1963`, and `1957-1959` |
-| `StagedFire`, `StagedConsumeFire` | The field `recorded` keeps the result of `verify`. | `rspace++/src/rspace/space_store_handle.rs:1350-1352` and `1376-1378` |
-| `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:246-255` |
-| `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:199-201` |
-| `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:389-398` |
-| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:84-88` and `2501-2508` |
+| `TxnCore::verify` | It returns `Option<COMM>` and never fails: the recorded COMM of a paired fire, or `None` in play and for an unpaired fire. | `rspace++/src/rspace/space_store_handle.rs:1643-1670` |
+| `TxnCore::stage_produce`, `TxnCore::stage_consume` | The two calls of `verify` no longer pass an error on, and only a paired fire adds its COMM to `paired`. | `rspace++/src/rspace/space_store_handle.rs:1832`, `1843-1845`, `2020`, and `1957-1959` |
+| `StagedFire`, `StagedConsumeFire` | The field `recorded` keeps the result of `verify`. | `rspace++/src/rspace/space_store_handle.rs:1403-1405` and `1434-1436` |
+| `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:243-252` |
+| `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:198-200` |
+| `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:394-403` |
+| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:84-88` and `2566-2573` |
 
 ### 6.4 The proofs and the models
 
 The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv) records the headlines and the invariants of the fix:
 
-- Headline H4 `verify_sound_complete` (`EventCorrelation.v:5359`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:5295`) stages a fire without its trigger event unpaired.
-- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:5325`) shows that an unpaired fire never commits, and that it emits no event and no effect.
-- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:6903`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
+- Headline H4 `verify_sound_complete` (`EventCorrelation.v:6261`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:6197`) stages a fire without its trigger event unpaired.
+- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:6227`) shows that an unpaired fire never commits, and that it emits no event and no effect.
+- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:7805`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
 - The new invariant T6 `ReplayOutcomeEqual` of `CheckpointReplay.tla` states that validators never reject an honest block. Its replayed deploy ends with the failure and the spending of play.
 - The Unsafe control `StagingDivergenceUnsafe.cfg` restores the rule of decision 19 and refutes exactly T6. The control `AcceptUnpairedUnsafe.cfg` commits an unpaired fire and refutes exactly T1.
 - Three Rocq mutants fail in the expected declarations: `ec-replay-fire-fails-at-staging`, `ec-unpaired-skips-observe-comm`, and `ec-unpaired-fire-commits`.
@@ -198,11 +198,11 @@ The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv)
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_space_txn_replay_divergence_typed_at_commit` | `rspace++/tests/reified_space_store_handle_props.rs:2408` | Property 5, renamed (H4, T3): an unpaired fire stages with no host call, and the commit fails at it with `ReplayDivergence` after its calls. |
-| `prop_space_txn_replay_requires_trigger_event` | `rspace++/tests/reified_space_store_handle_props.rs:2474` | Property 16 (H4): without its trigger event, a fire stages unpaired and fails at commit. |
-| `prop_space_txn_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle_props.rs:2482` | Property 25, new (H23, T6): replay rejects the call that play rejected, with the outcome, the calls, and the state of play. |
-| `space_store_handle_replay_divergence_is_typed_at_commit` | `rspace++/tests/reified_space_store_handle.rs:1457` | The integration form of property 5, renamed. |
-| `space_store_handle_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle.rs:1947` | A sweep over every position of a fallible call (H23, T6). |
+| `prop_space_txn_replay_divergence_typed_at_commit` | `rspace++/tests/reified_space_store_handle_props.rs:2409` | Property 5, renamed (H4, T3): an unpaired fire stages with no host call, and the commit fails at it with `ReplayDivergence` after its calls. |
+| `prop_space_txn_replay_requires_trigger_event` | `rspace++/tests/reified_space_store_handle_props.rs:2475` | Property 16 (H4): without its trigger event, a fire stages unpaired and fails at commit. |
+| `prop_space_txn_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle_props.rs:2483` | Property 25, new (H23, T6): replay rejects the call that play rejected, with the outcome, the calls, and the state of play. |
+| `space_store_handle_replay_divergence_is_typed_at_commit` | `rspace++/tests/reified_space_store_handle.rs:1507` | The integration form of property 5, renamed. |
+| `space_store_handle_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle.rs:1997` | A sweep over every position of a fallible call (H23, T6). |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:821` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
 
 The tests `space_store_handle_replay_cross_channel_comm_pairs_once`, `space_store_handle_replay_requires_produce_trigger_event`, and `space_store_handle_replay_requires_consume_trigger_event` now expect the error at commit.
@@ -256,5 +256,5 @@ The fix closes the first question of the earlier list. Two questions stay open, 
 
 - [Decision register, decision 36](../decision-register.md#decision-36), [decision 19](../decision-register.md#decision-19), and [decision 31](../decision-register.md#decision-31).
 - [Design, section S5.1 (staging)](../design.md#s51-staging), [section S5.2 (commit)](../design.md#s52-commit), [section S5.3 (verify)](../design.md#s53-verify-fr-3), [section S6 (errors)](../design.md#s6-errors), and [section S10 (limits)](../design.md#s10-limits).
-- [Verification dossier](../verification.md): the [headlines of EventCorrelation.v](../verification.md#42-headlines-of-eventcorrelationv), the [invariants of CheckpointReplay.tla](../verification.md#52-checkpointreplaytla), and the [witness tests](../verification.md#73-the-17-witness-tests).
+- [Verification dossier](../verification.md): the [headlines of EventCorrelation.v](../verification.md#42-headlines-of-eventcorrelationv), the [invariants of CheckpointReplay.tla](../verification.md#52-checkpointreplaytla), and the [witness tests](../verification.md#73-the-19-witness-tests).
 - [Glossary entry "Unpaired fire"](../glossary.md#unpaired-fire).

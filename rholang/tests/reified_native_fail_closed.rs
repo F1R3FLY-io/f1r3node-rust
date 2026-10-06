@@ -34,7 +34,9 @@ use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
-use rholang::rust::interpreter::rho_runtime::{create_native_replay_env, create_rho_runtime, RhoRuntime};
+use rholang::rust::interpreter::rho_runtime::{
+    create_native_replay_env, create_rho_runtime, RhoRuntime,
+};
 use rholang::rust::interpreter::spaces::namespace::{self, ReifiedId};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -70,7 +72,11 @@ fn native_execution_error() -> InterpreterError {
 }
 
 type RhoHistoryRepository = Arc<
-    Box<dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
+    Box<
+        dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+            + Send
+            + Sync,
+    >,
 >;
 
 fn schedule() -> PhloScheduleV1<'static> {
@@ -159,11 +165,12 @@ struct Played {
 /// replay environment installs them again.
 async fn play(term: &str) -> Played {
     let mut stores = InMemoryStoreManager::new();
-    let (space, _) = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
-        stores.r_space_stores().await.expect("in-memory stores"),
-        Arc::new(Box::new(Matcher)),
-    )
-    .expect("an in-memory play and replay space");
+    let (space, _) =
+        RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
+            stores.r_space_stores().await.expect("in-memory stores"),
+            Arc::new(Box::new(Matcher)),
+        )
+        .expect("an in-memory play and replay space");
     space.create_checkpoint().await.expect("the empty root");
     let history = space.get_history_repository();
     let mut runtime = create_rho_runtime(
@@ -291,7 +298,11 @@ async fn reified_native_replay_reproduces_the_rejection_of_play() {
     let played = play(SPACE_PROGRAM).await;
     let (replayed, complete, usage) = replay(&played, SPACE_PROGRAM).await;
     assert_eq!(replayed.errors, played.result.errors);
-    assert_eq!(complete, Ok(()), "replay consumed every journal row of play");
+    assert_eq!(
+        complete,
+        Ok(()),
+        "replay consumed every journal row of play"
+    );
     let recording = played
         .result
         .native_budget_recording
@@ -308,7 +319,11 @@ async fn reified_native_replay_reproduces_the_rejection_of_play() {
 #[tokio::test]
 async fn reified_native_host_program_plays_and_replays_unchanged() {
     let played = play(HOST_PROGRAM).await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     let (replayed, complete, usage) = replay(&played, HOST_PROGRAM).await;
     assert!(replayed.errors.is_empty(), "{:?}", replayed.errors);
     assert_eq!(complete, Ok(()));

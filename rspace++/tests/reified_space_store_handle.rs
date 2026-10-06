@@ -11,15 +11,19 @@
 //   G — round-2 rules: repeated channels in sorted groups (FR-1'), parent
 //       tracking per root evaluation (FR-5'), checks that cost O(changed
 //       entries) (FR-7'), and the sweep's nested-transaction guard (FR-9')
-//   H — round-3 rule FR-10: a peek fire does not store the incoming datum,
-//       the agent offers it again as the next produce of the transaction,
-//       and only retained stored records are reported persistent
+//   H — round-3 rule FR-10 with decision 45 (Rule E): a peek fire removes
+//       its stored non-persistent records as the host does and never stores
+//       the incoming datum, the agent stores each removed record again (the
+//       re-store) and offers a non-persistent incoming datum again (the
+//       re-offer) as next produces of the transaction, and every result of
+//       a fire keeps the host's flag
 // The parity oracle runs each operation on a host `RSpace` and stages the
 // same outcome on a twin through a transaction, then compares observer
 // calls, events, store contents and state roots. After a peek fire the
-// oracle follows HEAD's peek path (`head_peek_path` in support.rs): the
-// space keeps the stored records, and HEAD's re-produce of the incoming
-// datum is the agent's re-offer (FR-10). Every channel group is
+// oracle follows HEAD's peek path (`head_peek_path` in support.rs): HEAD's
+// re-produce of each non-persistent result (`produce_peeks`) is the agent's
+// next produce, the re-store of a removed record (decision 45, Rule E) or
+// the re-offer of the incoming datum (FR-10). Every channel group is
 // canonical: sorted (non-decreasing) by channel hash, which in the test
 // universe is `b < d < c < a < v1 < v2`. A sorted group may repeat a
 // channel.
@@ -183,6 +187,34 @@ fn fire_consume_op(
         outcome: ConsumeOutcome::Fire { data: candidates },
         before_observe: None,
     }
+}
+
+// A consume that peeks every bind and fires with `candidates`, which bind
+// stored records only.
+fn peek_consume_op(
+    channels: &[&str],
+    patterns: Vec<Pat>,
+    continuation: &str,
+    candidates: Vec<Candidate>,
+) -> SpaceConsume<String, Pat, String, String> {
+    SpaceConsume {
+        channels: names(channels),
+        patterns,
+        continuation: s(continuation),
+        persist: false,
+        peeks: (0..channels.len() as i32).collect(),
+        outcome: ConsumeOutcome::Fire { data: candidates },
+        before_observe: None,
+    }
+}
+
+// The produce counters of `sources` in the space behind `handle`, read in a
+// transaction that stages nothing.
+async fn counters_at(handle: &Handle, sources: &[Produce]) -> BTreeMap<Produce, i32> {
+    let mut probe = handle.begin(&universe()).await.expect("begin a probe");
+    probe
+        .produce_counters(sources)
+        .expect("read the produce counters")
 }
 
 fn single(groups: Vec<Op>) -> Vec<Vec<Op>> { vec![groups] }
@@ -616,14 +648,17 @@ async fn space_store_handle_parity_sub_orders_distinct_and_flatten_in_sequence()
     assert_parity(&twin).await;
 }
 
-// HEAD's peek path (reduce.rs:780-807, 977-1012): a peek fire removes the
-// bound records in the host, and the reducer produces them again. The space
-// keeps the stored record of the consume-side peek on `a` (the oracle puts
-// it back into the host without events), and the produce-side peek on `b`
-// does not store `y`: the agent offers `y` again as the next produce, which
-// stores it with HEAD's events and observer calls (FR-10).
+// HEAD's peek path (reduce.rs:776-811, 909-936 and `produce_peeks`,
+// 981-1016): a peek fire removes its bound non-persistent records in the
+// host, and the reducer produces each one again. The consume-side peek on `a`
+// removes the stored x in the space as well, and the agent stores x again
+// right after the fire (the re-store, decision 45, Rule E). The produce-side
+// peek on `b` does not store `y`, and the agent offers `y` again as the next
+// produce, which stores it (the re-offer, FR-10). Both re-produces have
+// HEAD's events, observer calls and produce counters, and every result keeps
+// the host's flag.
 #[tokio::test]
-async fn space_store_handle_peek_events_equal_host_and_retains() {
+async fn space_store_handle_peek_events_equal_host_and_restores() {
     let twin = twin().await;
     let groups = vec![
         vec![Op::produce("a", "x", false)],
@@ -633,14 +668,20 @@ async fn space_store_handle_peek_events_equal_host_and_retains() {
     ];
     let (plans, receipts) = run_guided(&twin.host, &twin.txn, &groups).await;
     let receipts = receipts_ok(receipts);
-    assert_eq!(plans[3].len(), 2);
-    match (&receipts[1].ops[0], &receipts[3].ops[..]) {
+    assert_eq!(plans.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2, 1, 2]);
+    let x = produce_source("a", "x", false);
+    let y = produce_source("b", "y", false);
+    match (&receipts[1].ops[..], &receipts[3].ops[..]) {
         (
-            SpaceOpReceipt::Fired {
-                results: kept,
-                comm: consume_comm,
-                ..
-            },
+            [
+                SpaceOpReceipt::Fired {
+                    results: peeked,
+                    comm: consume_comm,
+                    produce: None,
+                    ..
+                },
+                SpaceOpReceipt::Stored { produce: restored },
+            ],
             [
                 SpaceOpReceipt::Fired {
                     results: sent,
@@ -651,15 +692,20 @@ async fn space_store_handle_peek_events_equal_host_and_retains() {
                 SpaceOpReceipt::Stored { produce: reoffered },
             ],
         ) => {
-            assert!(kept.iter().all(|result| result.persistent));
+            assert_eq!(peeked.len(), 1);
+            assert!(!peeked[0].persistent);
             assert_eq!(consume_comm.peeks, BTreeSet::from([0]));
+            assert_eq!(consume_comm.times_repeated, BTreeMap::from([(x.clone(), 1)]));
+            assert_eq!(restored, &x);
             assert_eq!(produce_comm.peeks, BTreeSet::from([0]));
             assert_eq!(sent.len(), 1);
             assert!(!sent[0].persistent);
-            assert_eq!(produce, &Some(produce_source("b", "y", false)));
-            assert_eq!(reoffered, &produce_source("b", "y", false));
+            assert_eq!(produce, &Some(y.clone()));
+            assert_eq!(reoffered, &y);
         }
-        other => panic!("expected the peek fires and the re-offer, got {:?}", other),
+        other => {
+            panic!("expected the peek fires with the re-store and the re-offer, got {:?}", other)
+        }
     }
     let state = logical_state(&twin.txn);
     assert_eq!(state, logical_state(&twin.host));
@@ -672,9 +718,13 @@ async fn space_store_handle_peek_events_equal_host_and_retains() {
     );
     assert!(state.continuations.is_empty());
     assert!(state.joins.is_empty());
+    let sources = [x.clone(), y.clone()];
+    let counters = counters_at(&SpaceStoreHandle::new(twin.txn.clone()), &sources).await;
+    assert_eq!(counters, counters_at(&SpaceStoreHandle::new(twin.host.clone()), &sources).await);
+    assert_eq!(counters, BTreeMap::from([(x, 2), (y, 2)]));
     let (_, txn) = assert_parity(&twin).await;
     assert_eq!(kinds(&txn.log), vec![
-        "produce", "consume", "comm", "consume", "produce", "comm", "produce"
+        "produce", "consume", "comm", "produce", "consume", "produce", "comm", "produce"
     ]);
 }
 
@@ -2885,10 +2935,11 @@ async fn space_store_handle_nested_begin_fails_closed() {
     assert_eq!(txn.mode(), SpaceMode::Play);
 }
 
-// Peek fires in replay and reporting: both pair the play log, keep the
-// stored record of the consume-side peek as play does, leave the incoming
-// datum of the produce-side peek unstored until its re-offer stores it
-// (FR-10), and reach the play root.
+// Peek fires in replay and reporting: both pair the play log, remove the
+// stored record of the consume-side peek as play does and store it again
+// with the agent's re-store (decision 45, Rule E), leave the incoming datum
+// of the produce-side peek unstored until its re-offer stores it (FR-10),
+// and reach the play root.
 async fn run_peek_fires(handle: &Handle) -> Commits {
     let peek = BTreeSet::from([0]);
     let k2 =
@@ -2909,6 +2960,9 @@ async fn run_peek_fires(handle: &Handle) -> Commits {
         before_observe: None,
     })
     .expect("stage a peek consume fire");
+    assert!(txn.data(&s("a")).expect("read a").is_empty());
+    txn.produce(store_op("a", "x", false))
+        .expect("stage the re-store of x");
     txn.consume(park_op(&["b"], vec![Pat::Any], "k2", false, peek.clone()))
         .expect("stage a peek park");
     txn.produce(SpaceProduce {
@@ -2946,6 +3000,8 @@ async fn run_peek_fires(handle: &Handle) -> Commits {
     commits
 }
 
+// The play log of the transactions equals the log of HEAD's program, whose
+// reducer produces the peeked x and the incoming y again (`produce_peeks`).
 #[tokio::test]
 async fn space_store_handle_peek_fires_replay_and_report() {
     let play = play_space().await;
@@ -2953,19 +3009,49 @@ async fn space_store_handle_peek_fires_replay_and_report() {
     let played_receipts = receipts_ok(run_peek_fires(&SpaceStoreHandle::new(play.clone())).await);
     assert_eq!(play.get_data(&s("a")).await, vec![datum("a", "x", false)]);
     assert!(play.get_data(&s("b")).await.is_empty());
-    match &played_receipts[0].ops[3..] {
-        [SpaceOpReceipt::Fired { results, .. }, SpaceOpReceipt::Stored { produce }] => {
+    match &played_receipts[0].ops[1..] {
+        [
+            SpaceOpReceipt::Fired {
+                results: peeked,
+                produce: None,
+                ..
+            },
+            SpaceOpReceipt::Stored { produce: restored },
+            SpaceOpReceipt::Parked { .. },
+            SpaceOpReceipt::Fired { results, .. },
+            SpaceOpReceipt::Stored { produce },
+        ] => {
+            assert_eq!(peeked.len(), 1);
+            assert!(!peeked[0].persistent);
+            assert_eq!(restored, &produce_source("a", "x", false));
             assert_eq!(results.len(), 1);
             assert!(!results[0].persistent);
             assert_eq!(produce, &produce_source("b", "y", false));
         }
-        other => panic!("expected the peek produce fire and its re-offer, got {:?}", other),
+        other => {
+            panic!("expected the peek fires with the re-store and the re-offer, got {:?}", other)
+        }
     }
     let played = checkpoint(&play).await;
     assert_eq!(comms_of(&played.log).len(), 3);
     assert_eq!(kinds(&played.log), vec![
-        "produce", "consume", "comm", "consume", "produce", "comm", "produce", "consume", "comm"
+        "produce", "consume", "comm", "produce", "consume", "produce", "comm", "produce",
+        "consume", "comm"
     ]);
+    let head = play_space().await;
+    run_host_ops(&head, &[
+        Op::produce("a", "x", false),
+        Op::peek(&["a"], vec![Pat::Any], "k"),
+        Op::produce("a", "x", false),
+        Op::peek(&["b"], vec![Pat::Any], "k2"),
+        Op::produce("b", "y", false),
+        Op::produce("b", "y", false),
+        Op::consume(&["b"], vec![Pat::Any], "k3", false),
+    ])
+    .await;
+    let head_played = checkpoint(&head).await;
+    assert_eq!(event_bytes(&played.log), event_bytes(&head_played.log));
+    assert_eq!(played.root, head_played.root);
 
     let replay = replay_over(&play);
     rig(&replay, &start.root, &played.log).await;
@@ -3879,12 +3965,17 @@ impl AuthorityRegistry {
     }
 }
 
-// FR-10 (P4 amendment A1): a produce-side peek fire never stores its
-// incoming datum, not in the staged view and not in the committed store, in
-// play and in replay. The retained stored record of the fired join stays
-// where it was. Without a re-offer, the datum is in no store.
+// Decision 45 (Rule E, applied everywhere) with FR-10 (P4 amendment A1): the
+// produce-side fire of a peek join removes its stored non-persistent
+// candidate e, as the host's `remove_matched_datum_and_join` does, and never
+// stores its incoming datum r, not in the staged view and not in the
+// committed store, in play and in replay. The receipt keeps the host's flags.
+// The state, the events and the root equal those of the host produce before
+// the reducer's re-produces, which the agent stages as the next produces
+// (see `space_store_handle_peek_fire_receipt_flags`). Without the re-store
+// and the re-offer, neither record is in any store.
 #[tokio::test]
-async fn space_store_handle_retained_produce_fire_leaves_incoming_unstored() {
+async fn space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored() {
     async fn run(handle: &Handle) -> Commits {
         let joined = waiter(&["b", "v1"], "kbv", true);
         let mut txn = handle.begin(&universe()).await.expect("begin");
@@ -3919,38 +4010,52 @@ async fn space_store_handle_retained_produce_fire_leaves_incoming_unstored() {
             before_observe: None,
         })
         .expect("stage the peek fire");
-        assert_eq!(txn.data(&s("b")).expect("read b"), &[datum("b", "e", false)]);
+        assert!(txn.data(&s("b")).expect("read b").is_empty());
         assert!(txn.data(&s("v1")).expect("read v1").is_empty());
         assert!(
             txn.continuations(&names(&["b", "v1"]))
                 .expect("read [b, v1]")
                 .is_empty()
         );
+        for channel in ["b", "v1"] {
+            assert!(txn.joins(&s(channel)).expect("read the joins").is_empty());
+        }
         vec![txn.commit().await]
     }
 
+    let host = play_space().await;
+    run_host_ops(&host, &[
+        Op::produce("b", "e", false),
+        Op::peek(&["b", "v1"], vec![Pat::Any, Pat::Any], "kbv"),
+        Op::produce("v1", "r", false),
+    ])
+    .await;
     let play = play_space().await;
     let start = checkpoint(&play).await;
     let played = receipts_ok(run(&SpaceStoreHandle::new(play.clone())).await);
     assert_eq!(played[0].ops.iter().map(result_flags).collect::<Vec<_>>(), vec![
         vec![],
         vec![],
-        vec![true, false]
+        vec![false, false]
     ]);
-    assert_eq!(play.get_data(&s("b")).await, vec![datum("b", "e", false)]);
-    assert!(play.get_data(&s("v1")).await.is_empty());
     for channel in ["b", "v1"] {
+        assert!(play.get_data(&s(channel)).await.is_empty());
         assert!(play.get_joins(s(channel)).await.is_empty());
     }
+    assert_eq!(logical_state(&play), logical_state(&host));
     let log = checkpoint(&play).await;
+    let head = checkpoint(&host).await;
     assert_eq!(kinds(&log.log), vec!["produce", "consume", "produce", "comm"]);
+    assert_eq!(event_bytes(&log.log), event_bytes(&head.log));
+    assert_eq!(log.root, head.root);
 
     let replay = replay_over(&play);
     rig(&replay, &start.root, &log.log).await;
     let replayed = receipts_ok(run(&SpaceStoreHandle::new(replay.clone())).await);
     assert_eq!(replayed, played);
-    assert_eq!(replay.get_data(&s("b")).await, vec![datum("b", "e", false)]);
-    assert!(replay.get_data(&s("v1")).await.is_empty());
+    for channel in ["b", "v1"] {
+        assert!(replay.get_data(&s(channel)).await.is_empty());
+    }
     replay
         .check_replay_data()
         .await
@@ -4373,12 +4478,16 @@ async fn space_store_handle_peek_reoffer_replay_and_report() {
     assert_eq!(checkpoint(&txn_replay).await.root, played.root);
 }
 
-// FR-10 receipt flags: a peek fire reports its retained stored records as
-// persistent. The incoming datum of a produce-side peek fire keeps its own
-// flag: false for a non-persistent send, which the agent offers again, and
-// true for a persistent send. A fire that does not peek reports the own
-// flag of every record. Staged from HEAD's outcomes, the space keeps host
-// parity throughout.
+// Receipt flags under decision 45 (Rule E): every result of a fire keeps the
+// flag of the host's `wrap_result`, also for a peek fire. A stored
+// non-persistent record of a peek fire is reported non-persistent, because
+// the fire removes it, and the agent stores it again (the re-store). The
+// incoming datum of a produce-side peek fire keeps its own flag: false for a
+// non-persistent send, which the agent offers again, and true for a
+// persistent send. A fire that does not peek also reports the own flag of
+// every record. Each re-store and re-offer is a store with the identity of
+// its record. Staged from HEAD's outcomes and HEAD's re-produces, the space
+// keeps host parity throughout.
 #[tokio::test]
 async fn space_store_handle_peek_fire_receipt_flags() {
     let twin = twin().await;
@@ -4399,22 +4508,25 @@ async fn space_store_handle_peek_fire_receipt_flags() {
         vec![Op::consume(&["d"], vec![Pat::Any], "kd2", false)],
     ];
     let (_, receipts) = run_guided(&twin.host, &twin.txn, &groups).await;
-    let flags: Vec<Vec<Vec<bool>>> = receipts_ok(receipts)
+    let receipts = receipts_ok(receipts);
+    let flags: Vec<Vec<Vec<bool>>> = receipts
         .iter()
         .map(|receipt| receipt.ops.iter().map(result_flags).collect())
         .collect();
     assert_eq!(flags, vec![
         vec![vec![], vec![], vec![]],
-        // A consume-side peek retains the stored x.
-        vec![vec![true]],
+        // A consume-side peek reports the removed x as non-persistent, and
+        // its re-store stores x.
+        vec![vec![false], vec![]],
         vec![vec![]],
         // A produce-side peek: the incoming q keeps false; its re-offer
         // stores q.
         vec![vec![false], vec![]],
         vec![vec![]],
-        // A peek join: the stored e is retained, the incoming r keeps
-        // false; its re-offer stores r.
-        vec![vec![true, false], vec![]],
+        // A peek join reports the removed e and the incoming r as
+        // non-persistent. In result order, the re-store stores e and the
+        // re-offer stores r.
+        vec![vec![false, false], vec![], vec![]],
         vec![vec![]],
         // A persistent send keeps its own flag, true, and is not stored.
         vec![vec![true]],
@@ -4422,6 +4534,12 @@ async fn space_store_handle_peek_fire_receipt_flags() {
         vec![vec![true]],
         vec![vec![false]],
     ]);
+    let stored_receipt = |channel: &str, data: &str| SpaceOpReceipt::Stored {
+        produce: produce_source(channel, data, false),
+    };
+    assert_eq!(receipts[1].ops[1], stored_receipt("a", "x"));
+    assert_eq!(receipts[3].ops[1], stored_receipt("d", "q"));
+    assert_eq!(receipts[5].ops[1..], [stored_receipt("b", "e"), stored_receipt("v1", "r")]);
     let state = logical_state(&twin.txn);
     assert_eq!(state, logical_state(&twin.host));
     let stored = |channel: &str, data: &str, persist: bool| {
@@ -4439,4 +4557,309 @@ async fn space_store_handle_peek_fire_receipt_flags() {
     assert!(state.continuations.is_empty());
     assert!(state.joins.is_empty());
     assert_parity(&twin).await;
+}
+
+// HEAD's program for `space_store_handle_peek_restore_equals_head_reproduce`:
+// a peek on x and a peek join on p and y, each one followed by the reducer's
+// re-produce of the non-persistent record that it removed (`produce_peeks`),
+// then a consume of x. The fire does not remove the persistent p, so the
+// reducer does not produce p again.
+fn head_restore_ops() -> Vec<Op> {
+    vec![
+        Op::produce("a", "x", false),
+        Op::produce("a", "y", false),
+        Op::produce("b", "p", true),
+        Op::peek(&["a"], vec![Pat::Exact(s("x"))], "k1"),
+        Op::produce("a", "x", false),
+        Op::peek(&["b", "a"], vec![Pat::Any, Pat::Exact(s("y"))], "k2"),
+        Op::produce("a", "y", false),
+        Op::consume(&["a"], vec![Pat::Exact(s("x"))], "k3", false),
+    ]
+}
+
+// The space program of the same deploy, in three transactions: the stores,
+// then the two peek fires, each one followed by the agent's re-store of the
+// record that it removed (decision 45, Rule E), then the consume of x. The
+// staged view shows each removal and each re-store.
+async fn run_peek_restores(handle: &Handle) -> Commits {
+    let (x, y, p) = (datum("a", "x", false), datum("a", "y", false), datum("b", "p", true));
+    let mut commits = Vec::with_capacity(3);
+    let mut txn = handle.begin(&universe()).await.expect("begin");
+    txn.produce(store_op("a", "x", false)).expect("stage a!x");
+    txn.produce(store_op("a", "y", false)).expect("stage a!y");
+    txn.produce(store_op("b", "p", true)).expect("stage b!!p");
+    commits.push(txn.commit().await);
+
+    let mut txn = handle.begin(&universe()).await.expect("begin");
+    assert_eq!(txn.data(&s("a")).expect("read a"), &[y.clone(), x.clone()]);
+    txn.consume(peek_consume_op(&["a"], vec![Pat::Exact(s("x"))], "k1", vec![bind_candidate(
+        s("a"),
+        &x,
+        s("x"),
+        1,
+    )]))
+    .expect("stage the peek on x");
+    assert_eq!(txn.data(&s("a")).expect("read a"), std::slice::from_ref(&y));
+    txn.produce(store_op("a", "x", false))
+        .expect("stage the re-store of x");
+    assert_eq!(txn.data(&s("a")).expect("read a"), &[x.clone(), y.clone()]);
+    txn.consume(peek_consume_op(&["b", "a"], vec![Pat::Any, Pat::Exact(s("y"))], "k2", vec![
+        bind_candidate(s("b"), &p, s("p"), 0),
+        bind_candidate(s("a"), &y, s("y"), 1),
+    ]))
+    .expect("stage the peek join on p and y");
+    assert_eq!(txn.data(&s("b")).expect("read b"), std::slice::from_ref(&p));
+    assert_eq!(txn.data(&s("a")).expect("read a"), std::slice::from_ref(&x));
+    txn.produce(store_op("a", "y", false))
+        .expect("stage the re-store of y");
+    commits.push(txn.commit().await);
+
+    let mut txn = handle.begin(&universe()).await.expect("begin");
+    assert_eq!(txn.data(&s("a")).expect("read a"), &[y.clone(), x.clone()]);
+    txn.consume(fire_consume_op(&["a"], vec![Pat::Exact(s("x"))], "k3", vec![bind_candidate(
+        s("a"),
+        &x,
+        s("x"),
+        1,
+    )]))
+    .expect("stage the consume of x");
+    commits.push(txn.commit().await);
+    commits
+}
+
+// Decision 45 (Rule E), host parity of the re-store: HEAD's consume with a
+// peek removes each bound non-persistent record, and the reducer produces it
+// again (`produce_peeks`, reduce.rs:981-1016). The space stages the peek
+// fire, which removes the record as the host COMM does, and right after it,
+// in the same transaction, the agent's re-store: a store of the record's own
+// data, with the record's identity. The peek join also binds the persistent
+// p, which its fire does not remove, so only y is stored again. In play,
+// replay and reporting, the space and HEAD have the same events in the same
+// order, the same observer calls, the same produce counters and the same
+// roots. The later consume of x counts both produces of x.
+#[tokio::test]
+async fn space_store_handle_peek_restore_equals_head_reproduce() {
+    let head_ops = head_restore_ops();
+    let x = produce_source("a", "x", false);
+    let y = produce_source("a", "y", false);
+    let p = produce_source("b", "p", true);
+    let sources = [x.clone(), y.clone(), p.clone()];
+    let counters = BTreeMap::from([(x.clone(), 2), (y.clone(), 2), (p.clone(), 0)]);
+
+    // Play: the transactions against HEAD's program.
+    let twin = twin().await;
+    let start = checkpoint(&twin.txn).await;
+    checkpoint(&twin.host).await;
+    run_host_ops(&twin.host, &head_ops).await;
+    let txn_handle = SpaceStoreHandle::new(twin.txn.clone());
+    let played_receipts = receipts_ok(run_peek_restores(&txn_handle).await);
+    let flags: Vec<Vec<Vec<bool>>> = played_receipts
+        .iter()
+        .map(|receipt| receipt.ops.iter().map(result_flags).collect())
+        .collect();
+    assert_eq!(flags, vec![
+        vec![vec![], vec![], vec![]],
+        vec![vec![false], vec![], vec![true, false], vec![]],
+        vec![vec![false]],
+    ]);
+    match &played_receipts[1].ops[..] {
+        [
+            SpaceOpReceipt::Fired {
+                comm: peek,
+                produce: None,
+                ..
+            },
+            SpaceOpReceipt::Stored {
+                produce: restored_x,
+            },
+            SpaceOpReceipt::Fired {
+                comm: join,
+                produce: None,
+                ..
+            },
+            SpaceOpReceipt::Stored {
+                produce: restored_y,
+            },
+        ] => {
+            assert_eq!(peek.peeks, BTreeSet::from([0]));
+            assert_eq!(peek.times_repeated, BTreeMap::from([(x.clone(), 1)]));
+            assert_eq!(restored_x, &x);
+            assert_eq!(join.peeks, BTreeSet::from([0, 1]));
+            assert_eq!(join.times_repeated, BTreeMap::from([(p.clone(), 0), (y.clone(), 1)]));
+            assert_eq!(restored_y, &y);
+        }
+        other => panic!("expected each peek fire with its re-store, got {:?}", other),
+    }
+    match &played_receipts[2].ops[..] {
+        [SpaceOpReceipt::Fired { comm, .. }] => {
+            assert_eq!(comm.times_repeated, BTreeMap::from([(x.clone(), 2)]));
+        }
+        other => panic!("expected the consume of x, got {:?}", other),
+    }
+    assert_eq!(counters_at(&txn_handle, &sources).await, counters);
+    assert_eq!(counters_at(&SpaceStoreHandle::new(twin.host.clone()), &sources).await, counters);
+    assert_eq!(logical_state(&twin.txn), logical_state(&twin.host));
+    let (head_played, played) = assert_parity(&twin).await;
+    assert_eq!(kinds(&played.log), vec![
+        "produce", "produce", "produce", "consume", "comm", "produce", "consume", "comm",
+        "produce", "consume", "comm"
+    ]);
+
+    // Replay: the transactions pair the play log, and host replay of HEAD's
+    // program pairs HEAD's log, which is the same log.
+    let txn_replay = replay_over(&twin.txn);
+    let txn_replay_recorder = Recorder::new();
+    observed(&txn_replay, &txn_replay_recorder);
+    rig(&txn_replay, &start.root, &played.log).await;
+    let txn_replay_handle = SpaceStoreHandle::new(txn_replay.clone());
+    assert_eq!(receipts_ok(run_peek_restores(&txn_replay_handle).await), played_receipts);
+    let host_replay = replay_over(&twin.host);
+    let host_replay_recorder = Recorder::new();
+    observed(&host_replay, &host_replay_recorder);
+    rig(&host_replay, &start.root, &head_played.log).await;
+    run_host_ops(&host_replay, &head_ops).await;
+    let replay_calls = txn_replay_recorder.calls();
+    assert!(
+        replay_calls
+            .iter()
+            .any(|call| matches!(call, Call::Directive { .. }))
+    );
+    assert_eq!(replay_calls, host_replay_recorder.calls());
+    assert_eq!(without_directives(replay_calls.clone()), twin.txn_recorder.calls());
+    assert_eq!(counters_at(&txn_replay_handle, &sources).await, counters);
+    assert_eq!(counters_at(&SpaceStoreHandle::new(host_replay.clone()), &sources).await, counters);
+    assert_eq!(replay_state(&txn_replay), replay_state(&host_replay));
+    for replay in [&txn_replay, &host_replay] {
+        replay
+            .check_replay_data()
+            .await
+            .expect("replay pairs every COMM");
+        assert_eq!(checkpoint(replay).await.root, played.root);
+    }
+
+    // Reporting: the transactions report what HEAD's program reports, event
+    // for event, with the calls of replay.
+    let reporting = reporting_over(&twin.txn);
+    let reporting_recorder = Recorder::new();
+    observed(&reporting, &reporting_recorder);
+    let by_host = reporting_over(&twin.host);
+    let by_host_recorder = Recorder::new();
+    observed(&by_host, &by_host_recorder);
+    reporting
+        .rig_and_reset(start.root.clone(), played.log.clone())
+        .await
+        .expect("rig the reporting space");
+    by_host
+        .rig_and_reset(start.root.clone(), head_played.log.clone())
+        .await
+        .expect("rig the host reporting space");
+    let reporting_handle = SpaceStoreHandle::new(reporting.clone());
+    assert_eq!(receipts_ok(run_peek_restores(&reporting_handle).await), played_receipts);
+    run_host_ops(&by_host, &head_ops).await;
+    let report = reporting.get_report().expect("the report");
+    assert!(!report.is_empty());
+    assert_eq!(report, by_host.get_report().expect("the host report"));
+    assert_eq!(reporting_recorder.calls(), by_host_recorder.calls());
+    assert_eq!(reporting_recorder.calls(), replay_calls);
+    assert_eq!(counters_at(&reporting_handle, &sources).await, counters);
+    assert_eq!(counters_at(&SpaceStoreHandle::new(by_host.clone()), &sources).await, counters);
+    for space in [&reporting, &by_host] {
+        space
+            .check_replay_data()
+            .await
+            .expect("reporting pairs every COMM");
+        let root = ISpace::create_checkpoint(space)
+            .await
+            .expect("checkpoint the reporting space")
+            .root;
+        assert_eq!(root, played.root);
+    }
+}
+
+// Negative control for decision 45 (Rule E): the substrate change and the
+// agent's re-store must land together. If a peek fire kept its record (the
+// retention that Rule E deletes) and the agent stored the record again
+// anyway, the store would hold two byte-identical copies, because the hot
+// store does not deduplicate data (`HotStore::put_datum` inserts at index 0,
+// hot_store.rs:879-897). The test builds that wrong state through the host
+// store API: x stays where a retaining fire left it, and the `put_datum` of
+// the re-store adds a second copy. Two consumes then both take x, so x would
+// be delivered twice, and the root differs from HEAD's. The other half fails
+// too: a fire that removes x with no re-store after it loses x. The Rule E
+// path, whose fire removes x before the re-store, ends with exactly one copy,
+// with HEAD's state and root, so only the first of the two consumes takes x.
+#[tokio::test]
+async fn space_store_handle_restore_without_removal_duplicates_record() {
+    let x = datum("a", "x", false);
+    let x_bytes = bincode::serialize(&x).expect("serialize x");
+    let copies = |records: &[Datum<String>]| {
+        records
+            .iter()
+            .filter(|record| bincode::serialize(record).expect("serialize a datum") == x_bytes)
+            .count()
+    };
+
+    let head = play_space().await;
+    run_host_ops(&head, &[
+        Op::produce("a", "x", false),
+        Op::peek(&["a"], vec![Pat::Any], "k"),
+        Op::produce("a", "x", false),
+    ])
+    .await;
+    assert_eq!(copies(&head.get_data(&s("a")).await), 1);
+
+    let peek_fire = || {
+        peek_consume_op(&["a"], vec![Pat::Any], "k", vec![bind_candidate(s("a"), &x, s("x"), 0)])
+    };
+    let restored = play_space().await;
+    let mut txn = SpaceStoreHandle::new(restored.clone())
+        .begin(&universe())
+        .await
+        .expect("begin");
+    txn.produce(store_op("a", "x", false)).expect("stage a!x");
+    txn.consume(peek_fire()).expect("stage the peek fire");
+    assert_eq!(copies(txn.data(&s("a")).expect("read a")), 0, "the peek fire removes x");
+    txn.produce(store_op("a", "x", false))
+        .expect("stage the re-store of x");
+    assert_eq!(copies(txn.data(&s("a")).expect("read a")), 1);
+    txn.commit()
+        .await
+        .expect("commit the fire and the re-store");
+    assert_eq!(copies(&restored.get_data(&s("a")).await), 1, "Rule E leaves one copy");
+    assert_eq!(logical_state(&restored), logical_state(&head));
+
+    let removed_only = play_space().await;
+    let mut txn = SpaceStoreHandle::new(removed_only.clone())
+        .begin(&universe())
+        .await
+        .expect("begin");
+    txn.produce(store_op("a", "x", false)).expect("stage a!x");
+    txn.consume(peek_fire()).expect("stage the peek fire");
+    txn.commit()
+        .await
+        .expect("commit the fire without a re-store");
+    assert_eq!(copies(&removed_only.get_data(&s("a")).await), 0, "a removal alone loses x");
+
+    let duplicated = play_space().await;
+    run_host_ops(&duplicated, &[Op::produce("a", "x", false)]).await;
+    duplicated.get_store().put_datum(&s("a"), x.clone());
+    let records = duplicated.get_data(&s("a")).await;
+    assert_eq!(records.len(), 2);
+    assert_eq!(copies(&records), 2, "a re-store without the removal leaves two copies");
+
+    let head_root = checkpoint(&head).await.root;
+    assert_eq!(checkpoint(&restored).await.root, head_root);
+    assert_ne!(checkpoint(&removed_only).await.root, head_root);
+    assert_ne!(checkpoint(&duplicated).await.root, head_root);
+    for (space, deliveries) in [(&head, 1), (&restored, 1), (&removed_only, 0), (&duplicated, 2)] {
+        let mut taken = 0usize;
+        for continuation in ["k1", "k2"] {
+            let consume = Op::consume(&["a"], vec![Pat::Any], continuation, false);
+            match run_host(space, &consume).await.expect("run a consume") {
+                HostOutcome::Consumed(Some(_)) => taken += 1,
+                HostOutcome::Consumed(None) | HostOutcome::Produced(_) => {}
+            }
+        }
+        assert_eq!(taken, deliveries, "the consumes that take x");
+    }
 }

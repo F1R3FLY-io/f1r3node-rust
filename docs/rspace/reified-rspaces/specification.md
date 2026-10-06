@@ -247,6 +247,13 @@ A head that does not match blocks every entry behind it, also when an entry behi
 | A produce of the datum $`d`$ fires the head waiter $`w`$ | $`d`$ is not persistent and $`w`$ does not peek | $`w`$ is persistent |
 | A consume with the waiter $`w`$ fires with the head record $`d`$ | $`w`$ is not persistent | $`d`$ is persistent, or $`w`$ peeks |
 
+A head record that stays because $`w`$ peeks stays by a [re-store](glossary.md#re-store) ([decision 45](decision-register.md#decision-45), Rule E).
+The COMM of the peek removes the non-persistent record, as a host COMM removes a peeked datum.
+The same transaction then stores the same record again, with the same bytes, envelope and order.
+So the record keeps its place at the head, and the events equal those of the host program, whose reducer sends the peeked datum again.
+The re-store registers the cost authority of the record, and it does not bump the counter.
+A persistent record is never removed, so a peek of it stores nothing again.
+
 **Rule QD-5: rounds.** After a fire, the operation takes one of three steps:
 
 - When the incoming entry is spent, the operation ends.
@@ -289,6 +296,7 @@ QUEUE-CONSUME(R, W, w, o, kept):              ▷ the waiter w with the order o;
     (o_d, d) ← head(R)
     if not match(w, d): park (o, w), stop
     fire (d, w); fired ← fired + 1
+    if peek(w) and not persistent(d): store (o_d, d)   ▷ QD-4: the re-store (decision 45)
     spent ← not persistent(w)
     stays ← persistent(d) or peek(w)
     if not stays: R ← R \ {(o_d, d)}
@@ -354,7 +362,7 @@ Table 7 shows both schedules, and both end with the same fire and an empty colle
 
 Figure 1 shows the states of one queue collection and the transitions between them.
 
-![States of one queue collection as a state machine. A collection starts unopened. Its first operation consumes the space counter S(sid) and produces it again, opens S(sid, k) = 1, and takes the order 0. The open collection is in one of four states: Empty with R and W empty, Records queued with R not empty, Waiters queued with W not empty, and Blocked with both sides not empty, where the head waiter does not match the head record and no fresh operation leaves the state, while a re-entry ahead of a head can fire. A send without a waiter stores the record, and a receive without a record parks the waiter. A receive that fires with the head record removes it or keeps it for a peek or a persistent record. A receive that does not match the head record parks the waiter and blocks. A persistent receive drains every record and then parks. A send that fires the head waiter removes it unless it is persistent. A datum that survives every fire, after a peek waiter or as a send !!, is stored when no waiter matches. A note gives the rules: every operation bumps S(sid, k) from v to v + 1 and takes the order v, a re-issued persistent operation keeps the order of its first round and re-enters at its place, the head of a side is the least (ord, bincode), the re-offer, the drain, the re-issue of a divergent pair after one round, the re-issue of any chain after 64 fires, and the invariant INV at the end of every deploy.](diagrams/05-head-only-queue.svg)
+![States of one queue collection as a state machine. A collection starts unopened. Its first operation consumes the space counter S(sid) and produces it again, opens S(sid, k) = 1, and takes the order 0. The open collection is in one of four states: Empty with R and W empty, Records queued with R not empty, Waiters queued with W not empty, and Blocked with both sides not empty, where the head waiter does not match the head record and no fresh operation leaves the state, while a re-entry ahead of a head can fire. A send without a waiter stores the record, and a receive without a record parks the waiter. A receive that fires with the head record removes it, or keeps it: a peek stores it again in the same transaction (decision 45), and a persistent record stays. A receive that does not match the head record parks the waiter and blocks. A persistent receive drains every record and then parks. A send that fires the head waiter removes it unless it is persistent. A datum that survives every fire, after a peek waiter or as a send !!, is stored when no waiter matches. A note gives the rules: every operation bumps S(sid, k) from v to v + 1 and takes the order v, a re-issued persistent operation keeps the order of its first round and re-enters at its place, the head of a side is the least (ord, bincode), the re-offer, the re-store of a peeked record, the drain, the re-issue of a divergent pair after one round, the re-issue of any chain after 64 fires, and the invariant INV at the end of every deploy.](diagrams/05-head-only-queue.svg)
 
 *Figure 1. Source: [diagrams/05-head-only-queue.puml](diagrams/05-head-only-queue.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -421,22 +429,22 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | SM-3 | The TLA+ invariant `DanglingIsDeterministicError` (U6) | `reified_handle_dangling_aborts`, `space_queue_dangling_name_aborts` |
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:727`), `space_and_collection_counters_distinct` (`Namespace.v:784`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
-| SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1502`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
+| SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
 | SM-10 | `route_rules` (`SpaceRefs.v:624`), `space_name_route_ignores_ctx` (`SpaceRefs.v:645`), `ordinary_channels_route_default` (`SpaceRefs.v:710`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1035`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:995`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
-| OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:996`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
+| OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
 | OC-2 | `first_ops_race_on_space_counter` (`CounterConflict.v:772`) | `prop_first_ops_race_on_space_counter`, `space_counter_first_operation_bumps_the_space_counter` |
 | OC-4 | None | `space_counter_rejects_corrupt_counters` |
 | OC-5 | `ordered_writes_race_on_counter` (`CounterConflict.v:743`), `ordered_reads_race_on_counter` (`CounterConflict.v:757`), `same_block_ops_chain` (`CounterConflict.v:946`) | `space_queue_counter_race_conflict_enq_deq`, `space_queue_counter_race_conflict_same_block_one_chain` |
 | OC-6 | `merge_without_race_is_serializable` (`CounterConflict.v:1322`), the TLA+ invariant `NoMergedOrderFabrication` (U4) | `prop_nonracing_queue_branches_serializable`, `space_queue_counter_race_conflict_unrelated_queues_merge` |
-| QD-1 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:480`) | `prop_queue_candidates_head_only` |
-| QD-2, QD-3 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1168`), the TLA+ invariant `HeadBlocks` (U2) | `space_queue_head_only_data_head_blocks`, `space_queue_head_only_waiter_head_blocks` |
-| QD-4, QD-5 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1330`) | `space_queue_reissue_persistent_send`, `space_queue_reissue_peek_produce`, `space_queue_divergent_pair_exhausts_phlo` |
-| QD-6 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:878`), `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:898`), the TLA+ invariants `QuiescentNoPendingMatch` (U1) and `ShadowedNoPendingMatch` (U9), `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2662`), `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2731`) | `prop_queue_produce_preserves_invariant`, `prop_queue_consume_preserves_invariant`, `prop_queue_shadow_invariant_with_inflight` |
-| QD-7 | `queue_fifo` (`HeadOnlyDisciplines.v:1085`), `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2896`), the TLA+ invariants `FifoOrder` (U3) and `LeaveOrder` (U12) | `space_queue_head_only_fifo_delivery`, `prop_queue_fifo_with_reentries` |
+| QD-1 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | `prop_queue_candidates_head_only` |
+| QD-2, QD-3 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`), the TLA+ invariant `HeadBlocks` (U2) | `space_queue_head_only_data_head_blocks`, `space_queue_head_only_waiter_head_blocks` |
+| QD-4, QD-5 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | `space_queue_reissue_persistent_send`, `space_queue_reissue_peek_produce`, `space_queue_divergent_pair_exhausts_phlo` |
+| QD-6 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:928`), `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:948`), the TLA+ invariants `QuiescentNoPendingMatch` (U1) and `ShadowedNoPendingMatch` (U9), `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2712`), `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2781`) | `prop_queue_produce_preserves_invariant`, `prop_queue_consume_preserves_invariant`, `prop_queue_shadow_invariant_with_inflight` |
+| QD-7 | `queue_fifo` (`HeadOnlyDisciplines.v:1135`), `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2946`), the TLA+ invariants `FifoOrder` (U3) and `LeaveOrder` (U12) | `space_queue_head_only_fifo_delivery`, `prop_queue_fifo_with_reentries` |
 | QD-8 | None | `space_queue_join_rejected`, `space_queue_send_params_rejected`, `space_queue_query_rejected` |
-| QD-9 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2323`), `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:2971`), `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2292`), the TLA+ invariants `ReissueKeepsOrd` (U10), `IntroducedOnce` (U11) and `FifoOrder` (U3) | `space_queue_reissue_reenters_ahead_of_younger_records`, `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_reentry_head_blocks` |
+| QD-9 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`), `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`), `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`), the TLA+ invariants `ReissueKeepsOrd` (U10), `IntroducedOnce` (U11) and `FifoOrder` (U3) | `space_queue_reissue_reenters_ahead_of_younger_records`, `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_reentry_head_blocks` |
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:372`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |

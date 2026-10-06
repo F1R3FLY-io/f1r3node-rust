@@ -91,7 +91,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implemented |
 | [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implementation pending |
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
-| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Implementation pending |
+| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E implemented, Option P pending |
 | [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
 | [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after decision 43 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
@@ -549,7 +549,7 @@ These decisions override the earlier plan sections where they conflict.
 | Date | 2026-10-04 |
 | Status | In force |
 | Supersedes | The substrate description of the plan where it conflicts, for example raw `put`, `remove`, and `log` methods and a `replay()` method |
-| Amended by | [Decision 30](#decision-30), which supersedes the storing of the incoming datum of a produce-side peek fire in the P1 design. [Decision 36](#decision-36), which moves the failure of an unpaired replay fire from staging to commit, so that D6 also covers `ReplayDivergence` |
+| Amended by | [Decision 30](#decision-30), which supersedes the storing of the incoming datum of a produce-side peek fire in the P1 design. [Decision 36](#decision-36), which moves the failure of an unpaired replay fire from staging to commit, so that D6 also covers `ReplayDivergence`. [Decision 45](#decision-45), whose Rule E retires the retention of peeked stored records (FR-10): every fire removes what the host removes, and the agent stores a peeked record again |
 | Related | [M-4](#m-4), [space transaction](glossary.md#space-transaction), [sub-order](glossary.md#sub-order), [sweep](glossary.md#sweep), [substrate design](design.md#substrate) |
 
 **Statement.**
@@ -1243,8 +1243,8 @@ The tests compare them on one base.
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. The implementation is pending. |
-| Amends | [Decision 30](#decision-30), its consume-side clause |
+| Status | In force. Rule E is implemented. Option P, the legacy charges, is pending. |
+| Amends | [Decision 30](#decision-30), its consume-side clause, and the retention rule FR-10 of [decision 19](#decision-19) |
 | Related | [Decision 40](#decision-40), [M-3](#m-3) |
 
 **Statement.** In a legacy deploy, each staged space operation pays the storage and event charges that `ChargingRSpace` makes for the equivalent host call.
@@ -1267,6 +1267,19 @@ This amends the consume-side clause of [decision 30](#decision-30) and the reten
 
 **Reason.** [Decision 40](#decision-40) makes space charging follow the policy of `feature/cost-accounted-rho`.
 For a legacy deploy, that policy is the charges of `ChargingRSpace`, and the substrate of the spaces bypasses it today.
+
+**Scope of Rule E.** The user decided the scope on 2026-10-06: "Apply everywhere (Recommended)".
+The substrate keeps no record for any peek, also not the stored candidates of a produce-side peek join.
+Every fire removes what the host removes.
+The agent stores each removed non-persistent record of a peek again, in the same transaction.
+
+**Implementation of Rule E.**
+
+- Substrate: `check_peeks` replaces `peek_retention`, and it decides nothing about the removal. `removed_records` returns every stored non-persistent candidate of a fire.
+- The play and the replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`. `fired_receipt` keeps the persist flags of `wrap_result`.
+- Agent: after the fire of a peek receive, `Plan::restore` stages a produce of the same record bytes, with the outcome Store and `persist = false`.
+- The callback of the re-store registers the cost authority of the record (`Introduction::for_record`), and the re-store bumps no counter.
+- One commit: the substrate change and the re-store land together, because `put_datum` does not deduplicate data. A re-store alone would store a second copy, and a removal alone would lose the record.
 
 ### <a id="decision-46"></a>Decision 46: Spaces fail closed in native execution
 

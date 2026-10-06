@@ -229,14 +229,12 @@
         "require_canonical",
         "canonical_group_key",
         "SpaceTxnError::NonCanonicalChannelOrder",
-        "peek_retention",
-        "retained_results",
+        "check_peeks",
         "fired_receipt",
         "TxnCore::apply_fire_to_view"
       ],
       "optional_model_items": [
         "TxnCore::read_continuations",
-        "peek_retention",
         "TxnCore::apply_fire_to_view"
       ],
       "headlines": [
