@@ -2509,7 +2509,9 @@ tasks:
     blocked_by: [TASK-014-5]
     acceptance:
       - "Candidate evidence records the consensus model of the candidate"
+      - "A passing 60h stability soak uploads test-net-candidate.json to the canary prerelease; a canary without it cannot enroll"
       - "soak-in.yml enrolls a test net candidate after its 60h stability soak passes, instead of after stable publication"
+      - "The promotion controller starts after the Shard soak-in completes, not after the 60h stability soak"
       - "The Shard soak-in publishes Section 8.1 gate evidence, and release.yml holds promotion until that gate passes"
 ---
 ```

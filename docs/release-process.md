@@ -268,6 +268,7 @@ Each document binds to the candidate with these fields:
 | `soak-evidence.json` | Integration preflight and 60h stability soak | `soak_kind: weekend`, `requested_duration_seconds: 216000`, `completed`, `artifact_mode: candidate`, `retry_attempt`, `coverage_preserved`, `preflight.status` |
 | `verdict.json` | Regression verdict | `verdict`, `source_sha` |
 | `maintainer-review.json` | Accepts a `regress` verdict | `verdict_accepted`, `reviewer`, `reference`, `reviewed_at` |
+| `test-net-candidate.json` (proposed, Section 12.1) | Test net entry | `consensus_model`, `soak_run`, `soak_evidence_sha256` |
 
 The full CI and heavy integration gates read the CI run recorded in the candidate evidence. The slashing gate reads the newest successful push run of the slashing workflow for the source SHA. `release-required-ci-jobs.txt` and `release-required-slashing-jobs.txt` list the required jobs.
 
@@ -327,6 +328,8 @@ A dashboard latest verdict does not satisfy this gate. Promotion reads the exact
 ## 11. Stable promotion
 
 The promotion controller runs after a completed 60h stability soak. It can also run after another missing gate completes.
+
+**Proposed amendment (2026-10-06, pending ratification):** The promotion controller runs after a completed Shard soak-in (Section 12.1). A passing 60h stability soak makes the candidate a test net candidate and does not start promotion. The controller can also run after another missing gate completes.
 
 The controller performs these actions:
 
@@ -395,6 +398,14 @@ flowchart LR
 A test net candidate is a canary release that passed the 60h stability soak (Section 10) on its exact candidate image digest. Only a test net candidate can enroll in the test net.
 
 Enrollment happens before stable promotion. The Shard soak-in result becomes a stable promotion gate (Section 8). Stable promotion therefore waits for the soak period of the test net candidate.
+
+A test net candidate keeps its canary tag. No new Git tag or version format marks the status. Instead, the soak publication step uploads a `test-net-candidate.json` gate document (Section 8.1) to the canary prerelease. The document records these values:
+
+- The candidate tag, source SHA, and image index digest
+- The consensus model of the candidate
+- The 60h stability soak run, attempt, and `soak-evidence.json` digest
+
+`soak-in.yml` enrolls a canary only when this document exists and the controller checks pass for the named soak run. A canary without the document cannot enroll, even if a soak passed for its source SHA. The exact field names are set during implementation.
 
 #### Mixed-release shards
 

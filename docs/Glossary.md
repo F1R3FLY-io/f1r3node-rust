@@ -169,7 +169,7 @@ A Deployment Train is an independent release path that starts from a reviewed pu
 
 ### 60h stability soak
 
-The 60h stability soak is the fixed 60-hour pre-promotion soak of one release candidate on a multi-validator shard. A passing run is a mandatory gate for [stable release](#stable-release) promotion.
+The 60h stability soak is the fixed 60-hour pre-promotion soak of one release candidate on a multi-validator shard. A passing run is a mandatory gate for [stable release](#stable-release) promotion. Under the proposed 2026-10-06 amendment, a passing run makes the candidate a [test net candidate](#test-net-candidate). Stable promotion then also waits for the [Shard soak-in](#shard-soak-in).
 
 **Preferred usage.** Use this term for the pre-promotion release gate. *Avoid*: weekend soak. Machine identifiers keep the legacy values `weekend` and `weekend-60h` until a separate identifier migration. *Distinguish from* the [Dev integration soak](#dev-integration-soak): release gate versus integration monitoring.
 
