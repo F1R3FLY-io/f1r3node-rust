@@ -4,6 +4,7 @@ mod application;
 pub mod api_compat;
 pub(crate) mod assembly;
 mod ingress;
+pub mod instances;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -36,9 +37,9 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
 use super::manifest::ManifestGuard;
-use crate::rust::instances::block_processor_instance::BlockProcessorInstance;
-use crate::rust::instances::heartbeat_proposer::HeartbeatProposer;
-use crate::rust::instances::proposer_instance::ProposerInstance;
+use crate::rust::consensus::casper::instances::block_processor_instance::BlockProcessorInstance;
+use crate::rust::consensus::casper::instances::heartbeat_proposer::HeartbeatProposer;
+use crate::rust::consensus::casper::instances::proposer_instance::ProposerInstance;
 
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,

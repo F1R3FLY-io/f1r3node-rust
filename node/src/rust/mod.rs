@@ -6,7 +6,6 @@ pub mod configuration;
 pub mod diagnostics;
 pub mod effects;
 pub mod encode;
-pub mod instances;
 pub mod node_environment;
 pub mod repl;
 pub mod rho_trie_traverser;
