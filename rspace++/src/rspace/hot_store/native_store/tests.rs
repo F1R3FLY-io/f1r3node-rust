@@ -7,9 +7,13 @@ use std::collections::BTreeSet;
 use proptest::prelude::*;
 
 use super::*;
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::channel_key;
 use crate::rspace::history::history_reader::HistoryReaderBase;
+use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::history::native_reader::measure_allocations;
+use crate::rspace::hot_store_action::{DeleteAction, InsertAction};
+use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use crate::rspace::trace::event::Consume;
 
 type Store = NativeHotStore<String, String, String, String>;
@@ -410,6 +414,133 @@ proptest! {
         let oracle = legacy.changes_metered(&free()).map(export_multiset);
         prop_assert_eq!(digest, oracle);
     }
+}
+
+/// An empty history on in-memory stores.
+fn empty_history() -> Box<dyn HistoryRepository<String, String, String, String> + Send + Sync> {
+    HistoryRepositoryInstances::lmdb_repository(
+        Arc::new(InMemoryKeyValueStore::new()),
+        Arc::new(InMemoryKeyValueStore::new()),
+        Arc::new(InMemoryKeyValueStore::new()),
+    )
+    .expect("an in-memory history")
+}
+
+/// The root that a checkpoint of `actions` would publish over `history`.
+fn export_root(
+    history: &(dyn HistoryRepository<String, String, String, String> + Send + Sync),
+    actions: Vec<HotStoreAction<String, String, String, String>>,
+) -> Result<Option<Blake2b256Hash>, RSpaceError> {
+    history
+        .prepare_native_checkpoint(actions, &free())
+        .map(|prepared| prepared.root)
+}
+
+/// The map (continuations, data, joins) and the store key of an exported
+/// action.
+fn export_position(action: &HotStoreAction<String, String, String, String>) -> (u8, StoreKey) {
+    match action {
+        HotStoreAction::Insert(InsertAction::InsertContinuations(insert)) => {
+            (0, keys(&insert.channels).group)
+        }
+        HotStoreAction::Delete(DeleteAction::DeleteContinuations(delete)) => {
+            (0, keys(&delete.channels).group)
+        }
+        HotStoreAction::Insert(InsertAction::InsertData(insert)) => (1, key(&insert.channel)),
+        HotStoreAction::Delete(DeleteAction::DeleteData(delete)) => (1, key(&delete.channel)),
+        HotStoreAction::Insert(InsertAction::InsertJoins(insert)) => (2, key(&insert.channel)),
+        HotStoreAction::Delete(DeleteAction::DeleteJoins(delete)) => (2, key(&delete.channel)),
+    }
+}
+
+/// The operation with every channel group in ascending index order. The
+/// Rholang normalizer orders the binds of a join by their channel first
+/// (`ReceiveSortMatcher::sort_bind`), so two joins over the same channels
+/// have one channel order.
+fn canonical(op: Op) -> Op {
+    let sorted = |mut channels: Vec<usize>| {
+        channels.sort_unstable();
+        channels
+    };
+    match op {
+        Op::ReadContinuations(channels) => Op::ReadContinuations(sorted(channels)),
+        Op::ViewContinuations(channels) => Op::ViewContinuations(sorted(channels)),
+        Op::Consume {
+            channels,
+            body,
+            persist,
+            peek,
+        } => Op::Consume {
+            channels: sorted(channels),
+            body,
+            persist,
+            peek,
+        },
+        Op::RetireMatch {
+            channels,
+            persistent,
+        } => Op::RetireMatch {
+            channels: sorted(channels),
+            persistent,
+        },
+        Op::InstallContinuation { channels, body } => Op::InstallContinuation {
+            channels: sorted(channels),
+            body,
+        },
+        Op::InstallJoin { channel, join } => Op::InstallJoin {
+            channel,
+            join: sorted(join),
+        },
+        other => other,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S1 (D-C2d, DR-96): the digest store exports each map in digest
+    /// order, and the legacy store exports in the order of its hash shards.
+    /// The checkpoint sorts the history keys, so the two exports give the
+    /// same root, and the digest export reversed gives it too.
+    #[test]
+    fn export_root_equals_legacy_export_root(
+        ops in prop::collection::vec(op().prop_map(canonical), 0..24),
+    ) {
+        let store = Store::new();
+        let legacy = legacy();
+        for op in &ops {
+            apply(&store, &legacy, op)?;
+        }
+        let digest = store.changes(&free()).expect("the digest export");
+        let positions: Vec<(u8, StoreKey)> = digest.iter().map(export_position).collect();
+        prop_assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        let oracle = legacy.changes_metered(&free()).expect("the legacy export");
+        let history = empty_history();
+        let root = export_root(history.as_ref(), digest.clone());
+        prop_assert!(root.is_ok());
+        prop_assert_eq!(&root, &export_root(history.as_ref(), oracle));
+        let mut reversed = digest;
+        reversed.reverse();
+        prop_assert_eq!(&root, &export_root(history.as_ref(), reversed));
+    }
+}
+
+/// D-S1 (D-C2d, DR-96): two cached groups that are permutations of each
+/// other share one history projection, so a checkpoint rejects the export of
+/// either store with the same error.
+#[test]
+fn permuted_groups_fail_both_exports_alike() {
+    let store = Store::new();
+    let legacy = legacy();
+    for op in [Op::ViewContinuations(vec![2, 1]), Op::ViewContinuations(vec![1, 2])] {
+        apply(&store, &legacy, &op).expect("the stores agree");
+    }
+    let history = empty_history();
+    let digest = export_root(history.as_ref(), store.changes(&free()).expect("the digest export"));
+    let oracle =
+        export_root(history.as_ref(), legacy.changes_metered(&free()).expect("the legacy export"));
+    assert!(digest.is_err());
+    assert_eq!(digest, oracle);
 }
 
 /// The observable state of a store: its entry counts and its export.

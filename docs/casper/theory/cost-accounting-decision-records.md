@@ -6911,8 +6911,7 @@ spread is up to 40 MB of hot-store write charges.
 ## DR-96 — Digest-keyed ordered index for the native session store
 
 **Status.** In progress for Phase D item D-C2 of epic 8946 (D-S1 of the
-Phase D plan). Parts 1 to 3 (D-C2a, D-C2b and D-C2c) implemented
-2026-10-06.
+Phase D plan). Parts 1 to 4 (D-C2a to D-C2d) implemented 2026-10-06.
 
 **Context.** The native replay session keeps its data, continuations and
 joins in the hot store of the replay space: 256 `imbl::HashMap` shards keyed
@@ -7179,6 +7178,53 @@ largest difference is 21,914 and 246,918 bytes of VerificationBytes in arm
 A, and 30,818 and 47,265 bytes in arm B. The index charges read no other
 key, so they do not cause this remainder. D-C5 finds and closes its
 sources.
+
+**Decision (part 4, D-C2d).** The cold fills use the digests that the
+session already holds.
+
+1. `read_records` takes the 32 bytes of a history projection.
+   - A data or join cold fill passes the bytes of the channel's store key.
+     The legacy reader serialized and hashed the channel again.
+   - A continuation cold fill computes the projection from the channel keys
+     of its group with `channels_hash_from_keys`
+     (`rspace++/src/rspace/hashing/native_source/keys.rs`). The function
+     sorts the keys and hashes them, as `channels_hash` sorts and hashes
+     the channel digests. So the projection has the same bytes, and no
+     channel is serialized.
+   - The charge of `channels_hash_from_keys` for $`n`$ keys is the key
+     vector, $`n`$ copies of 32 bytes, the sort of the keys, $`n`$ digest
+     updates of 32 bytes and the 32-byte result.
+2. Since part 3, the export iterates each map in digest order. The legacy
+   export iterates in the order of its hash shards. The checkpoint
+   (`NativeCheckpoint::prepare`) sorts the history keys, and the radix
+   history has one root for one set of actions. So the order of the export
+   does not change the root.
+3. `NativeCheckpoint::prepare` still hashes each exported channel to make
+   its history key. The store keeps only the group key of a continuation
+   entry, not the keys of its channels, so this part does not change the
+   charges of the export.
+4. Two cached groups that are permutations of each other, such as
+   `[a, b]` and `[b, a]`, have one history projection. The checkpoint
+   rejects such an export with a duplicate-key error, in both stores
+   alike. The Rholang normalizer sorts the binds of a join by their channel
+   first (`ReceiveSortMatcher::sort_bind`), so two joins over the same
+   channels have one channel order.
+
+**Verification (part 4).** Tests:
+
+- `channels_hash_from_keys_matches_channels_hash` (256 cases): for any
+  order, length and repetition of the channels, the projection from the
+  keys has the bytes of `channels_hash`. A reversed group has the same
+  projection, and the charge is exactly the charge of item 1.
+- `cold_fill_reads_same_records_as_legacy`: over a history with a datum, a
+  waiting continuation and its joins, the cold fills of the session return
+  the records that reads by the legacy projections return.
+- `export_root_equals_legacy_export_root` (256 cases): over random
+  operation sequences with joins in one channel order, the digest export
+  is in digest order. Its root equals the root of the legacy export and the
+  root of the reversed digest export.
+- `permuted_groups_fail_both_exports_alike`: the two stores fail an export
+  with permuted groups with the same error.
 
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,

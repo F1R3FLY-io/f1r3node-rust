@@ -5,7 +5,10 @@ use proptest::prelude::*;
 
 use super::backing::tree_backing;
 use super::*;
-use crate::rspace::hashing::native_source::{SourceMeter, channel_key, hash};
+// Changed by D-C2d (D-S1, DR-96): the fixtures read the history by the
+// store key, so they no longer hash a channel.
+// use crate::rspace::hashing::native_source::{SourceMeter, channel_key, hash};
+use crate::rspace::hashing::native_source::{SourceMeter, channel_key};
 use crate::rspace::history::native_reader::NativeLeafKind;
 use crate::rspace::rspace::RSpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -419,7 +422,9 @@ async fn put_at(session: &Session, channel: &str, value: &str) {
         .data_view(
             &owned,
             key,
-            &|| session.read_records(NativeLeafKind::Data, hash(&owned, &free)?, &free),
+            // Changed by D-C2d (D-S1, DR-96): the reader takes the key's digest.
+            // &|| session.read_records(NativeLeafKind::Data, hash(&owned, &free)?, &free),
+            &|| session.read_records(NativeLeafKind::Data, &key.0, &free),
             &free,
         )
         .unwrap();

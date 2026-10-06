@@ -15,7 +15,7 @@ use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use serde::Serialize;
 
-use super::{Output, Result, SourceMeter, serialize, vector};
+use super::{Output, Result, SourceMeter, serialize, sort, vector};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
@@ -74,6 +74,29 @@ pub fn group_key(keys: &[StoreKey], meter: &impl SourceMeter) -> Result<StoreKey
         digest.update(key.0);
     }
     finish(digest, meter)
+}
+
+/// D-C2d (DR-96): the history projection of a channel group from the store
+/// keys of its channels. A channel's store key is the digest that
+/// `channels_hash` (`native_source.rs`) computes for the channel, so the
+/// projection has the same bytes, and no channel is serialized again. The
+/// digests are sorted, so the projection does not depend on the channel order.
+pub fn channels_hash_from_keys(keys: &[StoreKey], meter: &impl SourceMeter) -> Result<[u8; 32]> {
+    let mut sorted = vector(keys.len(), meter)?;
+    for key in keys {
+        meter.reserve(1, key.0.len(), 0)?;
+        sorted.push(*key);
+    }
+    sort(&mut sorted, |key| &key.0[..], meter)?;
+    let mut digest = Blake2b::<U32>::new();
+    for key in &sorted {
+        meter.reserve(1, key.0.len(), 0)?;
+        digest.update(key.0);
+    }
+    meter.reserve(1, 32, 0)?;
+    let mut bytes = [0; 32];
+    bytes.copy_from_slice(&digest.finalize());
+    Ok(bytes)
 }
 
 /// The keys of a channel group: the key of each channel, in channel order,

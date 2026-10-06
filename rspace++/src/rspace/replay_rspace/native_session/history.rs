@@ -3,8 +3,13 @@ use shared::rust::clone_backing::CloneBacking;
 use shared::rust::closed_decode::ClosedDecode;
 
 use super::*;
+// Changed by D-C2d (D-S1, DR-96): the cold fills read the history by the
+// store keys, so they no longer hash a channel.
+// use crate::rspace::hashing::native_source::{
+//     GroupKeys, SourceMeter, StoreKey, channels_hash, hash,
+// };
 use crate::rspace::hashing::native_source::{
-    GroupKeys, SourceMeter, StoreKey, channels_hash, hash,
+    GroupKeys, SourceMeter, StoreKey, channels_hash_from_keys,
 };
 use crate::rspace::history::native_reader::{
     NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
@@ -85,13 +90,16 @@ where
     pub(super) fn read_records<T: DeserializeOwned + ClosedDecode>(
         &self,
         kind: NativeLeafKind,
-        projection: Blake2b256Hash,
+        // Changed by D-C2d (D-S1, DR-96): the projection is the 32 bytes of a
+        // store key's digest, so it needs no conversion.
+        // projection: Blake2b256Hash,
+        projection: &[u8; 32],
         reserve: &impl SourceMeter,
     ) -> Result<Vec<T>, RSpaceError> {
         let history = self.space.get_history_repository();
-        let projection = projection.0.as_slice().try_into().map_err(|_| {
-            RSpaceError::InterpreterError("native history projection length".to_owned())
-        })?;
+        // let projection = projection.0.as_slice().try_into().map_err(|_| {
+        //     RSpaceError::InterpreterError("native history projection
+        // length".to_owned()) })?;
         let meter =
             Meter(|operations, scanned, backing| reserve.reserve(operations, scanned, backing));
         let decode_meter = Meter(|operations: usize, scanned: usize, backing| {
@@ -107,7 +115,9 @@ where
         });
         history
             .native_history_reader(self.root)
-            .with_records(kind, &projection, &meter, |rows| {
+            // Changed by D-C2d (D-S1, DR-96): the projection is a reference.
+            // .with_records(kind, &projection, &meter, |rows| {
+            .with_records(kind, projection, &meter, |rows| {
                 reserve.reserve(
                     rows.len()
                         .checked_mul(2)
@@ -165,7 +175,10 @@ where
         self.store.data(
             channel,
             key,
-            &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            // Changed by D-C2d (D-S1, DR-96): the cold fill reads by the key's
+            // digest instead of hashing the channel again.
+            // &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            &|| self.read_records(NativeLeafKind::Data, &key.0, reserve),
             reserve,
         )
     }
@@ -189,7 +202,10 @@ where
         self.store.joins(
             channel,
             key,
-            &|| self.read_records(NativeLeafKind::Joins, hash(channel, &reserve)?, &reserve),
+            // Changed by D-C2d (D-S1, DR-96): the cold fill reads by the key's
+            // digest instead of hashing the channel again.
+            // &|| self.read_records(NativeLeafKind::Joins, hash(channel, &reserve)?, &reserve),
+            &|| self.read_records(NativeLeafKind::Joins, &key.0, &reserve),
             &reserve,
         )
     }
@@ -225,7 +241,10 @@ where
             &|| {
                 self.read_records(
                     NativeLeafKind::Continuations,
-                    channels_hash(channels, &reserve)?,
+                    // Changed by D-C2d (D-S1, DR-96): the projection sorts the
+                    // channel keys instead of hashing every channel again.
+                    // channels_hash(channels, &reserve)?,
+                    &channels_hash_from_keys(&keys.channels, &reserve)?,
                     &reserve,
                 )
             },
@@ -266,7 +285,10 @@ where
             &|| {
                 self.read_records(
                     NativeLeafKind::Continuations,
-                    channels_hash(channels, &reserve)?,
+                    // Changed by D-C2d (D-S1, DR-96): the projection sorts the
+                    // channel keys instead of hashing every channel again.
+                    // channels_hash(channels, &reserve)?,
+                    &channels_hash_from_keys(&keys.channels, &reserve)?,
                     &reserve,
                 )
             },
@@ -322,7 +344,10 @@ where
         self.store.data_view(
             channel,
             key,
-            &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            // Changed by D-C2d (D-S1, DR-96): the cold fill reads by the key's
+            // digest instead of hashing the channel again.
+            // &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            &|| self.read_records(NativeLeafKind::Data, &key.0, reserve),
             reserve,
         )
     }

@@ -276,3 +276,37 @@ fn group_key_preserves_order() {
     assert_eq!(operation.groups[1].group, ab);
     assert_ne!(operation.groups[0].group, operation.groups[1].group);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S1 (D-C2d, DR-96): the projection of a channel group from the store
+    /// keys of its channels has the bytes of `channels_hash`, for any order,
+    /// length and repetition of the channels. Its charge is the key vector,
+    /// one copy per key, the sort of the keys, one digest update per key and
+    /// the result. No channel is serialized.
+    #[test]
+    fn channels_hash_from_keys_matches_channels_hash(
+        channels in prop::collection::vec("[a-c]{0,3}", 0..12),
+    ) {
+        let keys = GroupKeys::build(&channels, &Meter::default()).unwrap().channels;
+        let meter = Meter::default();
+        let projection = channels_hash_from_keys(&keys, &meter).unwrap();
+        let reference = channels_hash(&channels, &Meter::default()).unwrap();
+        prop_assert_eq!(projection.as_slice(), reference.0.as_slice());
+        let mut reversed = keys.clone();
+        reversed.reverse();
+        prop_assert_eq!(channels_hash_from_keys(&reversed, &Meter::default()).unwrap(), projection);
+        let count = keys.len();
+        let sort_meter = Meter::default();
+        let mut sorted = keys.clone();
+        sort(&mut sorted, |key| &key.0[..], &sort_meter).unwrap();
+        let [sort_operations, sort_scanned, sort_backing] = sort_meter.used.get();
+        let expected = [
+            (count + 1) + count + sort_operations + count + 1,
+            32 * count + 32 * count + sort_scanned + 32 * count + 32,
+            32 * count + sort_backing,
+        ];
+        prop_assert_eq!(meter.used.get(), expected);
+    }
+}

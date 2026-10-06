@@ -1,6 +1,7 @@
 use std::cell::Cell;
 
 use super::*;
+use crate::rspace::hashing::native_source::{GroupKeys, channel_key, channels_hash_from_keys};
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::instances::radix_history::RadixHistory;
@@ -111,7 +112,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
     let values = session
         .read_records::<Datum<String>>(
             NativeLeafKind::Data,
-            projection,
+            // Changed by D-C2d (D-S1, DR-96): the reader takes the digest's
+            // 32 bytes.
+            // projection,
+            &key,
             &|operations, scanned, _| {
                 actual_operations.set(actual_operations.get() + operations);
                 actual_scanned.set(actual_scanned.get() + scanned);
@@ -131,7 +135,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
     let used = Cell::new(0usize);
     let rejected = session.read_records::<Datum<String>>(
         NativeLeafKind::Data,
-        hash(&channel),
+        // Changed by D-C2d (D-S1, DR-96): the reader takes the digest's 32
+        // bytes.
+        // hash(&channel),
+        &key,
         &|_, scanned, _| {
             let next = used.get() + scanned;
             if next > limit {
@@ -396,6 +403,53 @@ async fn malformed_authenticated_records_never_publish_a_partial_cache_or_fall_b
         // assert!(session.space.get_store().snapshot().data_flat().is_empty());
         assert_eq!(session.store.entry_counts()[0], 0);
         assert_eq!(history.root(), root);
+    }
+}
+
+fn digest_bytes(digest: Blake2b256Hash) -> [u8; 32] {
+    digest.0.as_slice().try_into().expect("a 32-byte digest")
+}
+
+/// D-S1 (D-C2d, DR-96): the cold fills read the history by the store keys.
+/// For data, joins and continuations they return the records that a read by
+/// the legacy projections returns, which hashed every channel again. The
+/// continuation projection does not depend on the channel order.
+#[tokio::test]
+async fn cold_fill_reads_same_records_as_legacy() {
+    let history = retained_history().await;
+    let session = isolated(history);
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    let data = "data".to_owned();
+    let legacy_data = session
+        .read_records::<Datum<String>>(NativeLeafKind::Data, &digest_bytes(hash(&data)), &free)
+        .unwrap();
+    assert_eq!(legacy_data.len(), 1);
+    let data_key = channel_key(&data, &free).unwrap();
+    assert_eq!(session.read_data_with(&data, data_key, &free).unwrap(), legacy_data);
+    let group = vec!["left".to_owned(), "right".to_owned()];
+    let legacy_continuations = session
+        .read_records::<WaitingContinuation<String, String>>(
+            NativeLeafKind::Continuations,
+            &digest_bytes(hash_from_vec(&group)),
+            &free,
+        )
+        .unwrap();
+    assert_eq!(legacy_continuations.len(), 1);
+    let keys = GroupKeys::build(&group, &free).unwrap();
+    assert_eq!(session.read_continuations(&group, &keys).unwrap(), legacy_continuations);
+    let reversed: Vec<String> = group.iter().rev().cloned().collect();
+    let reversed_keys = GroupKeys::build(&reversed, &free).unwrap();
+    assert_eq!(
+        channels_hash_from_keys(&reversed_keys.channels, &free).unwrap(),
+        channels_hash_from_keys(&keys.channels, &free).unwrap()
+    );
+    for channel in &group {
+        let legacy_joins = session
+            .read_records::<Vec<String>>(NativeLeafKind::Joins, &digest_bytes(hash(channel)), &free)
+            .unwrap();
+        assert_eq!(legacy_joins, vec![group.clone()]);
+        let key = channel_key(channel, &free).unwrap();
+        assert_eq!(session.read_joins(channel, key).unwrap(), legacy_joins);
     }
 }
 
