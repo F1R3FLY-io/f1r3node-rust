@@ -3154,6 +3154,12 @@ Print Assumptions NativeDigestIndex.ord_replace_allocations_le.
 Print Assumptions NativeDigestIndex.per_key_schedule_total_invariant.
 Print Assumptions NativeDigestIndex.population_charge_schedule_dependent.
 Print Assumptions NativeDigestIndex.legacy_insert_nodes_example.
+Print Assumptions NativeDigestIndex.collision_check_found.
+Print Assumptions NativeDigestIndex.collision_check_absent.
+Print Assumptions NativeDigestIndex.collision_check_collision.
+Print Assumptions NativeDigestIndex.collision_check_preserves_key_semantics.
+Print Assumptions NativeDigestIndex.insert_checked_keyed.
+Print Assumptions NativeDigestIndex.unchecked_lookup_returns_another_key.
 Quit.
 EOF
 then

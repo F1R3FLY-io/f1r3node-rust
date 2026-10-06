@@ -397,7 +397,19 @@ where
             //     },
             //     &reserve,
             // )?;
+            // Changed by D-C2e (D-S1, DR-96): the publication passes the
+            // channel for the collision check.
+            // self.store.put_datum(
+            //     key,
+            //     Datum {
+            //         a: data,
+            //         persist,
+            //         source,
+            //     },
+            //     &reserve,
+            // )?;
             self.store.put_datum(
+                &channel,
                 key,
                 Datum {
                     a: data,

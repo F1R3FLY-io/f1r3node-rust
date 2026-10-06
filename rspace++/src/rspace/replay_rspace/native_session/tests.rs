@@ -432,7 +432,9 @@ async fn put_at(session: &Session, channel: &str, value: &str) {
     session
         .space
         .increment_produce_counter(&datum.source, false);
-    session.store.put_datum(key, datum, &free).unwrap();
+    // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+    // session.store.put_datum(key, datum, &free).unwrap();
+    session.store.put_datum(&owned, key, datum, &free).unwrap();
     session
         .space
         .event_log

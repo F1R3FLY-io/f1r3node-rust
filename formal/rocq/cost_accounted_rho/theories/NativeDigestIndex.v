@@ -1,5 +1,6 @@
-(* D-S1 (epic 8946, Phase D item D-C2b; decision record DR-96): the charges
-   of the digest-keyed ordered index of the native session store.
+(* D-S1 (epic 8946, Phase D items D-C2b and D-C2e; decision record DR-96):
+   the charges of the digest-keyed ordered index of the native session store,
+   and its digest-collision check.
 
    The index (rspace++/src/rspace/hot_store/native_index.rs) is a set of
    imbl 7.0.2 OrdMap shards keyed by 32-byte digests. An OrdMap is a B+tree:
@@ -38,11 +39,23 @@
      reads the population of a shared shard gives two such schedules
      different totals;
    - legacy_insert_nodes_example (contrast): the legacy insert model charged
-     398 nodes for a shard of 32 entries; the index charges at most 16.
+     398 nodes for a shard of 32 entries; the index charges at most 16;
+   - collision_check_found, collision_check_absent, collision_check_collision
+     and collision_check_preserves_key_semantics: for any digest function,
+     injective or not, the checked lookup returns a value only for the sought
+     key value, an absent key value has no entry, and a reported collision
+     names another stored key value with the same digest;
+   - insert_checked_keyed: the checked insert keeps every entry under the
+     digest of its own key value;
+   - unchecked_lookup_returns_another_key (negative control): without the
+     check, a constant digest makes a lookup return the value of another key.
 
    Rust correspondence: rspace++/src/rspace/hot_store/native_index.rs
    (ord_levels_bound, ORD_LEVELS, search_charge, replace_charge,
-   insert_charge, DigestShards); tests in native_index/tests.rs. *)
+   insert_charge, DigestShards, KeyLimit); tests in native_index/tests.rs.
+   The collision check is check_channel and check_group in
+   rspace++/src/rspace/hot_store/native_store.rs; tests in
+   native_store/tests.rs (digest_collision_is_detected). *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.
@@ -480,6 +493,162 @@ Example legacy_insert_nodes_example :
   legacy_insert_nodes 32 = 398 /\ 2 * levels_bound (2 ^ 20) + 2 = 16.
 Proof. split; vm_compute; reflexivity. Qed.
 
+(* ------------------------------------------------------------------------ *)
+(* Digest collisions (D-C2e)                                                *)
+
+(* The index keys every entry by the digest of its key value and stores the
+   key value in the entry. The digest is any function: two key values may
+   have one digest. The checked lookup compares the stored key value with the
+   sought one, so it never returns the value of another key; it reports a
+   collision instead. *)
+Section Collisions.
+
+Variables K D V : Type.
+Variable digest : K -> D.
+Variable key_eqb : K -> K -> bool.
+Hypothesis key_eqb_spec : forall a b, key_eqb a b = true <-> a = b.
+Variable digest_eqb : D -> D -> bool.
+Hypothesis digest_eqb_spec : forall a b, digest_eqb a b = true <-> a = b.
+
+(* A store: digests to entries, each entry the key value and its value. *)
+Definition store := list (D * (K * V)).
+
+(* Every entry sits under the digest of its own key value. *)
+Definition entries_keyed (s : store) : Prop :=
+  forall d k v, In (d, (k, v)) s -> d = digest k.
+
+Fixpoint find_digest (d : D) (s : store) : option (K * V) :=
+  match s with
+  | [] => None
+  | (d', entry) :: rest => if digest_eqb d d' then Some entry else find_digest d rest
+  end.
+
+Inductive outcome := Found (v : V) | Absent | Collision.
+
+Definition lookup_checked (s : store) (k : K) : outcome :=
+  match find_digest (digest k) s with
+  | Some (stored, v) => if key_eqb k stored then Found v else Collision
+  | None => Absent
+  end.
+
+(* The lookup without the check returns whatever the digest finds. *)
+Definition lookup_unchecked (s : store) (k : K) : option V :=
+  match find_digest (digest k) s with
+  | Some (_, v) => Some v
+  | None => None
+  end.
+
+Lemma find_digest_in : forall d s stored v,
+  find_digest d s = Some (stored, v) -> In (d, (stored, v)) s.
+Proof.
+  intros d s. induction s as [| [d' [k' v']] rest IH]; intros stored v found; cbn in found.
+  - discriminate.
+  - destruct (digest_eqb d d') eqn:same.
+    + apply digest_eqb_spec in same. subst d'. injection found as <- <-. left. reflexivity.
+    + right. apply IH. exact found.
+Qed.
+
+Lemma find_digest_none : forall d s,
+  find_digest d s = None -> forall entry, ~ In (d, entry) s.
+Proof.
+  intros d s. induction s as [| [d' entry'] rest IH]; intros absent entry inside; cbn in *.
+  - exact inside.
+  - destruct (digest_eqb d d') eqn:same; [discriminate |].
+    destruct inside as [head | tail].
+    + injection head as -> ->.
+      assert (digest_eqb d d = true) as refl by (apply digest_eqb_spec; reflexivity).
+      rewrite refl in same. discriminate.
+    + exact (IH absent entry tail).
+Qed.
+
+(* A found value is stored under the sought key value itself. *)
+Theorem collision_check_found : forall s k v,
+  lookup_checked s k = Found v -> In (digest k, (k, v)) s.
+Proof.
+  intros s k v found. unfold lookup_checked in found.
+  destruct (find_digest (digest k) s) as [[stored v'] |] eqn:entry; [| discriminate].
+  destruct (key_eqb k stored) eqn:same; [| discriminate].
+  apply key_eqb_spec in same. subst stored. injection found as <-.
+  apply find_digest_in. exact entry.
+Qed.
+
+(* An absent key has no entry in a well-keyed store. *)
+Theorem collision_check_absent : forall s k,
+  entries_keyed s -> lookup_checked s k = Absent -> forall d v, ~ In (d, (k, v)) s.
+Proof.
+  intros s k keyed absent d v inside. unfold lookup_checked in absent.
+  destruct (find_digest (digest k) s) as [[stored v'] |] eqn:entry.
+  - destruct (key_eqb k stored); discriminate.
+  - pose proof (keyed d k v inside) as at_digest. subst d.
+    exact (find_digest_none (digest k) s entry (k, v) inside).
+Qed.
+
+(* A collision is reported only when another key value with the same digest
+   is stored. *)
+Theorem collision_check_collision : forall s k,
+  entries_keyed s -> lookup_checked s k = Collision ->
+  exists other v, other <> k /\ digest other = digest k /\ In (digest k, (other, v)) s.
+Proof.
+  intros s k keyed collision. unfold lookup_checked in collision.
+  destruct (find_digest (digest k) s) as [[stored v] |] eqn:entry; [| discriminate].
+  destruct (key_eqb k stored) eqn:same; [discriminate |].
+  exists stored, v. apply find_digest_in in entry.
+  split; [| split].
+  - intros equal. subst stored.
+    assert (key_eqb k k = true) as refl by (apply key_eqb_spec; reflexivity).
+    rewrite refl in same. discriminate.
+  - symmetry. exact (keyed (digest k) stored v entry).
+  - exact entry.
+Qed.
+
+(* The checked lookup never returns the value of another key: a value it
+   returns is stored with the sought key value, an absent key has no entry,
+   and a collision names another stored key value with the same digest. *)
+Theorem collision_check_preserves_key_semantics : forall s k,
+  entries_keyed s ->
+  match lookup_checked s k with
+  | Found v => In (digest k, (k, v)) s
+  | Absent => forall d v, ~ In (d, (k, v)) s
+  | Collision =>
+      exists other v, other <> k /\ digest other = digest k /\ In (digest k, (other, v)) s
+  end.
+Proof.
+  intros s k keyed.
+  destruct (lookup_checked s k) eqn:outcome_of.
+  - exact (collision_check_found s k v outcome_of).
+  - exact (collision_check_absent s k keyed outcome_of).
+  - exact (collision_check_collision s k keyed outcome_of).
+Qed.
+
+(* The checked insert adds an entry only for a digest that is free, so it
+   keeps every entry under the digest of its own key value. *)
+Definition insert_checked (s : store) (k : K) (v : V) : option store :=
+  match find_digest (digest k) s with
+  | Some _ => None
+  | None => Some ((digest k, (k, v)) :: s)
+  end.
+
+Theorem insert_checked_keyed : forall s k v s',
+  entries_keyed s -> insert_checked s k v = Some s' -> entries_keyed s'.
+Proof.
+  intros s k v s' keyed inserted. unfold insert_checked in inserted.
+  destruct (find_digest (digest k) s); [discriminate |].
+  injection inserted as <-. intros d k' v' inside. destruct inside as [head | tail].
+  - injection head as same_digest same_key same_value. subst. reflexivity.
+  - exact (keyed d k' v' tail).
+Qed.
+
+End Collisions.
+
+(* Negative control: without the check, a lookup can return the value of
+   another key. With a constant digest, key 2 finds the entry of key 1; the
+   checked lookup reports the collision. *)
+Example unchecked_lookup_returns_another_key :
+  let s := [(0, (1, 10))] in
+  lookup_unchecked nat nat nat (fun _ => 0) Nat.eqb s 2 = Some 10 /\
+  lookup_checked nat nat nat (fun _ => 0) Nat.eqb Nat.eqb s 2 = Collision nat.
+Proof. split; reflexivity. Qed.
+
 Print Assumptions ord_size_lower_bound.
 Print Assumptions ord_root_lower_bound.
 Print Assumptions bsearch_le_5.
@@ -493,3 +662,9 @@ Print Assumptions ord_replace_allocations_le.
 Print Assumptions per_key_schedule_total_invariant.
 Print Assumptions population_charge_schedule_dependent.
 Print Assumptions legacy_insert_nodes_example.
+Print Assumptions collision_check_found.
+Print Assumptions collision_check_absent.
+Print Assumptions collision_check_collision.
+Print Assumptions collision_check_preserves_key_semantics.
+Print Assumptions insert_checked_keyed.
+Print Assumptions unchecked_lookup_returns_another_key.

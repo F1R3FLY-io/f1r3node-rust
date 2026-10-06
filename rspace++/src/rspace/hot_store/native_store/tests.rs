@@ -310,8 +310,14 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
             let _ = store.data_view(&name, key(&name), &read, &free());
             let _ = legacy.get_data_view_with_reader(&name, &read, &free());
             let datum = Datum::create(&name, format!("v{value}"), *persist);
+            // Changed by D-C2e (D-S1, DR-96): the publication passes the
+            // channel for the collision check.
+            // prop_assert_eq!(
+            //     store.put_datum(key(&name), datum.clone(), &free()),
+            //     legacy.put_datum_metered(&name, datum, &free())
+            // );
             prop_assert_eq!(
-                store.put_datum(key(&name), datum.clone(), &free()),
+                store.put_datum(&name, key(&name), datum.clone(), &free()),
                 legacy.put_datum_metered(&name, datum, &free())
             );
         }
@@ -590,7 +596,9 @@ enum Call {
     Continuations(Vec<String>, GroupKeys, RefCell<Vec<Waiting>>),
     ContinuationViews(Vec<String>, GroupKeys, RefCell<Vec<Waiting>>),
     StoreConsume(Vec<String>, GroupKeys, Waiting),
-    PutDatum(StoreKey, Datum<String>),
+    // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+    // PutDatum(StoreKey, Datum<String>),
+    PutDatum(String, StoreKey, Datum<String>),
     RetireData(Vec<RSpaceResult<String, String>>, Vec<StoreKey>, Vec<(usize, i32)>),
     RetireMatch(Vec<String>, GroupKeys, Vec<RSpaceResult<String, String>>, Vec<(usize, i32)>),
     InstallContinuation(Vec<String>, GroupKeys, Waiting),
@@ -634,7 +642,12 @@ fn calls() -> Vec<(&'static str, Call)> {
             "store_consume",
             Call::StoreConsume(pair.clone(), keys(&pair), waiting(&pair, "new", false, true)),
         ),
-        ("put_datum", Call::PutDatum(key(&a), Datum::create(&a, "put".to_owned(), false))),
+        // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+        // ("put_datum", Call::PutDatum(key(&a), Datum::create(&a, "put".to_owned(), false))),
+        (
+            "put_datum",
+            Call::PutDatum(a.clone(), key(&a), Datum::create(&a, "put".to_owned(), false)),
+        ),
         (
             "retire_data",
             Call::RetireData(vec![result_of("a", "h1", false)], vec![key(&a)], vec![(0, 0)]),
@@ -677,7 +690,9 @@ fn run(store: &Store, call: Call, meter: &Meter) -> Result<(), RSpaceError> {
         Call::StoreConsume(channels, keys, value) => store
             .store_consume(&channels, &keys, value, meter)
             .map(drop),
-        Call::PutDatum(key, datum) => store.put_datum(key, datum, meter),
+        // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+        // Call::PutDatum(key, datum) => store.put_datum(key, datum, meter),
+        Call::PutDatum(name, key, datum) => store.put_datum(&name, key, datum, meter),
         Call::RetireData(data, keys, retired) => store.retire_data(&data, &keys, &retired, meter),
         Call::RetireMatch(channels, keys, data, retired) => {
             store.retire_produce_match(&channels, &keys, 0, false, &data, &retired, meter)
@@ -729,8 +744,12 @@ fn views_are_stable_entry_snapshots() {
         .data_view(&name, key(&name), &read, &free())
         .expect("a free meter");
     let values = before.values().to_vec();
+    // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+    // store
+    //     .put_datum(key(&name), Datum::create(&name, "later".to_owned(), false),
+    // &free())     .expect("a free meter");
     store
-        .put_datum(key(&name), Datum::create(&name, "later".to_owned(), false), &free())
+        .put_datum(&name, key(&name), Datum::create(&name, "later".to_owned(), false), &free())
         .expect("a free meter");
     assert_eq!(before.values(), values.as_slice());
     let after = store
@@ -763,7 +782,9 @@ fn store_charges_are_schedule_independent() {
         0 | 2 => store
             .data_view(name, key(name), &|| Ok(Vec::new()), meter)
             .map(drop),
-        _ => store.put_datum(key(name), Datum::create(name, "v".to_owned(), false), meter),
+        // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+        // _ => store.put_datum(key(name), Datum::create(name, "v".to_owned(), false), meter),
+        _ => store.put_datum(name, key(name), Datum::create(name, "v".to_owned(), false), meter),
     };
     let run = |schedule: &[usize]| {
         let store = Store::new();
@@ -781,4 +802,203 @@ fn store_charges_are_schedule_independent() {
     {
         assert_eq!(run(&schedule), expected, "{schedule:?}");
     }
+}
+
+/// The orders of `items`.
+fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    let mut orders = Vec::new();
+    for (index, first) in items.iter().enumerate() {
+        let mut rest = items.to_vec();
+        rest.remove(index);
+        for mut order in permutations(&rest) {
+            order.insert(0, *first);
+            orders.push(order);
+        }
+    }
+    orders
+}
+
+/// D-S1 (D-C2e, DR-96): the five maps of a store share one key limit. A cold
+/// fill beyond the limit is rejected and changes nothing, in every order of
+/// the fills, so the set of distinct keys decides the rejection. A restore
+/// returns the count to the checkpoint.
+#[test]
+fn store_key_bound_rejects_deterministically() {
+    let a = channel(0);
+    let bb = channel(1);
+    let pair = group(&[0, 1]);
+    // Four cold fills of distinct keys in three maps.
+    let fill = |store: &Store, step: usize| -> Result<(), RSpaceError> {
+        match step {
+            0 => store
+                .data(&a, key(&a), &|| Ok(Vec::new()), &free())
+                .map(drop),
+            1 => store
+                .data(&bb, key(&bb), &|| Ok(Vec::new()), &free())
+                .map(drop),
+            2 => store
+                .joins(&a, key(&a), &|| Ok(Vec::new()), &free())
+                .map(drop),
+            _ => store
+                .continuations(&pair, &keys(&pair), &|| Ok(Vec::new()), &free())
+                .map(drop),
+        }
+    };
+    let orders = permutations(&[0, 1, 2, 3]);
+    assert_eq!(orders.len(), 24);
+    for order in &orders {
+        let store = Store::with_key_bound(3);
+        for (index, step) in order.iter().enumerate() {
+            let before = observed(&store);
+            if index < 3 {
+                assert_eq!(fill(&store, *step), Ok(()), "{order:?}");
+            } else {
+                assert_eq!(fill(&store, *step), Err(RSpaceError::HostWorkRejected), "{order:?}");
+                assert_eq!(observed(&store), before, "{order:?}");
+                assert_eq!(fill(&store, *step), Err(RSpaceError::HostWorkRejected), "{order:?}");
+            }
+        }
+        assert_eq!(store.keys_used(), 3);
+        assert_eq!(store.entry_counts().iter().sum::<usize>(), 3);
+        fill(&store, order[0]).expect("a warm read adds no key");
+        assert_eq!(store.keys_used(), 3);
+    }
+    let store = Store::with_key_bound(3);
+    fill(&store, 0).expect("room for the first key");
+    let checkpoint = store.snapshot();
+    fill(&store, 1).expect("room for the second key");
+    fill(&store, 2).expect("room for the third key");
+    assert_eq!(fill(&store, 3), Err(RSpaceError::HostWorkRejected));
+    store.restore(checkpoint);
+    assert_eq!(store.keys_used(), 1);
+    fill(&store, 3).expect("room after the restore");
+    fill(&store, 1).expect("room after the restore");
+    assert_eq!(fill(&store, 2), Err(RSpaceError::HostWorkRejected));
+    assert_eq!(store.keys_used(), 3);
+}
+
+/// D-S1 (D-C2e, DR-96): two channels with one digest are a collision. The
+/// test passes the key of one channel with another channel, which is what a
+/// digest collision produces. Every lookup that finds the first channel's
+/// entry for the second channel rejects the call and leaves the store
+/// unchanged, including a key repeated inside one group.
+#[test]
+fn digest_collision_is_detected() {
+    let collision =
+        || Err(RSpaceError::InterpreterError("native store digest collision".to_owned()));
+    let a = channel(0);
+    let bb = channel(1);
+    let ccc = channel(2);
+    let single = group(&[0]);
+    let store = Store::new();
+    store
+        .data(&a, key(&a), &|| Ok(history_data(&a)), &free())
+        .expect("a free meter");
+    store
+        .joins(&a, key(&a), &|| Ok(history_joins(&a)), &free())
+        .expect("a free meter");
+    store
+        .install_join(&a, key(&a), &group(&[0, 1]), &free())
+        .expect("a free meter");
+    store
+        .install_continuation(
+            &single,
+            &keys(&single),
+            waiting(&single, "installed", true, false),
+            &free(),
+        )
+        .expect("a free meter");
+    // A group [ccc, bb] with one stored continuation and its joins.
+    let pair = group(&[2, 1]);
+    store
+        .continuations(&pair, &keys(&pair), &|| Ok(Vec::new()), &free())
+        .expect("a free meter");
+    for name in &pair {
+        store
+            .joins(name, key(name), &|| Ok(Vec::new()), &free())
+            .expect("a free meter");
+    }
+    store
+        .store_consume(&pair, &keys(&pair), waiting(&pair, "stored", false, false), &free())
+        .expect("a free meter");
+    let before = observed(&store);
+
+    // `bb` with the digest of `a`, and the group [bb] with the digest of [a].
+    let forged = key(&a);
+    let lone = vec![bb.clone()];
+    let forged_group = GroupKeys {
+        channels: vec![forged],
+        group: keys(&single).group,
+    };
+    let empty_data = || Ok(Vec::new());
+    assert_eq!(store.data(&bb, forged, &empty_data, &free()).map(drop), collision());
+    assert_eq!(store.data_view(&bb, forged, &empty_data, &free()).map(drop), collision());
+    assert_eq!(
+        store
+            .joins(&bb, forged, &|| Ok(Vec::new()), &free())
+            .map(drop),
+        collision()
+    );
+    assert_eq!(
+        store
+            .continuations(&lone, &forged_group, &|| Ok(Vec::new()), &free())
+            .map(drop),
+        collision()
+    );
+    assert_eq!(
+        store
+            .continuation_views(&lone, &forged_group, &|| Ok(Vec::new()), &free())
+            .map(drop),
+        collision()
+    );
+    assert_eq!(
+        store.put_datum(&bb, forged, Datum::create(&bb, "v".to_owned(), false), &free()),
+        collision()
+    );
+    assert_eq!(
+        store
+            .store_consume(&lone, &forged_group, waiting(&lone, "w", false, false), &free())
+            .map(drop),
+        collision()
+    );
+    assert_eq!(store.install_join(&bb, forged, &lone, &free()), collision());
+    assert_eq!(
+        store.install_continuation(&lone, &forged_group, waiting(&lone, "i", true, false), &free()),
+        collision()
+    );
+    let lone_result = vec![result_of("bb", "h3", false)];
+    assert_eq!(store.retire_data(&lone_result, &[forged], &[(0, 0)], &free()), collision());
+    assert_eq!(
+        store.retire_produce_match(&lone, &forged_group, 0, false, &lone_result, &[], &free()),
+        collision()
+    );
+
+    // A key repeated inside one group: the data of [a, bb] retired with the
+    // digest of `a` twice compares the two channels.
+    let both = vec![result_of("a", "h1", false), result_of("bb", "h3", false)];
+    assert_eq!(
+        store.retire_data(&both, &[forged, forged], &[(0, 0), (1, 0)], &free()),
+        collision()
+    );
+    // The group [ccc, bb] with the digest of `ccc` twice: the consume and the
+    // match retirement find the second channel in the first one's joins.
+    let repeated = GroupKeys {
+        channels: vec![key(&ccc), key(&ccc)],
+        group: keys(&pair).group,
+    };
+    assert_eq!(
+        store
+            .store_consume(&pair, &repeated, waiting(&pair, "again", false, false), &free())
+            .map(drop),
+        collision()
+    );
+    let matched = vec![result_of("ccc", "x", true), result_of("bb", "y", true)];
+    assert_eq!(
+        store.retire_produce_match(&pair, &repeated, 0, false, &matched, &[], &free()),
+        collision()
+    );
+    assert_eq!(observed(&store), before);
 }

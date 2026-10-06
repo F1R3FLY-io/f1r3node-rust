@@ -6910,8 +6910,8 @@ spread is up to 40 MB of hot-store write charges.
 
 ## DR-96 — Digest-keyed ordered index for the native session store
 
-**Status.** In progress for Phase D item D-C2 of epic 8946 (D-S1 of the
-Phase D plan). Parts 1 to 4 (D-C2a to D-C2d) implemented 2026-10-06.
+**Status.** Implemented for Phase D item D-C2 of epic 8946 (D-S1 of the
+Phase D plan). Parts 1 to 5 (D-C2a to D-C2e) implemented 2026-10-06.
 
 **Context.** The native replay session keeps its data, continuations and
 joins in the hot store of the replay space: 256 `imbl::HashMap` shards keyed
@@ -7225,6 +7225,89 @@ session already holds.
   root of the reversed digest export.
 - `permuted_groups_fail_both_exports_alike`: the two stores fail an export
   with permuted groups with the same error.
+
+**Decision (part 5, D-C2e).** The store bounds its keys, and it checks the
+key value of every entry that a digest finds.
+
+1. A session holds at most `NATIVE_STORE_KEY_BOUND`, $`2^{20}`$, distinct
+   keys in the five maps of its store together. The maps share one
+   `KeyLimit` (`native_index.rs`).
+   - `insert_new` claims a key as its last check, after its charges and
+     before it changes the shard. A key beyond the limit returns
+     `HostWorkRejected`, and the rejected insert changes no map.
+   - A restore moves the shared count by the difference between the
+     current and the restored key count of each map.
+   - The store charges the shared limit once: its allocation and one
+     pointer copy for each map.
+2. The limit never rejects before the budget does. Each new key charges at
+   least the insert charge of part 2 to the session's host-work budget,
+   which includes 36,216 bytes of VerificationBytes. So $`2^{20}`$ keys need
+   more than 37.9 GB of VerificationBytes. This is above every
+   VerificationBytes cap, including the provisional cap of 16 GiB. The
+   limit bounds the store when a budget has no cap, and it keeps the level
+   bound $`L`$ of part 2 in every shard.
+3. On every hit of a digest, the store compares the stored key value with
+   the sought channel or group before it reads or changes the entry.
+   - The comparison is charged as one comparison of the two keys: an
+     inspection of each key and one operation.
+   - Two key values with one digest are a collision. The store rejects the
+     call with the interpreter error `native store digest collision`, and
+     it changes nothing.
+   - A key that repeats inside one group compares the channels at the two
+     positions, so a collision inside one group is found too.
+   - `put_datum` takes the channel for the comparison.
+4. A Blake2b-256 collision is not feasible to find. The check makes the
+   store correct without the assumption that the digest is injective.
+
+**Verification (part 5).** `NativeDigestIndex.v` proves without axioms, for
+any digest function:
+
+- `collision_check_found`: the checked lookup returns a value only for the
+  sought key value.
+- `collision_check_absent`: an absent key value has no entry.
+- `collision_check_collision`: a reported collision names another stored
+  key value with the same digest.
+- `collision_check_preserves_key_semantics` combines the three.
+- `insert_checked_keyed`: the checked insert keeps every entry under the
+  digest of its own key value.
+- Negative control `unchecked_lookup_returns_another_key`: under a constant
+  digest, a lookup without the check returns the value of another key.
+
+Tests in `rspace++/src/rspace/hot_store/native_store/tests.rs`:
+
+- `store_key_bound_rejects_deterministically`: with a limit of three keys,
+  all 24 orders of four cold fills in three maps accept the first three
+  fills. The fourth fill is rejected, leaves the store unchanged and is
+  rejected again on a retry. A warm read adds no key, and a restore returns
+  the count to the checkpoint.
+- `digest_collision_is_detected`: a channel passed with the key of another
+  channel makes every method that finds the other channel's entry reject
+  the call and leave the store unchanged. This covers the data, view, join
+  and continuation reads, the publication, the stored consume, both
+  installations and both retirements. A key repeated inside one group is
+  found in the data retirement, the stored consume and the match
+  retirement.
+- The differential, cut, view and export-root tests of parts 3 and 4 pass
+  with the checks.
+
+**Measurement (part 5).** One run of the gateway funding probe on
+2026-10-06 measured parts 4 and 5 together, with the provisional caps.
+
+- The validator replay of the gateway block uses 1,881,249,841 bytes of
+  VerificationBytes and 204,173,979 bytes of SearchStateBytes. The two runs
+  of part 3 used 1,821 MB to 1,824 MB and 201 MB to 202 MB.
+- So the check adds about 57 MB to 60 MB of VerificationBytes, about 3 %.
+  SearchStateBytes stays within 3 MB, because a comparison charges no
+  backing.
+- The sampled attribution puts 70 MB of VerificationBytes in the two check
+  functions. A comparison of equal keys reads both values completely, so
+  the charge is real work.
+- Against the original caps, the replay is at 7.01 times the
+  VerificationBytes cap and 1.52 times the SearchStateBytes cap.
+
+An operation can check one entry more than once. For example, a consume
+checks its group in the prefetch, in the candidate read and in the stored
+consume.
 
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,

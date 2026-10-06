@@ -30,9 +30,51 @@ use crate::rspace::hashing::native_source::SourceMeter;
 pub use crate::rspace::hashing::native_source::StoreKey;
 use crate::rspace::native_backing::arc_allocation_bytes;
 
-/// The most distinct keys that one native session stores. The charges below
-/// assume this bound; D-C2e enforces it.
+/// The most distinct keys that one native session stores, in all the maps of
+/// its store together. The charges below assume this bound, and
+/// [`KeyLimit`] enforces it (D-C2e).
 pub const NATIVE_STORE_KEY_BOUND: usize = 1 << 20;
+
+/// D-C2e (DR-96): the distinct keys of one native session. The maps of the
+/// session's store share one limit, so the session holds at most `bound`
+/// keys in all its maps together, and no shard holds more.
+pub struct KeyLimit {
+    used: AtomicUsize,
+    bound: usize,
+}
+
+impl KeyLimit {
+    pub fn new(bound: usize) -> Self {
+        Self {
+            used: AtomicUsize::new(0),
+            bound,
+        }
+    }
+
+    /// The keys that the session holds.
+    pub fn used(&self) -> usize { self.used.load(Ordering::Acquire) }
+
+    /// Claims one new key. A session that holds `bound` keys rejects it.
+    fn claim(&self) -> Result<(), RSpaceError> {
+        self.used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                (used < self.bound).then_some(used + 1)
+            })
+            .map(drop)
+            .map_err(|_| RSpaceError::HostWorkRejected)
+    }
+
+    /// Replaces the keys of one map at a restore: `removed` keys leave and
+    /// `restored` keys return. The caller holds the session's exclusive gate.
+    fn replace_map_keys(&self, removed: usize, restored: usize) {
+        let used = self
+            .used()
+            .checked_sub(removed)
+            .and_then(|rest| rest.checked_add(restored))
+            .expect("the session count includes the keys of each map");
+        self.used.store(used, Ordering::Release);
+    }
+}
 
 /// The imbl `OrdMap` chunk size: at most 16 entries per leaf and 16 keys per
 /// branch.
@@ -201,6 +243,9 @@ pub struct DigestSnapshot<K, V> {
 pub struct DigestShards<K, V> {
     shards: Box<[RwLock<DigestShard<K, V>>; NUM_SHARDS]>,
     keys: AtomicUsize,
+    /// D-C2e (DR-96): the key limit of the session, shared by the maps of
+    /// its store.
+    limit: Arc<KeyLimit>,
 }
 
 impl<K, V> Default for DigestShards<K, V> {
@@ -208,15 +253,33 @@ impl<K, V> Default for DigestShards<K, V> {
 }
 
 impl<K, V> DigestShards<K, V> {
-    pub fn new() -> Self {
+    // Changed by D-C2e (D-S1, DR-96): an index counts its keys against a key
+    // limit.
+    // pub fn new() -> Self {
+    //     Self {
+    //         shards: Box::new(std::array::from_fn(|_|
+    // RwLock::new(imbl::OrdMap::new()))),         keys: AtomicUsize::new(0),
+    //     }
+    // }
+    /// An index with its own limit of [`NATIVE_STORE_KEY_BOUND`] keys.
+    pub fn new() -> Self { Self::with_limit(Arc::new(KeyLimit::new(NATIVE_STORE_KEY_BOUND))) }
+
+    /// D-C2e (DR-96): an index that shares the key limit of its session.
+    pub fn with_limit(limit: Arc<KeyLimit>) -> Self {
         Self {
             shards: Box::new(std::array::from_fn(|_| RwLock::new(imbl::OrdMap::new()))),
             keys: AtomicUsize::new(0),
+            limit,
         }
     }
 
-    /// The operations and bytes of [`DigestShards::new`]: one boxed array of
-    /// empty shards.
+    /// The keys that the limit of this index counts, in all the maps that
+    /// share it.
+    #[cfg(test)]
+    pub fn limit_used(&self) -> usize { self.limit.used() }
+
+    /// The operations and bytes of [`DigestShards::with_limit`]: one boxed
+    /// array of empty shards. The store charges the shared limit once.
     pub fn constructor_layout() -> (usize, usize) {
         (NUM_SHARDS + 1, size_of::<[RwLock<DigestShard<K, V>>; NUM_SHARDS]>())
     }
@@ -262,8 +325,9 @@ impl<K, V> DigestShards<K, V> {
 
     /// Inserts a key that the shard does not hold, after the search charge
     /// and the insert charge. A present key is rejected, as in the legacy
-    /// store. Returns the stored entry; the insert also charges this clone of
-    /// the stored pointer ([`view_charge`]).
+    /// store, and so is a key beyond the session's key limit. Returns the
+    /// stored entry; the insert also charges this clone of the stored pointer
+    /// ([`view_charge`]).
     pub fn insert_new(
         &self,
         shard: &mut DigestShard<K, V>,
@@ -286,6 +350,9 @@ impl<K, V> DigestShards<K, V> {
             .and_then(|charge| charge.plus(view_charge()))
             .ok_or(RSpaceError::HostWorkRejected)?
             .reserve(meter)?;
+        // D-C2e (DR-96): the key counts against the session's limit. The claim
+        // is the last check, so a rejected insert changes no map.
+        self.limit.claim()?;
         let entry = Arc::new(NativeEntry {
             key: value_key,
             value,
@@ -339,7 +406,11 @@ impl<K, V> DigestShards<K, V> {
         for (lock, shard) in self.shards.iter().zip(*snapshot.shards) {
             *lock.write().expect("digest shard write lock") = shard;
         }
-        self.keys.store(snapshot.keys, Ordering::Release);
+        // Changed by D-C2e (D-S1, DR-96): the session's key limit follows the
+        // restored count of this map.
+        // self.keys.store(snapshot.keys, Ordering::Release);
+        let removed = self.keys.swap(snapshot.keys, Ordering::AcqRel);
+        self.limit.replace_map_keys(removed, snapshot.keys);
     }
 }
 

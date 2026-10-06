@@ -15,8 +15,8 @@ use shared::rust::clone_backing::CloneBacking;
 
 use super::native::{buffer, continuation_identity_metered, merge};
 use super::native_index::{
-    DigestShard, DigestShards, DigestSnapshot, ORD_CHUNK, StoreKey, ord_levels_bound,
-    ord_node_bytes, view_charge,
+    DigestShard, DigestShards, DigestSnapshot, KeyLimit, NATIVE_STORE_KEY_BOUND, ORD_CHUNK,
+    StoreKey, ord_levels_bound, ord_node_bytes, view_charge,
 };
 use super::*;
 use crate::rspace::hashing::native_source::GroupKeys;
@@ -74,9 +74,52 @@ fn key_comparison(meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
     meter.reserve(1, 2 * size_of::<StoreKey>(), 0)
 }
 
+/// D-C2e (DR-96): two keys with one digest. The store rejects them, the same
+/// way on every replay.
+fn collision() -> RSpaceError {
+    RSpaceError::InterpreterError("native store digest collision".to_owned())
+}
+
+/// D-C2e (DR-96): the entry found by a channel's digest must hold the
+/// channel. The check is one comparison of the two channels.
+fn check_channel<C: CloneBacking + PartialEq>(
+    stored: &C,
+    sought: &C,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    native_backing::inspect(stored, meter)?;
+    native_backing::inspect(sought, meter)?;
+    meter.reserve(1, 0, 0)?;
+    if stored == sought {
+        Ok(())
+    } else {
+        Err(collision())
+    }
+}
+
+/// D-C2e (DR-96): the entry found by a group's digest must hold the group.
+/// The check is one comparison of the two channel lists.
+fn check_group<C: CloneBacking + PartialEq>(
+    stored: &[C],
+    sought: &[C],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    native_backing::inspect_slice(stored, meter)?;
+    native_backing::inspect_slice(sought, meter)?;
+    meter.reserve(1, 0, 0)?;
+    if stored == sought {
+        Ok(())
+    } else {
+        Err(collision())
+    }
+}
+
 struct DataRetirement<'a, C, A: Clone> {
     shards: Vec<(usize, RwLockWriteGuard<'a, DigestShard<C, Vec<Datum<A>>>>)>,
-    updates: Vec<(StoreKey, Vec<Datum<A>>)>,
+    // Changed by D-C2e (D-S1, DR-96): an update records the data position of
+    // its channel, so a repeated key compares the two channels.
+    // updates: Vec<(StoreKey, Vec<Datum<A>>)>,
+    updates: Vec<(StoreKey, usize, Vec<Datum<A>>)>,
 }
 
 impl<C, A: Clone> DataRetirement<'_, C, A> {
@@ -88,7 +131,9 @@ impl<C, A: Clone> DataRetirement<'_, C, A> {
     }
 
     fn publish(&mut self) {
-        for (key, values) in std::mem::take(&mut self.updates) {
+        // Changed by D-C2e (D-S1, DR-96): the updates carry positions.
+        // for (key, values) in std::mem::take(&mut self.updates) {
+        for (key, _, values) in std::mem::take(&mut self.updates) {
             let (_, shard) = self
                 .shards
                 .iter_mut()
@@ -101,7 +146,10 @@ impl<C, A: Clone> DataRetirement<'_, C, A> {
 
 struct JoinRetirement<'a, C> {
     shards: Vec<(usize, RwLockWriteGuard<'a, DigestShard<C, Vec<Vec<C>>>>)>,
-    updates: Vec<(StoreKey, Vec<Vec<C>>)>,
+    // Changed by D-C2e (D-S1, DR-96): an update records the position of its
+    // channel, so a repeated key compares the two channels.
+    // updates: Vec<(StoreKey, Vec<Vec<C>>)>,
+    updates: Vec<(StoreKey, usize, Vec<Vec<C>>)>,
 }
 
 impl<C> JoinRetirement<'_, C> {
@@ -113,7 +161,9 @@ impl<C> JoinRetirement<'_, C> {
     }
 
     fn publish(mut self) {
-        for (key, values) in std::mem::take(&mut self.updates) {
+        // Changed by D-C2e (D-S1, DR-96): the updates carry positions.
+        // for (key, values) in std::mem::take(&mut self.updates) {
+        for (key, _, values) in std::mem::take(&mut self.updates) {
             let (_, shard) = self
                 .shards
                 .iter_mut()
@@ -182,13 +232,28 @@ impl<C, P: Clone, A: Clone, K: Clone> Default for NativeHotStore<C, P, A, K> {
 }
 
 impl<C, P: Clone, A: Clone, K: Clone> NativeHotStore<C, P, A, K> {
-    pub(crate) fn new() -> Self {
+    // Changed by D-C2e (D-S1, DR-96): the five maps share one key limit.
+    // pub(crate) fn new() -> Self {
+    //     Self {
+    //         data: DigestShards::new(),
+    //         continuations: DigestShards::new(),
+    //         installed_continuations: DigestShards::new(),
+    //         joins: DigestShards::new(),
+    //         installed_joins: DigestShards::new(),
+    //     }
+    // }
+    pub(crate) fn new() -> Self { Self::with_key_bound(NATIVE_STORE_KEY_BOUND) }
+
+    /// D-C2e (DR-96): a store whose five maps hold at most `bound` keys
+    /// together.
+    pub(crate) fn with_key_bound(bound: usize) -> Self {
+        let limit = Arc::new(KeyLimit::new(bound));
         Self {
-            data: DigestShards::new(),
-            continuations: DigestShards::new(),
-            installed_continuations: DigestShards::new(),
-            joins: DigestShards::new(),
-            installed_joins: DigestShards::new(),
+            data: DigestShards::with_limit(Arc::clone(&limit)),
+            continuations: DigestShards::with_limit(Arc::clone(&limit)),
+            installed_continuations: DigestShards::with_limit(Arc::clone(&limit)),
+            joins: DigestShards::with_limit(Arc::clone(&limit)),
+            installed_joins: DigestShards::with_limit(limit),
         }
     }
 
@@ -203,6 +268,10 @@ impl<C, P: Clone, A: Clone, K: Clone> NativeHotStore<C, P, A, K> {
         ];
         let mut operations: usize = 2;
         let mut bytes = arc_allocation_bytes::<Self>()?;
+        // D-C2e (DR-96): the key limit that the five maps share, and one
+        // pointer clone for each map.
+        operations = operations.checked_add(2)?.checked_add(layouts.len())?;
+        bytes = bytes.checked_add(arc_allocation_bytes::<KeyLimit>()?)?;
         for (layout_operations, layout_bytes) in layouts {
             operations = operations.checked_add(layout_operations)?;
             bytes = bytes.checked_add(layout_bytes)?;
@@ -259,6 +328,10 @@ impl<C, P: Clone, A: Clone, K: Clone> NativeHotStore<C, P, A, K> {
             self.installed_joins.key_count(),
         ]
     }
+
+    /// The keys that the shared key limit counts (D-C2e).
+    #[cfg(test)]
+    pub(crate) fn keys_used(&self) -> usize { self.data.limit_used() }
 }
 
 impl<C, P, A, K> NativeHotStore<C, P, A, K>
@@ -280,6 +353,8 @@ where
             let shard = self.data.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought channel.
+                    check_channel(entry.key.as_ref(), channel, meter)?;
                     native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
                     Some(entry.value.clone())
                 }
@@ -314,6 +389,8 @@ where
             let shard = self.data.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought channel.
+                    check_channel(entry.key.as_ref(), channel, meter)?;
                     view_charge().reserve(meter)?;
                     Some(Arc::clone(entry))
                 }
@@ -351,6 +428,8 @@ where
             let shard = self.installed_joins.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought channel.
+                    check_channel(entry.key.as_ref(), channel, meter)?;
                     native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
                     entry.value.clone()
                 }
@@ -361,6 +440,8 @@ where
             let shard = self.joins.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought channel.
+                    check_channel(entry.key.as_ref(), channel, meter)?;
                     native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
                     Some(entry.value.clone())
                 }
@@ -381,16 +462,37 @@ where
         Ok(result)
     }
 
+    // Changed by D-C2e (D-S1, DR-96): the lookup takes the group's channels
+    // for the collision check.
+    // /// The installed continuation of a group, as a deep copy, and the
+    // /// search that found it.
+    // fn installed_copy(
+    //     &self,
+    //     key: &StoreKey,
+    //     meter: &dyn SourceMeter,
+    // ) -> Result<Option<WaitingContinuation<P, K>>, RSpaceError> {
+    //     let shard = self.installed_continuations.read(key);
+    //     match DigestShards::get(&shard, key, meter)? {
+    //         Some(entry) => {
+    //             native_backing::reserve_copy_and_cleanup(entry.value.as_ref(),
+    // meter)?;             Ok(Some(entry.value.as_ref().clone()))
+    //         }
+    //         None => Ok(None),
+    //     }
+    // }
     /// The installed continuation of a group, as a deep copy, and the
     /// search that found it.
     fn installed_copy(
         &self,
+        channels: &[C],
         key: &StoreKey,
         meter: &dyn SourceMeter,
     ) -> Result<Option<WaitingContinuation<P, K>>, RSpaceError> {
         let shard = self.installed_continuations.read(key);
         match DigestShards::get(&shard, key, meter)? {
             Some(entry) => {
+                // D-C2e (DR-96): the entry must hold the sought group.
+                check_group(entry.key.as_ref(), channels, meter)?;
                 native_backing::reserve_copy_and_cleanup(entry.value.as_ref(), meter)?;
                 Ok(Some(entry.value.as_ref().clone()))
             }
@@ -408,7 +510,9 @@ where
         meter: &dyn SourceMeter,
     ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         let key = keys.group;
-        let installed = self.installed_copy(&key, meter)?;
+        // Changed by D-C2e (D-S1, DR-96): the lookup checks the group.
+        // let installed = self.installed_copy(&key, meter)?;
+        let installed = self.installed_copy(channels, &key, meter)?;
         let mut prefix = buffer(usize::from(installed.is_some()), meter)?;
         if let Some(installed) = installed {
             prefix.push(installed);
@@ -417,6 +521,8 @@ where
             let shard = self.continuations.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought group.
+                    check_group(entry.key.as_ref(), channels, meter)?;
                     let mut result = buffer(entry.value.len(), meter)?;
                     for value in &entry.value {
                         native_backing::reserve_copy_and_cleanup(value.as_ref(), meter)?;
@@ -472,6 +578,8 @@ where
             let shard = self.installed_continuations.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought group.
+                    check_group(entry.key.as_ref(), channels, meter)?;
                     meter.reserve(1, pointer, 0)?;
                     Some(Arc::clone(&entry.value))
                 }
@@ -486,6 +594,8 @@ where
             let shard = self.continuations.read(&key);
             match DigestShards::get(&shard, &key, meter)? {
                 Some(entry) => {
+                    // D-C2e (DR-96): the entry must hold the sought group.
+                    check_group(entry.key.as_ref(), channels, meter)?;
                     let mut result = buffer(entry.value.len(), meter)?;
                     for value in &entry.value {
                         meter.reserve(1, pointer, 0)?;
@@ -542,16 +652,33 @@ where
         let mut identity: Option<String> = None;
         let installed = {
             let shard = self.installed_continuations.read(&key);
-            usize::from(DigestShards::get(&shard, &key, meter)?.is_some())
+            // Changed by D-C2e (D-S1, DR-96): a found entry must hold the
+            // group.
+            // usize::from(DigestShards::get(&shard, &key, meter)?.is_some())
+            match DigestShards::get(&shard, &key, meter)? {
+                Some(entry) => {
+                    check_group(entry.key.as_ref(), channels, meter)?;
+                    1
+                }
+                None => 0,
+            }
         };
         let mut continuation_shard = self.continuations.write(&key);
-        let existing = &DigestShards::get(&continuation_shard, &key, meter)?
-            .ok_or_else(|| {
-                RSpaceError::InterpreterError(
-                    "native continuation cache is absent at publication".to_owned(),
-                )
-            })?
-            .value;
+        // Changed by D-C2e (D-S1, DR-96): the entry must hold the group.
+        // let existing = &DigestShards::get(&continuation_shard, &key, meter)?
+        //     .ok_or_else(|| {
+        //         RSpaceError::InterpreterError(
+        //             "native continuation cache is absent at publication".to_owned(),
+        //         )
+        //     })?
+        //     .value;
+        let entry = DigestShards::get(&continuation_shard, &key, meter)?.ok_or_else(|| {
+            RSpaceError::InterpreterError(
+                "native continuation cache is absent at publication".to_owned(),
+            )
+        })?;
+        check_group(entry.key.as_ref(), channels, meter)?;
+        let existing = &entry.value;
         let mut duplicate = false;
         // D-S4 (DR-90): identities are built and compared only for stored
         // continuations with the same source hash.
@@ -620,13 +747,27 @@ where
             requested[channel_key.shard()] = true;
         }
         let mut join_shards = lock_requested(&self.joins, requested, meter)?;
-        let mut join_updates: Vec<(StoreKey, Vec<Vec<C>>)> =
+        // Changed by D-C2e (D-S1, DR-96): a staged update records the position
+        // of its channel, so a repeated key compares the two channels.
+        // let mut join_updates: Vec<(StoreKey, Vec<Vec<C>>)> =
+        //     update_buffer(keys.channels.len(), meter)?;
+        // for channel_key in &keys.channels {
+        //     let mut repeated = false;
+        //     for (prior, _) in &join_updates {
+        //         key_comparison(meter)?;
+        //         if prior == channel_key {
+        //             repeated = true;
+        //             break;
+        //         }
+        //     }
+        let mut join_updates: Vec<(StoreKey, usize, Vec<Vec<C>>)> =
             update_buffer(keys.channels.len(), meter)?;
-        for channel_key in &keys.channels {
+        for (position, (channel, channel_key)) in channels.iter().zip(&keys.channels).enumerate() {
             let mut repeated = false;
-            for (prior, _) in &join_updates {
+            for (prior, prior_position, _) in &join_updates {
                 key_comparison(meter)?;
                 if prior == channel_key {
+                    check_channel(&channels[*prior_position], channel, meter)?;
                     repeated = true;
                     break;
                 }
@@ -648,13 +789,21 @@ where
                 .iter()
                 .find(|(candidate, _)| *candidate == index)
                 .expect("requested join shard");
-            let values = &DigestShards::get(shard, channel_key, meter)?
-                .ok_or_else(|| {
-                    RSpaceError::InterpreterError(
-                        "native join cache is absent at publication".to_owned(),
-                    )
-                })?
-                .value;
+            // Changed by D-C2e (D-S1, DR-96): the entry must hold the channel.
+            // let values = &DigestShards::get(shard, channel_key, meter)?
+            //     .ok_or_else(|| {
+            //         RSpaceError::InterpreterError(
+            //             "native join cache is absent at publication".to_owned(),
+            //         )
+            //     })?
+            //     .value;
+            let entry = DigestShards::get(shard, channel_key, meter)?.ok_or_else(|| {
+                RSpaceError::InterpreterError(
+                    "native join cache is absent at publication".to_owned(),
+                )
+            })?;
+            check_channel(entry.key.as_ref(), channel, meter)?;
+            let values = &entry.value;
             let mut present = false;
             for join in values {
                 native_backing::inspect_slice(join, meter)?;
@@ -684,12 +833,16 @@ where
                 .map_err(|_| RSpaceError::HostWorkRejected)?;
             native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
             updated.insert(0, channels.to_vec());
-            join_updates.push((*channel_key, updated));
+            // Changed by D-C2e (D-S1, DR-96): the update records its position.
+            // join_updates.push((*channel_key, updated));
+            join_updates.push((*channel_key, position, updated));
         }
         if let Some(values) = continuation_update {
             DigestShards::replace(&mut continuation_shard, &key, values);
         }
-        for (channel_key, values) in join_updates {
+        // Changed by D-C2e (D-S1, DR-96): the updates carry positions.
+        // for (channel_key, values) in join_updates {
+        for (channel_key, _, values) in join_updates {
             let index = channel_key.shard();
             let (_, shard) = join_shards
                 .iter_mut()
@@ -700,22 +853,40 @@ where
         Ok((!duplicate, depth))
     }
 
+    // Changed by D-C2e (D-S1, DR-96): the publication takes the channel for
+    // the collision check.
+    // /// Adds a datum to the cached data of a channel (port of
+    // /// `InMemHotStore::native_put_datum`).
+    // pub(crate) fn put_datum(
+    //     &self,
+    //     key: StoreKey,
+    //     datum: Datum<A>,
+    //     meter: &dyn SourceMeter,
+    // ) -> Result<(), RSpaceError> {
+    //     let mut shard = self.data.write(&key);
+    //     let values = &DigestShards::get(&shard, &key, meter)?
+    //         .ok_or_else(|| {
+    //             RSpaceError::InterpreterError(
+    //                 "native datum cache is absent at publication".to_owned(),
+    //             )
+    //         })?
+    //         .value;
     /// Adds a datum to the cached data of a channel (port of
     /// `InMemHotStore::native_put_datum`).
     pub(crate) fn put_datum(
         &self,
+        channel: &C,
         key: StoreKey,
         datum: Datum<A>,
         meter: &dyn SourceMeter,
     ) -> Result<(), RSpaceError> {
         let mut shard = self.data.write(&key);
-        let values = &DigestShards::get(&shard, &key, meter)?
-            .ok_or_else(|| {
-                RSpaceError::InterpreterError(
-                    "native datum cache is absent at publication".to_owned(),
-                )
-            })?
-            .value;
+        let entry = DigestShards::get(&shard, &key, meter)?.ok_or_else(|| {
+            RSpaceError::InterpreterError("native datum cache is absent at publication".to_owned())
+        })?;
+        // D-C2e (DR-96): the entry must hold the channel.
+        check_channel(entry.key.as_ref(), channel, meter)?;
+        let values = &entry.value;
         let count = values
             .len()
             .checked_add(1)
@@ -771,13 +942,51 @@ where
             requested[key.shard()] = true;
         }
         let shards = lock_requested(&self.data, requested, meter)?;
-        let mut updates: Vec<(StoreKey, Vec<Datum<A>>)> = update_buffer(retirement.len(), meter)?;
+        // Changed by D-C2e (D-S1, DR-96): an update records the data position
+        // of its channel; a repeated key compares the two channels, and a
+        // found entry must hold the channel.
+        // let mut updates: Vec<(StoreKey, Vec<Datum<A>>)> =
+        // update_buffer(retirement.len(), meter)?; for (position, datum_index)
+        // in retirement {     let key = keys[*position];
+        //     let mut staged = None;
+        //     for (index, (existing, _)) in updates.iter().enumerate() {
+        //         key_comparison(meter)?;
+        //         if *existing == key {
+        //             staged = Some(index);
+        //             break;
+        //         }
+        //     }
+        //     let staged = if let Some(index) = staged {
+        //         index
+        //     } else {
+        //         meter.reserve(shards.len(), 0, 0)?;
+        //         let (_, shard) = shards
+        //             .iter()
+        //             .find(|(index, _)| *index == key.shard())
+        //             .expect("requested data shard");
+        //         let values = &DigestShards::get(shard, &key, meter)?
+        //             .ok_or_else(|| {
+        //                 RSpaceError::InterpreterError(
+        //                     "native datum cache is absent at retirement".to_owned(),
+        //                 )
+        //             })?
+        //             .value;
+        //         DigestShards::<C, Vec<Datum<A>>>::reserve_replace(meter)?;
+        //         native_backing::reserve_copy_and_cleanup(values, meter)?;
+        //         updates.push((key, values.clone()));
+        //         updates.len() - 1
+        //     };
+        //     let values = &mut updates[staged].1;
+        let mut updates: Vec<(StoreKey, usize, Vec<Datum<A>>)> =
+            update_buffer(retirement.len(), meter)?;
         for (position, datum_index) in retirement {
             let key = keys[*position];
+            let channel = &data[*position].channel;
             let mut staged = None;
-            for (index, (existing, _)) in updates.iter().enumerate() {
+            for (index, (existing, staged_position, _)) in updates.iter().enumerate() {
                 key_comparison(meter)?;
                 if *existing == key {
+                    check_channel(&data[*staged_position].channel, channel, meter)?;
                     staged = Some(index);
                     break;
                 }
@@ -790,19 +999,19 @@ where
                     .iter()
                     .find(|(index, _)| *index == key.shard())
                     .expect("requested data shard");
-                let values = &DigestShards::get(shard, &key, meter)?
-                    .ok_or_else(|| {
-                        RSpaceError::InterpreterError(
-                            "native datum cache is absent at retirement".to_owned(),
-                        )
-                    })?
-                    .value;
+                let entry = DigestShards::get(shard, &key, meter)?.ok_or_else(|| {
+                    RSpaceError::InterpreterError(
+                        "native datum cache is absent at retirement".to_owned(),
+                    )
+                })?;
+                check_channel(entry.key.as_ref(), channel, meter)?;
+                let values = &entry.value;
                 DigestShards::<C, Vec<Datum<A>>>::reserve_replace(meter)?;
                 native_backing::reserve_copy_and_cleanup(values, meter)?;
-                updates.push((key, values.clone()));
+                updates.push((key, *position, values.clone()));
                 updates.len() - 1
             };
-            let values = &mut updates[staged].1;
+            let values = &mut updates[staged].2;
             if *datum_index < 0 || *datum_index as usize >= values.len() {
                 return Err(RSpaceError::InterpreterError(
                     "native datum retirement index is invalid".to_owned(),
@@ -839,18 +1048,37 @@ where
     ) -> Result<(), RSpaceError> {
         let mut data_update = self.prepare_retire_data(data, &keys.channels, retirement, meter)?;
         let key = keys.group;
+        // Changed by D-C2e (D-S1, DR-96): a found entry must hold the group.
+        // let installed = {
+        //     let shard = self.installed_continuations.read(&key);
+        //     DigestShards::get(&shard, &key, meter)?.is_some()
+        // };
+        // let mut continuation_shard = self.continuations.write(&key);
+        // let existing = &DigestShards::get(&continuation_shard, &key, meter)?
+        //     .ok_or_else(|| {
+        //         RSpaceError::InterpreterError(
+        //             "native continuation cache is absent at match
+        // retirement".to_owned(),         )
+        //     })?
+        //     .value;
         let installed = {
             let shard = self.installed_continuations.read(&key);
-            DigestShards::get(&shard, &key, meter)?.is_some()
+            match DigestShards::get(&shard, &key, meter)? {
+                Some(entry) => {
+                    check_group(entry.key.as_ref(), channels, meter)?;
+                    true
+                }
+                None => false,
+            }
         };
         let mut continuation_shard = self.continuations.write(&key);
-        let existing = &DigestShards::get(&continuation_shard, &key, meter)?
-            .ok_or_else(|| {
-                RSpaceError::InterpreterError(
-                    "native continuation cache is absent at match retirement".to_owned(),
-                )
-            })?
-            .value;
+        let entry = DigestShards::get(&continuation_shard, &key, meter)?.ok_or_else(|| {
+            RSpaceError::InterpreterError(
+                "native continuation cache is absent at match retirement".to_owned(),
+            )
+        })?;
+        check_group(entry.key.as_ref(), channels, meter)?;
+        let existing = &entry.value;
         let continuation_update = if continuation_persistent {
             None
         } else {
@@ -900,7 +1128,12 @@ where
         keys: &[StoreKey],
         meter: &dyn SourceMeter,
     ) -> Result<JoinRetirement<'_, C>, RSpaceError> {
-        if keys.len() != data.len() {
+        // Changed by D-C2e (D-S1, DR-96): key `i` is the key of `join[i]`, the
+        // channel that the collision check compares.
+        // if keys.len() != data.len() {
+        //     return Err(RSpaceError::HostWorkRejected);
+        // }
+        if keys.len() != data.len() || keys.len() != join.len() {
             return Err(RSpaceError::HostWorkRejected);
         }
         let mut requested = [false; NUM_SHARDS];
@@ -909,12 +1142,26 @@ where
             requested[key.shard()] = true;
         }
         let shards = lock_requested(&self.joins, requested, meter)?;
-        let mut updates: Vec<(StoreKey, Vec<Vec<C>>)> = update_buffer(keys.len(), meter)?;
-        for key in keys {
+        // Changed by D-C2e (D-S1, DR-96): an update records the position of its
+        // channel; a repeated key compares the two channels, and a found entry
+        // must hold the channel.
+        // let mut updates: Vec<(StoreKey, Vec<Vec<C>>)> = update_buffer(keys.len(),
+        // meter)?; for key in keys {
+        //     let mut repeated = false;
+        //     for (previous, _) in &updates {
+        //         key_comparison(meter)?;
+        //         if previous == key {
+        //             repeated = true;
+        //             break;
+        //         }
+        //     }
+        let mut updates: Vec<(StoreKey, usize, Vec<Vec<C>>)> = update_buffer(keys.len(), meter)?;
+        for (channel_position, (channel, key)) in join.iter().zip(keys).enumerate() {
             let mut repeated = false;
-            for (previous, _) in &updates {
+            for (previous, previous_position, _) in &updates {
                 key_comparison(meter)?;
                 if previous == key {
+                    check_channel(&join[*previous_position], channel, meter)?;
                     repeated = true;
                     break;
                 }
@@ -927,13 +1174,20 @@ where
                 .iter()
                 .find(|(candidate, _)| *candidate == key.shard())
                 .expect("requested join shard");
-            let existing = &DigestShards::get(shard, key, meter)?
-                .ok_or_else(|| {
-                    RSpaceError::InterpreterError(
-                        "native join cache is absent at match retirement".to_owned(),
-                    )
-                })?
-                .value;
+            // let existing = &DigestShards::get(shard, key, meter)?
+            //     .ok_or_else(|| {
+            //         RSpaceError::InterpreterError(
+            //             "native join cache is absent at match retirement".to_owned(),
+            //         )
+            //     })?
+            //     .value;
+            let entry = DigestShards::get(shard, key, meter)?.ok_or_else(|| {
+                RSpaceError::InterpreterError(
+                    "native join cache is absent at match retirement".to_owned(),
+                )
+            })?;
+            check_channel(entry.key.as_ref(), channel, meter)?;
+            let existing = &entry.value;
             let mut position = None;
             for (candidate, value) in existing.iter().enumerate() {
                 native_backing::inspect_slice(value, meter)?;
@@ -958,7 +1212,10 @@ where
                     .ok_or(RSpaceError::HostWorkRejected)?;
                 meter.reserve(moved, bytes, 0)?;
                 values.remove(position);
-                updates.push((*key, values));
+                // Changed by D-C2e (D-S1, DR-96): the update records its
+                // position.
+                // updates.push((*key, values));
+                updates.push((*key, channel_position, values));
             }
         }
         Ok(JoinRetirement { shards, updates })
@@ -980,7 +1237,16 @@ where
         meter.reserve(2, allocation, allocation)?;
         let key = keys.group;
         let mut shard = self.installed_continuations.write(&key);
-        if DigestShards::get(&shard, &key, meter)?.is_some() {
+        // Changed by D-C2e (D-S1, DR-96): a found entry must hold the group.
+        // if DigestShards::get(&shard, &key, meter)?.is_some() {
+        let found = match DigestShards::get(&shard, &key, meter)? {
+            Some(entry) => {
+                check_group(entry.key.as_ref(), channels, meter)?;
+                true
+            }
+            None => false,
+        };
+        if found {
             DigestShards::<Vec<C>, Arc<WaitingContinuation<P, K>>>::reserve_replace(meter)?;
             DigestShards::replace(&mut shard, &key, Arc::new(value));
         } else {
@@ -1011,6 +1277,8 @@ where
         let present = existing.is_some();
         let mut values = match existing {
             Some(entry) => {
+                // D-C2e (DR-96): the entry must hold the channel.
+                check_channel(entry.key.as_ref(), channel, meter)?;
                 native_backing::reserve_copy_and_cleanup(&entry.value, meter)?;
                 entry.value.clone()
             }
