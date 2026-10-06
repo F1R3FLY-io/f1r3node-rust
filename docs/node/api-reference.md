@@ -91,7 +91,7 @@ curl http://localhost:40403/api/status
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
   "lastFinalizedBlockNumber": 28,
-  "isValidator": false,
+  "isValidator": true,
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
