@@ -2652,10 +2652,33 @@ jobs:
             "$work/release-evidence.json" "$verdict" "$work/verdict.json"
           ci-control/.github/scripts/release-gate-evidence.sh candidate-marker \
             "$work/release-evidence.json" "$work/release-candidate.json"
+          # A pass verdict makes the canary a test net candidate (section
+          # 12.1). A regress verdict needs an accepted maintainer review by a
+          # maintain or admin collaborator; rerun this job after the review
+          # asset is uploaded.
+          documents=("$work/soak-evidence.json" "$work/verdict.json")
+          review_args=()
+          if [ "$verdict" = regress ] &&
+            gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'maintainer-review.json' --dir "$work/review" 2>/dev/null; then
+            reviewer="$(jq -r '.reviewer // empty' "$work/review/maintainer-review.json" 2>/dev/null || true)"
+            if [[ "$reviewer" =~ ^[A-Za-z0-9-]+$ ]] &&
+              gh api "repos/${GITHUB_REPOSITORY}/collaborators/${reviewer}/permission" \
+                --jq '{login: .user.login, permission: .permission}' > "$work/review/permission.json"; then
+              review_args=("$work/review/maintainer-review.json" "$work/review/permission.json")
+            fi
+          fi
+          if [ "$verdict" = pass ] || [ "${#review_args[@]}" -eq 2 ]; then
+            ci-control/.github/scripts/release-gate-evidence.sh test-net-candidate \
+              "$work/release-evidence.json" "$work/run.json" "$work/soak-evidence.json" \
+              "$work/verdict.json" "$work/test-net-candidate.json" "${review_args[@]}"
+            documents+=("$work/test-net-candidate.json")
+          else
+            echo "::warning::${CANDIDATE_TAG} is not a test net candidate yet: verdict ${verdict} has no accepted maintainer review"
+          fi
           # --clobber: a rerun of the same candidate replaces its own documents.
-          gh release upload "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            "$work/soak-evidence.json" "$work/verdict.json"
-          echo "Published soak-evidence.json and verdict.json (${verdict}) on ${CANDIDATE_TAG}."
+          gh release upload "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${documents[@]}"
+          echo "Published ${#documents[@]} gate documents (verdict ${verdict}) on ${CANDIDATE_TAG}."
           if [ "$verdict" = regress ]; then
             echo "::warning::regress verdict for ${CANDIDATE_TAG}; promotion holds until a maintainer uploads maintainer-review.json (docs/release-process.md section 8)"
           fi

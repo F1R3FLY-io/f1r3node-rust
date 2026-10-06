@@ -169,7 +169,7 @@ A Deployment Train is an independent release path that starts from a reviewed pu
 
 ### 60h stability soak
 
-The 60h stability soak is the fixed 60-hour pre-promotion soak of one release candidate on a multi-validator shard. A passing run is a mandatory gate for [stable release](#stable-release) promotion.
+The 60h stability soak is the fixed 60-hour pre-promotion soak of one release candidate on a multi-validator shard. A passing run is a mandatory gate for [stable release](#stable-release) promotion. Under the proposed 2026-10-06 amendment, a passing run makes the candidate a [test net candidate](#test-net-candidate). Stable promotion then also waits for the [Shard soak-in](#shard-soak-in).
 
 **Preferred usage.** Use this term for the pre-promotion release gate. *Avoid*: weekend soak. Machine identifiers keep the legacy values `weekend` and `weekend-60h` until a separate identifier migration. *Distinguish from* the [Dev integration soak](#dev-integration-soak): release gate versus integration monitoring.
 
@@ -187,15 +187,25 @@ This term does not establish power-loss durability, artifact upload, or a commit
 
 ### Test net
 
-The test net is the continuously running network of shards that hosts [Shard soak-ins](#shard-soak-in) and serves select partners and customers. Its shards run stable releases; nodes that complete a soak-in period hold the [Anchor](#anchor) role. Unlike the per-iteration soak shards, the test net does not restart between runs.
+The test net is the continuously running network of shards that hosts [Shard soak-ins](#shard-soak-in) and serves select partners and customers. Nodes that complete a soak-in period hold the [Anchor](#anchor) role. Unlike the per-iteration soak shards, the test net does not restart between runs.
 
-**Preferred usage.** Use this term for the standing shard network. *Avoid*: long-running quorum of shards, standing quorum, and continuously running shard quorum. *Distinguish from* the casper test-network fixture, which is an in-process test helper, not infrastructure.
+Under the proposed 2026-10-06 amendment (`docs/release-process.md` Section 12.1), each shard mixes releases: Anchors run earlier releases, and soaking nodes run a [test net candidate](#test-net-candidate). All shards in one test net use the same consensus and state machine replication (SMR) model. Each consensus model has its own test net.
+
+**Preferred usage.** Use this term for the standing shard network of one consensus model. Name the model when more than one test net exists, for example "the CBC Casper test net". *Avoid*: long-running quorum of shards, standing quorum, and continuously running shard quorum. *Distinguish from* the casper test-network fixture, which is an in-process test helper, not infrastructure.
+
+### Test net candidate
+
+A test net candidate is a [canary release](#canary-release) that passed the [60h stability soak](#60h-stability-soak) on its exact image digest. This term comes from the proposed 2026-10-06 amendment in `docs/release-process.md` Section 12.1. Only a test net candidate can enroll in the [test net](#test-net).
+
+**Preferred usage.** Use this term between a passing 60h stability soak and stable promotion. *Distinguish from* [Release candidate](#release-candidate), which has not yet passed the 60h stability soak, and from [Stable release](#stable-release), which passed every gate, including the [Shard soak-in](#shard-soak-in).
 
 ### Shard soak-in
 
 A Shard soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in the [test net](#test-net). The Shard soak-in measures node behavior with the current test net members, catches compatibility issues, and confirms that the new nodes stay up. Enrollment is scheduled for each stable release tag. The trigger is a stable release publication, which has passed the [60h stability soak](#60h-stability-soak) gate.
 
-**Preferred usage.** Use this term for post-promotion test net trials. *Avoid*: Soak-in, without the Shard qualifier, in new prose. *Distinguish from* the [60h stability soak](#60h-stability-soak), which is a pre-promotion release gate on one candidate.
+The proposed 2026-10-06 amendment (`docs/release-process.md` Section 12.1) moves enrollment before stable promotion. A [test net candidate](#test-net-candidate) enrolls after its 60h stability soak passes, and the Shard soak-in result becomes a stable promotion gate.
+
+**Preferred usage.** Use this term for test net trials of new nodes. *Avoid*: Soak-in, without the Shard qualifier, in new prose. *Distinguish from* the [60h stability soak](#60h-stability-soak), which is a pre-promotion release gate on one candidate.
 
 ### Soak-in
 

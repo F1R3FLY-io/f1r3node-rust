@@ -135,6 +135,7 @@ jobs:
             --pattern 'soak-evidence.json' \
             --pattern 'verdict.json' \
             --pattern 'maintainer-review.json' \
+            --pattern 'shard-soak-in-evidence.json' \
             --dir "$gates" || true
           [ -f "$gates/release-evidence.json" ] || {
             echo "::error::candidate ${CANDIDATE_TAG} has no release-evidence.json asset"
@@ -172,6 +173,7 @@ jobs:
           }
           fetch_named_run "$gates/oci-validation-evidence.json" "$gates/oci-validation-run.json"
           fetch_named_run "$gates/soak-evidence.json" "$gates/soak-run.json"
+          fetch_named_run "$gates/shard-soak-in-evidence.json" "$gates/shard-soak-in-run.json"
           if [ -f "$gates/maintainer-review.json" ]; then
             reviewer="$(jq -r '.reviewer // empty' "$gates/maintainer-review.json" 2>/dev/null || true)"
             if [[ "$reviewer" =~ ^[A-Za-z0-9-]+$ ]]; then
@@ -202,6 +204,10 @@ jobs:
         if: steps.candidate.outputs.candidate_tag != ''
         env:
           CANDIDATE_TAG: ${{ steps.candidate.outputs.candidate_tag }}
+          # Repository variable (docs/release-process.md section 12.1). Unset
+          # or advisory keeps the Shard soak-in gate advisory; enforced makes
+          # it binding; any other value fails the gate.
+          RELEASE_SHARD_SOAK_IN_GATE: ${{ vars.RELEASE_SHARD_SOAK_IN_GATE }}
         shell: bash -euo pipefail {0}
         run: |
           gates="$RUNNER_TEMP/gates"

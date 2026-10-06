@@ -404,6 +404,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-coverage-summary.sh
 
+      - name: Verify test net slot pins
+        shell: bash -euo pipefail {0}
+        run: scripts/remote/test-testnet-slots.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh

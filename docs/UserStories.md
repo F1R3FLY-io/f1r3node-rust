@@ -58,6 +58,29 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+
+#### US-010: Continuously running test net deployment
+
+> As a **release maintainer**, I want **CI to deploy each test net candidate to continuously running test net shards on OCI** so that **releases soak on long-lived state beside earlier releases before stable promotion, and partners can test against a running network**.
+
+**Implemented in:** EPIC-014, EPIC-013
+
+**Status:** In Progress
+
+**Design source:** `docs/release-process.md` Section 12.1 (proposed amendment, 2026-10-06, pending ratification).
+
+**Acceptance Criteria:**
+- [ ] Only a test net candidate deploys to the test net. A test net candidate is a canary release that passed the 60h stability soak on its exact image digest.
+- [ ] A CI workflow deploys the candidate image by digest to the test net on OCI with the existing fleet tooling.
+- [ ] Each shard runs a mix of releases. Soaking nodes on the candidate run beside Anchors on earlier releases.
+- [ ] All shards in one test net use the same consensus/SMR model. A candidate deploys only to the test net of its own model. The CBC Casper test net is the first test net.
+- [ ] A candidate that cannot interoperate with its shard starts a new shard with a fresh genesis in the same test net.
+- [ ] The Shard soak-in result publishes gate evidence, and stable promotion holds until that gate passes.
+- [ ] A failed deployment removes the soaking nodes, keeps the Anchors running, and reports the failure.
+- [ ] The deploy job runs only from protected refs with the release-credentials environment.
+
+---
+
 ## Planned Stories
 
 #### US-009: Bounded node behavior under resource faults
