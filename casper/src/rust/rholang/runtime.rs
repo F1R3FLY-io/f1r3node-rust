@@ -368,6 +368,36 @@ impl RuntimeOps {
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
 
+        // Slice 31: toggle the reducer's fs-native URN filter off
+        // for the duration of the genesis-blessed batch so FsGenesis
+        // can bind the raw fsRead/fsWrite/... primitives.  Restored
+        // to the default (block user deploys) on every return path,
+        // including the ? on process_deploy_with_mergeable_data,
+        // via a Drop-based guard — a panic or early return in a
+        // single deploy must not leave the filter permanently
+        // disabled on this runtime.
+        //
+        // The guard owns a cloned Arc to the AtomicBool so it does
+        // not keep an immutable borrow of self.runtime across the
+        // mutable borrow in create_checkpoint below.
+        struct FilterGuard {
+            flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+            prev: bool,
+        }
+        impl Drop for FilterGuard {
+            fn drop(&mut self) {
+                self.flag
+                    .store(self.prev, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let filter_flag = self.runtime.reducer.filter_fs_native_urns.clone();
+        let prev = filter_flag.load(std::sync::atomic::Ordering::Acquire);
+        filter_flag.store(false, std::sync::atomic::Ordering::Release);
+        let _guard = FilterGuard {
+            flag: filter_flag,
+            prev,
+        };
+
         let mut res = Vec::with_capacity(terms.len());
         for deploy in terms {
             res.push(self.process_deploy_with_mergeable_data(deploy).await?);
