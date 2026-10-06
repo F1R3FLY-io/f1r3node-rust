@@ -84,9 +84,10 @@ package "1. Sources" as SOURCES {
   ]
   rectangle SRC_TLA $v_model [
   **TLA+ models**
-  CheckpointReplay.tla: T1 to T4, T6
+  CheckpointReplay.tla: T1 to T4, T6, and U13
+  of decision 45
   TxnLockCoverage.tla: T5
-  19 configurations with BOUNDS headers
+  27 configurations with BOUNDS headers
   ]
   rectangle SRC_MAPS $v_map [
   **Maps and policies**
@@ -114,7 +115,7 @@ package "2. Checks" as CHECKS {
   ]
   rectangle CK_TLC $v_check [
   **TLC model checking**
-  3 safe configurations,
+  6 safe configurations,
   exhaustive breadth-first search
   ]
   rectangle CK_APA $v_check [
@@ -146,7 +147,7 @@ package "2. Checks" as CHECKS {
   ]
   rectangle NEG $v_control [
   **Negative controls: must fail**
-  27 Rocq mutants, 8 Unsafe TLC configurations,
+  27 Rocq mutants, 11 Unsafe TLC configurations,
   4 Apalache Error controls, 2 replay mutants,
   checker self-tests
   ]

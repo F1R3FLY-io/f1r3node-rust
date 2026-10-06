@@ -34,36 +34,36 @@
    step                     reified/costs.rs:97-102, 106-111, 123-126
                             (ScanMeter::inspect, reserve_copy, copy:
                             reserve, then work)
-   scan                     spaces/generic.rs:586-602, 606-618, 622-634
+   scan                     spaces/generic.rs:595-611, 615-627, 631-643
                             (scan_head, head_waiter, head_datum: the
                             buffer, one envelope decode for each entry, the
                             head copy) and
                             spaces/disciplines/queue.rs:39-57, 86-121
                             (head_metered: one comparison for each entry
                             after the first)
-   round_staged             spaces/generic.rs:696-759, 767-838 (offer and
+   round_staged             spaces/generic.rs:705-768, 776-847 (offer and
                             receive: the scan, the payload decode of a
                             receive, the metered match, the prepaid unwrap,
                             the staged fire). For a peek receive of a
                             non-persistent record, the staging of the round
                             also holds the re-store of decision 45: the
                             reserved copy of the record and the steps of
-                            Plan::restore (spaces/generic.rs:347-380: the
+                            Plan::restore (spaces/generic.rs:353-387: the
                             channel copy, Introduction::for_record and
                             register_introduction), each self-metered
-   round_after_commit       spaces/generic.rs:911-946 (outcome: the moves of
+   round_after_commit       spaces/generic.rs:920-955 (outcome: the moves of
                             into_continuation, prepaid by
                             spaces/record.rs:721-730)
-   operation_trace          spaces/generic.rs:980-1048 (prepare_produce and
+   operation_trace          spaces/generic.rs:989-1073 (prepare_produce and
                             prepare_consume: the channels, the config, the
                             matcher handle, the introduction, the bump, the
                             record, the rounds and the prepaid outcome
                             buffer). The checks of a re-entry (decision 43)
                             are self-metered steps of prepare: the two
                             comparisons of operation_ord
-                            (spaces/generic.rs:856-868), and the scan of
-                            head_ord and at_head (spaces/generic.rs:638-655,
-                            663-688: the buffer and the envelope decodes of
+                            (spaces/generic.rs:865-877), and the scan of
+                            head_ord and at_head (spaces/generic.rs:647-664,
+                            672-697: the buffer and the envelope decodes of
                             scan_head, with no copy) with the comparison of
                             the two orders and QueueDiscipline::precedes
                             (spaces/disciplines/queue.rs:63-72)
@@ -84,6 +84,11 @@
      substrate, which the branch does not meter on its play path, so it is
      not an event. The outcome runs after the commit: it moves each fired
      continuation out of its receipt and fills the prepaid buffer of fires.
+   - The legacy charges of decision 45 (Option P, LegacyChain in
+     reified/legacy_charges.rs) walk the encoded lengths of the staged
+     operations. The chain runs only in a legacy deploy, which has no
+     host-work budget, as ChargingRSpace runs its walks. So these reads
+     are not events of the model.
 
    ─────────────────────────────────────────────────────────────────────────
    Results (8 headlines, axiom-free)

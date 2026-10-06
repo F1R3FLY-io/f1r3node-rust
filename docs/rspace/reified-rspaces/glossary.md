@@ -15,57 +15,58 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Pairing](#pairing) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Par](#par) | 1 |
-| [Admission verdict](#admission-verdict) | 2 | [Path](#path) | 2 |
-| [Agent](#agent) | 1 | [Path marker](#path-marker) | 2 |
-| [Binding](#binding) | 2 | [Pattern](#pattern) | 1 |
-| [Block](#block) | 1 | [Peek](#peek) | 1 |
-| [Body channel](#body-channel) | 2 | [Persistent](#persistent) | 1 |
-| [Bundle](#bundle) | 1 | [pgmcp](#pgmcp) | 1 |
-| [Canonical form](#canonical-form) | 2 | [Phlo](#phlo) | 1 |
-| [Canonical group](#canonical-group) | 2 | [Play](#play) | 1 |
-| [Channel](#channel) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Checkpoint](#checkpoint) | 1 | [Process](#process) | 1 |
-| [Collection](#collection) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Collection counter](#collection-counter) | 2 | [Property-based test](#property-based-test) | 1 |
-| [Collection key](#collection-key) | 2 | [Qualifier](#qualifier) | 2 |
-| [COMM event](#comm-event) | 1 | [Random state](#random-state) | 1 |
-| [Config record](#config-record) | 2 | [Re-issue](#re-issue) | 2 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-offer](#re-offer) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Continuation](#continuation) | 1 | [Re-store](#re-store) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
-| [Datum](#datum) | 1 | [Recognized position](#recognized-position) | 2 |
-| [Deploy](#deploy) | 1 | [Record envelope](#record-envelope) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Reduction participant](#reduction-participant) | 2 |
-| [Event log](#event-log) | 1 | [Regression corpus](#regression-corpus) | 2 |
-| [F1r3lang](#f1r3lang) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [Factory](#factory) | 2 | [Replay](#replay) | 1 |
-| [Factory capability](#factory-capability) | 2 | [Reporting](#reporting) | 1 |
-| [FIPS](#fips) | 1 | [Retention](#retention) | 2 |
-| [Fire round](#fire-round) | 2 | [Rholang](#rholang) | 1 |
-| [Footprint policy](#footprint-policy) | 2 | [Rocq](#rocq) | 1 |
-| [Frontend](#frontend) | 1 | [Routing class](#routing-class) | 2 |
-| [Gate](#gate) | 2 | [RSpace](#rspace) | 1 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Send](#send) | 1 |
-| [Handle](#handle) | 2 | [Space](#space) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Space agent](#space-agent) | 2 |
-| [Head record](#head-record) | 2 | [Space counter](#space-counter) | 2 |
-| [Head waiter](#head-waiter) | 2 | [Space family](#space-family) | 2 |
-| [Head-only matching](#head-only-matching) | 2 | [Space id](#space-id) | 2 |
-| [Headline](#headline) | 2 | [Space intent](#space-intent) | 2 |
-| [History trie](#history-trie) | 1 | [Space name](#space-name) | 2 |
-| [Host operation](#host-operation) | 2 | [Space reference](#space-reference) | 2 |
-| [Host work](#host-work) | 1 | [Space transaction](#space-transaction) | 2 |
-| [Hot store](#hot-store) | 1 | [Staged view](#staged-view) | 2 |
-| [Inductive invariant](#inductive-invariant) | 1 | [Storage channel](#storage-channel) | 2 |
-| [Inert](#inert) | 2 | [Store identity](#store-identity) | 2 |
-| [Inner collection](#inner-collection) | 2 | [Sub-order](#sub-order) | 2 |
-| [Internal operation](#internal-operation) | 2 | [Sweep](#sweep) | 2 |
-| [Invariant map](#invariant-map) | 2 | [System process](#system-process) | 1 |
-| [Join](#join) | 1 | [Theory](#theory) | 2 |
-| [KIND](#kind) | 2 | [Theory identity](#theory-identity) | 2 |
+| [Acceptance category](#acceptance-category) | 2 | [Outer store](#outer-store) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Pairing](#pairing) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Par](#par) | 1 |
+| [Agent](#agent) | 1 | [Path](#path) | 2 |
+| [Binding](#binding) | 2 | [Path marker](#path-marker) | 2 |
+| [Block](#block) | 1 | [Pattern](#pattern) | 1 |
+| [Body channel](#body-channel) | 2 | [Peek](#peek) | 1 |
+| [Bundle](#bundle) | 1 | [Persistent](#persistent) | 1 |
+| [Canonical form](#canonical-form) | 2 | [pgmcp](#pgmcp) | 1 |
+| [Canonical group](#canonical-group) | 2 | [Phlo](#phlo) | 1 |
+| [Channel](#channel) | 1 | [Play](#play) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Collection](#collection) | 2 | [Process](#process) | 1 |
+| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
+| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
+| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-issue](#re-issue) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-offer](#re-offer) | 2 |
+| [Continuation](#continuation) | 1 | [Re-rooting](#re-rooting) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-store](#re-store) | 2 |
+| [Datum](#datum) | 1 | [Receive](#receive) | 1 |
+| [Deploy](#deploy) | 1 | [Recognized position](#recognized-position) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Record envelope](#record-envelope) | 2 |
+| [Event log](#event-log) | 1 | [Reduction participant](#reduction-participant) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Regression corpus](#regression-corpus) | 2 |
+| [Factory](#factory) | 2 | [Reified RSpace](#reified-rspace) | 2 |
+| [Factory capability](#factory-capability) | 2 | [Replay](#replay) | 1 |
+| [FIPS](#fips) | 1 | [Reporting](#reporting) | 1 |
+| [Fire round](#fire-round) | 2 | [Retention](#retention) | 2 |
+| [Footprint policy](#footprint-policy) | 2 | [Rholang](#rholang) | 1 |
+| [Frontend](#frontend) | 1 | [Rocq](#rocq) | 1 |
+| [Gate](#gate) | 2 | [Routing class](#routing-class) | 2 |
+| [getSpaceAgent](#getspaceagent) | 2 | [RSpace](#rspace) | 1 |
+| [Handle](#handle) | 2 | [Send](#send) | 1 |
+| [Handle capability](#handle-capability) | 2 | [Space](#space) | 2 |
+| [Head record](#head-record) | 2 | [Space agent](#space-agent) | 2 |
+| [Head waiter](#head-waiter) | 2 | [Space counter](#space-counter) | 2 |
+| [Head-only matching](#head-only-matching) | 2 | [Space family](#space-family) | 2 |
+| [Headline](#headline) | 2 | [Space id](#space-id) | 2 |
+| [History trie](#history-trie) | 1 | [Space intent](#space-intent) | 2 |
+| [Host operation](#host-operation) | 2 | [Space name](#space-name) | 2 |
+| [Host work](#host-work) | 1 | [Space reference](#space-reference) | 2 |
+| [Hot store](#hot-store) | 1 | [Space transaction](#space-transaction) | 2 |
+| [Inductive invariant](#inductive-invariant) | 1 | [Staged view](#staged-view) | 2 |
+| [Inert](#inert) | 2 | [Storage channel](#storage-channel) | 2 |
+| [Inner collection](#inner-collection) | 2 | [Store identity](#store-identity) | 2 |
+| [Internal operation](#internal-operation) | 2 | [Sub-order](#sub-order) | 2 |
+| [Invariant map](#invariant-map) | 2 | [Sweep](#sweep) | 2 |
+| [Join](#join) | 1 | [System process](#system-process) | 1 |
+| [KIND](#kind) | 2 | [Theory](#theory) | 2 |
+| [Legacy charge](#legacy-charge) | 2 | [Theory identity](#theory-identity) | 2 |
 | [LFS](#lfs) | 2 | [Times-repeated](#times-repeated) | 2 |
 | [Lock coverage](#lock-coverage) | 2 | [TLA+](#tla) | 1 |
 | [Lock stripe](#lock-stripe) | 1 | [Trigger event](#trigger-event) | 2 |
@@ -81,7 +82,6 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Op channel](#op-channel) | 2 | [Waiter](#waiter) | 2 |
 | [Operation order](#operation-order) | 2 | [Witness test](#witness-test) | 2 |
 | [Outcome](#outcome) | 2 | [Write skew](#write-skew) | 2 |
-| [Outer store](#outer-store) | 2 |  |  |
 
 ## Part 1: background terms
 
@@ -534,6 +534,15 @@ Each operation creates the same events, in the same order, as the equivalent hos
 
 The staged view is what a space transaction reads.
 It shows the hot store with the writes of the transaction applied, and it reads through to the history trie for older state.
+
+### Legacy charge
+
+A legacy charge is a phlo charge that `ChargingRSpace` makes for a host operation in a legacy deploy.
+Before the operation it charges the storage of the record or the continuation.
+After the operation it refunds the storage that a fire removes and charges the event fees.
+Each staged operation of a space transaction pays the legacy charges of its equivalent host operation ([decision 45](decision-register.md#decision-45), Option P).
+The pre-charge runs in the callback of the operation, and the post-charges run in the callback of the next operation or after the commit.
+*Distinguish from* the charges of the [accounting observer](#accounting-observer), which every deploy makes.
 
 ### Internal operation
 

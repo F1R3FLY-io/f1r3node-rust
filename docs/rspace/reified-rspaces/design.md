@@ -1305,18 +1305,21 @@ Apalache checks the inductive forms `IndInv` and `LockIndInv` with a base step a
 
 | Id | Invariant | Module | Safe configurations | Negative controls |
 |---|---|---|---|---|
-| T1 | `ReplayPrefixEqual` | `CheckpointReplay.tla` | `MC_CheckpointReplay.cfg`, `MC_CheckpointReplay_TwoBlock.cfg` | `UuidUnsafe.cfg`, `AcceptUnpairedUnsafe.cfg` |
+| T1 | `ReplayPrefixEqual` | `CheckpointReplay.tla` | `MC_CheckpointReplay.cfg`, `MC_CheckpointReplay_TwoBlock.cfg`, and the three configurations of decision 45: `MC_CheckpointReplay_Peek.cfg`, `MC_CheckpointReplay_Legacy.cfg`, `MC_CheckpointReplay_Legacy_TwoBlock.cfg` | `UuidUnsafe.cfg`, `AcceptUnpairedUnsafe.cfg` |
 | T2 | `SameRootIffSameState` | `CheckpointReplay.tla` | The same | `RootIgnoresVolatileUnsafe.cfg` |
 | T3 | `PairedOnce` | `CheckpointReplay.tla` | The same, and Apalache through `IndInv` | `DoublePairUnsafe.cfg`, `DoublePairUnsafe_IndStep_Apalache.cfg` |
 | T4 | `NoVolatileResidue` | `CheckpointReplay.tla` | The same, and Apalache through `IndInv` | `JoinResidueUnsafe.cfg`, `JoinResidueUnsafe_IndStep_Apalache.cfg` |
 | T5 | `Serializable` | `TxnLockCoverage.tla` | `MC_TxnLockCoverage.cfg`, and Apalache through `LockIndInv` | `UncoveredChannelUnsafe.cfg`, `UnjoinedChannelUnsafe.cfg`, and their Apalache step forms |
-| T6 | `ReplayOutcomeEqual` | `CheckpointReplay.tla` | `MC_CheckpointReplay.cfg`, `MC_CheckpointReplay_TwoBlock.cfg` | `StagingDivergenceUnsafe.cfg` |
+| T6 | `ReplayOutcomeEqual` | `CheckpointReplay.tla` | The same as T1 | `StagingDivergenceUnsafe.cfg`, `LegacyPreAfterObserveUnsafe.cfg` |
 
 The modules are [CheckpointReplay.tla](../../../formal/tlaplus/reified_rspaces/CheckpointReplay.tla) and [TxnLockCoverage.tla](../../../formal/tlaplus/reified_rspaces/TxnLockCoverage.tla).
 Each configuration file starts with a line that states its bounds.
 For example, `MC_TxnLockCoverage.cfg` covers two channels on two stripes, the groups that repeat a channel, two transactions, and two host operations.
 Since decision 36, the deploy of each block in `CheckpointReplay.tla` has a phlo limit, and the proposer may omit the COMM of its last fire.
 T6 states that an honest block is never rejected, and that its replayed deploy ends with the failure and the spending of play.
+
+Since [decision 45](decision-register.md#decision-45), the module also models peeks under Rule E and the legacy charges of Option P.
+Its invariant U13 `LegacyChargesFollowHost` is an id of the P4 map, and section [N10](#n10-legacy-charges) describes it.
 
 **Property tests.** The invariant map names 25 properties.
 Twenty-four are in [reified_space_store_handle_props.rs](../../../rspace++/tests/reified_space_store_handle_props.rs), and `prop_space_txn_par_identity_ignores_locally_free` is in [reified_space_store_handle_par.rs](../../../rholang/tests/reified_space_store_handle_par.rs), over real `Par` channels.
@@ -1623,7 +1626,7 @@ P4 uses the existing merge check #1 for this purpose and changes no merge code (
 Each operation on a queue consumes the counter record of its collection and produces it again with the next value, in its own transaction.
 So two branches that use one collection consume one counter produce, and check #1 sees a race.
 
-**The bump.** `bump` (`spaces/counter.rs:163-231`) stages the counter steps before the plan of the operation.
+**The bump.** `bump` (`spaces/counter.rs:165-245`) stages the counter steps before the plan of the operation.
 It returns the order of the operation, which is the value of the collection counter before the bump.
 
 ```text
@@ -1730,18 +1733,18 @@ Figure N3 shows the merge flow of the counter conflict.
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:196-199`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+`GenericSpace<S, D>` (`spaces/generic.rs:197-200`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 P4 instantiates it once, as `GenericSpace<HashMapOuter, QueueDiscipline>`, and `native_agent` returns it (`reified/system_processes.rs:56-58`).
 Two traits separate the parts of a family:
 
-- `OuterStore` (`spaces/generic.rs:108-124`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
-- `Discipline` (`spaces/generic.rs:145-192`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
+- `OuterStore` (`spaces/generic.rs:109-125`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
+- `Discipline` (`spaces/generic.rs:146-193`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
 
 `HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:22-52`).
 `QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:32-73`).
-In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:525-543`).
+In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:534-552`).
 
-**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:980-1048`) stage one operation in one transaction.
+**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:989-1073`) stage one operation in one transaction.
 The job then commits the transaction exactly once (`spaces/agent.rs:273-283`).
 
 ```text
@@ -1841,7 +1844,7 @@ A re-issued persistent element re-enters at its place.
 It meets the other side only when it precedes the head of its own side.
 Otherwise it is stored or parked behind the head, and it fires nothing.
 
-**The produce plan.** `offer` (`spaces/generic.rs:696-759`) is the plan of a send.
+**The produce plan.** `offer` (`spaces/generic.rs:705-768`) is the plan of a send.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
@@ -1868,7 +1871,7 @@ A head waiter that does not match blocks every waiter behind it, and the datum i
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive` (`spaces/generic.rs:767-838`) is the plan of a receive, and it mirrors OFFER.
+**The consume plan.** `receive` (`spaces/generic.rs:776-847`) is the plan of a receive, and it mirrors OFFER.
 
 ```text
 RECEIVE(op, ord):                              ▷ GenericSpace::receive
@@ -1973,7 +1976,7 @@ Then the matching heads would stay with nothing in flight.
 
 The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1135`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) prove the order of delivery and the blocking of a head.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:911-946`) turns the receipts into a `SpaceOutcome`.
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:920-955`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
 
@@ -2442,6 +2445,125 @@ The typed replies are not aborts, and the [agent API](agent-api.md#7-typed-repli
 - **Matching under the stripes.** The agent matches while its transaction holds its lock stripes, as the host does under its own locks.
 - **Closures.** A data value that a program sends inside a `use` block gets no wrapper (item A24). A forged reply channel of a system process loses its use context, so a reply channel should be a `new` name (R7).
 - **Key size.** A data channel holds the collection key, so the id of a data channel grows with the size of the channel.
+
+### N10. Legacy charges
+
+A legacy deploy charges phlo through `ChargingRSpace` (`rholang/src/rust/interpreter/storage/charging_rspace.rs:79-151`).
+Before each host call it charges the storage of the record or the continuation.
+After the call, `handle_result` refunds the storage that a fire removes and charges the event fees (`rholang/src/rust/interpreter/storage/charging_rspace.rs:298-381`).
+A space transaction reaches the host store through the substrate, not through `ChargingRSpace`.
+So the agent makes these [legacy charges](glossary.md#legacy-charge) itself ([decision 45](decision-register.md#decision-45), Option P).
+Each staged operation pays what `ChargingRSpace` charges for its equivalent host call.
+
+**The cost functions.** The charges use four functions of `accounting/costs.rs`.
+Let $`|x|`$ be the protobuf encoded length of $`x`$, and let $`n`$ be a number of channels.
+$`\mathrm{SP}`$ is the storage of a record $`d`$ on the channel $`c`$.
+$`\mathrm{SC}`$ is the storage of a continuation $`k`$ on the channels $`cs`$ with the patterns $`ps`$.
+$`E`$ and $`\mathit{CE}`$ are the event fees:
+
+```math
+\begin{aligned}
+\mathrm{SP}(c, d) &= |c| + \sum_{p \in \mathrm{pars}(d)} |p| \\
+\mathrm{SC}(cs, ps, k) &= \sum_{c \in cs} |c| + \sum_{p \in ps} |p| + |\mathrm{body}(k)| \\
+E(n) &= 32 + 32\,n \\
+\mathit{CE}(n) &= E(n) + n \cdot E(1) = 32 + 96\,n
+\end{aligned}
+```
+
+Let $`\mathrm{rs}(x)`$ be the random state of a record $`x`$, and $`\mathrm{id}(k)`$ the id bytes of a continuation: the random state of its body.
+Table N10.1 gives the charges of each staged shape, as `produce_charges` (`rholang/src/rust/interpreter/reified/legacy_charges.rs:59`) and `consume_charges` (`rholang/src/rust/interpreter/reified/legacy_charges.rs:88`) compute them.
+The post-charges keep the order of `handle_result`, and each refund is one entry, also when it is zero.
+
+*Table N10.1. The legacy charges of each staged shape.*
+
+| Staged shape | Pre-charge | Post-charges, in order |
+|---|---|---|
+| Store of the record $`d`$ on $`c`$ | $`\mathrm{SP}(c, d)`$ | $`E(1)`$ |
+| Park of $`k`$ on $`cs`$ | $`\mathrm{SC}(cs, ps, k)`$ | $`E(\lvert cs \rvert)`$ |
+| Produce of $`d`$ on $`c`$ that fires the waiter $`W`$ | $`\mathrm{SP}(c, d)`$ | The refund of $`\mathrm{SC}(W)`$ when $`W`$ is not persistent or $`\mathrm{id}(W) = \mathrm{rs}(d)`$, else 0. The refund of the sum of $`\mathrm{SP}(c_i, r_i)`$ over the bound records $`r_i`$ that are not persistent or that have $`\mathrm{rs}(r_i) = \mathrm{rs}(d)`$. Then $`E(1)`$ when $`d`$ is not persistent, and $`\mathit{CE}(\lvert W.cs \rvert)`$. |
+| Consume of $`k`$ on $`cs`$ that fires | $`\mathrm{SC}(cs, ps, k)`$ | The refund of $`\mathrm{SC}(cs, ps, k)`$. The refund of the sum of $`\mathrm{SP}(c_i, r_i)`$ over the bound records that are not persistent or that have $`\mathrm{rs}(r_i) = \mathrm{id}(k)`$. Then $`E(\lvert cs \rvert)`$ when $`k`$ is not persistent, and $`\mathit{CE}(\lvert cs \rvert)`$. |
+
+The incoming datum of a produce fire is always a refunded record, because its random state is $`\mathrm{rs}(d)`$.
+The persist flag of a bound record is the flag of the host's `wrap_result`, which the receipt keeps since Rule E.
+So the charges that the agent computes when it stages an operation equal the charges of `ChargingRSpace` on the result of the host call.
+
+**The chain.** The commit runs the callback `before_observe` of each staged operation before the observer calls of that operation.
+`LegacyChain` (`rholang/src/rust/interpreter/reified/legacy_charges.rs:211`) puts the charges of each operation into these callbacks:
+
+```text
+CHAIN-NEW(budget):                              ▷ LegacyChain::new
+    active ← the budget is legacy and metered
+    carry ← []
+
+CHAIN-STAGE(op):                                ▷ LegacyChain::produce, LegacyChain::consume
+    if active:
+        (pre, post) ← CHARGES(op)               ▷ Table N10.1
+        carried ← carry
+        carry ← post
+        callback(op) ← [charge each c of carried; the registration of op; charge pre]
+    stage op in the transaction
+
+CHAIN-FINISH():                                 ▷ LegacyChain::finish, after the commit
+    if active: charge each c of carry
+```
+
+The host program charges, for each operation $`i`$, the registration, then $`\mathrm{pre}_i`$, then the operation, then $`\mathrm{post}_i`$.
+The chain charges, in the callback of operation $`i`$, first $`\mathrm{post}_{i-1}`$, then the registration, then $`\mathrm{pre}_i`$, and the tail charges $`\mathrm{post}_{n-1}`$.
+So both runs make the same charges in the same order.
+The legacy log of a space job is the log of its host program.
+The callback of operation $`i`$ wraps the registration of the introduction (`rholang/src/rust/interpreter/reified/legacy_charges.rs:262-279`):
+
+```rust
+    fn attach(
+        &mut self,
+        budget: RuntimeBudget,
+        charges: LegacyCharges,
+        registration: Option<BeforeObserve>,
+    ) -> BeforeObserve {
+        let LegacyCharges { pre, post } = charges;
+        let carried = std::mem::replace(&mut self.carry, post);
+        Box::new(move |source: RSpaceOperationSource<'_>| {
+            for charge in carried {
+                budget.charge_legacy(charge).map_err(RSpaceError::from)?;
+            }
+            if let Some(registration) = registration {
+                registration(source)?;
+            }
+            budget.charge_legacy(pre).map_err(RSpaceError::from)
+        })
+    }
+```
+
+Every staged operation of a space job goes through the chain.
+This covers the counter bump (`counter::bump`), the plans of the queue, the [re-store](glossary.md#re-store), and the operations that create a space.
+The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:1027`, `1070`, `1150`).
+
+**Out of phlo.** A charge that runs out of phlo stops the run where the host program stops.
+A carried post-charge or a pre-charge fails inside the callback of its operation.
+That operation then makes no observer call, and the operations before it stay applied (D6).
+The host program fails at the same charge: after the host call of the operation before, or before the host call of the operation.
+
+A tail that runs out of phlo fails after the full commit, as the post-charges of the last host call fail after that call.
+Replay stages the same operations and runs the same callbacks, so it makes the same charges and stops at the same point ([decision 36](decision-register.md#decision-36)).
+Figure N10 shows the two runs and a stop at a pre-charge.
+
+![Legacy charges of a space transaction as a sequence diagram with three parts. In the host program, the reducer registers the authority of operation 0, ChargingRSpace charges pre 0, runs the RSpace operation, and charges post 0 with the refunds and the event fees, and then the same for operation 1. In the space transaction, the agent stages operation 0 through LegacyChain, which makes callback 0 of the registration and pre 0 and carries post 0, and stages operation 1, whose callback charges post 0, the registration and pre 1 and carries post 1. The commit runs callback 0, operation 0, callback 1 and operation 1, and finish charges the tail post 1 after the commit, so both runs make one log: pre 0, post 0, pre 1, post 1. In the last part, callback 1 runs out of phlo at pre 1: the commit fails with OutOfPhlogistonsError, operation 0 stays applied and operation 1 makes no observer call, which is where the host program stops.](diagrams/17-legacy-charge-chain.svg)
+
+*Figure N10. Source: [diagrams/17-legacy-charge-chain.puml](diagrams/17-legacy-charge-chain.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
+
+**Verification.** The Rocq module `LegacyCharges.v` proves that the space run makes the legacy log, the stop point, and the applied operations of the host program (Q79).
+It also proves that replay stops where play stops (Q80).
+The invariant U13 `LegacyChargesFollowHost` of `CheckpointReplay.tla` checks the same claim in a model of play and replay with peeks.
+Section [11.14](verification.md#1114-legacy-charges-of-decision-45) of the verification dossier lists these results, the tests, and the negative controls.
+
+**Scope and limits.**
+
+- The chain is active only in a legacy deploy with a metered budget (`LegacyChain::new`). In every other deploy the accounting observer charges the space operations ([M-3](decision-register.md#m-3)).
+- A legacy deploy has no host-work budget, so the encoded-length walks of the charges reserve no host work, as the walks of `ChargingRSpace` reserve none.
+- In a legacy deploy, the reducer runs host operations outside the deterministic scheduler. So the charges of parallel branches follow the schedule (design report of decision 45, D.4). A space job is sequential inside, so its charges keep their order.
+- If an operation fails a read-only check of the commit, the post-charges of the operation before it are not made. Only a defect or a produce counter at `i32::MAX` fails such a check.
+- The refund sum uses a checked addition, where `ChargingRSpace` adds without a check.
+- A continuation without a body fails closed with `Inconsistent`, where `ChargingRSpace` panics.
 
 ## References
 

@@ -10,6 +10,7 @@ pub mod errors;
 pub mod execution;
 pub mod factory;
 pub mod handle;
+pub mod legacy_charges;
 pub mod route;
 pub mod runtime;
 pub mod scope;

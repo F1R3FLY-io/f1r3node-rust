@@ -454,7 +454,7 @@
         "CoveredAt",
         "Mult",
         "Need",
-        "ReplayFire"
+        "ReplayApply"
       ],
       "covers": [
         "H1",
@@ -505,7 +505,7 @@
         "CoveredAt",
         "Mult",
         "Need",
-        "ReplayFire"
+        "ReplayApply"
       ],
       "covers": [
         "H1",
@@ -548,7 +548,7 @@
       "tla": [
         "Grants",
         "ReplayStage",
-        "ReplayFire"
+        "ReplayApply"
       ],
       "covers": [
         "H4",
@@ -572,7 +572,7 @@
         "stage_fire"
       ],
       "tla": [
-        "ReplayFire"
+        "ReplayApply"
       ],
       "covers": [
         "H4",
@@ -593,7 +593,7 @@
         "stage_fire"
       ],
       "tla": [
-        "ReplayFire"
+        "ReplayApply"
       ],
       "covers": [
         "H4",
@@ -754,7 +754,7 @@
       ],
       "tla": [
         "ReplayCommit",
-        "ReplayFire"
+        "ReplayApply"
       ],
       "covers": [
         "H1",
@@ -1471,7 +1471,7 @@
       ],
       "tla": [
         "ReplayStage",
-        "ReplayFire",
+        "ReplayApply",
         "ReplayCommit"
       ],
       "covers": [

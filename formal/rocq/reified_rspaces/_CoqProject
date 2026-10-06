@@ -1,5 +1,6 @@
 # Reified RSpaces — Formal Verification (P1: the storage substrate, P2: the
-# wire encoding, P4: the hashmap:queue slice and its metering)
+# wire encoding, P4: the hashmap:queue slice, its metering and its legacy
+# charges)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -8,7 +9,7 @@
 #   EventCorrelation  H1-H12: commit parity with the host (observer calls,
 #                     events, status and store), counter timing, replay
 #                     pairing, view coherence, joins lockstep, sub-orders,
-#                     abort, event coverage, peek retention, reporting.
+#                     abort, event coverage, peeks, reporting.
 #                     H17, H19-H21 (P1 fix rules): canonical groups fail
 #                     closed, replay directives fail closed, one
 #                     transaction per parent order, store identity. Round 2:
@@ -17,7 +18,13 @@
 #                     evaluation scope, on a store swap and on a session
 #                     change (FR-5'). Round 3: a produce-side peek fire
 #                     never stores its incoming datum, and the agent
-#                     re-offers it as the next operation (FR-10, H11).
+#                     re-offers it as the next operation (FR-10).
+#                     Decision 45 (Rule E): a peek fire removes its stored
+#                     non-persistent records as the host does, and the
+#                     agent stores them again. So the commit equals the
+#                     host program whose reducer sends the peeked data
+#                     again (H11, peek_reproduces_trace_eq_host). H23
+#                     (decision 36): replay reproduces the run of play.
 #   VolatileSweep     H13-H16: exact sweep, absent delete, root neutrality,
 #                     leaf record count. H18, H22 (P1 fix rules): canonical
 #                     reads are root neutral, the checkpoint rejects two
@@ -51,6 +58,13 @@
 #                     feature/cost-accounted-rho), its reservations precede
 #                     the commit, and its charges do not depend on the list
 #                     order of the staged view or on unread payloads.
+#   LegacyCharges     Decision 45, Option P (2 headlines): the legacy
+#                     storage charges of a space transaction. The callbacks
+#                     with the carried post-charges, and then the tail, make
+#                     the charges of the host program, with the same
+#                     budget, stop point and applied operations (Q79).
+#                     Replay with the operations of play stops where play
+#                     stops (Q80).
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -73,3 +87,4 @@ theories/HeadOnlyDisciplines.v
 theories/SpaceRefs.v
 theories/SpaceFactory.v
 theories/AgentReadCoverage.v
+theories/LegacyCharges.v

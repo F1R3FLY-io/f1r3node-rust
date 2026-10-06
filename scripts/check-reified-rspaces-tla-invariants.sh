@@ -5,7 +5,12 @@
 # P1: CheckpointReplay.tla (T1-T4, checkpoint and replay, and T6 of
 # decision 36: an honest deploy replays to the failure and the spending of
 # play) and TxnLockCoverage.tla (T5, lock coverage of space transactions,
-# FR-4).
+# FR-4). CheckpointReplay.tla also models decision 45: peeks under Rule E
+# (a peek fire removes the record, and a re-store puts it back), and the
+# legacy storage charges of Option P (the chain of before_observe callbacks
+# and the tail), with U13 (LegacyChargesFollowHost, an id of the P4 map):
+# the legacy log, the remaining budget and the stop point of play equal
+# those of the equivalent host program.
 # P4: HeadOnlyDiscipline.tla (head-only matching of a queue: no pending
 # match, a blocked head blocks the rest, FIFO, and the re-entry of a
 # re-issued persistent operation at its first-round ord of decision 43:
@@ -29,7 +34,8 @@
 #                  other invariants hold on the full state space
 #   4. apalache  - BASE (Init => Inv, --length=0) and STEP (Inv /\ Next =>
 #                  Inv', --length=1) for the inductive invariants IndInv
-#                  (CheckpointReplay: T3 and T4), LockIndInv
+#                  (CheckpointReplay: T3 and T4, also with peeks and
+#                  legacy charges), LockIndInv
 #                  (TxnLockCoverage: T5), HeadIndInv (HeadOnlyDiscipline:
 #                  the P4 fragment, and decision 43 with re-entries) and
 #                  HandleIndInv (NativeHandles). Each negative control
@@ -74,6 +80,9 @@ APALACHE_TIMEOUT="${APALACHE_TIMEOUT:-1800}"
 SAFE_CONFIGS=(
   "CheckpointReplay MC_CheckpointReplay.cfg"
   "CheckpointReplay MC_CheckpointReplay_TwoBlock.cfg"
+  "CheckpointReplay MC_CheckpointReplay_Peek.cfg"
+  "CheckpointReplay MC_CheckpointReplay_Legacy.cfg"
+  "CheckpointReplay MC_CheckpointReplay_Legacy_TwoBlock.cfg"
   "TxnLockCoverage MC_TxnLockCoverage.cfg"
   "HeadOnlyDiscipline MC_HeadOnlyDiscipline.cfg"
   "HeadOnlyDiscipline MC_HeadOnlyDiscipline_Reissue.cfg"
@@ -88,6 +97,9 @@ UNSAFE_CONFIGS=(
   "CheckpointReplay JoinResidueUnsafe.cfg NoVolatileResidue"
   "CheckpointReplay StagingDivergenceUnsafe.cfg ReplayOutcomeEqual"
   "CheckpointReplay AcceptUnpairedUnsafe.cfg ReplayPrefixEqual"
+  "CheckpointReplay LegacyPreAfterObserveUnsafe.cfg ReplayOutcomeEqual"
+  "CheckpointReplay LegacyTailDroppedUnsafe.cfg LegacyChargesFollowHost"
+  "CheckpointReplay RetainPeekUnsafe.cfg LegacyChargesFollowHost"
   "TxnLockCoverage UncoveredChannelUnsafe.cfg Serializable"
   "TxnLockCoverage UnjoinedChannelUnsafe.cfg Serializable"
   "HeadOnlyDiscipline HeadOnlyScanUnsafe.cfg HeadBlocks"
@@ -104,6 +116,8 @@ APALACHE_CHECKS=(
   "step|CheckpointReplay|MC_CheckpointReplay_IndStep_Apalache.cfg|1|NoError|"
   "step-doublepair-unsafe|CheckpointReplay|DoublePairUnsafe_IndStep_Apalache.cfg|1|Error|vStaged["
   "step-joinresidue-unsafe|CheckpointReplay|JoinResidueUnsafe_IndStep_Apalache.cfg|1|Error|Swept\""
+  "legacy-base|CheckpointReplay|MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg|0|NoError|"
+  "legacy-step|CheckpointReplay|MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg|1|NoError|"
   "lock-base|TxnLockCoverage|MC_TxnLockCoverage_IndBase_Apalache.cfg|0|NoError|"
   "lock-step|TxnLockCoverage|MC_TxnLockCoverage_IndStep_Apalache.cfg|1|NoError|"
   "lock-step-uncovered-unsafe|TxnLockCoverage|UncoveredChannelUnsafe_IndStep_Apalache.cfg|1|Error|stagedOne"

@@ -128,6 +128,12 @@ Each operation has the persistence flag of its form, and a consume also has a pe
 The events, the charges, the replay, and the merge of the operation are those of the equivalent host operations.
 An abort of the deploy reverts every operation of the deploy, as for host operations.
 
+**Rule SM-8a: legacy charges.** In a legacy deploy, each staged operation of a space transaction pays the [legacy charges](glossary.md#legacy-charge) of its equivalent host operation ([decision 45](decision-register.md#decision-45), Option P).
+The pre-charge of an operation runs before the observer calls of the operation.
+Its post-charges run before the next operation, and the post-charges of the last operation run after the commit.
+So the legacy log of a space operation is the log of the equivalent host program.
+A charge that runs out of phlo stops the operation where the host program stops, in play and in replay.
+
 **Rule SM-9: determinism.** The result of an operation depends only on the operation, its random state, and the committed state of its collection.
 It must not depend on the list order of the store, on a restart, or on the timing of threads.
 

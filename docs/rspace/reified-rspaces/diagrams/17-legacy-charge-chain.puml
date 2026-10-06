@@ -1,0 +1,95 @@
+' 17 Legacy charges of a space transaction (decision 45, Option P): the host
+' program, the space transaction of the same operations, and a stop at a
+' pre-charge.
+'
+' Source of Figure N10 in ../design.md. The figure restates the host charges
+' of storage/charging_rspace.rs (a pre-charge before the host call, then the
+' post-charges of handle_result) and the chain of
+' rholang/src/rust/interpreter/reified/legacy_charges.rs. It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The host program: the reducer registers the authority of each
+'      operation, and ChargingRSpace charges its pre-charge, runs the
+'      operation, and charges its post-charges.
+'   2. The space transaction: the agent stages each operation through the
+'      chain, which puts the carried post-charges, the registration and the
+'      pre-charge into the callback of the operation. The commit runs the
+'      callbacks, and finish charges the last post-charges after the commit.
+'      The legacy log equals the log of the host program.
+'   3. A pre-charge that runs out of phlo stops the commit before its
+'      operation, where the host program stops.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 17-legacy-charge-chain.puml   Check: ./render.sh --check
+
+@startuml 17-legacy-charge-chain
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam CollectionsBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Legacy charges of a space transaction (decision 45, Option P)
+autonumber
+
+participant "Reducer" as RED $rrs_host
+participant "ChargingRSpace" as CHG $rrs_host
+participant "Space agent\n(P4)" as AGENT $rrs_agent
+participant "LegacyChain" as CHAIN $rrs_agent
+participant "SpaceTxn\ncommit (P1)" as TXN $rrs_substrate
+collections "Legacy budget\nand its log" as BUD $rrs_host
+
+== The host program: operations 0 and 1 ==
+RED -[$rrs_flow]> BUD : register the authority of op 0
+RED -[$rrs_flow]> CHG : host call of op 0
+CHG -[$rrs_effect]> BUD : <latex>\mathrm{pre}_0</latex>
+CHG -[$rrs_relation]> CHG : the RSpace operation:\nobserver calls and events
+CHG -[$rrs_effect]> BUD : <latex>\mathrm{post}_0</latex>: refunds and event fees
+RED -[$rrs_flow]> BUD : register the authority of op 1
+RED -[$rrs_flow]> CHG : host call of op 1
+CHG -[$rrs_effect]> BUD : <latex>\mathrm{pre}_1</latex>
+CHG -[$rrs_relation]> CHG : the RSpace operation
+CHG -[$rrs_effect]> BUD : <latex>\mathrm{post}_1</latex>
+
+== The space transaction of the same operations ==
+AGENT -[$rrs_flow]> CHAIN : stage op 0 (the charges come from the staged op)
+CHAIN -[$rrs_relation]> CHAIN : callback 0: register, <latex>\mathrm{pre}_0</latex>\ncarry <latex>\mathrm{post}_0</latex>
+AGENT -[$rrs_flow]> CHAIN : stage op 1
+CHAIN -[$rrs_relation]> CHAIN : callback 1: <latex>\mathrm{post}_0</latex>, register, <latex>\mathrm{pre}_1</latex>\ncarry <latex>\mathrm{post}_1</latex>
+AGENT -[$rrs_flow]> TXN : commit()
+TXN -[$rrs_effect]> BUD : callback 0: register, <latex>\mathrm{pre}_0</latex>
+TXN -[$rrs_relation]> TXN : op 0: observer calls and events
+TXN -[$rrs_effect]> BUD : callback 1: <latex>\mathrm{post}_0</latex>, register, <latex>\mathrm{pre}_1</latex>
+TXN -[$rrs_relation]> TXN : op 1: observer calls and events
+AGENT -[$rrs_flow]> CHAIN : finish(), after the commit
+CHAIN -[$rrs_effect]> BUD : the tail: <latex>\mathrm{post}_1</latex>
+note over BUD : one log in both runs:\n<latex>\mathrm{pre}_0, \mathrm{post}_0, \mathrm{pre}_1, \mathrm{post}_1</latex>
+
+== Out of phlo at the pre-charge of op 1 ==
+TXN -[$rrs_effect]> BUD : callback 1: <latex>\mathrm{post}_0</latex>, register, <latex>\mathrm{pre}_1</latex>
+BUD -[$rrs_fail]-> TXN : OutOfPhlogistonsError
+TXN -[$rrs_fail]-> AGENT : op 0 stays applied, and op 1\nmakes no observer call (D6)
+note over RED, CHG : the host program stops at <latex>\mathrm{pre}_1</latex>,\nbefore the host call of op 1: the same point
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | host at the baseline: reducer, ChargingRSpace, budget |
+|<$rrs_agent>      | space agent and its legacy chain (P4, decision 45) |
+|<$rrs_substrate>  | substrate of P1: the commit of the space transaction |
+**Arrows**
+|<$rrs_flow>       | call |
+|<$rrs_effect>     | charge on the legacy budget |
+|<$rrs_relation>   | internal step |
+|<$rrs_fail>       | failure |
+endlegend
+@enduml

@@ -90,7 +90,7 @@
      ParBody (an optional body and a random state), a ScalaBodyRef, or no
      body, with an optional guard and an opaque cost authority.
    - An ord is a Z. The code stores an i64. The counters stop at i64::MAX
-     with CounterOverflow (spaces/counter.rs:185, 209), so every stored
+     with CounterOverflow (spaces/counter.rs:188, 221), so every stored
      ord is a natural number below 2^63.
    - The merger predicate single_gint is fixed by the code on every shape
      that the model names. On an opaque Par the model takes it as a section

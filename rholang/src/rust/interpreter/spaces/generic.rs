@@ -96,6 +96,7 @@ use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedI
 use super::record::{self, Introduction, OperationAuthority};
 use super::types::config::SpaceConfig;
 use crate::rust::interpreter::reified::costs::{FireRounds, FireStep, ScanMeter, FIRE_ROUND_CAP};
+use crate::rust::interpreter::reified::legacy_charges::LegacyChain;
 
 /// A record of a collection in the staged view.
 pub type ParDatum = Datum<ListParWithRandom>;
@@ -298,6 +299,9 @@ struct Plan<'a> {
     /// The introduction of the operation, which every staged operation registers.
     introduction: &'a Arc<Introduction>,
     staged: Vec<Staged>,
+    /// The legacy charges of the staged operations (decision 45, Option P). Every staged
+    /// operation of the plan goes through it.
+    legacy: LegacyChain,
 }
 
 impl<'a> Plan<'a> {
@@ -312,13 +316,14 @@ impl<'a> Plan<'a> {
         persist: bool,
     ) -> Result<(), SpaceError> {
         let meter = self.meter();
-        txn.produce(SpaceProduce {
+        let op = SpaceProduce {
             channel: meter.copy(self.data)?,
             data: record,
             persist,
             outcome: ProduceOutcome::Store,
             before_observe: Some(record::register_introduction(self.introduction, meter)?),
-        })?;
+        };
+        self.legacy.produce(txn, op)?;
         self.staged.push(Staged::Store);
         Ok(())
     }
@@ -331,7 +336,7 @@ impl<'a> Plan<'a> {
         peeks: BTreeSet<i32>,
     ) -> Result<(), SpaceError> {
         let meter = self.meter();
-        txn.consume(SpaceConsume {
+        let staged = SpaceConsume {
             channels: self.channel_list()?,
             patterns: self.pattern_list(op)?,
             continuation,
@@ -339,7 +344,8 @@ impl<'a> Plan<'a> {
             peeks,
             outcome: ConsumeOutcome::Park,
             before_observe: Some(record::register_introduction(self.introduction, meter)?),
-        })?;
+        };
+        self.legacy.consume(txn, staged)?;
         self.staged.push(Staged::Park);
         Ok(())
     }
@@ -356,13 +362,14 @@ impl<'a> Plan<'a> {
     ) -> Result<(), SpaceError> {
         let meter = self.meter();
         let introduction = self.introduction.for_record(&record, meter)?;
-        txn.produce(SpaceProduce {
+        let op = SpaceProduce {
             channel: meter.copy(self.data)?,
             data: record,
             persist: false,
             outcome: ProduceOutcome::Store,
             before_observe: Some(record::register_introduction(&introduction, meter)?),
-        })?;
+        };
+        self.legacy.produce(txn, op)?;
         self.staged.push(Staged::Store);
         Ok(())
     }
@@ -415,7 +422,7 @@ impl<'a> Plan<'a> {
             fire.persistent,
             fire.matched,
         ));
-        txn.produce(SpaceProduce {
+        let op = SpaceProduce {
             channel: meter.copy(self.data)?,
             data,
             persist: fire.persistent,
@@ -425,7 +432,8 @@ impl<'a> Plan<'a> {
                 data: candidates,
             },
             before_observe: Some(record::register_introduction(self.introduction, meter)?),
-        })?;
+        };
+        self.legacy.produce(txn, op)?;
         self.staged.push(Staged::Fire);
         Ok(())
     }
@@ -460,7 +468,7 @@ impl<'a> Plan<'a> {
             removed_datum: a,
             datum_index: view_index,
         });
-        txn.consume(SpaceConsume {
+        let staged = SpaceConsume {
             channels,
             patterns,
             continuation,
@@ -468,7 +476,8 @@ impl<'a> Plan<'a> {
             peeks,
             outcome: ConsumeOutcome::Fire { data: candidates },
             before_observe: Some(record::register_introduction(self.introduction, meter)?),
-        })?;
+        };
+        self.legacy.consume(txn, staged)?;
         self.staged.push(Staged::Fire);
         Ok(())
     }
@@ -989,25 +998,33 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             .await?;
         let matcher = SpaceMatcher::metered(env)?;
         let introduction = Introduction::new(&env.budget, &op.authority, meter)?;
+        let mut legacy = LegacyChain::new(&env.budget);
         let random = Blake2b512Random::from_bytes(&op.data.random_state);
-        let bump = counter::bump(&mut txn, channels.counters(), &BumpContext {
-            matcher: &matcher,
-            random: &random,
-            authority: OperationAuthority::of_produce(&op, &introduction),
-        })?;
+        let bump = counter::bump(
+            &mut txn,
+            channels.counters(),
+            &BumpContext {
+                matcher: &matcher,
+                random: &random,
+                authority: OperationAuthority::of_produce(&op, &introduction),
+            },
+            &mut legacy,
+        )?;
         let mut plan = Plan {
             data: channels.data(),
             matcher: &matcher,
             introduction: &introduction,
             staged,
+            legacy,
         };
         plan.staged
             .extend(bump.staged.iter().copied().map(Staged::Counter));
         let ord = operation_ord(op.reissued_ord, bump.ord, meter)?;
         let reissue = self.offer(&mut txn, &mut plan, op, ord)?;
-        let staged = plan.staged;
+        let Plan { staged, legacy, .. } = plan;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
+            legacy.finish()?;
             outcome(receipt, staged, reissue)
         }))
     }
@@ -1024,25 +1041,33 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             .await?;
         let matcher = SpaceMatcher::metered(env)?;
         let introduction = Introduction::new(&env.budget, &op.introduction_authority, meter)?;
+        let mut legacy = LegacyChain::new(&env.budget);
         let random = Blake2b512Random::from_bytes(&op.body.random_state);
-        let bump = counter::bump(&mut txn, channels.counters(), &BumpContext {
-            matcher: &matcher,
-            random: &random,
-            authority: OperationAuthority::of_consume(&op, &introduction),
-        })?;
+        let bump = counter::bump(
+            &mut txn,
+            channels.counters(),
+            &BumpContext {
+                matcher: &matcher,
+                random: &random,
+                authority: OperationAuthority::of_consume(&op, &introduction),
+            },
+            &mut legacy,
+        )?;
         let mut plan = Plan {
             data: channels.data(),
             matcher: &matcher,
             introduction: &introduction,
             staged,
+            legacy,
         };
         plan.staged
             .extend(bump.staged.iter().copied().map(Staged::Counter));
         let ord = operation_ord(op.reissued_ord, bump.ord, meter)?;
         let reissue = self.receive(&mut txn, &mut plan, op, ord)?;
-        let staged = plan.staged;
+        let Plan { staged, legacy, .. } = plan;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
+            legacy.finish()?;
             outcome(receipt, staged, reissue)
         }))
     }
@@ -1078,7 +1103,8 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         }
         self.check_family(config, meter)?;
         let introduction = Introduction::new(&env.budget, &creation.authority, meter)?;
-        txn.produce(SpaceProduce {
+        let mut legacy = LegacyChain::new(&env.budget);
+        let config = SpaceProduce {
             channel: config_channel,
             data: record::config_record_metered(
                 creation.config,
@@ -1088,9 +1114,10 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             persist: true,
             outcome: ProduceOutcome::Store,
             before_observe: Some(record::register_introduction(&introduction, meter)?),
-        })?;
+        };
+        legacy.produce(&mut txn, config)?;
         let cost_authority = record::cost_authority_metered(&creation.authority, meter)?;
-        txn.produce(SpaceProduce {
+        let counter = SpaceProduce {
             channel: space_counter,
             data: record::counter_record_metered(
                 0,
@@ -1103,12 +1130,13 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             persist: false,
             outcome: ProduceOutcome::Store,
             before_observe: Some(record::register_introduction(&introduction, meter)?),
-        })?;
+        };
+        legacy.produce(&mut txn, counter)?;
         let mut channels = meter.buffer::<Par>(1)?;
         channels.push(handle);
         let mut patterns = meter.buffer::<BindPattern>(1)?;
         patterns.push(creation.handle_pattern);
-        txn.consume(SpaceConsume {
+        let handle = SpaceConsume {
             channels,
             patterns,
             continuation: creation.handle_continuation,
@@ -1116,14 +1144,18 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             peeks: BTreeSet::new(),
             outcome: ConsumeOutcome::Park,
             before_observe: Some(record::register_introduction(&introduction, meter)?),
-        })?;
-        Ok(Prepared::new(txn, |receipt| match receipt.ops.as_slice() {
-            [SpaceOpReceipt::Stored { .. }, SpaceOpReceipt::Stored { .. }, SpaceOpReceipt::Parked { .. }] => {
-                Ok(())
+        };
+        legacy.consume(&mut txn, handle)?;
+        Ok(Prepared::new(txn, move |receipt| {
+            legacy.finish()?;
+            match receipt.ops.as_slice() {
+                [SpaceOpReceipt::Stored { .. }, SpaceOpReceipt::Stored { .. }, SpaceOpReceipt::Parked { .. }] => {
+                    Ok(())
+                }
+                _ => Err(SpaceError::Inconsistent(
+                    "a space creation committed other operations",
+                )),
             }
-            _ => Err(SpaceError::Inconsistent(
-                "a space creation committed other operations",
-            )),
         }))
     }
 

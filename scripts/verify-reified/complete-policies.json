@@ -185,6 +185,7 @@
         "rholang/src/rust/interpreter/reified/errors.rs",
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
         "rholang/src/rust/interpreter/reified/costs.rs",
+        "rholang/src/rust/interpreter/reified/legacy_charges.rs",
         "rholang/src/rust/interpreter/reified/route.rs",
         "rholang/src/rust/interpreter/reified/runtime.rs",
         "rholang/src/rust/interpreter/reified/schedule.rs",
@@ -240,6 +241,13 @@
         {"file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs", "pattern": "pub(crate) async fn space_op(\n        &self,\n        op: SpaceOp,\n        then: Option<DispatchFuture<'static>>,\n    ) -> Result<DispatchType, InterpreterError>"},
         {"file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs", "pattern": "pub(crate) fn dispatch_space_outcome<'a>("},
         {"file": "rholang/src/rust/interpreter/reified/costs.rs", "pattern": "pub const FIRE_ROUND_CAP: usize = 64;"},
+        {"file": "rholang/src/rust/interpreter/reified/mod.rs", "pattern": "pub mod legacy_charges;"},
+        {"file": "rholang/src/rust/interpreter/reified/legacy_charges.rs", "pattern": "pub fn produce_charges(op: &ParSpaceProduce) -> Result<LegacyCharges, SpaceError>"},
+        {"file": "rholang/src/rust/interpreter/reified/legacy_charges.rs", "pattern": "pub fn consume_charges(op: &ParSpaceConsume) -> Result<LegacyCharges, SpaceError>"},
+        {"file": "rholang/src/rust/interpreter/reified/legacy_charges.rs", "pattern": "pub struct LegacyChain {"},
+        {"file": "rholang/src/rust/interpreter/reified/legacy_charges.rs", "pattern": "pub fn finish(self) -> Result<(), SpaceError>"},
+        {"file": "rholang/src/rust/interpreter/spaces/generic.rs", "pattern": "legacy.finish()?;"},
+        {"file": "rholang/src/rust/interpreter/spaces/counter.rs", "pattern": "legacy: &mut LegacyChain"},
         {"file": "rholang/src/rust/interpreter/reified/route.rs", "pattern": "pub fn classify_channel(channel: &Par) -> ChannelClass"},
         {"file": "rholang/src/rust/interpreter/reified/route.rs", "pattern": "pub fn route(ctx: &SpaceCtx, channel: &Par) -> Result<Route, SpaceError>"},
         {"file": "rholang/src/rust/interpreter/reified/runtime.rs", "pattern": "pub fn for_host<T>(host: T, budget: RuntimeBudget) -> Arc<ReifiedRuntime>"},
@@ -298,10 +306,12 @@
         "rholang/tests/reified_queue_source.rs",
         "rholang/tests/reified_p4_props.rs",
         "rholang/tests/reified_p4_smoke.rs",
-        "rholang/tests/reified_native_fail_closed.rs"
+        "rholang/tests/reified_native_fail_closed.rs",
+        "rholang/tests/reified_legacy_charges.rs"
       ],
       "property_files": [
-        "rholang/tests/reified_p4_props.rs"
+        "rholang/tests/reified_p4_props.rs",
+        "rholang/tests/reified_legacy_charges.rs"
       ]
     }
   }

@@ -903,16 +903,17 @@
       ]
     },
     "P4": {
-      "title": "P4: the hashmap:queue slice (namespace, record envelopes, counters and merges, the head-only queue, space references and routing, factories and native handles), the I-20 refresh of Encoding.v, and the metering rule of decision 42 (AgentReadCoverage.v)",
-      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code. Decision 42 adds Q59 to Q66 (AgentReadCoverage.v), the three properties prop_agent_* and three witness tests, and prop_queue_plan_permutation_invariant also covers Q62 and Q63. Decision 46 adds Q67 (SpaceRefs.v) and the three tests of the native play and replay suite to the property table.",
+      "title": "P4: the hashmap:queue slice (namespace, record envelopes, counters and merges, the head-only queue, space references and routing, factories and native handles), the I-20 refresh of Encoding.v, and the metering rule of decision 42 (AgentReadCoverage.v), and the legacy charges of decision 45, Option P (LegacyCharges.v)",
+      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code. Decision 42 adds Q59 to Q66 (AgentReadCoverage.v), the three properties prop_agent_* and three witness tests, and prop_queue_plan_permutation_invariant also covers Q62 and Q63. Decision 46 adds Q67 (SpaceRefs.v) and the three tests of the native play and replay suite to the property table. Decision 45 (Option P) adds Q79 and Q80 (LegacyCharges.v), U13 (CheckpointReplay.tla), the three properties of reified_legacy_charges.rs, the unit tests of the legacy charges and of the chain, and the two legacy queue tests as witness tests.",
       "test_status": "required",
       "test_files": [
         "rholang/tests/reified_p4_props.rs",
         "rholang/tests/reified_marker_recognition.rs",
         "models/tests/reified_encoding.rs",
-        "rholang/tests/reified_native_fail_closed.rs"
+        "rholang/tests/reified_native_fail_closed.rs",
+        "rholang/tests/reified_legacy_charges.rs"
       ],
-      "expected_properties": 84,
+      "expected_properties": 87,
       "formal": {
         "Q1": {
           "kind": "rocq",
@@ -1737,6 +1738,35 @@
           "tests": [
             "prop_queue_restore_realizes_plan"
           ]
+        },
+        "Q79": {
+          "kind": "rocq",
+          "name": "legacy_rebracket_eq_host",
+          "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
+          "statement": "Decision 45 (Option P): a space job that stages its operations through the legacy chain makes the legacy log of the host program of the same operations, with the same remaining budget, status and applied operations, for every charge rule, call acceptance and budget. The status names the stop point, and a stop at a pre-charge or a post-charge of operation i applies exactly the operations of the host program.",
+          "tests": [
+            "prop_legacy_charges_equal_charging_rspace",
+            "prop_legacy_chain_log_is_host_order"
+          ]
+        },
+        "Q80": {
+          "kind": "rocq",
+          "name": "legacy_replay_stops_with_play",
+          "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
+          "statement": "Decision 45 (Option P): replay stages the operations of play and pairs each operation whose body play applied (decision 36). Then replay makes the legacy log, the remaining budget, the status and the applied operations of play, and it never diverges.",
+          "tests": [
+            "prop_legacy_replay_stops_with_play"
+          ]
+        },
+        "U13": {
+          "kind": "tla",
+          "name": "LegacyChargesFollowHost",
+          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+          "statement": "Decision 45 (Option P): in a legacy deploy, whenever play has no open transaction, play has the legacy log, the remaining budget and the stop point of the equivalent host program: the same host operations ran, and the deploy failed exactly when the program failed. A completed replay has the legacy state of that program.",
+          "tests": [
+            "prop_legacy_chain_log_is_host_order",
+            "prop_legacy_replay_stops_with_play"
+          ]
         }
       },
       "properties": [
@@ -2431,6 +2461,32 @@
           "covers": [
             "Q78"
           ]
+        },
+        {
+          "number": 85,
+          "test": "prop_legacy_charges_equal_charging_rspace",
+          "file": "rholang/tests/reified_legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "number": 86,
+          "test": "prop_legacy_chain_log_is_host_order",
+          "file": "rholang/tests/reified_legacy_charges.rs",
+          "covers": [
+            "Q79",
+            "U13"
+          ]
+        },
+        {
+          "number": 87,
+          "test": "prop_legacy_replay_stops_with_play",
+          "file": "rholang/tests/reified_legacy_charges.rs",
+          "covers": [
+            "Q80",
+            "U13"
+          ]
         }
       ],
       "witness_tests": [
@@ -2551,6 +2607,78 @@
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
           "covers": [
             "Q78"
+          ]
+        },
+        {
+          "test": "legacy_charges_of_a_store_and_a_park",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "legacy_charges_of_a_produce_fire_follow_handle_result",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "legacy_charges_of_a_consume_fire_refund_the_consume",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "legacy_charges_of_a_continuation_without_a_body_fail_closed",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "legacy_chain_is_active_only_in_a_metered_legacy_deploy",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79",
+            "Q80"
+          ]
+        },
+        {
+          "test": "legacy_chain_charges_in_host_order",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "legacy_chain_pre_charge_stops_before_its_operation",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "legacy_chain_tail_fails_after_the_commit",
+          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+          "covers": [
+            "Q79"
+          ]
+        },
+        {
+          "test": "space_queue_legacy_replay_equal",
+          "file": "rholang/tests/reified_queue_replay.rs",
+          "covers": [
+            "Q79",
+            "Q80"
+          ]
+        },
+        {
+          "test": "space_queue_legacy_out_of_phlo_sweep_replays_equal",
+          "file": "rholang/tests/reified_queue_replay.rs",
+          "covers": [
+            "Q80"
           ]
         }
       ]

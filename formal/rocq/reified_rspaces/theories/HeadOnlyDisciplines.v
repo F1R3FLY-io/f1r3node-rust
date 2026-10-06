@@ -63,16 +63,16 @@
    fire_round_cap, after_fire
                             reified/costs.rs:43, 299-310 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:696-759 (GenericSpace::offer)
-   receive, receive_loop    spaces/generic.rs:767-838 (GenericSpace::receive.
+   offer, offer_loop        spaces/generic.rs:705-768 (GenericSpace::offer)
+   receive, receive_loop    spaces/generic.rs:776-847 (GenericSpace::receive.
                             The row of code_ops covers its re-store of
                             decision 45.)
-   head_waiter, head_record spaces/generic.rs:586-602, 606-618, 622-634
+   head_waiter, head_record spaces/generic.rs:595-611, 615-627, 631-643
                             (scan_head, head_waiter, head_datum)
-   bump                     spaces/counter.rs:163-231 (the ord is the
+   bump                     spaces/counter.rs:165-245 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:980-1048 (prepare_produce and
+   produce, consume         spaces/generic.rs:989-1073 (prepare_produce and
                             prepare_consume: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
@@ -81,29 +81,29 @@
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
-   operation_ord            spaces/generic.rs:856-868 (the check
+   operation_ord            spaces/generic.rs:865-877 (the check
                             0 <= reissued_ord < bump.ord, else
                             Inconsistent, and the bump value for a fresh
                             operation)
    ord_precedes             spaces/disciplines/queue.rs:63-72
                             (QueueDiscipline::precedes: ord < head)
-   reentry_at_head          spaces/generic.rs:663-688, 638-655
+   reentry_at_head          spaces/generic.rs:672-697, 647-664
                             (GenericSpace::at_head and
                             GenericSpace::head_ord: an empty side, or an
                             ord that precedes the head, and Inconsistent on
                             an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:696-759, 767-838
+                            spaces/generic.rs:705-768, 776-847
                             (GenericSpace::offer and GenericSpace::receive:
                             store or park at its place when not at the
                             head, else the loop)
    reenter_produce, reenter_consume
-                            spaces/generic.rs:980-1013, 1015-1048
+                            spaces/generic.rs:989-1030, 1032-1073
                             (prepare_produce and prepare_consume with a
                             reissued_ord: bump, then operation_ord, then the
                             plan)
    reissued_ord, flight_after
-                            spaces/generic.rs:751, 830 (GenericSpace::offer
+                            spaces/generic.rs:760, 839 (GenericSpace::offer
                             and GenericSpace::receive: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
    round, run_rounds        reified/reducer_hooks.rs:458-508
@@ -111,7 +111,7 @@
                             Intent::Space, the last dispatch branch of the
                             same deploy)
    code_staged, code_of, code_ops
-                            spaces/generic.rs:347-380, 803-808 and 814-836
+                            spaces/generic.rs:353-387, 812-817 and 823-845
                             (Plan::restore and Plan::restore_peeked stage a
                             Store of the same record bytes with persist =
                             false. GenericSpace::receive copies the record
@@ -162,7 +162,7 @@
      shows that the list order does not change a plan. EventCorrelation.v
      (H11) models the removal and the re-store in the substrate.
    - The ord is a nat. The code checks i64 overflow with CounterOverflow
-     (spaces/counter.rs:185, 209), so every ord of the code is a nat.
+     (spaces/counter.rs:188, 221), so every ord of the code is a nat.
    - An element in flight is a record or a waiter with the ord of its first
      round. The list F of the elements in flight belongs to one collection.
      The re-issue of a non-persistent element is a fresh operation, so F

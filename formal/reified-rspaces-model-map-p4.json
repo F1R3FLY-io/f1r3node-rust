@@ -2,7 +2,7 @@
   "schema": "reified-rspaces-model-map/2",
   "phase": "P4",
   "title": "Reified RSpaces P4: the Rust items of the hashmap:queue slice and the formal models that cover them",
-  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it), and decision 46 (SpaceRefs.v native_execution_fails_closed: spaces fail closed in native play and native replay)",
+  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it), and decision 46 (SpaceRefs.v native_execution_fails_closed: spaces fail closed in native play and native replay), and decision 45, Option P (LegacyCharges.v: the legacy storage charges of a space job follow the host program, in play and in replay)",
   "code_base": "The items are in the P4 commit of this repository. The I-20 refresh and the normalizers are as of the P3b commit. The line numbers below are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -14,12 +14,14 @@
       "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
       "formal/rocq/reified_rspaces/theories/Encoding.v",
-      "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v"
+      "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "formal/rocq/reified_rspaces/theories/LegacyCharges.v"
     ],
     "tla": [
       "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
       "formal/tlaplus/reified_rspaces/CounterConflict.tla",
-      "formal/tlaplus/reified_rspaces/NativeHandles.tla"
+      "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+      "formal/tlaplus/reified_rspaces/CheckpointReplay.tla"
     ]
   },
   "headlines": {
@@ -562,6 +564,24 @@
       "name": "queue_restore_realizes_plan",
       "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
       "statement": "Decision 45 (Rule E): for a consume, a produce and a re-entry, the staged operations of the code (the plan with the re-store after each peek fire of a non-persistent record) give the records of the logical plan under the substrate effects of Rule E, up to list order."
+    },
+    "Q79": {
+      "kind": "rocq",
+      "name": "legacy_rebracket_eq_host",
+      "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
+      "statement": "Decision 45 (Option P): a space job that stages its operations through the legacy chain makes the legacy log of the host program of the same operations, with the same remaining budget, status and applied operations, for every charge rule, call acceptance and budget. The status names the stop point, and a stop at a pre-charge or a post-charge of operation i applies exactly the operations of the host program."
+    },
+    "Q80": {
+      "kind": "rocq",
+      "name": "legacy_replay_stops_with_play",
+      "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
+      "statement": "Decision 45 (Option P): replay stages the operations of play and pairs each operation whose body play applied (decision 36). Then replay makes the legacy log, the remaining budget, the status and the applied operations of play, and it never diverges."
+    },
+    "U13": {
+      "kind": "tla",
+      "name": "LegacyChargesFollowHost",
+      "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+      "statement": "Decision 45 (Option P): in a legacy deploy, whenever play has no open transaction, play has the legacy log, the remaining budget and the stop point of the equivalent host program: the same host operations ran, and the deploy failed exactly when the program failed. A completed replay has the legacy state of that program."
     }
   },
   "items": [
@@ -1471,13 +1491,14 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "bump",
-      "line": 163,
+      "line": 165,
       "role": "The counter COMM of every operation. The first operation consumes S(sid) and opens S(sid,k) at 1 (M-1, A25).",
       "rocq": [
         "exec",
         "counter_produce",
         "bump_ord",
-        "bump_next"
+        "bump_next",
+        "stage"
       ],
       "tla": [
         "CounterStep",
@@ -1493,7 +1514,8 @@
         "Q27",
         "Q28",
         "Q35",
-        "U4"
+        "U4",
+        "Q79"
       ]
     },
     {
@@ -1502,10 +1524,11 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "take",
-      "line": 235,
+      "line": 249,
       "role": "Consumes the only counter record. The COMM has no peeks.",
       "rocq": [
-        "exec"
+        "exec",
+        "stage"
       ],
       "tla": [
         "CounterStep"
@@ -1513,7 +1536,8 @@
       "covers": [
         "Q20",
         "Q21",
-        "Q22"
+        "Q22",
+        "Q79"
       ]
     },
     {
@@ -1522,16 +1546,18 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "put",
-      "line": 295,
+      "line": 310,
       "role": "Stores the next counter record, which the next operation consumes.",
       "rocq": [
-        "exec"
+        "exec",
+        "stage"
       ],
       "tla": [
         "CounterStep"
       ],
       "covers": [
-        "Q25"
+        "Q25",
+        "Q79"
       ]
     },
     {
@@ -1540,7 +1566,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "counter_continuation",
-      "line": 68,
+      "line": 69,
       "role": "The counter continuation of one bump, new for each value.",
       "rocq": [
         "exec"
@@ -1641,7 +1667,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_waiter",
-      "line": 606,
+      "line": 615,
       "role": "The head of the waiting continuations.",
       "rocq": [
         "waiter_head",
@@ -1666,7 +1692,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_datum",
-      "line": 622,
+      "line": 631,
       "role": "The head of the records.",
       "rocq": [
         "record_head",
@@ -1691,7 +1717,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "offer",
-      "line": 696,
+      "line": 705,
       "role": "The produce plan: a fresh datum joins the tail and a re-issued persistent datum re-enters at its place (decision 43), head-only fires, re-offer, the round cap.",
       "rocq": [
         "offer",
@@ -1735,7 +1761,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "receive",
-      "line": 767,
+      "line": 776,
       "role": "The consume plan: a fresh waiter joins the tail and a re-issued persistent waiter re-enters at its place (decision 43). After a peek fire of a non-persistent head record it stages the re-store (decision 45).",
       "rocq": [
         "receive",
@@ -1779,7 +1805,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "operation_ord",
-      "line": 856,
+      "line": 865,
       "role": "Decision 43: the kept first-round ord of a re-issued persistent operation, checked against the counter, or the bump value.",
       "rocq": [
         "operation_ord"
@@ -1801,7 +1827,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "scan_head",
-      "line": 586,
+      "line": 595,
       "role": "The head of one side and its ord: the buffer and one envelope decode for each entry are reserved first, and nothing is copied.",
       "rocq": [
         "record_head",
@@ -1825,7 +1851,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_ord",
-      "line": 638,
+      "line": 647,
       "role": "Decision 43: the ord of the head of one side, with no copy.",
       "rocq": [
         "reentry_at_head"
@@ -1845,7 +1871,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "at_head",
-      "line": 663,
+      "line": 672,
       "role": "Decision 43: a fresh element reaches the head only of an empty side; a re-issued persistent element re-enters at the head when its side is empty or its ord precedes the head; an equal ord is Inconsistent.",
       "rocq": [
         "reentry_at_head"
@@ -1934,17 +1960,19 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_produce",
-      "line": 980,
+      "line": 989,
       "role": "Bump, then the produce plan.",
       "rocq": [
         "produce",
         "bumped",
         "operation_trace",
-        "reenter_produce"
+        "reenter_produce",
+        "finish"
       ],
       "tla": [
         "Produce",
-        "OperationOrd"
+        "OperationOrd",
+        "ChainTail"
       ],
       "covers": [
         "Q30",
@@ -1953,7 +1981,10 @@
         "Q61",
         "Q63",
         "Q69",
-        "Q75"
+        "Q75",
+        "Q79",
+        "Q80",
+        "U13"
       ]
     },
     {
@@ -1963,18 +1994,20 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_consume",
-      "line": 1015,
+      "line": 1032,
       "role": "Bump, then the consume plan. A peek bumps too (A2).",
       "rocq": [
         "consume",
         "bumped",
         "operation_trace",
-        "reenter_consume"
+        "reenter_consume",
+        "finish"
       ],
       "tla": [
         "Consume",
         "Exec",
-        "OperationOrd"
+        "OperationOrd",
+        "ChainTail"
       ],
       "covers": [
         "Q28",
@@ -1985,7 +2018,10 @@
         "Q61",
         "Q63",
         "Q69",
-        "Q75"
+        "Q75",
+        "Q79",
+        "Q80",
+        "U13"
       ]
     },
     {
@@ -2026,11 +2062,13 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_create",
-      "line": 1050,
+      "line": 1075,
       "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
       "rocq": [
         "prepare_create",
-        "receipt_ok"
+        "receipt_ok",
+        "stage",
+        "finish"
       ],
       "tla": [
         "Create"
@@ -2038,7 +2076,9 @@
       "covers": [
         "Q55",
         "U5",
-        "U7"
+        "U7",
+        "Q79",
+        "Q80"
       ]
     },
     {
@@ -2048,7 +2088,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "read_config",
-      "line": 1130,
+      "line": 1162,
       "role": "A missing config record is DanglingHandle.",
       "tla": [
         "Call"
@@ -3561,7 +3601,7 @@
       "scope": "CollectionChannels",
       "kind": "fn",
       "name": "new_metered",
-      "line": 231,
+      "line": 232,
       "role": "The channels of an operation, with their ids reserved first.",
       "rocq": [
         "step"
@@ -3576,7 +3616,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "prepay_outcome",
-      "line": 905,
+      "line": 914,
       "role": "Prepays the buffer of the fires of the outcome before the commit.",
       "rocq": [
         "staged_trace"
@@ -3592,7 +3632,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "outcome",
-      "line": 911,
+      "line": 920,
       "role": "Step 7 after the commit: moves only, prepaid at staging.",
       "rocq": [
         "round_after_commit"
@@ -3608,13 +3648,15 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "fire_offer",
-      "line": 400,
+      "line": 407,
       "role": "Stages a produce-side fire with reserved copies, and moves the record on the last round.",
       "rocq": [
-        "round_staged"
+        "round_staged",
+        "stage"
       ],
       "covers": [
-        "Q59"
+        "Q59",
+        "Q79"
       ]
     },
     {
@@ -3624,13 +3666,15 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "fire_receive",
-      "line": 436,
+      "line": 444,
       "role": "Stages a consume-side fire with reserved copies, and moves the head copy into the candidate.",
       "rocq": [
-        "round_staged"
+        "round_staged",
+        "stage"
       ],
       "covers": [
-        "Q59"
+        "Q59",
+        "Q79"
       ]
     },
     {
@@ -3640,17 +3684,19 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "restore",
-      "line": 352,
+      "line": 358,
       "role": "Decision 45 (Rule E): stages the re-store of a record that a consume-side peek removed: the same record bytes and so the same identity, the outcome Store, persist false, the record's own cost authority, and no counter bump. Its channel copy and its introduction are reserved.",
       "rocq": [
         "code_of",
         "sub_step",
         "round_staged",
-        "step"
+        "step",
+        "stage"
       ],
       "covers": [
         "Q78",
-        "Q59"
+        "Q59",
+        "Q79"
       ]
     },
     {
@@ -3660,7 +3706,7 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "restore_peeked",
-      "line": 371,
+      "line": 378,
       "role": "Decision 45 (Rule E): stages the re-store of the record that a peek fire removed, when there is one.",
       "rocq": [
         "code_of",
@@ -3724,7 +3770,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "only_record",
-      "line": 148,
+      "line": 149,
       "role": "The only counter record of a channel: one reserved copy instead of a copy of the view.",
       "rocq": [
         "step"
@@ -3764,6 +3810,253 @@
       ],
       "covers": [
         "Q67"
+      ]
+    },
+    {
+      "item": "LegacyCharges",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "kind": "struct",
+      "name": "LegacyCharges",
+      "line": 52,
+      "role": "The charges of one staged operation: the pre-charge before its host call and the post-charges of handle_result (pre and post of the model).",
+      "rocq": [
+        "post_charges"
+      ],
+      "covers": [
+        "Q79",
+        "U13"
+      ],
+      "tla": [
+        "PreCharge",
+        "PostList"
+      ]
+    },
+    {
+      "item": "produce_charges",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "kind": "fn",
+      "name": "produce_charges",
+      "line": 59,
+      "role": "The legacy charges of a staged produce: SP(c, d) before the call, then E(1) for a store or the post-charges of a fire (ChargingRSpace::produce and handle_result).",
+      "rocq": [
+        "post_charges"
+      ],
+      "covers": [
+        "Q79",
+        "U13"
+      ],
+      "tla": [
+        "PreCharge",
+        "PostList"
+      ]
+    },
+    {
+      "item": "consume_charges",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "kind": "fn",
+      "name": "consume_charges",
+      "line": 88,
+      "role": "The legacy charges of a staged consume: SC(cs, ps, k) before the call, then E(|cs|) for a park or the post-charges of a fire (ChargingRSpace::consume and handle_result).",
+      "rocq": [
+        "post_charges"
+      ],
+      "covers": [
+        "Q79",
+        "U13"
+      ],
+      "tla": [
+        "PreCharge",
+        "PostList"
+      ]
+    },
+    {
+      "item": "fire_post",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "kind": "fn",
+      "name": "fire_post",
+      "line": 142,
+      "role": "The post-charges of a fire in the order of handle_result: the consume refund, the produce refunds, E(trigger channels) for a trigger that is not persistent, and CE(|channels|). A continuation without a body fails closed.",
+      "rocq": [
+        "post_charges",
+        "label_post"
+      ],
+      "covers": [
+        "Q79",
+        "U13"
+      ],
+      "tla": [
+        "PostList"
+      ]
+    },
+    {
+      "item": "LegacyChain",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "kind": "struct",
+      "name": "LegacyChain",
+      "line": 211,
+      "role": "The chain of one space job: the budget of a metered legacy deploy and the post-charges that the next callback carries.",
+      "rocq": [
+        "chain",
+        "chain_new"
+      ],
+      "covers": [
+        "Q79",
+        "Q80",
+        "U13"
+      ],
+      "tla": [
+        "LegCharge",
+        "ChainTail"
+      ]
+    },
+    {
+      "item": "LegacyChain::new",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "scope": "LegacyChain",
+      "kind": "fn",
+      "name": "new",
+      "line": 220,
+      "role": "An empty chain. It charges only in a metered legacy deploy (is_legacy and not is_unmetered).",
+      "rocq": [
+        "chain_new"
+      ],
+      "covers": [
+        "Q79",
+        "Q80",
+        "U13"
+      ],
+      "tla": [
+        "LegCharge"
+      ]
+    },
+    {
+      "item": "LegacyChain::produce",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "scope": "LegacyChain",
+      "kind": "fn",
+      "name": "produce",
+      "line": 231,
+      "role": "Stages a produce with its legacy callback in before_observe.",
+      "rocq": [
+        "attach",
+        "stage"
+      ],
+      "covers": [
+        "Q79",
+        "Q80",
+        "U13"
+      ],
+      "tla": [
+        "PreCharge",
+        "PostList"
+      ]
+    },
+    {
+      "item": "LegacyChain::consume",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "scope": "LegacyChain",
+      "kind": "fn",
+      "name": "consume",
+      "line": 246,
+      "role": "Stages a consume with its legacy callback in before_observe.",
+      "rocq": [
+        "attach",
+        "stage"
+      ],
+      "covers": [
+        "Q79",
+        "Q80",
+        "U13"
+      ],
+      "tla": [
+        "PreCharge",
+        "PostList"
+      ]
+    },
+    {
+      "item": "LegacyChain::attach",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "scope": "LegacyChain",
+      "kind": "fn",
+      "name": "attach",
+      "line": 262,
+      "role": "The callback of operation i: the carried post-charges of operation i-1, the registration of i, then the pre-charge of i. The chain then carries the post-charges of i.",
+      "rocq": [
+        "attach",
+        "before_observe"
+      ],
+      "covers": [
+        "Q79",
+        "Q80",
+        "U13"
+      ],
+      "tla": [
+        "PreCharge",
+        "PostList",
+        "LegCharge"
+      ]
+    },
+    {
+      "item": "LegacyChain::finish",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+      "scope": "LegacyChain",
+      "kind": "fn",
+      "name": "finish",
+      "line": 283,
+      "role": "The tail: the post-charges of the last operation, after the commit.",
+      "rocq": [
+        "finish",
+        "space_run_in"
+      ],
+      "covers": [
+        "Q79",
+        "Q80",
+        "U13"
+      ],
+      "tla": [
+        "ChainTail"
+      ]
+    },
+    {
+      "item": "Plan::store",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Plan",
+      "kind": "fn",
+      "name": "store",
+      "line": 312,
+      "role": "Stages the store of a record through the legacy chain.",
+      "rocq": [
+        "stage"
+      ],
+      "covers": [
+        "Q79"
+      ]
+    },
+    {
+      "item": "Plan::park",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Plan",
+      "kind": "fn",
+      "name": "park",
+      "line": 331,
+      "role": "Stages the park of a waiter through the legacy chain.",
+      "rocq": [
+        "stage"
+      ],
+      "covers": [
+        "Q79"
       ]
     }
   ]

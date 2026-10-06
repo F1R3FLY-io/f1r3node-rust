@@ -120,7 +120,7 @@ With the fix, replay makes the charges $`w_a`$ to $`w_k`$ in the same order, and
 
 ## 5. Reach and effect
 
-Every collection operation starts with a counter fire (`rholang/src/rust/interpreter/spaces/counter.rs:235-292`, [decision 31](../decision-register.md#decision-31)).
+Every collection operation starts with a counter fire (`rholang/src/rust/interpreter/spaces/counter.rs:249-307`, [decision 31](../decision-register.md#decision-31)).
 Every deploy pays introduction charges: the interpreter enters the COMM accounting scope for each deploy (`rholang/src/rust/interpreter/interpreter.rs:229`), and the introduction charge applies in that scope (`rholang/src/rust/interpreter/accounting/mod.rs:1191-1203`).
 So a plain deploy can run out of phlo inside any space transaction, and no cost-signed syntax is necessary.
 
@@ -203,7 +203,7 @@ The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv)
 | `prop_space_txn_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle_props.rs:2483` | Property 25, new (H23, T6): replay rejects the call that play rejected, with the outcome, the calls, and the state of play. |
 | `space_store_handle_replay_divergence_is_typed_at_commit` | `rspace++/tests/reified_space_store_handle.rs:1507` | The integration form of property 5, renamed. |
 | `space_store_handle_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle.rs:1997` | A sweep over every position of a fallible call (H23, T6). |
-| `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:821` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
+| `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:850` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
 
 The tests `space_store_handle_replay_cross_channel_comm_pairs_once`, `space_store_handle_replay_requires_produce_trigger_event`, and `space_store_handle_replay_requires_consume_trigger_event` now expect the error at commit.
 The P4 test `space_queue_replay_equal` passes with no change.

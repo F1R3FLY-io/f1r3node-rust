@@ -126,6 +126,35 @@ fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
     }
 }
 
+/// The labels of the storage charges of `ChargingRSpace` and of the legacy charges of the
+/// space jobs (decision 45, Option P).
+const STORAGE_LABELS: [&str; 6] = [
+    "produces storage",
+    "consume storage",
+    "consume storage refund",
+    "produces storage refund",
+    "event storage cost",
+    "comm event storage cost",
+];
+
+/// The storage charges of a legacy log, in log order.
+fn storage_charges(log: &[Cost]) -> Vec<Cost> {
+    log.iter()
+        .filter(|charge| STORAGE_LABELS.contains(&charge.operation.as_ref()))
+        .cloned()
+        .collect()
+}
+
+/// Every charge of a legacy log, sorted by label and value.
+fn sorted_charges(log: &[Cost]) -> Vec<(String, i64)> {
+    let mut charges: Vec<(String, i64)> = log
+        .iter()
+        .map(|charge| (charge.operation.to_string(), charge.value))
+        .collect();
+    charges.sort();
+    charges
+}
+
 /// A play runtime, a replay runtime and the history of one in-memory store.
 struct Node {
     play: RhoRuntimeImpl,
@@ -826,7 +855,29 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
         // limits L-1, L and L+1 at each limit L where the outcome of play changes. The deploy
         // names the space through injected names, so it makes no host COMM: a mismatch can only
         // come from the replay of its space transactions, not from host replay.
+        out_of_phlo_sweep_replays_equal(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn space_queue_legacy_out_of_phlo_sweep_replays_equal() {
+        // Decision 45, Option P. In a legacy deploy, each staged space operation pays the
+        // charges of `ChargingRSpace`: the pre-charge in its callback, its post-charges in the
+        // callback of the next operation, and the post-charges of the last operation after the
+        // commit. The same sweep must replay every limit to the outcome of play, so a charge
+        // that runs out of phlo stops play and replay at the same point.
+        out_of_phlo_sweep_replays_equal(true).await;
+    }
+
+    /// The sweep of `space_queue_out_of_phlo_sweep_replays_equal`, in a legacy deploy when
+    /// `legacy` is true.
+    async fn out_of_phlo_sweep_replays_equal(legacy: bool) {
         let mut node = node().await;
+        let _legacy = legacy.then(|| {
+            (
+                node.play.cost.enter_legacy_scope(),
+                node.replay.cost.enter_legacy_scope(),
+            )
+        });
         let setup = [
             program("rrs-p4-sweep-setup", SETUP.to_owned()),
             program(
@@ -944,6 +995,120 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
             cases.len() + 1,
             mismatches.join("\n")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn space_queue_legacy_replay_equal() {
+        // Decision 45, Option P. A legacy deploy charges each staged space operation as
+        // `ChargingRSpace` charges its host call. Play and replay make the same charges, so they
+        // reach the same cost, the same legacy log and the same root. The deploys name the space
+        // only through injected names, so they make no host operation: each COMM event of a log
+        // is a space COMM, and the legacy log holds one COMM fee for each of them.
+        //
+        // In a legacy deploy the reducer charges its own evaluation steps (`send eval`,
+        // `var eval`, `substitution`) as its parallel branches run, so their order in the log
+        // depends on the schedule, in play as in replay (design report D.4, R1). The test
+        // compares the storage charges in order, which only the space jobs make here, and every
+        // charge as a multiset.
+        let mut node = node().await;
+        let _legacy = (
+            node.play.cost.enter_legacy_scope(),
+            node.replay.cost.enter_legacy_scope(),
+        );
+        let setup = [program("rrs-p45-legacy-setup", SETUP.to_owned())];
+        let seeded = play(&mut node.play, &setup, true).await;
+        let mut root = seeded
+            .last()
+            .and_then(|deploy| deploy.root.clone())
+            .expect("the setup has a root");
+        let (_, names) = setup_space(&node.play).await;
+        let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
+        let injections = HashMap::from([(injected("a"), a), (injected("b"), b)]);
+        let bodies = [
+            ("rrs-p45-legacy-sends", "a!(1) | a!(2) | b!(3)"),
+            (
+                "rrs-p45-legacy-receives",
+                "for (@x <- a) { Nil } | for (@y <- b) { Nil }",
+            ),
+            ("rrs-p45-legacy-peek", "for (@x <<- a) { Nil }"),
+            (
+                "rrs-p45-legacy-persistent",
+                "b!!(4) | for (@z <- b) { Nil } | for (@w <- b) { Nil }",
+            ),
+            ("rrs-p45-legacy-drain", "for (@d <= a) { Nil }"),
+        ];
+        for (label, body) in bodies {
+            let deploy = program(
+                label,
+                format!(
+                    "new a(`{}`), b(`{}`) in {{ {body} }}",
+                    injected("a"),
+                    injected("b")
+                ),
+            );
+            node.play
+                .reset(&root)
+                .await
+                .expect("reset the play runtime");
+            let played = evaluate_injected(&node.play, &deploy, &injections, PHLO).await;
+            assert!(
+                played.errors.is_empty(),
+                "{label}: play fails: {:?}",
+                played.errors
+            );
+            let played_legacy = node.play.cost.get_log();
+            let log = node.play.take_event_log().await;
+            let next = node.play.create_checkpoint().await.root;
+            let comms = log
+                .iter()
+                .filter(|event| matches!(event, Event::Comm(_)))
+                .count();
+            let fees = played_legacy
+                .iter()
+                .filter(|charge| charge.operation == "comm event storage cost")
+                .count();
+            assert!(comms > 0, "{label}: the deploy makes space COMMs");
+            assert_eq!(fees, comms, "{label}: one COMM fee for each space COMM");
+
+            node.replay
+                .reset(&root)
+                .await
+                .expect("reset the replay runtime");
+            node.replay
+                .rig(log)
+                .await
+                .expect("rig the replay runtime with the play log");
+            let replayed = evaluate_injected(&node.replay, &deploy, &injections, PHLO).await;
+            assert!(
+                replayed.errors.is_empty(),
+                "{label}: replay fails: {:?}",
+                replayed.errors
+            );
+            let replayed_legacy = node.replay.cost.get_log();
+            node.replay.take_event_log().await;
+            node.replay
+                .check_replay_data()
+                .await
+                .unwrap_or_else(|error| panic!("{label}: the replay leaves events: {error:?}"));
+            assert_eq!(
+                replayed.cost.value, played.cost.value,
+                "{label}: the replay cost"
+            );
+            assert_eq!(
+                storage_charges(&replayed_legacy),
+                storage_charges(&played_legacy),
+                "{label}: the storage charges of the space jobs, in order"
+            );
+            assert_eq!(
+                sorted_charges(&replayed_legacy),
+                sorted_charges(&played_legacy),
+                "{label}: the same legacy charges"
+            );
+            let replayed_root = node.replay.create_checkpoint().await.root;
+            node.replay.take_event_log().await;
+            assert_eq!(replayed_root, next, "{label}: the replay root");
+            root = next;
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

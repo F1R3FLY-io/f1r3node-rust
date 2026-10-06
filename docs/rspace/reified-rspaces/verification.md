@@ -93,8 +93,9 @@ This conclusion holds at every depth, for the constants of the configuration.
 
 Each later phase adds one section for each new model or suite, and it adds its rows to the tables of sections 2 and 8.
 Phase P4 keeps its rows of those tables in its own section [11](#11-phase-p4-the-hashmapqueue-slice).
-The Rocq gate also checks the module `Encoding.v` of phase P2, the six modules of phase P4, and the module `AgentReadCoverage.v` of decision 42.
-So its total count of closed headlines is 113 over 10 modules, not 23.
+The Rocq gate also checks the module `Encoding.v` of phase P2 and the six modules of phase P4.
+It also checks `AgentReadCoverage.v` of decision 42 and `LegacyCharges.v` of decision 45.
+So its total count of closed headlines is 115 over 11 modules, not 23.
 The section of phase P2 documents the 12 headlines of P2 in `Encoding.v`, and section 11 documents the 3 headlines that P4 adds to it.
 
 ## 2. Acceptance categories
@@ -110,7 +111,7 @@ So this dossier names the planned recipe ids and step keys, without recipe hashe
 | Category | Evidence in P1 | Local gate | Recipe: step keys |
 |---|---|---|---|
 | Formally modeled | `check-model-map.py` checks the 70 items of the [model map](glossary.md#model-map), 32 of them required. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. Each of the 29 headlines (H1 to H23, T1 to T6) names an existing theorem or operator, and each fix rule names its items and headlines. The checker also checks each Rust line citation of the formal files. `check-closure.py modeled` checks the model items of the realignment leaves. | `python3 scripts/verify-reified/check-model-map.py` and `check-closure.py modeled` | `rrs-p1-checks`: `p1-model-map`, `p1-closure-modeled` |
-| Formal verification passes | The 23 Rocq headlines close under the global context, and `rocqchk` accepts each module. The 27 Rocq mutants of P1 fail in their expected declarations. TLC explores 3 safe configurations completely. Each of 8 Unsafe configurations refutes exactly one invariant, and its complement violates no other invariant. Apalache proves BASE and STEP of `IndInv` and `LockIndInv`, and 4 Error controls break them in the expected conjunct. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` | `rrs-p1-rocq-ec`: `fresh-kernel`. `rrs-p1-rocq-vs`: `fresh-kernel`. `rrs-p1-rocq-negative`: `p1-rocq-negative`. `rrs-p1-tla-checkpoint`: its 18 steps (section [5.2](#52-checkpointreplaytla)). `rrs-p1-tla-lock`: its 9 steps (section [5.3](#53-txnlockcoveragetla)). |
+| Formal verification passes | The 23 Rocq headlines close under the global context, and `rocqchk` accepts each module. The 27 Rocq mutants of P1 fail in their expected declarations. TLC explores 6 safe configurations completely. Each of 11 Unsafe configurations refutes exactly one invariant, and its complement violates no other invariant. Apalache proves BASE and STEP of `IndInv` (also with the legacy charges of decision 45) and `LockIndInv`, and 4 Error controls break them in the expected conjunct. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` | `rrs-p1-rocq-ec`: `fresh-kernel`. `rrs-p1-rocq-vs`: `fresh-kernel`. `rrs-p1-rocq-negative`: `p1-rocq-negative`. `rrs-p1-tla-checkpoint`: its 29 steps (section [5.2](#52-checkpointreplaytla)). `rrs-p1-tla-lock`: its 9 steps (section [5.3](#53-txnlockcoveragetla)). |
 | Every invariant extracted as a property-based test | The [invariant map](glossary.md#invariant-map) names at least one property test for each of the 29 P1 ids and for the checklist entry O1. The 25 P1 properties and `prop_ordinary_play_replay_equal` run 64 cases with a fixed seed. `check-closure.py invariants` checks the headlines of the realignment leaves. | `check-invariant-map.py --phase P1`, `check-invariant-map.py --phase ORD`, and the cargo targets of section [10.3](#103-rust-suites) | `rrs-p1-checks`: `p1-invariant-map`, `p1-invariant-map-ord`, `p1-closure-invariants`. `rrs-p1-rspace`: `p1-props`. `rrs-p1-regression`: `p1-regression-ordinary`. |
 | Implementation complete | `check-complete.py --phase p1` finds the 11 entry points of P1 and no forbidden token in the 3 P1 sources. It also finds no ignored test and no `/tmp` path in the P1 tests, and each property file sets `failure_persistence: None`. `check-complete.py --production-scan` finds none of the 24 consensus tokens in production code. `check-footprint.py` passes the policies `p1` and `p1-realign`. `check-consensus-checklist.py --milestone p1` and `check-closure.py entry-points` pass. | `python3 scripts/verify-reified/check-complete.py` and the other checkers | `rrs-p1-checks`: `p1-complete`, `p1-production-scan`, `p1-footprint`, `p1-footprint-realign`, `p1-consensus-checklist`, `p1-closure-entry-points`. For the formal leaves: `rrs-p1-rocq-ec`: `fresh-kernel`, and `rrs-p1-tla-checkpoint`: `p1-tla-safe-mc-checkpointreplay-twoblock`. |
 | Thoroughly tested | The substrate suites (18 library tests, 82 integration tests, 4 golden-corpus tests, 3 tests over `Par`, 1 host-bounds test), the whole `rspace++` suite, the regression suite of section [8](#8-regression-checks-for-ordinary-execution), the HEAD suites, the 273 checker self-tests, the audit harness, and the ledger-copy controls. | `cargo test` (section [10.3](#103-rust-suites)) and `python3 scripts/verify-reified/run-checker-tests.py` | `rrs-p1-rspace`: `p1-lib`, `p1-integration`, `p1-legacy-golden`. `rrs-p1-rspace-full`: `p1-full-rspace`. `rrs-p1-rholang`: `p1-rholang-par`, `p1-rholang-host-bounds`. `rrs-p1-regression`: its 10 steps (section [8.1](#81-consensus-preservation-checklist)). `rrs-p1-head-rspace`: `p1-head-storage`, `p1-head-replay`, `p1-head-observer`, `p1-head-history`, `p1-head-lib-history`. `rrs-p1-rholang-matcher`: `p1-head-rholang-matcher`. `rrs-p1-checks`: `p1-checker-tests`, `p1-audit-rocq`, `p1-audit-source`, `p1-ledger-copy`, `p1-ledger-copy-controls`. `rrs-p1-rocq-negative`: `p1-rocq-negative` (for `rrs-fv-event-correlation`). |
@@ -136,7 +137,7 @@ Read it from the left to the right: sources, checks, local gates, pgmcp recipes,
 The negative controls are checks that must fail, and their gates require the expected failure.
 Each recipe runs the same command as its local gate, in the verifier sandbox.
 
-![Verification pipeline of phase P1 as five columns from the left to the right. Sources: the P1 Rust code, the HEAD Rust code, the Rocq models EventCorrelation.v and VolatileSweep.v, the TLA+ models CheckpointReplay.tla and TxnLockCoverage.tla with 19 configurations, the maps and policies, the corpora, and the documents. Checks: the Rocq kernel checks, TLC on 3 safe configurations, the Apalache BASE check Init implies IndInv and STEP check IndInv and Next imply IndInv prime, the property-based tests with 64 cases, the deterministic suites, the Python checkers, the document checks, and the negative controls that must fail. Local gates: check-reified-rspaces-proofs.sh, check-reified-rspaces-tla-invariants.sh, cargo test, the Python checkers, and doc_lint.py with render.sh. pgmcp recipes: rrs-p1-rocq-ec, rrs-p1-rocq-vs and rrs-p1-rocq-negative, the TLA recipes, the Rust recipes, rrs-p1-checks with 18 checker steps, and rrs-p1-docs. Acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented. Green arrows show which recipe binds evidence of which category.](diagrams/13-verification-pipeline.svg)
+![Verification pipeline of phase P1 as five columns from the left to the right. Sources: the P1 Rust code, the HEAD Rust code, the Rocq models EventCorrelation.v and VolatileSweep.v, the TLA+ models CheckpointReplay.tla and TxnLockCoverage.tla with 27 configurations, the maps and policies, the corpora, and the documents. Checks: the Rocq kernel checks, TLC on 6 safe configurations, the Apalache BASE check Init implies IndInv and STEP check IndInv and Next imply IndInv prime, the property-based tests with 64 cases, the deterministic suites, the Python checkers, the document checks, and the negative controls that must fail. Local gates: check-reified-rspaces-proofs.sh, check-reified-rspaces-tla-invariants.sh, cargo test, the Python checkers, and doc_lint.py with render.sh. pgmcp recipes: rrs-p1-rocq-ec, rrs-p1-rocq-vs and rrs-p1-rocq-negative, the TLA recipes, the Rust recipes, rrs-p1-checks with 18 checker steps, and rrs-p1-docs. Acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented. Green arrows show which recipe binds evidence of which category.](diagrams/13-verification-pipeline.svg)
 
 *Figure V1. Source: [diagrams/13-verification-pipeline.puml](diagrams/13-verification-pipeline.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -156,10 +157,10 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 113 over 10 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)), and `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 70 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45) hold 5, 1, 3 and 3. The 10 pristine modules compile first.
+6. **Total.** The count of closed headlines is 115 over 11 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)). `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)), and `LegacyCharges.v` has 2 (section [11.14](#1114-legacy-charges-of-decision-45)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** The 75 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decision-46), [11.12](#1112-re-entry-of-decision-43), [11.13](#1113-peek-re-store-of-decision-45) and [11.14](#1114-legacy-charges-of-decision-45) hold 5, 1, 3, 3 and 5. The 11 pristine modules compile first.
 
-The last host run printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
+The last host run printed `reified-rspaces proofs: PASS=53 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
 The `Print Assumptions` lines are [lines 7578 to 7594 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L7578-L7594) and [lines 1744 to 1749 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1744-L1749).
 
 In the pgmcp sandbox, the Rocq adapter compiles one standalone file with `coqc -q -noglob` in a fresh directory.
@@ -228,7 +229,7 @@ The gate `scripts/check-reified-rspaces-tla-invariants.sh` copies the directory 
 
 The gate lists its legs in three arrays: `SAFE_CONFIGS`, `UNSAFE_CONFIGS`, and `APALACHE_CHECKS`.
 The recipe generator reads the same arrays, so the gate and the recipes check the same configurations.
-The state counts and depths below come from the last host run, the run of decision 43, which printed `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d43/tla-gate.log`).
+The state counts and depths below come from the last host run, the run of Option P of decision 45, which printed `reified-rspaces tla: PASS=162 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/tla-lc/gate.log`).
 That run also checked the P4 modules of section [11.4](#114-tla-models-of-p4).
 
 ### 5.2 CheckpointReplay.tla
@@ -244,6 +245,10 @@ A charge above the limit fails the deploy, and the commit keeps the operations b
 A replay fire with no free recorded occurrence stages unpaired, and the replay commit stops there when its charges pass.
 With the constant `Forge`, the proposer may also publish a log without the COMM of its last fire.
 
+Since [decision 45](decision-register.md#decision-45), the constant `Peeks` adds peeks under Rule E.
+The COMM of a peek fire removes the record, and a re-store with the same identity stores it again.
+The constant `Legacy` runs a legacy deploy with the charges of Option P, which section [11.14](#1114-legacy-charges-of-decision-45) describes.
+
 #### 5.2.1 Invariants of CheckpointReplay.tla
 
 *Table 7. The invariants of CheckpointReplay.tla.*
@@ -255,6 +260,7 @@ With the constant `Forge`, the proposer may also publish a log without the COMM 
 | T3 | `PairedOnce` | Replay pairs each COMM at most as often as the play log records it. |
 | T4 | `NoVolatileResidue` | No history trie, of play or of replay, holds data, continuations, or joins of a volatile channel. |
 | T6 | `ReplayOutcomeEqual` | When the published log is the commit log of play, replay never diverges, and the replayed deploy ends with the failed flag and the spending of play. |
+| U13 | `LegacyChargesFollowHost` | In a legacy deploy, whenever play has no open transaction, play has the legacy state and the stop point of the host program. U13 is an id of the P4 map (section [11.14](#1114-legacy-charges-of-decision-45)). |
 | Auxiliary | `TypeOK` | The type invariant of the module. It is not a property of the substrate. |
 | Auxiliary | `IndInv` | The inductive strengthening of T3 and T4 for the Apalache checks. TLC also checks it on every reachable state of both safe configurations. |
 
@@ -277,21 +283,23 @@ T6 uses these variables of the model:
 \end{aligned}
 ```
 
-The inductive invariant is a conjunction of nine parts:
+The inductive invariant is a conjunction of ten parts:
 
 ```math
-\mathit{IndInv} \triangleq \mathit{TypeOK} \land \mathit{TxnShapeInv} \land \mathit{ProgressInv} \land \mathit{DataInv} \land \mathit{PairedOnce} \land \mathit{NoVolatileResidue} \land \mathit{BindingInv} \land \mathit{StagedInv} \land \mathit{SweptClean}
+\mathit{IndInv} \triangleq \mathit{TypeOK} \land \mathit{TxnShapeInv} \land \mathit{ProgressInv} \land \mathit{DataInv} \land \mathit{PairedOnce} \land \mathit{NoVolatileResidue} \land \mathit{BindingInv} \land \mathit{StagedInv} \land \mathit{SweptClean} \land \mathit{LegacyInv}
 ```
 
 `BindingInv` says that the bindings hold the recorded occurrences that replay has not paired yet.
 `StagedInv` says that the pairings of an open replay transaction stay within them.
 `SweptClean` says that a swept store has no volatile residue, and the other parts make the bounds of `TypeOK` inductive.
+`LegacyInv` bounds the legacy logs, and it keeps each remaining budget non-negative until its run fails (section [11.14](#1114-legacy-charges-of-decision-45)).
 
 #### 5.2.2 Configurations and results of CheckpointReplay.tla
 
 Every configuration sets `SpacesInBlockHash = TRUE`.
 The constant `Budget` is the phlo limit of a deploy, in charges, and `Forge` lets the proposer omit the COMM of its last fire.
 The flags `UseUuid`, `RootIgnoresVolatile`, `DoublePair`, `JoinResidue`, `StagingDivergence`, and `AcceptUnpaired` turn on the wrong rules of the Unsafe configurations.
+The flags `LegacyPreAfterObserve`, `LegacyTailDropped`, and `RetainPeek` of decision 45 do the same, and `Peeks` and `Legacy` select the mode.
 The four older Unsafe configurations set `Budget=8`, which no run reaches, and `Forge=FALSE`.
 The bounds column quotes the `\* BOUNDS:` line of each file exactly.
 
@@ -299,18 +307,26 @@ The bounds column quotes the `\* BOUNDS:` line of each file exactly.
 
 | Configuration | Leg | Bounds | Distinct states | Depth | Result |
 |---|---|---|---|---|---|
-| `MC_CheckpointReplay.cfg` | safe | `Chans={"d1","d2","v1"}, Vol={"v1"}, Vals={"a","b"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=TRUE` | 145,255 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
-| `MC_CheckpointReplay_TwoBlock.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE` | 94,049 | 41 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
-| `UuidUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE` | 1,904 | 10 | Refutes exactly `ReplayPrefixEqual` |
-| `RootIgnoresVolatileUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE` | 329 | 6 | Refutes exactly `SameRootIffSameState` |
-| `DoublePairUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE` | 2,765 | 12 | Refutes exactly `PairedOnce` |
-| `JoinResidueUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE` | 329 | 6 | Refutes exactly `NoVolatileResidue` |
-| `StagingDivergenceUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=FALSE` | 5,146 | 18 | Refutes exactly `ReplayOutcomeEqual` |
-| `AcceptUnpairedUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=TRUE` | 2,988 | 12 | Refutes exactly `ReplayPrefixEqual` |
-| `MC_CheckpointReplay_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE` | - | 0 | `NoError` |
-| `MC_CheckpointReplay_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE` | - | 1 | `NoError` |
-| `DoublePairUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE` | - | 1 | `Error` in `StagedInv`, marker `vStaged[` |
-| `JoinResidueUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE` | - | 1 | `Error` in `SweptClean`, marker `Swept"` |
+| `MC_CheckpointReplay.cfg` | safe | `Chans={"d1","d2","v1"}, Vol={"v1"}, Vals={"a","b"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | 145,255 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
+| `MC_CheckpointReplay_TwoBlock.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | 94,049 | 41 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
+| `UuidUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 1,904 | 10 | Refutes exactly `ReplayPrefixEqual` |
+| `RootIgnoresVolatileUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 329 | 6 | Refutes exactly `SameRootIffSameState` |
+| `DoublePairUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 2,765 | 12 | Refutes exactly `PairedOnce` |
+| `JoinResidueUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 329 | 6 | Refutes exactly `NoVolatileResidue` |
+| `StagingDivergenceUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 5,146 | 18 | Refutes exactly `ReplayOutcomeEqual` |
+| `AcceptUnpairedUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | 2,988 | 12 | Refutes exactly `ReplayPrefixEqual` |
+| `MC_CheckpointReplay_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 0 | `NoError` |
+| `MC_CheckpointReplay_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 1 | `NoError` |
+| `DoublePairUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 1 | `Error` in `StagedInv`, marker `vStaged[` |
+| `MC_CheckpointReplay_Peek.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=4, Forge=TRUE, Peeks=TRUE, Legacy=FALSE` | 34,991 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
+| `MC_CheckpointReplay_Legacy.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 34,351 | 22 | No invariant violated (T1 to T4, T6, U13, `TypeOK`, `IndInv`) |
+| `MC_CheckpointReplay_Legacy_TwoBlock.cfg` | safe | `Chans={"d1"}, Vol={}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 38,602 | 43 | No invariant violated (T1 to T4, T6, U13, `TypeOK`, `IndInv`) |
+| `LegacyPreAfterObserveUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 26,034 | 18 | Refutes exactly `ReplayOutcomeEqual` |
+| `LegacyTailDroppedUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 90 | 4 | Refutes exactly `LegacyChargesFollowHost` |
+| `RetainPeekUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 326 | 5 | Refutes exactly `LegacyChargesFollowHost` |
+| `MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | - | 0 | `NoError` |
+| `MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | - | 1 | `NoError` |
+| `JoinResidueUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 1 | `Error` in `SweptClean`, marker `Swept"` |
 
 #### 5.2.3 Unsafe controls and complements of CheckpointReplay.tla
 
@@ -324,23 +340,27 @@ The bounds column quotes the `\* BOUNDS:` line of each file exactly.
 | `JoinResidueUnsafe` | `JoinResidue = TRUE` | T4 `NoVolatileResidue` | The sweep removes data and continuations only, as `remove_all_continuations` does, so a volatile join entry reaches the history trie. | 6,813 states, depth 22, no other violation |
 | `StagingDivergenceUnsafe` | `StagingDivergence = TRUE` | T6 `ReplayOutcomeEqual` | An unpaired replay fire fails at staging, which is the rule of decision 19. Play runs out of phlo at a produce fire of its second transaction, so the log lacks that COMM. Replay drops the transaction and rejects an honest block, as in the [replay finding](findings/space-replay-out-of-phlo.md). | 6,561 states, depth 22, no other violation |
 | `AcceptUnpairedUnsafe` | `AcceptUnpaired = TRUE` | T1 `ReplayPrefixEqual` | An unpaired replay fire commits as if it paired. When the proposer omits the COMM of its last fire, the validator commits and logs that fire, so its log stops being a prefix of the published log. | 8,357 states, depth 22, no other violation |
+| `LegacyPreAfterObserveUnsafe` | `LegacyPreAfterObserve = TRUE` | T6 `ReplayOutcomeEqual` | The pre-charge of a fire comes after its observer calls. Play runs out of phlo at that pre-charge, so the log lacks the fire. Replay then reaches the pairing check first and diverges on an honest block. | 34,227 states, depth 22, no other violation |
+| `LegacyTailDroppedUnsafe` | `LegacyTailDropped = TRUE` | U13 `LegacyChargesFollowHost` | The job charges no tail after the commit, so the legacy log of play misses the post-charges of the last operation. | 33,887 states, depth 22, no other violation |
+| `RetainPeekUnsafe` | `RetainPeek = TRUE` | U13 `LegacyChargesFollowHost` | A peek fire keeps its record, as the retention before Rule E did. The space then makes one host step fewer than the host program, which removes the record and sends it again. | 35,243 states, depth 22, no other violation |
 
 #### 5.2.4 Apalache checks of CheckpointReplay.tla
 
-The gate runs four Apalache checks on this module, with the names `base`, `step`, `step-doublepair-unsafe`, and `step-joinresidue-unsafe`.
+The gate runs six Apalache checks on this module, with the names `base`, `step`, `step-doublepair-unsafe`, `step-joinresidue-unsafe`, `legacy-base`, and `legacy-step`.
 BASE checks `Init` against `IndInv`, and STEP starts from `IndInit`, the set of every state that satisfies `IndInv`.
 Both pass with `NoError`, so `PairedOnce` and `NoVolatileResidue` hold at every depth for the constants of the configuration.
 With `DoublePair`, one replay stage step breaks `StagedInv`, and the violation holds the marker `vStaged[`.
 With `JoinResidue`, one deploy-end step leaves a volatile join and breaks `SweptClean`, with the marker `Swept"`.
 
 The budget, the forged logs, and the stops of decision 36 keep `IndInv` inductive, so both checks pass with `Budget=3` and `Forge=TRUE`.
-The recipe steps are `p1-tla-apalache-base`, `p1-tla-apalache-step`, `p1-tla-apalache-step-doublepair-unsafe`, and `p1-tla-apalache-step-joinresidue-unsafe`.
+The checks `legacy-base` and `legacy-step` prove `IndInv` with peeks and the legacy charges, with one operation in one transaction of each block.
+The recipe steps are `p1-tla-apalache-base`, `p1-tla-apalache-step`, `p1-tla-apalache-step-doublepair-unsafe`, `p1-tla-apalache-step-joinresidue-unsafe`, `p1-tla-apalache-legacy-base`, and `p1-tla-apalache-legacy-step`.
 
 #### 5.2.5 The two-block replay model
 
 The configuration `MC_CheckpointReplay_TwoBlock.cfg` is the two-block replay model of the leaf `rrs-fv-rocq-tla-two-block-replay-model`.
 The validator of block 2 resets to the root of block 1, and TLC explores 94,049 distinct states to depth 41 with no violation.
-Its Unsafe controls are the six configurations of Table 9 with their complements, which use `Blocks=1`.
+Its Unsafe controls are the nine configurations of Table 9 with their complements, which use `Blocks=1`.
 Its Apalache checks use `Blocks=2`.
 The invariant map names these property tests for T1 to T4 and T6:
 
@@ -352,10 +372,13 @@ The invariant map names these property tests for T1 to T4 and T6:
 
 The integration suite checks the same replay on the Rust code (section [7.4](#74-deterministic-substrate-suites)).
 Its group B tests the checkpoints, and its group C tests the replay.
-The recipe `rrs-p1-tla-checkpoint` has 18 steps.
+
+The recipe `rrs-p1-tla-checkpoint` has 29 steps.
 Its TLC steps are `p1-tla-safe-mc-checkpointreplay`, `p1-tla-safe-mc-checkpointreplay-twoblock`, `p1-tla-uuidunsafe`, `p1-tla-uuidunsafe-complement`, `p1-tla-rootignoresvolatileunsafe`, `p1-tla-rootignoresvolatileunsafe-complement`, `p1-tla-doublepairunsafe`, and `p1-tla-doublepairunsafe-complement`.
 They also include `p1-tla-joinresidueunsafe`, `p1-tla-joinresidueunsafe-complement`, `p1-tla-stagingdivergenceunsafe`, `p1-tla-stagingdivergenceunsafe-complement`, `p1-tla-acceptunpairedunsafe`, and `p1-tla-acceptunpairedunsafe-complement`.
-Its other steps are the four Apalache steps above.
+Decision 45 adds `p1-tla-safe-mc-checkpointreplay-peek`, `p1-tla-safe-mc-checkpointreplay-legacy`, and `p1-tla-safe-mc-checkpointreplay-legacy-twoblock`.
+It also adds `p1-tla-legacypreafterobserveunsafe`, `p1-tla-legacytaildroppedunsafe`, and `p1-tla-retainpeekunsafe`, each with its step `-complement`.
+Its other steps are the six Apalache steps above.
 
 ### 5.3 TxnLockCoverage.tla
 
@@ -420,10 +443,10 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 ### 6.1 Rocq mutants
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 70 mutants.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 75 mutants.
 Table 12 holds 29 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
 Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decision-46) holds 1.
-Table 50 of section [11.12](#1112-re-entry-of-decision-43) holds 3, and Table 55 of section [11.13](#1113-peek-re-store-of-decision-45) holds 3.
+Table 50 of section [11.12](#1112-re-entry-of-decision-43) and Table 55 of section [11.13](#1113-peek-re-store-of-decision-45) hold 3 each, and Table 59 of section [11.14](#1114-legacy-charges-of-decision-45) holds 5.
 Each mutant replaces text that must occur exactly once in a scratch copy of its module, so a stale mutant fails.
 The control passes only when the mutated copy fails to compile and the first error lies inside one of the expected declarations.
 
@@ -431,6 +454,7 @@ The pristine modules must compile first. The run after the merge of [decision 44
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d43/gates/proofs.log`).
 The run of [decision 45](decision-register.md#decision-45) passed all 70 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d45/gates/proofs.log`).
+The run of its Option P passed all 75 mutants after the 11 pristine modules compiled (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
 
 *Table 12. The 29 Rocq mutants of the P1 modules. EC is EventCorrelation.v, and VS is VolatileSweep.v.*
 
@@ -486,7 +510,7 @@ The substrate suites hold five negative controls:
 - `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2510`) shows that the host refuses a checkpoint with one channel set under two orders.
 - `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3439`) shows that host replay of a repeated channel can compute another COMM than the play log.
 
-The P4 suite `rholang/tests/reified_queue_replay.rs` holds the control of [decision 36](decision-register.md#decision-36), `space_queue_out_of_phlo_sweep_replays_equal` (`reified_queue_replay.rs:821`).
+The P4 suite `rholang/tests/reified_queue_replay.rs` holds the control of [decision 36](decision-register.md#decision-36), `space_queue_out_of_phlo_sweep_replays_equal` (`reified_queue_replay.rs:850`).
 It plays a space deploy out of phlo at many limits, and it replays each play log as Casper does.
 On the code before the fix, 143 of its 232 deploys replayed to another outcome than play (`target/verification/reified-rspaces/p4/fx-c/step1-sweep-before.log`).
 After the fix, every deploy replays to the outcome of play (`step3-sweep-after.log` of the same directory).
@@ -582,7 +606,7 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
 | `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:3440` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
 | `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1997` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
-| `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:821` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
+| `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:850` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
 ### 7.4 Deterministic substrate suites
 
@@ -1260,10 +1284,10 @@ Each gate writes its logs under `target/verification/reified-rspaces/` and never
 
 ### 10.2 Formal gates
 
-1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 70 mutants.
-2. Confirm the last line `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0`.
+1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 75 mutants.
+2. Confirm the last line `reified-rspaces proofs: PASS=53 FAIL=0 SKIP=0`.
 3. Run `scripts/check-reified-rspaces-tla-invariants.sh` for the TLC, Unsafe, complement, and Apalache legs.
-4. Confirm the last line `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0`.
+4. Confirm the last line `reified-rspaces tla: PASS=162 FAIL=0 SKIP=0`.
 5. To run one mutant, run `python3 scripts/verify-reified/rocq-negative-controls.py --only <id>`.
 6. To run one Unsafe control, run `scripts/verify-reified/tlc-expect-violation.sh <cfg> <invariant> <module>`.
 7. To run its complement, add the option `--complement` before the configuration.
@@ -1317,7 +1341,7 @@ The [design](design.md#native-spaces) describes the code, the [specification](sp
 
 ### 11.1 What P4 proves
 
-P4 proves eight groups of claims, with 67 Rocq headlines (Q1 to Q67) and 8 TLA+ invariants (U1 to U8):
+P4 proves eleven groups of claims, with 80 Rocq headlines (Q1 to Q80) and 13 TLA+ invariants (U1 to U13):
 
 - **Ids and records.** The Reified ids are injective, disjoint from every other name, and total to decode. The record envelopes round-trip, and their decoders accept only the image of their encoders (Q1 to Q19).
 - **Counters and merges.** Two branches that use one queue race on its counter in merge check 1, and two deploys of one block form one chain. A merge without a race is a serial run (Q20 to Q28, U4).
@@ -1327,6 +1351,9 @@ P4 proves eight groups of claims, with 67 Rocq headlines (Q1 to Q67) and 8 TLA+ 
 - **The refresh of I-20.** The strict decode of a refreshed marker tuple is the decode of the model, and it commutes with substitution (Q56 to Q58).
 - **Metering.** An operation reserves each read and copy before it makes it, and no reservation follows its commit. Its charges do not depend on the list order of the store or on unread payloads (Q59 to Q66, section [11.10](#1110-metering-of-decision-42)).
 - **Native execution.** Native play and native replay reject a space deploy at one point, before any space work (Q67, section [11.11](#1111-native-execution-of-decision-46)).
+- **Re-entry.** A re-issued persistent operation keeps the order of its first round and re-enters at its place (Q68 to Q77, U9 to U12, section [11.12](#1112-re-entry-of-decision-43)).
+- **Peek re-store.** A peek fire removes what the host removes, and the agent stores the record again (Q78, section [11.13](#1113-peek-re-store-of-decision-45)).
+- **Legacy charges.** A space job makes the legacy charges and the stop of its host program (Q79, Q80, U13, section [11.14](#1114-legacy-charges-of-decision-45)).
 
 The [invariant map](glossary.md#invariant-map) phase `P4` names at least one property test for each id.
 The [model map](glossary.md#model-map) of P4 ties each id to its Rust items.
@@ -1340,19 +1367,19 @@ The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decisi
 
 | Category | Evidence in P4 | Local gate |
 |---|---|---|
-| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 185 items of the P4 model map, all of them required, and its 89 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
-| Formal verification passes | The 113 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 70 Rocq mutants fail in their expected declarations. TLC explores 4 P4 safe configurations completely, 7 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` (with and without re-issues) and of `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
-| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q78 and U1 to U12: 78 properties in `reified_p4_props.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 17 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
-| Implementation complete | `check-complete.py --phase p4` finds the 69 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
-| Thoroughly tested | The 12 P4 suites of section [11.7](#117-integration-suites) with 169 tests, the 188 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
+| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 200 items of the P4 model map, all of them required, and its 93 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
+| Formal verification passes | The 115 Rocq headlines of eleven modules close under the global context, and `rocqchk` accepts each module. The 75 Rocq mutants fail in their expected declarations. TLC explores 4 P4 safe configurations completely, 7 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` (with and without re-issues) and of `HandleIndInv`. For U13, TLC explores the 2 legacy configurations of `CheckpointReplay.tla`, 2 Unsafe controls refute it, and Apalache proves BASE and STEP of `IndInv` (section [11.14](#1114-legacy-charges-of-decision-45)). | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
+| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q80 and U1 to U13: 78 properties in `reified_p4_props.rs`, 3 in `reified_legacy_charges.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 27 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` and `--test reified_legacy_charges` |
+| Implementation complete | `check-complete.py --phase p4` finds the 76 entry points in the 35 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
+| Thoroughly tested | The 13 P4 suites of section [11.7](#117-integration-suites) with 175 tests, the 198 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
 | Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document, and `render.sh --check` finds each SVG byte-identical to a fresh render. | `python3 scripts/verify-reified/doc_lint.py`, `docs/rspace/reified-rspaces/diagrams/render.sh --check` |
 
 ### 11.3 Rocq models of P4
 
 #### 11.3.1 The gate in P4
 
-The proofs gate of section [4.1](#41-toolchain-and-kernel-checks) now checks ten modules, with the expected count of each module.
-Table 25 gives the counts of the P4 modules, and section [11.10](#1110-metering-of-decision-42) adds `AgentReadCoverage.v` with 8 headlines, so the total is 101 closed headlines.
+The proofs gate of section [4.1](#41-toolchain-and-kernel-checks) now checks eleven modules, with the expected count of each module.
+Table 25 gives the counts of all eleven modules, and the total is 115 closed headlines.
 The run at the P4 milestone printed `reified-rspaces proofs: PASS=45 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/pc/gate-proofs.log`).
 Its last leg ran 65 negative checks: the 9 pristine modules and the 56 mutants of that milestone.
 
@@ -1360,6 +1387,8 @@ The run after the merge of [decision 44](decision-register.md#decision-44) print
 Its last leg ran 66 negative checks with the 57 mutants of section [11.5](#115-negative-controls-of-p4).
 The run of [decision 42](decision-register.md#decision-42) checked ten modules and printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
 Its last leg ran 72 negative checks: the 10 pristine modules and 62 mutants.
+The run of Option P of decision 45 checked eleven modules and printed `reified-rspaces proofs: PASS=53 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
+Its last leg ran 86 negative checks: the 11 pristine modules and 75 mutants.
 
 *Table 25. The modules of the proofs gate and their closed headlines.*
 
@@ -1375,7 +1404,8 @@ Its last leg ran 72 negative checks: the 10 pristine modules and 62 mutants.
 | [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 11 | P4 (10) and decision 46 (1) |
 | [SpaceFactory.v](../../../formal/rocq/reified_rspaces/theories/SpaceFactory.v) | 8 | P4 |
 | [AgentReadCoverage.v](../../../formal/rocq/reified_rspaces/theories/AgentReadCoverage.v) | 8 | Decision 42 |
-| Total | 113 | |
+| [LegacyCharges.v](../../../formal/rocq/reified_rspaces/theories/LegacyCharges.v) | 2 | Decision 45, Option P |
+| Total | 115 | |
 
 Each headline of the tables below has no assumption: `Print Assumptions` reports `Closed under the global context`.
 The last column gives the property tests that the invariant map names for the headline.
@@ -1511,7 +1541,7 @@ The fourth refinement corrects two notes of the module:
 ### 11.4 TLA+ models of P4
 
 The gate of section [5.1](#51-tools-and-gate-legs) checks three P4 modules with the legs Bounds, Safe, Unsafe, and Apalache.
-The last host run, the run of decision 43, printed `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d43/tla-gate.log`).
+The last host run, the run of Option P of decision 45, printed `reified-rspaces tla: PASS=162 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/tla-lc/gate.log`).
 The counts of that run include the P1 legs of section 5.
 
 #### 11.4.1 HeadOnlyDiscipline.tla
@@ -1618,11 +1648,13 @@ A restriction that removed the longer run would have to stop other elements from
 
 ### 11.5 Negative controls of P4
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 70 mutants. Tables 12, 39, 45, 47, 50 and 55 hold 29, 29, 5, 1, 3 and 3 of them.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 75 mutants. Tables 12, 39, 45, 47, 50, 55 and 59 hold 29, 29, 5, 1, 3, 3 and 5 of them.
+
 The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants, after the 9 pristine modules compiled (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d43/gates/proofs.log`).
 The run of [decision 45](decision-register.md#decision-45) passed all 70 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d45/gates/proofs.log`).
+The run of its Option P passed all 75 mutants, after the 11 pristine modules compiled (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
 
 *Table 39. The 29 Rocq mutants of P4.*
 
@@ -1662,13 +1694,14 @@ The TLA+ controls of P4 are the four Unsafe configurations of Table 37 and the t
 
 ### 11.6 Property-based tests
 
-The 69 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
+The 78 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
 A pure property and a property over the in-memory agent run 64 cases.
 A property that evaluates deploys on a Rholang runtime runs 16 cases.
 Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:151-176`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
+The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#1114-legacy-charges-of-decision-45)) run 64 cases each, with the seed `0x0E0D_2026_1006_0045`.
 
-*Table 40. The 84 properties of phase P4 in the invariant map.*
+*Table 40. The 87 properties of phase P4 in the invariant map.*
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
@@ -1683,10 +1716,11 @@ So a run has the same cases on every host, and it writes nothing to the source t
 | Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8367-8640` | Q47 to Q51, Q55 |
 | Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3773-4349` | Q68 to Q77, U1 to U3, and U9 to U12 |
 | Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4701` | Q78 |
+| Legacy charges (decision 45, Option P) | `prop_legacy_charges_equal_charging_rspace`, `prop_legacy_chain_log_is_host_order`, `prop_legacy_replay_stops_with_play` (3) | `reified_legacy_charges.rs:254-908` | Q79 and Q80, U13 for the last two |
 | Native execution | `reified_native_play_rejects_a_space_deploy_before_any_space_work`, `reified_native_replay_reproduces_the_rejection_of_play`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:287-320` | Q67 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
 
-*Table 41. The 17 witness tests of phase P4.*
+*Table 41. The 27 witness tests of phase P4.*
 
 | Test | Location | Covers |
 |---|---|---|
@@ -1704,9 +1738,19 @@ So a run has the same cases on every host, and it writes nothing to the source t
 | `wrap_body_restores_the_context_as_a_use_tuple` | `reified/scope.rs:257` | Q46 |
 | `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:388` | Q59 |
 | `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:227` | Q59 |
-| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:723` | Q61 |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:1811` | Q78 |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:1884` | Q78 |
+| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:740` | Q61 |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:1843` | Q78 |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:1916` | Q78 |
+| `legacy_charges_of_a_store_and_a_park` | `reified/legacy_charges.rs:416` | Q79 |
+| `legacy_charges_of_a_produce_fire_follow_handle_result` | `reified/legacy_charges.rs:442` | Q79 |
+| `legacy_charges_of_a_consume_fire_refund_the_consume` | `reified/legacy_charges.rs:504` | Q79 |
+| `legacy_charges_of_a_continuation_without_a_body_fail_closed` | `reified/legacy_charges.rs:546` | Q79 |
+| `legacy_chain_is_active_only_in_a_metered_legacy_deploy` | `reified/legacy_charges.rs:567` | Q79, Q80 |
+| `legacy_chain_charges_in_host_order` | `reified/legacy_charges.rs:632` | Q79 |
+| `legacy_chain_pre_charge_stops_before_its_operation` | `reified/legacy_charges.rs:661` | Q79 |
+| `legacy_chain_tail_fails_after_the_commit` | `reified/legacy_charges.rs:708` | Q79 |
+| `space_queue_legacy_replay_equal` | `reified_queue_replay.rs:1001` | Q79, Q80 |
+| `space_queue_legacy_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:862` | Q80 |
 
 After [decision 46](decision-register.md#decision-46), the invariant-map checker printed `invariant-map: PASS=213 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=333` for all phases (`target/verification/reified-rspaces/d46/invariant-map-p4.log`, `invariant-map-all.log`).
 The P4 entries of the map have the test status `required`, because every P4 test exists and passes.
@@ -1715,7 +1759,7 @@ The model-map checker printed `model-map: PASS=187 FAIL=0 PENDING=0` for the P1 
 ### 11.7 Integration suites
 
 Table 42 gives the P4 suites, with the exact counts of the last host run.
-Each run printed `test result: ok` with 0 failures (`target/verification/reified-rspaces/p4/fx-c/`).
+Each run printed `test result: ok` with 0 failures (`target/verification/reified-rspaces/d45/option-p-gates/`).
 
 *Table 42. The integration suites of P4.*
 
@@ -1725,21 +1769,22 @@ Each run printed `test result: ok` with 0 failures (`target/verification/reified
 | `rholang/tests/reified_factory.rs` | 14 | Private channels, the creation records, the factory gates, `assertEqual`, `getSpaceAgent`, fixed arities, and persistent sends |
 | `rholang/tests/reified_handle.rs` | 12 | The five methods, typed replies, the drop rule, the bare-handle rule, dangling handles, and persistent sends |
 | `rholang/tests/reified_queue.rs` | 22 | Head-only delivery, the counters, the order envelope, re-issues and re-entries, divergent pairs, observer parity, the rejected joins, queries, and params, dangling names, the meta channels, and item 19 |
-| `rholang/tests/reified_queue_replay.rs` | 5 of P4 | Play and replay equality with handle calls, peeks, and parked waiters, a typed divergence, and reporting |
+| `rholang/tests/reified_queue_replay.rs` | 7 of P4 | Play and replay equality with handle calls, peeks, and parked waiters, a typed divergence, reporting, and the two legacy tests of section [11.14](#1114-legacy-charges-of-decision-45) |
 | `rholang/tests/reified_queue_restart.rs` | 2 | Orders and handles across a restart and a replay |
 | `rholang/tests/reified_routing.rs` | 15 | The routing classes and rules, the use closure, R7, a reset, the agent gate, ordinary programs, and the unwrap of handles |
 | `rholang/tests/reified_merge.rs` | 11 | Nine counter races and chains, and the two checks of item 18 |
 | `rholang/tests/reified_queue_source.rs` | 1 | A source program end to end |
-| `rholang/tests/reified_p4_props.rs` | 77 | The properties of section [11.6](#116-property-based-tests) and of decision 43 |
+| `rholang/tests/reified_p4_props.rs` | 78 | The properties of section [11.6](#116-property-based-tests) and of decisions 43 and 45 |
 | `rholang/tests/reified_p4_smoke.rs` | 1 | A smoke test of play and replay |
 | `rholang/tests/reified_native_fail_closed.rs` | 3 | Native play and native replay of a space deploy and of a host program (section [11.11](#1111-native-execution-of-decision-46)) |
+| `rholang/tests/reified_legacy_charges.rs` | 3 | The legacy charges of Option P against `ChargingRSpace` and in replay (section [11.14](#1114-legacy-charges-of-decision-45)) |
 
-The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 6 tests.
+The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 8 tests.
 
-The P4 modules hold 188 unit tests: 181 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
+The P4 modules hold 198 unit tests: 191 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
 Two of them came with the merge of [decision 44](decision-register.md#decision-44) (section [8.8](#88-the-merge-of-featurecost-accounted-rho)).
 [Decision 42](decision-register.md#decision-42) replaced four unit tests that pinned the old meter and added eight (section [11.10](#1110-metering-of-decision-42)).
-[Decision 43](decision-register.md#decision-43) added eight unit tests of the re-entry (section [11.12](#1112-re-entry-of-decision-43)).
+[Decision 43](decision-register.md#decision-43) added eight unit tests of the re-entry (section [11.12](#1112-re-entry-of-decision-43)), and decision 45 added ten.
 At the P4 milestone, the library run of `rholang` printed `test result: ok. 1660 passed; 0 failed; 3 ignored`, with the 166 P4 tests of that time (`gate-rholang-lib.log` of the same directory).
 The suites of ordinary execution of section 8 also passed in the same run.
 
@@ -1762,7 +1807,7 @@ It holds one cumulative edit for each base file that P1, P2, and P4 change, such
 Each new file must be an exact path of its list `allowed_new_files`.
 The check passes with `footprint policy p4: checked <n> files, 0 violations`.
 
-**The completeness phase `p4`.** The phase lists the 34 P4 sources, 69 entry points, 12 test files, and the property file.
+**The completeness phase `p4`.** The phase lists the 35 P4 sources, 76 entry points, 13 test files, and 2 property files.
 `check-complete.py --phase p4` finds each entry point and no forbidden token, and it printed `complete phase p4: 242401 checks, 0 findings` (`target/verification/reified-rspaces/p4/pc/gate-complete-p4.log`).
 The production scan printed `complete production scan: 826 files, 0 findings`.
 
@@ -1843,8 +1888,8 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 | `metered_matching_reserves_on_the_branch_dimensions` | `reified/costs.rs:444` | The metered matcher charges the three dimensions and no `SearchCandidates`. |
 | `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:227` | `bind` adds nothing to the reservations of the matcher, and an unguarded `admits` charges one operation, whatever the size of the body (Q59). |
 | `legacy_mapping_dropped_operations_and_backing` | `spaces/matching.rs:278` | Negative control: the old mapping of the meter kept only the scanned bytes of the matcher. |
-| `space_counter_bump_reserves_its_work_on_the_branch_dimensions` | `spaces/counter.rs:699` | A bump charges the three dimensions and no `SearchCandidates`, and a zero budget rejects it. |
-| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:723` | A cut budget rejects a bump before its commit, with no event and no change of the counters (Q61). |
+| `space_counter_bump_reserves_its_work_on_the_branch_dimensions` | `spaces/counter.rs:716` | A bump charges the three dimensions and no `SearchCandidates`, and a zero budget rejects it. |
+| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:740` | A cut budget rejects a bump before its commit, with no event and no change of the counters (Q61). |
 
 Decision 42 changes no state, no event, and no outcome of an operation.
 So the models of sections [11.3](#113-rocq-models-of-p4) and [11.4](#114-tla-models-of-p4) do not change.
@@ -1884,8 +1929,8 @@ That is the divergence that the proposer's self-certification turned into a quar
 The element re-enters at its place.
 It is at the head of its side when that side is empty or its order precedes the head.
 Otherwise it rests behind the head and fires nothing.
-`operation_ord` (`spaces/generic.rs:856-868`) checks the kept order against the counter.
-`GenericSpace::at_head` (`spaces/generic.rs:663-688`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:63-72`) compares two orders.
+`operation_ord` (`spaces/generic.rs:865-877`) checks the kept order against the counter.
+`GenericSpace::at_head` (`spaces/generic.rs:672-697`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:63-72`) compares two orders.
 
 `HeadOnlyDisciplines.v` adds the 10 headlines of Table 49, with no axiom.
 The module defines the elements in flight $`F`$ and the re-entry plans.
@@ -1952,16 +1997,16 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:1970` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
-| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:2027` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
-| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:2142` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:2183` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
-| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:2214` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
-| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:2254` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
-| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:2299` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
-| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:2329` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
-| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:2363` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
-| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:2452` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
+| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:2002` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
+| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:2059` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
+| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:2174` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:2215` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
+| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:2246` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
+| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:2286` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
+| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:2331` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
+| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:2361` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
+| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:2395` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
+| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:2484` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
 | `space_queue_reissue_persistent_send` | `reified_queue.rs:1043` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
 | `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1114` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
 | `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1163` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
@@ -2005,8 +2050,8 @@ The substrate keeps no record for a peek, also not the stored candidates of a pr
 The play and replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`.
 
 The agent then makes a [re-store](glossary.md#re-store).
-`GenericSpace::receive` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:803-808`).
-Right after the fire, `Plan::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:347-368`) stages a produce of the same record bytes with the outcome Store and `persist = false`.
+`GenericSpace::receive` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:812-817`).
+Right after the fire, `Plan::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:353-375`) stages a produce of the same record bytes with the outcome Store and `persist = false`.
 `Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:847-860`) gives the re-store the cost authority of the record, as `produce_peeks` does.
 The re-store bumps no counter, and the record keeps its envelope, its order, and its place at the head.
 
@@ -2054,9 +2099,9 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
 | `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:3440` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:1811` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
-| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:1844` | The re-store registers the authority of the record, and the peek registers its own. |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:1884` | A peek of a persistent record removes nothing and stores nothing again. |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:1843` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
+| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:1876` | The re-store registers the authority of the record, and the peek registers its own. |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:1916` | A peek of a persistent record removes nothing and stores nothing again. |
 | `space_queue_observer_parity` | `reified_queue.rs:1336` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
 | `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4701` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
 
@@ -2081,7 +2126,150 @@ The audit `scripts/audit/check-rocq-line-refs.sh` reports 7 mismatches, all in C
 
 **Charges.** A consume-side peek of a record that is not persistent now makes one more produce, as the host program does.
 The accounting observer charges it as a new introduction of the record, with the record's own authority.
-The legacy storage charges of `ChargingRSpace` follow in Option P of decision 45.
+The legacy storage charges of `ChargingRSpace` follow in Option P of decision 45 (section [11.14](#1114-legacy-charges-of-decision-45)).
+
+### 11.14 Legacy charges of decision 45
+
+[Decision 45](decision-register.md#decision-45) (Option P) makes each staged space operation of a legacy deploy pay the [legacy charges](glossary.md#legacy-charge) of its host call.
+The [finding](findings/space-legacy-storage-charges.md) records the gap that Option P closes.
+Section [N10 of the design](design.md#n10-legacy-charges) gives the rule, and [Rule SM-8a](specification.md#13-entries-and-operations) states it.
+This section gives the evidence: the Rocq module `LegacyCharges.v`, the TLA+ invariant `LegacyChargesFollowHost`, the tests, and the negative controls.
+
+**The code.** `produce_charges` (`reified/legacy_charges.rs:59-83`) and `consume_charges` (`reified/legacy_charges.rs:88-112`) restate the pre-charge of `ChargingRSpace`.
+They also restate the post-charges of its `handle_result`, and `fire_post` (`reified/legacy_charges.rs:142-174`) gives the post-charges of a fire in that order.
+
+**The chain.** `LegacyChain::attach` (`reified/legacy_charges.rs:262-279`) puts three steps into the callback `before_observe` of operation $`i`$.
+The steps are the carried post-charges of operation $`i-1`$, the registration of operation $`i`$, and the pre-charge of operation $`i`$.
+`LegacyChain::finish` (`reified/legacy_charges.rs:283-292`) charges the post-charges of the last operation after the commit.
+Every staging site of `spaces/generic.rs` and `spaces/counter.rs` stages through the chain, and each prepared job calls `finish` before its outcome.
+Outside test code, only `LegacyChain` calls `txn.produce` and `txn.consume` in the P4 sources.
+
+**The Rocq model.** `LegacyCharges.v` models one committed transaction of a legacy deploy with a metered budget.
+The charges `pre` and `post` of an operation are section variables, so the theorems hold for all charges of all operations.
+The model also leaves the cost values, the debit, and the acceptance of each registration and observer call abstract.
+The status of a stop names its point: a registration, a pre-charge, an observer call, or a post-charge.
+The property `prop_legacy_charges_equal_charging_rspace` ties the abstract charges to the code, because it compares them with the real `ChargingRSpace`.
+
+*Table 58. The Rocq results of decision 45, Option P.*
+
+| Id | Headline | Claim |
+|---|---|---|
+| Q79 | `legacy_rebracket_eq_host` (`LegacyCharges.v:713`) | For every list of operations, budget, initial log, and call history, the space run makes the legacy log, remaining budget, status, calls, and applied operations of the host program. A stop at the pre-charge of operation $`i`$ applies the first $`i`$ operations, and a stop at a post-charge of operation $`i`$ applies the first $`i+1`$ operations. |
+| Q80 | `legacy_replay_stops_with_play` (`LegacyCharges.v:747`) | Replay stages the operations of play and pairs each operation whose body play applied. Then replay makes the legacy log, remaining budget, status, calls, and applied operations of play, and it never diverges. |
+
+The lemma `commit_finish_rebracket` (`LegacyCharges.v:449`) is the core of both proofs.
+By induction on the operations, the commit loop and the tail equal the carry and then the flat host run.
+The proof only re-associates binds, so it holds for every charge rule, call acceptance, and replay pairing.
+Q79 applies the lemma to the empty chain, and `host_ops_stops` gives the applied operations at each stop point.
+Q80 rewrites both runs to the flat form, and `host_op_pairing` shows that a pairing check matters only after play applied the body.
+The two premises of Q80 restate H23 of `EventCorrelation.v`, because the modules do not import each other.
+
+The module also proves two counterexamples with no assumption.
+In `legacy_tail_dropped_breaks_eq` (`LegacyCharges.v:828`), a run without the tail misses the post-charges of its last operation.
+In `legacy_pre_after_observe_breaks_prefix` (`LegacyCharges.v:879`), a late pre-charge stops at the point of the host, but with one more operation applied.
+`legacy_negative_controls_computed` (`LegacyCharges.v:923`) computes both counterexamples on a concrete instance.
+The module compiles alone, prints `Closed under the global context` for both headlines, and `rocqchk` reports `Axioms <none>`.
+
+*Table 59. The Rocq mutants of decision 45, Option P, in LegacyCharges.v.*
+
+| Id | What the mutant changes | Must fail in |
+|---|---|---|
+| `lc-tail-dropped` | The job never runs the tail, so the post-charges of the last operation are lost. | `commit_finish_rebracket` |
+| `lc-carry-dropped` | A callback does not charge the carry, so the post-charges of each operation before the last are lost. | `commit_finish_rebracket` |
+| `lc-pre-after-body` | The pre-charge comes after the body of its operation, at two sites of the model. | `commit_finish_rebracket` |
+| `lc-replay-unpaired` | Q80 loses the premise that replay pairs each operation whose body play applied. | `legacy_replay_stops_with_play` |
+| `lc-unpaired-skips-observe` | An unpaired replay body diverges before its observer calls, as before decision 36. | `host_op_pairing` |
+
+**The TLA+ model.** `CheckpointReplay.tla` gains the mode constants `Peeks` and `Legacy` and three Unsafe flags.
+`Legacy` runs a legacy deploy, and a ghost host program `HostOp` makes the same host steps with the charges of `ChargingRSpace`.
+The agent stages each step through `PlayApply` or `ReplayApply`, whose callbacks charge the carry and the pre-charge, and `ChainTail` charges the tail after the commit.
+The charge values are abstract, one for each label of `ChargingRSpace`.
+The invariant U13 compares play and replay with the ghost program:
+
+```math
+\begin{aligned}
+\mathit{LegacyChargesFollowHost} \triangleq\; \mathit{Legacy} \Rightarrow\; &\bigl(\neg(\mathit{phase} = \text{play} \land \mathit{pos} \ge 1) \Rightarrow \mathit{pLeg} = \mathit{hLeg} \land \mathit{pOps} = \mathit{hOps} \land \mathit{pFailed} = \mathit{hFailed}\bigr) \\
+&\land\; (\mathit{phase} = \text{replaySwept} \Rightarrow \mathit{rLeg} = \mathit{hLeg})
+\end{aligned}
+```
+
+The symbols have these meanings:
+
+- $`\mathit{pLeg}`$, $`\mathit{rLeg}`$, and $`\mathit{hLeg}`$ are the legacy states of play, of replay, and of the host program. Each holds the log, its length, and the remaining budget.
+- $`\mathit{pOps}`$ and $`\mathit{hOps}`$ count the host steps that play and the host program applied, so they mark the stop point.
+- $`\mathit{pFailed}`$ and $`\mathit{hFailed}`$ hold when the deploy and the program failed.
+- $`\mathit{phase} = \text{play} \land \mathit{pos} \ge 1`$ holds while play has an open transaction.
+
+*Table 60. The TLA+ checks of decision 45, Option P.*
+
+| Check | Configuration | Result |
+|---|---|---|
+| Safe, legacy | `MC_CheckpointReplay_Legacy.cfg`, `Budget=12`, `Peeks=TRUE`, `Legacy=TRUE` | 34,351 states, depth 22, no violation of T1 to T4, T6, U13, `TypeOK`, or `IndInv` |
+| Safe, legacy, two blocks | `MC_CheckpointReplay_Legacy_TwoBlock.cfg` | 38,602 states, depth 43, no violation |
+| Safe, peeks in token mode | `MC_CheckpointReplay_Peek.cfg`, `Budget=4`, `Peeks=TRUE`, `Legacy=FALSE` | 34,991 states, depth 22, no violation |
+| Unsafe, late pre-charge | `LegacyPreAfterObserveUnsafe.cfg` | Refutes exactly T6 `ReplayOutcomeEqual`, and the complement explores 34,227 states |
+| Unsafe, no tail | `LegacyTailDroppedUnsafe.cfg` | Refutes exactly U13, and the complement explores 33,887 states |
+| Unsafe, retained peek | `RetainPeekUnsafe.cfg` | Refutes exactly U13, and the complement explores 35,243 states |
+| Apalache BASE | `MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg`, `MaxTxnOps=1`, `MaxTxns=1`, `Blocks=2` | `NoError` |
+| Apalache STEP | `MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg`, the same bounds | `NoError` |
+
+The two configurations of section [5.2](#52-checkpointreplaytla) keep their counts of 145,255 and 94,049 states.
+`LegacyPreAfterObserve` refutes T6 and not U13, because observers charge no phlo in a legacy deploy and the charges of play keep their order.
+The divergence shows in replay, where the late pre-charge lets an unpaired fire reach the pairing check first.
+A STEP with `MaxTxnOps=2` also returned `NoError`, but it took 20 minutes, so the gate keeps the bound 1.
+
+**Limits of the model.** The model covers single-channel operations that are not persistent.
+The registration of an authority costs no phlo, so the model omits it.
+The abstract charges keep the net charge of each host step positive, so a negative deploy cost is out of its scope.
+The deviations D.7 of the design report and the order of the evaluation charges of the reducer are not modeled.
+The host program uses the staging order of the space.
+
+*Table 61. The tests of decision 45, Option P.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `prop_legacy_charges_equal_charging_rspace` | `reified_legacy_charges.rs:254` | Generated host programs run on the real `ChargingRSpace`. For each call, the charges of the equivalent staged operation equal the new log entries, value and label. All 8 shapes of call occur (Q79). |
+| `prop_legacy_chain_log_is_host_order` | `reified_legacy_charges.rs:800` | Generated transactions with generated budgets make the legacy log and the stop of the host program. All 6 kinds of transaction occur, the stops in the commit and in the tail included (Q79). |
+| `prop_legacy_replay_stops_with_play` | `reified_legacy_charges.rs:908` | Replay with the log of play makes the legacy log, the stop, and the store of play (Q80). |
+| `legacy_charges_of_a_store_and_a_park` | `reified/legacy_charges.rs:416` | A store pays the storage of its record and the event fee of one channel. A park pays the storage of its continuation and the event fee of its channels. |
+| `legacy_charges_of_a_produce_fire_follow_handle_result` | `reified/legacy_charges.rs:442` | A produce-side fire pays the refunds, the event fee, and the COMM fee in the order of `handle_result`. |
+| `legacy_charges_of_a_consume_fire_refund_the_consume` | `reified/legacy_charges.rs:504` | A consume-side fire always refunds the storage of its consume. |
+| `legacy_charges_of_a_continuation_without_a_body_fail_closed` | `reified/legacy_charges.rs:546` | A continuation without a body fails closed, where `ChargingRSpace` panics. |
+| `legacy_chain_is_active_only_in_a_metered_legacy_deploy` | `reified/legacy_charges.rs:567` | The chain charges only a legacy deploy with a metered budget. |
+| `legacy_chain_charges_in_host_order` | `reified/legacy_charges.rs:632` | The callbacks and the tail make the log of the host program. |
+| `legacy_chain_pre_charge_stops_before_its_operation` | `reified/legacy_charges.rs:661` | A pre-charge that runs out of phlo stops the commit before its operation, and the operations before it stay applied. |
+| `legacy_chain_tail_fails_after_the_commit` | `reified/legacy_charges.rs:708` | A tail that runs out of phlo fails after the full commit. |
+| `space_queue_legacy_replay_equal` | `reified_queue_replay.rs:1001` | Legacy deploys on queues replay with the cost, the storage charges in order, every charge as a multiset, and the root of play. |
+| `space_queue_legacy_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:862` | The out-of-phlo sweep of decision 36 in a legacy deploy: every limit replays to the outcome of play. |
+
+The order test compares the storage charges in order and every charge as a multiset.
+In a legacy deploy the reducer charges its own evaluation steps as its parallel branches run, so their order depends on the schedule.
+This is also true for host programs, and section 6 of the [finding](findings/space-legacy-storage-charges.md#6-limits-that-stay) records it.
+
+The script `.reified-rspaces-work/d45/run_mutants_option_p.py` applies six mutants to `reified/legacy_charges.rs` and runs the expected tests.
+Each mutant made at least one of its expected tests fail (`target/verification/reified-rspaces/d45/option-p-mutants.log`), and the script restored the file.
+
+*Table 62. The Rust mutants of decision 45, Option P.*
+
+| Mutant | What it breaks | Tests that fail |
+|---|---|---|
+| `tail-dropped` | `finish` charges nothing, so the post-charges of the last operation are lost. | `legacy_chain_charges_in_host_order`, `legacy_chain_tail_fails_after_the_commit`, `space_queue_legacy_replay_equal` |
+| `pre-before-carry` | A callback charges its pre-charge before the carried post-charges. | `legacy_chain_charges_in_host_order` |
+| `store-without-event-fee` | A store pays no event fee. | `prop_legacy_charges_equal_charging_rspace`, `legacy_charges_of_a_store_and_a_park` |
+| `refund-ignores-persist` | A fire refunds the storage of every bound record, also of a persistent one. | `prop_legacy_charges_equal_charging_rspace`, `legacy_charges_of_a_produce_fire_follow_handle_result`, `legacy_charges_of_a_consume_fire_refund_the_consume` |
+| `consume-refund-ignores-id` | A persistent continuation is never refunded, also when the trigger has its id. | `prop_legacy_charges_equal_charging_rspace`, `legacy_charges_of_a_produce_fire_follow_handle_result`, `legacy_charges_of_a_consume_fire_refund_the_consume` |
+| `active-outside-legacy` | The chain is active in every deploy. | `legacy_chain_is_active_only_in_a_metered_legacy_deploy` |
+
+**Gate.** The gate of Option P checked the workspace with no warning, and `cargo clippy -p rholang -p rspace_plus_plus --all-targets -- -D warnings` passes.
+Its 35 Rust legs passed (`target/verification/reified-rspaces/d45/option-p-gates/summary-rust.txt`).
+They include the substrate suites, the 3 properties of Option P, the P4 suites, the ordinary regression, and both empty-state-hash tests of Casper.
+The 26 unit tests of `reduce::reified_hooks` and `deterministic_reduction::reified_schedule`, which the module filters of the gate miss, also passed.
+
+The Rocq gate printed `reified-rspaces proofs: PASS=53 FAIL=0 SKIP=0`, with 115 closed headlines and 86 negative checks (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
+The TLA+ gate printed `reified-rspaces tla: PASS=162 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/tla-lc/gate.log`).
+The map checkers, the closure checks, the completeness phases, the footprint check, and the 273 checker self-tests pass (`target/verification/reified-rspaces/d45/option-p-gates/summary-checkers.txt`).
+The audit `scripts/audit/check-rocq-line-refs.sh` reports the same 7 mismatches as at the commit of Rule E, all in Casper documents outside the campaign.
+The Option P edits of `spaces/generic.rs` and `spaces/counter.rs` moved lines, so 93 older citations of the documents and the models moved with them.
 
 ## References
 

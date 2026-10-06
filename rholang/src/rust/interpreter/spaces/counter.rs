@@ -51,6 +51,7 @@ use super::errors::SpaceError;
 use super::matching::SpaceMatcher;
 use super::namespace::RandomPurpose;
 use super::record::{self, OperationAuthority};
+use crate::rust::interpreter::reified::legacy_charges::LegacyChain;
 
 /// The pattern that consumes a counter record: two free variables, one for each par.
 pub fn counter_pattern() -> BindPattern {
@@ -159,11 +160,13 @@ fn only_record(
 }
 
 /// Stages the counter bump of one collection operation in `txn` and returns the order of the
-/// operation. The lock keys of `txn` must cover both counter channels.
+/// operation. The lock keys of `txn` must cover both counter channels. Each staged counter
+/// operation goes through `legacy`, which charges it in a legacy deploy (decision 45, Option P).
 pub fn bump(
     txn: &mut ParSpaceTxn,
     channels: CounterChannels<'_>,
     context: &BumpContext<'_>,
+    legacy: &mut LegacyChain,
 ) -> Result<Bump, SpaceError> {
     let meter = context.matcher.meter();
     let collection = only_record(
@@ -190,6 +193,7 @@ pub fn bump(
                 value,
                 RandomPurpose::SpaceCounter,
                 context,
+                legacy,
             )?;
             put(
                 txn,
@@ -197,8 +201,16 @@ pub fn bump(
                 next,
                 RandomPurpose::SpaceCounter,
                 context,
+                legacy,
             )?;
-            put(txn, channels.collection, 1, RandomPurpose::Counter, context)?;
+            put(
+                txn,
+                channels.collection,
+                1,
+                RandomPurpose::Counter,
+                context,
+                legacy,
+            )?;
             Ok(Bump {
                 ord: 0,
                 staged: &OPEN,
@@ -214,6 +226,7 @@ pub fn bump(
                 value,
                 RandomPurpose::Counter,
                 context,
+                legacy,
             )?;
             put(
                 txn,
@@ -221,6 +234,7 @@ pub fn bump(
                 next,
                 RandomPurpose::Counter,
                 context,
+                legacy,
             )?;
             Ok(Bump {
                 ord: value,
@@ -239,6 +253,7 @@ fn take(
     value: i64,
     purpose: RandomPurpose,
     context: &BumpContext<'_>,
+    legacy: &mut LegacyChain,
 ) -> Result<(), SpaceError> {
     if stored.persist {
         return Err(SpaceError::Inconsistent("a counter record is persistent"));
@@ -276,7 +291,7 @@ fn take(
         removed_datum: a,
         datum_index: 0,
     });
-    txn.consume(SpaceConsume {
+    let op = SpaceConsume {
         channels,
         patterns,
         continuation,
@@ -287,8 +302,8 @@ fn take(
             context.authority.introduction,
             meter,
         )?),
-    })?;
-    Ok(())
+    };
+    legacy.consume(txn, op)
 }
 
 // Stores the counter record `value` on `channel`.
@@ -298,11 +313,12 @@ fn put(
     value: i64,
     purpose: RandomPurpose,
     context: &BumpContext<'_>,
+    legacy: &mut LegacyChain,
 ) -> Result<(), SpaceError> {
     let meter = context.matcher.meter();
     let introduction = context.authority.introduction;
     let cost_authority = record::cost_authority_metered(introduction.authority(), meter)?;
-    txn.produce(SpaceProduce {
+    let op = SpaceProduce {
         channel: meter.copy(channel)?,
         data: record::counter_record_metered(
             value,
@@ -313,8 +329,8 @@ fn put(
         persist: false,
         outcome: ProduceOutcome::Store,
         before_observe: Some(record::register_introduction(introduction, meter)?),
-    })?;
-    Ok(())
+    };
+    legacy.produce(txn, op)
 }
 
 #[cfg(test)]
@@ -437,6 +453,7 @@ mod tests {
                     introduction: &introduction,
                 },
             },
+            &mut LegacyChain::new(&env.budget),
         )?;
         Ok((bump, txn))
     }

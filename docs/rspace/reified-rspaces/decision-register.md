@@ -91,7 +91,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implemented |
 | [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implementation pending |
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
-| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E implemented, Option P pending |
+| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E and Option P implemented |
 | [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
 | [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after decision 43 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
@@ -1170,6 +1170,9 @@ The change touches the committed P4 code (`reified/costs.rs` and `spaces/*`) and
 
 **User's words.** "Align now (Recommended)".
 
+**Note of decision 45.** The legacy charges of [decision 45](#decision-45) walk the encoded lengths of the staged operations and reserve no host work, as `ChargingRSpace` does.
+A legacy deploy has no host-work budget, so such a reservation would have no effect.
+
 **Reason.** After the merge of [decision 44](#decision-44), the matcher reserves its own reads with that mapping.
 The old `ScanMeter` would drop the operations and the backing bytes that the matcher reserves, so its charges would differ from those of the host.
 
@@ -1243,7 +1246,7 @@ The tests compare them on one base.
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. Rule E is implemented. Option P, the legacy charges, is pending. |
+| Status | In force. Rule E and Option P are implemented. |
 | Amends | [Decision 30](#decision-30), its consume-side clause, and the retention rule FR-10 of [decision 19](#decision-19) |
 | Related | [Decision 40](#decision-40), [M-3](#m-3) |
 
@@ -1280,6 +1283,15 @@ The agent stores each removed non-persistent record of a peek again, in the same
 - Agent: after the fire of a peek receive, `Plan::restore` stages a produce of the same record bytes, with the outcome Store and `persist = false`.
 - The callback of the re-store registers the cost authority of the record (`Introduction::for_record`), and the re-store bumps no counter.
 - One commit: the substrate change and the re-store land together, because `put_datum` does not deduplicate data. A re-store alone would store a second copy, and a removal alone would lose the record.
+
+**Implementation of Option P.**
+
+- `reified/legacy_charges.rs` computes the [legacy charges](glossary.md#legacy-charge) of each staged operation: `produce_charges` and `consume_charges` restate `ChargingRSpace` and its `handle_result`.
+- `LegacyChain` stages every operation of a space job. The callback of an operation charges the carried post-charges of the operation before it, then registers the introduction, then charges the pre-charge.
+- `LegacyChain::finish` charges the post-charges of the last operation after the commit, in the finish step of the prepared job.
+- The chain is active only in a legacy deploy with a metered budget. The counter bump, the plans of the queue, the re-store, and the creation of a space all stage through it.
+- The design is section [N10](design.md#n10-legacy-charges) of the design, with Figure N10.
+- The evidence is section [11.14](verification.md#1114-legacy-charges-of-decision-45) of the verification dossier. It holds `LegacyCharges.v` (Q79 and Q80), the invariant `LegacyChargesFollowHost` of `CheckpointReplay.tla` (U13), the tests, and the controls.
 
 ### <a id="decision-46"></a>Decision 46: Spaces fail closed in native execution
 
@@ -1408,7 +1420,7 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force, revised 2026-10-04 |
+| Status | In force, revised 2026-10-04. [Decision 45](#decision-45) adds the legacy charges of a legacy deploy. |
 | Replaces | `observe_space_work` on the accounting observer, edits to `accounting/costs.rs`, and the earlier `reserve_primitive` plan |
 | Footprint | Zero edits to the cost-accounting module and the observer trait |
 | Related | [I-12](#i-12), [phlo](glossary.md#phlo), [host work](glossary.md#host-work) |
@@ -1422,6 +1434,7 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 - Matching, attach, and rehydration work use the existing host-work (liveness) budget. The tools are the metered methods of the injected matcher (`get_metered`, `check_commit_metered`) and `reserve_host_work`.
 - The node charges host work before the work, independent of cache state.
 - The Reified host-work cost functions live in a new `reified/costs.rs`.
+- In a legacy deploy, each staged operation also pays the [legacy charges](glossary.md#legacy-charge) of its equivalent host operation ([decision 45](#decision-45), Option P).
 
 **User's words.** The section quotation above.
 
@@ -1648,6 +1661,7 @@ The column "Amends" of the plan names the contract text that each decision chang
 - The node charges similarity and guard costs per candidate before it materializes the candidate.
 - Charges never depend on cache state.
 - The Reified host-work cost functions live in the new `reified/costs.rs`.
+- Legacy deploys: each staged space operation pays the legacy charges of `ChargingRSpace` for its equivalent host call ([decision 45](#decision-45), Option P).
 
 **Reason.** The rule needs no edit of the cost-accounting module. `reserve_primitive` is diagnostic only at the baseline, so it is not a charging path.
 

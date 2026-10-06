@@ -102,6 +102,29 @@ stores it again:
                          which the fire keeps, so the record is duplicated:
                          restore_fire_step breaks
 
+Decision 45 (Option P) has five controls in LegacyCharges.v. Each moves or
+drops one legacy charge of a space transaction, or drops a premise that Q80
+takes from H23 of EventCorrelation.v:
+  lc-tail-dropped            the job never runs the tail
+                             (LegacyChain::finish charges nothing), so the
+                             post-charges of the last operation are lost:
+                             commit_finish_rebracket, and so Q79, breaks
+  lc-carry-dropped           a callback does not charge the carry, so the
+                             post-charges of each operation before the last
+                             are lost: commit_finish_rebracket breaks
+  lc-pre-after-body          the pre-charge comes after the body of its
+                             operation, so a pre-charge that runs out of
+                             phlo stops after the body:
+                             commit_finish_rebracket breaks
+  lc-replay-unpaired         Q80 without the premise that replay pairs each
+                             operation whose body play applied:
+                             legacy_replay_stops_with_play breaks
+  lc-unpaired-skips-observe  an unpaired replay body diverges before its
+                             observer calls (decision 36 reverted), so a
+                             body that the observer rejects in play
+                             diverges in replay: host_op_pairing, and so
+                             Q80, breaks
+
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
   * A control has one mutation, or a tuple of mutations that the harness
@@ -630,6 +653,44 @@ CONTROLS = (
      "  ++ flat_map step (map (fun _ => compare) (tl side))\n"
      "  ++ flat_map step (map payload side) ++ step (payload head).",
      ("scan_reserved", "scan_charge_independent_of_unread_payloads")),
+    # ── Decision 45, Option P: LegacyCharges.v (Q79, Q80) ────────────────
+    ("lc-tail-dropped", "LegacyCharges",
+     "the job never runs the tail (LegacyChain::finish charges nothing), so the post-charges "
+     "of the last operation are lost",
+     "Definition finish (ch : chain) (s : state) : result := charge_all (chain_carry ch) s.",
+     "Definition finish (ch : chain) (s : state) : result := (s, Done).",
+     ("commit_finish_rebracket",)),
+    ("lc-carry-dropped", "LegacyCharges",
+     "a callback does not charge the carry, so the post-charges of each operation before the "
+     "last are lost",
+     "  (mkCallback (chain_next ch) o (chain_carry ch),",
+     "  (mkCallback (chain_next ch) o [],",
+     ("commit_finish_rebracket",)),
+    ("lc-pre-after-body", "LegacyCharges",
+     "the pre-charge comes after the observer calls and the events of its operation, so a "
+     "pre-charge that runs out of phlo stops after the body",
+     ("  charge (PPre (cb_index cb)) (pre (cb_op cb)) s2)).",
+      "      bind (body paired (cb_index cb) (cb_op cb) s1) (fun s2 =>\n"
+      "      commit paired rest s2))"),
+     ("  (s2, Done))).",
+      "      bind (body paired (cb_index cb) (cb_op cb) s1) (fun s2 =>\n"
+      "      bind (charge (PPre (cb_index cb)) (pre (cb_op cb)) s2) (fun s3 =>\n"
+      "      commit paired rest s3)))"),
+     ("commit_finish_rebracket",)),
+    ("lc-replay-unpaired", "LegacyCharges",
+     "Q80 without the premise of H23 that replay pairs each operation whose body play applied",
+     "    (forall i, i < length (bodies (fst pr)) -> paired i = true) ->",
+     "    True ->",
+     ("legacy_replay_stops_with_play",)),
+    ("lc-unpaired-skips-observe", "LegacyCharges",
+     "an unpaired replay body diverges before its observer calls (decision 36 reverted), so a "
+     "body that the observer rejects in play diverges in replay",
+     "  bind (call_step (PObserve i) (CObserve o) s) (fun s1 =>\n"
+     "    if paired i then (run_body o s1, Done) else (s1, Diverged (PObserve i))).",
+     "  if paired i\n"
+     "  then bind (call_step (PObserve i) (CObserve o) s) (fun s1 => (run_body o s1, Done))\n"
+     "  else (s, Diverged (PObserve i)).",
+     ("host_op_pairing",)),
 )
 
 DECLARATION = re.compile(
