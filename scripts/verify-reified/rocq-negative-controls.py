@@ -55,6 +55,12 @@ The P4 controls (batch 4E-F) revert one rule of the hashmap:queue slice:
   Encoding (I-20)     the refresh, the derived tuple flag, the strict flag
                       check
 
+Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
+the metering rule: a step that reads before it reserves, a fire that does not
+prepay the decode of its continuation, an operation that does not prepay the
+buffer of its outcome, an outcome that reserves after the commit, and a scan
+that copies every entry instead of the head only.
+
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
   * A control has one mutation, or a tuple of mutations that the harness
@@ -488,6 +494,33 @@ CONTROLS = (
      "  if tuple_flags_eqb (ft_flags x) (derived_flags (ft_construct x)) then decode (ferase x) else None.",
      "  decode (ferase x).",
      ("refresh_strict_decode_erase",)),
+    # ── Decision 42: AgentReadCoverage.v ─────────────────────────────────
+    ("arc-read-before-reserve", "AgentReadCoverage",
+     "a step reads before it reserves (the P4 order: copy, then charge)",
+     "Definition step (units : nat) : list event := [Reserve units; Read units].",
+     "Definition step (units : nat) : list event := [Read units; Reserve units].",
+     ("step_covered",)),
+    ("arc-unwrap-not-prepaid", "AgentReadCoverage",
+     "a fired round reserves nothing for the decode of its continuation",
+     "  ++ (if fires r then [Reserve (unwrap r)] else [])",
+     "  ++ (if fires r then [Reserve 0] else [])",
+     ("round_staged_totals",)),
+    ("arc-outcome-not-prepaid", "AgentReadCoverage",
+     "the operation does not prepay the buffer of the outcome",
+     "  ++ flat_map round_staged (rounds x) ++ [Reserve (outcome x)].",
+     "  ++ flat_map round_staged (rounds x).",
+     ("staged_totals",)),
+    ("arc-outcome-reserves-after-commit", "AgentReadCoverage",
+     "the outcome reserves its buffer after the commit",
+     "  Read (outcome x) :: flat_map round_after_commit (rounds x).",
+     "  Reserve (outcome x) :: Read (outcome x) :: flat_map round_after_commit (rounds x).",
+     ("operation_trace_covered", "reservations_precede_commit")),
+    ("arc-scan-copies-every-entry", "AgentReadCoverage",
+     "a scan copies every entry instead of the head only",
+     "  ++ flat_map step (map (fun _ => compare) (tl side))\n  ++ step (payload head).",
+     "  ++ flat_map step (map (fun _ => compare) (tl side))\n"
+     "  ++ flat_map step (map payload side) ++ step (payload head).",
+     ("scan_reserved", "scan_charge_independent_of_unread_payloads")),
 )
 
 DECLARATION = re.compile(

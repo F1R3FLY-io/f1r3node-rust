@@ -35,20 +35,20 @@
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    precedes, head_from, head
-                            spaces/disciplines/queue.rs:32-48, 56-65 (head:
-                            the least (ord, bytes), the earlier index on a
-                            tie, and precedes)
-   reaches_head             spaces/disciplines/queue.rs:51 (queued == 0)
+                            spaces/disciplines/queue.rs:38-56, 73-108
+                            (head_metered: the least (ord, bytes), the
+                            earlier index on a tie, and Best::challenge)
+   reaches_head             spaces/disciplines/queue.rs:59 (queued == 0)
    fire_round_cap, after_fire
-                            reified/costs.rs:28, 116-127 (FIRE_ROUND_CAP =
+                            reified/costs.rs:43, 299-310 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:337-401 (GenericSpace::offer)
-   receive, receive_loop    spaces/generic.rs:405-472 (GenericSpace::receive)
-   head_waiter, head_record spaces/generic.rs:300-315, 318-333
-   bump                     spaces/counter.rs:118-182 (the ord is the
+   offer, offer_loop        spaces/generic.rs:573-634 (GenericSpace::offer)
+   receive, receive_loop    spaces/generic.rs:640-700 (GenericSpace::receive)
+   head_waiter, head_record spaces/generic.rs:524-545, 549-568
+   bump                     spaces/counter.rs:163-231 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:537-595 (prepare_produce and
+   produce, consume         spaces/generic.rs:813-879 (prepare_produce and
                             prepare_consume: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
@@ -59,7 +59,7 @@
    ─────────────────────────────────────────────────────────────────────────
    - fits w d is the metered match of the payload of d against the pattern
      of w followed by the guard of w (SpaceMatcher::matches,
-     spaces/matching.rs:69-82). The model takes it as a section variable:
+     spaces/matching.rs:85-99). The model takes it as a section variable:
      every theorem holds for every matcher.
    - The bincode bytes of an entry give a strict total order on distinct
      entries. The model writes rank for the position of those bytes in that
@@ -69,7 +69,7 @@
    - The staged view of a collection is a record list and a waiter list. A
      fire removes the fired partner at its view index unless it stays.
    - The ord is a nat. The code checks i64 overflow with CounterOverflow
-     (spaces/counter.rs:133, 157), so every ord of the code is a nat.
+     (spaces/counter.rs:185, 209), so every ord of the code is a nat.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. queue_head_is_min_ord             the head has the least (ord, rank)

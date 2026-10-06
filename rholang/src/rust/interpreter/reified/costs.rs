@@ -1,24 +1,39 @@
 //! The host-work charges and the work bound of a space operation (readiness review S5,
-//! revised M-3, I-12 and P4 design A10).
+//! revised M-3, I-12, P4 design A10, and decisions 40 and 42).
 //!
 //! A space job runs in its own task, where `deterministic_reduction::current()` is `None`, so
 //! `reserve_host_work` charges nothing there. The scheduler captures the host-work budget of
-//! the deploy before it submits the job (`SpaceRequest`), and [`ScanMeter`] charges it:
+//! the deploy before it submits the job (`SpaceRequest`), and [`ScanMeter`] charges it with
+//! the rule of `feature/cost-accounted-rho` (DR-88, decision 42): the agent reserves every
+//! read and every copy that it makes, before it makes it. A reservation of `operations`,
+//! `scanned` and `backing` units charges the host-work dimensions as
+//! `reserve_native_observation_work` (`rho_runtime.rs`) does:
 //!
-//! * `SearchCandidates`: one unit for each call of a metered matcher method;
-//! * `SearchStateBytes`: one unit for each byte that a matcher call scans.
+//! * `VerificationOperations`: the operations;
+//! * `VerificationBytes`: the bytes that the work reads;
+//! * `SearchStateBytes`: the bytes that the work allocates.
 //!
-//! Without a budget the meter accepts every charge, as `reserve_host_work` does. The charges
-//! do not depend on cache state.
+//! The metered matcher reserves its own reads through the same meter (`SourceMeter`), and the
+//! copy walks of `shared::clone_backing` reserve through it as a `BackingMeter`. Without a
+//! budget the meter accepts every charge and skips every walk, as the host does. The charges do
+//! not depend on cache state.
 //!
 //! The fire loop of a collection operation (P4 design B.4) is bounded. A bounded chain fires
 //! in the transaction for at most [`FIRE_ROUND_CAP`] rounds. Then the agent commits the staged
 //! prefix and re-issues the rest as a new `Intent::Space`. A divergent pair re-issues after
 //! each round (A10).
 
+use std::mem::size_of;
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
+use rspace_plus_plus::rspace::space_store_handle::metered_encode;
+use serde::Serialize;
+use shared::rust::clone_backing::{
+    self, BackingError, BackingMeter, CloneBacking, BLOCK_SHARED_HEADER_SCANNED,
+};
 
 use crate::rust::interpreter::host_work::HostWorkBudget;
 
@@ -27,7 +42,7 @@ use crate::rust::interpreter::host_work::HostWorkBudget;
 /// `2 * (FIRE_ROUND_CAP + 1)` matcher calls.
 pub const FIRE_ROUND_CAP: usize = 64;
 
-/// The host-work meter of the matcher calls of one space job.
+/// The host-work meter of one space job.
 #[derive(Clone)]
 pub struct ScanMeter {
     host_work: Option<HostWorkBudget>,
@@ -40,35 +55,203 @@ impl ScanMeter {
     /// The host-work budget of the meter.
     pub fn host_work(&self) -> Option<&HostWorkBudget> { self.host_work.as_ref() }
 
-    /// Charges one call of a metered matcher method (`SearchCandidates`). Call it before each
-    /// `get_metered` and each `check_commit_metered`.
-    pub fn charge_call(&self) -> Result<(), RSpaceError> {
-        self.charge(HostWorkDimension::SearchCandidates, 1)
-    }
+    /// True when the meter charges a budget. Without one, the walks of a reservation are
+    /// skipped.
+    pub fn is_metered(&self) -> bool { self.host_work.is_some() }
 
-    fn charge(&self, dimension: HostWorkDimension, units: usize) -> Result<(), RSpaceError> {
+    // Disabled by decision 42 (DR-88 of feature/cost-accounted-rho, 3d3f79b07): the metered
+    // matcher reserves its own reads, and the caller adds no unit for each call. The branch
+    // charges `SearchCandidates` only in its funding search, never in RSpace matching.
+    // /// Charges one call of a metered matcher method (`SearchCandidates`). Call it before each
+    // /// `get_metered` and each `check_commit_metered`.
+    // pub fn charge_call(&self) -> Result<(), RSpaceError> {
+    //     self.charge(HostWorkDimension::SearchCandidates, 1)
+    // }
+
+    /// Reserves `operations`, `scanned` and `backing` units on `VerificationOperations`,
+    /// `VerificationBytes` and `SearchStateBytes`, in this order, as
+    /// `reserve_native_observation_work` does. A rejection is `HostWorkRejected`.
+    pub fn charge(
+        &self,
+        operations: usize,
+        scanned: usize,
+        backing: usize,
+    ) -> Result<(), RSpaceError> {
         let Some(budget) = &self.host_work else {
             return Ok(());
         };
-        let units = u64::try_from(units).map_err(|_| RSpaceError::HostWorkRejected)?;
-        budget
-            .reserve(dimension, HostWorkUnits::new(units))
-            .map(|_| ())
-            .map_err(|_| RSpaceError::HostWorkRejected)
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationOperations, operations),
+            (HostWorkDimension::VerificationBytes, scanned),
+            (HostWorkDimension::SearchStateBytes, backing),
+        ] {
+            let units = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
+            budget
+                .reserve(dimension, HostWorkUnits::new(units))
+                .map_err(|_| RSpaceError::HostWorkRejected)?;
+        }
+        Ok(())
+    }
+
+    /// Reserves a read of `value`: the walk over its parts, with no copy.
+    pub fn inspect<T: CloneBacking>(&self, value: &T) -> Result<(), RSpaceError> {
+        match self.is_metered() {
+            true => clone_backing::inspect(value, self).map_err(rejected),
+            false => Ok(()),
+        }
+    }
+
+    /// Reserves a copy of `value` and its cleanup, as `SorterMeter::clone` of the branch does.
+    /// The caller then makes the copy.
+    pub fn reserve_copy<T: CloneBacking>(&self, value: &T) -> Result<(), RSpaceError> {
+        match self.is_metered() {
+            true => clone_backing::reserve_copy_and_cleanup(value, self).map_err(rejected),
+            false => Ok(()),
+        }
+    }
+
+    /// Reserves a copy of the slice `values`, its allocation included, and its cleanup. The
+    /// caller then makes the copy.
+    pub fn reserve_copy_slice<T: CloneBacking>(&self, values: &[T]) -> Result<(), RSpaceError> {
+        match self.is_metered() {
+            true => clone_backing::reserve_slice_copy_and_cleanup(values, self).map_err(rejected),
+            false => Ok(()),
+        }
+    }
+
+    /// Reserves a copy of `value` and its cleanup, then copies it.
+    pub fn copy<T: Clone + CloneBacking>(&self, value: &T) -> Result<T, RSpaceError> {
+        self.reserve_copy(value)?;
+        Ok(value.clone())
+    }
+
+    /// Reserves a copy of the slice `values` and its cleanup, then copies it.
+    pub fn copy_slice<T: Clone + CloneBacking>(&self, values: &[T]) -> Result<Vec<T>, RSpaceError> {
+        self.reserve_copy_slice(values)?;
+        Ok(values.to_vec())
+    }
+
+    /// Reserves the allocation of a vector with room for `length` values: `length + 1`
+    /// operations and `length · size_of::<T>()` bytes, as the metered candidate buffer of the
+    /// branch does (`native_candidate/metered.rs`, `buffer`). The caller then allocates it.
+    pub fn reserve_buffer<T>(&self, length: usize) -> Result<(), RSpaceError> {
+        if !self.is_metered() {
+            return Ok(());
+        }
+        let bytes = length
+            .checked_mul(size_of::<T>())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let operations = length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?;
+        self.charge(operations, bytes, bytes)
+    }
+
+    /// Reserves and allocates an empty vector with room for `length` values.
+    pub fn buffer<T>(&self, length: usize) -> Result<Vec<T>, RSpaceError> {
+        self.reserve_buffer::<T>(length)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(length)
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        Ok(values)
+    }
+
+    /// Reserves one comparison that reads `left` and `right` bytes, as `MeteredOrder::scan` of
+    /// the branch does.
+    pub fn compare(&self, left: usize, right: usize) -> Result<(), RSpaceError> {
+        let scanned = left
+            .checked_add(right)
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        self.charge(1, scanned, 0)
+    }
+
+    /// Reserves one move of a slot of `bytes` bytes, as the bound values of the branch's
+    /// matcher move out of its free map (DR-91).
+    pub fn moved(&self, bytes: usize) -> Result<(), RSpaceError> { self.charge(1, bytes, 0) }
+
+    /// Reserves `count` copies of a shared pointer: each reads and writes the strong count in
+    /// the header of its allocation (`BLOCK_SHARED_HEADER_SCANNED`, DR-92).
+    pub fn shared(&self, count: usize) -> Result<(), RSpaceError> {
+        let scanned = count
+            .checked_mul(BLOCK_SHARED_HEADER_SCANNED)
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        self.charge(count, scanned, 0)
+    }
+
+    /// Reserves the bytes of `random.to_bytes()`, with the formula of
+    /// `reserve_reducer_random_bytes` (`reduce.rs`).
+    pub fn random_bytes(&self, random: &Blake2b512Random) -> Result<(), RSpaceError> {
+        if !self.is_metered() {
+            return Ok(());
+        }
+        let count_bytes = random
+            .count_view
+            .len()
+            .checked_mul(8)
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let output_bytes = 168usize
+            .checked_add(random.last_block.len())
+            .and_then(|size| size.checked_add(random.path_view.len()))
+            .and_then(|size| size.checked_add(count_bytes))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let allocation = output_bytes
+            .checked_mul(4)
+            .and_then(|size| size.checked_add(144))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        self.charge(output_bytes, output_bytes, allocation)
+    }
+
+    /// The bincode bytes of `value`. A metered encode reserves each write and each growth of
+    /// its buffer with the writer of the host (`native_source::encode`).
+    pub fn encode<T: Serialize + ?Sized>(&self, value: &T) -> Result<Vec<u8>, RSpaceError> {
+        match self.is_metered() {
+            true => metered_encode(value, self),
+            false => bincode::serialize(value)
+                .map_err(|error| RSpaceError::InterpreterError(error.to_string())),
+        }
     }
 }
 
+fn rejected(_: BackingError) -> RSpaceError { RSpaceError::HostWorkRejected }
+
 impl SourceMeter for ScanMeter {
-    /// Charges the bytes that a matcher call scans (`SearchStateBytes`).
+    /// Charges a reservation of the metered matcher or of a metered encode.
     fn reserve(
         &self,
-        _operations: usize,
+        operations: usize,
         scanned: usize,
-        _backing: usize,
+        backing: usize,
     ) -> Result<(), RSpaceError> {
-        self.charge(HostWorkDimension::SearchStateBytes, scanned)
+        self.charge(operations, scanned, backing)
     }
 }
+
+impl BackingMeter for ScanMeter {
+    /// Charges a reservation of a copy walk.
+    fn reserve(
+        &self,
+        operations: usize,
+        scanned: usize,
+        backing: usize,
+    ) -> Result<(), BackingError> {
+        self.charge(operations, scanned, backing)
+            .map_err(|_| BackingError::Rejected)
+    }
+}
+
+// Disabled by decision 42 (DR-88 of feature/cost-accounted-rho, 3d3f79b07): the branch maps
+// the operations, the scanned bytes and the backing bytes of a reservation to three host-work
+// dimensions, and this meter charged only the scanned bytes, on `SearchStateBytes`.
+// impl SourceMeter for ScanMeter {
+//     /// Charges the bytes that a matcher call scans (`SearchStateBytes`).
+//     fn reserve(
+//         &self,
+//         _operations: usize,
+//         scanned: usize,
+//         _backing: usize,
+//     ) -> Result<(), RSpaceError> {
+//         self.charge(HostWorkDimension::SearchStateBytes, scanned)
+//     }
+// }
 
 /// Why a collection operation re-issues as a new `Intent::Space`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -141,26 +324,28 @@ mod tests {
         HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)))
     }
 
+    /// The dimensions that a space job charges (decision 42).
+    const CHARGED: [HostWorkDimension; 3] = [
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+        HostWorkDimension::SearchStateBytes,
+    ];
+
     #[test]
-    fn scan_meter_charges_search_candidates_and_scanned_bytes() {
+    fn scan_meter_maps_amounts_to_the_branch_dimensions() {
         let host_work = budget(1_000);
         let meter = ScanMeter::new(Some(host_work.clone()));
-        meter.charge_call().expect("a call fits the budget");
-        meter.charge_call().expect("a call fits the budget");
-        meter.reserve(5, 40, 7).expect("the bytes fit the budget");
-        assert_eq!(
-            host_work.usage(HostWorkDimension::SearchCandidates),
-            HostWorkUsage::new(2)
-        );
-        assert_eq!(
-            host_work.usage(HostWorkDimension::SearchStateBytes),
-            HostWorkUsage::new(40)
-        );
+        meter.charge(5, 40, 7).expect("the amounts fit the budget");
+        let expected = [5, 40, 7];
+        for (dimension, amount) in CHARGED.into_iter().zip(expected) {
+            assert_eq!(
+                host_work.usage(dimension),
+                HostWorkUsage::new(amount),
+                "{dimension}"
+            );
+        }
         for dimension in HostWorkDimension::ALL {
-            if !matches!(
-                dimension,
-                HostWorkDimension::SearchCandidates | HostWorkDimension::SearchStateBytes
-            ) {
+            if !CHARGED.contains(&dimension) {
                 assert_eq!(
                     host_work.usage(dimension),
                     HostWorkUsage::ZERO,
@@ -171,25 +356,92 @@ mod tests {
     }
 
     #[test]
-    fn scan_meter_rejects_a_charge_over_the_limit() {
-        let host_work = budget(1);
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        meter.charge_call().expect("the first call fits");
-        assert_eq!(meter.charge_call(), Err(RSpaceError::HostWorkRejected));
-        assert_eq!(meter.reserve(0, 2, 0), Err(RSpaceError::HostWorkRejected));
-        assert!(host_work.is_rejected());
+    fn scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension() {
+        let amounts = [3_u64, 11, 5];
+        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+        for (dimension, amount) in CHARGED.into_iter().zip(amounts) {
+            exact.set(dimension, HostWorkLimit::new(amount));
+        }
+        ScanMeter::new(Some(HostWorkBudget::new(exact)))
+            .charge(3, 11, 5)
+            .expect("the exact credit suffices");
+        for (dimension, amount) in CHARGED.into_iter().zip(amounts) {
+            let mut cut = exact;
+            cut.set(dimension, HostWorkLimit::new(amount - 1));
+            let host_work = HostWorkBudget::new(cut);
+            assert_eq!(
+                ScanMeter::new(Some(host_work.clone())).charge(3, 11, 5),
+                Err(RSpaceError::HostWorkRejected),
+                "{dimension}"
+            );
+            assert!(host_work.is_rejected(), "{dimension}");
+        }
         let unmetered = ScanMeter::new(None);
         unmetered
-            .charge_call()
-            .expect("no budget accepts every charge");
-        unmetered
-            .reserve(0, usize::MAX, 0)
+            .charge(usize::MAX, usize::MAX, usize::MAX)
             .expect("no budget accepts every charge");
         assert!(unmetered.host_work().is_none());
+        assert!(!unmetered.is_metered());
     }
 
     #[test]
-    fn metered_matching_charges_the_scanned_bytes() {
+    fn scan_meter_copy_equals_clone_backing_copy_and_cleanup() {
+        let value = ListParWithRandom {
+            pars: vec![
+                new_gstring_par("payload".to_string(), Vec::new(), false),
+                new_gint_par(7, Vec::new(), false),
+            ],
+            random_state: vec![9; 64],
+            cost_authority: None,
+            cost_stack: None,
+        };
+        let recorded = std::cell::Cell::new([0_usize; 3]);
+        let recorder = |operations: usize, scanned: usize, backing: usize| {
+            let [o, s, b] = recorded.get();
+            recorded.set([o + operations, s + scanned, b + backing]);
+            Ok::<(), BackingError>(())
+        };
+        clone_backing::reserve_copy_and_cleanup(&value, &recorder)
+            .expect("the recording meter accepts every charge");
+        let host_work = budget(u64::MAX);
+        let copy = ScanMeter::new(Some(host_work.clone()))
+            .copy(&value)
+            .expect("the copy fits the budget");
+        assert_eq!(copy, value);
+        let charged: Vec<usize> = CHARGED
+            .iter()
+            .map(|dimension| {
+                usize::try_from(host_work.usage(*dimension).get()).expect("a small usage")
+            })
+            .collect();
+        assert_eq!(charged, recorded.get().to_vec());
+        assert!(recorded.get().iter().all(|amount| *amount > 0));
+    }
+
+    #[test]
+    fn scan_meter_skips_walks_without_a_budget() {
+        let value = vec![new_gstring_par("x".repeat(4096), Vec::new(), false); 16];
+        let unmetered = ScanMeter::new(None);
+        unmetered.inspect(&value).expect("no budget");
+        unmetered.reserve_copy(&value).expect("no budget");
+        assert_eq!(unmetered.copy(&value).expect("no budget"), value);
+        assert_eq!(unmetered.copy_slice(&value).expect("no budget"), value);
+        assert_eq!(unmetered.buffer::<u8>(8).expect("no budget").capacity(), 8);
+        unmetered
+            .random_bytes(&Blake2b512Random::create_from_bytes(b"random"))
+            .expect("no budget");
+        let host_work = budget(u64::MAX);
+        let metered = ScanMeter::new(Some(host_work.clone()));
+        assert_eq!(
+            metered.encode(&value).expect("the encode fits"),
+            unmetered.encode(&value).expect("no budget"),
+            "a metered encode gives the bytes of bincode"
+        );
+        assert!(host_work.usage(HostWorkDimension::VerificationBytes) > HostWorkUsage::ZERO);
+    }
+
+    #[test]
+    fn metered_matching_reserves_on_the_branch_dimensions() {
         let host_work = budget(1_000_000);
         let meter = ScanMeter::new(Some(host_work.clone()));
         let pattern = BindPattern {
@@ -203,7 +455,6 @@ mod tests {
             cost_authority: None,
             cost_stack: None,
         };
-        meter.charge_call().expect("a call fits");
         let matched = Matcher
             .get_metered(&pattern, &data, &meter)
             .expect("the metered match fits the budget");
@@ -211,9 +462,15 @@ mod tests {
         assert_eq!(matched, Matcher.get(&pattern, &data));
         assert_eq!(
             host_work.usage(HostWorkDimension::SearchCandidates),
-            HostWorkUsage::new(1)
+            HostWorkUsage::ZERO,
+            "the branch charges candidates only in its funding search"
         );
-        assert!(host_work.usage(HostWorkDimension::SearchStateBytes) > HostWorkUsage::ZERO);
+        for dimension in CHARGED {
+            assert!(
+                host_work.usage(dimension) > HostWorkUsage::ZERO,
+                "{dimension}"
+            );
+        }
         let mismatch = BindPattern {
             patterns: vec![new_gint_par(1, Vec::new(), false)],
             remainder: None,

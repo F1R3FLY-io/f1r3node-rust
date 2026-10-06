@@ -22,6 +22,8 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 
 use super::id::space_id_from_bytes;
 use super::qualifier::SpaceQualifier;
+use crate::rust::interpreter::reified::costs::ScanMeter;
+use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::SpaceId;
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr, MalformedRecord, RecordKind};
 
@@ -136,6 +138,22 @@ impl SpaceConfig {
             (true, true) => Ok(config),
             (true, false) | (false, _) => Err(malformed),
         }
+    }
+}
+
+impl SpaceConfig {
+    /// [`SpaceConfig::from_par`] with its work reserved on `meter` before the decode makes it
+    /// (decision 42). The decode walks the entries of `map`, copies the decoded fields, encodes
+    /// the decoded config again with [`SpaceConfig::to_par`] and compares the two maps. Each
+    /// part reads or copies at most `map`, so the reservations are a read of `map`, two copies
+    /// of `map` and a read of each side of the comparison.
+    pub fn from_par_metered(map: &Par, meter: &ScanMeter) -> Result<Self, SpaceError> {
+        meter.inspect(map)?;
+        meter.reserve_copy(map)?;
+        meter.reserve_copy(map)?;
+        meter.inspect(map)?;
+        meter.inspect(map)?;
+        Ok(Self::from_par(map)?)
     }
 }
 

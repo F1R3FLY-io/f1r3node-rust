@@ -1133,6 +1133,7 @@
         "formal/reified-rspaces-model-map.json",
         "formal/rocq/reified_rspaces/Makefile",
         "formal/rocq/reified_rspaces/_CoqProject",
+        "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
         "formal/rocq/reified_rspaces/theories/CounterConflict.v",
         "formal/rocq/reified_rspaces/theories/Encoding.v",
         "formal/rocq/reified_rspaces/theories/EventCorrelation.v",

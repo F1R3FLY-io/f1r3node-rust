@@ -1156,7 +1156,7 @@ The host and the spaces use one order, so a space operation and its equivalent h
 | Field | Value |
 |---|---|
 | Date | 2026-10-05 |
-| Status | In force. The implementation is pending. |
+| Status | In force. Implemented with the model `AgentReadCoverage.v`. |
 | Supersedes | The one-dimension `ScanMeter` of P4, which charged `SearchCandidates` for each matcher call |
 | Related | [Decision 40](#decision-40), [I-12](#i-12), [M-3](#m-3) |
 
@@ -1169,6 +1169,26 @@ The change touches the committed P4 code (`reified/costs.rs` and `spaces/*`) and
 
 **Reason.** After the merge of [decision 44](#decision-44), the matcher reserves its own reads with that mapping.
 The old `ScanMeter` would drop the operations and the backing bytes that the matcher reserves, so its charges would differ from those of the host.
+
+**The policy of the branch.** The rules come from the code of `feature/cost-accounted-rho` at `4d67b5ccc`:
+
+- The mapping of `reserve_native_observation_work` sends operations to VerificationOperations, scanned bytes to VerificationBytes, and allocated bytes to SearchStateBytes.
+- The metered matcher reserves each read that it makes, and its caller adds no charge for a call (DR-88).
+- A caller copies only what it selects, and it reserves each copy first (DR-81, DR-82).
+- A move out of a container reserves one read of the moved slot (DR-91).
+- The branch reserves the encode of a random state. It does not charge a split or a decode of a random state.
+
+**Implementation.** `ScanMeter` (`reified/costs.rs`) reserves with that mapping, and it skips every walk without a budget.
+The record builders and decoders have metered forms (`spaces/record.rs`).
+A builder reserves a copy of a template of its envelope, because every envelope of a kind has the shape of its template.
+A head scan decodes each envelope, reserves each comparison, and copies only the head (`spaces/generic.rs`, `spaces/disciplines/queue.rs`).
+The bump copies only its counter record and moves the copy into the fire (`spaces/counter.rs`).
+
+The outcome after the commit only moves values out of its receipt, and the agent prepays that work at staging.
+
+**Verification.** `AgentReadCoverage.v` proves that every operation reserves each read before it makes it, and that no reservation follows the commit.
+It also proves that the charges do not depend on the list order of the store or on unread payloads.
+Five mutants of the model and the properties `prop_agent_*` of `rholang/tests/reified_p4_props.rs` check these claims ([verification](verification.md#1110-metering-of-decision-42)).
 
 ### <a id="decision-43"></a>Decision 43: A re-issued persistent operation keeps its first-round identity
 
@@ -1694,7 +1714,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 
 **Statement.**
 
-- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:28`).
+- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:43`).
 - At the cap, the agent commits the staged prefix and re-issues the rest of the operation as a new `Intent::Space`. This is the re-issue path of A10.
 
 **Reason.**

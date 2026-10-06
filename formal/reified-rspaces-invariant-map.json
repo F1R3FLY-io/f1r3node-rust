@@ -883,15 +883,15 @@
       ]
     },
     "P4": {
-      "title": "P4: the hashmap:queue slice (namespace, record envelopes, counters and merges, the head-only queue, space references and routing, factories and native handles) and the I-20 refresh of Encoding.v",
-      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code.",
+      "title": "P4: the hashmap:queue slice (namespace, record envelopes, counters and merges, the head-only queue, space references and routing, factories and native handles), the I-20 refresh of Encoding.v, and the metering rule of decision 42 (AgentReadCoverage.v)",
+      "design": "p4-design-report E.1-E.3 with readiness review §4 and §6: persistent_op_call_aborts and space_already_exists_is_deterministic_abort replace space_already_exists_stops_reissue, and each of the four leaf extras covers a P4 entry (handle_dispatch_total, the family capability, the qualifier parse and the atomic commit). Plan revisions M-1, M-2 and I-20. Q# are Rocq headlines, U# are TLA+ invariants. The three I-20 headlines of Encoding.v map to the P2 tests that run the refresh. witness_tests lists deterministic unit tests of the P4 code. Decision 42 adds Q59 to Q66 (AgentReadCoverage.v), the three properties prop_agent_* and three witness tests, and prop_queue_plan_permutation_invariant also covers Q62 and Q63.",
       "test_status": "required",
       "test_files": [
         "rholang/tests/reified_p4_props.rs",
         "rholang/tests/reified_marker_recognition.rs",
         "models/tests/reified_encoding.rs"
       ],
-      "expected_properties": 69,
+      "expected_properties": 72,
       "formal": {
         "Q1": {
           "kind": "rocq",
@@ -1420,6 +1420,78 @@
             "reified_decode_commutes_with_substitution"
           ]
         },
+        "Q59": {
+          "kind": "rocq",
+          "name": "operation_trace_covered",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42: every collection operation reserves each read and copy before it makes it (DR-88 prefix coverage), the reads of the outcome after the commit included.",
+          "tests": [
+            "prop_agent_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "Q60": {
+          "kind": "rocq",
+          "name": "reservations_precede_commit",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42: the work after the commit reserves nothing.",
+          "tests": [
+            "prop_agent_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "Q61": {
+          "kind": "rocq",
+          "name": "cut_rejects_before_commit",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42: a budget below the reservations of an operation is exceeded by a staged reservation, so the operation fails before the commit and has no effect.",
+          "tests": [
+            "prop_agent_reservation_cut_rejects_without_effect"
+          ]
+        },
+        "Q62": {
+          "kind": "rocq",
+          "name": "scan_charge_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42: the charge of a head scan does not depend on the list order of its side.",
+          "tests": [
+            "prop_queue_plan_permutation_invariant"
+          ]
+        },
+        "Q63": {
+          "kind": "rocq",
+          "name": "operation_charge_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42: the charge of an operation does not depend on the list order of the staged view.",
+          "tests": [
+            "prop_queue_plan_permutation_invariant"
+          ]
+        },
+        "Q64": {
+          "kind": "rocq",
+          "name": "scan_charge_independent_of_unread_payloads",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42: the payloads of the entries that a scan does not copy do not change its charge.",
+          "tests": [
+            "prop_agent_charge_independent_of_unread_payloads"
+          ]
+        },
+        "Q65": {
+          "kind": "rocq",
+          "name": "p4_scan_covered_only_if_free",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42 (negative control): the P4 scan, which reserved nothing for its own decodes and copies, satisfies prefix coverage only when that work is zero.",
+          "tests": [
+            "prop_agent_reserves_its_own_work_beyond_the_matcher"
+          ]
+        },
+        "Q66": {
+          "kind": "rocq",
+          "name": "unprepaid_trace_uncovered",
+          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+          "statement": "Decision 42 (negative control): without the prepaid reservations, the reads of the outcome after the commit break prefix coverage.",
+          "tests": [
+            "prop_agent_reservation_cut_rejects_without_effect"
+          ]
+        },
         "U1": {
           "kind": "tla",
           "name": "HeadOnlyNoPendingMatch",
@@ -1779,7 +1851,9 @@
           "test": "prop_queue_plan_permutation_invariant",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
-            "Q36"
+            "Q36",
+            "Q62",
+            "Q63"
           ]
         },
         {
@@ -2047,6 +2121,33 @@
           "covers": [
             "Q58"
           ]
+        },
+        {
+          "number": 70,
+          "test": "prop_agent_reservation_cut_rejects_without_effect",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q59",
+            "Q60",
+            "Q61",
+            "Q66"
+          ]
+        },
+        {
+          "number": 71,
+          "test": "prop_agent_charge_independent_of_unread_payloads",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q64"
+          ]
+        },
+        {
+          "number": 72,
+          "test": "prop_agent_reserves_its_own_work_beyond_the_matcher",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q65"
+          ]
         }
       ],
       "witness_tests": [
@@ -2132,6 +2233,27 @@
           "file": "rholang/src/rust/interpreter/reified/scope.rs",
           "covers": [
             "Q46"
+          ]
+        },
+        {
+          "test": "space_counter_bump_cut_budget_rejects_without_effect",
+          "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+          "covers": [
+            "Q61"
+          ]
+        },
+        {
+          "test": "space_matching_reserves_only_what_the_matcher_reads",
+          "file": "rholang/src/rust/interpreter/spaces/matching.rs",
+          "covers": [
+            "Q59"
+          ]
+        },
+        {
+          "test": "scan_meter_copy_equals_clone_backing_copy_and_cleanup",
+          "file": "rholang/src/rust/interpreter/reified/costs.rs",
+          "covers": [
+            "Q59"
           ]
         }
       ]

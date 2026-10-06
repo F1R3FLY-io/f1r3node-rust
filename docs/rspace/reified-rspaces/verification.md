@@ -93,8 +93,8 @@ This conclusion holds at every depth, for the constants of the configuration.
 
 Each later phase adds one section for each new model or suite, and it adds its rows to the tables of sections 2 and 8.
 Phase P4 keeps its rows of those tables in its own section [11](#11-phase-p4-the-hashmapqueue-slice).
-The Rocq gate also checks the module `Encoding.v` of phase P2 and the six modules of phase P4.
-So its total count of closed headlines is 93 over 9 modules, not 23.
+The Rocq gate also checks the module `Encoding.v` of phase P2, the six modules of phase P4, and the module `AgentReadCoverage.v` of decision 42.
+So its total count of closed headlines is 101 over 10 modules, not 23.
 The section of phase P2 documents the 12 headlines of P2 in `Encoding.v`, and section 11 documents the 3 headlines that P4 adds to it.
 
 ## 2. Acceptance categories
@@ -156,10 +156,10 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 93 over 9 modules. It holds 23 headlines of P1, 15 of `Encoding.v`, and 55 of the six P4 modules (section [11.3](#113-rocq-models-of-p4)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 27 P1 mutants of section [6.1](#61-rocq-mutants) and the 29 P4 mutants of section [11.5](#115-negative-controls-of-p4) fail in their expected declarations. The 9 pristine modules compile first.
+6. **Total.** The count of closed headlines is 101 over 10 modules. It holds 23 headlines of P1, 15 of `Encoding.v`, 55 of the six P4 modules (section [11.3](#113-rocq-models-of-p4)), and 8 of `AgentReadCoverage.v` (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** The 28 mutants of section [6.1](#61-rocq-mutants), the 29 P4 mutants of section [11.5](#115-negative-controls-of-p4), and the 5 mutants of section [11.10](#1110-metering-of-decision-42) fail in their expected declarations. The 10 pristine modules compile first.
 
-The last host run printed `reified-rspaces proofs: PASS=45 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/pc/gate-proofs.log`).
+The last host run printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
 The `Print Assumptions` lines are [lines 7578 to 7594 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L7578-L7594) and [lines 1744 to 1749 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1744-L1749).
 
 In the pgmcp sandbox, the Rocq adapter compiles one standalone file with `coqc -q -noglob` in a fresh directory.
@@ -420,10 +420,11 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 ### 6.1 Rocq mutants
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 57 mutants: 28 in Table 12, and 29 in Table 39 of section [11.5](#115-negative-controls-of-p4).
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 62 mutants: 28 in Table 12, 29 in Table 39 of section [11.5](#115-negative-controls-of-p4), and 5 in Table 45 of section [11.10](#1110-metering-of-decision-42).
 Each mutant replaces text that must occur exactly once in a scratch copy of its module, so a stale mutant fails.
 The control passes only when the mutated copy fails to compile and the first error lies inside one of the expected declarations.
-The 9 pristine modules must compile first. The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
+The pristine modules must compile first. The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants of that time (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
+The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 
 *Table 12. The 28 Rocq mutants of the P1 modules. EC is EventCorrelation.v, and VS is VolatileSweep.v.*
 
@@ -470,7 +471,7 @@ The Error controls are `step-doublepair-unsafe` (marker `vStaged[`), `step-joinr
 
 The substrate suites hold five negative controls:
 
-- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:2992`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:3008`) show that the event correlation of the commit rejects a defect.
+- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:3004`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:3020`) show that the event correlation of the commit rejects a defect.
 - `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2149`) pins the HEAD behavior that `JoinResidueUnsafe` models.
 - `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2460`) shows that the host refuses a checkpoint with one channel set under two orders.
 - `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3353`) shows that host replay of a repeated channel can compute another COMM than the play log.
@@ -567,7 +568,7 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | `space_store_handle_peek_reoffer_authority_conflict_fails_at_reoffer` | `reified_space_store_handle.rs:4223` | FR-10 | H1, H6, H11 | A conflicting authority fails the commit at the re-offer, and the peek fire stays applied. |
 | `space_store_handle_peek_reoffer_replay_and_report` | `reified_space_store_handle.rs:4264` | FR-10 | H1, H4, H5, H11, H12, T1 | A peek fire and its re-offer replay and report from their play log with the play root. |
 | `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4383` | FR-10 | H1, H11 | A peek fire reports its retained stored records as persistent, and the incoming datum keeps its own flag. |
-| `space_store_handle_receipt_marks_only_retained_stored_results` | `space_store_handle.rs:3364` | FR-10 | H11 | The receipt marks only retained stored results as persistent. |
+| `space_store_handle_receipt_marks_only_retained_stored_results` | `space_store_handle.rs:3376` | FR-10 | H11 | The receipt marks only retained stored results as persistent. |
 | `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1947` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:821` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
@@ -1247,8 +1248,8 @@ Each gate writes its logs under `target/verification/reified-rspaces/` and never
 
 ### 10.2 Formal gates
 
-1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 57 mutants.
-2. Confirm the last line `reified-rspaces proofs: PASS=45 FAIL=0 SKIP=0`.
+1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 62 mutants.
+2. Confirm the last line `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0`.
 3. Run `scripts/check-reified-rspaces-tla-invariants.sh` for the TLC, Unsafe, complement, and Apalache legs.
 4. Confirm the last line `reified-rspaces tla: PASS=114 FAIL=0 SKIP=0`.
 5. To run one mutant, run `python3 scripts/verify-reified/rocq-negative-controls.py --only <id>`.
@@ -1304,7 +1305,7 @@ The [design](design.md#native-spaces) describes the code, the [specification](sp
 
 ### 11.1 What P4 proves
 
-P4 proves six groups of claims, with 58 Rocq headlines (Q1 to Q58) and 8 TLA+ invariants (U1 to U8):
+P4 proves seven groups of claims, with 66 Rocq headlines (Q1 to Q66) and 8 TLA+ invariants (U1 to U8):
 
 - **Ids and records.** The Reified ids are injective, disjoint from every other name, and total to decode. The record envelopes round-trip, and their decoders accept only the image of their encoders (Q1 to Q19).
 - **Counters and merges.** Two branches that use one queue race on its counter in merge check 1, and two deploys of one block form one chain. A merge without a race is a serial run (Q20 to Q28, U4).
@@ -1312,6 +1313,7 @@ P4 proves six groups of claims, with 58 Rocq headlines (Q1 to Q58) and 8 TLA+ in
 - **Routing and references.** The classification of channels and of space references is total and deterministic. The use context acts as a lexical closure (Q38 to Q47).
 - **Factories and handles.** The family indices, the constructors, the space ids, and the creation are deterministic. A persistent call aborts, and handle calls merge like contract calls (Q48 to Q55, U5 to U8).
 - **The refresh of I-20.** The strict decode of a refreshed marker tuple is the decode of the model, and it commutes with substitution (Q56 to Q58).
+- **Metering.** An operation reserves each read and copy before it makes it, and no reservation follows its commit. Its charges do not depend on the list order of the store or on unread payloads (Q59 to Q66, section [11.10](#1110-metering-of-decision-42)).
 
 The [invariant map](glossary.md#invariant-map) phase `P4` names at least one property test for each id.
 The [model map](glossary.md#model-map) of P4 ties each id to its Rust items.
@@ -1325,23 +1327,26 @@ The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decisi
 
 | Category | Evidence in P4 | Local gate |
 |---|---|---|
-| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 152 items of the P4 model map, all of them required, and its 66 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
-| Formal verification passes | The 93 Rocq headlines of nine modules close under the global context, and `rocqchk` accepts each module. The 56 Rocq mutants fail in their expected declarations. TLC explores 3 P4 safe configurations completely, 4 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` and `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
-| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q58 and U1 to U8: 66 properties in `reified_p4_props.rs` and 3 properties of `Encoding.v`. It also names 12 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
+| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 176 items of the P4 model map, all of them required, and its 74 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
+| Formal verification passes | The 101 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 62 Rocq mutants fail in their expected declarations. TLC explores 3 P4 safe configurations completely, 4 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` and `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
+| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q66 and U1 to U8: 69 properties in `reified_p4_props.rs` and 3 properties of `Encoding.v`. It also names 15 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
 | Implementation complete | `check-complete.py --phase p4` finds the 60 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
-| Thoroughly tested | The 11 P4 suites of section [11.7](#117-integration-suites) with 153 tests, the 173 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
+| Thoroughly tested | The 11 P4 suites of section [11.7](#117-integration-suites) with 156 tests, the 179 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
 | Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document, and `render.sh --check` finds each SVG byte-identical to a fresh render. | `python3 scripts/verify-reified/doc_lint.py`, `docs/rspace/reified-rspaces/diagrams/render.sh --check` |
 
 ### 11.3 Rocq models of P4
 
 #### 11.3.1 The gate in P4
 
-The proofs gate of section [4.1](#41-toolchain-and-kernel-checks) now checks nine modules, with the expected count of each module.
-Table 25 gives the counts, and the total is 93 closed headlines.
-The last host run printed `reified-rspaces proofs: PASS=45 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/pc/gate-proofs.log`).
+The proofs gate of section [4.1](#41-toolchain-and-kernel-checks) now checks ten modules, with the expected count of each module.
+Table 25 gives the counts of the P4 modules, and section [11.10](#1110-metering-of-decision-42) adds `AgentReadCoverage.v` with 8 headlines, so the total is 101 closed headlines.
+The run at the P4 milestone printed `reified-rspaces proofs: PASS=45 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/pc/gate-proofs.log`).
 Its last leg ran 65 negative checks: the 9 pristine modules and the 56 mutants of that milestone.
+
 The run after the merge of [decision 44](decision-register.md#decision-44) printed the same line (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 Its last leg ran 66 negative checks with the 57 mutants of section [11.5](#115-negative-controls-of-p4).
+The run of [decision 42](decision-register.md#decision-42) checked ten modules and printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
+Its last leg ran 72 negative checks: the 10 pristine modules and 62 mutants.
 
 *Table 25. The modules of the proofs gate and their closed headlines.*
 
@@ -1356,7 +1361,8 @@ Its last leg ran 66 negative checks with the 57 mutants of section [11.5](#115-n
 | [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 9 | P4 |
 | [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 10 | P4 |
 | [SpaceFactory.v](../../../formal/rocq/reified_rspaces/theories/SpaceFactory.v) | 8 | P4 |
-| Total | 93 | |
+| [AgentReadCoverage.v](../../../formal/rocq/reified_rspaces/theories/AgentReadCoverage.v) | 8 | Decision 42 |
+| Total | 101 | |
 
 Each headline of the tables below has no assumption: `Print Assumptions` reports `Closed under the global context`.
 The last column gives the property tests that the invariant map names for the headline.
@@ -1577,8 +1583,9 @@ CounterConflict.tla checks the merge of each pair of branches once, so every sta
 
 ### 11.5 Negative controls of P4
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 57 mutants: 28 in Table 12 and 29 in Table 39.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 62 mutants: 28 in Table 12, 29 in Table 39, and 5 in Table 45.
 The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants, after the 9 pristine modules compiled (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
+The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
 
 *Table 39. The 29 Rocq mutants of P4.*
 
@@ -1618,27 +1625,28 @@ The TLA+ controls of P4 are the four Unsafe configurations of Table 37 and the t
 
 ### 11.6 Property-based tests
 
-The 66 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
+The 69 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
 A pure property and a property over the in-memory agent run 64 cases.
 A property that evaluates deploys on a Rholang runtime runs 16 cases.
-Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:142-167`).
+Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:146-171`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
 
-*Table 40. The 69 properties of phase P4 in the invariant map.*
+*Table 40. The 72 properties of phase P4 in the invariant map.*
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
-| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:527-921` | Q1 to Q11 |
-| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1395-1730` | Q12 to Q19 |
-| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2063`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:3985-4409` | Q20 to Q28 |
-| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:2860-3287` | Q29 to Q37 |
-| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:4764-5052` | Q38 to Q46 |
-| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:5291-5660` | Q48 to Q55 |
-| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:5926-6502` | U1 to U8 |
-| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:6911-7184` | Q47 to Q51, Q55 |
+| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:531-925` | Q1 to Q11 |
+| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1399-1734` | Q12 to Q19 |
+| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2067`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:4314-4738` | Q20 to Q28 |
+| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3014-3453` | Q29 to Q37, and Q62 and Q63 for `prop_queue_plan_permutation_invariant` |
+| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:3527-3643` | Q59 to Q61, Q64 to Q66 |
+| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:5093-5381` | Q38 to Q46 |
+| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:5620-5989` | Q48 to Q55 |
+| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:6255-6831` | U1 to U8 |
+| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:7240-7513` | Q47 to Q51, Q55 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
 
-*Table 41. The 12 witness tests of phase P4.*
+*Table 41. The 15 witness tests of phase P4.*
 
 | Test | Location | Covers |
 |---|---|---|
@@ -1654,10 +1662,13 @@ So a run has the same cases on every host, and it writes nothing to the source t
 | `handle_under_a_bundle_without_write_flag_is_not_writable` | `reified/scope.rs:198` | Q39 |
 | `other_reified_ids_are_not_space_refs_and_other_values_are_agents` | `reified/scope.rs:212` | Q40 |
 | `wrap_body_restores_the_context_as_a_use_tuple` | `reified/scope.rs:257` | Q46 |
+| `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:388` | Q59 |
+| `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:227` | Q59 |
+| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:723` | Q61 |
 
-The invariant-map checker printed `invariant-map: PASS=192 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=312` for all phases (`target/verification/reified-rspaces/p4/pc/gate-invariant-map-p4.log`, `gate-invariant-map-all.log`).
+After [decision 42](decision-register.md#decision-42), the invariant-map checker printed `invariant-map: PASS=209 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=329` for all phases (`target/verification/reified-rspaces/d42/invariant-map-p4.log`, `invariant-map-all.log`).
 The P4 entries of the map have the test status `required`, because every P4 test exists and passes.
-The model-map checker printed `model-map: PASS=187 FAIL=0 PENDING=0` for the P1 map and `model-map: PASS=380 FAIL=0 PENDING=0` for the P4 map.
+The model-map checker printed `model-map: PASS=187 FAIL=0 PENDING=0` for the P1 map and `model-map: PASS=437 FAIL=0 PENDING=0` for the P4 map (`model-map-p1.log`, `model-map-p4.log` of the same directory).
 
 ### 11.7 Integration suites
 
@@ -1677,12 +1688,13 @@ Each run printed `test result: ok` with 0 failures (`target/verification/reified
 | `rholang/tests/reified_routing.rs` | 15 | The routing classes and rules, the use closure, R7, a reset, the agent gate, ordinary programs, and the unwrap of handles |
 | `rholang/tests/reified_merge.rs` | 11 | Nine counter races and chains, and the two checks of item 18 |
 | `rholang/tests/reified_queue_source.rs` | 1 | A source program end to end |
-| `rholang/tests/reified_p4_props.rs` | 66 | The properties of section [11.6](#116-property-based-tests) |
+| `rholang/tests/reified_p4_props.rs` | 69 | The properties of section [11.6](#116-property-based-tests) |
 | `rholang/tests/reified_p4_smoke.rs` | 1 | A smoke test of play and replay |
 
 The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 6 tests.
-The P4 modules hold 175 unit tests: 168 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
+The P4 modules hold 179 unit tests: 172 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
 Two of them came with the merge of [decision 44](decision-register.md#decision-44) (section [8.8](#88-the-merge-of-featurecost-accounted-rho)).
+[Decision 42](decision-register.md#decision-42) replaced four unit tests that pinned the old meter and added eight (section [11.10](#1110-metering-of-decision-42)).
 At the P4 milestone, the library run of `rholang` printed `test result: ok. 1660 passed; 0 failed; 3 ignored`, with the 166 P4 tests of that time (`gate-rholang-lib.log` of the same directory).
 The suites of ordinary execution of section 8 also passed in the same run.
 
@@ -1724,6 +1736,74 @@ To run the P4 checks, do these steps from the repository root, after the prepara
 9. Run `python3 scripts/verify-reified/doc_lint.py` and `docs/rspace/reified-rspaces/diagrams/render.sh --check`.
 
 Run each cargo command under the resource limits of section [10.3](#103-rust-suites), and write its log under `target/`.
+
+### 11.10 Metering of decision 42
+
+[Decision 42](decision-register.md#decision-42) aligns the host work of the queue agent with DR-88 of `feature/cost-accounted-rho`.
+The agent reserves each of its own reads and copies on the meter of the job before it makes them.
+It prepays the work of the outcome at staging.
+The module `formal/rocq/reified_rspaces/theories/AgentReadCoverage.v` restates the metering rule of that branch.
+The rule is prefix coverage: every prefix of a run reads at most the units that the same prefix has reserved.
+
+```math
+\forall\, p, s.\; t = p \mathbin{+\!\!+} s \;\Longrightarrow\; \sum_{e \in p} \mathrm{read}(e) \;\le\; \sum_{e \in p} \mathrm{reserved}(e)
+```
+
+Here $`t`$ is the event list of one operation, $`p`$ is a prefix of $`t`$, and $`\mathrm{read}`$ and $`\mathrm{reserved}`$ give the units of one event.
+The module proves the 8 headlines of Table 44, with no axiom.
+The gate run printed `PASS headlines AgentReadCoverage: 8 x 'Closed under the global context'`, and `rocqchk` reported `Axioms <none>` (`target/verification/reified-rspaces/d42/proofs.log`).
+
+*Table 44. The headlines of AgentReadCoverage.v.*
+
+| Id | Headline | Claim |
+|---|---|---|
+| Q59 | `operation_trace_covered` | Every collection operation satisfies prefix coverage, and the reads of the outcome after the commit are prepaid. |
+| Q60 | `reservations_precede_commit` | The work after the commit reserves nothing. |
+| Q61 | `cut_rejects_before_commit` | A staged reservation exceeds every budget below the reservations of the operation, so the operation fails before the commit. |
+| Q62 | `scan_charge_permutation_invariant` | The charge of a head scan does not depend on the list order of its side. |
+| Q63 | `operation_charge_permutation_invariant` | The charge of an operation does not depend on the list order of the staged view. |
+| Q64 | `scan_charge_independent_of_unread_payloads` | The payloads that a scan does not copy do not change its charge. |
+| Q65 | `p4_scan_covered_only_if_free` | Negative control: the P4 scan satisfies the rule only when its own work is zero. |
+| Q66 | `unprepaid_trace_uncovered` | Negative control: without the prepaid reservations, the outcome after the commit breaks the rule. |
+
+Table 45 gives the five mutants of the module.
+Each mutant reverts one part of the rule, and the gate requires that it fails in the expected declaration.
+
+*Table 45. The Rocq mutants of decision 42.*
+
+| Id | What the mutant changes | Must fail in |
+|---|---|---|
+| `arc-read-before-reserve` | A step reads before it reserves, as the P4 code copied first. | `step_covered` |
+| `arc-unwrap-not-prepaid` | A fired round reserves nothing for the decode of its continuation. | `round_staged_totals` |
+| `arc-outcome-not-prepaid` | The operation does not prepay the buffer of the outcome. | `staged_totals` |
+| `arc-outcome-reserves-after-commit` | The outcome reserves its buffer after the commit. | `operation_trace_covered` |
+| `arc-scan-copies-every-entry` | A scan copies every entry instead of the head only. | `scan_reserved` |
+
+Table 46 gives the tests of decision 42.
+The properties run 64 cases each with the seed of section [11.6](#116-property-based-tests).
+
+*Table 46. The tests of decision 42.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:3527` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
+| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:3578` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
+| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:3643` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
+| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3402` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
+| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3014` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
+| `scan_meter_maps_amounts_to_the_branch_dimensions` | `reified/costs.rs:335` | A reservation charges VerificationOperations, VerificationBytes, and SearchStateBytes, and no other dimension. |
+| `scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension` | `reified/costs.rs:359` | The exact credit suffices, and one unit less in any dimension rejects. |
+| `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:388` | A reserved copy charges the triple of the copy walk of the branch (Q59). |
+| `scan_meter_skips_walks_without_a_budget` | `reified/costs.rs:422` | Without a budget, every reservation passes, and a metered encode gives the bytes of bincode. |
+| `metered_matching_reserves_on_the_branch_dimensions` | `reified/costs.rs:444` | The metered matcher charges the three dimensions and no `SearchCandidates`. |
+| `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:227` | `bind` adds nothing to the reservations of the matcher, and an unguarded `admits` charges one operation, whatever the size of the body (Q59). |
+| `legacy_mapping_dropped_operations_and_backing` | `spaces/matching.rs:278` | Negative control: the old mapping of the meter kept only the scanned bytes of the matcher. |
+| `space_counter_bump_reserves_its_work_on_the_branch_dimensions` | `spaces/counter.rs:699` | A bump charges the three dimensions and no `SearchCandidates`, and a zero budget rejects it. |
+| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:723` | A cut budget rejects a bump before its commit, with no event and no change of the counters (Q61). |
+
+Decision 42 changes no state, no event, and no outcome of an operation.
+So the models of sections [11.3](#113-rocq-models-of-p4) and [11.4](#114-tla-models-of-p4) do not change.
+The suites of Table 42 pass with their earlier assertions.
 
 ## References
 

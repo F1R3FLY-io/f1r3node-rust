@@ -2,7 +2,7 @@
   "schema": "reified-rspaces-model-map/2",
   "phase": "P4",
   "title": "Reified RSpaces P4: the Rust items of the hashmap:queue slice and the formal models that cover them",
-  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32",
+  "design": "p4-design-report E.1-E.3 with readiness review §4 and §6 (the restated factory headlines and the Q#/U# ids), plan revisions M-1, M-2, I-19, I-20 and I-21, and decisions 11 and 28-32, and decision 42 (AgentReadCoverage.v: the agent reserves each read and copy before it makes it)",
   "code_base": "The items are in the P4 commit of this repository. The I-20 refresh and the normalizers are as of the P3b commit. The line numbers below are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -13,7 +13,8 @@
       "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
       "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
-      "formal/rocq/reified_rspaces/theories/Encoding.v"
+      "formal/rocq/reified_rspaces/theories/Encoding.v",
+      "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v"
     ],
     "tla": [
       "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -369,6 +370,54 @@
       "name": "refreshed_decode_commutes_with_subst",
       "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
       "statement": "I-20: the refresh makes the strict decode of a substituted tuple commute with substitution."
+    },
+    "Q59": {
+      "kind": "rocq",
+      "name": "operation_trace_covered",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42: every collection operation reserves each read and copy before it makes it (DR-88 prefix coverage), the reads of the outcome after the commit included."
+    },
+    "Q60": {
+      "kind": "rocq",
+      "name": "reservations_precede_commit",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42: the work after the commit reserves nothing."
+    },
+    "Q61": {
+      "kind": "rocq",
+      "name": "cut_rejects_before_commit",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42: a budget below the reservations of an operation is exceeded by a staged reservation, so the operation fails before the commit and has no effect."
+    },
+    "Q62": {
+      "kind": "rocq",
+      "name": "scan_charge_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42: the charge of a head scan does not depend on the list order of its side."
+    },
+    "Q63": {
+      "kind": "rocq",
+      "name": "operation_charge_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42: the charge of an operation does not depend on the list order of the staged view."
+    },
+    "Q64": {
+      "kind": "rocq",
+      "name": "scan_charge_independent_of_unread_payloads",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42: the payloads of the entries that a scan does not copy do not change its charge."
+    },
+    "Q65": {
+      "kind": "rocq",
+      "name": "p4_scan_covered_only_if_free",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42 (negative control): the P4 scan, which reserved nothing for its own decodes and copies, satisfies prefix coverage only when that work is zero."
+    },
+    "Q66": {
+      "kind": "rocq",
+      "name": "unprepaid_trace_uncovered",
+      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+      "statement": "Decision 42 (negative control): without the prepaid reservations, the reads of the outcome after the commit break prefix coverage."
     },
     "U1": {
       "kind": "tla",
@@ -968,7 +1017,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "const",
       "name": "RECORD_TAG_MARK",
-      "line": 46,
+      "line": 55,
       "role": "The R of a record tag.",
       "rocq": [
         "record_tag_mark"
@@ -984,7 +1033,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "const",
       "name": "RECORD_VERSION",
-      "line": 49,
+      "line": 58,
       "role": "Version 1 of the envelope.",
       "rocq": [
         "record_version"
@@ -999,7 +1048,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "struct",
       "name": "RecordKind",
-      "line": 54,
+      "line": 63,
       "role": "D, K, S and C.",
       "rocq": [
         "record_kind",
@@ -1016,7 +1065,7 @@
       "scope": "RecordKind",
       "kind": "fn",
       "name": "tag_bytes",
-      "line": 71,
+      "line": 80,
       "role": "[E0, R, kind, version].",
       "rocq": [
         "tag_bytes"
@@ -1033,7 +1082,7 @@
       "scope": "RecordKind",
       "kind": "fn",
       "name": "tag",
-      "line": 76,
+      "line": 85,
       "role": "The GByteArray tag.",
       "rocq": [
         "tag"
@@ -1048,7 +1097,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "list_par",
-      "line": 147,
+      "line": 156,
       "role": "A list with the derived bit sets.",
       "rocq": [
         "list_par"
@@ -1064,7 +1113,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "list_elements",
-      "line": 175,
+      "line": 184,
       "role": "The strict list reader: the flags must be the derived ones.",
       "rocq": [
         "list_elements"
@@ -1079,7 +1128,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "is_tag",
-      "line": 196,
+      "line": 205,
       "role": "Exactly the tag of a kind.",
       "rocq": [
         "is_tag"
@@ -1095,7 +1144,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "natural_of",
-      "line": 205,
+      "line": 214,
       "role": "A GInt of at least 0.",
       "rocq": [
         "natural_of"
@@ -1110,7 +1159,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "datum_envelope",
-      "line": 215,
+      "line": 224,
       "role": "[tag D, ord, Nil, Nil].",
       "rocq": [
         "datum_envelope"
@@ -1125,7 +1174,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "wrap_datum",
-      "line": 226,
+      "line": 235,
       "role": "The envelope in front of the payload.",
       "rocq": [
         "wrap_datum"
@@ -1142,7 +1191,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "datum_ord",
-      "line": 239,
+      "line": 248,
       "role": "The order of a datum record.",
       "rocq": [
         "datum_ord"
@@ -1158,7 +1207,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "unwrap_datum",
-      "line": 262,
+      "line": 271,
       "role": "The order and the datum as the program sent it.",
       "rocq": [
         "unwrap_datum"
@@ -1174,7 +1223,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "continuation_envelope",
-      "line": 280,
+      "line": 289,
       "role": "[tag K, ord, Nil, body].",
       "rocq": [
         "continuation_envelope"
@@ -1189,7 +1238,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "wrap_continuation",
-      "line": 292,
+      "line": 301,
       "role": "The envelope around a body.",
       "rocq": [
         "wrap_continuation"
@@ -1204,7 +1253,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "continuation_parts",
-      "line": 315,
+      "line": 324,
       "role": "The order, the body and the random state.",
       "rocq": [
         "continuation_parts"
@@ -1219,7 +1268,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "unwrap_continuation",
-      "line": 350,
+      "line": 359,
       "role": "The continuation as the program parked it.",
       "rocq": [
         "unwrap_continuation"
@@ -1234,7 +1283,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "counter_record",
-      "line": 369,
+      "line": 383,
       "role": "[[tag S], value].",
       "rocq": [
         "counter_record"
@@ -1249,7 +1298,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "counter_value",
-      "line": 383,
+      "line": 397,
       "role": "The value of a counter record.",
       "rocq": [
         "counter_value"
@@ -1264,7 +1313,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "config_record",
-      "line": 396,
+      "line": 413,
       "role": "The config map behind the C tag.",
       "rocq": [
         "config_record"
@@ -1279,7 +1328,7 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "config_map",
-      "line": 406,
+      "line": 423,
       "role": "The config map of a config record.",
       "rocq": [
         "config_map"
@@ -1295,7 +1344,7 @@
       "scope": "SpaceConfig",
       "kind": "fn",
       "name": "to_par",
-      "line": 83,
+      "line": 85,
       "role": "The canonical config map (I-17).",
       "rocq": [
         "to_par"
@@ -1311,7 +1360,7 @@
       "scope": "SpaceConfig",
       "kind": "fn",
       "name": "from_par",
-      "line": 110,
+      "line": 112,
       "role": "The strict config reader.",
       "rocq": [
         "from_par"
@@ -1326,7 +1375,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "bump",
-      "line": 118,
+      "line": 163,
       "role": "The counter COMM of every operation. The first operation consumes S(sid) and opens S(sid,k) at 1 (M-1, A25).",
       "rocq": [
         "exec",
@@ -1357,7 +1406,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "take",
-      "line": 185,
+      "line": 235,
       "role": "Consumes the only counter record. The COMM has no peeks.",
       "rocq": [
         "exec"
@@ -1377,7 +1426,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "put",
-      "line": 226,
+      "line": 295,
       "role": "Stores the next counter record, which the next operation consumes.",
       "rocq": [
         "exec"
@@ -1395,7 +1444,7 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "counter_continuation",
-      "line": 61,
+      "line": 68,
       "role": "The counter continuation of one bump, new for each value.",
       "rocq": [
         "exec"
@@ -1411,7 +1460,7 @@
       "scope": "QueueDiscipline",
       "kind": "const",
       "name": "USES_COUNTER",
-      "line": 27,
+      "line": 33,
       "role": "Every queue operation bumps the counter. An unordered discipline needs none.",
       "rocq": [
         "exec",
@@ -1424,18 +1473,19 @@
       ]
     },
     {
-      "item": "QueueDiscipline::head",
+      "item": "QueueDiscipline::head_metered",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
       "scope": "QueueDiscipline",
       "kind": "fn",
-      "name": "head",
-      "line": 32,
-      "role": "The least (ord, bincode bytes), on both sides.",
+      "name": "head_metered",
+      "line": 38,
+      "role": "The least (ord, bincode bytes), on both sides. Each comparison and each tie-break encode is reserved first (decision 42).",
       "rocq": [
         "head",
         "head_from",
-        "precedes"
+        "precedes",
+        "scan"
       ],
       "tla": [
         "IsHeadR",
@@ -1443,7 +1493,8 @@
       ],
       "covers": [
         "Q29",
-        "Q36"
+        "Q36",
+        "Q62"
       ]
     },
     {
@@ -1453,7 +1504,7 @@
       "scope": "QueueDiscipline",
       "kind": "fn",
       "name": "reaches_head",
-      "line": 51,
+      "line": 59,
       "role": "An incoming element joins the tail.",
       "rocq": [
         "offer",
@@ -1469,20 +1520,23 @@
       ]
     },
     {
-      "item": "precedes",
+      "item": "Best::challenge",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
       "kind": "fn",
-      "name": "precedes",
-      "line": 56,
-      "role": "A lesser ord, or an equal ord and lesser bytes.",
+      "name": "challenge",
+      "line": 73,
+      "role": "A lesser ord, or an equal ord and lesser bytes. The comparison of the orders is reserved first, and a tie encodes each entry at most once.",
       "rocq": [
         "precedes",
-        "precedes_key"
+        "precedes_key",
+        "scan"
       ],
       "covers": [
-        "Q29"
-      ]
+        "Q29",
+        "Q62"
+      ],
+      "scope": "Best"
     },
     {
       "item": "GenericSpace::head_waiter",
@@ -1491,17 +1545,22 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_waiter",
-      "line": 300,
+      "line": 524,
       "role": "The head of the waiting continuations.",
       "rocq": [
-        "waiter_head"
+        "waiter_head",
+        "scan",
+        "p4_scan"
       ],
       "tla": [
         "IsHeadW"
       ],
       "covers": [
         "Q29",
-        "Q33"
+        "Q33",
+        "Q62",
+        "Q64",
+        "Q65"
       ]
     },
     {
@@ -1511,17 +1570,22 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_datum",
-      "line": 318,
+      "line": 549,
       "role": "The head of the records.",
       "rocq": [
-        "record_head"
+        "record_head",
+        "scan",
+        "p4_scan"
       ],
       "tla": [
         "IsHeadR"
       ],
       "covers": [
         "Q29",
-        "Q33"
+        "Q33",
+        "Q62",
+        "Q64",
+        "Q65"
       ]
     },
     {
@@ -1531,11 +1595,12 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "offer",
-      "line": 337,
+      "line": 573,
       "role": "The produce plan: tail join, head-only fires, re-offer, the round cap.",
       "rocq": [
         "offer",
-        "offer_loop"
+        "offer_loop",
+        "round_staged"
       ],
       "tla": [
         "Produce"
@@ -1548,7 +1613,8 @@
         "Q37",
         "U1",
         "U2",
-        "U3"
+        "U3",
+        "Q59"
       ]
     },
     {
@@ -1558,11 +1624,12 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "receive",
-      "line": 405,
+      "line": 640,
       "role": "The consume plan.",
       "rocq": [
         "receive",
-        "receive_loop"
+        "receive_loop",
+        "round_staged"
       ],
       "tla": [
         "Consume"
@@ -1574,7 +1641,8 @@
         "Q34",
         "U1",
         "U2",
-        "U3"
+        "U3",
+        "Q59"
       ]
     },
     {
@@ -1584,18 +1652,22 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_produce",
-      "line": 537,
+      "line": 813,
       "role": "Bump, then the produce plan.",
       "rocq": [
         "produce",
-        "bumped"
+        "bumped",
+        "operation_trace"
       ],
       "tla": [
         "Produce"
       ],
       "covers": [
         "Q30",
-        "Q35"
+        "Q35",
+        "Q59",
+        "Q61",
+        "Q63"
       ]
     },
     {
@@ -1605,11 +1677,12 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_consume",
-      "line": 567,
+      "line": 847,
       "role": "Bump, then the consume plan. A peek bumps too (A2).",
       "rocq": [
         "consume",
-        "bumped"
+        "bumped",
+        "operation_trace"
       ],
       "tla": [
         "Consume",
@@ -1619,7 +1692,10 @@
         "Q28",
         "Q31",
         "Q35",
-        "U4"
+        "U4",
+        "Q59",
+        "Q61",
+        "Q63"
       ]
     },
     {
@@ -1628,7 +1704,7 @@
       "file": "rholang/src/rust/interpreter/reified/costs.rs",
       "kind": "const",
       "name": "FIRE_ROUND_CAP",
-      "line": 28,
+      "line": 43,
       "role": "64 fires per transaction (I-21).",
       "rocq": [
         "fire_round_cap"
@@ -1644,7 +1720,7 @@
       "scope": "FireRounds",
       "kind": "fn",
       "name": "after_fire",
-      "line": 116,
+      "line": 299,
       "role": "Done, continue, divergent re-issue (A10) or the round cap.",
       "rocq": [
         "after_fire"
@@ -1660,7 +1736,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_create",
-      "line": 597,
+      "line": 881,
       "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
       "rocq": [
         "prepare_create",
@@ -1682,7 +1758,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "read_config",
-      "line": 675,
+      "line": 961,
       "role": "A missing config record is DanglingHandle.",
       "tla": [
         "Call"
@@ -2051,7 +2127,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "routes_to_default_without_context",
-      "line": 510,
+      "line": 535,
       "role": "Every class but a space name and an agent name.",
       "rocq": [
         "routes_to_default_without_context"
@@ -2141,7 +2217,7 @@
       "file": "rholang/src/rust/interpreter/reified/handle.rs",
       "kind": "struct",
       "name": "HandleMethod",
-      "line": 70,
+      "line": 74,
       "role": "The five methods of a handle.",
       "rocq": [
         "method"
@@ -2157,7 +2233,7 @@
       "scope": "HandleMethod",
       "kind": "fn",
       "name": "parse",
-      "line": 80,
+      "line": 84,
       "role": "The method of a name.",
       "rocq": [
         "method_of"
@@ -2173,7 +2249,7 @@
       "scope": "HandleMethod",
       "kind": "fn",
       "name": "arity",
-      "line": 92,
+      "line": 96,
       "role": "The argument count of a method.",
       "rocq": [
         "arity"
@@ -2188,7 +2264,7 @@
       "file": "rholang/src/rust/interpreter/reified/handle.rs",
       "kind": "struct",
       "name": "ParsedMessage",
-      "line": 116,
+      "line": 120,
       "role": "Dropped, Malformed or a message.",
       "rocq": [
         "parsed"
@@ -2204,7 +2280,7 @@
       "scope": "ParsedMessage",
       "kind": "fn",
       "name": "parse",
-      "line": 127,
+      "line": 131,
       "role": "[ret, method, …, (PARAMS)?] (A23).",
       "rocq": [
         "parse_message"
@@ -2219,7 +2295,7 @@
       "file": "rholang/src/rust/interpreter/reified/handle.rs",
       "kind": "fn",
       "name": "is_reply_name",
-      "line": 161,
+      "line": 174,
       "role": "One unforgeable, or one bundle with the write flag.",
       "rocq": [
         "is_reply_name"
@@ -2235,7 +2311,7 @@
       "scope": "HandleProcess",
       "kind": "fn",
       "name": "call",
-      "line": 200,
+      "line": 213,
       "role": "A6, DanglingHandle, the parse, the reply.",
       "rocq": [
         "call"
@@ -2256,7 +2332,7 @@
       "scope": "HandleProcess",
       "kind": "fn",
       "name": "run",
-      "line": 248,
+      "line": 270,
       "role": "Positional params, method, arity, named params, then the body.",
       "rocq": [
         "run"
@@ -2727,7 +2803,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "struct",
       "name": "Field",
-      "line": 683,
+      "line": 708,
       "role": "Value, List, Map, Annotations, NewBody.",
       "rocq": [
         "field_flags"
@@ -2742,7 +2818,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "marker_fields",
-      "line": 697,
+      "line": 722,
       "role": "The fields of each marker.",
       "rocq": [
         "derived_flags"
@@ -2757,7 +2833,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "derived_flag",
-      "line": 790,
+      "line": 815,
       "role": "The flag that the encoder derives for a field.",
       "rocq": [
         "derived_flags"
@@ -2773,7 +2849,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_field",
-      "line": 856,
+      "line": 881,
       "role": "Recompute the derived flags of a field.",
       "rocq": [
         "refresh"
@@ -2788,7 +2864,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple",
-      "line": 927,
+      "line": 952,
       "role": "Recompute the derived flags of a marker tuple.",
       "rocq": [
         "refresh"
@@ -2803,7 +2879,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_tuple",
-      "line": 938,
+      "line": 963,
       "role": "A current tuple is not copied.",
       "rocq": [
         "refresh",
@@ -2820,7 +2896,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple_par",
-      "line": 959,
+      "line": 984,
       "role": "The tuple and its holder Par.",
       "rocq": [
         "refresh"
@@ -2835,7 +2911,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_marker_par",
-      "line": 985,
+      "line": 1010,
       "role": "H4: the QUERY source before it fails closed.",
       "rocq": [
         "refresh"
@@ -2851,7 +2927,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "trailing_params",
-      "line": 998,
+      "line": 1023,
       "role": "H3: refresh, then split_trailing_params.",
       "rocq": [
         "sdecode"
@@ -2927,9 +3003,386 @@
       "file": "rholang/src/rust/interpreter/reified/schedule.rs",
       "kind": "fn",
       "name": "submit_space",
-      "line": 167,
+      "line": 192,
       "role": "The space job scheduler.",
       "unmodeled": "The scheduler of the Intent::Space jobs. P1 T5 (TxnLockCoverage) models the lock coverage of their transactions. The P4 models take one operation as one atomic transaction."
+    },
+    {
+      "item": "ScanMeter::charge",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "charge",
+      "line": 74,
+      "role": "Reserves operations, scanned bytes and backing bytes on VerificationOperations, VerificationBytes and SearchStateBytes, the mapping of DR-88.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "ScanMeter::inspect",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "inspect",
+      "line": 97,
+      "role": "Reserves a read walk before the read.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "ScanMeter::copy",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "copy",
+      "line": 123,
+      "role": "Reserves a copy and its cleanup, then copies.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "ScanMeter::buffer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "buffer",
+      "line": 149,
+      "role": "Reserves a buffer of n slots, then allocates it.",
+      "rocq": [
+        "step",
+        "scan"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "ScanMeter::compare",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "compare",
+      "line": 160,
+      "role": "Reserves one comparison of two orders or of two tie-break encodes.",
+      "rocq": [
+        "scan"
+      ],
+      "covers": [
+        "Q62"
+      ]
+    },
+    {
+      "item": "ScanMeter::moved",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "moved",
+      "line": 169,
+      "role": "Reserves the move of one slot (DR-91).",
+      "rocq": [
+        "round_after_commit"
+      ],
+      "covers": [
+        "Q60"
+      ]
+    },
+    {
+      "item": "ScanMeter::encode",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/costs.rs",
+      "scope": "ScanMeter",
+      "kind": "fn",
+      "name": "encode",
+      "line": 205,
+      "role": "A bincode encode that reserves each write with the writer of the host.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "wrap_datum_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "wrap_datum_metered",
+      "line": 599,
+      "role": "The datum record, with its copies reserved first.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "datum_ord_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "datum_ord_metered",
+      "line": 622,
+      "role": "The order of a record: a reserved read of the envelope only.",
+      "rocq": [
+        "scan"
+      ],
+      "covers": [
+        "Q64"
+      ]
+    },
+    {
+      "item": "unwrap_datum_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "unwrap_datum_metered",
+      "line": 631,
+      "role": "The payload of the head record of a receive, with its copies reserved first.",
+      "rocq": [
+        "round_staged"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "wrap_continuation_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "wrap_continuation_metered",
+      "line": 654,
+      "role": "The parked continuation of a receive, built once, with its copies reserved first.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "continuation_ord_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "continuation_ord_metered",
+      "line": 709,
+      "role": "The order of a waiter: a reserved read of the spine and the small slots, never of the body.",
+      "rocq": [
+        "scan"
+      ],
+      "covers": [
+        "Q64"
+      ]
+    },
+    {
+      "item": "prepay_continuation_unwrap",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "prepay_continuation_unwrap",
+      "line": 721,
+      "role": "Prepays at staging the decode that the outcome makes after the commit.",
+      "rocq": [
+        "round_staged",
+        "prepaid"
+      ],
+      "covers": [
+        "Q59",
+        "Q66"
+      ]
+    },
+    {
+      "item": "into_continuation",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "into_continuation",
+      "line": 735,
+      "role": "The outcome decode: it moves the slots out of the receipt and copies nothing.",
+      "rocq": [
+        "round_after_commit"
+      ],
+      "covers": [
+        "Q60"
+      ]
+    },
+    {
+      "item": "Introduction::new",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "scope": "Introduction",
+      "kind": "fn",
+      "name": "new",
+      "line": 828,
+      "role": "One introduction for each operation: the authority and the phlo budget, with their copies reserved.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "register_introduction",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/record.rs",
+      "kind": "fn",
+      "name": "register_introduction",
+      "line": 854,
+      "role": "The callback of a staged operation: one reserved copy of a shared pointer.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "CollectionChannels::new_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "CollectionChannels",
+      "kind": "fn",
+      "name": "new_metered",
+      "line": 204,
+      "role": "The channels of an operation, with their ids reserved first.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "prepay_outcome",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "prepay_outcome",
+      "line": 738,
+      "role": "Prepays the buffer of the fires of the outcome before the commit.",
+      "rocq": [
+        "staged_trace"
+      ],
+      "covers": [
+        "Q59",
+        "Q66"
+      ]
+    },
+    {
+      "item": "outcome",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "outcome",
+      "line": 744,
+      "role": "Step 7 after the commit: moves only, prepaid at staging.",
+      "rocq": [
+        "round_after_commit"
+      ],
+      "covers": [
+        "Q60"
+      ]
+    },
+    {
+      "item": "Plan::fire_offer",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Plan",
+      "kind": "fn",
+      "name": "fire_offer",
+      "line": 338,
+      "role": "Stages a produce-side fire with reserved copies, and moves the record on the last round.",
+      "rocq": [
+        "round_staged"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "Plan::fire_receive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "Plan",
+      "kind": "fn",
+      "name": "fire_receive",
+      "line": 374,
+      "role": "Stages a consume-side fire with reserved copies, and moves the head copy into the candidate.",
+      "rocq": [
+        "round_staged"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "SpaceConfig::from_par_metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
+      "scope": "SpaceConfig",
+      "kind": "fn",
+      "name": "from_par_metered",
+      "line": 150,
+      "role": "The strict config decode, with its walks reserved first.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "SpaceMatcher::metered",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/matching.rs",
+      "scope": "SpaceMatcher",
+      "kind": "fn",
+      "name": "metered",
+      "line": 44,
+      "role": "The matcher of a job, with the copy of the shared handle reserved.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
+    },
+    {
+      "item": "only_record",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/counter.rs",
+      "kind": "fn",
+      "name": "only_record",
+      "line": 148,
+      "role": "The only counter record of a channel: one reserved copy instead of a copy of the view.",
+      "rocq": [
+        "step"
+      ],
+      "covers": [
+        "Q59"
+      ]
     }
   ]
 }

@@ -21,6 +21,14 @@
 //! The bit sets of an envelope are the union of the bit sets of its elements. They belong to no
 //! identity. The decoders are strict: a record that is not the exact image of its encoder is a
 //! [`MalformedRecord`], and the operation aborts with `Inconsistent`.
+//!
+//! The space agents call the metered forms (decision 42): each one reserves on the host-work
+//! meter of the job the reads and the copies that its plain form makes, before the plain form
+//! makes them (DR-88 of `feature/cost-accounted-rho`). Then it calls the plain form, so both
+//! forms give the same record. Without a budget every reservation is free.
+
+use std::mem::size_of;
+use std::sync::{Arc, LazyLock};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
@@ -41,6 +49,7 @@ use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
+use crate::rust::interpreter::reified::costs::ScanMeter;
 
 /// The second byte of every record tag.
 pub const RECORD_TAG_MARK: u8 = 0x52;
@@ -364,6 +373,11 @@ pub fn unwrap_continuation(
     })
 }
 
+/// The pars of the counter record with the value `value`: the envelope, then the value.
+fn counter_pars(value: i64) -> Vec<Par> {
+    vec![list_par(vec![RecordKind::Counter.tag()]), int_par(value)]
+}
+
 /// The counter record with the value `value`, the random state `random` and the cost authority
 /// `cost_authority`.
 pub fn counter_record(
@@ -372,7 +386,7 @@ pub fn counter_record(
     cost_authority: Option<CostAuthority>,
 ) -> ListParWithRandom {
     ListParWithRandom {
-        pars: vec![list_par(vec![RecordKind::Counter.tag()]), int_par(value)],
+        pars: counter_pars(value),
         random_state: random.to_bytes(),
         cost_authority,
         cost_stack: None,
@@ -391,11 +405,14 @@ pub fn counter_value(record: &ListParWithRandom) -> Result<i64, MalformedRecord>
     }
 }
 
+/// The envelope of a config record.
+fn config_envelope() -> Par { list_par(vec![RecordKind::Config.tag()]) }
+
 /// The config record of the config map `config` (I-17) with the random state `random`. It has
 /// no cost authority (P4 design B.7).
 pub fn config_record(config: Par, random: &Blake2b512Random) -> ListParWithRandom {
     ListParWithRandom {
-        pars: vec![list_par(vec![RecordKind::Config.tag()]), config],
+        pars: vec![config_envelope(), config],
         random_state: random.to_bytes(),
         cost_authority: None,
         cost_stack: None,
@@ -418,54 +435,429 @@ pub fn config_map(record: &ListParWithRandom) -> Result<&Par, MalformedRecord> {
     }
 }
 
-/// The cost authority that a record carries for `authority`: the authority when it has a
-/// region, as `eval_send` stamps a datum and `consume` stamps a continuation.
-pub fn cost_authority(authority: &CostAuthority) -> Option<CostAuthority> {
+/// The authority that a record carries for `authority`, by reference: the authority when it has
+/// a region, as `eval_send` stamps a datum and `consume` stamps a continuation.
+pub fn stamped(authority: &CostAuthority) -> Option<&CostAuthority> {
     match authority.regions.is_empty() {
         true => None,
-        false => Some(authority.clone()),
+        false => Some(authority),
     }
 }
 
-/// The authorities of the records that one collection operation stages (P4 design B.7).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct OperationAuthority {
+/// The cost authority that a record carries for `authority`: a copy of [`stamped`].
+pub fn cost_authority(authority: &CostAuthority) -> Option<CostAuthority> {
+    stamped(authority).cloned()
+}
+
+/// [`cost_authority`] with its copy reserved.
+pub fn cost_authority_metered(
+    authority: &CostAuthority,
+    meter: &ScanMeter,
+) -> Result<Option<CostAuthority>, RSpaceError> {
+    stamped(authority)
+        .map(|authority| meter.copy(authority))
+        .transpose()
+}
+
+// Disabled by decision 42: the authorities were copied once for each operation, before the
+// operation needed them. The borrowed form below copies an authority only where a record or a
+// callback keeps it, and the meter reserves that copy.
+// /// The authorities of the records that one collection operation stages (P4 design B.7).
+// #[derive(Clone, Debug, Default, PartialEq)]
+// pub struct OperationAuthority {
+//     /// The cost authority of a counter continuation: the cost authority of the datum or of the
+//     /// continuation of the operation.
+//     pub continuation: Option<CostAuthority>,
+//     /// The introduction authority of the operation. Every staged operation registers it, and a
+//     /// new counter datum carries it.
+//     pub introduction: CostAuthority,
+// }
+//
+// impl OperationAuthority {
+//     /// The authorities of a produce: the cost authority of its datum and its introduction
+//     /// authority.
+//     pub fn of_produce(op: &ProduceOp) -> Self {
+//         Self {
+//             continuation: op.data.cost_authority.clone(),
+//             introduction: op.authority.clone(),
+//         }
+//     }
+//
+//     /// The authorities of a consume: its receive authority and its introduction authority.
+//     pub fn of_consume(op: &ConsumeOp) -> Self {
+//         Self {
+//             continuation: cost_authority(&op.authority),
+//             introduction: op.introduction_authority.clone(),
+//         }
+//     }
+// }
+
+/// The authorities of the records that one collection operation stages (P4 design B.7), by
+/// reference.
+#[derive(Clone, Copy)]
+pub struct OperationAuthority<'a> {
     /// The cost authority of a counter continuation: the cost authority of the datum or of the
     /// continuation of the operation.
-    pub continuation: Option<CostAuthority>,
-    /// The introduction authority of the operation. Every staged operation registers it, and a
-    /// new counter datum carries it.
-    pub introduction: CostAuthority,
+    pub continuation: Option<&'a CostAuthority>,
+    /// The introduction of the operation. Every staged operation registers it, and a new counter
+    /// datum carries its authority.
+    pub introduction: &'a Arc<Introduction>,
 }
 
-impl OperationAuthority {
-    /// The authorities of a produce: the cost authority of its datum and its introduction
-    /// authority.
-    pub fn of_produce(op: &ProduceOp) -> Self {
+impl<'a> OperationAuthority<'a> {
+    /// The authorities of a produce: the cost authority of its datum and the introduction of
+    /// the send.
+    pub fn of_produce(op: &'a ProduceOp, introduction: &'a Arc<Introduction>) -> Self {
         Self {
-            continuation: op.data.cost_authority.clone(),
-            introduction: op.authority.clone(),
+            continuation: op.data.cost_authority.as_ref(),
+            introduction,
         }
     }
 
-    /// The authorities of a consume: its receive authority and its introduction authority.
-    pub fn of_consume(op: &ConsumeOp) -> Self {
+    /// The authorities of a consume: its receive authority and the introduction of the receive.
+    pub fn of_consume(op: &'a ConsumeOp, introduction: &'a Arc<Introduction>) -> Self {
         Self {
-            continuation: cost_authority(&op.authority),
-            introduction: op.introduction_authority.clone(),
+            continuation: stamped(&op.authority),
+            introduction,
         }
     }
 }
 
-/// The `before_observe` callback of a staged operation. At commit, right before the observer
-/// sees the operation, it registers `authority` as the introduction authority of the operation
-/// identity, where the reducer's `produce` and `consume` register it (P4 design B.7). A repeated
-/// identity, a re-offer or a re-fire, registers its first authority again. Another authority
-/// fails the commit at that operation.
-pub fn register_introduction(budget: &RuntimeBudget, authority: &CostAuthority) -> BeforeObserve {
-    let budget = budget.clone();
-    let authority = authority.clone();
-    Box::new(move |source: RSpaceOperationSource<'_>| {
+// Disabled by decision 42: each staged operation copied the budget handle and the authority.
+// One `Introduction` per operation now holds them, and each callback copies one shared pointer
+// (`register_introduction` below).
+// /// The `before_observe` callback of a staged operation. At commit, right before the observer
+// /// sees the operation, it registers `authority` as the introduction authority of the operation
+// /// identity, where the reducer's `produce` and `consume` register it (P4 design B.7). A repeated
+// /// identity, a re-offer or a re-fire, registers its first authority again. Another authority
+// /// fails the commit at that operation.
+// pub fn register_introduction(budget: &RuntimeBudget, authority: &CostAuthority) -> BeforeObserve {
+//     let budget = budget.clone();
+//     let authority = authority.clone();
+//     Box::new(move |source: RSpaceOperationSource<'_>| {
+//         let (identity, kind) = match source {
+//             RSpaceOperationSource::Produce(produce) => (
+//                 produce_introduction_identity(produce),
+//                 AuthorityByteEventKind::ProduceIntroduction,
+//             ),
+//             RSpaceOperationSource::Consume(consume) => (
+//                 consume_introduction_identity(consume),
+//                 AuthorityByteEventKind::ConsumeIntroduction,
+//             ),
+//         };
+//         budget
+//             .register_introduction_authority(identity, kind, &authority)
+//             .map_err(RSpaceError::from)
+//     })
+// }
+
+// ── Metered forms (decision 42) ───────────────────────────────────────────────────────────
+
+/// The bytes of the spine of a continuation envelope: the `Par`, its `Expr`, the `EList` and the
+/// four element `Par`s. A metered decode reserves the spine and reads the three small slots. It
+/// does not read the body: the decoder reads only the `connective_used` flag of the body, which
+/// the spine covers, and DR-88 charges no part that the decoder does not read.
+const CONTINUATION_SPINE_BYTES: usize =
+    size_of::<Par>() + size_of::<Expr>() + size_of::<EList>() + 4 * size_of::<Par>();
+
+/// The slots that [`into_continuation`] moves out of a fired continuation: the body, the random
+/// state, the guard and the cost authority. Each move is one operation that reads its slot
+/// (DR-91).
+const CONTINUATION_MOVED_SLOTS: [usize; 4] = [
+    size_of::<Par>(),
+    size_of::<Vec<u8>>(),
+    size_of::<Option<Par>>(),
+    size_of::<Option<CostAuthority>>(),
+];
+
+/// The machine words of a `RuntimeBudget` handle. Every field of the handle but one is a
+/// shared pointer, so a copy of the handle copies at most this many shared pointers.
+const RUNTIME_BUDGET_WORDS: usize = size_of::<RuntimeBudget>() / size_of::<usize>();
+
+// The templates of the envelopes that an agent builds. Every envelope of a kind has the shape of
+// its template: the order and the value are inline integers, and every bit set of a template
+// element is empty. So a reserved copy of the template reserves the allocations of a new
+// envelope, before the builder makes them.
+
+/// The template of a datum envelope.
+static DATUM_ENVELOPE: LazyLock<Par> = LazyLock::new(|| datum_envelope(0));
+
+/// The template of a continuation envelope around an empty body: the spine, the tag, the order
+/// and the policy slot.
+static CONTINUATION_ENVELOPE: LazyLock<Par> =
+    LazyLock::new(|| continuation_envelope(0, Par::default()));
+
+/// The template of the pars of a counter record.
+static COUNTER_PARS: LazyLock<Vec<Par>> = LazyLock::new(|| counter_pars(0));
+
+/// The template of the envelope of a config record.
+static CONFIG_ENVELOPE: LazyLock<Par> = LazyLock::new(config_envelope);
+
+/// [`wrap_datum`] with its copies reserved: the envelope, the buffer of the envelope and the
+/// payload, each payload par, the random state, the cost authority and the cost stack of
+/// `datum`.
+pub fn wrap_datum_metered(
+    ord: i64,
+    datum: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<ListParWithRandom, RSpaceError> {
+    let length = datum
+        .pars
+        .len()
+        .checked_add(1)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve_copy(&*DATUM_ENVELOPE)?;
+    meter.reserve_buffer::<Par>(length)?;
+    for par in &datum.pars {
+        meter.reserve_copy(par)?;
+    }
+    meter.reserve_copy(&datum.random_state)?;
+    meter.reserve_copy(&datum.cost_authority)?;
+    meter.reserve_copy(&datum.cost_stack)?;
+    Ok(wrap_datum(ord, datum))
+}
+
+/// [`datum_ord`] with its read reserved: the envelope, which is small for every record that an
+/// agent wrote (DR-76: inspect before an unmetered walk).
+pub fn datum_ord_metered(record: &ListParWithRandom, meter: &ScanMeter) -> Result<i64, SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+    }
+    Ok(datum_ord(record)?)
+}
+
+/// [`unwrap_datum`] with its reads and copies reserved: the envelope, the payload, the random
+/// state, the cost authority and the cost stack.
+pub fn unwrap_datum_metered(
+    record: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<DatumRecord, SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+    }
+    if let Some(payload) = record.pars.get(1..) {
+        meter.reserve_copy_slice(payload)?;
+    }
+    meter.reserve_copy(&record.random_state)?;
+    meter.reserve_copy(&record.cost_authority)?;
+    meter.reserve_copy(&record.cost_stack)?;
+    Ok(unwrap_datum(record)?)
+}
+
+/// The parked continuation of a receive with the order `ord`, built from its parts with one
+/// copy of each part: the body inside the envelope, the random state, the guard and the cost
+/// authority. It equals [`wrap_continuation`] of the continuation with these parts.
+///
+/// The reservations are the envelope, the body, the work of `list_par` on the bit set of the
+/// body (its copy into the fold, the union and the copy into the list), the random state, the
+/// guard and the cost authority.
+pub fn wrap_continuation_metered(
+    ord: i64,
+    body: &ParWithRandom,
+    guard: &Option<Par>,
+    cost_authority: Option<&CostAuthority>,
+    meter: &ScanMeter,
+) -> Result<TaggedContinuation, SpaceError> {
+    let Some(original) = &body.body else {
+        return Err(MalformedRecord(RecordKind::Continuation).into());
+    };
+    meter.reserve_copy(&*CONTINUATION_ENVELOPE)?;
+    meter.reserve_copy(original)?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_buffer::<u8>(original.locally_free.len())?;
+    meter.reserve_copy(&original.locally_free)?;
+    meter.reserve_copy(&body.random_state)?;
+    meter.reserve_copy(guard)?;
+    let cost_authority = cost_authority
+        .map(|authority| meter.copy(authority))
+        .transpose()?;
+    Ok(TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(continuation_envelope(ord, original.clone())),
+            random_state: body.random_state.clone(),
+        })),
+        guard: guard.clone(),
+        cost_authority,
+    })
+}
+
+/// Reserves the decode of the envelope of `continuation`: its spine and its tag, order and
+/// policy slots, never its body.
+fn reserve_continuation_envelope(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<(), SpaceError> {
+    meter.charge(4, CONTINUATION_SPINE_BYTES, 0)?;
+    let slots = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => match sole_expr(body) {
+            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.get(..3),
+            _ => None,
+        },
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => None,
+    };
+    for slot in slots.unwrap_or_default() {
+        meter.inspect(slot)?;
+    }
+    Ok(())
+}
+
+/// [`continuation_ord`] with its read reserved: the spine and the small slots of the envelope.
+pub fn continuation_ord_metered(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<i64, SpaceError> {
+    reserve_continuation_envelope(continuation, meter)?;
+    Ok(continuation_ord(continuation)?)
+}
+
+/// Reserves the later [`into_continuation`] of a fired continuation at the time its fire is
+/// staged: the decode of its envelope and the moves of its four slots. The outcome of the
+/// operation decodes the receipt after the commit, so the agent pays for that work before the
+/// commit, and a host-work rejection never follows a commit.
+pub fn prepay_continuation_unwrap(
+    continuation: &TaggedContinuation,
+    meter: &ScanMeter,
+) -> Result<(), SpaceError> {
+    reserve_continuation_envelope(continuation, meter)?;
+    for slot in CONTINUATION_MOVED_SLOTS {
+        meter.moved(slot)?;
+    }
+    Ok(())
+}
+
+/// Decodes an owned parked continuation (the inverse of [`wrap_continuation`]). It moves the
+/// original body, the random state, the guard and the cost authority out of the record, so it
+/// copies nothing. [`prepay_continuation_unwrap`] reserves its work.
+pub fn into_continuation(
+    continuation: TaggedContinuation,
+) -> Result<ContinuationRecord, MalformedRecord> {
+    let malformed = MalformedRecord(RecordKind::Continuation);
+    let ord = continuation_ord(&continuation)?;
+    let TaggedContinuation {
+        tagged_cont,
+        guard,
+        cost_authority,
+    } = continuation;
+    let ParWithRandom { body, random_state } = match tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body,
+        Some(TaggedCont::ScalaBodyRef(_)) | None => return Err(malformed),
+    };
+    let original = body
+        .and_then(|mut envelope| match envelope.exprs.pop() {
+            Some(Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList { mut ps, .. })),
+            }) => ps.pop(),
+            _ => None,
+        })
+        .ok_or(malformed)?;
+    Ok(ContinuationRecord {
+        ord,
+        continuation: TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(original),
+                random_state,
+            })),
+            guard,
+            cost_authority,
+        },
+    })
+}
+
+/// [`counter_record`] with its copies reserved: the pars and the bytes of the random state. The
+/// caller reserves the copy of `cost_authority`.
+pub fn counter_record_metered(
+    value: i64,
+    random: &Blake2b512Random,
+    cost_authority: Option<CostAuthority>,
+    meter: &ScanMeter,
+) -> Result<ListParWithRandom, RSpaceError> {
+    meter.reserve_copy(&*COUNTER_PARS)?;
+    meter.random_bytes(random)?;
+    Ok(counter_record(value, random, cost_authority))
+}
+
+/// [`counter_value`] with its read reserved: the envelope and the value.
+pub fn counter_value_metered(
+    record: &ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<i64, SpaceError> {
+    meter.inspect(&record.pars)?;
+    Ok(counter_value(record)?)
+}
+
+/// [`config_record`] with its copies reserved: the envelope, the buffer of the two pars and the
+/// bytes of the random state. The config map moves into the record.
+pub fn config_record_metered(
+    config: Par,
+    random: &Blake2b512Random,
+    meter: &ScanMeter,
+) -> Result<ListParWithRandom, RSpaceError> {
+    meter.reserve_copy(&*CONFIG_ENVELOPE)?;
+    meter.reserve_buffer::<Par>(2)?;
+    meter.random_bytes(random)?;
+    Ok(config_record(config, random))
+}
+
+/// [`config_map`] with its read reserved: the envelope. The caller reserves its reads of the
+/// map.
+pub fn config_map_metered<'a>(
+    record: &'a ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<&'a Par, SpaceError> {
+    if let Some(envelope) = record.pars.first() {
+        meter.inspect(envelope)?;
+    }
+    Ok(config_map(record)?)
+}
+
+/// The introduction authority of one operation and the phlo budget of its deploy. The staged
+/// operations of the operation share it, so each callback copies one shared pointer instead of
+/// the budget and the authority.
+pub struct Introduction {
+    budget: RuntimeBudget,
+    authority: CostAuthority,
+}
+
+impl Introduction {
+    /// The introduction of `authority` on `budget`, with its copies reserved: the shared
+    /// pointers of the budget handle, the authority and the shared allocation.
+    pub fn new(
+        budget: &RuntimeBudget,
+        authority: &CostAuthority,
+        meter: &ScanMeter,
+    ) -> Result<Arc<Introduction>, RSpaceError> {
+        meter.shared(RUNTIME_BUDGET_WORDS)?;
+        meter.reserve_copy(authority)?;
+        let allocation = shared::rust::clone_backing::arc_allocation_bytes::<Introduction>()
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.charge(1, 0, allocation)?;
+        Ok(Arc::new(Introduction {
+            budget: budget.clone(),
+            authority: authority.clone(),
+        }))
+    }
+
+    /// The introduction authority.
+    pub fn authority(&self) -> &CostAuthority { &self.authority }
+}
+
+/// The `before_observe` callback of a staged operation of the operation of `introduction`.
+/// At commit, right before the observer sees the staged operation, it registers the
+/// introduction authority under the identity of the staged operation, where the reducer's
+/// `produce` and `consume` register it (P4 design B.7). A repeated identity, a re-offer or a
+/// re-fire, registers its first authority again. Another authority fails the commit at that
+/// operation. The callback copies one shared pointer, which the meter reserves.
+pub fn register_introduction(
+    introduction: &Arc<Introduction>,
+    meter: &ScanMeter,
+) -> Result<BeforeObserve, RSpaceError> {
+    meter.shared(1)?;
+    let introduction = Arc::clone(introduction);
+    Ok(Box::new(move |source: RSpaceOperationSource<'_>| {
         let (identity, kind) = match source {
             RSpaceOperationSource::Produce(produce) => (
                 produce_introduction_identity(produce),
@@ -476,10 +868,11 @@ pub fn register_introduction(budget: &RuntimeBudget, authority: &CostAuthority) 
                 AuthorityByteEventKind::ConsumeIntroduction,
             ),
         };
-        budget
-            .register_introduction_authority(identity, kind, &authority)
+        introduction
+            .budget
+            .register_introduction_authority(identity, kind, &introduction.authority)
             .map_err(RSpaceError::from)
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -889,10 +1282,19 @@ mod tests {
         }
     }
 
+    /// The introduction of `authority` on a fresh budget, without a meter.
+    fn introduction_of(authority: &CostAuthority) -> Arc<Introduction> {
+        let budget = RuntimeBudget::new(Cost::create(1_000, "record test"));
+        Introduction::new(&budget, authority, &ScanMeter::new(None))
+            .expect("an unmetered introduction")
+    }
+
     #[test]
     fn space_record_operation_authorities_follow_b7() {
         assert_eq!(cost_authority(&CostAuthority::default()), None);
         assert_eq!(cost_authority(&region(2)), Some(region(2)));
+        assert_eq!(stamped(&CostAuthority::default()), None);
+        assert_eq!(stamped(&region(2)), Some(&region(2)));
         let produce = ProduceOp {
             space: space(),
             key: CollectionKey::from_bytes(vec![1]).expect("a key"),
@@ -901,13 +1303,10 @@ mod tests {
             persistent: false,
             authority: region(5),
         };
-        assert_eq!(
-            OperationAuthority::of_produce(&produce),
-            OperationAuthority {
-                continuation: Some(region(4)),
-                introduction: region(5),
-            }
-        );
+        let sent = introduction_of(&produce.authority);
+        let authority = OperationAuthority::of_produce(&produce, &sent);
+        assert_eq!(authority.continuation, Some(&region(4)));
+        assert_eq!(authority.introduction.authority(), &region(5));
         let consume = ConsumeOp {
             space: space(),
             key: CollectionKey::from_bytes(vec![1]).expect("a key"),
@@ -920,18 +1319,26 @@ mod tests {
             authority: region(6),
             introduction_authority: region(8),
         };
-        assert_eq!(
-            OperationAuthority::of_consume(&consume),
-            OperationAuthority {
-                continuation: Some(region(6)),
-                introduction: region(8),
-            }
-        );
+        let received = introduction_of(&consume.introduction_authority);
+        let authority = OperationAuthority::of_consume(&consume, &received);
+        assert_eq!(authority.continuation, Some(&region(6)));
+        assert_eq!(authority.introduction.authority(), &region(8));
         let unsigned = ConsumeOp {
             authority: CostAuthority::default(),
             ..consume
         };
-        assert_eq!(OperationAuthority::of_consume(&unsigned).continuation, None);
+        assert_eq!(
+            OperationAuthority::of_consume(&unsigned, &received).continuation,
+            None
+        );
+    }
+
+    /// The `before_observe` callback of an operation with the authority `authority`.
+    fn callback(budget: &RuntimeBudget, authority: &CostAuthority) -> BeforeObserve {
+        let meter = ScanMeter::new(None);
+        let introduction =
+            Introduction::new(budget, authority, &meter).expect("an unmetered introduction");
+        register_introduction(&introduction, &meter).expect("an unmetered callback")
     }
 
     #[test]
@@ -944,11 +1351,11 @@ mod tests {
             &parked(int(3)),
             false,
         );
-        let unscoped = register_introduction(&budget, &region(1));
+        let unscoped = callback(&budget, &region(1));
         assert_eq!(unscoped(RSpaceOperationSource::Produce(&produce)), Ok(()));
 
         let _scope = budget.enter_comm_accounting_scope();
-        let first = register_introduction(&budget, &region(1));
+        let first = callback(&budget, &region(1));
         assert_eq!(first(RSpaceOperationSource::Produce(&produce)), Ok(()));
         let produce_identity = produce_introduction_identity(&produce);
         assert_eq!(
@@ -958,9 +1365,9 @@ mod tests {
             ),
             Ok(region(1))
         );
-        let repeated = register_introduction(&budget, &region(1));
+        let repeated = callback(&budget, &region(1));
         assert_eq!(repeated(RSpaceOperationSource::Produce(&produce)), Ok(()));
-        let conflicting = register_introduction(&budget, &region(2));
+        let conflicting = callback(&budget, &region(2));
         assert!(conflicting(RSpaceOperationSource::Produce(&produce)).is_err());
         assert_eq!(
             budget.introduction_authority(
@@ -970,7 +1377,7 @@ mod tests {
             Ok(region(1))
         );
 
-        let consumer = register_introduction(&budget, &region(9));
+        let consumer = callback(&budget, &region(9));
         assert_eq!(consumer(RSpaceOperationSource::Consume(&consume)), Ok(()));
         assert_eq!(
             budget.introduction_authority(

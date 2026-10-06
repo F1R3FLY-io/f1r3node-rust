@@ -426,9 +426,9 @@ mod tests {
             .space_env(Some(host_work.clone()))
             .expect("a host runtime has a space environment");
         assert_eq!(env.store.mode(), SpaceMode::Play);
-        env.meter.charge_call().expect("one call fits");
+        env.meter.charge(1, 0, 0).expect("one operation fits");
         assert_eq!(
-            host_work.usage(HostWorkDimension::SearchCandidates),
+            host_work.usage(HostWorkDimension::VerificationOperations),
             HostWorkUsage::new(1)
         );
         let lock = namespace::gprivate(namespace::config_channel(space()));

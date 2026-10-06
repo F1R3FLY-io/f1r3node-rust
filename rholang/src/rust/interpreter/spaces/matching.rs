@@ -1,12 +1,13 @@
-//! Metered matching for the native spaces (P4 design B.5, readiness review S5).
+//! Metered matching for the native spaces (P4 design B.5, readiness review S5, decision 42).
 //!
 //! A space matches with the injected matcher of its host (`SpaceStoreHandle::matcher`): the
-//! same `Match` implementation that host play and replay use, never a hard-wired one. It calls
-//! only the metered methods `get_metered` and `check_commit_metered`. Before each call it
-//! charges one `SearchCandidates` unit (`ScanMeter::charge_call`), and the call charges the
-//! bytes that it scans (`SearchStateBytes`). A host-work rejection aborts the operation with
-//! `HostWorkRejected`. Matching is synchronous, so a space job never awaits between `begin`
-//! and `commit`.
+//! same `Match` implementation that host play and replay use, never a hard-wired one. With a
+//! host-work budget it calls the metered methods `get_metered` and `check_commit_metered`, which
+//! reserve every read that they make on the meter of the job (DR-88 of
+//! `feature/cost-accounted-rho`). The caller adds no charge for a call, and it inspects nothing
+//! before the call. Without a budget it calls `get` and `check_commit`, as the host does, and
+//! the results are equal. A host-work rejection aborts the operation with `HostWorkRejected`.
+//! Matching is synchronous, so a space job never awaits between `begin` and `commit`.
 //!
 //! A datum is matched without its envelope (`record::unwrap_datum`), with its random state,
 //! its cost authority and its cost stack. The rholang matcher refuses a datum with a cost stack,
@@ -39,6 +40,15 @@ impl<'a> SpaceMatcher<'a> {
         }
     }
 
+    /// [`SpaceMatcher::new`] with the copy of the shared matcher handle reserved.
+    pub fn metered(env: &'a SpaceEnv) -> Result<Self, SpaceError> {
+        env.meter.shared(1)?;
+        Ok(Self::new(env))
+    }
+
+    /// The host-work meter of the job.
+    pub fn meter(&self) -> &'a ScanMeter { self.meter }
+
     /// The spatial match of `pattern` against `data`: the bound values in binder order with the
     /// random state and the cost authority of `data`, or `None`.
     pub fn bind(
@@ -46,21 +56,28 @@ impl<'a> SpaceMatcher<'a> {
         pattern: &BindPattern,
         data: &ListParWithRandom,
     ) -> Result<Option<ListParWithRandom>, SpaceError> {
-        self.meter.charge_call()?;
-        Ok(self.matcher.get_metered(pattern, data, self.meter)?)
+        match self.meter.is_metered() {
+            true => Ok(self.matcher.get_metered(pattern, data, self.meter)?),
+            false => Ok(self.matcher.get(pattern, data)),
+        }
     }
 
-    /// The `where` guard of `continuation` over the bound values `matched`, which the matcher
-    /// reads by reference. A continuation without a guard admits every match.
+    /// The `where` guard of `continuation` over the bound values `matched` of its one bind. A
+    /// continuation without a guard admits every match. The matcher reads `matched` by
+    /// reference, so neither path copies it.
     pub fn admits(
         &self,
         continuation: &TaggedContinuation,
-        matched: &[&ListParWithRandom],
+        matched: &ListParWithRandom,
     ) -> Result<bool, SpaceError> {
-        self.meter.charge_call()?;
-        Ok(self
-            .matcher
-            .check_commit_metered(continuation, matched, self.meter)?)
+        match self.meter.is_metered() {
+            true => Ok(self
+                .matcher
+                .check_commit_metered(continuation, &[matched], self.meter)?),
+            false => Ok(self
+                .matcher
+                .check_commit(continuation, std::slice::from_ref(matched))),
+        }
     }
 
     /// The match of one bind: the spatial match of `pattern` against `data`, then the guard of
@@ -74,7 +91,7 @@ impl<'a> SpaceMatcher<'a> {
         let Some(matched) = self.bind(pattern, data)? else {
             return Ok(None);
         };
-        match self.admits(continuation, &[&matched])? {
+        match self.admits(continuation, &matched)? {
             true => Ok(Some(matched)),
             false => Ok(None),
         }
@@ -83,13 +100,16 @@ impl<'a> SpaceMatcher<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use models::rhoapi::tagged_continuation::TaggedCont;
     use models::rhoapi::{Par, ParWithRandom};
     use models::rust::host_work::{
         HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
     };
-    use models::rust::utils::{new_freevar_par, new_gbool_par, new_gint_par};
+    use models::rust::utils::{new_freevar_par, new_gbool_par, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::errors::RSpaceError;
+    use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -181,33 +201,135 @@ mod tests {
         );
     }
 
+    /// The usage of `host_work` in the dimensions that a space job charges.
+    fn charged(host_work: &HostWorkBudget) -> [u64; 3] {
+        [
+            HostWorkDimension::VerificationOperations,
+            HostWorkDimension::VerificationBytes,
+            HostWorkDimension::SearchStateBytes,
+        ]
+        .map(|dimension| host_work.usage(dimension).get())
+    }
+
+    /// A continuation without a guard whose body has `bytes` bytes.
+    fn continuation_with_body(bytes: usize) -> TaggedContinuation {
+        TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(new_gstring_par("b".repeat(bytes), Vec::new(), false)),
+                random_state: Vec::new(),
+            })),
+            guard: None,
+            cost_authority: None,
+        }
+    }
+
     #[tokio::test]
-    async fn space_matching_charges_one_search_candidate_per_metered_call() {
+    async fn space_matching_reserves_only_what_the_matcher_reads() {
         let host_work = budget(1_000_000);
         let env = env(Some(host_work.clone())).await;
         let matcher = SpaceMatcher::new(&env);
-        let candidates = || host_work.usage(HostWorkDimension::SearchCandidates);
         matcher
             .bind(&any(), &datum(5))
             .expect("the match fits the budget");
-        assert_eq!(candidates(), HostWorkUsage::new(1));
-        assert!(host_work.usage(HostWorkDimension::SearchStateBytes) > HostWorkUsage::ZERO);
-        matcher
-            .admits(&continuation(None), &[&datum(5)])
-            .expect("the guard fits the budget");
-        assert_eq!(candidates(), HostWorkUsage::new(2));
-        matcher
-            .matches(&any(), &datum(5), &continuation(None))
-            .expect("the match fits the budget");
-        assert_eq!(candidates(), HostWorkUsage::new(4));
-        matcher
-            .matches(&exactly(6), &datum(5), &continuation(None))
+        let direct = budget(1_000_000);
+        Matcher
+            .get_metered(&any(), &datum(5), &ScanMeter::new(Some(direct.clone())))
             .expect("the match fits the budget");
         assert_eq!(
-            candidates(),
-            HostWorkUsage::new(5),
-            "a spatial mismatch skips the guard"
+            charged(&host_work),
+            charged(&direct),
+            "bind adds nothing to the reads of the matcher"
         );
+        assert!(charged(&host_work).iter().all(|amount| *amount > 0));
+        assert_eq!(
+            host_work.usage(HostWorkDimension::SearchCandidates),
+            HostWorkUsage::ZERO
+        );
+        let before = charged(&host_work);
+        matcher
+            .admits(&continuation(None), &datum(5))
+            .expect("the guard fits the budget");
+        let unguarded = charged(&host_work);
+        assert_eq!(
+            [
+                unguarded[0] - before[0],
+                unguarded[1] - before[1],
+                unguarded[2] - before[2]
+            ],
+            [1, 0, 0],
+            "an unguarded check is one operation"
+        );
+        matcher
+            .admits(&continuation_with_body(4096), &datum(5))
+            .expect("the guard fits the budget");
+        let after = charged(&host_work);
+        assert_eq!(
+            [
+                after[0] - unguarded[0],
+                after[1] - unguarded[1],
+                after[2] - unguarded[2]
+            ],
+            [1, 0, 0],
+            "the guard check never reads the body"
+        );
+    }
+
+    #[test]
+    fn legacy_mapping_dropped_operations_and_backing() {
+        let full = RecordingMeter::new(false);
+        Matcher
+            .get_metered(&any(), &datum(5), &full)
+            .expect("the recording meter accepts every charge");
+        let legacy = RecordingMeter::new(true);
+        Matcher
+            .get_metered(&any(), &datum(5), &legacy)
+            .expect("the recording meter accepts every charge");
+        let [operations, scanned, backing] = full.recorded();
+        assert!(operations >= 1 && backing >= 1, "the matcher reserves both");
+        assert_eq!(
+            legacy.recorded(),
+            [0, scanned, 0],
+            "negative control: the earlier mapping kept only the scanned bytes"
+        );
+    }
+
+    /// A meter that records each reservation. With `legacy`, it keeps only the scanned bytes,
+    /// as the meter of the agents did before decision 42.
+    struct RecordingMeter {
+        recorded: [AtomicUsize; 3],
+        legacy: bool,
+    }
+
+    impl RecordingMeter {
+        fn new(legacy: bool) -> Self {
+            Self {
+                recorded: Default::default(),
+                legacy,
+            }
+        }
+
+        fn recorded(&self) -> [usize; 3] {
+            self.recorded
+                .each_ref()
+                .map(|amount| amount.load(Ordering::Relaxed))
+        }
+    }
+
+    impl SourceMeter for RecordingMeter {
+        fn reserve(
+            &self,
+            operations: usize,
+            scanned: usize,
+            backing: usize,
+        ) -> Result<(), RSpaceError> {
+            let [recorded_operations, recorded_scanned, recorded_backing] = &self.recorded;
+            recorded_scanned.fetch_add(scanned, Ordering::Relaxed);
+            if !self.legacy {
+                recorded_operations.fetch_add(operations, Ordering::Relaxed);
+                recorded_backing.fetch_add(backing, Ordering::Relaxed);
+            }
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -220,7 +342,7 @@ mod tests {
             .bind(&any(), &datum(1))
             .expect("the match fits the budget")
             .is_some());
-        assert_eq!(matcher.admits(&refusing, &[&datum(1)]), Ok(false));
+        assert_eq!(matcher.admits(&refusing, &datum(1)), Ok(false));
         assert_eq!(matcher.matches(&any(), &datum(1), &refusing), Ok(None));
         assert!(matcher
             .matches(&any(), &datum(1), &admitting)
@@ -239,7 +361,7 @@ mod tests {
         let rejected = Some(SpaceError::Host(RSpaceError::HostWorkRejected));
         assert_eq!(matcher.bind(&any(), &datum(1)).err(), rejected);
         assert_eq!(
-            matcher.admits(&continuation(None), &[&datum(1)]).err(),
+            matcher.admits(&continuation(None), &datum(1)).err(),
             rejected
         );
         assert_eq!(
@@ -257,7 +379,8 @@ mod tests {
         assert_eq!(matcher.bind(&any(), &datum(1)).err(), rejected);
     }
 
-    // A budget with room for one call but not for the scanned bytes.
+    // A budget of one unit in every dimension: room for one operation, but not for the reads of
+    // one match.
     async fn env_with_calls_only() -> SpaceEnv { env(Some(budget(1))).await }
 
     #[tokio::test]

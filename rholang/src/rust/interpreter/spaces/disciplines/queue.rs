@@ -8,13 +8,19 @@
 //! The order comes from the `ord` of the envelopes, never from the list order of the store: the
 //! hot store inserts at the front, and a restart can load a list in another order. Two entries
 //! with one `ord` order by their bincode bytes, so the head is a function of the entry set.
+//! The scan reserves each comparison of two orders, and on an equal order it encodes each entry
+//! at most once and reserves the comparison of the bytes (decision 42). Equal orders do not occur
+//! in a well-formed collection (`HeadOnlyDisciplines.v`, `wf`), but the path stays metered.
 //! The legacy queue popped the front of a `VecDeque`, and its waiter side scanned every
 //! continuation. Both are replaced.
 
 use std::cmp::Ordering;
+use std::mem::size_of;
 
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use serde::Serialize;
 
+use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Discipline, Ordered, Side};
 
@@ -29,44 +35,85 @@ impl Discipline for QueueDiscipline {
     const SEND_PARAMS: &'static [&'static str] = &[];
 
     /// The entry with the least `(ord, bincode bytes)`, on both sides.
-    fn head<T: Serialize>(
+    fn head_metered<T: Serialize>(
         &self,
         _side: Side,
         entries: &[Ordered<'_, T>],
+        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        let mut head: Option<(usize, &Ordered<'_, T>)> = None;
+        let mut head: Option<Best<'_, '_, T>> = None;
         for (index, entry) in entries.iter().enumerate() {
-            head = match head {
-                None => Some((index, entry)),
-                Some((current, best)) => match precedes(entry, best)? {
-                    true => Some((index, entry)),
-                    false => Some((current, best)),
+            head = Some(match head {
+                None => Best {
+                    index,
+                    entry,
+                    bytes: None,
                 },
-            };
+                Some(best) => best.challenge(index, entry, meter)?,
+            });
         }
-        Ok(head.map(|(index, _)| index))
+        Ok(head.map(|best| best.index))
     }
 
     /// An incoming element joins the tail, so it is the head only of an empty side.
     fn reaches_head(&self, _side: Side, queued: usize) -> bool { queued == 0 }
 }
 
-// True when `entry` comes strictly before `best`: a lesser `ord`, or an equal `ord` and lesser
-// bytes.
-fn precedes<T: Serialize>(
-    entry: &Ordered<'_, T>,
-    best: &Ordered<'_, T>,
-) -> Result<bool, SpaceError> {
-    match entry.ord.cmp(&best.ord) {
-        Ordering::Less => Ok(true),
-        Ordering::Greater => Ok(false),
-        Ordering::Equal => Ok(bytes(entry.entry)? < bytes(best.entry)?),
+// The best entry of a scan so far, with its bytes once a tie-break has encoded them.
+struct Best<'e, 'a, T> {
+    index: usize,
+    entry: &'e Ordered<'a, T>,
+    bytes: Option<Vec<u8>>,
+}
+
+impl<'e, 'a, T: Serialize> Best<'e, 'a, T> {
+    // The better of `self` and `entry`: a lesser `ord`, or an equal `ord` and lesser bytes. The
+    // comparison of the two orders is reserved first. A tie encodes `entry` and, once per scan,
+    // the best entry, and reserves the comparison of the bytes.
+    fn challenge(
+        self,
+        index: usize,
+        entry: &'e Ordered<'a, T>,
+        meter: &ScanMeter,
+    ) -> Result<Self, SpaceError> {
+        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+        match entry.ord.cmp(&self.entry.ord) {
+            Ordering::Less => Ok(Best {
+                index,
+                entry,
+                bytes: None,
+            }),
+            Ordering::Greater => Ok(self),
+            Ordering::Equal => {
+                let best_bytes = match self.bytes {
+                    Some(bytes) => bytes,
+                    None => bytes(self.entry.entry, meter)?,
+                };
+                let entry_bytes = bytes(entry.entry, meter)?;
+                meter.compare(entry_bytes.len(), best_bytes.len())?;
+                match entry_bytes < best_bytes {
+                    true => Ok(Best {
+                        index,
+                        entry,
+                        bytes: Some(entry_bytes),
+                    }),
+                    false => Ok(Best {
+                        index: self.index,
+                        entry: self.entry,
+                        bytes: Some(best_bytes),
+                    }),
+                }
+            }
+        }
     }
 }
 
-fn bytes<T: Serialize>(entry: &T) -> Result<Vec<u8>, SpaceError> {
-    bincode::serialize(entry)
-        .map_err(|_| SpaceError::Inconsistent("a collection entry is not serializable"))
+// The bincode bytes of a tie-break, encoded with the meter of the job.
+fn bytes<T: Serialize>(entry: &T, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
+    meter.encode(entry).map_err(|error| match error {
+        RSpaceError::HostWorkRejected => SpaceError::Host(RSpaceError::HostWorkRejected),
+        _ => SpaceError::Inconsistent("a collection entry is not serializable"),
+    })
 }
 
 #[cfg(test)]

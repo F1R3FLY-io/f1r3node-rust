@@ -312,6 +312,9 @@ In replay, the observer can also return a directive, which asks RSpace to run th
 
 Host work is node work that protects liveness, such as matching work.
 The repository glossary defines the [host-work unit](../../Glossary.md#host-work-unit) and the [host-work budget](../../Glossary.md#host-work-budget).
+A space job reserves its host work before it does the work ([decision 42](decision-register.md#decision-42)).
+A reservation has three amounts: operations, scanned bytes, and allocated bytes.
+They charge the dimensions VerificationOperations, VerificationBytes, and SearchStateBytes, as on `feature/cost-accounted-rho`.
 
 ### Frontend
 

@@ -42,6 +42,7 @@ use serde::Serialize;
 
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::hashing::stable_hash_provider::hash_from_hashes;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::hot_store::HotStore;
@@ -281,6 +282,17 @@ pub struct SweepReport {
     pub data: usize,
     pub continuations: usize,
     pub joins: usize,
+}
+
+/// The bincode bytes of `value`, encoded by the metered writer of the host
+/// (`native_source::encode`): each write and each growth of the buffer is
+/// reserved on `meter` before it happens. Space agents meter their encodes
+/// with the rule of the host (decision 42).
+pub fn metered_encode<T: Serialize + ?Sized>(
+    value: &T,
+    meter: &impl SourceMeter,
+) -> Result<Vec<u8>, RSpaceError> {
+    native_source::encode(value, meter)
 }
 
 /// Candidate that binds the stored record `stored` (at `view_index` in the

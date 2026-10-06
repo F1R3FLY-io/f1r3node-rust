@@ -24,8 +24,16 @@
 //!
 //! A collection with two counter records, a persistent counter record, or a missing space
 //! counter is `Inconsistent`. A counter at `i64::MAX` fails with `CounterOverflow`.
+//!
+//! The bump reserves its reads and copies on the meter of the job before it makes them
+//! (decision 42): it copies only the counter record that it consumes, and it moves that copy
+//! into the fire. The pattern and the continuation are built from templates, whose reserved
+//! copies cover their allocations. As in the reducer of `feature/cost-accounted-rho`, a split of
+//! a random state is not charged (`util::evaluation_random`), and its encode is
+//! (`ScanMeter::random_bytes`).
 
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -33,9 +41,9 @@ use models::rhoapi::{
     BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
 use models::rust::utils::{new_freevar_par, new_gint_par};
-use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
 use rspace_plus_plus::rspace::space_store_handle::{
-    bind_candidate, ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceProduce,
+    ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceProduce,
 };
 
 use super::agent::ParSpaceTxn;
@@ -43,7 +51,6 @@ use super::errors::SpaceError;
 use super::matching::SpaceMatcher;
 use super::namespace::RandomPurpose;
 use super::record::{self, OperationAuthority};
-use crate::rust::interpreter::accounting::RuntimeBudget;
 
 /// The pattern that consumes a counter record: two free variables, one for each par.
 pub fn counter_pattern() -> BindPattern {
@@ -63,15 +70,33 @@ pub fn counter_continuation(
     random: &Blake2b512Random,
     cost_authority: Option<CostAuthority>,
 ) -> TaggedContinuation {
+    continuation_with(value, random.to_bytes(), cost_authority)
+}
+
+/// The counter continuation with the value `value`, the random state bytes `random_state` and
+/// the cost authority `cost_authority`.
+fn continuation_with(
+    value: i64,
+    random_state: Vec<u8>,
+    cost_authority: Option<CostAuthority>,
+) -> TaggedContinuation {
     TaggedContinuation {
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(new_gint_par(value, Vec::new(), false)),
-            random_state: random.to_bytes(),
+            random_state,
         })),
         guard: None,
         cost_authority,
     }
 }
+
+/// The template of the counter pattern.
+static COUNTER_PATTERN: LazyLock<BindPattern> = LazyLock::new(counter_pattern);
+
+/// The template of a counter continuation: its body, without random state bytes and without a
+/// cost authority. The value is an inline integer, so every counter continuation has its shape.
+static COUNTER_CONTINUATION: LazyLock<TaggedContinuation> =
+    LazyLock::new(|| continuation_with(0, Vec::new(), None));
 
 /// An operation that a bump stages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +107,13 @@ pub enum CounterOp {
     Put,
 }
 
+/// The operations of the first bump of a collection: the take and the put of the space
+/// counter, and the put of the new collection counter.
+const OPEN: [CounterOp; 3] = [CounterOp::Take, CounterOp::Put, CounterOp::Put];
+
+/// The operations of every later bump: the take and the put of the collection counter.
+const STEP: [CounterOp; 2] = [CounterOp::Take, CounterOp::Put];
+
 /// The bump of one collection operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bump {
@@ -89,7 +121,7 @@ pub struct Bump {
     /// the first operation on the collection.
     pub ord: i64,
     /// The operations that the bump staged, in staging order.
-    pub staged: Vec<CounterOp>,
+    pub staged: &'static [CounterOp],
 }
 
 /// The counter channels of one collection.
@@ -103,14 +135,27 @@ pub struct CounterChannels<'a> {
 
 /// What the staging of a bump needs from its operation.
 pub struct BumpContext<'a> {
-    /// The matcher of the job.
+    /// The matcher of the job, with its meter.
     pub matcher: &'a SpaceMatcher<'a>,
     /// The random state of the operation.
     pub random: &'a Blake2b512Random,
     /// The authorities of the operation (P4 design B.7).
-    pub authority: &'a OperationAuthority,
-    /// The phlo budget of the deploy.
-    pub budget: &'a RuntimeBudget,
+    pub authority: OperationAuthority<'a>,
+}
+
+/// The only counter record of `channel` in the staged view, copied, or `None`. Two records are
+/// `Inconsistent` with the message `two`.
+fn only_record(
+    txn: &mut ParSpaceTxn,
+    channel: &Par,
+    context: &BumpContext<'_>,
+    two: &'static str,
+) -> Result<Option<Datum<ListParWithRandom>>, SpaceError> {
+    match txn.data(channel)? {
+        [] => Ok(None),
+        [stored] => Ok(Some(context.matcher.meter().copy(stored)?)),
+        _ => Err(SpaceError::Inconsistent(two)),
+    }
 }
 
 /// Stages the counter bump of one collection operation in `txn` and returns the order of the
@@ -120,16 +165,23 @@ pub fn bump(
     channels: CounterChannels<'_>,
     context: &BumpContext<'_>,
 ) -> Result<Bump, SpaceError> {
-    let collection = txn.data(channels.collection)?.to_vec();
-    match collection.as_slice() {
-        [] => {
-            let space = txn.data(channels.space)?.to_vec();
-            let stored = match space.as_slice() {
-                [stored] => stored,
-                [] => return Err(SpaceError::Inconsistent("a space has no space counter")),
-                _ => return Err(SpaceError::Inconsistent("a space has two space counters")),
-            };
-            let value = record::counter_value(&stored.a)?;
+    let meter = context.matcher.meter();
+    let collection = only_record(
+        txn,
+        channels.collection,
+        context,
+        "a collection has two counter records",
+    )?;
+    match collection {
+        None => {
+            let stored = only_record(
+                txn,
+                channels.space,
+                context,
+                "a space has two space counters",
+            )?
+            .ok_or(SpaceError::Inconsistent("a space has no space counter"))?;
+            let value = record::counter_value_metered(&stored.a, meter)?;
             let next = value.checked_add(1).ok_or(SpaceError::CounterOverflow)?;
             take(
                 txn,
@@ -149,11 +201,11 @@ pub fn bump(
             put(txn, channels.collection, 1, RandomPurpose::Counter, context)?;
             Ok(Bump {
                 ord: 0,
-                staged: vec![CounterOp::Take, CounterOp::Put, CounterOp::Put],
+                staged: &OPEN,
             })
         }
-        [stored] => {
-            let value = record::counter_value(&stored.a)?;
+        Some(stored) => {
+            let value = record::counter_value_metered(&stored.a, meter)?;
             let next = value.checked_add(1).ok_or(SpaceError::CounterOverflow)?;
             take(
                 txn,
@@ -172,20 +224,18 @@ pub fn bump(
             )?;
             Ok(Bump {
                 ord: value,
-                staged: vec![CounterOp::Take, CounterOp::Put],
+                staged: &STEP,
             })
         }
-        _ => Err(SpaceError::Inconsistent(
-            "a collection has two counter records",
-        )),
     }
 }
 
-// Consumes the only counter record of `channel`, at index 0 of its staged list.
+// Consumes the only counter record of `channel`, at index 0 of its staged list. The record is
+// the bump's own copy, so it moves into the fire.
 fn take(
     txn: &mut ParSpaceTxn,
     channel: &Par,
-    stored: &Datum<ListParWithRandom>,
+    stored: Datum<ListParWithRandom>,
     value: i64,
     purpose: RandomPurpose,
     context: &BumpContext<'_>,
@@ -193,31 +243,50 @@ fn take(
     if stored.persist {
         return Err(SpaceError::Inconsistent("a counter record is persistent"));
     }
-    let pattern = counter_pattern();
-    let matched = context
-        .matcher
-        .bind(&pattern, &stored.a)?
-        .ok_or(SpaceError::Inconsistent(
-            "a counter record does not match the counter pattern",
-        ))?;
-    let continuation = counter_continuation(
-        value,
-        &purpose.derive(context.random).split_byte(0),
-        context.authority.continuation.clone(),
-    );
+    let meter = context.matcher.meter();
+    let matched =
+        context
+            .matcher
+            .bind(&COUNTER_PATTERN, &stored.a)?
+            .ok_or(SpaceError::Inconsistent(
+                "a counter record does not match the counter pattern",
+            ))?;
+    let random = purpose.derive(context.random).split_byte(0);
+    meter.reserve_copy(&*COUNTER_CONTINUATION)?;
+    meter.random_bytes(&random)?;
+    let cost_authority = context
+        .authority
+        .continuation
+        .map(|authority| meter.copy(authority))
+        .transpose()?;
+    let continuation = counter_continuation(value, &random, cost_authority);
+    let mut channels = meter.buffer::<Par>(1)?;
+    channels.push(meter.copy(channel)?);
+    let mut patterns = meter.buffer::<BindPattern>(1)?;
+    patterns.push(meter.copy(&*COUNTER_PATTERN)?);
+    let mut data = meter.buffer::<ConsumeCandidate<Par, ListParWithRandom>>(1)?;
+    let Datum { a, persist, source } = stored;
+    data.push(ConsumeCandidate {
+        channel: meter.copy(channel)?,
+        datum: Datum {
+            a: matched,
+            persist,
+            source,
+        },
+        removed_datum: a,
+        datum_index: 0,
+    });
     txn.consume(SpaceConsume {
-        channels: vec![channel.clone()],
-        patterns: vec![pattern],
+        channels,
+        patterns,
         continuation,
         persist: false,
         peeks: BTreeSet::new(),
-        outcome: ConsumeOutcome::Fire {
-            data: vec![bind_candidate(channel.clone(), stored, matched, 0)],
-        },
+        outcome: ConsumeOutcome::Fire { data },
         before_observe: Some(record::register_introduction(
-            context.budget,
-            &context.authority.introduction,
-        )),
+            context.authority.introduction,
+            meter,
+        )?),
     })?;
     Ok(())
 }
@@ -230,19 +299,20 @@ fn put(
     purpose: RandomPurpose,
     context: &BumpContext<'_>,
 ) -> Result<(), SpaceError> {
+    let meter = context.matcher.meter();
+    let introduction = context.authority.introduction;
+    let cost_authority = record::cost_authority_metered(introduction.authority(), meter)?;
     txn.produce(SpaceProduce {
-        channel: channel.clone(),
-        data: record::counter_record(
+        channel: meter.copy(channel)?,
+        data: record::counter_record_metered(
             value,
             &purpose.derive(context.random).split_byte(1),
-            record::cost_authority(&context.authority.introduction),
-        ),
+            cost_authority,
+            meter,
+        )?,
         persist: false,
         outcome: ProduceOutcome::Store,
-        before_observe: Some(record::register_introduction(
-            context.budget,
-            &context.authority.introduction,
-        )),
+        before_observe: Some(record::register_introduction(introduction, meter)?),
     })?;
     Ok(())
 }
@@ -268,6 +338,7 @@ mod tests {
 
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
+    use crate::rust::interpreter::accounting::RuntimeBudget;
     use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reified::costs::ScanMeter;
@@ -275,6 +346,7 @@ mod tests {
     use crate::rust::interpreter::spaces::namespace::{
         self, CollectionKey, Durability, NativeSpace, SID_LEN,
     };
+    use crate::rust::interpreter::spaces::record::Introduction;
 
     type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
@@ -298,13 +370,6 @@ mod tests {
                     value: Some(CostSignatureValue::Ground(vec![byte])),
                 }),
             }],
-        }
-    }
-
-    fn authority() -> OperationAuthority {
-        OperationAuthority {
-            continuation: Some(region(1)),
-            introduction: region(2),
         }
     }
 
@@ -355,7 +420,8 @@ mod tests {
             .begin(&[space_counter(), collection_counter()])
             .await?;
         let matcher = SpaceMatcher::new(env);
-        let authority = authority();
+        let continuation = region(1);
+        let introduction = Introduction::new(&env.budget, &region(2), &env.meter)?;
         let random = random();
         let bump = bump(
             &mut txn,
@@ -366,8 +432,10 @@ mod tests {
             &BumpContext {
                 matcher: &matcher,
                 random: &random,
-                authority: &authority,
-                budget: &env.budget,
+                authority: OperationAuthority {
+                    continuation: Some(&continuation),
+                    introduction: &introduction,
+                },
             },
         )?;
         Ok((bump, txn))
@@ -417,7 +485,7 @@ mod tests {
         let (bump, mut txn) = run_bump(&env).await.expect("the bump stages");
         assert_eq!(bump, Bump {
             ord: 0,
-            staged: vec![CounterOp::Take, CounterOp::Put, CounterOp::Put],
+            staged: &[CounterOp::Take, CounterOp::Put, CounterOp::Put],
         });
         let receipt = txn.commit().await.expect("the bump commits");
         assert!(matches!(receipt.ops.as_slice(), [
@@ -484,7 +552,7 @@ mod tests {
         let (bump, mut txn) = run_bump(&env).await.expect("the bump stages");
         assert_eq!(bump, Bump {
             ord: 3,
-            staged: vec![CounterOp::Take, CounterOp::Put],
+            staged: &[CounterOp::Take, CounterOp::Put],
         });
         txn.commit().await.expect("the bump commits");
         assert_eq!(values(&space, &collection_counter()).await, vec![4]);
@@ -599,28 +667,87 @@ mod tests {
         space.get_data(channel).await.len()
     }
 
-    #[tokio::test]
-    async fn space_counter_bump_matches_with_the_metered_matcher() {
+    /// The dimensions that a space job charges (decision 42).
+    const CHARGED: [HostWorkDimension; 3] = [
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+        HostWorkDimension::SearchStateBytes,
+    ];
+
+    /// A host-work budget with the limit `limit` in every dimension.
+    fn uniform(limit: u64) -> HostWorkBudget {
+        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)))
+    }
+
+    /// Stages and commits one first bump with the meter `meter`, and returns the bump result.
+    async fn bump_with(meter: ScanMeter) -> (ParRSpace, Result<Bump, SpaceError>) {
         let (space, mut env) = host().await;
-        // One match of a counter record scans about 1.2 million state bytes in the matcher's
-        // backing model, so the budget covers a few matches.
-        let host_work =
-            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
-        env.meter = ScanMeter::new(Some(host_work.clone()));
+        env.meter = meter;
         store(&env, &space_counter(), vec![(counter(0, 0), false)]).await;
-        let (_, mut txn) = run_bump(&env).await.expect("the bump stages");
-        txn.commit().await.expect("the bump commits");
+        space.take_event_log().await;
+        let result = match run_bump(&env).await {
+            Ok((bump, mut txn)) => {
+                txn.commit().await.expect("the bump commits");
+                Ok(bump)
+            }
+            Err(error) => Err(error),
+        };
+        (space, result)
+    }
+
+    #[tokio::test]
+    async fn space_counter_bump_reserves_its_work_on_the_branch_dimensions() {
+        let host_work = uniform(100_000_000);
+        let (space, result) = bump_with(ScanMeter::new(Some(host_work.clone()))).await;
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(
             host_work.usage(HostWorkDimension::SearchCandidates),
-            HostWorkUsage::new(1)
+            HostWorkUsage::ZERO,
+            "the branch charges candidates only in its funding search"
         );
-        assert!(host_work.usage(HostWorkDimension::SearchStateBytes) > HostWorkUsage::ZERO);
+        for dimension in CHARGED {
+            assert!(
+                host_work.usage(dimension) > HostWorkUsage::ZERO,
+                "{dimension:?}"
+            );
+        }
         assert_eq!(values(&space, &collection_counter()).await, vec![1]);
-        let rejecting = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-        env.meter = ScanMeter::new(Some(rejecting));
+        let (_, rejected) = bump_with(ScanMeter::new(Some(uniform(0)))).await;
         assert_eq!(
-            run_bump(&env).await.map(|(bump, _)| bump),
+            rejected,
             Err(SpaceError::Host(RSpaceError::HostWorkRejected))
         );
+    }
+
+    #[tokio::test]
+    async fn space_counter_bump_cut_budget_rejects_without_effect() {
+        let measured = uniform(100_000_000);
+        let (_, result) = bump_with(ScanMeter::new(Some(measured.clone()))).await;
+        assert!(result.is_ok(), "{result:?}");
+        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+        for dimension in CHARGED {
+            exact.set(
+                dimension,
+                HostWorkLimit::new(measured.usage(dimension).get()),
+            );
+        }
+        let (_, accepted) = bump_with(ScanMeter::new(Some(HostWorkBudget::new(exact)))).await;
+        assert!(accepted.is_ok(), "the exact usage suffices: {accepted:?}");
+        for dimension in CHARGED {
+            let mut cut = exact;
+            cut.set(
+                dimension,
+                HostWorkLimit::new(measured.usage(dimension).get() - 1),
+            );
+            let (space, rejected) = bump_with(ScanMeter::new(Some(HostWorkBudget::new(cut)))).await;
+            assert_eq!(
+                rejected,
+                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
+                "{dimension:?}"
+            );
+            assert!(space.take_event_log().await.is_empty(), "{dimension:?}");
+            assert_eq!(values(&space, &space_counter()).await, vec![0]);
+            assert!(values(&space, &collection_counter()).await.is_empty());
+        }
     }
 }

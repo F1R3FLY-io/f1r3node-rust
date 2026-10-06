@@ -59,10 +59,10 @@
    in_pre_state             casper/src/rust/merging/block_index.rs:61-65
                             (produce_exists_in_pre_state)
    exec (the bump)          rholang/src/rust/interpreter/spaces/counter.rs:
-                            118-182, 185-223 (bump, and take: the COMM has
+                            163-231, 235-292 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            537-595 (bump, then plan)
+                            813-879 (bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives

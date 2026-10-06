@@ -1,5 +1,5 @@
 # Reified RSpaces — Formal Verification (P1: the storage substrate, P2: the
-# wire encoding, P4: the hashmap:queue slice)
+# wire encoding, P4: the hashmap:queue slice and its metering)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -46,6 +46,11 @@
 #   SpaceFactory      P4 (8 headlines): the space families, the factory
 #                     constructor, the space id, persistent sends to system
 #                     ops and SpaceAlreadyExists.
+#   AgentReadCoverage Decision 42 (8 headlines): a space agent reserves each
+#                     read and copy before it makes it (DR-88 of
+#                     feature/cost-accounted-rho), its reservations precede
+#                     the commit, and its charges do not depend on the list
+#                     order of the staged view or on unread payloads.
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -67,3 +72,4 @@ theories/CounterConflict.v
 theories/HeadOnlyDisciplines.v
 theories/SpaceRefs.v
 theories/SpaceFactory.v
+theories/AgentReadCoverage.v

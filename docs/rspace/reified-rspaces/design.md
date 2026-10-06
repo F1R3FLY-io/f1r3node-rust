@@ -1567,12 +1567,13 @@ Every decoder is strict: it accepts exactly the image of its encoder, with the v
 Any other record is a `MalformedRecord`, and the operation fails with `Inconsistent`.
 The headlines of `RecordEnvelope.v` prove the round trips, the injectivity, the soundness of the decoders, and the disjointness of the kinds.
 
-**The config record.** The [config record](glossary.md#config-record) holds the canonical map of [decision I-17](decision-register.md#i-17), which `SpaceConfig::to_par` builds (`spaces/types/config.rs:83-104`).
+**The config record.** The [config record](glossary.md#config-record) holds the canonical map of [decision I-17](decision-register.md#i-17), which `SpaceConfig::to_par` builds (`spaces/types/config.rs:85-106`).
 For a queue space with the default qualifier, the map is `{"spaceId": GByteArray(sid), "outer": "hashmap", "inner": "queue", "qualifier": "default", "params": {}, "theory": Nil}`.
 The decoder `SpaceConfig::from_par` accepts only the exact image of `to_par`, and in P4 the theory must be `Nil`.
 Each read of a config record also requires that its `spaceId` is the space id of the space, otherwise the operation fails with `Inconsistent`.
 
-**Authorities.** Each staged operation registers an introduction authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:465-483`).
+**Authorities.** Each operation builds one `Introduction`, which holds its introduction authority and the phlo budget of the deploy (`spaces/record.rs:820-846`).
+Each staged operation registers that authority before the observer sees it, as the reducer does for a host operation (`spaces/record.rs:854-876`).
 Table N2.4 gives the authorities of each record (P4 design B.7).
 
 *Table N2.4. The authorities of the records.*
@@ -1598,7 +1599,7 @@ P4 uses the existing merge check #1 for this purpose and changes no merge code (
 Each operation on a queue consumes the counter record of its collection and produces it again with the next value, in its own transaction.
 So two branches that use one collection consume one counter produce, and check #1 sees a race.
 
-**The bump.** `bump` (`spaces/counter.rs:118-182`) stages the counter steps before the plan of the operation.
+**The bump.** `bump` (`spaces/counter.rs:163-231`) stages the counter steps before the plan of the operation.
 It returns the order of the operation, which is the value of the collection counter before the bump.
 
 ```text
@@ -1705,19 +1706,19 @@ Figure N3 shows the merge flow of the counter conflict.
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:150-153`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+`GenericSpace<S, D>` (`spaces/generic.rs:169-172`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 P4 instantiates it once, as `GenericSpace<HashMapOuter, QueueDiscipline>`, and `native_agent` returns it (`reified/system_processes.rs:56-58`).
 Two traits separate the parts of a family:
 
-- `OuterStore` (`spaces/generic.rs:85-101`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
-- `Discipline` (`spaces/generic.rs:122-146`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
+- `OuterStore` (`spaces/generic.rs:93-109`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
+- `Discipline` (`spaces/generic.rs:130-165`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
 
 `HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:22-52`).
-`QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:25-52`).
-In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:262-274`).
+`QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:31-60`).
+In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:463-481`).
 
-**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:537-595`) stage one operation in one transaction.
-The job then commits the transaction exactly once (`spaces/agent.rs:260-270`).
+**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:813-879`) stage one operation in one transaction.
+The job then commits the transaction exactly once (`spaces/agent.rs:263-273`).
 
 ```text
 COLLECTION-OP(op):                             ▷ GenericSpace::prepare_produce, prepare_consume, run_op
@@ -1778,7 +1779,7 @@ The hot store inserts at the front, and a restart can load a list in another ord
     fn reaches_head(&self, _side: Side, queued: usize) -> bool { queued == 0 }
 ```
 
-**The produce plan.** `offer` (`spaces/generic.rs:337-401`) is the plan of a send.
+**The produce plan.** `offer` (`spaces/generic.rs:573-634`) is the plan of a send.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
@@ -1800,12 +1801,12 @@ OFFER(op, ord):                                ▷ GenericSpace::offer
             Reissue(cause):  return Reissue(op, cause)
 ```
 
-`MATCH` makes the metered spatial match of the pattern against the payload without its envelope, and then it checks the guard of the waiter (`spaces/matching.rs:69-82`).
+`MATCH` makes the metered spatial match of the pattern against the payload without its envelope, and then it checks the guard of the waiter (`spaces/matching.rs:85-99`).
 A head waiter that does not match blocks every waiter behind it, and the datum is stored.
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive` (`spaces/generic.rs:405-472`) is the plan of a receive, and it mirrors OFFER.
+**The consume plan.** `receive` (`spaces/generic.rs:640-700`) is the plan of a receive, and it mirrors OFFER.
 
 ```text
 RECEIVE(op, ord):                              ▷ GenericSpace::receive
@@ -1829,7 +1830,7 @@ A peek `<<-` keeps the head record in place, and the substrate reports the recor
 A persistent receive `<=` drains the head records one after another and parks when no head record matches.
 This drain is the persistent drain of the queue.
 
-**The fire rounds.** `FireRounds::after_fire` (`reified/costs.rs:116-127`) decides the next step after each fire:
+**The fire rounds.** `FireRounds::after_fire` (`reified/costs.rs:299-310`) decides the next step after each fire:
 
 ```rust
     /// Records one fire and returns the next step (A10, readiness review S5).
@@ -1881,7 +1882,7 @@ A re-issue stages neither the datum nor the continuation of the operation, so it
 So every committed transaction keeps INV, which the headlines `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:779`) and `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:799`) prove.
 The headlines `queue_fifo` (`HeadOnlyDisciplines.v:979`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1062`) prove the order of delivery and the blocking of a head.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:498-533`) turns the receipts into a `SpaceOutcome`.
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:744-779`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
 
@@ -2116,8 +2117,22 @@ In the host mode, the call resets the tracker of committed parent orders, so a d
 It makes no event, no charge, and no random draw.
 
 **Host work.** The job gets the host-work budget that `submit_space` captured, because `reserve_host_work` charges nothing inside the task of a job.
-`ScanMeter` (`reified/costs.rs:32-71`) charges one `SearchCandidates` unit for each metered matcher call, and one `SearchStateBytes` unit for each scanned byte.
-Without a budget, the meter accepts every charge, as `reserve_host_work` does ([decision I-12](decision-register.md#i-12)).
+`ScanMeter` (`reified/costs.rs:47-239`) applies the rule of DR-88 of `feature/cost-accounted-rho` ([decision 42](decision-register.md#decision-42)).
+A reservation has three amounts, and each amount charges one host-work dimension:
+
+- The operations charge VerificationOperations.
+- The scanned bytes charge VerificationBytes.
+- The allocated bytes charge SearchStateBytes.
+
+The metered matcher reserves its own reads on the meter, and the agent adds no charge for a matcher call.
+The agent reserves each of its own reads and copies before it makes it:
+
+- the ids of the channels and the decode of the config
+- each envelope decode and each comparison of a head scan, and the copy of the head
+- the copies of each staged operation
+The agent prepays at staging the work of the outcome after the commit.
+So a host-work rejection always happens before the commit, and the operation has no effect (`AgentReadCoverage.v`, `cut_rejects_before_commit`).
+Without a budget, the meter accepts every charge and skips every walk, as `reserve_host_work` does ([decision I-12](decision-register.md#i-12)).
 
 **The runtime of a reducer.** `ReifiedRuntime` (`reified/runtime.rs:54-56`) has three modes, and only the host mode runs space jobs.
 
@@ -2327,7 +2342,7 @@ The typed replies are not aborts, and the [agent API](agent-api.md#7-typed-repli
 - **One family.** Only `hashmap:queue` has a factory. A config record of another family fails with `FamilyUnavailable`, and P5 and P6 add the other families.
 - **Conservative merges.** Two branches that only peek one queue conflict (item A2). Two branches that open collections of one space conflict on the space counter (item A25).
 - **Divergent pairs.** A persistent send and a persistent receive on one queue fire again in each new space intent. They stop only when the phlo of the deploy runs out, as on the baseline host.
-- **Host work.** The meter charges the matcher work of each operation, but the production evaluation passes no host-work budget yet. Each charge then takes effect when cost accounting enables the budget.
+- **Host work.** The meter charges the matcher work and the own reads and copies of each operation ([decision 42](decision-register.md#decision-42)). The production evaluation passes no host-work budget yet. Each charge then takes effect when cost accounting enables the budget.
 - **Matching under the stripes.** The agent matches while its transaction holds its lock stripes, as the host does under its own locks.
 - **Closures.** A data value that a program sends inside a `use` block gets no wrapper (item A24). A forged reply channel of a system process loses its use context, so a reply channel should be a `new` name (R7).
 - **Key size.** A data channel holds the collection key, so the id of a data channel grows with the size of the channel.

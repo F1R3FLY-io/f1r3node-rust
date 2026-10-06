@@ -22,7 +22,9 @@
 //!   transaction.
 //! * A method that stages work returns a [`Prepared`]. The job commits it exactly once with
 //!   [`Prepared::commit`]. Nothing awaits between `begin` and the commit, except `begin`.
-//! * Matching uses only the metered matcher calls, with [`SpaceEnv::meter`].
+//! * Matching uses only the metered matcher calls, with [`SpaceEnv::meter`]. The agent also
+//!   reserves its own decodes, copies and tie-breaks on that meter before it makes them, and it
+//!   prepays at staging the work of the outcome after the commit (decision 42).
 //! * A collection operation fires in at most `costs::FIRE_ROUND_CAP` rounds. It re-issues the
 //!   rest with the A10 rule of `costs::FireRounds`.
 
@@ -58,7 +60,8 @@ pub struct SpaceEnv {
     /// The phlo budget of the deploy. The `before_observe` closures register the introduction
     /// authority of each staged operation with it (P4 design B.7).
     pub budget: RuntimeBudget,
-    /// The host-work meter of the matcher calls (readiness review S5).
+    /// The host-work meter of the job (readiness review S5, decision 42): the matcher and the
+    /// agent reserve each read and copy on it before they make it.
     pub meter: ScanMeter,
 }
 

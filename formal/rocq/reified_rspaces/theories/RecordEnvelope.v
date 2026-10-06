@@ -31,29 +31,29 @@
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    record_kind, kind_byte, tag_bytes, tag
-                            spaces/record.rs:46, 49, 54-59, 71-73, 76
+                            spaces/record.rs:55, 58, 63-68, 80-82, 85
                             (RECORD_TAG_MARK, RECORD_VERSION, RecordKind,
                             tag_bytes, tag)
-   sole shapes of rpar      spaces/record.rs:98-133, 136-143 (sole_expr,
+   sole shapes of rpar      spaces/record.rs:107-142, 145-152 (sole_expr,
                             expr_par)
-   list_par                 spaces/record.rs:147-170 (the bit sets of the
+   list_par                 spaces/record.rs:156-179 (the bit sets of the
                             normalizer)
-   list_elements            spaces/record.rs:175-194 (strict flags)
+   list_elements            spaces/record.rs:184-203 (strict flags)
    is_tag, is_nil, natural_of
-                            spaces/record.rs:196-201, 203, 205-210
+                            spaces/record.rs:205-210, 212, 214-219
    datum_envelope, wrap_datum, datum_ord, unwrap_datum
-                            spaces/record.rs:215-222, 226-236, 239-249,
-                            262-277
+                            spaces/record.rs:224-231, 235-245, 248-258,
+                            271-286
    continuation_envelope, wrap_continuation, continuation_parts,
-   unwrap_continuation      spaces/record.rs:280-287, 292-312, 315-332,
-                            350-365
+   unwrap_continuation      spaces/record.rs:289-296, 301-321, 324-341,
+                            359-374
    counter_record, counter_value
-                            spaces/record.rs:369-380, 383-392
+                            spaces/record.rs:383-394, 397-406
    config_record, config_map
-                            spaces/record.rs:396-403, 406-419
+                            spaces/record.rs:413-420, 423-436
    space_config, to_par, from_par
-                            spaces/types/config.rs:29-47, 51-62, 83-104,
-                            110-139, 142-190 (the keys, SpaceConfig,
+                            spaces/types/config.rs:31-49, 53-64, 85-106,
+                            112-141, 160-208 (the keys, SpaceConfig,
                             to_par, from_par, and string_par, map_par,
                             string_of, bytes_of, map_entries)
    map_par flags            models/src/rust/par_map.rs:48-55, 67-70
@@ -90,7 +90,7 @@
      ParBody (an optional body and a random state), a ScalaBodyRef, or no
      body, with an optional guard and an opaque cost authority.
    - An ord is a Z. The code stores an i64. The counters stop at i64::MAX
-     with CounterOverflow (spaces/counter.rs:133, 157), so every stored
+     with CounterOverflow (spaces/counter.rs:185, 209), so every stored
      ord is a natural number below 2^63.
    - The merger predicate single_gint is fixed by the code on every shape
      that the model names. On an opaque Par the model takes it as a section
