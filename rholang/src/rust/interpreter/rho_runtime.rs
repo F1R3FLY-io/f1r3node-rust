@@ -1034,13 +1034,12 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// a future call site that explicitly handles the 4 divergence reply
 /// shapes.
 ///
-/// NOT CALLED FROM `setup_system_processes` YET — this helper lands
-/// as pure infrastructure.  Wiring requires (a) a reduce.rs URN
-/// filter so user deploys cannot invoke fs natives directly during
-/// state execution (bypassing the Fs cap's sandbox), (b) toggling
-/// the filter off/on around genesis composition.  Those slices land
-/// before the first `fs_handlers_to_definitions()` call site.
-#[allow(dead_code)]
+/// Called by `dispatch_table_creator` to register every fs native
+/// URN into the runtime's dispatch map.  Phase-scoped visibility
+/// is enforced inside the reducer by `filter_fs_native_urns`
+/// (slice 5.32): user deploys get a `ReduceError`; genesis gets
+/// unfiltered access via the toggle in `play_deploys_for_genesis`
+/// (slice 5.33).
 fn fs_handlers_to_definitions(dispatcher: RhoDispatch, space: RhoISpace) -> Vec<Definition> {
     use super::accounting::noop::{Metering, NoopMetering};
     use super::io::handle_table::FileHandleTable;
@@ -1102,6 +1101,25 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
+
+    // File I/O native URNs — one Definition per entry in the
+    // FS_HANDLERS distributed slice.  Registration is unconditional
+    // (same posture as the stdio / crypto / ai processes); phase-
+    // scoped visibility is enforced inside the reducer by
+    // `filter_fs_native_urns` (slice 5.32).  User deploys attempting
+    // to bind these URNs via `new x(\`rho:io:fs:native:1.0.0/...\`)`
+    // get a `ReduceError`; genesis composition toggles the filter
+    // off (slice 5.33's `play_deploys_for_genesis`).
+    //
+    // The dispatcher clone threaded here is the same `RhoDispatch`
+    // instance that every other Definition's handler receives
+    // through its `ProcessContext`, so the fs native handlers see
+    // the same reducer / space / dispatcher as the rest of the
+    // system-processes layer.
+    all_processes.extend(fs_handlers_to_definitions(
+        dispatcher.clone(),
+        space.clone(),
+    ));
 
     all_processes.append(extra_system_processes);
 
