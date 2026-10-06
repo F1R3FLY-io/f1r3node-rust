@@ -264,6 +264,9 @@ tasks:
         - "The soak runs dev at b5cbb51d1, not master 95be0d450. dev adds the rholang file I/O handlers of PRs #613 to #617, which deploys of test_load do not use."
         - "The soak includes the PR #622 log guardian. It runs on the host and adds a Docker probe every 15 seconds, but no node code."
         - "The harness collects no ISSUE24_METRICS records for the boot and readonly nodes, so their lag stays unexplained."
+        - "PR #523 (issue-468) merged to dev at 6ae47b00c on 2026-10-05, after soak 37343966570 started. It prevents in-flight marker leaks in the block processor and evicts stale markers. A leaked marker can hold a block back from processing, so this change can affect finalization latency by itself. Soak 37343966570 tests b5cbb51d1 and does not include it. A soak of fix/issue-24-root-cause-fix at f66861983 or later includes it."
+        - "PR #480 was open on 2026-10-05. It excludes silent newcomers from the finality and synchrony weight. If it merges before the next soak, it can change finalization by itself."
+        - "Rule for the next soak: compare it with this soak only for the metrics that PR #523 and PR #480 cannot change. These are the roots and checkpoint lock counters and the checkpoint time. Read the failure rate and the finalization p95 as the combined effect of all changes in the tested SHA."
     origin: "In soak 37153082817, history_repository_roots_repository_lock_wait_ns reached 2 to 21 seconds for each validator in test_deploy_throughput_and_finalization, and no other test exceeded 1 second. The checkpoint's own roots lock wait stayed near zero. The metrics record wait times only, so they cannot show which call site holds the lock. The candidate cause is reset() in rspace++/src/rspace/history/history_repository_impl.rs, which holds the roots lock while it waits for the current-history lock."
     files:
       - rspace++/src/rspace/history/history_repository_impl.rs
