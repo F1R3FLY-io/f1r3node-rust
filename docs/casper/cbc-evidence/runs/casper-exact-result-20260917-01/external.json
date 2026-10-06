@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-exact-result-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-exact-result-20260917-01.external.tar.gz",
+   "sha256": "4c3253d9be21a7db936ddc5ede2e5e441f19e1bc0fb7dd443ec32c9e4fa998e2",
+   "bytes": 90328,
+   "members": 3,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}
