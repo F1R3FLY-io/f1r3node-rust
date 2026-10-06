@@ -2436,4 +2436,84 @@ mod tests {
         );
         println!("compose_fs_genesis_source (non-empty bundle) hash = {hex}");
     }
+
+    /// Third byte-anchor exercising sort stability + tie-breaking.
+    /// The 4-entry bundle in the sister test has trivially distinct
+    /// first characters — a sort-key change (e.g., path-based tie-
+    /// break vs. logical-name-based) would not flip its hash.
+    ///
+    /// This bundle uses 6 entries with shared `app.` prefix + a
+    /// `zdata.*` pair for sort-tail coverage.  Mixes kinds and modes
+    /// so every per-cell branch participates, and includes trailing-
+    /// slash logical names that trigger the Dir branches' path
+    /// handling.
+    #[test]
+    fn compose_fs_genesis_source_golden_hex_with_sort_tie_bundle() {
+        let bundle = [
+            BundleEntry {
+                logical_name: "app.cfg".into(),
+                canon_path: PathBuf::from("/etc/app/cfg"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "app.log/".into(),
+                canon_path: PathBuf::from("/var/log/app"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "app.state.bin".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/app.state.bin"),
+                kind: BundleEntryKind::File,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "app.state.dir/".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/app.state.dir"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "zdata.bin".into(),
+                canon_path: PathBuf::from("/opt/rnode/zdata.bin"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "zdata.dir/".into(),
+                canon_path: PathBuf::from("/opt/rnode/zdata.dir"),
+                kind: BundleEntryKind::Dir,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+        ];
+        let src = compose_fs_genesis_source("00", "00", &bundle, None);
+        let h = Blake2b256::hash(src.into_bytes());
+        let hex: String = h.iter().fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
+        // Byte-identity with fileio canonical as of slice 5.27 port.
+        // Regenerate via
+        //   cargo test -p casper --lib -- --nocapture \
+        //     compose_fs_genesis_source_golden_hex_with_sort_tie_bundle
+        // ONLY when intentionally hard-forking Genesis composition
+        // OR bundle format.
+        const EXPECTED: &str = "5d93da4727878944b726a3e08bd3f7434deb0241efb80d07d7ed6baff9cc4497";
+        assert_eq!(
+            hex, EXPECTED,
+            "compose_fs_genesis_source() hash for sort-tie bundle changed. \
+             Either a Genesis hard fork OR a bundle-format drift (sort key \
+             / tie-breaking / tuple field reorder).  Rerun with --nocapture \
+             and update EXPECTED."
+        );
+        println!("compose_fs_genesis_source (sort-tie bundle) hash = {hex}");
+    }
 }
