@@ -41,6 +41,34 @@ fn required<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {
     })
 }
 
+fn review_date(id: &str, entry: &Exception) -> Result<NaiveDate> {
+    let date = entry
+        .review_by
+        .date
+        .ok_or_else(|| eyre!("{id}: a review date is required."))?;
+    ensure!(
+        entry.review_by.time.is_none() && entry.review_by.offset.is_none(),
+        "{id}: a date without a time is required."
+    );
+    NaiveDate::from_ymd_opt(date.year.into(), date.month.into(), date.day.into())
+        .ok_or_else(|| eyre!("{id}: invalid review date."))
+}
+
+pub fn reviews_due(
+    policy: &Policy,
+    today: NaiveDate,
+    days: i64,
+) -> Result<Vec<(String, NaiveDate)>> {
+    let mut due = Vec::new();
+    for (id, entry) in &policy.exceptions {
+        let deadline = review_date(id, entry)?;
+        if (deadline - today).num_days() <= days {
+            due.push((id.clone(), deadline));
+        }
+    }
+    Ok(due)
+}
+
 pub fn validate(policy: &Policy, deny: &Value, today: NaiveDate) -> Result<()> {
     let ignored = required(deny, "advisories.ignore")?
         .as_array()
@@ -80,18 +108,10 @@ pub fn validate(policy: &Policy, deny: &Value, today: NaiveDate) -> Result<()> {
                     .all(|v| semver::Version::parse(v).is_ok()),
             "{id}: exact package versions are required."
         );
-        let date = entry
-            .review_by
-            .date
-            .ok_or_else(|| eyre!("{id}: a review date is required."))?;
         ensure!(
-            entry.review_by.time.is_none() && entry.review_by.offset.is_none(),
-            "{id}: a date without a time is required."
+            review_date(id, entry)? > today,
+            "{id}: the exception requires review."
         );
-        let deadline =
-            NaiveDate::from_ymd_opt(date.year.into(), date.month.into(), date.day.into())
-                .ok_or_else(|| eyre!("{id}: invalid review date."))?;
-        ensure!(deadline > today, "{id}: the exception requires review.");
     }
     for (path, value) in [
         ("graph.all-features", Value::Boolean(true)),
