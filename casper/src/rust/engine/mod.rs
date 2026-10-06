@@ -16,5 +16,6 @@ pub mod running;
 pub mod runtime_state_requester;
 pub mod snapshot_chunk_retriever;
 pub mod snapshot_chunk_server;
+pub mod snapshot_chunk_wire;
 pub mod wal_payload_retriever;
 pub mod wal_payload_server;
