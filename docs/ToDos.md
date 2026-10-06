@@ -303,7 +303,7 @@ tasks:
     blocked_by: []
     branch: fix/issue-24-deepening-resolution
     pr: 653
-    merge_hold: "Draft PR #653 with label awaiting-soak-evidence. Do not merge it until a soak of dev after PR #622 and PR #620 merge, and a soak of this branch, are compared."
+    merge_hold: "Draft PR #653 with label awaiting-soak-evidence. Do not merge it until a soak of dev after PR #622 and PR #620 merge, and a soak of this branch, are compared. TASK-021-11 must also discharge CLAIM-RSPACE-002."
     pr_base_branch: dev
     discovered_in: docs/discoveries/architecture-review-2026-10-06T114619Z.md
     design: docs/casper/design/history-checkpoint-commit.md
@@ -337,6 +337,32 @@ tasks:
       - "Mocks sit only at the CheckpointWriter seam. No internal collaborator of the history repository is mocked."
       - "The ignored roots_lock_contention_probe and its helpers are deleted. The remaining LMDB shape tests use the last_txn_id difference."
       - "A soak of this branch, compared with a soak of dev after PR #622 and PR #620 merge, shows lower root commit and roots lock times and a sustained finalization p95 that is not worse."
+  - id: TASK-021-11
+    title: "Apply the CbC method to the checkpoint commit of TASK-021-10"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim, so this task closes that gap before PR #653 leaves draft."
+    method: "/cbc identify, then /cbc verify, then /cbc discharge. Follow the pattern of CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): specification first, a mechanized model, and a property test against the previous code path as the oracle."
+    files:
+      - docs/claims/rspace-history-checkpoint-commit.md
+      - rspace++/src/rspace/history/checkpoint_writer.rs
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/history/instances/radix_history.rs
+      - rspace++/src/rspace/history/radix_tree.rs
+      - rspace++/src/rspace/history/roots_store.rs
+      - shared/src/rust/store/lmdb_key_value_store.rs
+    acceptance:
+      - "/cbc identify classifies each step-1 artifact. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
+      - "docs/claims/rspace-history-checkpoint-commit.md registers CLAIM-RSPACE-002 with status pending before any further code change."
+      - "The claim states four properties. Atomicity: a recorded root always has all of its nodes in the history store. State equivalence: for every action list, stage and write produce the same root and the same store contents as the previous process and record_root path. Collision: a stored node with a different value fails the checkpoint and records no root. Write shape: one checkpoint with actions makes one write transaction on the history environment."
+      - "A bounded model checks atomicity over every crash point of the write sequence, both for one shared environment and for the fallback with separate stores. A negative control shows that root-before-nodes ordering violates atomicity."
+      - "A property test checks state equivalence on random action batches, with the previous process and record_root path as the oracle. The state root is consensus data, so any difference fails the test."
+      - "/cbc verify writes an evidence record for CLAIM-RSPACE-002, and /cbc discharge passes for the step-1 diff. The claims audit of CLAIM-CASPER-SOAK-001 to -008 still exits 0."
+      - "The maintainer accepts the evidence before PR #653 leaves draft."
 ---
 ```
 

@@ -101,6 +101,15 @@ rspace++/src/rspace/rspace/ops_install.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/rspace/setup.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/space_matcher.rs cbc=mandatory cbc-weight=high
 rspace++/src/rspace/match.rs cbc=mandatory cbc-weight=high
+rspace++/src/rspace/history/history_repository_impl.rs cbc=mandatory cbc-weight=high
+rspace++/src/rspace/history/radix_tree.rs cbc=mandatory cbc-weight=high
+rspace++/src/rspace/history/checkpoint_writer.rs cbc=mandatory cbc-weight=high
+shared/src/rust/store/lmdb_key_value_store.rs cbc=mandatory cbc-weight=high
+rspace++/src/rspace/history/instances/radix_history.rs cbc=mandatory cbc-weight=medium
+rspace++/src/rspace/history/history_repository.rs cbc=mandatory cbc-weight=medium
+rspace++/src/rspace/history/roots_store.rs cbc=mandatory cbc-weight=medium
+rspace++/src/rspace/history/root_repository.rs cbc=mandatory cbc-weight=medium
+rspace++/src/rspace/history/history.rs cbc=mandatory cbc-weight=medium
 scripts/run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
 scripts/bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
 scripts/bench/write-soak-summary.sh cbc=mandatory cbc-weight=high
