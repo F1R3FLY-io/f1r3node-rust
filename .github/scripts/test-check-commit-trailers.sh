@@ -126,8 +126,60 @@ GIT_AUTHOR_NAME='Claude' GIT_AUTHOR_EMAIL='noreply@anthropic.com' commit "$TMP/c
 expect_failure 'AI-authored commit that is not the pull request author' \
 	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$OUTSIDE_BASE" --exempt-authors "$TMP/exempt-none.txt"
 if grep -i -q 'anthropic' "$TOOL"; then
-	printf 'the check must not name a vendor; the history decides\n' >&2
+	printf 'the check must not name a vendor; the history and the denied list decide\n' >&2
 	exit 1
 fi
+
+# --- Denied identities: rejected even when history ratifies them -------------
+# The fixture history now holds a commit authored by noreply@anthropic.com,
+# so history alone would ratify that address. The denied list overrides it.
+DENIED="$TMP/denied.txt"
+printf '%s\n' '# denied test identities' '@anthropic.com' 'blocked@example.com' >"$DENIED"
+DENY_BASE="$(git -C "$REPO" rev-parse HEAD)"
+"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$DENY_BASE"
+expect_failure 'denied author ratified by history' \
+	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$DENY_BASE" --denied "$DENIED"
+grep -q 'denied identity: Claude <noreply@anthropic.com>' "$TMP/err"
+git -C "$REPO" rev-parse HEAD >"$TMP/exempt-denied.txt"
+expect_failure 'denied author in an exempt pull request commit' \
+	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$DENY_BASE" --denied "$DENIED" \
+	--exempt-authors "$TMP/exempt-denied.txt"
+commit "$TMP/case.txt"
+expect_failure 'denied co-author in another letter case' \
+	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$DENY_BASE" --denied "$DENIED"
+message 'Co-authored-by: Blocked <Blocked@Example.com>' >"$TMP/blocked.txt"
+commit "$TMP/blocked.txt"
+expect_failure 'denied exact address' \
+	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$DENY_BASE" --denied "$DENIED"
+expect_failure 'missing denied list' \
+	"$TOOL" range "HEAD~1..HEAD" --repo "$REPO" --ratified-from "$DENY_BASE" --denied "$TMP/absent.txt"
+# The hook checks a denied author too, although it does not check author
+# ratification.
+expect_failure 'hook with a denied author' \
+	env GIT_AUTHOR_NAME='Claude' GIT_AUTHOR_EMAIL='noreply@anthropic.com' \
+	bash -c 'cd "$1" && "$2" message "$3" --denied "$4"' _ "$REPO" "$TOOL" "$TMP/clean.txt" "$DENIED"
+(cd "$REPO" && "$TOOL" message "$TMP/clean.txt" --denied "$DENIED")
+
+# The committed denied list blocks the AI identity that put an account in the
+# contributors graph. The hook and CI read it by default.
+COMMITTED_DENIED="$ROOT/.github/denied-identities.txt"
+grep -Fxq '@anthropic.com' "$COMMITTED_DENIED" ||
+	{ printf 'the committed denied list must block @anthropic.com\n' >&2; exit 1; }
+if grep -v -E '^(#.*|@[a-z0-9.-]+|[^@[:space:]]+@[a-z0-9.-]+)?$' "$COMMITTED_DENIED" | grep -q .; then
+	printf 'every denied line must be a lowercase @domain or address\n' >&2
+	exit 1
+fi
+expect_failure 'hook with the committed denied list' \
+	env GIT_AUTHOR_NAME='Claude' GIT_AUTHOR_EMAIL='noreply@anthropic.com' \
+	bash -c 'cd "$1" && "$2" "$3"' _ "$REPO" "$HOOK" "$TMP/clean.txt"
+
+# --- CI wiring -----------------------------------------------------------------
+CI="$ROOT/.github/workflows/ci.yml"
+grep -q 'PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}' "$CI" ||
+	{ printf 'CI must read the pull request author account type\n' >&2; exit 1; }
+grep -q '\[ "$PR_AUTHOR_TYPE" = User \]' "$CI" ||
+	{ printf 'CI must exempt only a User account, never a bot or app\n' >&2; exit 1; }
+grep -q -- '--denied "$denied"' "$CI" ||
+	{ printf 'CI must pass the denied list\n' >&2; exit 1; }
 
 printf 'commit trailer tests passed\n'

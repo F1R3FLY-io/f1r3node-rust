@@ -368,6 +368,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         shell: bash -euo pipefail {0}
         run: |
           unshallow=()
@@ -377,11 +378,24 @@ jobs:
           if [ "$count" -gt 250 ]; then
             echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
           fi
+          # Only a human account (type User) exempts its own commits. A bot or
+          # app account that opens a pull request gets no exemption.
           exempt="$RUNNER_TEMP/exempt-authors.txt"
-          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
-            --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"
+          : > "$exempt"
+          if [ "$PR_AUTHOR_TYPE" = User ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
+              --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"
+          else
+            echo "Pull request author ${PR_AUTHOR} is a ${PR_AUTHOR_TYPE} account; no author exemption."
+          fi
+          # The base commit's denied list applies, so a pull request cannot
+          # remove its own block. Before the list reaches the base branch,
+          # the pull request's copy applies.
+          denied="$RUNNER_TEMP/denied-identities.txt"
+          git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
+            cp .github/denied-identities.txt "$denied"
           .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
-            --ratified-from "$BASE_SHA" --exempt-authors "$exempt"
+            --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
 
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
