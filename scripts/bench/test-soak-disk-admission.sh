@@ -46,6 +46,18 @@
 #   cleanup-error-builder docker system df fails                              -> refuse
 #   cleanup-partial       hygiene reclaims to 8000 MiB, still below the band  -> refuse
 #   cleanup-sufficient    hygiene reclaims to 16384 MiB                       -> one iteration
+#   log-within-budget     both log probes under budget                        -> one iteration
+#   log-container-soft    container log 450 MiB, budget 400, 3 samples        -> breach, writers stopped
+#   log-container-hard    container log 900 MiB, two times the budget, 1 sample -> breach
+#   log-node-soft         node log directory 3000 MiB, budget 2560, 3 samples -> breach, writers stopped
+#   log-probe-missing-active   docker inspect fails during the iteration     -> breach, log probe unavailable
+#   log-probe-missing-boundary docker inspect fails at the admission check   -> refuse
+#   log-sudo-fallback     stat refuses the container log, sudo -n stat reads it -> one iteration
+#   log-budget-disabled   both budgets 0, logs over any budget                -> one iteration, no probe
+#   log-budget-range      SOAK_CONTAINER_LOG_BUDGET_MB above the 64-bit maximum -> configuration rejected, exit 2
+#   log-descriptor-exhaustion a writer at its descriptor limit keeps appending -> the probes sample, breach
+#   log-probe-vanished    the container stops between docker ps and docker inspect -> skipped, one iteration
+#   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -68,7 +80,10 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     benchmark-cancel-stall guardian-stall guardian-progress-boundary benchmark-progress-boundary
     hygiene-timeout disk-floor-range disk-band-range disk-sum-range disk-max-floor disk-max-band
     cleanup-active-session cleanup-error-list cleanup-error-remove cleanup-error-network
-    cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient)
+    cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
+    log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
+    log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
+    log-probe-vanished log-rotated-unreadable)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -207,6 +222,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             exit 1
         fi
         ;;
+    log-*) available=16384 ;;
 esac
 printf 'valid=%s\n' "$available" >>/case/evidence/probe-samples.txt
 printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
@@ -219,6 +235,31 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
 owned_id=0000000000000000000000000000000000000000000000000000000000000001
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-vanished && -s /case/evidence/workload-started.txt ]]; then
+    if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]] &&
+        mkdir /case/evidence/vanish-window 2>/dev/null; then
+        printf 'inspect-vanished\n' >>/case/evidence/log-probe-faults.txt
+        exit 1
+    fi
+    if [[ "${1:-}" == ps && "$*" == *"--filter id=$owned_id"* && -d /case/evidence/vanish-window ]] &&
+        mkdir /case/evidence/vanish-closed 2>/dev/null; then
+        printf 'recheck-empty\n' >>/case/evidence/log-probe-faults.txt
+        exit 0
+    fi
+fi
+if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]]; then
+    if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-missing-boundary ||
+        ( "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-missing-active && -s /case/evidence/workload-started.txt ) ]]; then
+        printf 'inspect-failed\n' >>/case/evidence/log-probe-faults.txt
+        exit 1
+    fi
+    printf '%s /case/clog/json.log\n' "${SOAK_WRITER_OWNER:?}"
+    exit 0
+fi
+if [[ "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
+    printf '%s\t/var/lib/rnode/logs\n' "$(cat /case/node-log-bytes)"
+    exit 0
+fi
 if [[ "${1:-}" == ps && "$*" == *'--filter label=io.f1r3fly.soak.owner='* ]]; then
     printf '%s\n' "$owned_id"
     exit 0
@@ -372,6 +413,27 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
         while [[ ! -e /case/evidence/release-iteration ]]; do sleep 0.05; done
         ;;
     missing-active | record-before-stop | stalled-active | stop-timeout) sleep 12 ;;
+    log-container-soft) truncate -s 450M /case/clog/json.log && sleep 25 ;;
+    log-container-hard) truncate -s 900M /case/clog/json.log && sleep 25 ;;
+    log-node-soft) printf '%s\n' 3145728000 >/case/node-log-bytes && sleep 25 ;;
+    log-probe-missing-active) sleep 25 ;;
+    log-probe-vanished) sleep 25 ;;
+    log-rotated-unreadable) truncate -s 1M /case/clog/json.log.1 && sleep 25 ;;
+    log-descriptor-exhaustion)
+        (
+            exec 9>>/case/clog/json.log
+            ulimit -n 32
+            held=0
+            while exec {fd}</dev/null 2>/dev/null; do held=$((held + 1)); done
+            printf '%s\n' "$held" >/case/evidence/descriptors-held.txt
+            chunk="$(printf '%065536d' 0)"
+            while :; do
+                printf '%s' "$chunk" >&9
+                sleep 0.05
+            done
+        ) &
+        sleep 25
+        ;;
 esac
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-guardian-interleaved ]]; then
     printf 'finalize\n' >/case/evidence/output/signal
@@ -406,6 +468,75 @@ SH
     esac
     [[ "$SCENARIO" != benchmark-disabled ]] || disk_floor=0
     printf 'floor=%s\nband=%s\n' "$disk_floor" "$disk_band" >evidence/disk-settings.txt
+    container_budget=0
+    node_budget=0
+    log_every=3
+    driver_timeout=20
+    mkdir -p /case/clog
+    truncate -s 10M /case/clog/json.log
+    printf '%s\n' 1048576 >/case/node-log-bytes
+    if [[ "$SCENARIO" == log-* ]]; then
+        container_budget=400
+        node_budget=2560
+        log_every=1
+        driver_timeout=50
+        case "$SCENARIO" in
+        log-budget-disabled)
+            container_budget=0
+            node_budget=0
+            truncate -s 900M /case/clog/json.log
+            printf '%s\n' 4194304000 >/case/node-log-bytes
+            ;;
+        log-budget-range) container_budget=9223372036854775808 ;;
+        log-descriptor-exhaustion)
+            container_budget=1
+            : >/case/clog/json.log
+            ;;
+        log-rotated-unreadable)
+            cat >bin/stat <<'SH'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    if [[ "$argument" == /case/clog/json.log.1 ]]; then
+        printf 'rotated-refused\n' >>/case/evidence/log-probe-faults.txt
+        exit 1
+    fi
+done
+exec /usr/bin/stat "$@"
+SH
+            cat >bin/sudo <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" != -n ]] || shift
+printf '%s\n' "$*" >>/case/evidence/sudo-commands.txt
+case "${1:-}" in
+test) shift; exec /usr/bin/env test "$@" ;;
+stat) shift; exec /case/bin/stat "$@" ;;
+esac
+exit 1
+SH
+            ;;
+        log-sudo-fallback)
+            cat >bin/stat <<'SH'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    if [[ "$argument" == /case/clog/* ]]; then
+        printf 'stat-refused\n' >>/case/evidence/log-probe-faults.txt
+        exit 1
+    fi
+done
+exec /usr/bin/stat "$@"
+SH
+            cat >bin/sudo <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" != -n ]] || shift
+printf '%s\n' "$*" >>/case/evidence/sudo-commands.txt
+[[ "${1:-}" == stat ]] || exit 1
+shift
+exec /usr/bin/stat "$@"
+SH
+            ;;
+        esac
+    fi
+    printf 'container=%s\nnode=%s\nevery=%s\n' "$container_budget" "$node_budget" "$log_every" >evidence/log-settings.txt
     run_benchmarks=false
     if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-* ]]; then
         duration=700
@@ -606,6 +737,10 @@ SH
         SOAK_HOST_FREE_FLOOR_MB=0 \
         SOAK_DISK_FREE_FLOOR_MB="$disk_floor" \
         SOAK_DISK_HYGIENE_BAND_MB="$disk_band" \
+        SOAK_CONTAINER_LOG_BUDGET_MB="$container_budget" \
+        SOAK_NODE_LOG_BUDGET_MB="$node_budget" \
+        SOAK_LOG_PROBE_EVERY="$log_every" \
+        SOAK_LOG_PROBE_SECONDS=2 \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
         SOAK_DISK_STOP_SECONDS=1 \
         SOAK_DISK_HYGIENE_SECONDS=1 \
@@ -620,11 +755,11 @@ SH
         SOAK_GUARDIAN_MAX_SILENCE_SECONDS=8 \
         SOAK_GUARDIAN_POLL_SECONDS=0.05 \
         SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
-        timeout --signal=TERM --kill-after=2 20 \
+        timeout --signal=TERM --kill-after=2 "$driver_timeout" \
         bash repo/scripts/run-merge-recovery-soak.sh >evidence/driver.log 2>&1 || status=$?
     printf '%s\n' "$status" >evidence/driver-exit.txt
     [[ -z "$observer" ]] || wait "$observer"
-    if [[ "$SCENARIO" == disk-*-range ]]; then
+    if [[ "$SCENARIO" == disk-*-range || "$SCENARIO" == log-budget-range ]]; then
         if [[ "$status" != 2 ]]; then
             if [[ ! -s evidence/workload-started.txt ]]; then
                 printf 'ERROR: The range fixture neither rejected configuration nor reached workload admission.\n' >&2
@@ -634,7 +769,7 @@ SH
             exit 1
         fi
         if [[ -e evidence/workload-started.txt || -e evidence/benchmark-started.txt ]] ||
-            ! grep -Eq '^SOAK_DISK_.*must' evidence/driver.log; then
+            ! grep -Eq '^SOAK_(DISK_|CONTAINER_LOG_BUDGET_MB|NODE_LOG_BUDGET_MB).*must' evidence/driver.log; then
             printf 'ERROR: The range fixture did not produce the expected configuration refusal.\n' >&2
             exit 2
         fi
@@ -648,6 +783,88 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == log-* ]]; then
+        owned_id=0000000000000000000000000000000000000000000000000000000000000001
+        log_inspects="$(grep -c 'LogPath' evidence/docker-commands.txt 2>/dev/null || true)"
+        log_execs="$(grep -c "^exec $owned_id " evidence/docker-commands.txt 2>/dev/null || true)"
+        log_inspects="${log_inspects:-0}"
+        log_execs="${log_execs:-0}"
+        case "$SCENARIO" in
+        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished)
+            if [[ "$SCENARIO" == log-budget-disabled ]]; then
+                if [[ "$log_inspects" != 0 || "$log_execs" != 0 ]]; then
+                    printf 'FAIL: A disabled log budget still ran its probes.\n' >&2
+                    exit 1
+                fi
+            elif [[ "$log_inspects" -lt 1 || "$log_execs" -lt 1 ]]; then
+                printf 'ERROR: The fixture did not exercise both log probes (%s).\n' "$SCENARIO" >&2
+                exit 2
+            fi
+            if [[ "$SCENARIO" == log-probe-vanished ]] && ! grep -Fxq inspect-vanished evidence/log-probe-faults.txt; then
+                printf 'ERROR: The fixture did not remove the container between the listing and its probe.\n' >&2
+                exit 2
+            fi
+            if [[ "$SCENARIO" == log-sudo-fallback ]] &&
+                { ! grep -Fxq stat-refused evidence/log-probe-faults.txt ||
+                    ! grep -Fxq 'stat -c %s /case/clog/json.log' evidence/sudo-commands.txt; }; then
+                printf 'ERROR: The fixture did not refuse the direct read and offer sudo.\n' >&2
+                exit 2
+            fi
+            if [[ "$status" != 0 || "$iterations" != 1 || -s evidence/output/host-guardian-breach.txt ]] ||
+                ! jq -e '.iterations == 1 and .failures == 0' evidence/output/summary.json >/dev/null; then
+                printf 'FAIL: The log guardian refused or broke a run within its budgets (%s).\n' "$SCENARIO" >&2
+                exit 1
+            fi
+            printf 'PASS: The run within its log budgets completed one iteration (%s).\n' "$SCENARIO"
+            exit 0
+            ;;
+        log-probe-missing-boundary)
+            if [[ -e evidence/workload-started.txt || "$status" != 1 || "$iterations" != 0 ]] ||
+                ! grep -Fq 'The log probe is unavailable before admission (log probe unavailable: docker inspect' evidence/output/protection-breach.txt ||
+                ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt; then
+                printf 'FAIL: An unreadable log probe at the admission check permitted work or lost its refusal.\n' >&2
+                exit 1
+            fi
+            printf 'PASS: An unreadable log probe at the admission check refused work.\n'
+            exit 0
+            ;;
+        esac
+        if [[ ! -s evidence/workload-started.txt ]]; then
+            printf 'ERROR: The fixture did not start the workload (%s).\n' "$SCENARIO" >&2
+            exit 2
+        fi
+        case "$SCENARIO" in
+        log-probe-missing-active)
+            [[ -s evidence/log-probe-faults.txt ]] || exit 2
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect'
+            ;;
+        log-rotated-unreadable)
+            grep -Fxq rotated-refused evidence/log-probe-faults.txt || exit 2
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: container log of 000000000000'
+            ;;
+        log-node-soft) expected='The log guardian detected the node log directory of container 000000000000 at 3000 MiB over budget 2560 MiB (consecutive samples 3).' ;;
+        log-container-soft) expected='The log guardian detected the container log of container 000000000000 at 450 MiB over budget 400 MiB (consecutive samples 3).' ;;
+        log-container-hard) expected='The log guardian detected the container log of container 000000000000 at 900 MiB over budget 400 MiB (consecutive samples 1).' ;;
+        log-descriptor-exhaustion)
+            held="$(cat evidence/descriptors-held.txt 2>/dev/null || true)"
+            if ! [[ "$held" =~ ^[0-9]+$ ]] || [[ "$held" -lt 16 ]]; then
+                printf 'ERROR: The writer did not reach its descriptor limit (held %s).\n' "${held:-none}" >&2
+                exit 2
+            fi
+            expected='The log guardian detected the container log of container 000000000000 at'
+            ;;
+        esac
+        if [[ "$status" != 1 || "$iterations" != 1 ]] ||
+            ! grep -Fq "$expected" evidence/output/host-guardian-breach.txt ||
+            ! grep -Fxq "kill $owned_id" evidence/docker-commands.txt ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 1 and .failures >= 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: The log guardian did not record the breach and stop the writers (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: The log guardian recorded the breach and stopped the writers (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$SCENARIO" == cleanup-partial || "$SCENARIO" == cleanup-sufficient ]]; then
         expected_iterations=0
         expected_failures=1
@@ -1221,7 +1438,9 @@ run_scenario() {
         docker cp - "$CONTAINER:/case/repo/"
     docker cp "${BASH_SOURCE[0]}" "$CONTAINER:/case/test.sh"
     docker cp "$HARNESS" "$CONTAINER:/case/casper-soak"
-    timeout --signal=TERM --kill-after=5 40 docker start -a "$CONTAINER" \
+    local start_seconds=40
+    [[ "$scenario" != log-* ]] || start_seconds=70
+    timeout --signal=TERM --kill-after=5 "$start_seconds" docker start -a "$CONTAINER" \
         >"$out/result.txt" 2>&1 || status=$?
     docker inspect "$CONTAINER" >"$out/container-finished.json"
     if ! jq -e '.[0].State.Running == false and .[0].State.OOMKilled == false' \
