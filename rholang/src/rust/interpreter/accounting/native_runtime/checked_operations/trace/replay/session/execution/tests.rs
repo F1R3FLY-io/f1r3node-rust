@@ -621,6 +621,24 @@ async fn native_replay_authority_state_matches_recorded_execution() {
 /// journal, the checked journal binds the trace, and the replay runs it
 /// (C14, DR-79).
 async fn replayed_host_usage(term: &str) -> HostWorkUsages {
+    replayed_host_usage_with_schedule(term, None).await
+}
+
+/// D-C5a (DR-100): a schedule for the replay session of
+/// `replayed_host_usage_with_schedule`: the seed of the detached-task yields,
+/// the direct-path counter, and the pre-DR-100 joins read.
+struct ReplaySchedule {
+    seed: u64,
+    direct_paths: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    legacy_joins_read: bool,
+}
+
+/// `replayed_host_usage`, with the test hooks of the schedule set only while
+/// the replay session is built (the play session runs without them).
+async fn replayed_host_usage_with_schedule(
+    term: &str,
+    schedule: Option<&ReplaySchedule>,
+) -> HostWorkUsages {
     let funding = FundingFixture::default();
     let (weights, limit) = (funding.weights, 1_000_000);
     let parsed = Compiler::source_to_adt(term).unwrap();
@@ -705,20 +723,114 @@ async fn replayed_host_usage(term: &str) -> HostWorkUsages {
     .unwrap();
     environment.block_data.write().await.block_number = 123;
     environment.deploy_data.write().await.timestamp = 456;
+    if let Some(schedule) = schedule {
+        use crate::rust::interpreter::deterministic_reduction::{
+            DIRECT_PATH_PROBE, LEGACY_NATIVE_FOOTPRINT_READ, SCHEDULE_SEED,
+        };
+        SCHEDULE_SEED.with(|seed| seed.set(Some(schedule.seed)));
+        DIRECT_PATH_PROBE.with(|probe| *probe.borrow_mut() = Some(schedule.direct_paths.clone()));
+        LEGACY_NATIVE_FOOTPRINT_READ.with(|legacy| legacy.set(schedule.legacy_joins_read));
+    }
     let replayed = tokio::time::timeout(
         Duration::from_secs(60),
         environment.evaluate_raw(parsed, rand()),
     )
     .await
     .expect("native reducer must complete");
+    if schedule.is_some() {
+        use crate::rust::interpreter::deterministic_reduction::{
+            DIRECT_PATH_PROBE, LEGACY_NATIVE_FOOTPRINT_READ, SCHEDULE_SEED,
+        };
+        SCHEDULE_SEED.with(|seed| seed.set(None));
+        DIRECT_PATH_PROBE.with(|probe| *probe.borrow_mut() = None);
+        LEGACY_NATIVE_FOOTPRINT_READ.with(|legacy| legacy.set(false));
+    }
     assert_eq!(replayed.0, played.0);
     environment.check_complete().await.unwrap();
     assert_eq!(
         environment.accounting_budget().authority_events(),
         budget.authority_events()
     );
-    assert!(environment.accounting_budget().authority_events().len() > 10);
+    if schedule.is_none() {
+        assert!(environment.accounting_budget().authority_events().len() > 10);
+    }
     host.usages()
+}
+
+/// D-C5a (DR-100): the replay usages and direct-path counts of `term` under
+/// the schedule seeds `0..seeds` on a current-thread runtime.
+fn seeded_replay_usages(
+    term: &str,
+    seeds: u64,
+    legacy_joins_read: bool,
+) -> Vec<(HostWorkUsages, usize)> {
+    let mut results = Vec::with_capacity(usize::try_from(seeds).expect("seed count fits usize"));
+    for seed in 0..seeds {
+        let schedule = ReplaySchedule {
+            seed,
+            direct_paths: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            legacy_joins_read,
+        };
+        let usages = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime")
+            .block_on(replayed_host_usage_with_schedule(term, Some(&schedule)));
+        results.push((
+            usages,
+            schedule
+                .direct_paths
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ));
+    }
+    results
+}
+
+/// D-C5a (DR-100; `ReplayChargeScheduleInvariance.direct_and_driver_paths_charge_alike`):
+/// seeded schedules decide which produces of a lone participant take the
+/// direct path and which reach the driver. The replay charges the same
+/// host-work use under every seed, and the seeds reach different path
+/// choices, so the test is not vacuous. Negative control: with the joins read
+/// of the driver path restored, the charge follows the path choice.
+#[test]
+fn replay_charges_are_schedule_independent() {
+    let terms = [
+        r#"@"a"!(1) | match [1, 2, 3] { [4, 5] => @"b"!(2) _ => Nil }"#,
+        r#"new loop, a, b, c, d in {
+            contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(6) |
+            a!(1) | b!(2) | c!(3) | d!(4) |
+            for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
+        }"#,
+    ];
+    let mut reached_both_paths = false;
+    let mut legacy_differs = false;
+    for term in terms {
+        let results = seeded_replay_usages(term, 16, false);
+        let (first, _) = &results[0];
+        for (seed, (usages, _)) in results.iter().enumerate() {
+            assert_eq!(
+                usages, first,
+                "seed {seed} changed the replay charge of {term}"
+            );
+        }
+        let paths = results
+            .iter()
+            .map(|(_, direct)| *direct)
+            .collect::<std::collections::BTreeSet<_>>();
+        if paths.len() > 1 {
+            reached_both_paths = true;
+            let legacy = seeded_replay_usages(term, 16, true);
+            legacy_differs |= legacy.iter().any(|(usages, _)| usages != &legacy[0].0);
+        }
+    }
+    assert!(
+        reached_both_paths,
+        "no seed changed a path choice; the test would be vacuous"
+    );
+    assert!(
+        legacy_differs,
+        "the pre-DR-100 joins read did not change the charge"
+    );
 }
 
 /// C14 (DR-79): the replay authority charges use live map sizes. Native

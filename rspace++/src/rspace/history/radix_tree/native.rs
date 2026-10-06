@@ -109,13 +109,25 @@ impl<'a> NativeRadixBuilder<'a> {
 
     fn cache_node(&self, key: &ByteVector, node: Node) -> Result<Arc<Node>, RSpaceError> {
         self.meter.reserve(1, key.len(), 0)?;
-        let index = self.tree.cache_r.determine_map(key);
-        let count = self.tree.cache_r.shards()[index].read().len();
-        let next = count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?;
-        let (old_ops, old_backing) =
-            hash_backing::<ByteVector, Arc<Node>>(count).ok_or(RSpaceError::HostWorkRejected)?;
+        // Changed by D-C5a (DR-100): the growth was charged at the population of
+        // the key's shard. The DashMap assigns a key to a shard with a
+        // per-instance RandomState and has a CPU-dependent shard count, so
+        // validators charged one checkpoint differently. Every insert is now
+        // charged the first-table growth hash_backing(1), which bounds the
+        // growth of every shard (hash_backing(k) <= k * hash_backing(1)) and
+        // depends on no shard.
+        // let index = self.tree.cache_r.determine_map(key);
+        // let count = self.tree.cache_r.shards()[index].read().len();
+        // let next = count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?;
+        // let (old_ops, old_backing) =
+        //     hash_backing::<ByteVector,
+        // Arc<Node>>(count).ok_or(RSpaceError::HostWorkRejected)?;
+        // let (new_ops, new_backing) =
+        //     hash_backing::<ByteVector,
+        // Arc<Node>>(next).ok_or(RSpaceError::HostWorkRejected)?;
+        let (old_ops, old_backing) = (0, 0);
         let (new_ops, new_backing) =
-            hash_backing::<ByteVector, Arc<Node>>(next).ok_or(RSpaceError::HostWorkRejected)?;
+            hash_backing::<ByteVector, Arc<Node>>(1).ok_or(RSpaceError::HostWorkRejected)?;
         let backing = new_backing
             .checked_sub(old_backing)
             .and_then(|bytes| bytes.checked_add(key.len()))
@@ -536,6 +548,42 @@ mod tests {
                 key,
                 hash: Blake2b256Hash::new(&[index as u8, round as u8]),
             })
+        }
+    }
+
+    /// D-C5a (DR-100;
+    /// `ReplayChargeScheduleInvariance.
+    /// constant_growth_dominates_shard_growth`): fresh trees, whose read
+    /// caches assign shards with different RandomStates, reserve the same
+    /// sequence for one action set, and the constant growth charge bounds
+    /// the growth of a shard of every size.
+    #[test]
+    fn native_cache_charges_do_not_depend_on_the_shard_assignment() {
+        let record = || {
+            let tree = RadixTreeImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+            let reservations = std::cell::RefCell::new(Vec::new());
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                reservations
+                    .borrow_mut()
+                    .push((operations, scanned, backing));
+                Ok::<(), RSpaceError>(())
+            };
+            let builder = NativeRadixBuilder::new(&tree, &meter);
+            let actions = (0..512).map(|index| action(index, 1)).collect();
+            builder
+                .make_actions(&empty_node(), actions)
+                .expect("native actions")
+                .expect("a root");
+            reservations.into_inner()
+        };
+        let first = record();
+        for build in 0..8 {
+            assert_eq!(record(), first, "build {build}");
+        }
+        let (_, one) = hash_backing::<ByteVector, Arc<Node>>(1).expect("one-entry table");
+        for entries in 1..=1_usize << 12 {
+            let (_, bytes) = hash_backing::<ByteVector, Arc<Node>>(entries).expect("table");
+            assert!(bytes <= entries * one, "{entries} entries");
         }
     }
 

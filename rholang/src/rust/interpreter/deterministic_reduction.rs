@@ -209,6 +209,12 @@ pub(crate) fn spawn_detached_in_context(
     let mut detached_guard = DetachedGuard::new(task_session.clone(), task_id, participant.clone());
     let handle = tokio::spawn(scope(child.clone(), async move {
         if ready.await.is_ok() {
+            #[cfg(test)]
+            if let Some(seed) = task_session.schedule_seed {
+                for _ in 0..schedule_yields(seed, task_id) {
+                    tokio::task::yield_now().await;
+                }
+            }
             if let Err(error) = future.await {
                 record_evaluator_failures(std::slice::from_ref(&error));
                 task_session
@@ -509,9 +515,44 @@ thread_local! {
     pub(crate) static LEGACY_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// D-C5a (DR-100): sessions built on this thread while a seed is set
+    /// delay each detached task by a seed-dependent number of yields, so a
+    /// current-thread runtime runs a different, reproducible schedule for each
+    /// seed.
+    pub(crate) static SCHEDULE_SEED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// D-C5a (DR-100): counts the operations of sessions built on this thread
+    /// that took the direct path, so a schedule test can show that its seeds
+    /// reach different path choices.
+    pub(crate) static DIRECT_PATH_PROBE: std::cell::RefCell<Option<Arc<AtomicUsize>>> =
+        const { std::cell::RefCell::new(None) };
+    /// D-C5a (DR-100): sessions built on this thread while the flag is set read
+    /// the produced channel's joins in native mode, as before DR-100 (the
+    /// oracle of the negative control).
+    pub(crate) static LEGACY_NATIVE_FOOTPRINT_READ: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// D-C5a (DR-100): the number of yields of a detached task under a schedule
+/// seed (splitmix64 of the seed and the task id, modulo 8).
+#[cfg(test)]
+fn schedule_yields(seed: u64, task_id: u64) -> u64 {
+    let mut value = seed ^ task_id.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (value ^ (value >> 31)) % 8
+}
+
 struct ReductionSession {
     #[cfg(test)]
     legacy_split: bool,
+    #[cfg(test)]
+    schedule_seed: Option<u64>,
+    #[cfg(test)]
+    direct_path_probe: Option<Arc<AtomicUsize>>,
+    #[cfg(test)]
+    legacy_native_footprint_read: bool,
     space: ExecutionSpace,
     budget: RuntimeBudget,
     host_work: Option<HostWorkBudget>,
@@ -655,6 +696,12 @@ impl ReductionSession {
         Self {
             #[cfg(test)]
             legacy_split: LEGACY_SPLIT.with(std::cell::Cell::get),
+            #[cfg(test)]
+            schedule_seed: SCHEDULE_SEED.with(std::cell::Cell::get),
+            #[cfg(test)]
+            direct_path_probe: DIRECT_PATH_PROBE.with(|probe| probe.borrow().clone()),
+            #[cfg(test)]
+            legacy_native_footprint_read: LEGACY_NATIVE_FOOTPRINT_READ.with(std::cell::Cell::get),
             space,
             budget,
             failure_work: host_work
@@ -811,6 +858,10 @@ impl ReductionSession {
         let order = context.next_operation();
         if self.claim_direct(&context.participant) {
             let _direct = DirectExecutionGuard::new(self.clone(), context.participant.clone());
+            #[cfg(test)]
+            if let Some(probe) = &self.direct_path_probe {
+                probe.fetch_add(1, Ordering::Relaxed);
+            }
             return internal_scope(operation_context::scope(
                 order,
                 self.space.produce(channel, data, persistent),
@@ -847,6 +898,10 @@ impl ReductionSession {
         let order = context.next_operation();
         if self.claim_direct(&context.participant) {
             let _direct = DirectExecutionGuard::new(self.clone(), context.participant.clone());
+            #[cfg(test)]
+            if let Some(probe) = &self.direct_path_probe {
+                probe.fetch_add(1, Ordering::Relaxed);
+            }
             return internal_scope(operation_context::scope(
                 order,
                 self.space
@@ -900,13 +955,34 @@ impl ReductionSession {
         match &intent {
             Intent::Produce { channel, data, .. } => {
                 insert_channel(&mut footprint, channel);
-                let joins = match self.space.get_joins(channel.clone()).await {
-                    Ok(joins) => joins,
-                    Err(error) => return Err(intent.reject(order, error)),
-                };
-                for join in joins {
-                    for joined_channel in join {
-                        insert_channel(&mut footprint, &joined_channel);
+                // Changed by D-C5a (DR-100): a native session gives every intent
+                // the footprint key [2, 0] (insert_authority), so its frontier is
+                // one conflict component and the joins cannot change the
+                // partition. The joins read was charged to the replay budget on
+                // this driver path only; the direct path of a lone participant
+                // skipped it, so the charge depended on whether the other
+                // participants had completed (the thread schedule).
+                // let joins = match self.space.get_joins(channel.clone()).await {
+                //     Ok(joins) => joins,
+                //     Err(error) => return Err(intent.reject(order, error)),
+                // };
+                // for join in joins {
+                //     for joined_channel in join {
+                //         insert_channel(&mut footprint, &joined_channel);
+                //     }
+                // }
+                let read_joins = !self.budget.native_execution_active();
+                #[cfg(test)]
+                let read_joins = read_joins || self.legacy_native_footprint_read;
+                if read_joins {
+                    let joins = match self.space.get_joins(channel.clone()).await {
+                        Ok(joins) => joins,
+                        Err(error) => return Err(intent.reject(order, error)),
+                    };
+                    for join in joins {
+                        for joined_channel in join {
+                            insert_channel(&mut footprint, &joined_channel);
+                        }
                     }
                 }
                 insert_authority(&mut footprint, data.cost_authority.as_ref(), &self.budget);
@@ -990,6 +1066,10 @@ impl ReductionSession {
             }
         }
         let components = conflict_components(prepared);
+        debug_assert!(
+            !self.budget.native_execution_active() || components.len() <= 1,
+            "a native frontier must form one conflict component (DR-79 step 5, DR-100)"
+        );
         let mut component_futures = FuturesUnordered::new();
         for component in components {
             let session = self.clone();

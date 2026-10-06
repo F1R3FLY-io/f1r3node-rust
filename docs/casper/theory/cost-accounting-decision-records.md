@@ -7770,3 +7770,112 @@ Tests:
 
 **Cross-refs.** DR-34, DR-73. Bug 9954
 (`bug-a-node-joining-a-resource-policy-chain-after-genesis-cannot-start-policy-load-requires-the-approved-block-to-be-genesis-30a2aa`).
+
+## DR-100 — Replay charges that depend on neither the schedule nor a random shard
+
+**Status.** Implemented for Phase D item D-C5a of epic 8946 on 2026-10-06.
+The user amended the leaf: the two measured causes replace the trace-known
+bounds that the plan proposed.
+
+**Context.** The validator replays of one block must charge the same
+host-work usage, because the accept/reject verdict at a cap boundary
+decides consensus. The gateway funding probe found that the three validator
+replays of its gateway block differed by 20 to 129 KB of VerificationBytes
+in every run. Small blocks sometimes differed by 260 or 520 bytes.
+
+The plan suspected charges at live sizes: the produce counter, the replay
+authority maps and the introduction registry. A design pass showed that
+these charges are deterministic in native replay. Every native intent
+carries the footprint key `[2, 0]`, so every frontier is one conflict
+component, and its operations run one at a time in operation order (DR-79
+step 5).
+
+A measurement attributed the disagreement exactly. It used task-local
+tags, a histogram of the untagged reservations and captured stacks, in a
+probe build that was never merged. It found two causes:
+
+- **R0.** `ReductionSession::prepare` read the joins of each produced
+  channel. In replay, that read goes through the native session and is
+  charged to the replay budget. A participant that is alone runs its
+  operation directly and skips `prepare`. Whether it is alone depends on
+  whether the other participants have finished, so on the thread schedule.
+  Each produce that moves from the direct path to the driver path adds
+  exactly 827 operations, 21,629 VerificationBytes and 2,392
+  SearchStateBytes. The produce's own charges are the same on both paths.
+- **R1.** `NativeRadixBuilder::cache_node` charged the growth of the
+  checkpoint's node cache at the population of the key's shard. The cache
+  is a `DashMap` that assigns a key to a shard with a per-instance
+  `RandomState` and has a shard count that depends on the CPU count. The
+  first insert into an empty shard costs 8 operations and 260 bytes more
+  than other inserts, and the number of shards that receive a node varies,
+  so replays differed by multiples of (8, 260, 260).
+
+**Decision.**
+
+1. R0: in native mode, `prepare` does not read the joins. The joins cannot
+   change the partition of a frontier that is one component. Outside
+   native mode the read stays. A debug assertion checks that a native
+   frontier forms one conflict component.
+2. R1: every insert into the node cache is charged the growth of a
+   one-entry table, `hash_backing(1)`. For the cache's entry type,
+   `hash_backing(k) <= k * hash_backing(1)` for every k, so the constant
+   charge bounds the growth of every shard for every assignment of keys to
+   shards, and it depends on no shard.
+3. The replaced lines stay as comments with the reason.
+
+```text
+prepare(produce)      ≡ footprint(channel) ∪ footprint(authority)   -- native: no joins read
+cache_node charge(k)  ≡ hash_backing(1)                              -- was hash_backing(n+1) − hash_backing(n), n = |shard(k)|
+```
+
+**Soundness.** R0 removes a read; the operation reads its joins again
+under its own lock, so no work loses its charge. R1 charges at least the
+growth of the shard tables, by the bound above (`hash_backing(1)` is 260
+bytes; the largest per-entry growth of one table is about 151 bytes).
+
+**Behavior changes.** The validator replays of one block charge the same
+usage. R0 removes one joins read per produce that reaches the driver. R1
+charges a little more for caches with many entries per shard.
+
+**Verification.** `ReplayChargeScheduleInvariance.v` proves without axioms:
+
+- `path_total_without_prepare_charge` and
+  `direct_and_driver_paths_charge_alike`: without a prepare charge, any
+  assignment of direct and driver paths is charged the same.
+- Negative control `driver_footprint_read_charge_schedule_dependent`: with a
+  prepare charge, a direct run and a driver run are charged differently.
+- `constant_growth_dominates_shard_growth` and
+  `constant_charge_independent_of_assignment`: the constant charge bounds
+  the shard growth and depends only on the number of inserts.
+- Negative control `shard_growth_depends_on_assignment`: two keys in one
+  shard grow by 260 bytes; in two shards, by 520.
+
+`ReplayChargeScheduleInvariance.tla` checks with TLC that every schedule of
+three participants, one of them with an operation on the direct or the
+driver path, has the same total. The `driverRead` mutation is refuted.
+
+Tests:
+
+- `replay_charges_are_schedule_independent`: seeded schedules on a
+  current-thread runtime give the same replay usage. The seeds reach both
+  paths, so the test is not vacuous. With the joins read restored (the
+  negative control), the usage depends on the seed.
+- `native_cache_charges_do_not_depend_on_the_shard_assignment`: fresh trees
+  with different `RandomState`s reserve the same sequence for 512 actions,
+  and `hash_backing(k) <= k * hash_backing(1)` holds up to 4,096 entries.
+  With the shard-population charge restored, the test fails.
+
+**Measurement.** With this change, the three validator replays of every
+block of the gateway probe (two runs) and of the prepaid probe agree
+exactly in every dimension. Against the two D-C4 samples (DR-98), the
+validator replay of the gateway block uses 7.75 MB less VerificationBytes
+(1,715.4 to 1,707.6 MB), 1.04 MB less SearchStateBytes and 0.35 M fewer
+operations: about 300 produces no longer read their joins on the driver
+path. Against the original caps the replay is at 6.36 times
+VerificationBytes and 1.38 times SearchStateBytes.
+
+**Out of scope.** The design passes also found latent defects that the
+probe did not show. The user moved them to the follow-up campaign
+`followup-8946-d-c5-deferred-findings`.
+
+**Cross-refs.** DR-79, DR-96, DR-98. Leaf `ofp-2-cap-d-c5a-trace-known-bounds`.
