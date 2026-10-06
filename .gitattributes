@@ -1,4 +1,4 @@
-node/src/rust/instances/heartbeat_proposer.rs cbc=mandatory cbc-weight=high
+node/src/rust/consensus/casper/instances/heartbeat_proposer.rs cbc=mandatory cbc-weight=high
 casper/src/rust/engine/multi_parent_casper/snapshot.rs cbc=mandatory cbc-weight=high
 casper/src/rust/blocks/proposer/block_creator.rs cbc=mandatory cbc-weight=high
 casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs cbc=mandatory cbc-weight=high
