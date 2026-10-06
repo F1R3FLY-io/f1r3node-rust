@@ -44,7 +44,7 @@ use rholang::rust::interpreter::rho_runtime::{
 use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_history_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
@@ -2334,8 +2334,13 @@ impl RuntimeManager {
                     let Some(raw) = records.iter().next() else {
                         return Ok(0);
                     };
+                    // Changed by D-S2 (DR-95): the row decodes in History mode,
+                    // which charges each node once and reserves only real
+                    // allocations.
+                    // let datum: Datum<ListParWithRandom> =
+                    //     decode_record(raw, &meter).map_err(mergeable_read_error)?;
                     let datum: Datum<ListParWithRandom> =
-                        decode_record(raw, &meter).map_err(mergeable_read_error)?;
+                        decode_history_record(raw, &meter).map_err(mergeable_read_error)?;
                     RholangMergingLogic::try_get_number_with_rnd(&datum.a)
                         .map(|(number, _)| number)
                         .ok_or_else(|| {

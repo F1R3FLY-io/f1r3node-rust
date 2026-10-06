@@ -1181,6 +1181,20 @@ The backing allowance combines standard vector growth with the existing tree and
 The allocation tests check successful derived records and every reservation cut against actual requested allocations.
 These bounds apply to derived serde records and standard containers. They do not authorize arbitrary custom deserializers with hidden allocations.
 
+Since DR-95, the history decode sites call `decode_history_record`, which decodes in History mode.
+These sites are the metered data reads of the play and replay spaces, the row reads of the native replay session, and the mergeable pre-state read of offered validation.
+History mode charges each node once, at its deserializer call, with no backing.
+It reserves backing only for the allocations of the decode, and it reserves each one before it occurs:
+
+- vector growth, by the growth rule of `RawVec`;
+- the `tree_growth` increment before each insert into a tagged B-tree set;
+- the key half and the value half of the increment before each map entry;
+- the exact length of each string.
+
+The `ClosedDecode` marker limits History mode to types whose decode makes no other allocation.
+`NativeDecodeBacking.v` proves that every prefix of such a decode is covered.
+`decode_record` keeps the rule above for its other callers.
+
 The decoder limits nested visitor depth to 128. Reaching this local host bound returns `HostWorkRejected` through the session adapter.
 Complete producer and replay conformance still requires compatible write limits before publication.
 A malformed typed record returns a typed-record fault. A rejected reservation preserves the original host error.

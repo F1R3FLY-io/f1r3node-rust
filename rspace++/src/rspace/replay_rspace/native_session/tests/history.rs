@@ -5,7 +5,7 @@ use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadMeter, decode_record,
+    NativeLeafKind, NativeReadCharge, NativeReadMeter, decode_history_record,
 };
 use crate::rspace::history::radix_tree::{Item, empty_node, encode};
 
@@ -91,7 +91,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
             |rows| {
                 rows_count.set(rows.len());
                 for row in rows.iter() {
-                    let datum: Datum<String> = decode_record(row, &ChargeCounter {
+                    // Changed by D-S2 (DR-95): the session decodes its rows in
+                    // History mode, so the reference decode uses it too.
+                    // let datum: Datum<String> = decode_record(row, &ChargeCounter {
+                    let datum: Datum<String> = decode_history_record(row, &ChargeCounter {
                         operations: &decode_operations,
                         scanned: &decode_scanned,
                     })

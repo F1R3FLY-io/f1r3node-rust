@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
@@ -160,7 +161,8 @@ pub trait ISpace<
     ) -> Result<Vec<Datum<A>>, RSpaceError>
     where
         C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned,
+        // D-S2 (DR-95): the history rows decode in History mode.
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
     {
         Err(RSpaceError::HostWorkRejected)
     }

@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::{Checkpoint, SoftCheckpoint};
 use super::errors::RSpaceError;
@@ -343,7 +344,7 @@ where
     ) -> Result<Vec<Datum<A>>, RSpaceError>
     where
         C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
     {
         self.replay_rspace.get_data_metered(channel, meter).await
     }

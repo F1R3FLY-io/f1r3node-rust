@@ -569,3 +569,88 @@ async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
          #50"
     );
 }
+
+// ── D-S2 (DR-95): metered cold data reads in History mode ────────────────
+
+/// A meter that counts the reservations and rejects the reservation at index
+/// `reject_at`.
+struct CutMeter {
+    calls: AtomicU64,
+    reject_at: u64,
+}
+
+impl CutMeter {
+    fn new(reject_at: u64) -> Self {
+        Self {
+            calls: AtomicU64::new(0),
+            reject_at,
+        }
+    }
+}
+
+impl crate::rspace::hashing::native_source::SourceMeter for CutMeter {
+    fn reserve(
+        &self,
+        _operations: usize,
+        _scanned: usize,
+        _backing: usize,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == self.reject_at {
+            return Err(crate::rspace::errors::RSpaceError::HostWorkRejected);
+        }
+        Ok(())
+    }
+}
+
+/// From a cold hot store at `root`, the metered data read of `channel`
+/// returns the data that the unmetered read returns. Every rejected
+/// reservation returns the host error and leaves the read retryable with the
+/// same data.
+async fn assert_metered_cold_read<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    root: &crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    channel: &String,
+) {
+    space.reset(root).await.unwrap();
+    let expected = space.get_data(channel).await;
+    assert_eq!(expected.len(), 5);
+    space.reset(root).await.unwrap();
+    let meter = CutMeter::new(u64::MAX);
+    let metered = space.get_data_metered(channel, &meter).await.unwrap();
+    assert_eq!(metered, expected);
+    let total = meter.calls.load(Ordering::SeqCst);
+    assert!(total > 0);
+    for cut in 0..total {
+        space.reset(root).await.unwrap();
+        let rejected = space.get_data_metered(channel, &CutMeter::new(cut)).await;
+        assert!(
+            matches!(rejected, Err(crate::rspace::errors::RSpaceError::HostWorkRejected)),
+            "cut {cut}"
+        );
+        let retried = space
+            .get_data_metered(channel, &CutMeter::new(u64::MAX))
+            .await
+            .unwrap();
+        assert_eq!(retried, expected, "cut {cut}");
+    }
+}
+
+/// D-S2 (DR-95): the play and replay spaces decode their cold data rows in
+/// History mode, with the values of the unmetered read at every reservation
+/// cut.
+#[tokio::test]
+async fn metered_cold_data_reads_match_unmetered_reads_at_every_cut() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (play, replay) =
+        RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch))).unwrap();
+    let channel = "history-data".to_string();
+    for index in 0..5 {
+        play.produce(channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .unwrap();
+    }
+    let root = play.create_checkpoint().await.unwrap().root;
+    assert_metered_cold_read(&play, &root, &channel).await;
+    assert_metered_cold_read(&replay, &root, &channel).await;
+}

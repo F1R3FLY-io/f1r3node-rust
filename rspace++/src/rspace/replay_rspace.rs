@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
@@ -25,7 +26,7 @@ use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
 use super::history::native_reader::{
     NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-    decode_record,
+    decode_history_record,
 };
 use super::logging::{BasicLogger, RSpaceLogger};
 use super::r#match::Match;
@@ -223,7 +224,7 @@ where
     ) -> Result<Vec<Datum<A>>, RSpaceError>
     where
         C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
     {
         struct ReadMeter<'a>(&'a dyn SourceMeter);
 
@@ -288,7 +289,12 @@ where
                             .try_reserve_exact(rows.len())
                             .map_err(|_| RSpaceError::HostWorkRejected)?;
                         for row in rows.iter() {
-                            values.push(decode_record(row, &read_meter).map_err(read_error)?);
+                            // Changed by D-S2 (DR-95): the rows decode in History mode,
+                            // which charges each node once and reserves only real
+                            // allocations.
+                            // values.push(decode_record(row, &read_meter).map_err(read_error)?);
+                            values
+                                .push(decode_history_record(row, &read_meter).map_err(read_error)?);
                         }
                         Ok(values)
                     })

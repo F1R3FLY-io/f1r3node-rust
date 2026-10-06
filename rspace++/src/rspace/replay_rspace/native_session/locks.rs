@@ -11,6 +11,7 @@ where
         + Serialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + Hash
         + Ord
         + Eq
@@ -23,6 +24,7 @@ where
         + Serialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -32,6 +34,7 @@ where
         + Serialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -41,6 +44,7 @@ where
         + Serialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,

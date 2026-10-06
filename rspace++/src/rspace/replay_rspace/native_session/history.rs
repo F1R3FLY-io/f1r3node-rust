@@ -1,11 +1,12 @@
 use serde::de::DeserializeOwned;
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::*;
 use crate::rspace::hashing::native_source::{SourceMeter, channels_hash, hash};
 use crate::rspace::history::native_reader::{
     NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-    decode_record,
+    decode_history_record,
 };
 use crate::rspace::hot_store::NativeDataView;
 
@@ -40,6 +41,7 @@ where
         + Serialize
         + CloneBacking
         + DeserializeOwned
+        + ClosedDecode
         + Hash
         + Ord
         + Eq
@@ -52,6 +54,7 @@ where
         + Serialize
         + CloneBacking
         + DeserializeOwned
+        + ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -61,6 +64,7 @@ where
         + Serialize
         + CloneBacking
         + DeserializeOwned
+        + ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -70,12 +74,13 @@ where
         + Serialize
         + CloneBacking
         + DeserializeOwned
+        + ClosedDecode
         + 'static
         + Sync
         + Send,
     E: NativeReplayEpoch,
 {
-    pub(super) fn read_records<T: DeserializeOwned>(
+    pub(super) fn read_records<T: DeserializeOwned + ClosedDecode>(
         &self,
         kind: NativeLeafKind,
         projection: Blake2b256Hash,
@@ -114,7 +119,11 @@ where
                     .try_reserve_exact(rows.len())
                     .map_err(|_| RSpaceError::HostWorkRejected)?;
                 for row in rows.iter() {
-                    values.push(decode_record(row, &decode_meter).map_err(read_error)?);
+                    // Changed by D-S2 (DR-95): the rows decode in History mode,
+                    // which charges each node once and reserves only real
+                    // allocations.
+                    // values.push(decode_record(row, &decode_meter).map_err(read_error)?);
+                    values.push(decode_history_record(row, &decode_meter).map_err(read_error)?);
                 }
                 Ok(values)
             })

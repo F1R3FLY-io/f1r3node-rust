@@ -6688,8 +6688,9 @@ for this cluster.
 
 ## DR-95 — History decode charged by the decoded structure
 
-**Status.** In progress for Phase D item D-C1 of epic 8946 (D-S2 of the
-Phase D plan). Part 1 (D-C1a) and part 2 (D-C1b) implemented 2026-10-06.
+**Status.** Implemented for Phase D item D-C1 of epic 8946 (D-S2 of the
+Phase D plan): part 1 (D-C1a), part 2 (D-C1b) and part 3 (D-C1c),
+2026-10-06.
 
 **Context.** The metered history decoder
 (`rspace++/src/rspace/history/native_reader/typed.rs`) does not know the
@@ -6843,6 +6844,66 @@ Test in `rholang/src/rust/interpreter/accounting/native_runtime/tests/history_de
   guards and cost stacks. The History decode returns the encoded value and
   allocates at most its reservation. The History reservation is at most the
   legacy reservation.
+
+**Decision (part 3, D-C1c).** The history decode sites call
+`decode_history_record`. The replaced calls stay as comments.
+
+| Site | Records |
+|------|---------|
+| `RSpace::get_data_metered` (`rspace++/src/rspace/rspace/ispace_impl.rs`) | cold data rows of the play space |
+| `ReplayRSpace::get_data_metered` (`rspace++/src/rspace/replay_rspace.rs`) | cold data rows of the replay space |
+| `NativeReplaySession::read_records` (`rspace++/src/rspace/replay_rspace/native_session/history.rs`) | data, join and continuation rows of native replay |
+| `save_mergeable_channels_metered` (`casper/src/rust/util/rholang/runtime_manager.rs`) | mergeable pre-state rows of offered validation |
+
+The trait method `ISpace::get_data_metered` requires `A: ClosedDecode`.
+The native replay session and its rholang wrapper
+(`checked_operations/trace/replay/session.rs`) require `ClosedDecode` for
+`C`, `P`, `A` and `K`. The bound is not on the impl blocks of `RSpace` and
+`ReplayRSpace`. Test types that are not closed therefore keep their other
+uses. For example, a test continuation that holds a `LinkedList` must not
+implement `ClosedDecode`, because a linked list allocates a node for each
+element.
+
+The casper supply, accepted-trade and prepaid-receipt readers keep the
+legacy rule. They are not in this item.
+
+**Verification (part 3).** Tests:
+
+- `metered_cold_data_reads_match_unmetered_reads_at_every_cut`
+  (`rspace++/src/rspace/rspace/tests.rs`): for the play space and the replay
+  space, a cold metered data read returns the data of the unmetered read. At
+  every reservation cut, the read returns the host error, and a retry
+  returns the same data.
+- `cold_typed_rows_prepay_cleanup_before_cache_handoff` computes its
+  reference decode in History mode. The other session tests, which cover
+  every reservation cut, malformed records and projections, pass unchanged.
+- The casper suite runs with the original caps. Its offered replay tests
+  check that the validators reach the producer's roots.
+
+**Measurement (part 3).** The exact-usage probe ran the gateway funding test
+three times on the same day: twice without this part (A1 and A2, at
+393d6791a) and once with it (B). The runs of one build differ, because the
+test's blocks differ from run to run. The A1 and A2 columns show this
+spread. The history-read row counts the samples whose stack contains a
+`native_reader` frame.
+
+| Budget | A1 | A2 | B |
+|--------|---:|---:|--:|
+| Gateway block, validator replay, VerificationBytes | 3,396.2 MB | 3,421.6 MB | 2,971.4 MB |
+| Gateway block, validator replay, SearchStateBytes | 973.3 MB | 994.5 MB | 479.5 MB |
+| Gateway validator replay, history reads (VerificationBytes / SearchStateBytes) | 520.1 / 513.8 MB | 511.7 / 515.9 MB | 46.1 / 8.4 MB |
+| Gateway block, producer execution, VerificationBytes | 183.4 MB | 184.6 MB | 183.1 MB |
+| Gateway block, producer execution, SearchStateBytes | 119.9 MB | 121.6 MB | 74.9 MB |
+| First small block, validator replay (VerificationBytes / SearchStateBytes) | 67.0 / 51.7 MB | 67.4 / 51.6 MB | 65.5 / 15.5 MB |
+| Third small block, validator replay (VerificationBytes / SearchStateBytes) | 66.8 / 59.6 MB | 68.5 / 60.2 MB | 59.2 / 13.1 MB |
+
+The history reads went from about 515 MB to 46 MB of VerificationBytes, and
+from about 515 MB to 8 MB of SearchStateBytes, as the plan predicted. The
+gateway validator replay total went down by 425 to 450 MB of
+VerificationBytes and by 494 to 515 MB of SearchStateBytes. Producer
+execution of the gateway block stays under both original caps. The other
+work categories changed by less than the spread between A1 and A2. That
+spread is up to 40 MB of hot-store write charges.
 
 **Cross-refs.** DR-77. Leaves `ofp-2-cap-d-c1a-tree-set-tag`,
 `ofp-2-cap-d-c1b-exact-decode-model` and `ofp-2-cap-d-c1c-switch-decode-sites`.
