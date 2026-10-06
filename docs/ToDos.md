@@ -83,7 +83,7 @@ user_story: null
 issues: [24]
 blocked_by: []
 created_at: 2026-10-03
-updated_at: 2026-10-05
+updated_at: 2026-10-06
 claimed_by: claude-session-aa467dea
 claimed_at: 2026-10-03T21:10:00Z
 branch: fix/issue-24
@@ -150,6 +150,7 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
+    fix_decision_2026_10_06: "The user chose fix F2 (one LMDB transaction for the checkpoint nodes and root) over F1 (root commit outside the roots mutex) in a /review-codebase run. Maintainer approval is pending. TASK-021-10 implements it, and docs/casper/design/history-checkpoint-commit.md records the reasons."
     candidate_fix: "0ef0966c6 on fix/issue-24-root-cause-fix (PR #620): reset() validates the root with a read and no longer writes current-root, the roots lock is released before the history lock, and record_root writes in one LMDB transaction. 2cd9790f9 removes the unused validate_and_set_current_root path. The code review of 2026-10-05 found no correctness defect. After a restart, history opens at the last checkpointed root, not at the last reset root. Soak 37343966570 tests the candidate. The acceptance items still apply: the maintainer chooses the fix, and the TASK-021-8 findings do not yet show that the roots lock is the root cause."
     acceptance:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
@@ -294,6 +295,46 @@ tasks:
       - "masterProtect keeps protected-branch-image-publish and drops casper-campaign and ephemeral-launch from required deployments."
       - "The release process documents that a promotion PR carries the exact soaked SHA, and that a later dev commit voids the verdict."
       - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
+  - id: TASK-021-10
+    title: "Write the checkpoint nodes and root in one LMDB transaction (fix F2)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr_base_branch: dev
+    discovered_in: docs/discoveries/architecture-review-2026-10-06T114619Z.md
+    design: docs/casper/design/history-checkpoint-commit.md
+    glossary_terms:
+      - docs/Glossary.md#finalization-latency-p95
+    dependency_category: local-substitutable
+    tdd_plan: docs/tdd-plans/history-checkpoint-commit-2026-10-06.md
+    decision: "On 2026-10-06 the user chose fix F2 in a /review-codebase run. Maintainer approval is pending. rspace-history and rspace-roots share the LMDB environment rspace/history, so each checkpoint takes the single writer lock twice and fsyncs twice. The root commit also holds the global roots mutex. F1 alone would move the wait to the LMDB writer lock. F2 writes the nodes and the root in one transaction, outside the roots mutex."
+    plan:
+      step_1: "Checkpoint writer for the most common caller: History::stage, RadixTreeImpl::take_pending_writes, CheckpointWriter with KvCheckpointWriter over batched_put, roots_store::root_record_kvs. do_checkpoint stages under the current-history mutex and writes after it releases the mutex. No trait signature changes for callers in casper or rspace."
+      step_2: "One CheckpointCommit module (open, commit, contains_root) replaces RootRepository. The global roots mutex is deleted, and the collision check moves into the write transaction. A separate PR after step 1 has soak evidence."
+    rejected:
+      - "C2, an immutable History for issue #24: in production, checkpoints run on spawned repositories with their own mutex, so readers never wait for a checkpoint fsync. See the design record, section 3."
+      - "The flexible StateCommit interface with sync policies: three variants have no caller, and group commit weakens the durability of finalized state."
+    files:
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/history/history.rs
+      - rspace++/src/rspace/history/instances/radix_history.rs
+      - rspace++/src/rspace/history/radix_tree.rs
+      - rspace++/src/rspace/history/roots_store.rs
+      - rspace++/src/rspace/history/root_repository.rs
+      - rspace++/src/rspace/history/history_repository.rs
+      - rspace++/tests/history/roots_lock_contention_tests.rs
+    acceptance:
+      - "A checkpoint advances the last_txn_id of the rspace/history LMDB environment by exactly 1, in a real-LMDB test through the history repository interface."
+      - "A checkpoint with actions makes exactly one CheckpointWriter write, an empty checkpoint makes none, and the written root equals the root of the new history, in tests through the repository interface with a recording adapter."
+      - "No CheckpointWriter write occurs while the roots mutex is held, asserted on one thread without timing."
+      - "A failing CheckpointWriter leaves the history store and current-root unchanged."
+      - "A key with a different stored value still fails with the collision error, and a key with an equal stored value is still skipped."
+      - "A process call with cache_r bounded to one entry completes without a missing-node error, which confirms or rejects the eviction defect in the design record."
+      - "Mocks sit only at the CheckpointWriter seam. No internal collaborator of the history repository is mocked."
+      - "The ignored roots_lock_contention_probe and its helpers are deleted. The remaining LMDB shape tests use the last_txn_id difference."
+      - "A soak of the change shows a lower checkpoint root commit time and an unchanged or lower sustained finalization p95 than soak 37343966570, read with the controls and confounders of TASK-021-8."
 ---
 ```
 
