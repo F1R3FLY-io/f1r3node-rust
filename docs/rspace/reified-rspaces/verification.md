@@ -524,11 +524,11 @@ A module passes only when it has at least one test and every test passes.
 A skipped test, an expected failure, and an unexpected success make the module fail, because they give no evidence.
 The runner sets `sys.dont_write_bytecode`, so a run writes no `__pycache__` directory into the snapshot.
 
-*Table 13. The checker self-tests (last run: 273 tests, 0 failures).*
+*Table 13. The checker self-tests (last run: 278 tests, 0 failures).*
 
 | Module | Tests | What the tests check |
 |---|---|---|
-| `test_checkers` | 103 | The consensus-checklist checker (21), the footprint checker (28), the completeness checker (11), the Rust citation rule (10) and module (4), the ORD phase of the invariant-map checker (8), the production scan (7), the model-map checker for a phase other than P1 (9), and the P1 ids H23 and T6 of decision 36 in both map checkers (5). |
+| `test_checkers` | 108 | The consensus-checklist checker (21), the footprint checker (28), the completeness checker (11), the Rust citation rule (10) and module (4), the ORD phase of the invariant-map checker (8), the production scan (7), the model-map checker for a phase other than P1 (9), the P1 ids H23 and T6 of decision 36 in both map checkers (5), and the merge script of the queue parity golden (5). |
 | `test_closure` | 87 | The policy loading (5), the modeled rules (11), the invariant rules (6), the entry-point rules (4), the document rules (10), the audit harness (22), the ledger-copy rules (11) and controls (7), and the runner itself (11). |
 | `test_doc_lint` | 83 | Every rule of `doc_lint.py` on a passing fixture and a failing fixture, the command line, the render check, and a manifest row that names an example file. |
 
@@ -2270,6 +2270,66 @@ The TLA+ gate printed `reified-rspaces tla: PASS=162 FAIL=0 SKIP=0` (`target/ver
 The map checkers, the closure checks, the completeness phases, the footprint check, and the 273 checker self-tests pass (`target/verification/reified-rspaces/d45/option-p-gates/summary-checkers.txt`).
 The audit `scripts/audit/check-rocq-line-refs.sh` reports the same 7 mismatches as at the commit of Rule E, all in Casper documents outside the campaign.
 The Option P edits of `spaces/generic.rs` and `spaces/counter.rs` moved lines, so 93 older citations of the documents and the models moved with them.
+
+## 12. Phase P5: the other disciplines and outer stores
+
+Phase P5 adds the disciplines bag, set, cell, stack, and priority queue, the outer stores Array, Vector, and PathMap, and same-space joins.
+[Decision 48](decision-register.md#decision-48) sets the order of the work.
+Its first step, W0, freezes a baseline of the queue before the engine changes.
+
+### 12.1 The queue parity golden
+
+The suite `rholang/tests/reified_queue_parity.rs` pins what the queue agent does on a fixed set of deploys.
+The golden file `test-vectors/reified-queue-parity-v1.json` was captured at the commit of Option P of decision 45 (`2c2b45bf5`).
+Every later step of P5 must leave the golden unchanged.
+
+*Table 63. The scenarios of the queue parity golden.*
+
+| Scenario | Deploys | What it pins |
+|---|---|---|
+| `fifo_and_peek_restore` | 5 | FIFO enqueue and dequeue, and two consume-side peeks with their re-stores (Rule E of decision 45) |
+| `produce_side_peek_reoffer` | 5 | A peek waiter with the re-offer to the next waiter (decision 30), and the store after a peek with no waiter behind it |
+| `capped_persistent_send` | 2 | A persistent send to 66 waiters, past `FIRE_ROUND_CAP`, with the re-issue that keeps the order of its first round (I-21, decision 43) |
+| `reentry` | 3 | The re-entry of decision 43 ahead of a younger datum |
+| `divergent_pair` | 1 | A persistent receive and a persistent send that re-issue until the phlo runs out (A10) |
+| `persistent_operations` | 3 | A persistent send with two waiters, and a persistent receive that drains a queue |
+| `legacy_budget` | 5 | The deploys of a legacy budget, with the legacy charges of Option P |
+
+Each record of a deploy holds these values:
+
+- The events of the deploy, in order. Each event has every field of its identity: the hashes, the channels, the peeks, and `times_repeated`.
+- The phlo cost, the error codes, and the root after the deploy.
+- For a token budget, the host-work usage of each dimension, under a metered budget with no binding limit.
+- For a legacy budget, the storage charges in order and all legacy charges as a multiset.
+
+The deploys name the space only through injected names, so no host operation interleaves with the space jobs.
+A token scenario runs twice on fresh stores: with the plain evaluation of a user deploy, and under a metered host-work budget.
+The suite requires the same events, costs, errors, and roots from both runs.
+The counts of waiters are literals, so the deploys of the golden do not change with `FIRE_ROUND_CAP`.
+
+**Determinism.** Two captures on the same host gave byte-identical fragments.
+The second capture assembles to the same golden file (`merge-queue-parity-capture.py --check`).
+
+**Negative controls.** The script `.reified-rspaces-work/p5/run_parity_mutants.py` applies three mutants and restores each file (`target/verification/reified-rspaces/p5/parity-mutants.log`).
+Each mutant makes its expected scenarios fail, in the expected fields of their records.
+
+*Table 64. The mutants of the queue parity golden.*
+
+| Mutant | What it changes | What fails |
+|---|---|---|
+| `fire-round-cap-63` | `FIRE_ROUND_CAP` is 63. | All six token scenarios, in their events, roots, and host work |
+| `store-without-event-fee` | A store pays no event fee in a legacy deploy. | `legacy_budget`, in its charges and its cost |
+| `compare-charges-two-operations` | Each metered comparison reserves two operations. | All six token scenarios, in their host work only |
+
+**Capture.** A new capture replaces the baseline, so only a recorded decision that changes the queue can justify it.
+To capture, do these steps from the repository root:
+
+1. Set `RRS_CAPTURE_QUEUE_PARITY_OUT` to an absolute directory under `target/`.
+2. Run `cargo test -p rholang --test reified_queue_parity`. Each scenario writes one fragment.
+3. Run `python3 scripts/verify-reified/merge-queue-parity-capture.py --capture-dir <directory> --output test-vectors/reified-queue-parity-v1.json --capture-command <command>`.
+
+The merge script fails on a missing fragment, on a fragment of another scenario, and on an unknown fragment.
+Five checker self-tests cover these rules and the check mode (Table 13).
 
 ## References
 

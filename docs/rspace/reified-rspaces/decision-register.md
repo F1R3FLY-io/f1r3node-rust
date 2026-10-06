@@ -93,7 +93,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
 | [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E and Option P implemented |
 | [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | In force. Implemented |
-| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after decision 43 |
+| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Planned after P5 (decision 48) |
+| [Decision 48](#decision-48) | The work order after decision 43 | 2026-10-06 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -1318,9 +1319,9 @@ One rule for play and replay makes the deploy fail in play, and native replay re
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. The phase is planned after [decision 43](#decision-43). |
+| Status | In force. [Decision 48](#decision-48) moves the phase after P5. |
 | Amends | [M-3](#m-3), for one accessor |
-| Related | [Decision 46](#decision-46) |
+| Related | [Decision 46](#decision-46), [decision 48](#decision-48) |
 
 **Statement.** Spaces get full support on the native path in their own phase, after [decision 43](#decision-43).
 The phase starts with a design pass, and then it delivers code, formal models, and tests.
@@ -1331,6 +1332,33 @@ That accessor is the only exception to [M-3](#m-3).
 
 **Reason.** The native path is the default of protocol version 6.
 A space backend over the tickets of the native replay session needs the space store of the session, and the session keeps its store private.
+
+### <a id="decision-48"></a>Decision 48: The work order after decision 43
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-06 |
+| Status | In force |
+| Amends | [Decision 47](#decision-47), its timing |
+| Related | [Decision 43](#decision-43), [decision 45](#decision-45) |
+
+**Statement.** The work continues in this order:
+
+1. Commit [decision 43](#decision-43).
+2. Implement and commit [decision 45](#decision-45), Rule E and Option P, in the shared agent and substrate.
+3. Run P5 with parallel agents on separate files. Each discipline and each outer store gets its own batch, and one owner edits `generic.rs` and the family dispatch.
+4. Run [decision 47](#decision-47), the native support, after P5. Until then, spaces fail closed in native execution ([decision 46](#decision-46)).
+
+Each phase runs one full gate set, not each decision.
+Before its commit, each decision runs its targeted tests, the formal legs that it changes, the checkers, and the document lint.
+It also runs the empty-state-hash regression tests of I-14.
+
+**User's words.** The user asked why one space took so much time, and then chose "Speed up as proposed (Recommended)".
+
+**Reason.** About 184 production lines are specific to `hashmap:queue`: 131 in `queue.rs` and 53 in `hashmap.rs`.
+About 12,550 lines are the shared framework that every family reuses.
+The framework holds the substrate, the encoding, the agent framework, the factory, the handle, the routing, and the runtime.
+So the other families can reuse the framework in parallel batches.
 
 ## Minimal-footprint revision: M-1 to M-5
 

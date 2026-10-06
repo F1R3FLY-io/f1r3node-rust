@@ -313,6 +313,18 @@
         "rholang/tests/reified_p4_props.rs",
         "rholang/tests/reified_legacy_charges.rs"
       ]
+    },
+    "p5": {
+      "description": "P5, the other disciplines, the outer stores and the joins (decision 48 and the P5 design v3). W0 adds the queue parity golden, which pins the queue at the commit of decision 45. The spine and the batches add their sources, entry points, tests and property files.",
+      "sources": [],
+      "entry_points": [
+        {"file": "rholang/tests/reified_queue_parity.rs", "pattern": "const CORPUS: &str = \"test-vectors/reified-queue-parity-v1.json\";"},
+        {"file": "scripts/verify-reified/merge-queue-parity-capture.py", "pattern": "CORPUS_NAME = \"reified_queue_parity_v1\""}
+      ],
+      "tests": [
+        "rholang/tests/reified_queue_parity.rs"
+      ],
+      "property_files": []
     }
   }
 }

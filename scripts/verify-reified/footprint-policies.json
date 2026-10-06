@@ -1403,6 +1403,15 @@
         "test-vectors/protobuf-schema-head-6f7a80da3.json",
         "test-vectors/reified-syntax-corpus-v1.json"
       ]
+    },
+    "p5": {
+      "description": "P5 (decision 48 and the P5 design v3): the other disciplines, the outer stores and the joins. It extends p4, so the P4 edits and new files carry over, and it adds the new files of P5. W0 adds the queue parity golden. A batch that edits a base file that p4 already edits rewrites this policy to extend campaign with one cumulative edit per path, as p4 does.",
+      "extends": "p4",
+      "allowed_new_files": [
+        "rholang/tests/reified_queue_parity.rs",
+        "scripts/verify-reified/merge-queue-parity-capture.py",
+        "test-vectors/reified-queue-parity-v1.json"
+      ]
     }
   }
 }

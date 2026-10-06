@@ -5,7 +5,8 @@ the pin, the allowed new files and the replaced blocks, and the ORD phase of che
 They also cover check-consensus-checklist.py, the citation rule of
 check-model-map.py, and its maps of phases other than P1 (Q# and U# ids, no
 fix rules, const fn, restricted visibility, associated consts and type aliases).
-The P1 id lists of both map checkers include H23 and T6 (decision 36).
+The P1 id lists of both map checkers include H23 and T6 (decision 36). They also cover
+merge-queue-parity-capture.py, which assembles the queue parity golden of P5.
 
 Each checker gets passing fixtures and failing fixtures (negative controls).
 Fixtures are built in a temporary directory, so the source tree is never written.
@@ -23,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -47,6 +49,7 @@ MODEL_MAP = load("check_model_map", "check-model-map.py")
 CITATIONS = load("rust_citations", "rust_citations.py")
 INVARIANT_MAP = load("check_invariant_map", "check-invariant-map.py")
 CHECKLIST = load("check_consensus_checklist", "check-consensus-checklist.py")
+QUEUE_PARITY_MERGE = load("merge_queue_parity_capture", "merge-queue-parity-capture.py")
 
 GIT_FIXTURE_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -1392,6 +1395,93 @@ class PhaseOneDecision36Ids(unittest.TestCase):
                 MODEL_MAP.check(data, True, report)
         self.assertIn("FAIL: H23 is not defined in the map", output.getvalue())
         self.assertIn("FAIL: T6 is not defined in the map", output.getvalue())
+
+
+class QueueParityMerge(unittest.TestCase):
+    """merge-queue-parity-capture.py: one fragment for each scenario, and the --check mode."""
+
+    REVISION = "0" * 40
+
+    def write_fragments(self, directory, skip=None, wrong=None, extra=None):
+        for scenario in QUEUE_PARITY_MERGE.SCENARIOS:
+            if scenario == skip:
+                continue
+            key = "another_scenario" if scenario == wrong else scenario
+            document = {key: [{"label": scenario, "cost": 1}]}
+            (directory / f"{scenario}.json").write_text(json.dumps(document), encoding="utf-8")
+        if extra is not None:
+            (directory / f"{extra}.json").write_text(json.dumps({extra: []}), encoding="utf-8")
+
+    def arguments(self, directory):
+        return types.SimpleNamespace(
+            capture_dir=directory,
+            output=directory.parent / "golden.json",
+            capture_command="capture",
+            revision=self.REVISION,
+            rustc_version="rustc 0",
+            check=False,
+        )
+
+    def test_assembles_every_scenario_with_its_provenance(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            self.write_fragments(directory)
+            corpus = json.loads(QUEUE_PARITY_MERGE.build_corpus(self.arguments(directory)))
+            self.assertEqual(sorted(QUEUE_PARITY_MERGE.SCENARIOS), sorted(corpus["scenarios"]))
+            self.assertEqual("reified_queue_parity_v1", corpus["name"])
+            self.assertEqual(self.REVISION, corpus["captured_at_revision"])
+            self.assertEqual(
+                [{"label": "reentry", "cost": 1}], corpus["scenarios"]["reentry"]
+            )
+
+    def test_missing_fragment_fails(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            self.write_fragments(directory, skip="reentry")
+            with self.assertRaises(SystemExit) as raised:
+                QUEUE_PARITY_MERGE.build_corpus(self.arguments(directory))
+            self.assertIn("missing capture fragment", str(raised.exception))
+
+    def test_fragment_of_another_scenario_fails(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            self.write_fragments(directory, wrong="legacy_budget")
+            with self.assertRaises(SystemExit) as raised:
+                QUEUE_PARITY_MERGE.build_corpus(self.arguments(directory))
+            self.assertIn("must contain exactly the scenario legacy_budget", str(raised.exception))
+
+    def test_unknown_fragment_fails(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            self.write_fragments(directory, extra="stray")
+            with self.assertRaises(SystemExit) as raised:
+                QUEUE_PARITY_MERGE.build_corpus(self.arguments(directory))
+            self.assertIn("unknown capture fragments: stray", str(raised.exception))
+
+    def test_check_mode_detects_a_changed_golden(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw) / "capture"
+            directory.mkdir()
+            self.write_fragments(directory)
+            output = Path(raw) / "golden.json"
+            base = [
+                "merge-queue-parity-capture.py",
+                "--capture-dir", str(directory),
+                "--output", str(output),
+                "--capture-command", "capture",
+                "--revision", self.REVISION,
+                "--rustc-version", "rustc 0",
+            ]
+            with mock.patch.object(sys, "argv", base):
+                self.assertEqual(0, QUEUE_PARITY_MERGE.main())
+            with mock.patch.object(sys, "argv", base + ["--check"]):
+                self.assertEqual(0, QUEUE_PARITY_MERGE.main())
+            output.write_text(output.read_text(encoding="utf-8").replace('"cost": 1', '"cost": 2', 1),
+                              encoding="utf-8")
+            with mock.patch.object(sys, "argv", base + ["--check"]), \
+                    contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(1, QUEUE_PARITY_MERGE.main())
+            self.assertIn("differs from the assembled capture", errors.getvalue())
 
 
 if __name__ == "__main__":
