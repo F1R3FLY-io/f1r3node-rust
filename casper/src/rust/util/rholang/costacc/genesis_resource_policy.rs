@@ -1,3 +1,5 @@
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -12,6 +14,7 @@ use rholang::rust::interpreter::accounting::phlo_execution::PhloFundingIntentVie
 
 use crate::rust::casper::CasperShardConf;
 use crate::rust::errors::CasperError;
+use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub(crate) const OFFERED_PRODUCTION_READY: bool = true;
@@ -39,6 +42,53 @@ pub struct CompatibleAcquisitionTerms<'policy, 'terms> {
     schedule: PhloScheduleV1<'terms>,
 }
 
+/// DR-99: the genesis block of the chain whose approved block is `approved`.
+/// A genesis participant's approved block is the genesis itself. An
+/// LFS-joined node's approved block is its restore anchor, and the genesis is
+/// the block that the node learned during restore: its hash comes from the
+/// DAG's genesis register (or the held height-0 block), and its body from the
+/// block store. The body must re-hash to the learned hash, have no parents and
+/// belong to the anchor's shard. Without such a block the node fails closed:
+/// it never falls back to the anchor, whose post-state is not the genesis
+/// identity.
+pub(crate) fn resolve_policy_genesis(
+    approved: &BlockMessage,
+    dag: &BlockDagKeyValueStorage,
+    store: &KeyValueBlockStore,
+) -> Result<BlockMessage, CasperError> {
+    if approved.header.parents_hash_list.is_empty() {
+        return Ok(approved.clone());
+    }
+    let learned = dag
+        .genesis_hash()
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "resource policy: this node has not learned the shard genesis hash".to_string(),
+            )
+        })?;
+    let genesis = store
+        .get(&learned)
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        .ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "resource policy: this node holds no copy of genesis {}",
+                hex::encode(&learned)
+            ))
+        })?;
+    if genesis.block_hash != learned
+        || proto_util::hash_block(&genesis) != learned
+        || !genesis.header.parents_hash_list.is_empty()
+        || genesis.shard_id != approved.shard_id
+    {
+        return Err(CasperError::RuntimeError(format!(
+            "resource policy: the held copy of genesis {} is not an authenticated genesis",
+            hex::encode(&learned)
+        )));
+    }
+    Ok(genesis)
+}
+
 impl<'policy, 'terms> CompatibleAcquisitionTerms<'policy, 'terms> {
     pub fn adopted(&self) -> &'policy AdoptedResourcePolicy { self.adopted }
 
@@ -54,6 +104,19 @@ impl AdoptedResourcePolicy {
         adopted: &CasperShardConf,
     ) -> Result<Self, CasperError> {
         GenesisResourcePolicy::load(manager, approved_genesis)
+            .await?
+            .adopt(adopted)
+    }
+
+    /// DR-99: the adopted policy of the authenticated genesis block, with its
+    /// sealed constants read at `sealed_state` (`GenesisResourcePolicy::load_at`).
+    pub async fn load_at(
+        manager: &RuntimeManager,
+        approved_genesis: &BlockMessage,
+        sealed_state: &StateHash,
+        adopted: &CasperShardConf,
+    ) -> Result<Self, CasperError> {
+        GenesisResourcePolicy::load_at(manager, approved_genesis, sealed_state)
             .await?
             .adopt(adopted)
     }
@@ -142,9 +205,74 @@ impl AdoptedResourcePolicy {
 }
 
 impl GenesisResourcePolicy {
+    // Changed by DR-99 (joined-node policy adoption): the identity of the
+    // policy is the authenticated genesis block, and its sealed constants can
+    // be read at any held state of the chain. An LFS-joined node holds no
+    // genesis post-state below its restore horizon.
+    // pub async fn load(
+    //     manager: &RuntimeManager,
+    //     approved_genesis: &BlockMessage,
+    // ) -> Result<Self, CasperError> {
+    //     if !approved_genesis.header.parents_hash_list.is_empty() {
+    //         return Err(CasperError::RuntimeError(
+    //             "resource policy requires the approved genesis block".to_string(),
+    //         ));
+    //     }
+    //     let genesis_root = approved_genesis.body.state.post_state_hash.clone();
+    //     let record = manager.get_genesis_resource_policy(&genesis_root).await?;
+    //     let (_, _, minimum) =
+    //         crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
+    //             manager,
+    //             &genesis_root,
+    //         )
+    //         .await?;
+    //     let minimum_price = u64::try_from(minimum).map_err(|_| {
+    //         CasperError::RuntimeError("genesis phlo minimum must be nonnegative".to_string())
+    //     })?;
+    //     let (_, _, decimals) =
+    //         crate::rust::util::token_metadata_check::read_on_chain_token_metadata(
+    //             manager,
+    //             &genesis_root,
+    //         )
+    //         .await?;
+    //     record
+    //         .validate_context(
+    //             approved_genesis.header.version,
+    //             &approved_genesis.shard_id,
+    //             decimals,
+    //         )
+    //         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+    //     Ok(Self {
+    //         genesis_root,
+    //         record,
+    //         minimum_price,
+    //     })
+    // }
+
+    /// The policy of a genesis block whose post-state this node holds.
     pub async fn load(
         manager: &RuntimeManager,
         approved_genesis: &BlockMessage,
+    ) -> Result<Self, CasperError> {
+        Self::load_at(
+            manager,
+            approved_genesis,
+            &approved_genesis.body.state.post_state_hash,
+        )
+        .await
+    }
+
+    /// DR-99: the policy of the authenticated genesis block, with its sealed
+    /// constants read at `sealed_state`, a held state of the same chain. The
+    /// policy record, the consensus parameters and the token metadata are
+    /// genesis template constants under nonce `i64::MAX`, so every held state
+    /// returns the genesis values. The identity (`genesis_root`) and the
+    /// checked context (header version, shard) stay those of the genesis
+    /// block.
+    pub async fn load_at(
+        manager: &RuntimeManager,
+        approved_genesis: &BlockMessage,
+        sealed_state: &StateHash,
     ) -> Result<Self, CasperError> {
         if !approved_genesis.header.parents_hash_list.is_empty() {
             return Err(CasperError::RuntimeError(
@@ -152,11 +280,11 @@ impl GenesisResourcePolicy {
             ));
         }
         let genesis_root = approved_genesis.body.state.post_state_hash.clone();
-        let record = manager.get_genesis_resource_policy(&genesis_root).await?;
+        let record = manager.get_genesis_resource_policy(sealed_state).await?;
         let (_, _, minimum) =
             crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
                 manager,
-                &genesis_root,
+                sealed_state,
             )
             .await?;
         let minimum_price = u64::try_from(minimum).map_err(|_| {
@@ -165,7 +293,7 @@ impl GenesisResourcePolicy {
         let (_, _, decimals) =
             crate::rust::util::token_metadata_check::read_on_chain_token_metadata(
                 manager,
-                &genesis_root,
+                sealed_state,
             )
             .await?;
         record

@@ -7459,3 +7459,139 @@ this change on 2026-10-06, with the provisional caps.
 
 **Cross-refs.** DR-95, DR-96 (parts 2 to 4). Leaf
 `ofp-2-cap-d-c3-dirty-export`.
+
+## DR-99 — A node that joins after genesis adopts the genesis resource policy
+
+**Status.** Implemented for bug 9954 of epic 8946 on 2026-10-06.
+
+**Context.** The offered-only activation (commit `0ba7b9bfb`, DR-73) makes
+`hash_set_casper` load the adopted resource policy on every chain that has
+a policy record. The loader took the approved block as the genesis block,
+and it refused a block with parents. A node that joins with
+last-finalized-state (LFS) restore approves its restore anchor, which is a
+later block. So no node could join a policy chain after genesis: not an
+observer, not a late validator, and not a node that restores again.
+
+The embers stack showed the failure. Its observer joined after block 1 was
+finalized, and its restore stopped three times:
+
+- attempt 1: "resource policy requires the approved genesis block";
+- attempts 2 and 3: "Estimator not available", because attempt 1 had taken
+  the estimator out of its cell (a general Casper defect, see "Out of
+  scope").
+
+Block validation, offered admission, the deploy API, and the proposal path
+also loaded the policy from the approved block at each use. On a joined
+node they would fail in the same way. Each of those loads also ran three
+exploratory evaluations.
+
+The report that a fresh chain has genesis header version 1 under the
+`local-qa` protocol 6 policy did not reproduce. The genesis block of a
+fresh standalone node with that policy has version 6.
+
+**Decision.**
+
+1. The identity of the policy is the authenticated genesis block, not the
+   approved block. `resolve_policy_genesis` returns the genesis block:
+   - A parentless approved block is the genesis block itself.
+   - Otherwise the node uses the genesis block that it learned during the
+     restore. The hash comes from the genesis register of the DAG, or from
+     the held height-0 block. The block comes from the block store.
+   - The block must re-hash to the learned hash, carry that hash, have no
+     parents, and belong to the shard of the approved block.
+   - Without such a block the node does not start. It never uses the
+     anchor as the genesis block, because the post-state of the anchor is
+     not the genesis identity.
+2. `GenesisResourcePolicy::load_at` reads the sealed constants at a held
+   state of the same chain: the state of the approved block.
+   - The policy record (`TokenMetadata.resourcePolicy`), the consensus
+     parameters (PoS `getConsensusParameters`), and the token metadata are
+     genesis template constants under nonce `i64::MAX`. No deploy can change
+     them, so every state of the chain returns the genesis values.
+   - The identity (`genesis_root`) and the checked context (header version
+     and shard) stay those of the genesis block.
+   - `GenesisResourcePolicy::load` is `load_at` at the genesis post-state.
+3. `hash_set_casper` adopts the policy once and stores it in the Casper
+   instance (`adopted_resource_policy`, exposed by
+   `Casper::adopted_resource_policy`). The version adoption of DR-73 does
+   not change. A joined node adopts the header version of its anchor, and
+   `adopt` then requires the version of the genesis schedule. So a joined
+   node runs the genesis version, or it does not start.
+4. Block validation, offered admission (`BlockAPI::deploy_offered` and
+   `admit_deploy_envelope`), and proposals use the stored policy.
+   - A proposal checks the stored policy against the shard configuration of
+     its snapshot (`GenesisResourcePolicy::adopt`). This check runs no
+     exploratory evaluation.
+   - Admission compares the identity of the submitted policy with the
+     identity of the stored policy. Before this change it compared it with
+     the post-state of the approved block.
+   - `block_creator::create_with_approved_genesis` became
+     `create_with_adopted_policy`.
+5. The replaced lines stay as comments with the reason.
+
+```text
+⟨policy genesis⟩ ≡
+  if parents(approved) = ∅ then approved
+  else let h = genesis_register ∨ height_0_block
+       let g = block_store[h]
+       require hash(g) = h ∧ g.hash = h ∧ parents(g) = ∅ ∧ shard(g) = shard(approved)
+       g
+
+⟨adopted policy⟩ ≡ adopt(load_at(⟨policy genesis⟩, post_state(approved)), shard_conf)
+```
+
+**Behavior changes.**
+
+- A node that joins a policy chain after genesis starts and adopts the
+  genesis policy.
+- Validation, admission, and proposals no longer run the three exploratory
+  evaluations of a policy load at each use. This change covers the
+  per-use reload part of item G8 (`ofp-2-policy-cache`).
+- A node that has no authenticated genesis copy does not start on a policy
+  chain. Before this change, no joined node started on a policy chain.
+
+**Out of scope (reported, not changed).** These are general Casper defects
+(the Casper team owns them):
+
+- `create_casper_and_transition_to_running` takes the estimator out of its
+  cell before `hash_set_casper` runs. If an attempt fails, the later
+  attempts fail with "Estimator not available".
+- `request_floor_cache` takes the floor-cache receiver on the first restore
+  attempt and does not put it back.
+
+**Verification.** `GenesisVersionAdoption.v` proves without axioms:
+
+- `joined_node_runs_the_genesis_version`: a joined node that passes the
+  adopt check runs the genesis version.
+- `joined_anchor_at_the_genesis_version_passes_adopt_check` and
+  `joined_anchor_version_mismatch_fails_adopt_check`: the check passes
+  exactly when the anchor carries the genesis version.
+- `policy_identity_is_the_genesis_root` and
+  `adopted_identity_is_anchor_independent`: every node of one chain adopts
+  the genesis post-state root as the identity, whatever its anchor.
+- Negative control `anchor_bound_identity_splits_joined_nodes`: the
+  identity before this change, the post-state of the approved block,
+  separates a genesis participant from a joined node of the same chain.
+
+Tests:
+
+- `joined_anchor_version_adopts_only_the_genesis_version` (256 cases): the
+  running version of a joined node is its anchor version, and the real
+  `adopt` accepts it exactly when it equals the genesis schedule version.
+- `resolve_policy_genesis_layouts` (nine unit tests): a parentless approved
+  block, a shipped genesis copy, the height-0 fallback, and six layouts that
+  fail closed. These are no learned hash, no copy, a copy that does not
+  re-hash, a valid block under another hash, a learned block with parents,
+  and a genesis of another shard.
+- `a_node_restored_from_a_post_genesis_anchor_adopts_the_genesis_resource_policy`:
+  a policy chain with one offered block as the anchor.
+  - The load before this change refuses the anchor (regression witness).
+  - The sealed constants at the anchor equal the genesis values, and a read
+    at an unknown state fails.
+  - `hash_set_casper` with the anchor as the approved block starts and
+    adopts the genesis policy at version 6.
+  - The joined node admits an offer and refuses a policy with another
+    identity.
+
+**Cross-refs.** DR-34, DR-73. Bug 9954
+(`bug-a-node-joining-a-resource-policy-chain-after-genesis-cannot-start-policy-load-requires-the-approved-block-to-be-genesis-30a2aa`).

@@ -630,3 +630,165 @@ async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
         producer_receipt.purses[0].post_balance
     );
 }
+
+/// DR-99 (bug 9954): a node that joins a policy chain after genesis restores
+/// from a post-genesis anchor. Its approved block is the anchor, it holds the
+/// anchor state and a copy of genesis, and it must adopt the genesis resource
+/// policy. Before DR-99 the node did not start, because the policy load took
+/// the approved block as the genesis block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_restored_from_a_post_genesis_anchor_adopts_the_genesis_resource_policy() {
+    use casper::rust::casper::hash_set_casper;
+    use casper::rust::util::rholang::costacc::genesis_resource_policy::GenesisResourcePolicy;
+    use models::rust::deploy_envelope::DeployEnvelope;
+
+    let genesis = offered_v6_genesis(1).await;
+    let genesis_block = genesis.genesis_block.clone();
+    let mut nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, None)
+        .await
+        .expect("single-node network starts");
+    // The anchor carries an offer, so its post-state differs from the
+    // genesis post-state (an empty block keeps the genesis post-state).
+    BlockAPI::deploy_offered(
+        &nodes[0].engine_cell,
+        signed_offer(
+            genesis.genesis_vaults[0].0.clone(),
+            &genesis.genesis_vaults[0].1,
+        ),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .expect("well-formed offer is admitted");
+    let anchor = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("an offered block extends the policy chain");
+    assert_eq!(anchor.body.deploys.len(), 1);
+    assert_eq!(anchor.header.parents_hash_list, vec![genesis_block
+        .block_hash
+        .clone()]);
+    assert_ne!(
+        anchor.body.state.post_state_hash,
+        genesis_block.body.state.post_state_hash
+    );
+    let runtime_manager = nodes[0].runtime_manager.clone();
+    let shard_conf = nodes[0].casper.casper_shard_conf.clone();
+
+    // Regression witness: the load before DR-99 takes the approved block as
+    // the genesis block, so it refuses the anchor.
+    let refused = AdoptedResourcePolicy::load(&runtime_manager, &anchor, &shard_conf)
+        .await
+        .expect_err("the anchor is not a genesis block");
+    assert!(refused
+        .to_string()
+        .contains("requires the approved genesis block"));
+
+    // The sealed constants read at the anchor equal the genesis values, and
+    // the reads use the given state: an unknown state fails.
+    let at_genesis = GenesisResourcePolicy::load(&runtime_manager, &genesis_block)
+        .await
+        .expect("the genesis policy loads at the genesis state");
+    let at_anchor = GenesisResourcePolicy::load_at(
+        &runtime_manager,
+        &genesis_block,
+        &anchor.body.state.post_state_hash,
+    )
+    .await
+    .expect("the genesis policy loads at the anchor state");
+    assert_eq!(
+        at_anchor.genesis_root(),
+        &genesis_block.body.state.post_state_hash
+    );
+    assert_eq!(at_anchor.genesis_root(), at_genesis.genesis_root());
+    assert_eq!(
+        at_anchor.record().encode().expect("the record encodes"),
+        at_genesis.record().encode().expect("the record encodes")
+    );
+    assert_eq!(at_anchor.minimum_price(), at_genesis.minimum_price());
+    assert!(GenesisResourcePolicy::load_at(
+        &runtime_manager,
+        &genesis_block,
+        &vec![0x5c; 32].into(),
+    )
+    .await
+    .is_err());
+
+    let deploy_storage = nodes[0].deploy_storage.lock().clone();
+    let joined = hash_set_casper(
+        nodes[0].casper.block_retriever.clone(),
+        nodes[0].casper.event_publisher.clone(),
+        Arc::new(runtime_manager.clone()),
+        nodes[0].casper.estimator.clone(),
+        nodes[0].block_store.clone(),
+        nodes[0].block_dag_storage.clone(),
+        deploy_storage,
+        nodes[0].rejected_deploy_buffer.clone(),
+        nodes[0].casper.casper_buffer_storage.clone(),
+        None,
+        shard_conf.clone(),
+        anchor.clone(),
+        casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+    )
+    .await
+    .expect("a node restored from a post-genesis anchor starts");
+    assert_eq!(
+        joined
+            .get_approved_block()
+            .expect("the joined node has an approved block")
+            .block_hash,
+        anchor.block_hash
+    );
+    let adopted = joined
+        .adopted_resource_policy()
+        .expect("the joined node adopts the genesis policy");
+    assert_eq!(
+        adopted.genesis().genesis_root(),
+        &genesis_block.body.state.post_state_hash
+    );
+    assert!(adopted.offered_funded_v6_active());
+    assert!(joined.offered_funded_active());
+    assert_eq!(joined.get_version(), 6);
+
+    // Admission: the joined node admits an offer under its adopted policy and
+    // refuses a policy with another genesis identity.
+    let limits = offered_funded_v6_limits().envelope;
+    let offer = DeployEnvelope::from_proto(
+        signed_offer_at(
+            genesis.genesis_vaults[0].0.clone(),
+            &genesis.genesis_vaults[0].1,
+            11,
+        ),
+        limits,
+    )
+    .expect("the offer is a canonical envelope");
+    assert!(matches!(
+        joined.deploy_envelope(offer, adopted),
+        Ok(Either::Right(_))
+    ));
+    let mut foreign_genesis = genesis_block.clone();
+    foreign_genesis.body.state.post_state_hash = anchor.body.state.post_state_hash.clone();
+    let foreign = AdoptedResourcePolicy::load_at(
+        &runtime_manager,
+        &foreign_genesis,
+        &anchor.body.state.post_state_hash,
+        &shard_conf,
+    )
+    .await
+    .expect("a policy with another identity loads");
+    assert_ne!(
+        foreign.genesis().genesis_root(),
+        adopted.genesis().genesis_root()
+    );
+    let second_offer = DeployEnvelope::from_proto(
+        signed_offer_at(
+            genesis.genesis_vaults[0].0.clone(),
+            &genesis.genesis_vaults[0].1,
+            12,
+        ),
+        limits,
+    )
+    .expect("the offer is a canonical envelope");
+    assert!(joined.deploy_envelope(second_offer, &foreign).is_err());
+}

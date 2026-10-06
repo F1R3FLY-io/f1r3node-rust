@@ -899,7 +899,9 @@ pub async fn compute_deploys_checkpoint_envelopes(
     system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
     s: &CasperSnapshot,
     runtime_manager: &RuntimeManager,
-    approved_genesis: Option<&BlockMessage>,
+    // Changed by DR-99: the policy adopted at start replaces the approved genesis.
+    // approved_genesis: Option<&BlockMessage>,
+    adopted_policy: Option<&AdoptedResourcePolicy>,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
@@ -944,18 +946,32 @@ pub async fn compute_deploys_checkpoint_envelopes(
         .iter()
         .any(|candidate| matches!(candidate, PendingDeployCandidate::Envelope(_)))
     {
-        let approved_genesis = approved_genesis.ok_or_else(|| {
+        // Changed by DR-99 (joined-node policy adoption): the proposal takes
+        // the policy adopted at start and checks it against the snapshot's
+        // shard configuration, without new exploratory evaluations.
+        // let approved_genesis = approved_genesis.ok_or_else(|| {
+        //     CasperError::RuntimeError(
+        //         "offered proposal requires its authenticated approved genesis".to_string(),
+        //     )
+        // })?;
+        // Some(
+        //     AdoptedResourcePolicy::load(
+        //         runtime_manager,
+        //         approved_genesis,
+        //         &s.on_chain_state.shard_conf,
+        //     )
+        //     .await?,
+        // )
+        let adopted_policy = adopted_policy.ok_or_else(|| {
             CasperError::RuntimeError(
-                "offered proposal requires its authenticated approved genesis".to_string(),
+                "offered proposal requires the adopted genesis resource policy".to_string(),
             )
         })?;
         Some(
-            AdoptedResourcePolicy::load(
-                runtime_manager,
-                approved_genesis,
-                &s.on_chain_state.shard_conf,
-            )
-            .await?,
+            adopted_policy
+                .genesis()
+                .clone()
+                .adopt(&s.on_chain_state.shard_conf)?,
         )
     } else {
         None

@@ -62,15 +62,25 @@ This distinction preserves existing fixtures and declared historical formats wit
 
 [`GenesisResourcePolicy::load`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/genesis_resource_policy.rs) requires the approved genesis block from the existing authority chain.
 The caller must establish approval before this call. The loader is not a block-signature or ceremony verifier.
-The loader rejects a block with parents and queries only its genesis post-state root.
-It requires exactly one canonical byte-array result and checks the record against the genesis protocol, shard, and on-chain decimal scale.
-The loader also reads the minimum phlo price from the PoS contract at that same root.
+The loader rejects a block with parents.
+`GenesisResourcePolicy::load` queries the genesis post-state root.
+`GenesisResourcePolicy::load_at` (DR-99) queries a held state of the same chain instead, because a node that joined after genesis does not hold the genesis post-state.
+The loader requires exactly one canonical byte-array result and checks the record against the genesis protocol, shard, and on-chain decimal scale.
+The loader also reads the minimum phlo price from the PoS contract at that same state.
 It publishes the loaded value only after all reads and checks succeed.
+
+The policy record, the PoS consensus parameters, and the token metadata are sealed genesis constants.
+Genesis registers each of them as a contract template under nonce `i64::MAX`, and no deploy can change them.
+So every state of the chain returns the genesis values, and a read at a later held state gives the same policy.
+The identity of the loaded value is always the genesis post-state root, whichever state the reads used.
 
 The loaded value retains the genesis root, its minimum price, and an immutable owned record.
 Load the policy during accounting initialization and retain the value for funding checks.
-Restart requires the authenticated genesis state or its verified recovery.
-The loader does not accept a current wallet root, current finalized root, or local tariff as a replacement authority.
+Restart requires an authenticated copy of the genesis block and a held state of the same chain (DR-99).
+A genesis participant holds the genesis state.
+A node that joined after genesis holds the state of its restore anchor and the genesis copy that it received during the restore.
+The loader does not accept a current wallet root, current finalized root, or local tariff as a replacement identity.
+It reads the sealed constants at a held state only because no deploy can change them.
 Missing state or malformed data returns an error.
 The caller must recover required state or reject the operation, not construct a replacement policy.
 A local read failure does not prove that a block is invalid.
@@ -81,12 +91,46 @@ Its fields are private. Later changes to a configuration value cannot change the
 The native family binding accepts this retained context instead of separate policy and configuration arguments.
 It checks the captured execution parameters and the selected schedule before checking signed family consent and allocation.
 
+`hash_set_casper` adopts the policy once, when Casper starts, and stores it in the Casper instance (DR-99).
+Running Casper exposes the stored context through `Casper::adopted_resource_policy()`.
+Block validation, offered admission, and proposals use the stored context and run no new exploratory evaluation.
+A proposal checks the stored context against the shard configuration of its snapshot with `GenesisResourcePolicy::adopt`.
+Offered admission compares the identity of the submitted context with the identity of the stored context.
+Other Casper instances adopt independently. This mechanism does not serialize execution or establish a cross-validator lock.
+A chain without a policy record stores no context, so historical paths do not require a policy record merely to construct Casper.
+
+Initialization finds the genesis block with `resolve_policy_genesis`.
+
+- A parentless approved block is the genesis block itself.
+- A node that joined after genesis approves its restore anchor, which has parents.
+  Its genesis hash comes from the genesis register of the DAG, or from the held height-0 block.
+  Its genesis block comes from the block store.
+- The block must re-hash to the learned hash, carry that hash, have no parents, and belong to the shard of the anchor.
+- Without such a block, Casper does not start.
+  Initialization never uses the restore anchor as the genesis block, because the post-state of the anchor is not the genesis identity.
+
+A joined node adopts the header version of its anchor, as every node adopts the header version of its approved block.
+`adopt` then requires the protocol version of the genesis schedule.
+So a joined node runs the genesis version or does not start (`GenesisVersionAdoption.joined_node_runs_the_genesis_version`).
+
+<details>
+<summary>Text before DR-99</summary>
+
 Running Casper exposes this context through `accounting_context()`.
 Concurrent requests share one successful initialization within that Casper instance.
 Failed initialization does not publish a context or prevent a later retry.
 Other Casper instances initialize independently. This mechanism does not serialize execution or establish a cross-validator lock.
 Initialization queries the original approved genesis, not the latest finalized state or candidate wallet state.
 Historical paths that do not request offered funding do not require a policy record merely to construct Casper.
+
+The loader rejects a block with parents and queries only its genesis post-state root.
+Restart requires the authenticated genesis state or its verified recovery.
+The loader does not accept a current wallet root, current finalized root, or local tariff as a replacement authority.
+
+These rules took the approved block as the genesis block.
+An LFS-joined node approves its restore anchor, so it could not start on a chain with a policy (bug 9954).
+
+</details>
 
 ### Executable native rules
 

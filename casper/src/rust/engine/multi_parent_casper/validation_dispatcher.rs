@@ -39,7 +39,8 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
-use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+// Unused since DR-99: validation reads the policy adopted at start.
+// use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint_with_policy;
 use crate::rust::validate::Validate;
 
@@ -156,20 +157,37 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
+        // Changed by DR-99 (joined-node policy adoption): validation uses the
+        // policy adopted at start, because an LFS-joined node's approved block
+        // is its restore anchor, not genesis.
+        // let offered_policy = if block
+        //     .body
+        //     .deploys
+        //     .iter()
+        //     .any(|term| matches!(term, ProcessedUserDeploy::Offered(_)))
+        // {
+        //     Some(
+        //         AdoptedResourcePolicy::load(
+        //             &this.runtime_manager,
+        //             &this.approved_block,
+        //             &this.casper_shard_conf,
+        //         )
+        //         .await?,
+        //     )
+        // } else {
+        //     None
+        // };
         let offered_policy = if block
             .body
             .deploys
             .iter()
             .any(|term| matches!(term, ProcessedUserDeploy::Offered(_)))
         {
-            Some(
-                AdoptedResourcePolicy::load(
-                    &this.runtime_manager,
-                    &this.approved_block,
-                    &this.casper_shard_conf,
+            Some(this.adopted_resource_policy.as_ref().ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "offered block on a chain without a genesis resource policy".to_string(),
                 )
-                .await?,
-            )
+            })?)
         } else {
             None
         };
@@ -184,7 +202,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
                 local_validator.as_ref(),
-                offered_policy.as_ref(),
+                offered_policy,
             ),
         )
         .await?;

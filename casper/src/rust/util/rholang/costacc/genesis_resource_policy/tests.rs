@@ -165,6 +165,201 @@ fn token_metadata_policy_getter_is_opt_in() {
         .contains(&format!("\"{encoded}\".hexToBytes()")));
 }
 
+/// DR-99: `resolve_policy_genesis` returns the authenticated genesis block of
+/// the approved block's chain, or fails closed. It never returns the anchor of
+/// a joined node.
+mod resolve_policy_genesis_layouts {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use models::rust::block_hash::BlockHash;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::super::resolve_policy_genesis;
+    use crate::rust::util::proto_util;
+
+    fn hashed_block(number: i64, parents: Vec<BlockHash>, shard: &str) -> BlockMessage {
+        let mut block = get_random_block(
+            Some(number),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(parents),
+            Some(vec![]),
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            Some(shard.to_string()),
+            None,
+        );
+        block.block_hash = proto_util::hash_block(&block);
+        block
+    }
+
+    struct JoinedLayout {
+        dag: BlockDagKeyValueStorage,
+        store: KeyValueBlockStore,
+        genesis: BlockMessage,
+        anchor: BlockMessage,
+    }
+
+    /// A restored node: the anchor is the approved block of the DAG, and the
+    /// genesis block is neither registered nor stored yet.
+    async fn joined_layout() -> JoinedLayout {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("in-memory DAG storage");
+        let store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("in-memory block store");
+        let genesis = hashed_block(0, vec![], "root");
+        let anchor = hashed_block(5, vec![genesis.block_hash.clone()], "root");
+        dag.insert(&anchor, InsertMode::Approved)
+            .expect("the anchor enters the DAG");
+        store
+            .put_block_message(&anchor)
+            .expect("the anchor is stored");
+        JoinedLayout {
+            dag,
+            store,
+            genesis,
+            anchor,
+        }
+    }
+
+    fn refusal(layout: &JoinedLayout) -> String {
+        resolve_policy_genesis(&layout.anchor, &layout.dag, &layout.store)
+            .expect_err("the resolver must fail closed")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_parentless_approved_block_is_its_own_policy_genesis() {
+        let layout = joined_layout().await;
+        let resolved = resolve_policy_genesis(&layout.genesis, &layout.dag, &layout.store)
+            .expect("a genesis participant needs no lookup");
+        assert_eq!(resolved, layout.genesis);
+    }
+
+    #[tokio::test]
+    async fn a_joined_node_resolves_its_shipped_genesis() {
+        let layout = joined_layout().await;
+        layout
+            .dag
+            .record_genesis_hash(layout.genesis.block_hash.clone())
+            .expect("the register records the learned hash");
+        layout
+            .store
+            .put_block_message(&layout.genesis)
+            .expect("the shipped genesis is stored");
+        let resolved = resolve_policy_genesis(&layout.anchor, &layout.dag, &layout.store)
+            .expect("a joined node resolves its verified genesis copy");
+        assert_eq!(resolved, layout.genesis);
+        assert_ne!(resolved, layout.anchor);
+    }
+
+    #[tokio::test]
+    async fn a_node_without_the_register_uses_its_height_zero_block() {
+        let layout = joined_layout().await;
+        layout
+            .dag
+            .insert(&layout.genesis, InsertMode::Approved)
+            .expect("a ceremony node holds genesis at height zero");
+        layout
+            .store
+            .put_block_message(&layout.genesis)
+            .expect("the genesis is stored");
+        let resolved = resolve_policy_genesis(&layout.anchor, &layout.dag, &layout.store)
+            .expect("the height-zero block is the learned genesis");
+        assert_eq!(resolved, layout.genesis);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_has_not_learned_the_genesis_fails_closed() {
+        let layout = joined_layout().await;
+        assert!(refusal(&layout).contains("has not learned"));
+    }
+
+    #[tokio::test]
+    async fn a_node_without_a_genesis_copy_fails_closed() {
+        let layout = joined_layout().await;
+        layout
+            .dag
+            .record_genesis_hash(layout.genesis.block_hash.clone())
+            .expect("the register records the learned hash");
+        assert!(refusal(&layout).contains("holds no copy"));
+    }
+
+    #[tokio::test]
+    async fn a_copy_that_does_not_rehash_to_the_register_fails_closed() {
+        let layout = joined_layout().await;
+        layout
+            .dag
+            .record_genesis_hash(layout.genesis.block_hash.clone())
+            .expect("the register records the learned hash");
+        let mut forged = layout.genesis.clone();
+        forged.body.state.post_state_hash = vec![0x5a; 32].into();
+        layout
+            .store
+            .put(layout.genesis.block_hash.clone(), &forged)
+            .expect("the forged copy is stored under the learned hash");
+        assert!(refusal(&layout).contains("not an authenticated genesis"));
+    }
+
+    #[tokio::test]
+    async fn a_valid_block_stored_under_another_hash_fails_closed() {
+        let layout = joined_layout().await;
+        layout
+            .dag
+            .record_genesis_hash(layout.genesis.block_hash.clone())
+            .expect("the register records the learned hash");
+        let other = hashed_block(0, vec![], "root");
+        assert_ne!(other.block_hash, layout.genesis.block_hash);
+        layout
+            .store
+            .put(layout.genesis.block_hash.clone(), &other)
+            .expect("another genesis is stored under the learned hash");
+        assert!(refusal(&layout).contains("not an authenticated genesis"));
+    }
+
+    #[tokio::test]
+    async fn a_learned_block_with_parents_fails_closed() {
+        let layout = joined_layout().await;
+        let middle = hashed_block(3, vec![layout.genesis.block_hash.clone()], "root");
+        layout
+            .dag
+            .record_genesis_hash(middle.block_hash.clone())
+            .expect("the register records a block with parents");
+        layout
+            .store
+            .put_block_message(&middle)
+            .expect("the block is stored");
+        assert!(refusal(&layout).contains("not an authenticated genesis"));
+    }
+
+    #[tokio::test]
+    async fn a_genesis_of_another_shard_fails_closed() {
+        let layout = joined_layout().await;
+        let foreign = hashed_block(0, vec![], "other");
+        layout
+            .dag
+            .record_genesis_hash(foreign.block_hash.clone())
+            .expect("the register records a genesis of another shard");
+        layout
+            .store
+            .put_block_message(&foreign)
+            .expect("the foreign genesis is stored");
+        assert!(refusal(&layout).contains("not an authenticated genesis"));
+    }
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
@@ -188,5 +383,29 @@ proptest::proptest! {
                 .adopt(&shard_conf(10, local, "root"))
                 .is_err());
         }
+    }
+
+    /// Extracted from `GenesisVersionAdoption.v`: `joined_node_runs_the_genesis_version`
+    /// and `joined_anchor_version_mismatch_fails_adopt_check` (DR-99). A joined node
+    /// adopts the header version of its anchor, and the adopt check against the sealed
+    /// genesis policy passes exactly when that version is the genesis schedule
+    /// version. So a joined node runs the genesis version or does not start.
+    #[test]
+    fn joined_anchor_version_adopts_only_the_genesis_version(
+        schedule_version in 1u64..64,
+        anchor_version in -8i64..72,
+        local in -8i64..72,
+    ) {
+        let genesis = policy(10, schedule_version, "root");
+        let running =
+            crate::rust::casper::adopted_casper_version(Some(&genesis), anchor_version, local);
+        proptest::prop_assert_eq!(running, anchor_version);
+        let accepted = policy(10, schedule_version, "root")
+            .adopt(&shard_conf(10, running, "root"))
+            .is_ok();
+        proptest::prop_assert_eq!(
+            accepted,
+            u64::try_from(anchor_version).ok() == Some(schedule_version)
+        );
     }
 }

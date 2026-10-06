@@ -105,6 +105,15 @@ pub trait Casper {
 
     fn offered_funded_active(&self) -> bool { false }
 
+    /// DR-99: the resource policy of the shard genesis, adopted once when the
+    /// Casper instance starts. `None` on a chain without a policy.
+    fn adopted_resource_policy(
+        &self,
+    ) -> Option<&crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy>
+    {
+        None
+    }
+
     fn deploy(
         &self,
         deploy: Signed<DeployData>,
@@ -393,18 +402,44 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         );
     }
     casper_shard_conf.casper_version = running_version;
-    let offered_funded_active = match genesis_policy {
+    // Changed by DR-99 (joined-node policy adoption): an LFS-joined node's
+    // approved block is its restore anchor, not genesis, so the policy is
+    // loaded for the authenticated genesis block and read at the anchor state.
+    // let offered_funded_active = match genesis_policy {
+    //     Some(_) => {
+    //         crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy::load(
+    //             &runtime_manager,
+    //             &approved_block,
+    //             &casper_shard_conf,
+    //         )
+    //         .await?
+    //         .offered_funded_v6_active()
+    //     }
+    //     None => false,
+    // };
+    let adopted_resource_policy = match genesis_policy {
         Some(_) => {
-            crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy::load(
-                &runtime_manager,
-                &approved_block,
-                &casper_shard_conf,
+            let genesis =
+                crate::rust::util::rholang::costacc::genesis_resource_policy::resolve_policy_genesis(
+                    &approved_block,
+                    &block_dag_storage,
+                    &block_store,
+                )?;
+            Some(
+                crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy::load_at(
+                    &runtime_manager,
+                    &genesis,
+                    &approved_block.body.state.post_state_hash,
+                    &casper_shard_conf,
+                )
+                .await?,
             )
-            .await?
-            .offered_funded_v6_active()
         }
-        None => false,
+        None => None,
     };
+    let offered_funded_active = adopted_resource_policy
+        .as_ref()
+        .is_some_and(|policy| policy.offered_funded_v6_active());
 
     Ok(MultiParentCasperImpl {
         divergence_monitor: std::sync::Arc::new(
@@ -426,6 +461,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         casper_shard_conf,
         approved_block,
         offered_funded_active,
+        adopted_resource_policy,
         finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),

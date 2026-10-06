@@ -889,13 +889,19 @@ impl BlockAPI {
         let casper = eng
             .with_casper()
             .ok_or_else(|| offered_validation_error("Casper instance was not available"))?;
-        let adopted = AdoptedResourcePolicy::load(
-            &casper.runtime_manager(),
-            casper.get_approved_block()?,
-            casper.casper_shard_conf(),
-        )
-        .await?;
-        check_offered_submission_policy(&envelope, &adopted)?;
+        // Changed by DR-99 (joined-node policy adoption): admission uses the
+        // policy adopted at start, because an LFS-joined node's approved block
+        // is its restore anchor, not genesis.
+        // let adopted = AdoptedResourcePolicy::load(
+        //     &casper.runtime_manager(),
+        //     casper.get_approved_block()?,
+        //     casper.casper_shard_conf(),
+        // )
+        // .await?;
+        let adopted = casper
+            .adopted_resource_policy()
+            .ok_or_else(|| offered_validation_error("this shard has no genesis resource policy"))?;
+        check_offered_submission_policy(&envelope, adopted)?;
         let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
             return Err(offered_validation_error("expected offered-funded envelope"));
         };
@@ -915,7 +921,7 @@ impl BlockAPI {
                 "offered-funded deploy is outside the block lifespan",
             ));
         }
-        let deploy_id = match casper.deploy_envelope(envelope, &adopted)? {
+        let deploy_id = match casper.deploy_envelope(envelope, adopted)? {
             Either::Left(error) => return Err(error.into()),
             Either::Right(deploy_id) => deploy_id,
         };

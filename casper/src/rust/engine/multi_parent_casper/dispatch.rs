@@ -66,6 +66,13 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
     fn offered_funded_active(&self) -> bool { self.offered_funded_active }
 
+    fn adopted_resource_policy(
+        &self,
+    ) -> Option<&crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy>
+    {
+        self.adopted_resource_policy.as_ref()
+    }
+
     fn deploy(
         &self,
         deploy: Signed<DeployData>,

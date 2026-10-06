@@ -40,6 +40,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::finality::floor_context::{FloorContext, RetryGateBasis};
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -2913,8 +2914,40 @@ pub async fn create(
     .await
 }
 
-pub async fn create_with_approved_genesis(
-    approved_genesis: &BlockMessage,
+// Replaced by DR-99 (joined-node policy adoption): a proposal takes the
+// policy that the Casper instance adopted at start, because an LFS-joined
+// node's approved block is its restore anchor, not genesis.
+// pub async fn create_with_approved_genesis(
+//     approved_genesis: &BlockMessage,
+//     offered_funded_active: bool,
+//     casper_snapshot: &CasperSnapshot,
+//     validator_identity: &ValidatorIdentity,
+//     dummy_deploy_opt: Option<(PrivateKey, String)>,
+//     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+//     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+//     runtime_manager: &RuntimeManager,
+//     block_store: &mut KeyValueBlockStore,
+//     selection: super::proposer::DeploySelection,
+// ) -> Result<BlockCreatorResult, CasperError> {
+//     create_inner(
+//         Some(approved_genesis),
+//         offered_funded_active,
+//         casper_snapshot,
+//         validator_identity,
+//         dummy_deploy_opt,
+//         deploy_storage,
+//         rejected_deploy_buffer,
+//         runtime_manager,
+//         block_store,
+//         selection,
+//     )
+//     .await
+// }
+
+/// A proposal on a chain whose genesis resource policy the Casper instance
+/// adopted at start (DR-99).
+pub async fn create_with_adopted_policy(
+    adopted_policy: Option<&AdoptedResourcePolicy>,
     offered_funded_active: bool,
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -2926,7 +2959,7 @@ pub async fn create_with_approved_genesis(
     selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
     create_inner(
-        Some(approved_genesis),
+        adopted_policy,
         offered_funded_active,
         casper_snapshot,
         validator_identity,
@@ -2941,7 +2974,9 @@ pub async fn create_with_approved_genesis(
 }
 
 async fn create_inner(
-    approved_genesis: Option<&BlockMessage>,
+    // Changed by DR-99: the adopted policy replaces the approved genesis.
+    // approved_genesis: Option<&BlockMessage>,
+    adopted_policy: Option<&AdoptedResourcePolicy>,
     offered_funded_active: bool,
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -3553,7 +3588,7 @@ async fn create_inner(
             system_deploys_converted.clone(),
             casper_snapshot,
             runtime_manager,
-            approved_genesis,
+            adopted_policy,
             block_data.clone(),
             invalid_blocks.clone(),
             Some(&rejected_deploy_buffer),

@@ -115,8 +115,11 @@ impl TestNode {
         })?;
 
         // Create block using block_creator
-        block_creator::create_with_approved_genesis(
-            self.casper.get_approved_block()?,
+        // Changed by DR-99: a proposal takes the policy adopted at start.
+        // block_creator::create_with_approved_genesis(
+        //     self.casper.get_approved_block()?,
+        block_creator::create_with_adopted_policy(
+            self.casper.adopted_resource_policy.as_ref(),
             self.casper.offered_funded_active,
             &snapshot,
             &validator,
@@ -1155,6 +1158,25 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
+        // DR-99: the harness adopts the genesis policy once, as hash_set_casper
+        // does. A shard configuration that differs from the genesis policy
+        // leaves no adopted policy, so such a test fails only when it uses the
+        // offered path, as it did when the policy was loaded at each use.
+        let adopted_resource_policy = match runtime_manager
+            .find_genesis_resource_policy(&genesis.body.state.post_state_hash)
+            .await
+            .expect("test genesis resource policy query must succeed")
+        {
+            Some(_) => casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy::load(
+                &runtime_manager,
+                &genesis,
+                &shard_conf,
+            )
+            .await
+            .ok(),
+            None => None,
+        };
+
         let casper_impl = MultiParentCasperImpl {
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
@@ -1179,6 +1201,7 @@ impl TestNode {
                 .await
                 .expect("test genesis resource policy query must succeed")
                 .is_some_and(|policy| policy.offered_funded_v6_active()),
+            adopted_resource_policy,
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),

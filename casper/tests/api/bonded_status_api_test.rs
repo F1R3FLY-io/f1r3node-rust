@@ -85,6 +85,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         offered_funded_active: node.casper.offered_funded_active,
+        adopted_resource_policy: node.casper.adopted_resource_policy.clone(),
         finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
