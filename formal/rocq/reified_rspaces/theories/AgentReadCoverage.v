@@ -24,8 +24,9 @@
    - Design: .reified-rspaces-work/p4/decisions-41-43-design.md, section 42
      (42.1 the policy of the branch, 42.3 every site, 42.6 this model).
      Decision 42 of docs/rspace/reified-rspaces/decision-register.md.
-   - Code: the commit of decision 42 in this repository. The line numbers
-     below are the line numbers of that commit.
+   - Code: the commit of decision 42 in this repository, with the re-entry
+     of decision 43. The line numbers below are the line numbers of the
+     commit of decision 43.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
@@ -33,24 +34,33 @@
    step                     reified/costs.rs:97-102, 106-111, 123-126
                             (ScanMeter::inspect, reserve_copy, copy:
                             reserve, then work)
-   scan                     spaces/generic.rs:524-545, 549-568 (head_waiter,
-                            head_datum: the buffer, one envelope decode for
-                            each entry, the head copy) and
-                            spaces/disciplines/queue.rs:38-56, 73-108
+   scan                     spaces/generic.rs:548-564, 568-580, 584-596
+                            (scan_head, head_waiter, head_datum: the
+                            buffer, one envelope decode for each entry, the
+                            head copy) and
+                            spaces/disciplines/queue.rs:39-57, 86-121
                             (head_metered: one comparison for each entry
                             after the first)
-   round_staged             spaces/generic.rs:573-634, 640-700 (offer and
+   round_staged             spaces/generic.rs:658-721, 729-791 (offer and
                             receive: the scan, the payload decode of a
                             receive, the metered match, the prepaid unwrap,
                             the staged fire)
-   round_after_commit       spaces/generic.rs:744-779 (outcome: the moves of
+   round_after_commit       spaces/generic.rs:864-899 (outcome: the moves of
                             into_continuation, prepaid by
                             spaces/record.rs:721-730)
-   operation_trace          spaces/generic.rs:813-879 (prepare_produce and
+   operation_trace          spaces/generic.rs:933-1001 (prepare_produce and
                             prepare_consume: the channels, the config, the
                             matcher handle, the introduction, the bump, the
                             record, the rounds and the prepaid outcome
-                            buffer)
+                            buffer). The checks of a re-entry (decision 43)
+                            are self-metered steps of prepare: the two
+                            comparisons of operation_ord
+                            (spaces/generic.rs:809-821), and the scan of
+                            head_ord and at_head (spaces/generic.rs:600-617,
+                            625-650: the buffer and the envelope decodes of
+                            scan_head, with no copy) with the comparison of
+                            the two orders and QueueDiscipline::precedes
+                            (spaces/disciplines/queue.rs:63-72)
    p4_scan                  the P4 commit 294c95632: head_waiter and
                             head_datum decoded each envelope and copied the
                             head without a reservation
@@ -317,7 +327,8 @@ Record operation := {
   bump : list nat;      (* the counter bump: the copy and the decode of the
                            counter record, the matcher reads of its take, the
                            templates, the random bytes and the copies *)
-  prepare : list nat;   (* the record of the operation and its identity *)
+  prepare : list nat;   (* the record of the operation, its identity, and
+                           the checks of a re-entry (decision 43) *)
   rounds : list round;  (* the fire loop *)
   outcome : nat         (* the buffer of the fires of the outcome, which the
                            operation prepays *)

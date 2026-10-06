@@ -8,7 +8,7 @@
     "IndInv": "The inductive strengthening of T3 and T4 (CheckpointReplay) for the Apalache BASE and STEP checks. TLC checks it on every reachable state of the two safe CheckpointReplay configurations.",
     "LockIndInv": "The inductive strengthening of T5 (TxnLockCoverage) for the Apalache BASE and STEP checks. TLC checks it on every reachable state of MC_TxnLockCoverage.",
     "CommitOrderWitness": "When the ghost serialOk holds, the commit order itself witnesses T5. TLC checks it on every reachable state of MC_TxnLockCoverage.",
-    "HeadIndInv": "The inductive strengthening of U1-U3 (HeadOnlyDiscipline) for the Apalache BASE and STEP checks: the ords are below the counter and unique, and every queued record follows every delivered one. TLC checks it on every reachable state of MC_HeadOnlyDiscipline.",
+    "HeadIndInv": "The inductive strengthening of U1-U3 and U9-U12 (HeadOnlyDiscipline) for the Apalache BASE and STEP checks: the ords and the carried ords are below the counter and unique, the carried ords differ from the stored ords, the elements in flight have their shapes, and the history flags hold. TLC checks it on every reachable state of MC_HeadOnlyDiscipline and MC_HeadOnlyDiscipline_Reissue.",
     "HandleIndInv": "The inductive strengthening of U5-U8 (NativeHandles) for the Apalache BASE and STEP checks: live spaces are durable, only live spaces have collection counters, and no counter or log grows faster than the steps. TLC checks it on every reachable state of MC_NativeHandles.",
     "SharedQueueRaces": "CounterConflict: two branches that use one queue race in check #1. It restates the Rocq headlines Q21, Q22 and Q24, which their own property tests cover. TLC checks it in MC_CounterConflict.",
     "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict."
@@ -892,7 +892,7 @@
         "models/tests/reified_encoding.rs",
         "rholang/tests/reified_native_fail_closed.rs"
       ],
-      "expected_properties": 75,
+      "expected_properties": 83,
       "formal": {
         "Q1": {
           "kind": "rocq",
@@ -1504,31 +1504,125 @@
             "reified_native_host_program_plays_and_replays_unchanged"
           ]
         },
+        "Q68": {
+          "kind": "rocq",
+          "name": "persistent_reentry_never_spent",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: a re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place.",
+          "tests": [
+            "prop_queue_reissue_keeps_first_round_ord"
+          ]
+        },
+        "Q69": {
+          "kind": "rocq",
+          "name": "queue_reissue_keeps_ord",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: a re-issued persistent element keeps the ord of its first round. Its round bumps the counter by one and keeps wf'.",
+          "tests": [
+            "prop_queue_reissue_keeps_first_round_ord",
+            "prop_queue_persistent_reissue_charged_once"
+          ]
+        },
+        "Q70": {
+          "kind": "rocq",
+          "name": "queue_reentry_preserves_shadow_inv",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: every fresh operation and every re-entry keeps wf' and SHADOW.",
+          "tests": [
+            "prop_queue_shadow_invariant_with_inflight"
+          ]
+        },
+        "Q71": {
+          "kind": "rocq",
+          "name": "queue_quiescent_inv",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: SHADOW with nothing in flight is INV. Every run of rounds keeps wf' and SHADOW, and it has INV whenever nothing is in flight.",
+          "tests": [
+            "prop_queue_shadow_invariant_with_inflight"
+          ]
+        },
+        "Q72": {
+          "kind": "rocq",
+          "name": "queue_fifo_with_reentries",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: over runs with re-entries, the records that are not persistent leave in increasing ord, each older than every such record that stays.",
+          "tests": [
+            "prop_queue_fifo_with_reentries"
+          ]
+        },
+        "Q73": {
+          "kind": "rocq",
+          "name": "queue_head_blocks_reentry",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: a re-entry behind an older head of its side rests at its place and fires nothing. A re-entry at the head that does not match the other head rests too. A fire meets the head of the other side.",
+          "tests": [
+            "prop_queue_reentry_head_blocks"
+          ]
+        },
+        "Q74": {
+          "kind": "rocq",
+          "name": "queue_reentry_loop_bounded_or_reissues",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: a re-entry stages at most FIRE_ROUND_CAP fires. A re-issue carries the first-round ord exactly for a persistent element.",
+          "tests": [
+            "prop_queue_reentry_head_blocks"
+          ]
+        },
+        "Q75": {
+          "kind": "rocq",
+          "name": "queue_reentry_permutation_invariant",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43: a re-entry depends on the entries of the collection, not on their list order.",
+          "tests": [
+            "prop_queue_reentry_permutation_invariant"
+          ]
+        },
+        "Q76": {
+          "kind": "rocq",
+          "name": "fresh_ord_reissue_loses_first_round_place",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43 (negative control C0): with a fresh ord, a re-issued persistent element rests behind a younger record and loses its first-round place.",
+          "tests": [
+            "prop_fresh_ord_reissue_loses_first_round_place"
+          ]
+        },
+        "Q77": {
+          "kind": "rocq",
+          "name": "nonpersistent_first_ord_reentry_breaks_quiescent_inv",
+          "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+          "statement": "Decision 43 (negative control C1): an element that is not persistent and keeps its first-round ord leaves a pending match with nothing in flight.",
+          "tests": [
+            "prop_queue_nonpersistent_reissue_fresh_ord"
+          ]
+        },
         "U1": {
           "kind": "tla",
-          "name": "HeadOnlyNoPendingMatch",
+          "name": "QuiescentNoPendingMatch",
           "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
-          "statement": "The head record and the head waiter never match, on every schedule.",
+          "statement": "With no element in flight, the head record and the head waiter never match (INV), on every schedule (decision 43).",
           "tests": [
-            "prop_queue_no_pending_match_any_schedule"
+            "prop_queue_no_pending_match_any_schedule",
+            "prop_queue_shadow_invariant_with_inflight"
           ]
         },
         "U2": {
           "kind": "tla",
           "name": "HeadBlocks",
           "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
-          "statement": "Every fire involves the head of its side, on every schedule.",
+          "statement": "Every fire involves the head of the other side, on every schedule.",
           "tests": [
-            "prop_queue_head_blocks_any_schedule"
+            "prop_queue_head_blocks_any_schedule",
+            "prop_queue_reentry_head_blocks"
           ]
         },
         "U3": {
           "kind": "tla",
           "name": "FifoOrder",
           "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
-          "statement": "Records leave in ord order, on every schedule.",
+          "statement": "An element fires only when no entry of its own side precedes it, also after a re-entry (QD-7, QD-9).",
           "tests": [
-            "prop_queue_fifo_any_schedule"
+            "prop_queue_head_blocks_any_schedule",
+            "prop_queue_reentry_head_blocks"
           ]
         },
         "U4": {
@@ -1574,6 +1668,45 @@
           "statement": "Handle calls on disjoint collections merge like contract calls, and calls on one collection race.",
           "tests": [
             "prop_handle_calls_merge_like_contracts"
+          ]
+        },
+        "U9": {
+          "kind": "tla",
+          "name": "ShadowedNoPendingMatch",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "While an element is in flight, a matching pair of heads needs an element in flight that precedes the head of its side (SHADOW, decision 43).",
+          "tests": [
+            "prop_queue_shadow_invariant_with_inflight"
+          ]
+        },
+        "U10": {
+          "kind": "tla",
+          "name": "ReissueKeepsOrd",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "Every persistent element in flight carries the ord of its first round (decision 43).",
+          "tests": [
+            "prop_queue_reissue_keeps_first_round_ord",
+            "prop_queue_loop_bounded"
+          ]
+        },
+        "U11": {
+          "kind": "tla",
+          "name": "IntroducedOnce",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "Each persistent element takes a fresh ord exactly once, so its record and its introduction are the same in every round (decision 43).",
+          "tests": [
+            "prop_queue_persistent_reissue_charged_once",
+            "prop_queue_reissue_keeps_first_round_ord"
+          ]
+        },
+        "U12": {
+          "kind": "tla",
+          "name": "LeaveOrder",
+          "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "statement": "Records that are not persistent leave in increasing ord, each older than every such record that stays.",
+          "tests": [
+            "prop_queue_fifo_any_schedule",
+            "prop_queue_fifo_with_reentries"
           ]
         }
       },
@@ -1847,7 +1980,8 @@
           "test": "prop_queue_loop_bounded",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
-            "Q34"
+            "Q34",
+            "U10"
           ]
         },
         {
@@ -2025,7 +2159,8 @@
           "test": "prop_queue_head_blocks_any_schedule",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
-            "U2"
+            "U2",
+            "U3"
           ]
         },
         {
@@ -2033,7 +2168,7 @@
           "test": "prop_queue_fifo_any_schedule",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
-            "U3"
+            "U12"
           ]
         },
         {
@@ -2183,6 +2318,81 @@
           "file": "rholang/tests/reified_native_fail_closed.rs",
           "covers": [
             "Q67"
+          ]
+        },
+        {
+          "number": 76,
+          "test": "prop_queue_reissue_keeps_first_round_ord",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q68",
+            "Q69",
+            "U10",
+            "U11"
+          ]
+        },
+        {
+          "number": 77,
+          "test": "prop_queue_shadow_invariant_with_inflight",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q70",
+            "Q71",
+            "U1",
+            "U9"
+          ]
+        },
+        {
+          "number": 78,
+          "test": "prop_queue_fifo_with_reentries",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q72",
+            "U12"
+          ]
+        },
+        {
+          "number": 79,
+          "test": "prop_queue_reentry_head_blocks",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q73",
+            "Q74",
+            "U2",
+            "U3"
+          ]
+        },
+        {
+          "number": 80,
+          "test": "prop_queue_reentry_permutation_invariant",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q75"
+          ]
+        },
+        {
+          "number": 81,
+          "test": "prop_fresh_ord_reissue_loses_first_round_place",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q76"
+          ]
+        },
+        {
+          "number": 82,
+          "test": "prop_queue_nonpersistent_reissue_fresh_ord",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q77"
+          ]
+        },
+        {
+          "number": 83,
+          "test": "prop_queue_persistent_reissue_charged_once",
+          "file": "rholang/tests/reified_p4_props.rs",
+          "covers": [
+            "Q69",
+            "U11"
           ]
         }
       ],

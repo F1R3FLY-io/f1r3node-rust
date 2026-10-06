@@ -7,10 +7,13 @@
 # play) and TxnLockCoverage.tla (T5, lock coverage of space transactions,
 # FR-4).
 # P4: HeadOnlyDiscipline.tla (head-only matching of a queue: no pending
-# match, a blocked head blocks the rest, FIFO), CounterConflict.tla (a merge
-# without a check #1 race is a serial run: M-1 and A2) and NativeHandles.tla
-# (handle uniqueness, dangling handles, restarts, handle calls that merge
-# like contract calls).
+# match, a blocked head blocks the rest, FIFO, and the re-entry of a
+# re-issued persistent operation at its first-round ord of decision 43:
+# SHADOW in flight, INV at quiescent states, one introduction for each
+# persistent element), CounterConflict.tla (a merge without a check #1
+# race is a serial run: M-1 and A2) and NativeHandles.tla (handle
+# uniqueness, dangling handles, restarts, handle calls that merge like
+# contract calls).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -27,8 +30,9 @@
 #   4. apalache  - BASE (Init => Inv, --length=0) and STEP (Inv /\ Next =>
 #                  Inv', --length=1) for the inductive invariants IndInv
 #                  (CheckpointReplay: T3 and T4), LockIndInv
-#                  (TxnLockCoverage: T5), HeadIndInv (HeadOnlyDiscipline)
-#                  and HandleIndInv (NativeHandles). Each negative control
+#                  (TxnLockCoverage: T5), HeadIndInv (HeadOnlyDiscipline:
+#                  the P4 fragment, and decision 43 with re-entries) and
+#                  HandleIndInv (NativeHandles). Each negative control
 #                  must refute its inductive invariant in the expected
 #                  conjunct.
 #
@@ -72,6 +76,7 @@ SAFE_CONFIGS=(
   "CheckpointReplay MC_CheckpointReplay_TwoBlock.cfg"
   "TxnLockCoverage MC_TxnLockCoverage.cfg"
   "HeadOnlyDiscipline MC_HeadOnlyDiscipline.cfg"
+  "HeadOnlyDiscipline MC_HeadOnlyDiscipline_Reissue.cfg"
   "CounterConflict MC_CounterConflict.cfg"
   "NativeHandles MC_NativeHandles.cfg"
 )
@@ -86,6 +91,9 @@ UNSAFE_CONFIGS=(
   "TxnLockCoverage UncoveredChannelUnsafe.cfg Serializable"
   "TxnLockCoverage UnjoinedChannelUnsafe.cfg Serializable"
   "HeadOnlyDiscipline HeadOnlyScanUnsafe.cfg HeadBlocks"
+  "HeadOnlyDiscipline ReissueFreshOrdUnsafe.cfg IntroducedOnce"
+  "HeadOnlyDiscipline ReentryAtHeadUnsafe.cfg FifoOrder"
+  "HeadOnlyDiscipline NonPersistentFirstOrdUnsafe.cfg QuiescentNoPendingMatch"
   "CounterConflict CounterDroppedUnsafe.cfg NoMergedOrderFabrication"
   "CounterConflict PeekCounterFreeUnsafe.cfg NoMergedOrderFabrication"
   "NativeHandles JoinDescriptorUnsafe.cfg HandleCallsMergeLikeContracts"
@@ -102,7 +110,9 @@ APALACHE_CHECKS=(
   "lock-step-unjoined-unsafe|TxnLockCoverage|UnjoinedChannelUnsafe_IndStep_Apalache.cfg|1|Error|stagedOne"
   "head-base|HeadOnlyDiscipline|MC_HeadOnlyDiscipline_IndBase_Apalache.cfg|0|NoError|"
   "head-step|HeadOnlyDiscipline|MC_HeadOnlyDiscipline_IndStep_Apalache.cfg|1|NoError|"
-  "head-step-scan-unsafe|HeadOnlyDiscipline|HeadOnlyScanUnsafe_IndStep_Apalache.cfg|1|Error|[\"fired\"]"
+  "head-step-scan-unsafe|HeadOnlyDiscipline|HeadOnlyScanUnsafe_IndStep_Apalache.cfg|1|Error|~partnersAtHead"
+  "head-reissue-base|HeadOnlyDiscipline|MC_HeadOnlyDiscipline_Reissue_IndBase_Apalache.cfg|0|NoError|"
+  "head-reissue-step|HeadOnlyDiscipline|MC_HeadOnlyDiscipline_Reissue_IndStep_Apalache.cfg|1|NoError|"
   "handle-base|NativeHandles|MC_NativeHandles_IndBase_Apalache.cfg|0|NoError|"
   "handle-step|NativeHandles|MC_NativeHandles_IndStep_Apalache.cfg|1|NoError|"
   "handle-step-joindescriptor-unsafe|NativeHandles|JoinDescriptorUnsafe_IndStep_Apalache.cfg|1|Error|\"user\""

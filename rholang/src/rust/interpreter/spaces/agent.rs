@@ -26,7 +26,8 @@
 //!   reserves its own decodes, copies and tie-breaks on that meter before it makes them, and it
 //!   prepays at staging the work of the outcome after the commit (decision 42).
 //! * A collection operation fires in at most `costs::FIRE_ROUND_CAP` rounds. It re-issues the
-//!   rest with the A10 rule of `costs::FireRounds`.
+//!   rest with the A10 rule of `costs::FireRounds`. A re-issued persistent operation keeps the
+//!   `ord` of its first round (decision 43).
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -84,6 +85,11 @@ pub struct ProduceOp {
     pub persistent: bool,
     /// The introduction authority of the send (P4 design B.7).
     pub authority: CostAuthority,
+    /// The `ord` of the first round of a re-issued persistent send, or `None` (decision 43).
+    /// The send keeps this `ord` in every round, so it keeps its record, its identity and its
+    /// place in the collection. A send of the program and a re-issued send that is not
+    /// persistent take the `ord` of their bump.
+    pub reissued_ord: Option<i64>,
 }
 
 /// A single-bind receive on a collection of a native space (P4 design C.3).
@@ -111,6 +117,9 @@ pub struct ConsumeOp {
     pub authority: CostAuthority,
     /// The introduction authority of the receive (P4 design B.7).
     pub introduction_authority: CostAuthority,
+    /// The `ord` of the first round of a re-issued persistent receive, or `None` (decision
+    /// 43), as for [`ProduceOp::reissued_ord`].
+    pub reissued_ord: Option<i64>,
 }
 
 /// One operation on a collection of a native space. It runs in one `Intent::Space` job.
@@ -157,7 +166,8 @@ pub struct SpaceFire {
 /// The rest of an operation that a new `Intent::Space` must run (A10, readiness review S5).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpaceReissue {
-    /// The operation to run again, as the program issued it.
+    /// The operation to run again, as the program issued it. A persistent operation also
+    /// carries the `ord` of its first round in its `reissued_ord` (decision 43).
     pub op: SpaceOp,
     /// Why the operation re-issues.
     pub cause: ReissueCause,
@@ -325,6 +335,7 @@ mod tests {
             },
             persistent: false,
             authority: CostAuthority::default(),
+            reissued_ord: None,
         }
     }
 
@@ -465,6 +476,7 @@ mod tests {
                 guard: None,
                 authority: CostAuthority::default(),
                 introduction_authority: CostAuthority::default(),
+                reissued_ord: None,
             }),
         )
         .await;
@@ -498,6 +510,7 @@ mod tests {
             guard: None,
             authority: CostAuthority::default(),
             introduction_authority: region(5),
+            reissued_ord: None,
         };
         assert_eq!(
             SpaceOp::Consume(consume.clone()).footprint_authority(),

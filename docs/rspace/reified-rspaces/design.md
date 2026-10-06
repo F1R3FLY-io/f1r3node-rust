@@ -1706,19 +1706,19 @@ Figure N3 shows the merge flow of the counter conflict.
 
 ### N4. GenericSpace and the queue discipline
 
-`GenericSpace<S, D>` (`spaces/generic.rs:169-172`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
+`GenericSpace<S, D>` (`spaces/generic.rs:193-196`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
 P4 instantiates it once, as `GenericSpace<HashMapOuter, QueueDiscipline>`, and `native_agent` returns it (`reified/system_processes.rs:56-58`).
 Two traits separate the parts of a family:
 
-- `OuterStore` (`spaces/generic.rs:93-109`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
-- `Discipline` (`spaces/generic.rs:130-165`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
+- `OuterStore` (`spaces/generic.rs:105-121`) maps a channel to its collection key, its data channel, and its counter channel. It also mints a space name for `gensym`.
+- `Discipline` (`spaces/generic.rs:142-189`) chooses the head of each side of a collection. It also states whether the discipline uses a counter, allows joins, and takes send params.
 
 `HashMapOuter` keys a collection by the collection key, and it mints a space name with a 32-byte tail from the purpose `Gensym` (`spaces/outer/hashmap.rs:22-52`).
-`QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:31-60`).
-In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:463-481`).
+`QueueDiscipline` uses a counter, allows no joins, and takes no send params (`spaces/disciplines/queue.rs:32-73`).
+In P4 the agent runs only disciplines with a counter and without joins, and other families fail with `FamilyUnavailable` (`spaces/generic.rs:487-505`).
 
-**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:813-879`) stage one operation in one transaction.
-The job then commits the transaction exactly once (`spaces/agent.rs:263-273`).
+**A collection operation.** `prepare_produce` and `prepare_consume` (`spaces/generic.rs:933-1001`) stage one operation in one transaction.
+The job then commits the transaction exactly once (`spaces/agent.rs:273-283`).
 
 ```text
 COLLECTION-OP(op):                             ▷ GenericSpace::prepare_produce, prepare_consume, run_op
@@ -1726,7 +1726,8 @@ COLLECTION-OP(op):                             ▷ GenericSpace::prepare_produce
     txn ← begin([C(sid), S(sid), S(sid, k), D(sid, k)])  ▷ every channel that the operation can touch
     ⟨Check the collection⟩
     bump ← BUMP(txn, S(sid), S(sid, k), ctx)            ▷ N3
-    reissue ← OFFER(op, bump.ord) for a produce, RECEIVE(op, bump.ord) for a consume
+    ord ← OPERATION-ORD(op.reissued_ord, bump.ord)      ▷ decision 43
+    reissue ← OFFER(op, ord) for a produce, RECEIVE(op, ord) for a consume
     receipt ← txn.commit()                              ▷ exactly once, prefix-atomic
     return OUTCOME(receipt, reissue)
 ```
@@ -1753,39 +1754,76 @@ Every operation stages its bump, so no commit is empty.
 
 The minimum is lexicographic, and it depends only on the set $`E`$, not on the list order of the hot store.
 The hot store inserts at the front, and a restart can load a list in another order, so the list order cannot decide.
-`QueueDiscipline` implements the rule:
+`QueueDiscipline` implements the rule (`spaces/disciplines/queue.rs:39-72`):
 
 ```rust
     /// The entry with the least `(ord, bincode bytes)`, on both sides.
-    fn head<T: Serialize>(
+    fn head_metered<T: Serialize>(
         &self,
         _side: Side,
         entries: &[Ordered<'_, T>],
+        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        let mut head: Option<(usize, &Ordered<'_, T>)> = None;
+        let mut head: Option<Best<'_, '_, T>> = None;
         for (index, entry) in entries.iter().enumerate() {
-            head = match head {
-                None => Some((index, entry)),
-                Some((current, best)) => match precedes(entry, best)? {
-                    true => Some((index, entry)),
-                    false => Some((current, best)),
+            head = Some(match head {
+                None => Best {
+                    index,
+                    entry,
+                    bytes: None,
                 },
-            };
+                Some(best) => best.challenge(index, entry, meter)?,
+            });
         }
-        Ok(head.map(|(index, _)| index))
+        Ok(head.map(|best| best.index))
     }
 
     /// An incoming element joins the tail, so it is the head only of an empty side.
     fn reaches_head(&self, _side: Side, queued: usize) -> bool { queued == 0 }
+
+    /// The least order interacts first, on both sides.
+    fn precedes(
+        &self,
+        _side: Side,
+        ord: i64,
+        head: i64,
+        meter: &ScanMeter,
+    ) -> Result<bool, SpaceError> {
+        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+        Ok(ord < head)
+    }
 ```
 
-**The produce plan.** `offer` (`spaces/generic.rs:573-634`) is the plan of a send.
+**The order of an operation.** A fresh operation takes the value of its bump as its order.
+A re-issued persistent operation keeps the order of its first round ([decision 43](decision-register.md#decision-43)).
+`operation_ord` checks that a kept order lies below the bump value, because a bump value is never taken twice.
+`at_head` then decides whether the element of the operation reaches the head of its side.
+
+```text
+OPERATION-ORD(kept, bumped):                   ▷ operation_ord
+    if kept = none: return bumped
+    require 0 ≤ kept < bumped                           ▷ Inconsistent
+    return kept
+
+AT-HEAD(side, kept, ord):                      ▷ GenericSpace::at_head
+    if kept = none: return the side holds no entry       ▷ a fresh element joins the tail
+    h ← the order of the head of the side, or return true   ▷ head_ord: decodes, no copy
+    require h ≠ ord                                     ▷ an element in flight is stored nowhere
+    return PRECEDES(side, ord, h)                       ▷ a queue: ord < h
+```
+
+A fresh element joins the tail, so it reaches the head only of an empty side.
+A re-issued persistent element re-enters at its place.
+It meets the other side only when it precedes the head of its own side.
+Otherwise it is stored or parked behind the head, and it fires nothing.
+
+**The produce plan.** `offer` (`spaces/generic.rs:658-721`) is the plan of a send.
 It is the OFFER of the substrate design ([S5.8](#s58-peek-re-offer-fr-10)), with the fire-round rule of A10 and of [I-21](decision-register.md#i-21).
 
 ```text
 OFFER(op, ord):                                ▷ GenericSpace::offer
     rec ← WRAP-DATUM(ord, op.data)
-    if txn.data(D) ≠ []: STORE(rec) and return no re-issue     ▷ the datum joins the tail
+    if not AT-HEAD(Data, op.reissued_ord, ord): STORE(rec) and return no re-issue   ▷ its place
     src ← Produce::create(D, rec, op.persistent)
     rounds ← 0
     loop:
@@ -1798,7 +1836,7 @@ OFFER(op, ord):                                ▷ GenericSpace::offer
         case AFTER-FIRE(rounds, spent, stays) of
             Done:            return no re-issue
             Continue:        ▷ W left and the datum survives: the next round re-offers it
-            Reissue(cause):  return Reissue(op, cause)
+            Reissue(cause):  return Reissue(op with reissued_ord ← (ord if op.persistent), cause)
 ```
 
 `MATCH` makes the metered spatial match of the pattern against the payload without its envelope, and then it checks the guard of the waiter (`spaces/matching.rs:85-99`).
@@ -1806,13 +1844,13 @@ A head waiter that does not match blocks every waiter behind it, and the datum i
 A peek waiter leaves the datum alive, so the next round re-offers the datum with the same produce identity ([decision 30](decision-register.md#decision-30)).
 A persistent send `!!` fires the waiters one after another and stores the datum when no waiter matches.
 
-**The consume plan.** `receive` (`spaces/generic.rs:640-700`) is the plan of a receive, and it mirrors OFFER.
+**The consume plan.** `receive` (`spaces/generic.rs:729-791`) is the plan of a receive, and it mirrors OFFER.
 
 ```text
 RECEIVE(op, ord):                              ▷ GenericSpace::receive
     K ← WRAP-CONTINUATION(ord, op.body, op.guard, the cost authority of op)
     peeks ← {0} for a peek, ∅ otherwise
-    if txn.continuations([D]) ≠ []: PARK(K, peeks) and return no re-issue   ▷ the waiter joins the tail
+    if not AT-HEAD(Waiters, op.reissued_ord, ord): PARK(K, peeks) and return no re-issue
     rounds ← 0
     loop:
         (i, h) ← the head record and its view index, or PARK(K, peeks) and return no re-issue
@@ -1823,7 +1861,7 @@ RECEIVE(op, ord):                              ▷ GenericSpace::receive
         case AFTER-FIRE(rounds, spent, stays) of
             Done:            return no re-issue
             Continue:        ▷ the head record left: a persistent receive meets the next head
-            Reissue(cause):  return Reissue(op, cause)
+            Reissue(cause):  return Reissue(op with reissued_ord ← (ord if op.persistent), cause)
 ```
 
 A peek `<<-` keeps the head record in place, and the substrate reports the record as persistent ([retention](glossary.md#retention)).
@@ -1867,22 +1905,44 @@ A divergent pair is a persistent send and a persistent receive that meet: neithe
 The host reducer repeats such a pair forever with its re-produce. So the agent re-issues after one round, and each round is a new space intent (item A10).
 The pair then stops only when the phlo of the deploy runs out, as on the baseline host.
 
+A re-issued persistent element keeps its record, so every round repeats its identity ([decision 43](decision-register.md#decision-43)).
+Its introduction is charged once in each deploy, as the host charges a persistent produce that it produces again.
+A divergent pair repeats one COMM identity too, so each later round pays only its counter bump.
+
 A chain without a divergent pair makes at most one more fire than the collection holds entries. The cap of [I-21](decision-register.md#i-21) also bounds one transaction at 64 fires.
 So one operation makes at most $`2(\mathtt{FIRE\_ROUND\_CAP} + 1) = 130`$ metered matcher calls: two in each round, and one for the counter.
 
-**The invariant.** Let $`R`$ be the records and $`W`$ the waiters of a collection after a committed transaction.
+**The invariant.** Let $`R`$ be the records and $`W`$ the waiters of a collection at the end of a completed deploy.
 
 ```math
 \mathrm{INV}(R, W) \iff R = \emptyset \;\lor\; W = \emptyset \;\lor\; \neg\, \mathrm{match}\bigl(\mathrm{head}(W),\ \mathrm{head}(R)\bigr)
 ```
 
-OFFER meets a waiter only when $`R = \emptyset`$, and it stores the datum only when no head waiter matches.
-RECEIVE meets a record only when $`W = \emptyset`$, and it parks only when no head record matches.
-A re-issue stages neither the datum nor the continuation of the operation, so it leaves its side unchanged.
-So every committed transaction keeps INV, which the headlines `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:779`) and `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:799`) prove.
-The headlines `queue_fifo` (`HeadOnlyDisciplines.v:979`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1062`) prove the order of delivery and the blocking of a head.
+A fresh OFFER meets a waiter only when $`R = \emptyset`$, and it stores the datum only when no head waiter matches.
+A fresh RECEIVE meets a record only when $`W = \emptyset`$, and it parks only when no head record matches.
+A re-issue stages neither the datum nor the continuation of the operation, so the element is in flight until it re-enters.
+So a fresh operation keeps INV, which the headlines `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:878`) and `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:898`) prove.
 
-**Outcome and dispatch.** `outcome` (`spaces/generic.rs:744-779`) turns the receipts into a `SpaceOutcome`.
+Between two rounds, other operations can store younger entries on the side of an element in flight.
+Then the two heads can match while the element is in flight.
+Let $`F`$ be the persistent elements in flight, each with its kept order and its side $`X_f`$.
+Every committed transaction keeps the shadow form of INV:
+
+```math
+\mathrm{SHADOW}(R, W, F) \iff \mathrm{INV}(R, W) \;\lor\; \exists f \in F.\ \mathit{ord}(f) < \mathit{ord}\bigl(\mathrm{head}(X_f)\bigr)
+```
+
+When $`f`$ re-enters, the space stores or parks it at the head of its side without a match.
+Otherwise $`f`$ is in flight again, and it still precedes that head.
+A completed deploy has no element in flight, so INV holds at the end of each deploy.
+
+A datum that is not persistent keeps no order.
+With a kept order, it could re-enter ahead of two matching heads, fire an older partner, and be spent.
+Then the matching heads would stay with nothing in flight.
+
+The headlines `queue_fifo` (`HeadOnlyDisciplines.v:1085`) and `queue_head_blocks` (`HeadOnlyDisciplines.v:1168`) prove the order of delivery and the blocking of a head.
+
+**Outcome and dispatch.** `outcome` (`spaces/generic.rs:864-899`) turns the receipts into a `SpaceOutcome`.
 It checks that each receipt has the kind of its staged operation, and it drops the counter fires.
 Each other fire gives its continuation without the envelope and the results of the substrate, in staging order.
 
@@ -1907,7 +1967,7 @@ A fire that play did not commit stays unpaired, and the replay commit stops at i
 The first operation on a collection stages three counter operations instead of two. They are the take and the put of the space counter, and the put of the collection counter.
 Figure N4 shows the states of one queue collection.
 
-![State machine of one queue collection. The collection starts unopened; its first operation consumes the space counter S(sid), produces it again, opens S(sid,k) = 1 and takes the order 0. Every later operation bumps S(sid,k) from v to v + 1 and takes the order v. The open collection has four states: Empty, Records queued, Waiters queued, and Blocked, in which both sides hold entries but the head waiter does not match the head record. A send in a state with records joins the tail. A send without records meets the head waiter: on no match it is stored; on a match it fires; a peek waiter or a persistent send leaves the datum alive and the next round re-offers it to the next head waiter; a persistent send that fires a persistent receive re-issues as a new space intent. A receive in a state with waiters joins the tail. A receive without waiters meets the head record: on no match it parks; on a match it fires; a peek keeps the head record; a persistent receive drains the next head; a persistent receive that meets a persistent record re-issues. After 64 fires in one transaction the rest re-issues. The invariant INV holds in every state: no pending match between the two heads.](diagrams/05-head-only-queue.svg)
+![State machine of one queue collection. The collection starts unopened; its first operation consumes the space counter S(sid), produces it again, opens S(sid,k) = 1 and takes the order 0. Every later operation bumps S(sid,k) from v to v + 1 and takes the order v, except that a re-issued persistent operation keeps the order of its first round and re-enters at its place. The open collection has four states: Empty, Records queued, Waiters queued, and Blocked, in which both sides hold entries but the head waiter does not match the head record. A send in a state with records joins the tail. A send without records meets the head waiter: on no match it is stored; on a match it fires; a peek waiter or a persistent send leaves the datum alive and the next round re-offers it to the next head waiter; a persistent send that fires a persistent receive re-issues as a new space intent. A receive in a state with waiters joins the tail. A receive without waiters meets the head record: on no match it parks; on a match it fires; a peek keeps the head record; a persistent receive drains the next head; a persistent receive that meets a persistent record re-issues. After 64 fires in one transaction the rest re-issues. A re-entry ahead of a head can fire in the Blocked state. The invariant INV holds at the end of every deploy: no pending match between the two heads.](diagrams/05-head-only-queue.svg)
 
 *Figure N4. Source: [diagrams/05-head-only-queue.puml](diagrams/05-head-only-queue.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -1954,7 +2014,7 @@ pub fn route(ctx: &SpaceCtx, channel: &Par) -> Result<Route, SpaceError> {
 Two more rules complete the routing:
 
 - **R6.** A space operation builds its produce and consume identities on the data channel $`D(\mathit{sid}, k)`$. So the identities equal what reaches storage.
-- **R7.** `RoutingExecution` (`reified/execution.rs:110-127`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
+- **R7.** `RoutingExecution` (`reified/execution.rs:111-128`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
 
 A channel of an ordinary program routes to the default space, and the hooks then make the baseline call with identical arguments.
 The headline `ordinary_channels_route_default` (`SpaceRefs.v:710`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
@@ -2003,7 +2063,7 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:390-400`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:392-402`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
 **The send hook.** `reified_produce` (`reified/reducer_hooks.rs:205-223`) is hook H3, with the same signature as the baseline `produce`.
@@ -2029,7 +2089,7 @@ REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_pr
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:282-346`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:283-348`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2049,7 +2109,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:952-972`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:954-974`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2151,7 +2211,7 @@ Native replay then reproduces the failure of play (`SpaceRefs.v`, `native_execut
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:454-504`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:456-506`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome

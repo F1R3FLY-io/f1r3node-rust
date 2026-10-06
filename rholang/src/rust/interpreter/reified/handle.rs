@@ -381,6 +381,7 @@ fn produce_method(
         },
         persistent,
         authority: call.cost_authority.clone().unwrap_or_default(),
+        reissued_ord: None,
     };
     Ok(MethodEffect::Operation(SpaceOp::Produce(op)))
 }

@@ -80,6 +80,7 @@ impl RoutingExecution {
                     data,
                     persistent,
                     authority,
+                    reissued_ord: None,
                 }),
             )
             .await?;

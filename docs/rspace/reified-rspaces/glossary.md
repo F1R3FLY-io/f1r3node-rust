@@ -1036,6 +1036,12 @@ In the second case, the loop reached `FIRE_ROUND_CAP`, which is 64 fires.
 
 A re-issue repeats the operation as the program issued it.
 So a divergent pair fires once in each new space intent, until the phlo of the deploy runs out.
+
+A persistent operation also keeps the `ord` of its first round ([decision 43](decision-register.md#decision-43)).
+So it keeps its record, its identity, and its place in the collection.
+Between two rounds the operation is in flight, and other operations can run.
+When it re-enters, it fires only if its side is empty or its `ord` is less than the `ord` of the head.
+Otherwise the space stores or parks it at its place.
 *Distinguish from* a [re-offer](#re-offer), which offers a surviving datum again inside the same transaction.
 
 ### Path marker

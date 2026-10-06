@@ -425,23 +425,83 @@
       "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "statement": "Decision 46: native play and native replay reject a space entry at one point, with no staged operation and one error; outside native execution a host runtime runs the job unchanged."
     },
+    "Q68": {
+      "kind": "rocq",
+      "name": "persistent_reentry_never_spent",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: a re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place."
+    },
+    "Q69": {
+      "kind": "rocq",
+      "name": "queue_reissue_keeps_ord",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: a re-issued persistent element keeps the ord of its first round. Its round bumps the counter by one and keeps wf'."
+    },
+    "Q70": {
+      "kind": "rocq",
+      "name": "queue_reentry_preserves_shadow_inv",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: every fresh operation and every re-entry keeps wf' and SHADOW."
+    },
+    "Q71": {
+      "kind": "rocq",
+      "name": "queue_quiescent_inv",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: SHADOW with nothing in flight is INV. Every run of rounds keeps wf' and SHADOW, and it has INV whenever nothing is in flight."
+    },
+    "Q72": {
+      "kind": "rocq",
+      "name": "queue_fifo_with_reentries",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: over runs with re-entries, the records that are not persistent leave in increasing ord, each older than every such record that stays."
+    },
+    "Q73": {
+      "kind": "rocq",
+      "name": "queue_head_blocks_reentry",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: a re-entry behind an older head of its side rests at its place and fires nothing. A re-entry at the head that does not match the other head rests too. A fire meets the head of the other side."
+    },
+    "Q74": {
+      "kind": "rocq",
+      "name": "queue_reentry_loop_bounded_or_reissues",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: a re-entry stages at most FIRE_ROUND_CAP fires. A re-issue carries the first-round ord exactly for a persistent element."
+    },
+    "Q75": {
+      "kind": "rocq",
+      "name": "queue_reentry_permutation_invariant",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43: a re-entry depends on the entries of the collection, not on their list order."
+    },
+    "Q76": {
+      "kind": "rocq",
+      "name": "fresh_ord_reissue_loses_first_round_place",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43 (negative control C0): with a fresh ord, a re-issued persistent element rests behind a younger record and loses its first-round place."
+    },
+    "Q77": {
+      "kind": "rocq",
+      "name": "nonpersistent_first_ord_reentry_breaks_quiescent_inv",
+      "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+      "statement": "Decision 43 (negative control C1): an element that is not persistent and keeps its first-round ord leaves a pending match with nothing in flight."
+    },
     "U1": {
       "kind": "tla",
-      "name": "HeadOnlyNoPendingMatch",
+      "name": "QuiescentNoPendingMatch",
       "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
-      "statement": "The head record and the head waiter never match, on every schedule."
+      "statement": "With no element in flight, the head record and the head waiter never match (INV), on every schedule (decision 43)."
     },
     "U2": {
       "kind": "tla",
       "name": "HeadBlocks",
       "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
-      "statement": "Every fire involves the head of its side, on every schedule."
+      "statement": "Every fire involves the head of the other side, on every schedule."
     },
     "U3": {
       "kind": "tla",
       "name": "FifoOrder",
       "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
-      "statement": "Records leave in ord order, on every schedule."
+      "statement": "An element fires only when no entry of its own side precedes it, also after a re-entry (QD-7, QD-9)."
     },
     "U4": {
       "kind": "tla",
@@ -472,6 +532,30 @@
       "name": "HandleCallsMergeLikeContracts",
       "file": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
       "statement": "Handle calls on disjoint collections merge like contract calls, and calls on one collection race."
+    },
+    "U9": {
+      "kind": "tla",
+      "name": "ShadowedNoPendingMatch",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "While an element is in flight, a matching pair of heads needs an element in flight that precedes the head of its side (SHADOW, decision 43)."
+    },
+    "U10": {
+      "kind": "tla",
+      "name": "ReissueKeepsOrd",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "Every persistent element in flight carries the ord of its first round (decision 43)."
+    },
+    "U11": {
+      "kind": "tla",
+      "name": "IntroducedOnce",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "Each persistent element takes a fresh ord exactly once, so its record and its introduction are the same in every round (decision 43)."
+    },
+    "U12": {
+      "kind": "tla",
+      "name": "LeaveOrder",
+      "file": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+      "statement": "Records that are not persistent leave in increasing ord, each older than every such record that stays."
     }
   },
   "items": [
@@ -1466,7 +1550,7 @@
       "scope": "QueueDiscipline",
       "kind": "const",
       "name": "USES_COUNTER",
-      "line": 33,
+      "line": 34,
       "role": "Every queue operation bumps the counter. An unordered discipline needs none.",
       "rocq": [
         "exec",
@@ -1485,7 +1569,7 @@
       "scope": "QueueDiscipline",
       "kind": "fn",
       "name": "head_metered",
-      "line": 38,
+      "line": 39,
       "role": "The least (ord, bincode bytes), on both sides. Each comparison and each tie-break encode is reserved first (decision 42).",
       "rocq": [
         "head",
@@ -1510,7 +1594,7 @@
       "scope": "QueueDiscipline",
       "kind": "fn",
       "name": "reaches_head",
-      "line": 59,
+      "line": 60,
       "role": "An incoming element joins the tail.",
       "rocq": [
         "offer",
@@ -1531,7 +1615,7 @@
       "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
       "kind": "fn",
       "name": "challenge",
-      "line": 73,
+      "line": 86,
       "role": "A lesser ord, or an equal ord and lesser bytes. The comparison of the orders is reserved first, and a tie encodes each entry at most once.",
       "rocq": [
         "precedes",
@@ -1551,7 +1635,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_waiter",
-      "line": 524,
+      "line": 568,
       "role": "The head of the waiting continuations.",
       "rocq": [
         "waiter_head",
@@ -1576,7 +1660,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "head_datum",
-      "line": 549,
+      "line": 584,
       "role": "The head of the records.",
       "rocq": [
         "record_head",
@@ -1601,15 +1685,18 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "offer",
-      "line": 573,
-      "role": "The produce plan: tail join, head-only fires, re-offer, the round cap.",
+      "line": 658,
+      "role": "The produce plan: a fresh datum joins the tail and a re-issued persistent datum re-enters at its place (decision 43), head-only fires, re-offer, the round cap.",
       "rocq": [
         "offer",
         "offer_loop",
-        "round_staged"
+        "round_staged",
+        "reenter_offer"
       ],
       "tla": [
-        "Produce"
+        "Produce",
+        "DataRound",
+        "Reenter"
       ],
       "covers": [
         "Q30",
@@ -1620,7 +1707,19 @@
         "U1",
         "U2",
         "U3",
-        "Q59"
+        "Q59",
+        "Q68",
+        "Q70",
+        "Q73",
+        "Q74",
+        "Q71",
+        "Q72",
+        "Q76",
+        "Q77",
+        "U9",
+        "U10",
+        "U11",
+        "U12"
       ]
     },
     {
@@ -1630,15 +1729,18 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "receive",
-      "line": 640,
-      "role": "The consume plan.",
+      "line": 729,
+      "role": "The consume plan: a fresh waiter joins the tail and a re-issued persistent waiter re-enters at its place (decision 43).",
       "rocq": [
         "receive",
         "receive_loop",
-        "round_staged"
+        "round_staged",
+        "reenter_receive"
       ],
       "tla": [
-        "Consume"
+        "Consume",
+        "ContRound",
+        "Reenter"
       ],
       "covers": [
         "Q31",
@@ -1648,7 +1750,172 @@
         "U1",
         "U2",
         "U3",
-        "Q59"
+        "Q59",
+        "Q68",
+        "Q70",
+        "Q73",
+        "Q74",
+        "Q71",
+        "Q72",
+        "Q77",
+        "U9",
+        "U10",
+        "U11",
+        "U12"
+      ]
+    },
+    {
+      "item": "operation_ord",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "kind": "fn",
+      "name": "operation_ord",
+      "line": 809,
+      "role": "Decision 43: the kept first-round ord of a re-issued persistent operation, checked against the counter, or the bump value.",
+      "rocq": [
+        "operation_ord"
+      ],
+      "tla": [
+        "OperationOrd"
+      ],
+      "covers": [
+        "Q69",
+        "Q76",
+        "U10",
+        "U11"
+      ]
+    },
+    {
+      "item": "GenericSpace::scan_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "scan_head",
+      "line": 548,
+      "role": "The head of one side and its ord: the buffer and one envelope decode for each entry are reserved first, and nothing is copied.",
+      "rocq": [
+        "record_head",
+        "waiter_head",
+        "scan"
+      ],
+      "tla": [
+        "IsHeadR",
+        "IsHeadW"
+      ],
+      "covers": [
+        "Q29",
+        "Q62",
+        "Q64"
+      ]
+    },
+    {
+      "item": "GenericSpace::head_ord",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "head_ord",
+      "line": 600,
+      "role": "Decision 43: the ord of the head of one side, with no copy.",
+      "rocq": [
+        "reentry_at_head"
+      ],
+      "tla": [
+        "AtHead"
+      ],
+      "covers": [
+        "Q73",
+        "Q75"
+      ]
+    },
+    {
+      "item": "GenericSpace::at_head",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "at_head",
+      "line": 625,
+      "role": "Decision 43: a fresh element reaches the head only of an empty side; a re-issued persistent element re-enters at the head when its side is empty or its ord precedes the head; an equal ord is Inconsistent.",
+      "rocq": [
+        "reentry_at_head"
+      ],
+      "tla": [
+        "AtHead"
+      ],
+      "covers": [
+        "Q70",
+        "Q73",
+        "Q75",
+        "U3"
+      ]
+    },
+    {
+      "item": "QueueDiscipline::precedes",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+      "scope": "QueueDiscipline",
+      "kind": "fn",
+      "name": "precedes",
+      "line": 63,
+      "role": "Decision 43: the least ord interacts first; the comparison is reserved first.",
+      "rocq": [
+        "ord_precedes"
+      ],
+      "tla": [
+        "AtHead"
+      ],
+      "covers": [
+        "Q70",
+        "Q73",
+        "U3"
+      ]
+    },
+    {
+      "item": "ProduceOp",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+      "kind": "struct",
+      "name": "ProduceOp",
+      "line": 72,
+      "role": "A produce on a collection; reissued_ord carries the first-round ord of a re-issued persistent send (decision 43).",
+      "rocq": [
+        "in_flight",
+        "flight_ord",
+        "reissued_ord"
+      ],
+      "tla": [
+        "Reissued",
+        "Reenter"
+      ],
+      "covers": [
+        "Q69",
+        "Q74",
+        "U10"
+      ]
+    },
+    {
+      "item": "ConsumeOp",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/agent.rs",
+      "kind": "struct",
+      "name": "ConsumeOp",
+      "line": 97,
+      "role": "A receive on a collection; reissued_ord carries the first-round ord of a re-issued persistent receive (decision 43).",
+      "rocq": [
+        "in_flight",
+        "flight_ord",
+        "reissued_ord"
+      ],
+      "tla": [
+        "Reissued",
+        "Reenter"
+      ],
+      "covers": [
+        "Q69",
+        "Q74",
+        "U10"
       ]
     },
     {
@@ -1658,22 +1925,26 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_produce",
-      "line": 813,
+      "line": 933,
       "role": "Bump, then the produce plan.",
       "rocq": [
         "produce",
         "bumped",
-        "operation_trace"
+        "operation_trace",
+        "reenter_produce"
       ],
       "tla": [
-        "Produce"
+        "Produce",
+        "OperationOrd"
       ],
       "covers": [
         "Q30",
         "Q35",
         "Q59",
         "Q61",
-        "Q63"
+        "Q63",
+        "Q69",
+        "Q75"
       ]
     },
     {
@@ -1683,16 +1954,18 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_consume",
-      "line": 847,
+      "line": 968,
       "role": "Bump, then the consume plan. A peek bumps too (A2).",
       "rocq": [
         "consume",
         "bumped",
-        "operation_trace"
+        "operation_trace",
+        "reenter_consume"
       ],
       "tla": [
         "Consume",
-        "Exec"
+        "Exec",
+        "OperationOrd"
       ],
       "covers": [
         "Q28",
@@ -1701,7 +1974,9 @@
         "U4",
         "Q59",
         "Q61",
-        "Q63"
+        "Q63",
+        "Q69",
+        "Q75"
       ]
     },
     {
@@ -1742,7 +2017,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "prepare_create",
-      "line": 881,
+      "line": 1003,
       "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
       "rocq": [
         "prepare_create",
@@ -1764,7 +2039,7 @@
       "scope": "GenericSpace",
       "kind": "fn",
       "name": "read_config",
-      "line": 961,
+      "line": 1083,
       "role": "A missing config record is DanglingHandle.",
       "tla": [
         "Call"
@@ -2026,7 +2301,7 @@
       "scope": "RoutingExecution",
       "kind": "fn",
       "name": "produce",
-      "line": 110,
+      "line": 111,
       "role": "route(&None, channel): no context.",
       "rocq": [
         "r7_produce",
@@ -2116,7 +2391,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "reified_consume",
-      "line": 282,
+      "line": 283,
       "role": "H4/H5: the fast path, the USE wrapper, the route.",
       "rocq": [
         "routes_to_default_without_context",
@@ -2133,7 +2408,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "routes_to_default_without_context",
-      "line": 535,
+      "line": 537,
       "role": "Every class but a space name and an agent name.",
       "rocq": [
         "routes_to_default_without_context"
@@ -2815,7 +3090,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "struct",
       "name": "Field",
-      "line": 708,
+      "line": 710,
       "role": "Value, List, Map, Annotations, NewBody.",
       "rocq": [
         "field_flags"
@@ -2830,7 +3105,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "marker_fields",
-      "line": 722,
+      "line": 724,
       "role": "The fields of each marker.",
       "rocq": [
         "derived_flags"
@@ -2845,7 +3120,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "derived_flag",
-      "line": 815,
+      "line": 817,
       "role": "The flag that the encoder derives for a field.",
       "rocq": [
         "derived_flags"
@@ -2861,7 +3136,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_field",
-      "line": 881,
+      "line": 883,
       "role": "Recompute the derived flags of a field.",
       "rocq": [
         "refresh"
@@ -2876,7 +3151,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple",
-      "line": 952,
+      "line": 954,
       "role": "Recompute the derived flags of a marker tuple.",
       "rocq": [
         "refresh"
@@ -2891,7 +3166,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_tuple",
-      "line": 963,
+      "line": 965,
       "role": "A current tuple is not copied.",
       "rocq": [
         "refresh",
@@ -2908,7 +3183,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refresh_tuple_par",
-      "line": 984,
+      "line": 986,
       "role": "The tuple and its holder Par.",
       "rocq": [
         "refresh"
@@ -2923,7 +3198,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "refreshed_marker_par",
-      "line": 1010,
+      "line": 1012,
       "role": "H4: the QUERY source before it fails closed.",
       "rocq": [
         "refresh"
@@ -2939,7 +3214,7 @@
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "kind": "fn",
       "name": "trailing_params",
-      "line": 1023,
+      "line": 1025,
       "role": "H3: refresh, then split_trailing_params.",
       "rocq": [
         "sdecode"
@@ -3277,7 +3552,7 @@
       "scope": "CollectionChannels",
       "kind": "fn",
       "name": "new_metered",
-      "line": 204,
+      "line": 228,
       "role": "The channels of an operation, with their ids reserved first.",
       "rocq": [
         "step"
@@ -3292,7 +3567,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "prepay_outcome",
-      "line": 738,
+      "line": 858,
       "role": "Prepays the buffer of the fires of the outcome before the commit.",
       "rocq": [
         "staged_trace"
@@ -3308,7 +3583,7 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "outcome",
-      "line": 744,
+      "line": 864,
       "role": "Step 7 after the commit: moves only, prepaid at staging.",
       "rocq": [
         "round_after_commit"
@@ -3324,7 +3599,7 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "fire_offer",
-      "line": 338,
+      "line": 362,
       "role": "Stages a produce-side fire with reserved copies, and moves the record on the last round.",
       "rocq": [
         "round_staged"
@@ -3340,7 +3615,7 @@
       "scope": "Plan",
       "kind": "fn",
       "name": "fire_receive",
-      "line": 374,
+      "line": 398,
       "role": "Stages a consume-side fire with reserved copies, and moves the head copy into the candidate.",
       "rocq": [
         "round_staged"

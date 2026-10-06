@@ -6,9 +6,12 @@
    head-only on both sides. The head of the records and the head of the
    waiting continuations are the entries with the least (ord, bincode
    bytes), and only the two heads interact. A head that does not match
-   blocks the entries behind it. An incoming element joins the tail of its
-   side, so it interacts only when its side is empty. Every operation takes
-   the value of the collection counter as its ord (M-1, decision 31).
+   blocks the entries behind it. Every operation bumps the collection
+   counter (M-1, decision 31). A fresh operation takes the value of the
+   counter as its ord. So its element joins the tail of its side, and it
+   interacts only when its side is empty. A re-issued persistent operation
+   keeps the ord of its first round (decision 43). So its element keeps
+   its record identity and its FIFO place.
 
    The produce plan (offer, decision 30):
      if a record is queued: store the datum, stop             (FIFO tail)
@@ -21,38 +24,83 @@
            else offer to the next head
    The consume plan (receive) is symmetric: the continuation waits behind
    earlier waiters, then meets the head records one by one.
+   The round of a re-issued persistent element (decision 43, QD-9):
+     bump the counter, keep the first-round ord             (operation_ord)
+     if an older entry is the head of its side: store or park the element
+       at its place, stop
+     else: the loop of the produce plan or of the consume plan, from the
+       element
+     a re-issue keeps the ord only for a persistent element (the scope
+       rule). A non-persistent element runs again as a fresh operation.
 
    Sources
    - Design: the P4 design report B.4 (plans, the invariant INV, the loop
-     bound) and E.1 (the headlines of this module, the queue part).
-   - Plan: decisions 11 (head-only), 30 (re-offer of a surviving datum) and
-     31 (every operation bumps the counter), and revision I-21
+     bound) and E.1 (the headlines of this module, the queue part). The
+     design addendum of decision 43, sections 43.2 to 43.4 and 43.9 (the
+     placement rule, the scope rule, SHADOW, L1 to L4 and T1 to T4).
+   - Plan: decisions 11 (head-only), 30 (re-offer of a surviving datum), 31
+     (every operation bumps the counter) and 43 (a re-issued persistent
+     operation keeps its first-round ord), and revision I-21
      (FIRE_ROUND_CAP = 64).
-   - Code: the P4 commit of this repository. The line numbers below are the
-     line numbers of that commit.
+   - Code: the commit of decision 43 in this repository. The line numbers
+     below are the line numbers of that commit.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    precedes, head_from, head
-                            spaces/disciplines/queue.rs:38-56, 73-108
+                            spaces/disciplines/queue.rs:39-57, 86-121
                             (head_metered: the least (ord, bytes), the
                             earlier index on a tie, and Best::challenge)
-   reaches_head             spaces/disciplines/queue.rs:59 (queued == 0)
+   reaches_head             spaces/disciplines/queue.rs:60 (queued == 0)
    fire_round_cap, after_fire
                             reified/costs.rs:43, 299-310 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:573-634 (GenericSpace::offer)
-   receive, receive_loop    spaces/generic.rs:640-700 (GenericSpace::receive)
-   head_waiter, head_record spaces/generic.rs:524-545, 549-568
+   offer, offer_loop        spaces/generic.rs:658-721 (GenericSpace::offer)
+   receive, receive_loop    spaces/generic.rs:729-791 (GenericSpace::receive)
+   head_waiter, head_record spaces/generic.rs:548-564, 568-580, 584-596
+                            (scan_head, head_waiter, head_datum)
    bump                     spaces/counter.rs:163-231 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:813-879 (prepare_produce and
+   produce, consume         spaces/generic.rs:933-1001 (prepare_produce and
                             prepare_consume: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
                             similarity scans every waiter, commit ff479042)
+   in_flight, flight_ord    spaces/agent.rs:92, 122
+                            (ProduceOp::reissued_ord and
+                            ConsumeOp::reissued_ord: the first-round ord of
+                            a re-issued persistent operation)
+   operation_ord            spaces/generic.rs:809-821 (the check
+                            0 <= reissued_ord < bump.ord, else
+                            Inconsistent, and the bump value for a fresh
+                            operation)
+   ord_precedes             spaces/disciplines/queue.rs:63-72
+                            (QueueDiscipline::precedes: ord < head)
+   reentry_at_head          spaces/generic.rs:625-650, 600-617
+                            (GenericSpace::at_head and
+                            GenericSpace::head_ord: an empty side, or an
+                            ord that precedes the head, and Inconsistent on
+                            an equal ord)
+   reenter_offer, reenter_receive
+                            spaces/generic.rs:658-721, 729-791
+                            (GenericSpace::offer and GenericSpace::receive:
+                            store or park at its place when not at the
+                            head, else the loop)
+   reenter_produce, reenter_consume
+                            spaces/generic.rs:933-966, 968-1001
+                            (prepare_produce and prepare_consume with a
+                            reissued_ord: bump, then operation_ord, then the
+                            plan)
+   reissued_ord, flight_after
+                            spaces/generic.rs:713, 783 (GenericSpace::offer
+                            and GenericSpace::receive: the re-issue sets
+                            reissued_ord: op.persistent.then_some(ord))
+   round, run_rounds        reified/reducer_hooks.rs:456-506
+                            (dispatch_space_outcome: a re-issue is a new
+                            Intent::Space, the last dispatch branch of the
+                            same deploy)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -70,6 +118,16 @@
      fire removes the fired partner at its view index unless it stays.
    - The ord is a nat. The code checks i64 overflow with CounterOverflow
      (spaces/counter.rs:185, 209), so every ord of the code is a nat.
+   - An element in flight is a record or a waiter with the ord of its first
+     round. The list F of the elements in flight belongs to one collection.
+     The re-issue of a non-persistent element is a fresh operation, so F
+     does not hold it.
+   - The model gives None for the Inconsistent errors of operation_ord and
+     at_head. queue_reissue_keeps_ord shows that wf' excludes them.
+   - A run with re-entries (run_rounds) is a list of rounds. A round runs a
+     fresh operation or the re-entry of an element of F. A deploy ends only
+     when its re-issues complete (design 43.4, T2). So F is empty at every
+     deploy boundary.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. queue_head_is_min_ord             the head has the least (ord, rank)
@@ -79,9 +137,39 @@
     5. queue_head_blocks                 a blocked head blocks the rest
     6. queue_loop_bounded_or_reissues    at most FIRE_ROUND_CAP fires, at
                                          most one more than the queue length
-    7. queue_ord_fresh                   the ord of an operation is new
+    7. queue_ord_fresh                   the ord of a fresh operation is
+                                         new
     8. queue_plan_permutation_invariant  the plan ignores the list order
     9. legacy_scan_violates_head_blocks  the legacy scan breaks head-only
+   Decision 43 (a re-issued persistent operation keeps its first-round
+   ord):
+   10. persistent_reentry_never_spent    L2: a re-entered persistent
+                                         element is stored, parked or in
+                                         flight again
+   11. queue_reissue_keeps_ord           a re-issue keeps its first-round
+                                         ord and its record, the counter
+                                         grows by one, and wf' holds
+   12. queue_reentry_preserves_shadow_inv
+                                         every round keeps wf' and SHADOW
+   13. queue_quiescent_inv               INV holds when nothing is in
+                                         flight, so at every deploy
+                                         boundary
+   14. queue_fifo_with_reentries         non-persistent records leave in
+                                         arrival order, with re-entries
+   15. queue_head_blocks_reentry         an older head holds a re-entered
+                                         element at its place
+   16. queue_reentry_loop_bounded_or_reissues
+                                         the loop bound of a re-entry, and
+                                         the scope rule of a re-issue
+   17. queue_reentry_permutation_invariant
+                                         a re-entry ignores the list order
+   18. fresh_ord_reissue_loses_first_round_place
+                                         C0: with a fresh ord, the element
+                                         queues behind a younger record
+   19. nonpersistent_first_ord_reentry_breaks_quiescent_inv
+                                         C1: a non-persistent element that
+                                         keeps its ord breaks INV at a
+                                         deploy boundary
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -100,6 +188,17 @@
      `intros [| fuel]; cbn [offer_loop]`.
    - `all: try` hides failing branches. The proofs use the helper lemmas
      offer_props and receive_props instead.
+   - The injection tactic and the inversion tactic fail on an equation
+     with offer_loop fire_round_cap (decision 43). Each tactic normalizes
+     the loop and runs out of memory. receive_loop fire_round_cap has the
+     same form. Use some_injective or triple_injective, then subst.
+   - A proof that unfolds SHADOW or no_pending_match (a match on the two
+     heads) over o_state (offer_loop fire_round_cap ...) and rewrites in it
+     passes its tactics, but its Qed does not end (decision 43). The likely
+     cause: the kernel reduces the loop, and each level of the loop holds
+     the rest of the loop three times (o_ops, o_state, o_reissue). State
+     such a lemma over an outcome variable, with offer_end or receive_end
+     as a premise (offer_end_shadow). Then instantiate the variable.
    ═══════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import List Arith Bool Lia PeanoNat.
@@ -888,10 +987,12 @@ Section Queue.
         assert (H := Hbw w). first [specialize (H Hw0) | rewrite Ew in H; specialize (H Hw0)]. lia.
   Qed.
 
-  (* Headline 7. The ord of an operation is the counter value, which is
-     above the ord of every entry of the collection. The operation
+  (* Headline 7. The ord of a fresh operation is the counter value, which
+     is above the ord of every entry of the collection. The operation
      advances the counter by one and keeps the collection well formed. The
-     first operation takes the ord 0 and opens the counter at 1. *)
+     first operation takes the ord 0 and opens the counter at 1. A
+     re-issued persistent operation keeps its first-round ord instead
+     (headline 11, queue_reissue_keeps_ord). *)
   Theorem queue_ord_fresh :
     forall st, wf st ->
       (forall x, In x (q_records st) -> r_ord x < bump_ord (q_counter st)) /\
@@ -924,9 +1025,13 @@ Section Queue.
     | OpConsume rank pat pers peek => consume st rank pat pers peek
     end.
 
-  (* A run: each operation in its own transaction. The second component is
-     the list of the records that the run removed, in removal order. A
-     re-issued operation is an operation of the list. *)
+  (* A run of fresh operations: each operation in its own transaction. The
+     second component is the list of the records that the run removed, in
+     removal order. The re-issue of a non-persistent element is an
+     operation of the list, because it takes a fresh ord. A re-issued
+     persistent operation keeps its first-round ord (decision 43). Its
+     re-entry is a round of run_rounds, and queue_fifo_with_reentries
+     gives the removal order with re-entries. *)
   Fixpoint run (st : qstate) (ops : list qop) : qstate * list record :=
     match ops with
     | [] => (st, [])
@@ -970,12 +1075,13 @@ Section Queue.
       apply Forall_forall. intros y Hy. apply Hcross; [left; reflexivity | exact Hy].
   Qed.
 
-  (* Headline 4. Over any run of operations from a well-formed collection,
-     the records leave in strictly increasing ord, every removed record is
-     older than every record that stays, and a removed record was in the
-     collection at the start or arrived during the run. Since a produce
-     takes the counter value as the ord of its record, the removal order is
-     the arrival order. *)
+  (* Headline 4. Over any run of fresh operations from a well-formed
+     collection, the records leave in strictly increasing ord. Every
+     removed record is older than every record that stays. A removed record
+     was in the collection at the start or arrived during the run. A fresh
+     produce takes the counter value as the ord of its record, so the
+     removal order is the arrival order. Headline 14
+     (queue_fifo_with_reentries) adds the re-entries of decision 43. *)
   Theorem queue_fifo :
     forall ops st, wf st ->
       let (st', rem) := run st ops in
@@ -1450,9 +1556,1594 @@ Section Queue.
               (if w_pers w then st else mkQ (q_records st) (remove_at i (q_waiters st)) (q_counter st)) None
         end
     end.
+
+  (* ── 14. Decision 43: the definitions of re-entry ──────────────────── *)
+
+  (* An element in flight (design 43.4): a persistent datum or a
+     persistent continuation whose operation re-issued (A10 or I-21) and
+     did not re-enter yet. The element keeps the ord of its first round.
+     So the list F of the elements in flight holds records and waiters
+     with their first-round ords. *)
+  Inductive in_flight : Type :=
+  | FlightRecord : record -> in_flight
+  | FlightWaiter : waiter -> in_flight.
+
+  Definition flight_ord (f : in_flight) : nat :=
+    match f with FlightRecord r => r_ord r | FlightWaiter w => w_ord w end.
+
+  Definition flight_pers (f : in_flight) : bool :=
+    match f with FlightRecord r => r_pers r | FlightWaiter w => w_pers w end.
+
+  (* operation_ord: the ord of a round. A re-issued operation takes its
+     first-round ord when that ord is below the value of the bump of the
+     round. A fresh operation takes the value of the bump. None is
+     Inconsistent. *)
+  Definition operation_ord (reissued : option nat) (bump : nat) : option nat :=
+    match reissued with
+    | None => Some bump
+    | Some o => if o <? bump then Some o else None
+    end.
+
+  (* QueueDiscipline::precedes: the lesser ord interacts first. *)
+  Definition ord_precedes (o head : nat) : bool := o <? head.
+
+  (* GenericSpace::at_head for a re-entered element (QD-9). The element is
+     at the head when its side is empty or when its ord precedes the ord of
+     the head. A stored entry with the ord of the element is Inconsistent
+     (None). *)
+  Definition reentry_at_head (o : nat) (head : option nat) : option bool :=
+    match head with
+    | None => Some true
+    | Some h => if o =? h then None else Some (ord_precedes o h)
+    end.
+
+  (* The plan of a re-entered datum r (GenericSpace::offer): the offer loop
+     from the head, or a store at its place. *)
+  Definition reenter_offer (st : qstate) (r : record) : option outcome :=
+    match reentry_at_head (r_ord r) (option_map r_ord (record_head (q_records st))) with
+    | None => None
+    | Some true => Some (offer_loop fire_round_cap 0 st r)
+    | Some false => Some (mkOutcome [SStore r] (store_record st r) None)
+    end.
+
+  (* The plan of a re-entered continuation k (GenericSpace::receive): the
+     receive loop from the head, or a park at its place. *)
+  Definition reenter_receive (st : qstate) (k : waiter) : option outcome :=
+    match reentry_at_head (w_ord k) (option_map w_ord (waiter_head (q_waiters st))) with
+    | None => None
+    | Some true => Some (receive_loop fire_round_cap 0 st k)
+    | Some false => Some (mkOutcome [SPark k] (park_waiter st k) None)
+    end.
+
+  Definition reenter_plan (st : qstate) (f : in_flight) : option outcome :=
+    match f with
+    | FlightRecord r => reenter_offer st r
+    | FlightWaiter k => reenter_receive st k
+    end.
+
+  (* The round of a re-issued persistent operation (prepare_produce and
+     prepare_consume with a reissued_ord). The round bumps the counter and
+     takes the ord of operation_ord. Then it plans the record or the
+     continuation with that ord. *)
+  Definition reenter_produce (st : qstate) (r : record) : option outcome :=
+    match operation_ord (Some (r_ord r)) (bump_ord (q_counter st)) with
+    | None => None
+    | Some o => reenter_offer (bumped st) (mkRecord o (r_rank r) (r_val r) (r_pers r))
+    end.
+
+  Definition reenter_consume (st : qstate) (k : waiter) : option outcome :=
+    match operation_ord (Some (w_ord k)) (bump_ord (q_counter st)) with
+    | None => None
+    | Some o => reenter_receive (bumped st) (mkWaiter o (w_rank k) (w_pat k) (w_pers k) (w_peek k))
+    end.
+
+  Definition reenter (st : qstate) (f : in_flight) : option outcome :=
+    match f with
+    | FlightRecord r => reenter_produce st r
+    | FlightWaiter k => reenter_consume st k
+    end.
+
+  (* The reissued_ord of a re-issue: the ord of a persistent element, and
+     none for a non-persistent element (op.persistent.then_some(ord)). *)
+  Definition reissued_ord (x : in_flight) : option nat :=
+    if flight_pers x then Some (flight_ord x) else None.
+
+  (* F after a round of the element x with the outcome o. A re-issue that
+     carries an ord puts x in flight. A re-issue without an ord runs again
+     as a fresh operation (a RoundFresh round), so F does not hold it. *)
+  Definition flight_after (x : in_flight) (o : outcome) (F : list in_flight) : list in_flight :=
+    match o_reissue o, reissued_ord x with
+    | Some _, Some _ => x :: F
+    | _, _ => F
+    end.
+
+  (* wf' (design 43.4). The collection is well formed, and every element
+     in flight is persistent. The first-round ords of F are distinct and
+     below the counter value. No stored entry has the ord of an element in
+     flight. *)
+  Definition wf' (st : qstate) (F : list in_flight) : Prop :=
+    wf st /\ NoDup (map flight_ord F) /\
+    (forall f, In f F -> flight_pers f = true /\ flight_ord f < bump_ord (q_counter st)) /\
+    (forall f y, In f F -> In y (q_records st) -> flight_ord f <> r_ord y) /\
+    (forall f y, In f F -> In y (q_waiters st) -> flight_ord f <> w_ord y).
+
+  (* An element in flight shadows the heads h and w when it is older than
+     the head of its side. *)
+  Definition shadows (f : in_flight) (h : record) (w : waiter) : Prop :=
+    match f with
+    | FlightRecord x => r_ord x < r_ord h
+    | FlightWaiter x => w_ord x < w_ord w
+    end.
+
+  (* SHADOW (design 43.4): when the two heads exist and match, an element
+     in flight shadows them. INV (no_pending_match) is SHADOW with F = []
+     (queue_quiescent_inv). *)
+  Definition SHADOW (st : qstate) (F : list in_flight) : Prop :=
+    match record_head (q_records st), waiter_head (q_waiters st) with
+    | Some h, Some w => fits (w_pat w) (r_val h) = true -> exists f, In f F /\ shadows f h w
+    | _, _ => True
+    end.
+
+  (* A staged operation that names the element f: its store, its park, or
+     one of its fires. *)
+  Definition stages (f : in_flight) (s : staged) : Prop :=
+    match f, s with
+    | FlightRecord r, SStore r' => r' = r
+    | FlightRecord r, SFireProduce _ r' => r' = r
+    | FlightWaiter k, SPark k' => k' = k
+    | FlightWaiter k, SFireConsume k' _ => k' = k
+    | _, _ => False
+    end.
+
+  (* A round of a run with re-entries. RoundFresh runs an operation with a
+     fresh ord: an operation of the program, or the re-issue of a
+     non-persistent element. RoundReenter i runs the re-entry of the
+     element at index i of F. *)
+  Inductive round : Type :=
+  | RoundFresh : qop -> round
+  | RoundReenter : nat -> round.
+
+  (* The element of a fresh operation: its record or its continuation with
+     the ord of the bump. *)
+  Definition fresh_element (st : qstate) (op : qop) : in_flight :=
+    match op with
+    | OpProduce rank v pers => FlightRecord (mkRecord (bump_ord (q_counter st)) rank v pers)
+    | OpConsume rank pat pers peek => FlightWaiter (mkWaiter (bump_ord (q_counter st)) rank pat pers peek)
+    end.
+
+  (* The plan of a round: its element, its outcome, and F without the
+     element. None when F has no element at the index, or when the round
+     is Inconsistent. *)
+  Definition round_plan (st : qstate) (F : list in_flight) (rd : round)
+    : option (in_flight * outcome * list in_flight) :=
+    match rd with
+    | RoundFresh op => Some (fresh_element st op, step st op, F)
+    | RoundReenter i =>
+        match nth_error F i with
+        | None => None
+        | Some f =>
+            match reenter st f with
+            | None => None
+            | Some o => Some (f, o, remove_at i F)
+            end
+        end
+    end.
+
+  (* A run with re-entries: each round in its own transaction. The result
+     is the final state, the final F, and the records that the run
+     removed, in removal order. A round without a plan changes nothing. *)
+  Fixpoint run_rounds (st : qstate) (F : list in_flight) (rounds : list round)
+    : qstate * list in_flight * list record :=
+    match rounds with
+    | [] => (st, F, [])
+    | rd :: rest =>
+        match round_plan st F rd with
+        | None => run_rounds st F rest
+        | Some (x, o, F0) =>
+            let '(st', F', rem) := run_rounds (o_state o) (flight_after x o F0) rest in
+            (st', F', removed_of o ++ rem)
+        end
+    end.
+
+  (* ── 15. Decision 43: the loops from any staged view ───────────────── *)
+
+  (* The head waiter does not match the datum r, or no waiter waits. *)
+  Definition no_match_head_waiter (ws : list waiter) (r : record) : Prop :=
+    match waiter_head ws with Some w => fits (w_pat w) (r_val r) = false | None => True end.
+
+  (* The head record does not match the continuation k, or no record is
+     stored. *)
+  Definition no_match_head_record (rs : list record) (k : waiter) : Prop :=
+    match record_head rs with Some h => fits (w_pat k) (r_val h) = false | None => True end.
+
+  Lemma after_fire_done :
+    forall n spent stays, after_fire n spent stays = FDone -> spent = true.
+  Proof.
+    intros n spent stays H. unfold after_fire in H.
+    destruct spent; [reflexivity |]. destruct stays; [discriminate |].
+    destruct (fire_round_cap <=? n); discriminate.
+  Qed.
+
+  (* The end of an offer loop from any staged view. The records side can
+     hold entries (a re-entry at the head). The datum is stored with no
+     match at the head waiter, or a fire spends it, or it re-issues. The
+     records change only by the store, the waiters only lose entries, and
+     the counter stays. *)
+  Definition offer_end (st : qstate) (r : record) (o : outcome) : Prop :=
+    q_counter (o_state o) = q_counter st /\
+    (forall w, In w (q_waiters (o_state o)) -> In w (q_waiters st)) /\
+    ((q_records (o_state o) = r :: q_records st /\ o_reissue o = None /\
+      no_match_head_waiter (q_waiters (o_state o)) r) \/
+     (q_records (o_state o) = q_records st /\ o_reissue o = None /\ r_pers r = false) \/
+     (q_records (o_state o) = q_records st /\ o_reissue o <> None)).
+
+  Lemma offer_end_store :
+    forall st r, no_match_head_waiter (q_waiters st) r ->
+      offer_end st r (mkOutcome [SStore r] (store_record st r) None).
+  Proof.
+    intros st r Hm. unfold offer_end, store_record.
+    cbn [o_state o_reissue q_records q_waiters q_counter].
+    split; [reflexivity | split; [intros w0 H0; exact H0 |]].
+    left. split; [reflexivity | split; [reflexivity | exact Hm]].
+  Qed.
+
+  Lemma offer_end_fired :
+    forall st r ops st1 re,
+      q_counter st1 = q_counter st -> q_records st1 = q_records st ->
+      (forall w, In w (q_waiters st1) -> In w (q_waiters st)) ->
+      (re = None -> r_pers r = false) ->
+      offer_end st r (mkOutcome ops st1 re).
+  Proof.
+    intros st r ops st1 re Hc Hr Hw Hsp. unfold offer_end. cbn [o_state o_reissue].
+    split; [exact Hc | split; [exact Hw |]]. right.
+    destruct re as [c |].
+    - right. split; [exact Hr | discriminate].
+    - left. split; [exact Hr | split; [reflexivity | exact (Hsp eq_refl)]].
+  Qed.
+
+  Lemma offer_end_rest :
+    forall st st1 r ops o,
+      q_counter st1 = q_counter st -> q_records st1 = q_records st ->
+      (forall w, In w (q_waiters st1) -> In w (q_waiters st)) ->
+      offer_end st1 r o -> offer_end st r (mkOutcome ops (o_state o) (o_reissue o)).
+  Proof.
+    intros st st1 r ops o Hc Hr Hw [H1 [H2 H3]]. unfold offer_end. cbn [o_state o_reissue].
+    split; [rewrite H1; exact Hc | split; [intros w0 H0; exact (Hw w0 (H2 w0 H0)) |]].
+    rewrite Hr in H3. exact H3.
+  Qed.
+
+  Lemma offer_fired_state :
+    forall st wi (w : waiter),
+      let st1 := if w_pers w then st else mkQ (q_records st) (remove_at wi (q_waiters st)) (q_counter st) in
+      q_counter st1 = q_counter st /\ q_records st1 = q_records st /\
+      (forall w0, In w0 (q_waiters st1) -> In w0 (q_waiters st)).
+  Proof.
+    intros st wi w. cbv zeta. destruct (w_pers w); cbn [q_counter q_records q_waiters].
+    - split; [reflexivity | split; [reflexivity | intros w0 H0; exact H0]].
+    - split; [reflexivity | split; [reflexivity | apply remove_at_in]].
+  Qed.
+
+  Lemma offer_loop_end : forall fuel fired st r, offer_end st r (offer_loop fuel fired st r).
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st r;
+      unfold offer_loop; fold offer_loop;
+      destruct (head_index w_ord w_rank (q_waiters st)) as [[wi w] |] eqn:Eh.
+    2, 4: apply offer_end_store; unfold no_match_head_waiter, waiter_head, head; rewrite Eh; exact I.
+    all: destruct (head_index_head waiter w_ord w_rank _ _ _ Eh) as [Hhead _].
+    all: destruct (fits (w_pat w) (r_val r)) eqn:Efit; cbn [negb].
+    2, 4: apply offer_end_store; unfold no_match_head_waiter, waiter_head; rewrite Hhead; exact Efit.
+    all: destruct (offer_fired_state st wi w) as [Hc [Hr Hw]].
+    all: destruct (after_fire (S fired) (negb (r_pers r) && negb (w_peek w)) (w_pers w)) eqn:Eaf.
+    (* fuel S, FContinue: the loop goes on with the next head *)
+    6: exact (offer_end_rest st _ r _ _ Hc Hr Hw (IH (S fired) _ r)).
+    all: apply offer_end_fired; [exact Hc | exact Hr | exact Hw |].
+    all: intros Hre; try discriminate.
+    all: apply after_fire_done in Eaf; apply andb_true_iff in Eaf as [Ep _].
+    all: apply negb_true_iff in Ep; exact Ep.
+  Qed.
+
+  (* The end of a receive loop from any staged view (the waiters side can
+     hold entries), symmetric to offer_end. *)
+  Definition receive_end (st : qstate) (k : waiter) (o : outcome) : Prop :=
+    q_counter (o_state o) = q_counter st /\
+    (forall x, In x (q_records (o_state o)) -> In x (q_records st)) /\
+    ((q_waiters (o_state o) = k :: q_waiters st /\ o_reissue o = None /\
+      no_match_head_record (q_records (o_state o)) k) \/
+     (q_waiters (o_state o) = q_waiters st /\ o_reissue o = None /\ w_pers k = false) \/
+     (q_waiters (o_state o) = q_waiters st /\ o_reissue o <> None)).
+
+  Lemma receive_end_park :
+    forall st k, no_match_head_record (q_records st) k ->
+      receive_end st k (mkOutcome [SPark k] (park_waiter st k) None).
+  Proof.
+    intros st k Hm. unfold receive_end, park_waiter.
+    cbn [o_state o_reissue q_records q_waiters q_counter].
+    split; [reflexivity | split; [intros x0 H0; exact H0 |]].
+    left. split; [reflexivity | split; [reflexivity | exact Hm]].
+  Qed.
+
+  Lemma receive_end_fired :
+    forall st k ops st1 re,
+      q_counter st1 = q_counter st -> q_waiters st1 = q_waiters st ->
+      (forall x, In x (q_records st1) -> In x (q_records st)) ->
+      (re = None -> w_pers k = false) ->
+      receive_end st k (mkOutcome ops st1 re).
+  Proof.
+    intros st k ops st1 re Hc Hw Hr Hsp. unfold receive_end. cbn [o_state o_reissue].
+    split; [exact Hc | split; [exact Hr |]]. right.
+    destruct re as [c |].
+    - right. split; [exact Hw | discriminate].
+    - left. split; [exact Hw | split; [reflexivity | exact (Hsp eq_refl)]].
+  Qed.
+
+  Lemma receive_end_rest :
+    forall st st1 k ops o,
+      q_counter st1 = q_counter st -> q_waiters st1 = q_waiters st ->
+      (forall x, In x (q_records st1) -> In x (q_records st)) ->
+      receive_end st1 k o -> receive_end st k (mkOutcome ops (o_state o) (o_reissue o)).
+  Proof.
+    intros st st1 k ops o Hc Hw Hr [H1 [H2 H3]]. unfold receive_end. cbn [o_state o_reissue].
+    split; [rewrite H1; exact Hc | split; [intros x0 H0; exact (Hr x0 (H2 x0 H0)) |]].
+    rewrite Hw in H3. exact H3.
+  Qed.
+
+  Lemma receive_fired_state :
+    forall st hi (h : record) (k : waiter),
+      let st1 := if r_pers h || w_peek k then st
+                 else mkQ (remove_at hi (q_records st)) (q_waiters st) (q_counter st) in
+      q_counter st1 = q_counter st /\ q_waiters st1 = q_waiters st /\
+      (forall x, In x (q_records st1) -> In x (q_records st)).
+  Proof.
+    intros st hi h k. cbv zeta. destruct (r_pers h || w_peek k); cbn [q_counter q_records q_waiters].
+    - split; [reflexivity | split; [reflexivity | intros x0 H0; exact H0]].
+    - split; [reflexivity | split; [reflexivity | apply remove_at_in]].
+  Qed.
+
+  Lemma receive_loop_end : forall fuel fired st k, receive_end st k (receive_loop fuel fired st k).
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st k;
+      unfold receive_loop; fold receive_loop;
+      destruct (head_index r_ord r_rank (q_records st)) as [[hi h] |] eqn:Eh.
+    2, 4: apply receive_end_park; unfold no_match_head_record, record_head, head; rewrite Eh; exact I.
+    all: destruct (head_index_head record r_ord r_rank _ _ _ Eh) as [Hhead _].
+    all: destruct (fits (w_pat k) (r_val h)) eqn:Efit; cbn [negb].
+    2, 4: apply receive_end_park; unfold no_match_head_record, record_head; rewrite Hhead; exact Efit.
+    all: destruct (receive_fired_state st hi h k) as [Hc [Hw Hr]].
+    all: destruct (after_fire (S fired) (negb (w_pers k)) (r_pers h || w_peek k)) eqn:Eaf.
+    (* fuel S, FContinue: the loop goes on with the next head *)
+    6: exact (receive_end_rest st _ k _ _ Hc Hw Hr (IH (S fired) _ k)).
+    all: apply receive_end_fired; [exact Hc | exact Hw | exact Hr |].
+    all: intros Hre; try discriminate.
+    all: apply after_fire_done in Eaf; apply negb_true_iff in Eaf; exact Eaf.
+  Qed.
+
+  (* receive_loop_removed without the premise that no waiter waits. The
+     removed records leave from the head in increasing ord. Each removed
+     record is older than every record that stays. *)
+  Lemma receive_loop_removed_any :
+    forall fuel fired st k,
+      NoDup (map r_ord (q_records st)) ->
+      let o := receive_loop fuel fired st k in
+      StronglySorted (fun a b => r_ord a < r_ord b) (removed_of o) /\
+      (forall x, In x (removed_of o) -> In x (q_records st)) /\
+      (forall x y, In x (removed_of o) -> In y (q_records (o_state o)) -> r_ord x < r_ord y) /\
+      NoDup (map r_ord (q_records (o_state o))).
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st k Hnd; cbv zeta;
+      unfold receive_loop; fold receive_loop;
+      destruct (head_index r_ord r_rank (q_records st)) as [[hi h] |] eqn:Eh.
+    all: try (unfold removed_of; cbn [o_ops o_state flat_map park_waiter q_records app];
+              split; [constructor | split; [intros x [] | split; [intros x y [] | exact Hnd]]]).
+    all: destruct (head_index_head record r_ord r_rank _ _ _ Eh) as [Hhead Hnth].
+    all: destruct (head_spec record r_ord r_rank _ _ Hhead) as [Hin Hmin].
+    all: destruct (fits (w_pat k) (r_val h)) eqn:Efit; cbn [negb].
+    all: try (unfold removed_of; cbn [o_ops o_state flat_map park_waiter q_records app];
+              split; [constructor | split; [intros x [] | split; [intros x y [] | exact Hnd]]]).
+    (* The removed head is older than every record that stays. *)
+    all: assert (Hlt : forall y, In y (remove_at hi (q_records st)) -> r_ord h < r_ord y)
+           by (intros y Hy; pose proof (Hmin y (remove_at_in record hi _ y Hy)) as Hle;
+               pose proof (remove_at_nodup_other record r_ord hi _ h y Hnth Hnd Hy) as Hne;
+               unfold key_le in Hle; lia).
+    all: assert (Hnd1 : NoDup (map r_ord (remove_at hi (q_records st))))
+           by (apply remove_at_nodup; exact Hnd).
+    all: destruct (after_fire (S fired) (negb (w_pers k)) (r_pers h || w_peek k)) eqn:Eaf.
+    all: try (destruct (r_pers h || w_peek k) eqn:Estays;
+              unfold removed_of; cbn [o_ops o_state flat_map q_records app]; rewrite ?Estays;
+              cbn [app];
+              [ split; [constructor | split; [intros x [] | split; [intros x y [] | exact Hnd]]]
+              | split; [repeat constructor |];
+                split; [intros x [-> | []]; exact Hin |];
+                split; [intros x y [-> | []] Hy; exact (Hlt y Hy) | exact Hnd1] ]; fail).
+    (* The continuation case: the record leaves, and the loop goes on. *)
+    all: pose proof (after_fire_continue _ _ _ Eaf) as [_ Hstays].
+    all: unfold removed_of; cbn [o_ops o_state flat_map q_records app]; rewrite Hstays; cbn [app].
+    set (st1 := mkQ (remove_at hi (q_records st)) (q_waiters st) (q_counter st)).
+    destruct (IH (S fired) st1 k Hnd1) as [Hs [Hfrom [Hold Hnd']]].
+    fold (removed_of (receive_loop fuel (S fired) st1 k)).
+    pose proof (receive_loop_end fuel (S fired) st1 k) as [_ [Hsub _]].
+    split; [constructor; [exact Hs |] | split; [| split; [| exact Hnd']]].
+    - apply Forall_forall. intros x Hx. apply Hlt. exact (Hfrom x Hx).
+    - intros x [-> | Hx]; [exact Hin | exact (remove_at_in record hi _ x (Hfrom x Hx))].
+    - intros x y [-> | Hx] Hy; [apply Hlt; exact (Hsub y Hy) | exact (Hold x y Hx Hy)].
+  Qed.
+
+  Lemma offer_loop_stages :
+    forall fuel fired st r s, In s (o_ops (offer_loop fuel fired st r)) -> stages (FlightRecord r) s.
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st r s;
+      unfold offer_loop; fold offer_loop;
+      destruct (head_index w_ord w_rank (q_waiters st)) as [[wi w] |].
+    all: try (destruct (negb (fits (w_pat w) (r_val r)))).
+    all: try (destruct (after_fire (S fired) (negb (r_pers r) && negb (w_peek w)) (w_pers w))).
+    all: cbn [o_ops]; intros Hs.
+    all: destruct Hs as [<- | Hs]; [reflexivity |].
+    all: first [destruct Hs | exact (IH _ _ _ _ Hs)].
+  Qed.
+
+  Lemma receive_loop_stages :
+    forall fuel fired st k s, In s (o_ops (receive_loop fuel fired st k)) -> stages (FlightWaiter k) s.
+  Proof.
+    induction fuel as [| fuel IH]; intros fired st k s;
+      unfold receive_loop; fold receive_loop;
+      destruct (head_index r_ord r_rank (q_records st)) as [[hi h] |].
+    all: try (destruct (negb (fits (w_pat k) (r_val h)))).
+    all: try (destruct (after_fire (S fired) (negb (w_pers k)) (r_pers h || w_peek k))).
+    all: cbn [o_ops]; intros Hs.
+    all: destruct Hs as [<- | Hs]; [reflexivity |].
+    all: first [destruct Hs | exact (IH _ _ _ _ Hs)].
+  Qed.
+
+  (* ── 16. Decision 43: heads, places and plans ──────────────────────── *)
+
+  (* An entry older than every entry of a side is the head of the side
+     with the entry. *)
+  Lemma head_cons_least :
+    forall (E : Type) (ord rank : E -> nat) e l,
+      NoDup (map ord l) -> (forall x, In x l -> ord e < ord x) ->
+      head ord rank (e :: l) = Some e.
+  Proof.
+    intros E ord rank e l Hnd Hlt. apply head_unique.
+    - apply nodup_keys_unique. cbn [map]. apply NoDup_cons_iff. split; [| exact Hnd].
+      intros Hin. apply in_map_iff in Hin as [x [Hx Hin]]. specialize (Hlt x Hin). lia.
+    - left. reflexivity.
+    - intros x [<- | Hx]; [apply key_le_refl | unfold key_le; left; exact (Hlt x Hx)].
+  Qed.
+
+  (* An entry behind the head of a side does not change the head. *)
+  Lemma head_cons_behind :
+    forall (E : Type) (ord rank : E -> nat) e l h,
+      NoDup (map ord (e :: l)) -> head ord rank l = Some h -> ord h < ord e ->
+      head ord rank (e :: l) = Some h.
+  Proof.
+    intros E ord rank e l h Hnd Hh Hlt.
+    destruct (head_spec E ord rank l h Hh) as [Hin Hmin].
+    apply head_unique.
+    - apply nodup_keys_unique. exact Hnd.
+    - right. exact Hin.
+    - intros x [<- | Hx]; [unfold key_le; left; exact Hlt | exact (Hmin x Hx)].
+  Qed.
+
+  (* An ord below the head is below every entry of the side. *)
+  Lemma head_least_below :
+    forall (E : Type) (ord rank : E -> nat) l h o,
+      head ord rank l = Some h -> o < ord h -> forall x, In x l -> o < ord x.
+  Proof.
+    intros E ord rank l h o Hh Hlt x Hx.
+    destruct (head_spec E ord rank l h Hh) as [_ Hmin].
+    specialize (Hmin x Hx). unfold key_le in Hmin. lia.
+  Qed.
+
+  Lemma in_remove_at_neq :
+    forall (A : Type) i (l : list A) x y,
+      nth_error l i = Some x -> In y l -> y <> x -> In y (remove_at i l).
+  Proof.
+    intros A i l x y Hn Hy Hne.
+    apply (Permutation_in y (remove_at_perm A i l x Hn)) in Hy.
+    destruct Hy as [Heq | Hy]; [exfalso; apply Hne; symmetry; exact Heq | exact Hy].
+  Qed.
+
+  Lemma nodup_cons_distinct :
+    forall (E : Type) (f : E -> nat) e l,
+      NoDup (map f l) -> (forall y, In y l -> f e <> f y) -> NoDup (map f (e :: l)).
+  Proof.
+    intros E f e l Hnd Hne. cbn [map]. apply NoDup_cons_iff. split; [| exact Hnd].
+    intros Hin. apply in_map_iff in Hin as [y [Hy Hin]]. exact (Hne y Hin (eq_sym Hy)).
+  Qed.
+
+  (* On an equation with a loop of fuel fire_round_cap, the injection
+     tactic normalizes the loop and exhausts the memory. The proofs use
+     this lemma on such equations. *)
+  Lemma some_injective : forall (A : Type) (a b : A), Some a = Some b -> a = b.
+  Proof. intros A a b H. injection H as H. exact H. Qed.
+
+  Lemma triple_injective :
+    forall (A B C : Type) (a a' : A) (b b' : B) (c c' : C),
+      (a, b, c) = (a', b', c') -> a = a' /\ b = b' /\ c = c'.
+  Proof.
+    intros A B C a a' b b' c c' H. injection H as H1 H2 H3.
+    split; [exact H1 | split; [exact H2 | exact H3]].
+  Qed.
+
+  (* The shape of a re-entered plan: the loop from the head, or the store
+     or the park at its place. *)
+  Lemma reenter_offer_shape :
+    forall st r o, reenter_offer st r = Some o ->
+      o = offer_loop fire_round_cap 0 st r \/ o = mkOutcome [SStore r] (store_record st r) None.
+  Proof.
+    intros st r o H. unfold reenter_offer in H.
+    destruct (reentry_at_head (r_ord r) (option_map r_ord (record_head (q_records st)))) as [[] |];
+      [left | right | discriminate H]; apply some_injective in H; symmetry; exact H.
+  Qed.
+
+  Lemma reenter_receive_shape :
+    forall st k o, reenter_receive st k = Some o ->
+      o = receive_loop fire_round_cap 0 st k \/ o = mkOutcome [SPark k] (park_waiter st k) None.
+  Proof.
+    intros st k o H. unfold reenter_receive in H.
+    destruct (reentry_at_head (w_ord k) (option_map w_ord (waiter_head (q_waiters st)))) as [[] |];
+      [left | right | discriminate H]; apply some_injective in H; symmetry; exact H.
+  Qed.
+
+  (* A re-entered element whose ord no stored entry of its side has is
+     never Inconsistent. *)
+  Lemma reenter_offer_some :
+    forall st r, (forall y, In y (q_records st) -> r_ord r <> r_ord y) ->
+      exists o, reenter_offer st r = Some o.
+  Proof.
+    intros st r Hne. unfold reenter_offer, reentry_at_head.
+    destruct (record_head (q_records st)) as [h |] eqn:Eh; cbn [option_map].
+    - destruct (head_spec record r_ord r_rank _ _ Eh) as [Hin _].
+      rewrite (proj2 (Nat.eqb_neq (r_ord r) (r_ord h)) (Hne h Hin)).
+      destruct (ord_precedes (r_ord r) (r_ord h)); eexists; reflexivity.
+    - eexists. reflexivity.
+  Qed.
+
+  Lemma reenter_receive_some :
+    forall st k, (forall y, In y (q_waiters st) -> w_ord k <> w_ord y) ->
+      exists o, reenter_receive st k = Some o.
+  Proof.
+    intros st k Hne. unfold reenter_receive, reentry_at_head.
+    destruct (waiter_head (q_waiters st)) as [h |] eqn:Eh; cbn [option_map].
+    - destruct (head_spec waiter w_ord w_rank _ _ Eh) as [Hin _].
+      rewrite (proj2 (Nat.eqb_neq (w_ord k) (w_ord h)) (Hne h Hin)).
+      destruct (ord_precedes (w_ord k) (w_ord h)); eexists; reflexivity.
+    - eexists. reflexivity.
+  Qed.
+
+  (* The state facts of a re-entered datum plan. *)
+  Lemma reenter_offer_facts :
+    forall st r o,
+      NoDup (map r_ord (q_records st)) -> NoDup (map w_ord (q_waiters st)) ->
+      (forall y, In y (q_records st) -> r_ord r <> r_ord y) ->
+      reenter_offer st r = Some o ->
+      q_counter (o_state o) = q_counter st /\
+      NoDup (map r_ord (q_records (o_state o))) /\ NoDup (map w_ord (q_waiters (o_state o))) /\
+      (forall y, In y (q_records (o_state o)) -> In y (q_records st) \/ y = r) /\
+      (forall w, In w (q_waiters (o_state o)) -> In w (q_waiters st)) /\
+      (o_reissue o <> None -> q_records (o_state o) = q_records st) /\
+      removed_of o = [] /\
+      (forall s, In s (o_ops o) -> stages (FlightRecord r) s).
+  Proof.
+    intros st r o Hndr Hndw Hne Ho.
+    pose proof (nodup_cons_distinct record r_ord r (q_records st) Hndr Hne) as Hcons.
+    destruct (reenter_offer_shape st r o Ho) as [-> | ->].
+    - pose proof (offer_loop_end fire_round_cap 0 st r) as [Hc [Hw Hend]].
+      split; [exact Hc |]. split; [| split; [apply offer_loop_waiters_nodup; exact Hndw |]].
+      { destruct Hend as [[Hr _] | [[Hr _] | [Hr _]]]; rewrite Hr; [exact Hcons | exact Hndr | exact Hndr]. }
+      split; [| split; [exact Hw | split; [| split; [apply offer_loop_removed | apply offer_loop_stages]]]].
+      + intros y Hy. destruct Hend as [[Hr _] | [[Hr _] | [Hr _]]]; rewrite Hr in Hy.
+        * destruct Hy as [<- | Hy]; [right; reflexivity | left; exact Hy].
+        * left. exact Hy.
+        * left. exact Hy.
+      + intros Hre. destruct Hend as [[_ [Hn _]] | [[Hr _] | [Hr _]]];
+          [exfalso; exact (Hre Hn) | exact Hr | exact Hr].
+    - unfold store_record. cbn [o_state o_ops o_reissue q_records q_waiters q_counter].
+      split; [reflexivity | split; [exact Hcons | split; [exact Hndw |]]].
+      split; [intros y [<- | Hy]; [right; reflexivity | left; exact Hy] |].
+      split; [intros w0 H0; exact H0 |].
+      split; [intros Hre; exfalso; exact (Hre eq_refl) |].
+      split; [reflexivity |].
+      intros s [<- | []]. reflexivity.
+  Qed.
+
+  (* The state facts of a re-entered continuation plan. *)
+  Lemma reenter_receive_facts :
+    forall st k o,
+      NoDup (map r_ord (q_records st)) -> NoDup (map w_ord (q_waiters st)) ->
+      (forall y, In y (q_waiters st) -> w_ord k <> w_ord y) ->
+      reenter_receive st k = Some o ->
+      q_counter (o_state o) = q_counter st /\
+      NoDup (map r_ord (q_records (o_state o))) /\ NoDup (map w_ord (q_waiters (o_state o))) /\
+      (forall y, In y (q_records (o_state o)) -> In y (q_records st)) /\
+      (forall w, In w (q_waiters (o_state o)) -> In w (q_waiters st) \/ w = k) /\
+      (o_reissue o <> None -> q_waiters (o_state o) = q_waiters st) /\
+      StronglySorted (fun a b => r_ord a < r_ord b) (removed_of o) /\
+      (forall y, In y (removed_of o) -> In y (q_records st)) /\
+      (forall y z, In y (removed_of o) -> In z (q_records (o_state o)) -> r_ord y < r_ord z) /\
+      (forall s, In s (o_ops o) -> stages (FlightWaiter k) s).
+  Proof.
+    intros st k o Hndr Hndw Hne Ho.
+    pose proof (nodup_cons_distinct waiter w_ord k (q_waiters st) Hndw Hne) as Hcons.
+    destruct (reenter_receive_shape st k o Ho) as [-> | ->].
+    - pose proof (receive_loop_end fire_round_cap 0 st k) as [Hc [Hr Hend]].
+      destruct (receive_loop_removed_any fire_round_cap 0 st k Hndr) as [Hs [Hfrom [Hold Hndr']]].
+      split; [exact Hc | split; [exact Hndr' |]].
+      split; [destruct Hend as [[Hw _] | [[Hw _] | [Hw _]]]; rewrite Hw; [exact Hcons | exact Hndw | exact Hndw] |].
+      split; [exact Hr |].
+      split.
+      { intros y Hy. destruct Hend as [[Hw _] | [[Hw _] | [Hw _]]]; rewrite Hw in Hy.
+        - destruct Hy as [<- | Hy]; [right; reflexivity | left; exact Hy].
+        - left. exact Hy.
+        - left. exact Hy. }
+      split.
+      { intros Hre. destruct Hend as [[_ [Hn _]] | [[Hw _] | [Hw _]]];
+          [exfalso; exact (Hre Hn) | exact Hw | exact Hw]. }
+      split; [exact Hs | split; [exact Hfrom | split; [exact Hold | apply receive_loop_stages]]].
+    - unfold park_waiter, removed_of. cbn [o_state o_ops o_reissue q_records q_waiters q_counter flat_map app].
+      split; [reflexivity | split; [exact Hndr | split; [exact Hcons |]]].
+      split; [intros y Hy; exact Hy |].
+      split; [intros y [<- | Hy]; [right; reflexivity | left; exact Hy] |].
+      split; [intros Hre; exfalso; exact (Hre eq_refl) |].
+      split; [constructor | split; [intros y [] | split; [intros y z [] |]]].
+      intros s [<- | []]. reflexivity.
+  Qed.
+
+  (* ── 17. Decision 43: well-formedness with elements in flight ──────── *)
+
+  (* wf' after a re-entry round: the stored entries are old entries or the
+     element f itself. F loses f, and a re-issue puts f back with its ord. *)
+  Lemma wf'_after_reentry :
+    forall st F i f st' F',
+      wf' st F -> nth_error F i = Some f ->
+      NoDup (map r_ord (q_records st')) -> NoDup (map w_ord (q_waiters st')) ->
+      bump_ord (q_counter st') = S (bump_ord (q_counter st)) ->
+      (forall y, In y (q_records st') -> In y (q_records st) \/ f = FlightRecord y) ->
+      (forall y, In y (q_waiters st') -> In y (q_waiters st) \/ f = FlightWaiter y) ->
+      (F' = remove_at i F \/
+       (F' = f :: remove_at i F /\
+        (forall y, In y (q_records st') -> In y (q_records st)) /\
+        (forall y, In y (q_waiters st') -> In y (q_waiters st)))) ->
+      wf' st' F'.
+  Proof.
+    intros st F i f st' F' [[_ [_ [Hbr Hbw]]] [HndF [HF [HFr HFw]]]] Hn Hndr' Hndw' Hc Hrec Hwait HF'.
+    assert (Hin : In f F) by (apply nth_error_In with i; exact Hn).
+    assert (Hother : forall g, In g (remove_at i F) -> flight_ord g <> flight_ord f)
+      by (intros g Hg; exact (remove_at_nodup_other in_flight flight_ord i F f g Hn HndF Hg)).
+    assert (HinF : forall g, In g F' -> In g F).
+    { intros g Hg. destruct HF' as [-> | [-> _]].
+      - exact (remove_at_in in_flight i F g Hg).
+      - destruct Hg as [<- | Hg]; [exact Hin | exact (remove_at_in in_flight i F g Hg)]. }
+    destruct (HF f Hin) as [_ Hflt].
+    split; [split; [exact Hndr' | split; [exact Hndw' | split]] | split; [| split; [| split]]].
+    - intros y Hy. rewrite Hc. destruct (Hrec y Hy) as [Hy0 | Hy0].
+      + specialize (Hbr y Hy0). lia.
+      + rewrite Hy0 in Hflt. cbn [flight_ord] in Hflt. lia.
+    - intros y Hy. rewrite Hc. destruct (Hwait y Hy) as [Hy0 | Hy0].
+      + specialize (Hbw y Hy0). lia.
+      + rewrite Hy0 in Hflt. cbn [flight_ord] in Hflt. lia.
+    - destruct HF' as [-> | [-> _]].
+      + apply remove_at_nodup. exact HndF.
+      + exact (Permutation_NoDup (Permutation_map flight_ord (remove_at_perm in_flight i F f Hn)) HndF).
+    - intros g Hg. destruct (HF g (HinF g Hg)) as [Hp Hlt]. split; [exact Hp | rewrite Hc; lia].
+    - intros g y Hg Hy. destruct HF' as [-> | [-> [Hsubr _]]].
+      + destruct (Hrec y Hy) as [Hy0 | Hy0].
+        * exact (HFr g y (remove_at_in in_flight i F g Hg) Hy0).
+        * specialize (Hother g Hg). rewrite Hy0 in Hother. cbn [flight_ord] in Hother. exact Hother.
+      + exact (HFr g y (HinF g Hg) (Hsubr y Hy)).
+    - intros g y Hg Hy. destruct HF' as [-> | [-> [_ Hsubw]]].
+      + destruct (Hwait y Hy) as [Hy0 | Hy0].
+        * exact (HFw g y (remove_at_in in_flight i F g Hg) Hy0).
+        * specialize (Hother g Hg). rewrite Hy0 in Hother. cbn [flight_ord] in Hother. exact Hother.
+      + exact (HFw g y (HinF g Hg) (Hsubw y Hy)).
+  Qed.
+
+  (* wf' after a fresh round: every new stored entry has the ord of the
+     bump, which no element in flight has. *)
+  Lemma wf'_after_fresh :
+    forall st F st',
+      wf' st F -> wf st' -> bump_ord (q_counter st') = S (bump_ord (q_counter st)) ->
+      (forall y, In y (q_records st') -> In y (q_records st) \/ r_ord y = bump_ord (q_counter st)) ->
+      (forall y, In y (q_waiters st') -> In y (q_waiters st) \/ w_ord y = bump_ord (q_counter st)) ->
+      wf' st' F.
+  Proof.
+    intros st F st' [_ [HndF [HF [HFr HFw]]]] Hwf' Hc Hrec Hwait.
+    split; [exact Hwf' | split; [exact HndF | split; [| split]]].
+    - intros f Hf. destruct (HF f Hf) as [Hp Hlt]. split; [exact Hp | rewrite Hc; lia].
+    - intros f y Hf Hy. destruct (Hrec y Hy) as [Hy0 | Hy0].
+      + exact (HFr f y Hf Hy0).
+      + destruct (HF f Hf) as [_ Hlt]. lia.
+    - intros f y Hf Hy. destruct (Hwait y Hy) as [Hy0 | Hy0].
+      + exact (HFw f y Hf Hy0).
+      + destruct (HF f Hf) as [_ Hlt]. lia.
+  Qed.
+
+  (* wf' after a fresh round that puts its persistent element x in
+     flight. x has the ord of the bump, and the round stores no new
+     entry. *)
+  Lemma wf'_after_fresh_reissue :
+    forall st F st' x,
+      wf' st F -> wf st' -> bump_ord (q_counter st') = S (bump_ord (q_counter st)) ->
+      flight_pers x = true -> flight_ord x = bump_ord (q_counter st) ->
+      (forall y, In y (q_records st') -> In y (q_records st)) ->
+      (forall y, In y (q_waiters st') -> In y (q_waiters st)) ->
+      wf' st' (x :: F).
+  Proof.
+    intros st F st' x Hwf Hwf' Hc Hp Ho Hrec Hwait.
+    pose proof Hwf as [[_ [_ [Hbr Hbw]]] [HndF [HF _]]].
+    destruct (wf'_after_fresh st F st' Hwf Hwf' Hc
+                (fun y Hy => or_introl (Hrec y Hy)) (fun y Hy => or_introl (Hwait y Hy)))
+      as [_ [_ [HF1 [HFr1 HFw1]]]].
+    split; [exact Hwf' | split; [| split; [| split]]].
+    - cbn [map]. apply NoDup_cons_iff. split; [| exact HndF].
+      intros Hin. apply in_map_iff in Hin as [g [Hg Hin]]. destruct (HF g Hin) as [_ Hlt]. lia.
+    - intros g [<- | Hg]; [split; [exact Hp | rewrite Hc; lia] | exact (HF1 g Hg)].
+    - intros g y [<- | Hg] Hy; [| exact (HFr1 g y Hg Hy)].
+      specialize (Hbr y (Hrec y Hy)). lia.
+    - intros g y [<- | Hg] Hy; [| exact (HFw1 g y Hg Hy)].
+      specialize (Hbw y (Hwait y Hy)). lia.
+  Qed.
+
+  (* ── 18. Decision 43: headlines 10 and 11 (L2 and the kept ord) ────── *)
+
+  (* Headline 10 (L2 of design 43.4). A re-entered persistent element is
+     never spent. Its round ends with the element in flight again (a
+     re-issue), or with the element stored or parked. A fire spends only a
+     non-persistent datum or a non-persistent continuation. *)
+  Theorem persistent_reentry_never_spent :
+    (forall st r o, r_pers r = true -> reenter_offer st r = Some o ->
+       o_reissue o <> None \/ (o_reissue o = None /\ In r (q_records (o_state o)))) /\
+    (forall st k o, w_pers k = true -> reenter_receive st k = Some o ->
+       o_reissue o <> None \/ (o_reissue o = None /\ In k (q_waiters (o_state o)))).
+  Proof.
+    split.
+    - intros st r o Hp Ho. destruct (reenter_offer_shape st r o Ho) as [-> | ->].
+      + pose proof (offer_loop_end fire_round_cap 0 st r) as [_ [_ Hend]].
+        destruct Hend as [[Hr [Hn _]] | [[_ [_ Hf]] | [_ Hre]]].
+        * right. split; [exact Hn | rewrite Hr; left; reflexivity].
+        * rewrite Hp in Hf. discriminate.
+        * left. exact Hre.
+      + right. cbn [o_reissue o_state store_record q_records]. split; [reflexivity | left; reflexivity].
+    - intros st k o Hp Ho. destruct (reenter_receive_shape st k o Ho) as [-> | ->].
+      + pose proof (receive_loop_end fire_round_cap 0 st k) as [_ [_ Hend]].
+        destruct Hend as [[Hw [Hn _]] | [[_ [_ Hf]] | [_ Hre]]].
+        * right. split; [exact Hn | rewrite Hw; left; reflexivity].
+        * rewrite Hp in Hf. discriminate.
+        * left. exact Hre.
+      + right. cbn [o_reissue o_state park_waiter q_waiters]. split; [reflexivity | left; reflexivity].
+  Qed.
+
+  (* Headline 11 (headline 7 for re-issued operations). A fresh operation
+     takes the bump value as its ord. A re-issued persistent operation
+     passes the check of operation_ord and keeps its first-round ord. The
+     round plans the same record or continuation, and every staged
+     operation of the round names it. So the element keeps its record
+     identity. The round never meets the Inconsistent case of at_head. It
+     advances the counter by one. It keeps wf' with F without the element,
+     or with the element in flight again after a re-issue. *)
+  Theorem queue_reissue_keeps_ord :
+    (forall bump, operation_ord None bump = Some bump) /\
+    (forall st F i f, wf' st F -> nth_error F i = Some f ->
+       operation_ord (Some (flight_ord f)) (bump_ord (q_counter st)) = Some (flight_ord f) /\
+       reenter st f = reenter_plan (bumped st) f /\
+       exists o, reenter st f = Some o /\
+         (forall s, In s (o_ops o) -> stages f s) /\
+         q_counter (o_state o) = Some (S (bump_ord (q_counter st))) /\
+         wf' (o_state o) (match o_reissue o with
+                          | Some _ => f :: remove_at i F
+                          | None => remove_at i F
+                          end)).
+  Proof.
+    split; [reflexivity |].
+    intros st F i f Hwf Hn.
+    pose proof Hwf as [[Hndr [Hndw _]] [_ [HF [HFr HFw]]]].
+    assert (Hin : In f F) by (apply nth_error_In with i; exact Hn).
+    destruct (HF f Hin) as [_ Hlt].
+    assert (Hop : operation_ord (Some (flight_ord f)) (bump_ord (q_counter st)) = Some (flight_ord f))
+      by (unfold operation_ord; rewrite (proj2 (Nat.ltb_lt _ _) Hlt); reflexivity).
+    assert (Hplan : reenter st f = reenter_plan (bumped st) f).
+    { destruct f as [[ro rk rv rp] | [wo wk wp wpe wpk]].
+      - unfold reenter, reenter_produce, reenter_plan. cbn [flight_ord r_ord r_rank r_val r_pers] in Hop |- *.
+        rewrite Hop. reflexivity.
+      - unfold reenter, reenter_consume, reenter_plan. cbn [flight_ord w_ord w_rank w_pat w_pers w_peek] in Hop |- *.
+        rewrite Hop. reflexivity. }
+    split; [exact Hop | split; [exact Hplan |]].
+    rewrite Hplan.
+    destruct f as [r | k]; cbn [reenter_plan].
+    - (* a re-entered datum *)
+      assert (Hne : forall y, In y (q_records (bumped st)) -> r_ord r <> r_ord y)
+        by (intros y Hy; exact (HFr (FlightRecord r) y Hin Hy)).
+      destruct (reenter_offer_some (bumped st) r Hne) as [o Ho].
+      destruct (reenter_offer_facts (bumped st) r o Hndr Hndw Hne Ho)
+        as [Hc [Hndr' [Hndw' [Hrec [Hwait [Hre [_ Hstages]]]]]]].
+      exists o. split; [exact Ho | split; [exact Hstages | split; [rewrite Hc; reflexivity |]]].
+      apply (wf'_after_reentry st F i (FlightRecord r) (o_state o));
+        [exact Hwf | exact Hn | exact Hndr' | exact Hndw' | rewrite Hc; exact (bump_ord_next (q_counter st)) | | |].
+      + intros y Hy. destruct (Hrec y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; reflexivity].
+      + intros y Hy. left. exact (Hwait y Hy).
+      + destruct (o_reissue o) as [c |] eqn:Er; [right | left; reflexivity].
+        split; [reflexivity | split; [| exact Hwait]].
+        intros y Hy. rewrite (Hre ltac:(discriminate)) in Hy. exact Hy.
+    - (* a re-entered continuation *)
+      assert (Hne : forall y, In y (q_waiters (bumped st)) -> w_ord k <> w_ord y)
+        by (intros y Hy; exact (HFw (FlightWaiter k) y Hin Hy)).
+      destruct (reenter_receive_some (bumped st) k Hne) as [o Ho].
+      destruct (reenter_receive_facts (bumped st) k o Hndr Hndw Hne Ho)
+        as [Hc [Hndr' [Hndw' [Hrec [Hwait [Hre [_ [_ [_ Hstages]]]]]]]]].
+      exists o. split; [exact Ho | split; [exact Hstages | split; [rewrite Hc; reflexivity |]]].
+      apply (wf'_after_reentry st F i (FlightWaiter k) (o_state o));
+        [exact Hwf | exact Hn | exact Hndr' | exact Hndw' | rewrite Hc; exact (bump_ord_next (q_counter st)) | | |].
+      + intros y Hy. left. exact (Hrec y Hy).
+      + intros y Hy. destruct (Hwait y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; reflexivity].
+      + destruct (o_reissue o) as [c |] eqn:Er; [right | left; reflexivity].
+        split; [reflexivity | split; [exact Hrec |]].
+        intros y Hy. rewrite (Hre ltac:(discriminate)) in Hy. exact Hy.
+  Qed.
+
+  (* ── 19. Decision 43: SHADOW ───────────────────────────────────────── *)
+
+  Lemma shadow_nil_iff : forall st, SHADOW st [] <-> no_pending_match st.
+  Proof.
+    intros st. unfold SHADOW, no_pending_match.
+    destruct (record_head (q_records st)) as [h |]; [| split; intros _; exact I].
+    destruct (waiter_head (q_waiters st)) as [w |]; [| split; intros _; exact I].
+    split.
+    - intros H. destruct (fits (w_pat w) (r_val h)) eqn:E; [| reflexivity].
+      destruct (H eq_refl) as [f [[] _]].
+    - intros H Hfit. rewrite H in Hfit. discriminate.
+  Qed.
+
+  Lemma no_pending_match_shadow : forall st F, no_pending_match st -> SHADOW st F.
+  Proof.
+    intros st F H. unfold no_pending_match, SHADOW in *.
+    destruct (record_head (q_records st)) as [h |]; [| exact I].
+    destruct (waiter_head (q_waiters st)) as [w |]; [| exact I].
+    intros Hfit. rewrite H in Hfit. discriminate.
+  Qed.
+
+  (* L4 (design 43.4): with the same heads, a shadow stays valid while its
+     element stays in flight. *)
+  Lemma shadow_same_heads :
+    forall st st' F F',
+      record_head (q_records st') = record_head (q_records st) ->
+      waiter_head (q_waiters st') = waiter_head (q_waiters st) ->
+      (forall f h w, record_head (q_records st) = Some h -> waiter_head (q_waiters st) = Some w ->
+         In f F -> shadows f h w -> In f F') ->
+      SHADOW st F -> SHADOW st' F'.
+  Proof.
+    intros st st' F F' Hr Hw Hsub. unfold SHADOW. rewrite Hr, Hw.
+    destruct (record_head (q_records st)) as [h |] eqn:Eh; [| intros _; exact I].
+    destruct (waiter_head (q_waiters st)) as [w |] eqn:Ew; [| intros _; exact I].
+    intros Hsh Hfit. destruct (Hsh Hfit) as [f [Hin Hs]].
+    exists f. split; [exact (Hsub f h w eq_refl eq_refl Hin Hs) | exact Hs].
+  Qed.
+
+  (* The facts of a fresh produce that SHADOW uses. L3 (design 43.4): when
+     the records are not empty, the datum joins their tail and the heads
+     stay. Otherwise the loop ends with no pending match, as in headline 2.
+     A re-issue stores no record. *)
+  Lemma produce_round_facts :
+    forall st rank v pers, wf st ->
+      let x := mkRecord (bump_ord (q_counter st)) rank v pers in
+      let o := produce st rank v pers in
+      wf (o_state o) /\ bump_ord (q_counter (o_state o)) = S (bump_ord (q_counter st)) /\
+      (forall y, In y (q_records (o_state o)) -> In y (q_records st) \/ y = x) /\
+      (forall w, In w (q_waiters (o_state o)) -> In w (q_waiters st)) /\
+      (o_reissue o <> None -> q_records (o_state o) = q_records st /\ no_pending_match (o_state o)) /\
+      ((record_head (q_records (o_state o)) = record_head (q_records st) /\
+        q_waiters (o_state o) = q_waiters st) \/ no_pending_match (o_state o)).
+  Proof.
+    intros st rank v pers Hwf. cbv zeta.
+    destruct (produce_wf st rank v pers Hwf) as [Hwf1 [Hc [Hrec _]]].
+    pose proof Hwf as [Hndr [_ [Hbr _]]].
+    split; [exact Hwf1 | split; [rewrite Hc; apply bump_ord_next | split; [exact Hrec |]]].
+    unfold produce, offer, bumped. cbn [q_records].
+    destruct (q_records st) as [| x0 xs] eqn:Erec.
+    - pose proof (offer_loop_state fire_round_cap 0
+                    (mkQ [] (q_waiters st) (bump_next (q_counter st)))
+                    (mkRecord (bump_ord (q_counter st)) rank v pers) eq_refl) as [Hinv [_ [_ Hw]]].
+      pose proof (offer_loop_end fire_round_cap 0
+                    (mkQ [] (q_waiters st) (bump_next (q_counter st)))
+                    (mkRecord (bump_ord (q_counter st)) rank v pers)) as [_ [_ Hend]].
+      split; [exact Hw | split; [| right; exact Hinv]].
+      intros Hre. split; [| exact Hinv].
+      destruct Hend as [[_ [Hn _]] | [[Hr _] | [Hr _]]]; [exfalso; exact (Hre Hn) | exact Hr | exact Hr].
+    - cbn [o_state o_reissue]. unfold store_record. cbn [q_records q_waiters q_counter].
+      split; [intros w0 H0; exact H0 | split; [intros H; exfalso; exact (H eq_refl) |]].
+      left. split; [| reflexivity].
+      unfold record_head. apply head_cons_fresh.
+      + apply nodup_keys_unique. first [exact Hndr | rewrite Erec in Hndr; exact Hndr].
+      + discriminate.
+      + intros y Hy. cbn [r_ord]. apply Hbr. first [exact Hy | rewrite Erec; exact Hy].
+  Qed.
+
+  (* The facts of a fresh consume that SHADOW uses, symmetric to
+     produce_round_facts. *)
+  Lemma consume_round_facts :
+    forall st rank pat pers peek, wf st ->
+      let x := mkWaiter (bump_ord (q_counter st)) rank pat pers peek in
+      let o := consume st rank pat pers peek in
+      wf (o_state o) /\ bump_ord (q_counter (o_state o)) = S (bump_ord (q_counter st)) /\
+      (forall y, In y (q_records (o_state o)) -> In y (q_records st)) /\
+      (forall w, In w (q_waiters (o_state o)) -> In w (q_waiters st) \/ w = x) /\
+      (o_reissue o <> None -> q_waiters (o_state o) = q_waiters st /\ no_pending_match (o_state o)) /\
+      ((q_records (o_state o) = q_records st /\
+        waiter_head (q_waiters (o_state o)) = waiter_head (q_waiters st)) \/ no_pending_match (o_state o)).
+  Proof.
+    intros st rank pat pers peek Hwf. cbv zeta.
+    destruct (consume_wf st rank pat pers peek Hwf) as [Hwf1 [Hc [Hrec _]]].
+    pose proof Hwf as [_ [Hndw [_ Hbw]]].
+    split; [exact Hwf1 | split; [rewrite Hc; apply bump_ord_next | split; [exact Hrec |]]].
+    unfold consume, receive, bumped. cbn [q_waiters].
+    destruct (q_waiters st) as [| x0 xs] eqn:Ew.
+    - pose proof (receive_loop_state fire_round_cap 0
+                    (mkQ (q_records st) [] (bump_next (q_counter st)))
+                    (mkWaiter (bump_ord (q_counter st)) rank pat pers peek) eq_refl) as [Hinv [Hw _]].
+      pose proof (receive_loop_end fire_round_cap 0
+                    (mkQ (q_records st) [] (bump_next (q_counter st)))
+                    (mkWaiter (bump_ord (q_counter st)) rank pat pers peek)) as [_ [_ Hend]].
+      split; [| split; [| right; exact Hinv]].
+      + intros w0 H0. destruct Hw as [Hw | Hw]; rewrite Hw in H0; [destruct H0 |].
+        destruct H0 as [<- | []]. right. reflexivity.
+      + intros Hre. split; [| exact Hinv].
+        destruct Hend as [[_ [Hn _]] | [[Hw' _] | [Hw' _]]]; [exfalso; exact (Hre Hn) | exact Hw' | exact Hw'].
+    - cbn [o_state o_reissue]. unfold park_waiter. cbn [q_records q_waiters q_counter].
+      split; [intros w0 [<- | H0]; [right; reflexivity | left; first [exact H0 | rewrite Ew; exact H0]] |].
+      split; [intros H; exfalso; exact (H eq_refl) |].
+      left. split; [reflexivity |].
+      unfold waiter_head. apply head_cons_fresh.
+      + apply nodup_keys_unique. first [exact Hndw | rewrite Ew in Hndw; exact Hndw].
+      + discriminate.
+      + intros y Hy. cbn [w_ord]. apply Hbw. first [exact Hy | rewrite Ew; exact Hy].
+  Qed.
+
+  (* T1 (d) for a datum at the head. The offer loop runs from r, which is
+     older than every stored record. L2 excludes a fire that spends r. So
+     r ends stored at the head with no match, or in flight again. In
+     flight, r is older than the head of the records, so it shadows any
+     exposed pair. The lemma takes the outcome as a variable, because the
+     kernel check of SHADOW over the loop itself does not end (see the
+     header). *)
+  Lemma offer_end_shadow :
+    forall st F i r o,
+      NoDup (map r_ord (q_records st)) -> r_pers r = true ->
+      (forall y, In y (q_records st) -> r_ord r < r_ord y) ->
+      offer_end st r o ->
+      SHADOW (o_state o) (match o_reissue o with
+                          | Some _ => FlightRecord r :: remove_at i F
+                          | None => remove_at i F
+                          end).
+  Proof.
+    intros st F i r o Hndr Hpers Hlt [_ [_ Hend]].
+    destruct Hend as [[Hr [Hre Hm]] | [[_ [_ Hf]] | [Hr Hre]]].
+    - rewrite Hre. apply no_pending_match_shadow.
+      unfold no_pending_match, record_head. rewrite Hr.
+      rewrite (head_cons_least record r_ord r_rank r (q_records st) Hndr Hlt).
+      unfold no_match_head_waiter in Hm.
+      destruct (waiter_head (q_waiters (o_state o))) as [w |]; [exact Hm | exact I].
+    - rewrite Hpers in Hf. discriminate.
+    - destruct (o_reissue o) as [c |]; [| exfalso; exact (Hre eq_refl)].
+      unfold SHADOW. rewrite Hr.
+      destruct (record_head (q_records st)) as [h |] eqn:Eh; [| exact I].
+      destruct (waiter_head (q_waiters (o_state o))) as [w |]; [| exact I].
+      intros _. exists (FlightRecord r). split; [left; reflexivity |].
+      cbn [shadows]. apply Hlt. exact (proj1 (head_spec record r_ord r_rank _ _ Eh)).
+  Qed.
+
+  Lemma receive_end_shadow :
+    forall st F i k o,
+      NoDup (map w_ord (q_waiters st)) -> w_pers k = true ->
+      (forall y, In y (q_waiters st) -> w_ord k < w_ord y) ->
+      receive_end st k o ->
+      SHADOW (o_state o) (match o_reissue o with
+                          | Some _ => FlightWaiter k :: remove_at i F
+                          | None => remove_at i F
+                          end).
+  Proof.
+    intros st F i k o Hndw Hpers Hlt [_ [_ Hend]].
+    destruct Hend as [[Hw [Hre Hm]] | [[_ [_ Hf]] | [Hw Hre]]].
+    - rewrite Hre. apply no_pending_match_shadow.
+      unfold no_pending_match. unfold waiter_head at 1. rewrite Hw.
+      rewrite (head_cons_least waiter w_ord w_rank k (q_waiters st) Hndw Hlt).
+      unfold no_match_head_record in Hm.
+      destruct (record_head (q_records (o_state o))) as [h |]; [exact Hm | exact I].
+    - rewrite Hpers in Hf. discriminate.
+    - destruct (o_reissue o) as [c |]; [| exfalso; exact (Hre eq_refl)].
+      unfold SHADOW. rewrite Hw.
+      destruct (record_head (q_records (o_state o))) as [h |]; [| exact I].
+      destruct (waiter_head (q_waiters st)) as [w |] eqn:Ew; [| exact I].
+      intros _. exists (FlightWaiter k). split; [left; reflexivity |].
+      cbn [shadows]. apply Hlt. exact (proj1 (head_spec waiter w_ord w_rank _ _ Ew)).
+  Qed.
+
+  (* T1 (c) and (d) for a re-entered datum. QD-9 decides the place: at the
+     head (an empty side, or an ord below the head), the offer loop runs
+     from r. Behind an older head, r is stored at its place, the heads
+     stay, and r cannot shadow the old pair, so another element does. *)
+  Lemma reenter_offer_shadow :
+    forall st F i r o,
+      NoDup (map r_ord (q_records st)) -> r_pers r = true ->
+      (forall y, In y (q_records st) -> r_ord r <> r_ord y) ->
+      nth_error F i = Some (FlightRecord r) -> SHADOW st F ->
+      reenter_offer st r = Some o ->
+      SHADOW (o_state o) (match o_reissue o with
+                          | Some _ => FlightRecord r :: remove_at i F
+                          | None => remove_at i F
+                          end).
+  Proof.
+    intros st F i r o Hndr Hpers Hne Hn Hsh Ho.
+    pose proof (nodup_cons_distinct record r_ord r (q_records st) Hndr Hne) as Hcons.
+    unfold reenter_offer, reentry_at_head, ord_precedes in Ho.
+    destruct (record_head (q_records st)) as [h |] eqn:Eh; cbn [option_map] in Ho.
+    - destruct (head_spec record r_ord r_rank _ _ Eh) as [Hhin _].
+      rewrite (proj2 (Nat.eqb_neq (r_ord r) (r_ord h)) (Hne h Hhin)) in Ho.
+      destruct (r_ord r <? r_ord h) eqn:Elt; apply some_injective in Ho.
+      + (* at the head: r precedes the head h *)
+        apply Nat.ltb_lt in Elt.
+        pose proof (offer_loop_end fire_round_cap 0 st r) as Hend. rewrite Ho in Hend.
+        exact (offer_end_shadow st F i r o Hndr Hpers
+                 (head_least_below record r_ord r_rank _ h (r_ord r) Eh Elt) Hend).
+      + (* behind the older head h: r is stored at its place *)
+        subst o. apply Nat.ltb_ge in Elt.
+        assert (Hlt : r_ord h < r_ord r) by (pose proof (Hne h Hhin); lia).
+        cbn [o_reissue o_state].
+        apply (shadow_same_heads st (store_record st r) F (remove_at i F)).
+        * unfold store_record, record_head. cbn [q_records].
+          rewrite (head_cons_behind record r_ord r_rank r (q_records st) h Hcons Eh Hlt).
+          symmetry. exact Eh.
+        * reflexivity.
+        * intros f h' w' Eh' _ Hf Hs. rewrite Eh in Eh'. apply some_injective in Eh'. subst h'.
+          apply (in_remove_at_neq in_flight i F (FlightRecord r) f Hn Hf).
+          intros ->. cbn [shadows] in Hs. lia.
+        * exact Hsh.
+    - (* an empty records side: r is at the head *)
+      apply some_injective in Ho.
+      assert (Hnil : q_records st = []) by (apply (proj1 (head_index_none record r_ord r_rank _));
+                                            unfold record_head, head in Eh;
+                                            destruct (head_index r_ord r_rank (q_records st)); [discriminate | reflexivity]).
+      pose proof (offer_loop_end fire_round_cap 0 st r) as Hend. rewrite Ho in Hend.
+      apply (offer_end_shadow st F i r o Hndr Hpers); [| exact Hend].
+      intros y Hy. rewrite Hnil in Hy. destruct Hy.
+  Qed.
+
+  Lemma reenter_receive_shadow :
+    forall st F i k o,
+      NoDup (map w_ord (q_waiters st)) -> w_pers k = true ->
+      (forall y, In y (q_waiters st) -> w_ord k <> w_ord y) ->
+      nth_error F i = Some (FlightWaiter k) -> SHADOW st F ->
+      reenter_receive st k = Some o ->
+      SHADOW (o_state o) (match o_reissue o with
+                          | Some _ => FlightWaiter k :: remove_at i F
+                          | None => remove_at i F
+                          end).
+  Proof.
+    intros st F i k o Hndw Hpers Hne Hn Hsh Ho.
+    pose proof (nodup_cons_distinct waiter w_ord k (q_waiters st) Hndw Hne) as Hcons.
+    unfold reenter_receive, reentry_at_head, ord_precedes in Ho.
+    destruct (waiter_head (q_waiters st)) as [h |] eqn:Eh; cbn [option_map] in Ho.
+    - destruct (head_spec waiter w_ord w_rank _ _ Eh) as [Hhin _].
+      rewrite (proj2 (Nat.eqb_neq (w_ord k) (w_ord h)) (Hne h Hhin)) in Ho.
+      destruct (w_ord k <? w_ord h) eqn:Elt; apply some_injective in Ho.
+      + (* at the head: k precedes the head h *)
+        apply Nat.ltb_lt in Elt.
+        pose proof (receive_loop_end fire_round_cap 0 st k) as Hend. rewrite Ho in Hend.
+        exact (receive_end_shadow st F i k o Hndw Hpers
+                 (head_least_below waiter w_ord w_rank _ h (w_ord k) Eh Elt) Hend).
+      + (* behind the older head h: k is parked at its place *)
+        subst o. apply Nat.ltb_ge in Elt.
+        assert (Hlt : w_ord h < w_ord k) by (pose proof (Hne h Hhin); lia).
+        cbn [o_reissue o_state].
+        apply (shadow_same_heads st (park_waiter st k) F (remove_at i F)).
+        * reflexivity.
+        * unfold park_waiter, waiter_head. cbn [q_waiters].
+          rewrite (head_cons_behind waiter w_ord w_rank k (q_waiters st) h Hcons Eh Hlt).
+          symmetry. exact Eh.
+        * intros f h' w' _ Ew' Hf Hs. rewrite Eh in Ew'. apply some_injective in Ew'. subst w'.
+          apply (in_remove_at_neq in_flight i F (FlightWaiter k) f Hn Hf).
+          intros ->. cbn [shadows] in Hs. lia.
+        * exact Hsh.
+    - (* an empty waiters side: k is at the head *)
+      apply some_injective in Ho.
+      assert (Hnil : q_waiters st = []) by (apply (proj1 (head_index_none waiter w_ord w_rank _));
+                                            unfold waiter_head, head in Eh;
+                                            destruct (head_index w_ord w_rank (q_waiters st)); [discriminate | reflexivity]).
+      pose proof (receive_loop_end fire_round_cap 0 st k) as Hend. rewrite Ho in Hend.
+      apply (receive_end_shadow st F i k o Hndw Hpers); [| exact Hend].
+      intros y Hy. rewrite Hnil in Hy. destruct Hy.
+  Qed.
+
+  (* ── 20. Decision 43: headlines 12 and 13 (SHADOW and quiescence) ──── *)
+
+  (* Headline 12 (headlines 2 and 3 with elements in flight, T1 of design
+     43.4). Every round keeps wf' and SHADOW. A fresh round keeps them
+     with the same F. When it re-issues, it also keeps them with its
+     persistent element in flight. The re-entry of the element at index i
+     of F keeps them with F without the element. After a re-issue, it
+     keeps them with the element in flight again. *)
+  Theorem queue_reentry_preserves_shadow_inv :
+    forall st F, wf' st F -> SHADOW st F ->
+      (forall rank v pers,
+         let o := produce st rank v pers in
+         let x := FlightRecord (mkRecord (bump_ord (q_counter st)) rank v pers) in
+         wf' (o_state o) F /\ SHADOW (o_state o) F /\
+         (o_reissue o <> None -> pers = true ->
+            wf' (o_state o) (x :: F) /\ SHADOW (o_state o) (x :: F))) /\
+      (forall rank pat pers peek,
+         let o := consume st rank pat pers peek in
+         let x := FlightWaiter (mkWaiter (bump_ord (q_counter st)) rank pat pers peek) in
+         wf' (o_state o) F /\ SHADOW (o_state o) F /\
+         (o_reissue o <> None -> pers = true ->
+            wf' (o_state o) (x :: F) /\ SHADOW (o_state o) (x :: F))) /\
+      (forall i f, nth_error F i = Some f ->
+         exists o, reenter st f = Some o /\
+           wf' (o_state o) (match o_reissue o with Some _ => f :: remove_at i F | None => remove_at i F end) /\
+           SHADOW (o_state o) (match o_reissue o with Some _ => f :: remove_at i F | None => remove_at i F end)).
+  Proof.
+    intros st F Hwf Hsh. pose proof Hwf as [Hw0 [_ [HF [HFr HFw]]]].
+    split; [| split].
+    - (* T1 (a) and (b) for a datum *)
+      intros rank v pers. cbv zeta.
+      destruct (produce_round_facts st rank v pers Hw0) as [Hwf1 [Hc [Hrec [Hwait [Hre Hheads]]]]].
+      split; [| split].
+      + apply (wf'_after_fresh st F _ Hwf Hwf1 Hc).
+        * intros y Hy. destruct (Hrec y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; reflexivity].
+        * intros y Hy. left. exact (Hwait y Hy).
+      + destruct Hheads as [[Hr Hw] | Hinv]; [| apply no_pending_match_shadow; exact Hinv].
+        apply (shadow_same_heads st _ F F); [exact Hr | rewrite Hw; reflexivity | | exact Hsh].
+        intros f h w _ _ Hf _. exact Hf.
+      + intros Hre1 Hp. destruct (Hre Hre1) as [Hr Hinv].
+        split; [| apply no_pending_match_shadow; exact Hinv].
+        apply (wf'_after_fresh_reissue st F _ _ Hwf Hwf1 Hc); [exact Hp | reflexivity | | exact Hwait].
+        intros y Hy. rewrite Hr in Hy. exact Hy.
+    - (* T1 (a) and (b) for a continuation *)
+      intros rank pat pers peek. cbv zeta.
+      destruct (consume_round_facts st rank pat pers peek Hw0) as [Hwf1 [Hc [Hrec [Hwait [Hre Hheads]]]]].
+      split; [| split].
+      + apply (wf'_after_fresh st F _ Hwf Hwf1 Hc).
+        * intros y Hy. left. exact (Hrec y Hy).
+        * intros y Hy. destruct (Hwait y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; reflexivity].
+      + destruct Hheads as [[Hr Hw] | Hinv]; [| apply no_pending_match_shadow; exact Hinv].
+        apply (shadow_same_heads st _ F F); [rewrite Hr; reflexivity | exact Hw | | exact Hsh].
+        intros f h w _ _ Hf _. exact Hf.
+      + intros Hre1 Hp. destruct (Hre Hre1) as [Hw Hinv].
+        split; [| apply no_pending_match_shadow; exact Hinv].
+        apply (wf'_after_fresh_reissue st F _ _ Hwf Hwf1 Hc); [exact Hp | reflexivity | exact Hrec |].
+        intros y Hy. rewrite Hw in Hy. exact Hy.
+    - (* T1 (c) and (d): a re-entry *)
+      intros i f Hn.
+      destruct (proj2 queue_reissue_keeps_ord st F i f Hwf Hn) as [_ [Hplan [o [Ho [_ [_ HwF]]]]]].
+      exists o. split; [exact Ho | split; [exact HwF |]].
+      assert (Hin : In f F) by (apply nth_error_In with i; exact Hn).
+      destruct (HF f Hin) as [Hpers _].
+      rewrite Hplan in Ho.
+      destruct f as [r | k]; cbn [reenter_plan flight_pers] in Ho, Hpers.
+      + apply (reenter_offer_shadow (bumped st) F i r o (proj1 Hw0) Hpers); [| exact Hn | exact Hsh | exact Ho].
+        intros y Hy. exact (HFr (FlightRecord r) y Hin Hy).
+      + apply (reenter_receive_shadow (bumped st) F i k o (proj1 (proj2 Hw0)) Hpers); [| exact Hn | exact Hsh | exact Ho].
+        intros y Hy. exact (HFw (FlightWaiter k) y Hin Hy).
+  Qed.
+
+  (* Headline 13 (T2 of design 43.4, quiescence). INV is SHADOW with
+     nothing in flight. Take any run of fresh rounds and re-entries, with
+     the scope rule of flight_after. Along the run, wf' and SHADOW hold.
+     INV holds at every point where no element is in flight. A deploy ends
+     only when every re-issue of the deploy completes. So INV holds at
+     every deploy boundary. *)
+  Theorem queue_quiescent_inv :
+    (forall st, SHADOW st [] <-> no_pending_match st) /\
+    (forall rounds st F, wf' st F -> SHADOW st F ->
+       let '(st', F', _) := run_rounds st F rounds in
+       wf' st' F' /\ SHADOW st' F' /\ (F' = [] -> no_pending_match st')).
+  Proof.
+    split; [exact shadow_nil_iff |].
+    induction rounds as [| rd rest IH]; intros st F Hwf Hsh.
+    - cbn [run_rounds]. split; [exact Hwf | split; [exact Hsh |]].
+      intros ->. apply shadow_nil_iff. exact Hsh.
+    - cbn [run_rounds].
+      destruct (round_plan st F rd) as [[[x o] F0] |] eqn:Ep.
+      2: { specialize (IH st F Hwf Hsh). exact IH. }
+      assert (Hnext : wf' (o_state o) (flight_after x o F0) /\ SHADOW (o_state o) (flight_after x o F0)).
+      { destruct (queue_reentry_preserves_shadow_inv st F Hwf Hsh) as [Hprod [Hcons Hre]].
+        unfold flight_after, reissued_ord.
+        destruct rd as [[rank v pers | rank pat pers peek] | i]; cbn [round_plan] in Ep.
+        - (* a fresh produce: only a persistent datum enters F *)
+          apply some_injective, triple_injective in Ep as [Ex [Eo EF]]. subst x o F0.
+          cbn [step fresh_element flight_pers flight_ord r_pers r_ord].
+          destruct (Hprod rank v pers) as [HwF [HsF Hx]].
+          destruct (o_reissue (produce st rank v pers)) as [c |] eqn:Er; [| split; [exact HwF | exact HsF]].
+          destruct pers; [| split; [exact HwF | exact HsF]].
+          apply Hx; [discriminate | reflexivity].
+        - (* a fresh consume: only a persistent continuation enters F *)
+          apply some_injective, triple_injective in Ep as [Ex [Eo EF]]. subst x o F0.
+          cbn [step fresh_element flight_pers flight_ord w_pers w_ord].
+          destruct (Hcons rank pat pers peek) as [HwF [HsF Hx]].
+          destruct (o_reissue (consume st rank pat pers peek)) as [c |] eqn:Er; [| split; [exact HwF | exact HsF]].
+          destruct pers; [| split; [exact HwF | exact HsF]].
+          apply Hx; [discriminate | reflexivity].
+        - (* a re-entry: the element is persistent and keeps its ord *)
+          destruct (nth_error F i) as [f |] eqn:En; [| discriminate].
+          destruct (reenter st f) as [o' |] eqn:Ero; [| discriminate].
+          apply some_injective, triple_injective in Ep as [Ex [Eo EF]]. subst x o F0.
+          destruct (Hre i f En) as [o'' [Ho'' [HwF HsF]]].
+          rewrite Ero in Ho''. apply some_injective in Ho''. subst o''.
+          assert (Hin : In f F) by (apply nth_error_In with i; exact En).
+          pose proof Hwf as [_ [_ [HF _]]]. destruct (HF f Hin) as [Hpers _].
+          rewrite Hpers.
+          destruct (o_reissue o') as [c |]; split; [exact HwF | exact HsF | exact HwF | exact HsF]. }
+      destruct Hnext as [Hwf1 Hsh1].
+      specialize (IH (o_state o) (flight_after x o F0) Hwf1 Hsh1).
+      destruct (run_rounds (o_state o) (flight_after x o F0) rest) as [[st' F'] rem].
+      exact IH.
+  Qed.
+
+  (* ── 21. Decision 43: headline 14 (FIFO with re-entries) ───────────── *)
+
+  Lemma removed_of_nonpersistent : forall o y, In y (removed_of o) -> r_pers y = false.
+  Proof.
+    intros [ops st re] y. unfold removed_of. cbn [o_ops].
+    induction ops as [| s ops IH]; cbn [flat_map]; [intros [] |].
+    intros Hy. apply in_app_or in Hy as [Hy | Hy]; [| exact (IH Hy)].
+    destruct s as [x | x | w x | k h]; cbn in Hy; try destruct Hy.
+    destruct (r_pers h || w_peek k) eqn:E; [destruct Hy |].
+    destruct Hy as [<- | []]. apply orb_false_iff in E as [E _]. exact E.
+  Qed.
+
+  Lemma flight_after_in :
+    forall x o F g, In g (flight_after x o F) -> g = x \/ In g F.
+  Proof.
+    intros x o F g H. unfold flight_after in H.
+    destruct (o_reissue o); [destruct (reissued_ord x) |].
+    - destruct H as [-> | H]; [left; reflexivity | right; exact H].
+    - right. exact H.
+    - right. exact H.
+  Qed.
+
+  (* The facts of one round that the FIFO headline uses. The in-flight list
+     after the round follows the scope rule: a re-issue keeps the element
+     in flight exactly when the element is persistent. *)
+  Lemma round_plan_facts :
+    forall st F rd x o F0, wf' st F -> round_plan st F rd = Some (x, o, F0) ->
+      wf' (o_state o) (match o_reissue o with
+                       | Some _ => if flight_pers x then x :: F0 else F0
+                       | None => F0
+                       end) /\
+      bump_ord (q_counter (o_state o)) = S (bump_ord (q_counter st)) /\
+      (forall g, In g F0 -> In g F) /\
+      (In x F \/ flight_ord x = bump_ord (q_counter st)) /\
+      (forall y, In y (q_records (o_state o)) ->
+         In y (q_records st) \/ bump_ord (q_counter st) <= r_ord y \/ In (FlightRecord y) F) /\
+      StronglySorted (fun a b => r_ord a < r_ord b) (removed_of o) /\
+      (forall y, In y (removed_of o) -> In y (q_records st)) /\
+      (forall y z, In y (removed_of o) -> In z (q_records (o_state o)) -> r_ord y < r_ord z).
+  Proof.
+    intros st F rd x o F0 Hwf Ep. pose proof Hwf as [Hw0 [_ [HF [HFr HFw]]]].
+    pose proof Hw0 as [Hndr [Hndw _]].
+    destruct rd as [[rank v pers | rank pat pers peek] | i]; cbn [round_plan] in Ep.
+    - (* a fresh produce *)
+      apply some_injective, triple_injective in Ep as [Ex [Eo EF]]. subst x o F0.
+      cbn [step fresh_element flight_pers flight_ord r_pers r_ord w_pers w_ord].
+      destruct (produce_round_facts st rank v pers Hw0) as [Hwf1 [Hc [Hrec [Hwait [Hre _]]]]].
+      destruct (produce_wf st rank v pers Hw0) as [_ [_ [_ Hrem]]].
+      assert (HwF : wf' (o_state (produce st rank v pers)) F).
+      { apply (wf'_after_fresh st F _ Hwf Hwf1 Hc).
+        - intros y Hy. destruct (Hrec y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; reflexivity].
+        - intros y Hy. left. exact (Hwait y Hy). }
+      split; [| split; [exact Hc | split; [intros g Hg; exact Hg | split; [right; reflexivity | split]]]].
+      + destruct (o_reissue (produce st rank v pers)) as [c |] eqn:Er; [| exact HwF].
+        destruct pers; [| exact HwF].
+        apply (wf'_after_fresh_reissue st F _ _ Hwf Hwf1 Hc); [reflexivity | reflexivity | | exact Hwait].
+        intros y Hy. rewrite (proj1 (Hre ltac:(discriminate))) in Hy. exact Hy.
+      + intros y Hy. destruct (Hrec y Hy) as [Hy0 | ->]; [left; exact Hy0 |].
+        right; left. cbn [r_ord]. lia.
+      + rewrite Hrem. split; [constructor | split; [intros y [] | intros y z []]].
+    - (* a fresh consume *)
+      apply some_injective, triple_injective in Ep as [Ex [Eo EF]]. subst x o F0.
+      cbn [step fresh_element flight_pers flight_ord r_pers r_ord w_pers w_ord].
+      destruct (consume_round_facts st rank pat pers peek Hw0) as [Hwf1 [Hc [Hrec [Hwait [Hre _]]]]].
+      destruct (consume_wf st rank pat pers peek Hw0) as [_ [_ [_ [Hs [Hfrom Hold]]]]].
+      assert (HwF : wf' (o_state (consume st rank pat pers peek)) F).
+      { apply (wf'_after_fresh st F _ Hwf Hwf1 Hc).
+        - intros y Hy. left. exact (Hrec y Hy).
+        - intros y Hy. destruct (Hwait y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; reflexivity]. }
+      split; [| split; [exact Hc | split; [intros g Hg; exact Hg | split; [right; reflexivity | split]]]].
+      + destruct (o_reissue (consume st rank pat pers peek)) as [c |] eqn:Er; [| exact HwF].
+        destruct pers; [| exact HwF].
+        apply (wf'_after_fresh_reissue st F _ _ Hwf Hwf1 Hc); [reflexivity | reflexivity | exact Hrec |].
+        intros y Hy. rewrite (proj1 (Hre ltac:(discriminate))) in Hy. exact Hy.
+      + intros y Hy. left. exact (Hrec y Hy).
+      + split; [exact Hs | split; [exact Hfrom | exact Hold]].
+    - (* a re-entry *)
+      destruct (nth_error F i) as [f |] eqn:En; [| discriminate].
+      destruct (reenter st f) as [o' |] eqn:Ero; [| discriminate].
+      apply some_injective, triple_injective in Ep as [Ex [Eo EF]]. subst x o F0.
+      assert (Hin : In f F) by (apply nth_error_In with i; exact En).
+      destruct (HF f Hin) as [Hpers _].
+      destruct (proj2 queue_reissue_keeps_ord st F i f Hwf En) as [_ [Hplan [o'' [Ho'' [_ [Hc HwF]]]]]].
+      rewrite Ero in Ho''. apply some_injective in Ho''. subst o''.
+      rewrite Hpers.
+      split; [destruct (o_reissue o'); exact HwF |].
+      split; [rewrite Hc; reflexivity |].
+      split; [intros g Hg; exact (remove_at_in in_flight i F g Hg) |].
+      split; [left; exact Hin |].
+      rewrite Hplan in Ero.
+      destruct f as [r | k]; cbn [reenter_plan] in Ero.
+      + (* a datum: it stores at most itself and removes nothing *)
+        assert (Hne : forall y, In y (q_records (bumped st)) -> r_ord r <> r_ord y)
+          by (intros y Hy; exact (HFr (FlightRecord r) y Hin Hy)).
+        destruct (reenter_offer_facts (bumped st) r o' Hndr Hndw Hne Ero)
+          as [_ [_ [_ [Hrec [_ [_ [Hrem _]]]]]]].
+        split; [| rewrite Hrem; split; [constructor | split; [intros y [] | intros y z []]]].
+        intros y Hy. destruct (Hrec y Hy) as [Hy0 | ->]; [left; exact Hy0 | right; right; exact Hin].
+      + (* a continuation: it removes head records, as a fresh one does *)
+        assert (Hne : forall y, In y (q_waiters (bumped st)) -> w_ord k <> w_ord y)
+          by (intros y Hy; exact (HFw (FlightWaiter k) y Hin Hy)).
+        destruct (reenter_receive_facts (bumped st) k o' Hndr Hndw Hne Ero)
+          as [_ [_ [_ [Hrec [_ [_ [Hs [Hfrom [Hold _]]]]]]]]].
+        split; [intros y Hy; left; exact (Hrec y Hy) |].
+        split; [exact Hs | split; [exact Hfrom | exact Hold]].
+  Qed.
+
+  (* Headline 14 (headline 4 with re-entries, T3 of design 43.4). Take any
+     run of fresh rounds and re-entries from a state with wf'. The records
+     leave in strictly increasing ord. Every removed record is older than
+     every surviving non-persistent record. Only non-persistent records
+     leave. A removed record was in the collection at the start, or it
+     arrived during the run with a fresh ord. A record of the final state
+     was in the collection at the start, or it arrived with a fresh ord.
+     Else it is a persistent element that was in flight at the start and
+     re-entered with its first-round ord. A persistent record keeps its
+     first-round place (queue_reissue_keeps_ord). It is behind every older
+     stored entry and ahead of every entry stored after its first round. *)
+  Theorem queue_fifo_with_reentries :
+    forall rounds st F, wf' st F ->
+      let '(st', F', rem) := run_rounds st F rounds in
+      wf' st' F' /\
+      StronglySorted (fun a b => r_ord a < r_ord b) rem /\
+      (forall x, In x rem -> r_pers x = false) /\
+      (forall x y, In x rem -> In y (q_records st') -> r_pers y = false -> r_ord x < r_ord y) /\
+      (forall x, In x rem -> In x (q_records st) \/ bump_ord (q_counter st) <= r_ord x) /\
+      (forall y, In y (q_records st') ->
+         In y (q_records st) \/ bump_ord (q_counter st) <= r_ord y \/ In (FlightRecord y) F) /\
+      bump_ord (q_counter st) <= bump_ord (q_counter st').
+  Proof.
+    induction rounds as [| rd rest IH]; intros st F Hwf.
+    - cbn [run_rounds].
+      split; [exact Hwf |]. split; [constructor |]. split; [intros x [] |].
+      split; [intros x y [] |]. split; [intros x [] |].
+      split; [intros y Hy; left; exact Hy | lia].
+    - cbn [run_rounds].
+      destruct (round_plan st F rd) as [[[x o] F0] |] eqn:Ep.
+      2: { specialize (IH st F Hwf). exact IH. }
+      destruct (round_plan_facts st F rd x o F0 Hwf Ep)
+        as [Hwf1 [Hc1 [HF0 [Hx [Hnew1 [Hs1 [Hfrom1 Hold1]]]]]]].
+      (* the scope rule of flight_after *)
+      assert (Hwf1' : wf' (o_state o) (flight_after x o F0)).
+      { revert Hwf1. unfold flight_after, reissued_ord.
+        destruct (o_reissue o); [destruct (flight_pers x) |]; intros H; exact H. }
+      pose proof Hwf as [[_ [_ [Hbound _]]] [_ [HF _]]].
+      pose proof Hwf1' as [_ [_ [HF1 _]]].
+      specialize (IH (o_state o) (flight_after x o F0) Hwf1').
+      destruct (run_rounds (o_state o) (flight_after x o F0) rest) as [[st' F'] rem2].
+      destruct IH as [Hwf' [Hs2 [Hnp2 [Hold2 [Hfrom2 [Hnew2 Hc2]]]]]].
+      split; [exact Hwf' |].
+      split.
+      { (* the removal order *)
+        apply StronglySorted_app; [exact Hs1 | exact Hs2 |].
+        intros y z Hy Hz. destruct (Hfrom2 z Hz) as [Hz1 | Hz1].
+        - exact (Hold1 y z Hy Hz1).
+        - specialize (Hbound y (Hfrom1 y Hy)). lia. }
+      split.
+      { (* only non-persistent records leave *)
+        intros y Hy. apply in_app_or in Hy as [Hy | Hy];
+          [exact (removed_of_nonpersistent o y Hy) | exact (Hnp2 y Hy)]. }
+      split.
+      { (* older than every surviving non-persistent record *)
+        intros y z Hy Hz Hnp. apply in_app_or in Hy as [Hy | Hy]; [| exact (Hold2 y z Hy Hz Hnp)].
+        destruct (Hnew2 z Hz) as [Hz1 | [Hz1 | Hz1]].
+        - exact (Hold1 y z Hy Hz1).
+        - specialize (Hbound y (Hfrom1 y Hy)). lia.
+        - destruct (HF1 _ Hz1) as [Hp _]. cbn [flight_pers] in Hp. rewrite Hp in Hnp. discriminate. }
+      split.
+      { (* a removed record was present or arrived with a fresh ord *)
+        intros y Hy. apply in_app_or in Hy as [Hy | Hy]; [left; exact (Hfrom1 y Hy) |].
+        destruct (Hfrom2 y Hy) as [Hy1 | Hy1]; [| right; lia].
+        destruct (Hnew1 y Hy1) as [Hy2 | [Hy2 | Hy2]]; [left; exact Hy2 | right; exact Hy2 |].
+        destruct (HF _ Hy2) as [Hp _]. cbn [flight_pers] in Hp.
+        rewrite (Hnp2 y Hy) in Hp. discriminate. }
+      split.
+      { (* the records of the final state *)
+        intros z Hz. destruct (Hnew2 z Hz) as [Hz1 | [Hz1 | Hz1]].
+        - exact (Hnew1 z Hz1).
+        - right; left. lia.
+        - destruct (flight_after_in x o F0 _ Hz1) as [Heq | Hz2].
+          + rewrite <- Heq in Hx. destruct Hx as [Hx | Hx]; [right; right; exact Hx |].
+            right; left. cbn [flight_ord] in Hx. lia.
+          + right; right. exact (HF0 _ Hz2). }
+      lia.
+  Qed.
+
+  (* ── 22. Decision 43: headline 15 (head blocks for a re-entry) ─────── *)
+
+  (* Headline 15 (headline 5 for a re-entered element). An older head holds
+     the side of a re-entered element: the element is stored or parked at
+     its place and fires nothing. At the head, a head of the other side
+     that does not match blocks the element. The first fire of a re-entry
+     is on the head of the other side. *)
+  Theorem queue_head_blocks_reentry :
+    (forall st r h, record_head (q_records st) = Some h -> r_ord h < r_ord r ->
+       reenter_offer st r = Some (mkOutcome [SStore r] (store_record st r) None)) /\
+    (forall st k h, waiter_head (q_waiters st) = Some h -> w_ord h < w_ord k ->
+       reenter_receive st k = Some (mkOutcome [SPark k] (park_waiter st k) None)) /\
+    (forall st r w,
+       (forall h, record_head (q_records st) = Some h -> r_ord r < r_ord h) ->
+       waiter_head (q_waiters st) = Some w -> fits (w_pat w) (r_val r) = false ->
+       reenter_offer st r = Some (mkOutcome [SStore r] (store_record st r) None)) /\
+    (forall st k h,
+       (forall h', waiter_head (q_waiters st) = Some h' -> w_ord k < w_ord h') ->
+       record_head (q_records st) = Some h -> fits (w_pat k) (r_val h) = false ->
+       reenter_receive st k = Some (mkOutcome [SPark k] (park_waiter st k) None)) /\
+    (forall st r o w rest, reenter_offer st r = Some o -> o_ops o = SFireProduce w r :: rest ->
+       waiter_head (q_waiters st) = Some w) /\
+    (forall st k o h rest, reenter_receive st k = Some o -> o_ops o = SFireConsume k h :: rest ->
+       record_head (q_records st) = Some h).
+  Proof.
+    split; [| split; [| split; [| split; [| split]]]].
+    - intros st r h Eh Hlt. unfold reenter_offer, reentry_at_head, ord_precedes. rewrite Eh.
+      cbn [option_map].
+      rewrite (proj2 (Nat.eqb_neq (r_ord r) (r_ord h)) ltac:(lia)).
+      rewrite (proj2 (Nat.ltb_ge (r_ord r) (r_ord h)) ltac:(lia)). reflexivity.
+    - intros st k h Eh Hlt. unfold reenter_receive, reentry_at_head, ord_precedes. rewrite Eh.
+      cbn [option_map].
+      rewrite (proj2 (Nat.eqb_neq (w_ord k) (w_ord h)) ltac:(lia)).
+      rewrite (proj2 (Nat.ltb_ge (w_ord k) (w_ord h)) ltac:(lia)). reflexivity.
+    - intros st r w Hat Hw Hf.
+      unfold waiter_head, head in Hw.
+      destruct (head_index w_ord w_rank (q_waiters st)) as [[wi w'] |] eqn:Ew; [| discriminate].
+      cbn [option_map snd] in Hw. apply some_injective in Hw. subst w'.
+      assert (Hloop : reenter_offer st r = Some (offer_loop fire_round_cap 0 st r)).
+      { unfold reenter_offer, reentry_at_head, ord_precedes.
+        destruct (record_head (q_records st)) as [h |] eqn:Eh; cbn [option_map]; [| reflexivity].
+        specialize (Hat h eq_refl).
+        rewrite (proj2 (Nat.eqb_neq (r_ord r) (r_ord h)) ltac:(lia)).
+        rewrite (proj2 (Nat.ltb_lt (r_ord r) (r_ord h)) Hat). reflexivity. }
+      rewrite Hloop, (offer_loop_blocked _ _ st r wi w Ew Hf). reflexivity.
+    - intros st k h Hat Hr Hf.
+      unfold record_head, head in Hr.
+      destruct (head_index r_ord r_rank (q_records st)) as [[hi h'] |] eqn:Er; [| discriminate].
+      cbn [option_map snd] in Hr. apply some_injective in Hr. subst h'.
+      assert (Hloop : reenter_receive st k = Some (receive_loop fire_round_cap 0 st k)).
+      { unfold reenter_receive, reentry_at_head, ord_precedes.
+        destruct (waiter_head (q_waiters st)) as [h' |] eqn:Eh; cbn [option_map]; [| reflexivity].
+        specialize (Hat h' eq_refl).
+        rewrite (proj2 (Nat.eqb_neq (w_ord k) (w_ord h')) ltac:(lia)).
+        rewrite (proj2 (Nat.ltb_lt (w_ord k) (w_ord h')) Hat). reflexivity. }
+      rewrite Hloop, (receive_loop_blocked _ _ st k hi h Er Hf). reflexivity.
+    - intros st r o w rest Ho Hops. destruct (reenter_offer_shape st r o Ho) as [-> | ->].
+      + exact (offer_loop_first _ _ st r w rest Hops).
+      + discriminate Hops.
+    - intros st k o h rest Ho Hops. destruct (reenter_receive_shape st k o Ho) as [-> | ->].
+      + exact (receive_loop_first _ _ st k h rest Hops).
+      + discriminate Hops.
+  Qed.
+
+  (* ── 23. Decision 43: headline 16 (the loop bound of a re-entry) ───── *)
+
+  (* Headline 16 (headline 6 for a re-entered element). A re-entry plan
+     fires at most FIRE_ROUND_CAP times, and at most once for each entry of
+     the other side. A plan that stops at the cap fired exactly
+     FIRE_ROUND_CAP times, and a divergent re-issue needs a persistent
+     partner. A re-entered persistent element is never spent
+     (persistent_reentry_never_spent). The re-issue carries the
+     first-round ord exactly for a persistent element, which stays in
+     flight. A non-persistent element leaves F and runs again as a fresh
+     operation. *)
+  Theorem queue_reentry_loop_bounded_or_reissues :
+    (forall st r o, reenter_offer st r = Some o ->
+       fires o <= fire_round_cap /\ fires o <= length (q_waiters st) /\
+       (o_reissue o = Some ReissueRoundCap -> fires o = fire_round_cap) /\
+       (o_reissue o = Some ReissueDivergent ->
+          exists w, In (SFireProduce w r) (o_ops o) /\ w_pers w = true /\
+                    (r_pers r = true \/ w_peek w = true))) /\
+    (forall st k o, reenter_receive st k = Some o ->
+       fires o <= fire_round_cap /\ fires o <= length (q_records st) /\
+       (o_reissue o = Some ReissueRoundCap -> fires o = fire_round_cap) /\
+       (o_reissue o = Some ReissueDivergent ->
+          w_pers k = true /\
+          exists h, In (SFireConsume k h) (o_ops o) /\ (r_pers h = true \/ w_peek k = true))) /\
+    (forall st r o, r_pers r = true -> reenter_offer st r = Some o ->
+       o_reissue o <> None \/ (o_reissue o = None /\ In r (q_records (o_state o)))) /\
+    (forall st k o, w_pers k = true -> reenter_receive st k = Some o ->
+       o_reissue o <> None \/ (o_reissue o = None /\ In k (q_waiters (o_state o)))) /\
+    (forall x n, reissued_ord x = Some n <-> flight_pers x = true /\ n = flight_ord x) /\
+    (forall x o F, o_reissue o <> None ->
+       flight_after x o F = (if flight_pers x then x :: F else F)).
+  Proof.
+    split; [| split; [| split; [| split; [| split]]]].
+    - intros st r o Ho. destruct (reenter_offer_shape st r o Ho) as [-> | ->].
+      + pose proof (offer_loop_fires fire_round_cap 0 st r (Nat.add_0_r _)
+                      ltac:(unfold fire_round_cap; lia)) as H.
+        cbv zeta in H. rewrite !Nat.add_0_l in H. exact H.
+      + unfold fires; cbn. split; [unfold fire_round_cap; lia | split; [lia | split; intros H; discriminate]].
+    - intros st k o Ho. destruct (reenter_receive_shape st k o Ho) as [-> | ->].
+      + pose proof (receive_loop_fires fire_round_cap 0 st k (Nat.add_0_r _)
+                      ltac:(unfold fire_round_cap; lia)) as H.
+        cbv zeta in H. rewrite !Nat.add_0_l in H. exact H.
+      + unfold fires; cbn. split; [unfold fire_round_cap; lia | split; [lia | split; intros H; discriminate]].
+    - exact (proj1 persistent_reentry_never_spent).
+    - exact (proj2 persistent_reentry_never_spent).
+    - intros x n. unfold reissued_ord. destruct (flight_pers x).
+      + split; [intros H; apply some_injective in H; split; [reflexivity | symmetry; exact H] |].
+        intros [_ ->]. reflexivity.
+      + split; [intros H; discriminate H | intros [H _]; discriminate H].
+    - intros x o F Hre. unfold flight_after, reissued_ord.
+      destruct (o_reissue o) as [c |]; [| exfalso; exact (Hre eq_refl)].
+      destruct (flight_pers x); reflexivity.
+  Qed.
+
+  (* ── 24. Decision 43: headline 17 (the list order of a re-entry) ───── *)
+
+  Definition outcome_equiv (o1 o2 : outcome) : Prop :=
+    o_ops o1 = o_ops o2 /\ o_reissue o1 = o_reissue o2 /\ q_equiv (o_state o1) (o_state o2).
+
+  Definition option_outcome_equiv (a b : option outcome) : Prop :=
+    match a, b with
+    | Some o1, Some o2 => outcome_equiv o1 o2
+    | None, None => True
+    | _, _ => False
+    end.
+
+  (* Headline 17 (headline 8 for a re-entered element). The round of a
+     re-entry depends on the entries of the collection, not on the order
+     of the lists of the staged view. Two views with permuted lists give
+     the same Inconsistent result or stage the same operations and reach
+     permuted views. *)
+  Theorem queue_reentry_permutation_invariant :
+    forall st1 st2,
+      q_equiv st1 st2 ->
+      keys_unique r_ord r_rank (q_records st1) -> keys_unique w_ord w_rank (q_waiters st1) ->
+      (forall r, option_outcome_equiv (reenter_produce st1 r) (reenter_produce st2 r)) /\
+      (forall k, option_outcome_equiv (reenter_consume st1 k) (reenter_consume st2 k)).
+  Proof.
+    intros st1 st2 [Hpr [Hpw Hc]] Hkr Hkw.
+    assert (Hb : q_equiv (bumped st1) (bumped st2))
+      by (unfold bumped, q_equiv; cbn [q_records q_waiters q_counter];
+          split; [exact Hpr | split; [exact Hpw | rewrite Hc; reflexivity]]).
+    split.
+    - intros r. unfold reenter_produce. rewrite Hc.
+      destruct (operation_ord (Some (r_ord r)) (bump_ord (q_counter st2))) as [o |]; [| exact I].
+      unfold reenter_offer.
+      change (q_records (bumped st1)) with (q_records st1).
+      change (q_records (bumped st2)) with (q_records st2).
+      unfold record_head. rewrite (head_perm record r_ord r_rank _ _ Hpr Hkr).
+      match goal with
+      | |- context [reentry_at_head ?a ?b] => destruct (reentry_at_head a b) as [[] |]
+      end.
+      + unfold option_outcome_equiv, outcome_equiv.
+        exact (offer_loop_perm fire_round_cap 0 _ _ _ Hb Hkw).
+      + unfold option_outcome_equiv, outcome_equiv, store_record, q_equiv.
+        cbn [o_ops o_reissue o_state q_records q_waiters q_counter bumped].
+        split; [reflexivity | split; [reflexivity |]].
+        split; [apply perm_skip; exact Hpr | split; [exact Hpw | first [reflexivity | rewrite Hc; reflexivity]]].
+      + exact I.
+    - intros k. unfold reenter_consume. rewrite Hc.
+      destruct (operation_ord (Some (w_ord k)) (bump_ord (q_counter st2))) as [o |]; [| exact I].
+      unfold reenter_receive.
+      change (q_waiters (bumped st1)) with (q_waiters st1).
+      change (q_waiters (bumped st2)) with (q_waiters st2).
+      unfold waiter_head. rewrite (head_perm waiter w_ord w_rank _ _ Hpw Hkw).
+      match goal with
+      | |- context [reentry_at_head ?a ?b] => destruct (reentry_at_head a b) as [[] |]
+      end.
+      + unfold option_outcome_equiv, outcome_equiv.
+        exact (receive_loop_perm fire_round_cap 0 _ _ _ Hb Hkr).
+      + unfold option_outcome_equiv, outcome_equiv, park_waiter, q_equiv.
+        cbn [o_ops o_reissue o_state q_records q_waiters q_counter bumped].
+        split; [reflexivity | split; [reflexivity |]].
+        split; [exact Hpr | split; [apply perm_skip; exact Hpw | first [reflexivity | rewrite Hc; reflexivity]]].
+      + exact I.
+  Qed.
 End Queue.
 
-(* ── 14. Headline 9: the legacy scan breaks head-only ────────────────── *)
+(* ── 25. Headline 9: the legacy scan breaks head-only ────────────────── *)
 
 (* A pattern matches a value when they are equal. The head waiter w1 (ord
    0) waits for 7. The younger waiter w2 (ord 1) waits for 5. The datum is
@@ -1488,7 +3179,104 @@ Proof.
   intros V P st [Hr [Hw _]]. split; apply nodup_keys_unique; assumption.
 Qed.
 
-(* ── 15. Assumption audit ──────────────────────────────────────────────── *)
+(* ── 26. Decision 43: headlines 18 and 19 (C0 and C1) ──────────────────── *)
+
+(* The patterns of the examples: None matches every value, and Some n
+   matches the value n only. *)
+Definition pattern_fits (p : option nat) (v : nat) : bool :=
+  match p with None => true | Some n => Nat.eqb n v end.
+
+(* C0 (design 43.2). W (ord 0) is a persistent waiter for 1. The send
+   x = q!!(1) takes ord 1, fires W, and both stay, so x re-issues (A10).
+   The send y = q!(2) takes ord 2 and is stored, because W does not match
+   2. *)
+Definition c0_W : waiter (option nat) := mkWaiter (option nat) 0 0 (Some 1) true false.
+Definition c0_x : record nat := mkRecord nat 1 0 1 true.
+Definition c0_y : record nat := mkRecord nat 2 0 2 false.
+Definition c0_x_fresh : record nat := mkRecord nat 3 0 1 true.
+Definition c0_st0 : qstate nat (option nat) := mkQ nat (option nat) [] [c0_W] (Some 1).
+Definition c0_st1 : qstate nat (option nat) := mkQ nat (option nat) [] [c0_W] (Some 2).
+Definition c0_st2 : qstate nat (option nat) := mkQ nat (option nat) [c0_y] [c0_W] (Some 3).
+
+(* Headline 18 (C0). With the fresh ord of P4, the round 2 of x takes ord
+   3. This is a new record, and it queues behind the younger y. So x loses
+   the FIFO place of its first round. With decision 43, the round 2 of x
+   keeps ord 1. The same record re-enters ahead of y and fires W again. *)
+Theorem fresh_ord_reissue_loses_first_round_place :
+  produce nat (option nat) pattern_fits c0_st0 0 1 true =
+    mkOutcome nat (option nat) [SFireProduce nat (option nat) c0_W c0_x] c0_st1 (Some ReissueDivergent) /\
+  o_state nat (option nat) (produce nat (option nat) pattern_fits c0_st1 0 2 false) = c0_st2 /\
+  r_ord nat c0_x < r_ord nat c0_y /\
+  produce nat (option nat) pattern_fits c0_st2 0 1 true =
+    mkOutcome nat (option nat) [SStore nat (option nat) c0_x_fresh]
+      (mkQ nat (option nat) [c0_x_fresh; c0_y] [c0_W] (Some 4)) None /\
+  record_head nat [c0_x_fresh; c0_y] = Some c0_y /\
+  r_ord nat c0_y < r_ord nat c0_x_fresh /\ c0_x_fresh <> c0_x /\
+  reenter_produce nat (option nat) pattern_fits c0_st2 c0_x =
+    Some (mkOutcome nat (option nat) [SFireProduce nat (option nat) c0_W c0_x]
+            (mkQ nat (option nat) [c0_y] [c0_W] (Some 4)) (Some ReissueDivergent)).
+Proof.
+  split; [reflexivity |]. split; [reflexivity |]. split; [cbn; lia |].
+  split; [reflexivity |]. split; [reflexivity |]. split; [cbn; lia |].
+  split; [discriminate | reflexivity].
+Qed.
+
+(* C1 (design 43.2). 64 non-persistent peek waiters for any value (ords 0
+   to 63) and W, a waiter for 1 (ord 64), wait on the queue. The deploy
+   sends x = q!(1) (ord 65), which fires the 64 peek waiters and re-issues
+   at FIRE_ROUND_CAP (I-21). Then y = q!(2) (ord 66) is stored, because W
+   does not match 2. Z, a receive for any value (ord 67), parks behind
+   W. *)
+Definition c1_peeks : list (waiter (option nat)) :=
+  map (fun n => mkWaiter (option nat) n 0 None false true) (seq 0 64).
+Definition c1_W : waiter (option nat) := mkWaiter (option nat) 64 0 (Some 1) false false.
+Definition c1_x : record nat := mkRecord nat 65 0 1 false.
+Definition c1_y : record nat := mkRecord nat 66 0 2 false.
+Definition c1_Z : waiter (option nat) := mkWaiter (option nat) 67 0 None false false.
+Definition c1_x_fresh : record nat := mkRecord nat 68 0 1 false.
+Definition c1_st0 : qstate nat (option nat) := mkQ nat (option nat) [] (c1_W :: c1_peeks) (Some 65).
+Definition c1_st1 : qstate nat (option nat) := mkQ nat (option nat) [] [c1_W] (Some 66).
+Definition c1_st2 : qstate nat (option nat) := mkQ nat (option nat) [c1_y] [c1_W] (Some 67).
+Definition c1_st3 : qstate nat (option nat) := mkQ nat (option nat) [c1_y] [c1_Z; c1_W] (Some 68).
+Definition c1_good : qstate nat (option nat) :=
+  mkQ nat (option nat) [c1_x_fresh; c1_y] [c1_Z; c1_W] (Some 69).
+Definition c1_bad : qstate nat (option nat) := mkQ nat (option nat) [c1_y] [c1_Z] (Some 69).
+
+(* The deploy with the scope rule: the re-issue of the non-persistent x is
+   a fresh round, so it takes the ord 68. *)
+Definition c1_deploy : list (round nat (option nat)) :=
+  [RoundFresh nat (option nat) (OpProduce nat (option nat) 0 1 false);
+   RoundFresh nat (option nat) (OpProduce nat (option nat) 0 2 false);
+   RoundFresh nat (option nat) (OpConsume nat (option nat) 0 None false false);
+   RoundFresh nat (option nat) (OpProduce nat (option nat) 0 1 false)].
+
+(* Headline 19 (C1). The deploy starts with no pending match. With the
+   scope rule, the deploy ends with nothing in flight and with INV. If the
+   non-persistent x kept its first-round ord 65, its round 2 would precede
+   y, fire W and spend x. Then nothing is in flight, so the deploy can end,
+   but the heads y and Z match: INV fails at the deploy boundary. *)
+Theorem nonpersistent_first_ord_reentry_breaks_quiescent_inv :
+  no_pending_match nat (option nat) pattern_fits c1_st0 /\
+  o_reissue nat (option nat) (produce nat (option nat) pattern_fits c1_st0 0 1 false) =
+    Some ReissueRoundCap /\
+  o_state nat (option nat) (produce nat (option nat) pattern_fits c1_st0 0 1 false) = c1_st1 /\
+  o_state nat (option nat) (produce nat (option nat) pattern_fits c1_st1 0 2 false) = c1_st2 /\
+  o_state nat (option nat) (consume nat (option nat) pattern_fits c1_st2 0 None false false) = c1_st3 /\
+  run_rounds nat (option nat) pattern_fits c1_st0 [] c1_deploy = (c1_good, [], []) /\
+  no_pending_match nat (option nat) pattern_fits c1_good /\
+  r_ord nat c1_x < r_ord nat c1_y /\
+  reenter_produce nat (option nat) pattern_fits c1_st3 c1_x =
+    Some (mkOutcome nat (option nat) [SFireProduce nat (option nat) c1_W c1_x] c1_bad None) /\
+  ~ SHADOW nat (option nat) pattern_fits c1_bad [].
+Proof.
+  split; [exact I |].
+  split; [reflexivity |]. split; [reflexivity |]. split; [reflexivity |]. split; [reflexivity |].
+  split; [reflexivity |]. split; [reflexivity |]. split; [cbn; lia |].
+  split; [reflexivity |].
+  intros H. destruct (H eq_refl) as [f [[] _]].
+Qed.
+
+(* ── 27. Assumption audit ──────────────────────────────────────────────── *)
 
 Print Assumptions queue_head_is_min_ord.
 Print Assumptions queue_produce_preserves_inv.
@@ -1499,3 +3287,13 @@ Print Assumptions queue_loop_bounded_or_reissues.
 Print Assumptions queue_ord_fresh.
 Print Assumptions queue_plan_permutation_invariant.
 Print Assumptions legacy_scan_violates_head_blocks.
+Print Assumptions persistent_reentry_never_spent.
+Print Assumptions queue_reissue_keeps_ord.
+Print Assumptions queue_reentry_preserves_shadow_inv.
+Print Assumptions queue_quiescent_inv.
+Print Assumptions queue_fifo_with_reentries.
+Print Assumptions queue_head_blocks_reentry.
+Print Assumptions queue_reentry_loop_bounded_or_reissues.
+Print Assumptions queue_reentry_permutation_invariant.
+Print Assumptions fresh_ord_reissue_loses_first_round_place.
+Print Assumptions nonpersistent_first_ord_reentry_breaks_quiescent_inv.

@@ -8,9 +8,9 @@
 # the round-3 rule FR-10 (H11, prompts/p1-fix-rules.md) and decision 36
 # (replay reproduces play: H4 and H23). P2 adds Encoding.v (12 headlines,
 # and 3 more for plan revision I-20). P4 adds Namespace.v (11),
-# RecordEnvelope.v (8), CounterConflict.v (9), HeadOnlyDisciplines.v (9),
-# SpaceRefs.v (10, and 1 of decision 46) and SpaceFactory.v (8). Decision 42
-# adds AgentReadCoverage.v (8).
+# RecordEnvelope.v (8), CounterConflict.v (9), HeadOnlyDisciplines.v (9,
+# and 10 of decision 43), SpaceRefs.v (10, and 1 of decision 46) and
+# SpaceFactory.v (8). Decision 42 adds AgentReadCoverage.v (8).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -42,11 +42,13 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 102: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 112: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
-#                        for P2 and I-20, 56 for the six P4 modules with
-#                        the native headline of decision 46 in SpaceRefs.v,
-#                        and 8 for AgentReadCoverage.v of decision 42)
+#                        for P2 and I-20, 66 for the six P4 modules with
+#                        the native headline of decision 46 in SpaceRefs.v
+#                        and the 10 headlines of decision 43 in
+#                        HeadOnlyDisciplines.v, and 8 for
+#                        AgentReadCoverage.v of decision 42)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -65,7 +67,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-102}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-112}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -78,7 +80,7 @@ declare -A EXPECTED_PER_MODULE=(
   [Namespace]=11
   [RecordEnvelope]=8
   [CounterConflict]=9
-  [HeadOnlyDisciplines]=9
+  [HeadOnlyDisciplines]=19
   [SpaceRefs]=11
   [SpaceFactory]=8
   [AgentReadCoverage]=8

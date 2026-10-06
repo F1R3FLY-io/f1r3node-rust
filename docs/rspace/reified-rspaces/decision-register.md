@@ -1787,12 +1787,13 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 | Date | 2026-10-05 |
 | Status | In force. The value is vetoable: the user may choose another cap. |
 | Amends | Item A10 of the P4 design ("a bounded chain of fires"), arbitration item H8, and [I-12](#i-12) (work bounds for each operation) |
-| Related | [Decision 34](#decision-34), [I-12](#i-12), [re-issue](glossary.md#re-issue), [space intent](glossary.md#space-intent) |
+| Related | [Decision 34](#decision-34), [decision 43](#decision-43), [I-12](#i-12), [re-issue](glossary.md#re-issue), [space intent](glossary.md#space-intent) |
 
 **Statement.**
 
 - One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:43`).
 - At the cap, the agent commits the staged prefix and re-issues the rest of the operation as a new `Intent::Space`. This is the re-issue path of A10.
+- A re-issued persistent operation keeps the `ord` of its first round, and it re-enters at its place ([decision 43](#decision-43)).
 
 **Reason.**
 

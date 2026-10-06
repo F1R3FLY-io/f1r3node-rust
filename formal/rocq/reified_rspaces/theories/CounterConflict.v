@@ -62,7 +62,7 @@
                             163-231, 235-292 (bump, and take: the COMM has
                             no peeks)
    exec (the plan)          rholang/src/rust/interpreter/spaces/generic.rs:
-                            813-879 (bump, then plan)
+                            933-1001 (bump, then plan)
    list_diff                rspace++/src/rspace/merger/channel_change.rs:
                             74-82 (vec_diff), rspace++/src/rspace/merger/
                             state_change.rs:318-357 (multiset_diff gives

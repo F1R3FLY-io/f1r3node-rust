@@ -45,7 +45,7 @@ use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce, COMM};
 
 /// True when `event` is a COMM whose consume is on the channel with the hash `key`.
 fn is_comm_on(event: &Event, key: &Blake2b256Hash) -> bool {
@@ -452,6 +452,19 @@ fn events_touching(log: &[Event], channel: &Par) -> usize {
 fn comms_on(log: &[Event], channel: &Par) -> usize {
     let key = hash(channel);
     log.iter().filter(|event| is_comm_on(event, &key)).count()
+}
+
+/// The produce events of `log` on `channel`, in log order.
+fn data_produces(log: &[Event], channel: &Par) -> Vec<Produce> {
+    let key = hash(channel);
+    log.iter()
+        .filter_map(|event| match event {
+            Event::IoEvent(IOEvent::Produce(produce)) if produce.channel_hash == key => {
+                Some(produce.clone())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 mod space_queue_head_only {
@@ -1056,7 +1069,8 @@ mod space_real_events {
             "the persistent record stays with the ord of the send"
         );
         // More waiters than FIRE_ROUND_CAP: the agent commits the first rounds and re-issues
-        // the rest as a new operation, with its own bump (A10, I-21).
+        // the rest as a new operation, with its own bump (A10, I-21). The re-issued send keeps
+        // the order of its first round (decision 43).
         let waiters = FIRE_ROUND_CAP + 2;
         let mut parks = String::new();
         for _ in 0..waiters {
@@ -1083,10 +1097,107 @@ mod space_real_events {
         assert_eq!(session.values("rrs-capped").await.len(), waiters);
         assert_eq!(
             session.records(space.space, &space.a).await,
-            vec![(counter + 1, vec![gint(8)], true)],
-            "the second operation stores the persistent record"
+            vec![(counter, vec![gint(8)], true)],
+            "the second operation stores the persistent record with the order of the first"
         );
         assert!(session.parked(space.space, &space.a).await.is_empty());
+        let produces = data_produces(&capped.log, &data_channel(space.space, &space.a));
+        assert_eq!(produces.len(), waiters + 1, "every fire and the store");
+        assert!(
+            produces.iter().all(|produce| *produce == produces[0]),
+            "both operations stage one record, so one identity"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn space_queue_reissue_reenters_ahead_of_younger_records() {
+        // Decision 43: a re-issued persistent send keeps the order of its first round. A body
+        // that the first round fires sends a younger datum to the queue before the second round,
+        // and the head waiter does not take it. The send re-enters ahead of that datum and fires
+        // the head waiter.
+        let mut session = Session::new().await;
+        let space = session.setup().await;
+        let mut parks = String::from("for (@v <- a) { a!(99) }");
+        for _ in 1..FIRE_ROUND_CAP {
+            parks.push_str(" | for (@v <- a) { Nil }");
+        }
+        session.run(&with_space(&parks), "rrs-d43-park").await;
+        session
+            .run(
+                &with_space(r#"for (@1 <- a) { @"rrs-d43-one"!(1) }"#),
+                "rrs-d43-park-one",
+            )
+            .await;
+        let first = session.counter(space.space, &space.a).await;
+        let deploy = session.run(&with_space("a!!(1)"), "rrs-d43-reenter").await;
+        assert_eq!(
+            comms_on(&deploy.log, &counter_channel(space.space, &space.a)),
+            3,
+            "the first round, the younger send and the second round each bump the counter"
+        );
+        assert_eq!(session.sole("rrs-d43-one").await, gint(1));
+        assert_eq!(
+            session.records(space.space, &space.a).await,
+            vec![
+                (first, vec![gint(1)], true),
+                (first + 1, vec![gint(99)], false)
+            ],
+            "the send rests at its first order, ahead of the younger datum"
+        );
+        assert!(session.parked(space.space, &space.a).await.is_empty());
+        let produces = data_produces(&deploy.log, &data_channel(space.space, &space.a));
+        let send: Vec<&Produce> = produces
+            .iter()
+            .filter(|produce| produce.persistent)
+            .collect();
+        assert_eq!(
+            send.len(),
+            FIRE_ROUND_CAP + 2,
+            "two rounds of fires and the store"
+        );
+        assert!(send.iter().all(|produce| *produce == send[0]));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn space_queue_reissue_keeps_one_produce_identity() {
+        // Decision 43: every round of a re-issued persistent send stages the same record. The
+        // deploy has one introduction row for its one identity, as the host has for a
+        // persistent produce that it makes again (`persistent_introductions`).
+        let mut session = Session::new().await;
+        let space = session.setup().await;
+        let mut parks = String::new();
+        for _ in 0..=FIRE_ROUND_CAP {
+            parks.push_str("for (@v <- a) { Nil } | ");
+        }
+        parks.push_str("Nil");
+        session
+            .run(&with_space(&parks), "rrs-d43-identity-park")
+            .await;
+        let deploy = session
+            .run(&with_space("a!!(5)"), "rrs-d43-identity-send")
+            .await;
+        let produces = data_produces(&deploy.log, &data_channel(space.space, &space.a));
+        assert_eq!(
+            produces.len(),
+            FIRE_ROUND_CAP + 2,
+            "every fire and the store"
+        );
+        assert!(produces.iter().all(|produce| *produce == produces[0]));
+        let identity = produce_introduction_identity(&produces[0]);
+        let rows = deploy
+            .result
+            .byte_observations
+            .rows
+            .iter()
+            .filter(|row| {
+                row.kind == AuthorityByteEventKind::ProduceIntroduction && row.event_id == identity
+            })
+            .count();
+        assert_eq!(
+            rows, 1,
+            "one introduction row for the one identity of the send"
+        );
+        check_rows(&deploy.result, &deploy.log, "rrs-d43-identity-send");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1193,6 +1304,27 @@ mod space_real_events {
                 session.counter_or_zero(space.space, &space.a).await,
                 counter,
                 "attempt {attempt}: the failed deploy is reverted"
+            );
+            // Decision 43: the element in flight keeps its record, so every round repeats one
+            // produce on the data channel and one COMM, and only the bump of a round is new.
+            let data = data_channel(space.space, &space.a);
+            let produces = data_produces(&deploy.log, &data);
+            assert!(
+                produces.iter().all(|produce| *produce == produces[0]),
+                "attempt {attempt}: every round produces one record"
+            );
+            let key = hash(&data);
+            let comms: Vec<&COMM> = deploy
+                .log
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Comm(comm) if is_comm_on(event, &key) => Some(comm),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                comms.iter().all(|comm| *comm == comms[0]),
+                "attempt {attempt}: every round repeats one COMM"
             );
             outcomes.push(deploy.log);
         }

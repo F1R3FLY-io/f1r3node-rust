@@ -129,9 +129,9 @@
                             tuple_par: each flag is the disjunction over
                             the children)
    refresh, sdecode (I-20)  rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:708-719, 722-730, 815-855,
-                            881-913, 916-918, 952-960, 963-972, 984-993,
-                            1010-1019, 1023-1030 (Field, marker_fields,
+                            reducer_hooks.rs:710-721, 724-732, 817-857,
+                            883-915, 918-920, 954-962, 965-974, 986-995,
+                            1012-1021, 1025-1032 (Field, marker_fields,
                             derived_flag, refresh_field,
                             derived_flag_of_new, refresh_tuple,
                             refreshed_tuple, refresh_tuple_par,
@@ -204,7 +204,7 @@
      and that a tuple with a stale flag is accepted only after the refresh.
    - Section 8b keeps the flags only where the encoder derives them: the
      holder Par, the tuple and the container fields of marker_fields
-     (reducer_hooks.rs:722-730). A value keeps its own flag, which no hook
+     (reducer_hooks.rs:724-732). A value keeps its own flag, which no hook
      changes, so a flagged construct pairs each value with its flag. A map
      key is a GString, whose flag is false.
    - The substitution is a Section Variable. Its equations are premises of

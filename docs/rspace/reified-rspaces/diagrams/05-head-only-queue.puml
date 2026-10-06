@@ -3,14 +3,15 @@
 ' Source of Figure N4 in ../design.md (section N4). The figure restates the
 ' bump of rholang/src/rust/interpreter/spaces/counter.rs, the plans offer and
 ' receive of spaces/generic.rs, the head rule of spaces/disciplines/queue.rs,
-' and the fire rounds of reified/costs.rs (decisions 11, 30 and 31, P4 design
-' item A10, plan revision I-21). It adds no new fact.
+' and the fire rounds of reified/costs.rs (decisions 11, 30, 31 and 43, P4
+' design item A10, plan revision I-21). It adds no new fact.
 '
 ' Reading order:
 '   1. A collection starts unopened. Its first operation consumes the space
 '      counter, opens the collection counter at 1, and takes the order 0.
 '   2. Every later operation bumps the collection counter from v to v + 1
-'      and takes the order v.
+'      and takes the order v. A re-issued persistent operation keeps the
+'      order of its first round and re-enters at its place (decision 43).
 '   3. The open collection is in one of four states, by the records R and
 '      the waiters W that it holds.
 '   4. A send meets only the head waiter, and a receive meets only the head
@@ -37,7 +38,7 @@ state "Open collection" as OPEN $ca_pkg_indigo {
   state "Empty" as EMPTY $rrs_storage : <latex>R = \emptyset,\ W = \emptyset</latex>
   state "Records queued" as RECORDS $rrs_storage : <latex>R \neq \emptyset,\ W = \emptyset</latex>
   state "Waiters queued" as WAITERS $rrs_storage : <latex>R = \emptyset,\ W \neq \emptyset</latex>
-  state "Blocked" as BLOCKED $ca_note_amber : <latex>R \neq \emptyset,\ W \neq \emptyset</latex>\nthe head waiter does not match\nthe head record, so nothing fires\nno operation leaves this state
+  state "Blocked" as BLOCKED $ca_note_amber : <latex>R \neq \emptyset,\ W \neq \emptyset</latex>\nthe head waiter does not match\nthe head record, so nothing fires\nno fresh operation leaves this state\na re-entry ahead of a head can fire\n(decision 43)
 
   [*] --> EMPTY
   EMPTY --> RECORDS : send, no waiter:\nstore the record
@@ -65,9 +66,15 @@ note right of OPEN
   also a peek and a fire that changes no state
   (decision 31). Entries have distinct orders.
 
+  **Re-entry** (decision 43): a re-issued persistent
+  operation keeps the order of its first round. It is
+  at the head when its side is empty or its order is
+  below the order of the head. Otherwise it is stored
+  or parked at its place and fires nothing.
+
   **Head of a side:** the least <latex>(\mathit{ord}, \mathrm{bincode})</latex>.
-  A send meets the head waiter only when R is empty.
-  A receive meets the head record only when W is empty.
+  A fresh send meets the head waiter only when R is empty.
+  A fresh receive meets the head record only when W is empty.
 
   **Fire rounds** in one transaction:
   Re-offer: a peek waiter leaves the datum alive,
@@ -77,8 +84,10 @@ note right of OPEN
   or a receive <= with a record of !!) re-issues after
   one round, and any chain re-issues after 64 fires (I-21).
 
-  **INV** holds in every state:
+  **INV** holds at the end of every deploy:
   <latex>R = \emptyset \lor W = \emptyset \lor \neg\, \mathrm{match}(\mathrm{head}(W), \mathrm{head}(R))</latex>
+  Inside a deploy, the heads can match only while a
+  persistent element in flight precedes the head of its side.
 end note
 
 legend bottom

@@ -1302,6 +1302,7 @@ mod tests {
             data: datum(vec![int(1)]),
             persistent: false,
             authority: region(5),
+            reissued_ord: None,
         };
         let sent = introduction_of(&produce.authority);
         let authority = OperationAuthority::of_produce(&produce, &sent);
@@ -1318,6 +1319,7 @@ mod tests {
             guard: None,
             authority: region(6),
             introduction_authority: region(8),
+            reissued_ord: None,
         };
         let received = introduction_of(&consume.introduction_authority);
         let authority = OperationAuthority::of_consume(&consume, &received);

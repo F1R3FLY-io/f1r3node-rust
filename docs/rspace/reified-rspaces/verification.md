@@ -94,7 +94,7 @@ This conclusion holds at every depth, for the constants of the configuration.
 Each later phase adds one section for each new model or suite, and it adds its rows to the tables of sections 2 and 8.
 Phase P4 keeps its rows of those tables in its own section [11](#11-phase-p4-the-hashmapqueue-slice).
 The Rocq gate also checks the module `Encoding.v` of phase P2, the six modules of phase P4, and the module `AgentReadCoverage.v` of decision 42.
-So its total count of closed headlines is 102 over 10 modules, not 23.
+So its total count of closed headlines is 112 over 10 modules, not 23.
 The section of phase P2 documents the 12 headlines of P2 in `Encoding.v`, and section 11 documents the 3 headlines that P4 adds to it.
 
 ## 2. Acceptance categories
@@ -156,8 +156,8 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 102 over 10 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 56 (sections [11.3](#113-rocq-models-of-p4) and [11.11](#1111-native-execution-of-decision-46)), and `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 63 mutants fail in their expected declarations: 28 of section [6.1](#61-rocq-mutants), 29 of section [11.5](#115-negative-controls-of-p4), 5 of section [11.10](#1110-metering-of-decision-42), and 1 of section [11.11](#1111-native-execution-of-decision-46). The 10 pristine modules compile first.
+6. **Total.** The count of closed headlines is 112 over 10 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 66 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decision-46) and [11.12](#1112-re-entry-of-decision-43)), and `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** The 66 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 28 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decision-46) and [11.12](#1112-re-entry-of-decision-43) hold 5, 1 and 3. The 10 pristine modules compile first.
 
 The last host run printed `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d42/proofs.log`).
 The `Print Assumptions` lines are [lines 7578 to 7594 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L7578-L7594) and [lines 1744 to 1749 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1744-L1749).
@@ -228,7 +228,7 @@ The gate `scripts/check-reified-rspaces-tla-invariants.sh` copies the directory 
 
 The gate lists its legs in three arrays: `SAFE_CONFIGS`, `UNSAFE_CONFIGS`, and `APALACHE_CHECKS`.
 The recipe generator reads the same arrays, so the gate and the recipes check the same configurations.
-The state counts and depths below come from the last host run, which printed `reified-rspaces tla: PASS=114 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/fx-f/gate-tla.log`).
+The state counts and depths below come from the last host run, the run of decision 43, which printed `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d43/tla-gate.log`).
 That run also checked the P4 modules of section [11.4](#114-tla-models-of-p4).
 
 ### 5.2 CheckpointReplay.tla
@@ -420,14 +420,16 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 ### 6.1 Rocq mutants
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 63 mutants.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 66 mutants.
 Table 12 holds 28 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
 Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decision-46) holds 1.
+Table 50 of section [11.12](#1112-re-entry-of-decision-43) holds 3.
 Each mutant replaces text that must occur exactly once in a scratch copy of its module, so a stale mutant fails.
 The control passes only when the mutated copy fails to compile and the first error lies inside one of the expected declarations.
 
 The pristine modules must compile first. The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants of that time (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
+The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants after the 10 pristine modules compiled (`target/verification/reified-rspaces/d43/gates/proofs.log`).
 
 *Table 12. The 28 Rocq mutants of the P1 modules. EC is EventCorrelation.v, and VS is VolatileSweep.v.*
 
@@ -1251,10 +1253,10 @@ Each gate writes its logs under `target/verification/reified-rspaces/` and never
 
 ### 10.2 Formal gates
 
-1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 63 mutants.
+1. Run `scripts/check-reified-rspaces-proofs.sh` for the Rocq legs and the 66 mutants.
 2. Confirm the last line `reified-rspaces proofs: PASS=49 FAIL=0 SKIP=0`.
 3. Run `scripts/check-reified-rspaces-tla-invariants.sh` for the TLC, Unsafe, complement, and Apalache legs.
-4. Confirm the last line `reified-rspaces tla: PASS=114 FAIL=0 SKIP=0`.
+4. Confirm the last line `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0`.
 5. To run one mutant, run `python3 scripts/verify-reified/rocq-negative-controls.py --only <id>`.
 6. To run one Unsafe control, run `scripts/verify-reified/tlc-expect-violation.sh <cfg> <invariant> <module>`.
 7. To run its complement, add the option `--complement` before the configuration.
@@ -1331,11 +1333,11 @@ The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decisi
 
 | Category | Evidence in P4 | Local gate |
 |---|---|---|
-| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 178 items of the P4 model map, all of them required, and its 75 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
-| Formal verification passes | The 102 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 63 Rocq mutants fail in their expected declarations. TLC explores 3 P4 safe configurations completely, 4 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` and `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
-| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q67 and U1 to U8: 69 properties in `reified_p4_props.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 15 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
-| Implementation complete | `check-complete.py --phase p4` finds the 60 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
-| Thoroughly tested | The 12 P4 suites of section [11.7](#117-integration-suites) with 159 tests, the 180 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
+| Formally modeled | `check-model-map.py --map formal/reified-rspaces-model-map-p4.json` checks the 185 items of the P4 model map, all of them required, and its 89 headlines. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. | `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json` |
+| Formal verification passes | The 112 Rocq headlines of ten modules close under the global context, and `rocqchk` accepts each module. The 66 Rocq mutants fail in their expected declarations. TLC explores 4 P4 safe configurations completely, 7 P4 Unsafe configurations each refute exactly one invariant, and Apalache proves BASE and STEP of `HeadIndInv` (with and without re-issues) and of `HandleIndInv`. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` |
+| Every invariant extracted as a property-based test | The invariant map names a property for each of Q1 to Q77 and U1 to U12: 77 properties in `reified_p4_props.rs`, 3 properties of `Encoding.v`, and the 3 tests of `reified_native_fail_closed.rs`. It also names 15 witness tests. | `python3 scripts/verify-reified/check-invariant-map.py --phase P4`, and `cargo test -p rholang --test reified_p4_props` |
+| Implementation complete | `check-complete.py --phase p4` finds the 66 entry points in the 34 P4 sources, and no forbidden token. `check-footprint.py --policy p4` checks the P4 edits of the base files. `check-consensus-checklist.py --milestone p4` confirms the active checks of the 22 items. | `python3 scripts/verify-reified/check-complete.py --phase p4` and the other checkers |
+| Thoroughly tested | The 12 P4 suites of section [11.7](#117-integration-suites) with 169 tests, the 188 unit tests of the P4 modules, and the suites of ordinary execution. | `cargo test` (section [11.9](#119-running-the-p4-checks)) |
 | Documented per the pgmcp guidelines | `doc_lint.py` passes every rule on every campaign document, and `render.sh --check` finds each SVG byte-identical to a fresh render. | `python3 scripts/verify-reified/doc_lint.py`, `docs/rspace/reified-rspaces/diagrams/render.sh --check` |
 
 ### 11.3 Rocq models of P4
@@ -1362,11 +1364,11 @@ Its last leg ran 72 negative checks: the 10 pristine modules and 62 mutants.
 | [Namespace.v](../../../formal/rocq/reified_rspaces/theories/Namespace.v) | 11 | P4 |
 | [RecordEnvelope.v](../../../formal/rocq/reified_rspaces/theories/RecordEnvelope.v) | 8 | P4 |
 | [CounterConflict.v](../../../formal/rocq/reified_rspaces/theories/CounterConflict.v) | 9 | P4 |
-| [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 9 | P4 |
+| [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 19 | P4 (9) and decision 43 (10) |
 | [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 11 | P4 (10) and decision 46 (1) |
 | [SpaceFactory.v](../../../formal/rocq/reified_rspaces/theories/SpaceFactory.v) | 8 | P4 |
 | [AgentReadCoverage.v](../../../formal/rocq/reified_rspaces/theories/AgentReadCoverage.v) | 8 | Decision 42 |
-| Total | 102 | |
+| Total | 112 | |
 
 Each headline of the tables below has no assumption: `Print Assumptions` reports `Closed under the global context`.
 The last column gives the property tests that the invariant map names for the headline.
@@ -1434,15 +1436,15 @@ HeadOnlyDisciplines.v models the plans of the queue for every matcher, with pers
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q29 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:381`) | The head of each side has the least order and bytes. | `prop_queue_candidates_head_only` |
-| Q30 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:779`) | A produce keeps INV: no pending match between the heads. | `prop_queue_produce_preserves_invariant` |
-| Q31 | `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:799`) | A consume keeps INV. | `prop_queue_consume_preserves_invariant` |
-| Q32 | `queue_fifo` (`HeadOnlyDisciplines.v:979`) | Records leave in arrival order. | `prop_queue_fifo` |
-| Q33 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1062`) | A head that does not match blocks the entries behind it. | `prop_queue_head_blocks` |
-| Q34 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1224`) | A plan stages at most `FIRE_ROUND_CAP` fires, and at most one more fire than the queue holds, or it re-issues. | `prop_queue_loop_bounded` |
-| Q35 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:895`) | The order of an operation is new in its collection. | `prop_queue_ord_fresh` |
-| Q36 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1396`) | The plan ignores the list order of the staged view. | `prop_queue_plan_permutation_invariant` |
-| Q37 | `legacy_scan_violates_head_blocks` (`HeadOnlyDisciplines.v:1468`) | The legacy waiter scan breaks head-only matching, as a computed example. | `prop_legacy_scan_breaks_head_blocks` |
+| Q29 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:480`) | The head of each side has the least order and bytes. | `prop_queue_candidates_head_only` |
+| Q30 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:878`) | A produce keeps INV: no pending match between the heads. | `prop_queue_produce_preserves_invariant` |
+| Q31 | `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:898`) | A consume keeps INV. | `prop_queue_consume_preserves_invariant` |
+| Q32 | `queue_fifo` (`HeadOnlyDisciplines.v:1085`) | Records leave in arrival order. | `prop_queue_fifo` |
+| Q33 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1168`) | A head that does not match blocks the entries behind it. | `prop_queue_head_blocks` |
+| Q34 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1330`) | A plan stages at most `FIRE_ROUND_CAP` fires, and at most one more fire than the queue holds, or it re-issues. | `prop_queue_loop_bounded` |
+| Q35 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:996`) | The order of an operation is new in its collection. | `prop_queue_ord_fresh` |
+| Q36 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1502`) | The plan ignores the list order of the staged view. | `prop_queue_plan_permutation_invariant` |
+| Q37 | `legacy_scan_violates_head_blocks` (`HeadOnlyDisciplines.v:3159`) | The legacy waiter scan breaks head-only matching, as a computed example. | `prop_legacy_scan_breaks_head_blocks` |
 
 #### 11.3.6 Headlines of SpaceRefs.v
 
@@ -1502,25 +1504,36 @@ The fourth refinement corrects two notes of the module:
 ### 11.4 TLA+ models of P4
 
 The gate of section [5.1](#51-tools-and-gate-legs) checks three P4 modules with the legs Bounds, Safe, Unsafe, and Apalache.
-The last host run printed `reified-rspaces tla: PASS=114 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/fx-f/gate-tla.log`).
+The last host run, the run of decision 43, printed `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d43/tla-gate.log`).
 The counts of that run include the P1 legs of section 5.
 
 #### 11.4.1 HeadOnlyDiscipline.tla
 
-[HeadOnlyDiscipline.tla](../../../formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla) explores every schedule of produces and consumes on one queue collection, with every value and every pattern.
-Every entry is non-persistent and no waiter peeks, so a fire spends both partners.
-HeadOnlyDisciplines.v covers persistent entries, peeks, and the fire rounds for every matcher.
+[HeadOnlyDiscipline.tla](../../../formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla) explores every schedule of produces, consumes, and re-entries on one queue collection, with every value and every pattern.
+With `Reissues = FALSE`, every entry is non-persistent and no waiter peeks, so a fire spends both partners.
+With `Reissues = TRUE`, the model adds persistent sends, persistent receives, peek receives, and the elements in flight of [decision 43](decision-register.md#decision-43).
+A round fires at most once (`Cap = 1`), because Apalache does not accept the recursive fire loop.
+A round of the code with k fires is k rounds of the model with no operation between them.
+HeadOnlyDisciplines.v covers every fire-round cap and every matcher.
 
 *Table 33. The invariants of HeadOnlyDiscipline.tla.*
 
 | Id | Invariant | Meaning | Property tests |
 |---|---|---|---|
-| U1 | `HeadOnlyNoPendingMatch` | The head record and the head waiter never match (INV). | `prop_queue_no_pending_match_any_schedule` |
-| U2 | `HeadBlocks` | Every fire involves the head of its side, so a head that does not match blocks the entries behind it. | `prop_queue_head_blocks_any_schedule` |
-| U3 | `FifoOrder` | Records leave in order. | `prop_queue_fifo_any_schedule` |
+| U1 | `QuiescentNoPendingMatch` | With no element in flight, the head record and the head waiter never match (INV). | `prop_queue_no_pending_match_any_schedule`, `prop_queue_shadow_invariant_with_inflight` |
+| U2 | `HeadBlocks` | Every fire involves the head of the other side, so a head that does not match blocks the entries behind it. | `prop_queue_head_blocks_any_schedule`, `prop_queue_reentry_head_blocks` |
+| U3 | `FifoOrder` | An element fires only when no entry of its own side precedes it, also after a re-entry (QD-7, QD-9). | `prop_queue_head_blocks_any_schedule`, `prop_queue_reentry_head_blocks` |
+| U9 | `ShadowedNoPendingMatch` | While an element is in flight, a matching pair of heads needs an element in flight that precedes the head of its side (SHADOW). | `prop_queue_shadow_invariant_with_inflight` |
+| U10 | `ReissueKeepsOrd` | Every persistent element in flight carries the order of its first round. | `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_loop_bounded` |
+| U11 | `IntroducedOnce` | Each persistent element takes a fresh order exactly once. | `prop_queue_persistent_reissue_charged_once`, `prop_queue_reissue_keeps_first_round_ord` |
+| U12 | `LeaveOrder` | The records that are not persistent leave in increasing order, each older than every such record that stays. | `prop_queue_fifo_any_schedule`, `prop_queue_fifo_with_reentries` |
 
-The inductive invariant `HeadIndInv` holds the three invariants and the facts that make them inductive.
-The orders are below the counter and unique, and every queued record follows every delivered one.
+U1 and U9 together state SHADOW in every state.
+U1 replaces `HeadOnlyNoPendingMatch` of P4, which is U1 when nothing can be in flight.
+U3 now states the fire order of each side, and U12 states the leave order that U3 stated before decision 43.
+The inductive invariant `HeadIndInv` holds the seven invariants and the facts that make them inductive.
+The orders and the carried orders are below the counter and unique, and the carried orders differ from the stored orders.
+The elements in flight have their shapes, and history flags record that every fire so far kept U2, U3, and U12.
 
 #### 11.4.2 CounterConflict.tla
 
@@ -1559,7 +1572,8 @@ No counter or log grows faster than the steps.
 
 | Configuration | Bounds | Distinct states | Depth |
 |---|---|---|---|
-| `MC_HeadOnlyDiscipline.cfg` | `Vals={"a","b"}`, `Pats={"a","b","any"}`, `MaxOps=6`, `ScanWaiters=FALSE` | 9202 | 7 |
+| `MC_HeadOnlyDiscipline.cfg` | `Vals={"a","b"}`, `Pats={"a","b","any"}`, `MaxOps=6`, `Reissues=FALSE` | 9059 | 7 |
+| `MC_HeadOnlyDiscipline_Reissue.cfg` | `Vals={"a","b"}`, `Pats={"a","b","any"}`, `MaxOps=6`, `Reissues=TRUE` | 3473357 | 7 |
 | `MC_CounterConflict.cfg` | `Qs={"q1","q2"}`, `Vals={"x","y"}`, pre-state queues unopened, `[x]`, or `[y]`, 1 or 2 operations in each branch, `WriteCounters=TRUE`, `ReadCounters=TRUE` | 46656 | 1 |
 | `MC_NativeHandles.cfg` | `Rands={"r1","r2"}`, `Sids={"s1","s2","s3"}` with `s3` fabricated, `Colls={"k1","k2"}`, `MaxSteps=5`, `SingleChannelHandle=TRUE` | 2617 | 6 |
 
@@ -1569,10 +1583,18 @@ CounterConflict.tla checks the merge of each pair of branches once, so every sta
 
 | Configuration | Wrong rule | Refutes exactly | Counterexample | Complement |
 |---|---|---|---|---|
-| `HeadOnlyScanUnsafe.cfg` | `ScanWaiters=TRUE`: a datum fires the first waiter that matches, as the legacy scan does | `HeadBlocks` | 71 states, depth 4 | 8153 states, depth 7, no other violation |
+| `HeadOnlyScanUnsafe.cfg` | `ScanWaiters=TRUE`: a datum fires the first waiter that matches, as the legacy scan does | `HeadBlocks` | 71 states, depth 4 | 7899 states, depth 7, no other violation |
+| `ReissueFreshOrdUnsafe.cfg` | `ReissueFreshOrd=TRUE`: each round of a re-issued element takes a fresh order (C0) | `IntroducedOnce` | 243 states, depth 4 | 3524808 states, depth 7, no other violation |
+| `ReentryAtHeadUnsafe.cfg` | `ReentryAtHead=TRUE`, `MaxOps=7`: a re-entry is at the head whatever the order of the head, when the other side holds at most one entry | `FifoOrder` | 340728 states, depth 7 | 44207717 states, depth 8, no other violation |
+| `NonPersistentFirstOrdUnsafe.cfg` | `NonPersistentFirstOrd=TRUE`: a re-issued element that is not persistent keeps its first order (C1); the configuration does not check `LeaveOrder` | `QuiescentNoPendingMatch` | 2857991 states, depth 7 | 3486737 states, depth 7, no other violation |
 | `CounterDroppedUnsafe.cfg` | No operation uses a counter, and an enqueue takes the greatest order of the queue plus 1 | `NoMergedOrderFabrication` | An initial state: TLC prints `?` for the counts | 46656 states, depth 1, no other violation |
 | `PeekCounterFreeUnsafe.cfg` | A peek does not bump the counter, which is the design before decision 31 | `NoMergedOrderFabrication` | An initial state: TLC prints `?` for the counts | 46656 states, depth 1, no other violation |
 | `JoinDescriptorUnsafe.cfg` | The handle continuation joins $`H(\mathit{sid})`$ with a descriptor channel | `HandleCallsMergeLikeContracts` | 52 states, depth 4 | 2617 states, depth 6, no other violation |
+
+The control `NonPersistentFirstOrdUnsafe.cfg` refutes exactly one invariant at its bound.
+A scratch search with five operation kinds found a run of 10 rounds that also breaks `ShadowedNoPendingMatch`.
+The complements at 6 and 7 rounds find no other violation (3,486,737 and 44,442,255 states).
+A restriction that removed the longer run would have to stop other elements from entering flight, so the control stays unrestricted at its bound.
 
 *Table 38. The Apalache checks of P4.*
 
@@ -1580,16 +1602,19 @@ CounterConflict.tla checks the merge of each pair of branches once, so every sta
 |---|---|---|---|
 | `head-base` | `MC_HeadOnlyDiscipline_IndBase_Apalache.cfg`, `MaxOps=3` | 0 | `NoError`: $`\mathit{Init} \Rightarrow \mathit{HeadIndInv}`$ |
 | `head-step` | `MC_HeadOnlyDiscipline_IndStep_Apalache.cfg`, `MaxOps=3` | 1 | `NoError`: $`\mathit{HeadIndInv} \land \mathit{Next} \Rightarrow \mathit{HeadIndInv}'`$ |
-| `head-step-scan-unsafe` | `HeadOnlyScanUnsafe_IndStep_Apalache.cfg` | 1 | An error in the conjunct with the marker `["fired"]` |
+| `head-step-scan-unsafe` | `HeadOnlyScanUnsafe_IndStep_Apalache.cfg` | 1 | An error in the conjunct `~partnersAtHead` |
+| `head-reissue-base` | `MC_HeadOnlyDiscipline_Reissue_IndBase_Apalache.cfg`, `MaxOps=7` | 0 | `NoError`: $`\mathit{Init} \Rightarrow \mathit{HeadIndInv}`$ |
+| `head-reissue-step` | `MC_HeadOnlyDiscipline_Reissue_IndStep_Apalache.cfg`, `MaxOps=7` | 1 | `NoError`: $`\mathit{HeadIndInv} \land \mathit{Next} \Rightarrow \mathit{HeadIndInv}'`$ |
 | `handle-base` | `MC_NativeHandles_IndBase_Apalache.cfg`, `MaxSteps=4` | 0 | `NoError`: $`\mathit{Init} \Rightarrow \mathit{HandleIndInv}`$ |
 | `handle-step` | `MC_NativeHandles_IndStep_Apalache.cfg`, `MaxSteps=4` | 1 | `NoError`: $`\mathit{HandleIndInv} \land \mathit{Next} \Rightarrow \mathit{HandleIndInv}'`$ |
 | `handle-step-joindescriptor-unsafe` | `JoinDescriptorUnsafe_IndStep_Apalache.cfg` | 1 | An error in the conjunct with the marker `"user"` |
 
 ### 11.5 Negative controls of P4
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 62 mutants: 28 in Table 12, 29 in Table 39, and 5 in Table 45.
+The script `scripts/verify-reified/rocq-negative-controls.py` holds 66 mutants. Tables 12, 39, 45, 47 and 50 hold 28, 29, 5, 1 and 3 of them.
 The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants, after the 9 pristine modules compiled (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
+The run of [decision 43](decision-register.md#decision-43) passed all 66 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d43/gates/proofs.log`).
 
 *Table 39. The 29 Rocq mutants of P4.*
 
@@ -1632,22 +1657,23 @@ The TLA+ controls of P4 are the four Unsafe configurations of Table 37 and the t
 The 69 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
 A pure property and a property over the in-memory agent run 64 cases.
 A property that evaluates deploys on a Rholang runtime runs 16 cases.
-Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:146-171`).
+Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:151-176`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
 
-*Table 40. The 75 properties of phase P4 in the invariant map.*
+*Table 40. The 83 properties of phase P4 in the invariant map.*
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
-| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:531-925` | Q1 to Q11 |
-| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1399-1734` | Q12 to Q19 |
-| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2067`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:4314-4738` | Q20 to Q28 |
-| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3014-3453` | Q29 to Q37, and Q62 and Q63 for `prop_queue_plan_permutation_invariant` |
-| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:3527-3643` | Q59 to Q61, Q64 to Q66 |
-| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:5093-5381` | Q38 to Q46 |
-| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:5620-5989` | Q48 to Q55 |
-| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:6255-6831` | U1 to U8 |
-| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:7240-7513` | Q47 to Q51, Q55 |
+| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:536-930` | Q1 to Q11 |
+| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1404-1739` | Q12 to Q19 |
+| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2072`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5312-5736` | Q20 to Q28 |
+| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3021-3470` | Q29 to Q37, Q62 and Q63 for `prop_queue_plan_permutation_invariant`, and U10 for `prop_queue_loop_bounded` |
+| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4525-4641` | Q59 to Q61, Q64 to Q66 |
+| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6091-6379` | Q38 to Q46 |
+| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6618-6987` | Q48 to Q55 |
+| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7253-7829` | U1 to U8, and U12 |
+| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8238-8511` | Q47 to Q51, Q55 |
+| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3778-4361` | Q68 to Q77, U1 to U3, and U9 to U12 |
 | Native execution | `reified_native_play_rejects_a_space_deploy_before_any_space_work`, `reified_native_replay_reproduces_the_rejection_of_play`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:280-309` | Q67 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
 
@@ -1655,9 +1681,9 @@ So a run has the same cases on every host, and it writes nothing to the source t
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1523` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1302` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1350` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:1525` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1304` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1352` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:192` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:207` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
@@ -1687,20 +1713,22 @@ Each run printed `test result: ok` with 0 failures (`target/verification/reified
 | `models/tests/space_factory_urn.rs` | 6 | URN forms, aliases, the constructor, the qualifier matrix, and the family indices |
 | `rholang/tests/reified_factory.rs` | 14 | Private channels, the creation records, the factory gates, `assertEqual`, `getSpaceAgent`, fixed arities, and persistent sends |
 | `rholang/tests/reified_handle.rs` | 12 | The five methods, typed replies, the drop rule, the bare-handle rule, dangling handles, and persistent sends |
-| `rholang/tests/reified_queue.rs` | 20 | Head-only delivery, the counters, the order envelope, re-issues, divergent pairs, observer parity, the rejected joins, queries, and params, dangling names, the meta channels, and item 19 |
+| `rholang/tests/reified_queue.rs` | 22 | Head-only delivery, the counters, the order envelope, re-issues and re-entries, divergent pairs, observer parity, the rejected joins, queries, and params, dangling names, the meta channels, and item 19 |
 | `rholang/tests/reified_queue_replay.rs` | 5 of P4 | Play and replay equality with handle calls, peeks, and parked waiters, a typed divergence, and reporting |
 | `rholang/tests/reified_queue_restart.rs` | 2 | Orders and handles across a restart and a replay |
 | `rholang/tests/reified_routing.rs` | 15 | The routing classes and rules, the use closure, R7, a reset, the agent gate, ordinary programs, and the unwrap of handles |
 | `rholang/tests/reified_merge.rs` | 11 | Nine counter races and chains, and the two checks of item 18 |
 | `rholang/tests/reified_queue_source.rs` | 1 | A source program end to end |
-| `rholang/tests/reified_p4_props.rs` | 69 | The properties of section [11.6](#116-property-based-tests) |
+| `rholang/tests/reified_p4_props.rs` | 77 | The properties of section [11.6](#116-property-based-tests) and of decision 43 |
 | `rholang/tests/reified_p4_smoke.rs` | 1 | A smoke test of play and replay |
 | `rholang/tests/reified_native_fail_closed.rs` | 3 | Native play and native replay of a space deploy and of a host program (section [11.11](#1111-native-execution-of-decision-46)) |
 
 The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 6 tests.
-The P4 modules hold 180 unit tests: 173 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
+
+The P4 modules hold 188 unit tests: 181 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
 Two of them came with the merge of [decision 44](decision-register.md#decision-44) (section [8.8](#88-the-merge-of-featurecost-accounted-rho)).
 [Decision 42](decision-register.md#decision-42) replaced four unit tests that pinned the old meter and added eight (section [11.10](#1110-metering-of-decision-42)).
+[Decision 43](decision-register.md#decision-43) added eight unit tests of the re-entry (section [11.12](#1112-re-entry-of-decision-43)).
 At the P4 milestone, the library run of `rholang` printed `test result: ok. 1660 passed; 0 failed; 3 ignored`, with the 166 P4 tests of that time (`gate-rholang-lib.log` of the same directory).
 The suites of ordinary execution of section 8 also passed in the same run.
 
@@ -1713,7 +1741,7 @@ The suites of ordinary execution of section 8 also passed in the same run.
 | # | Item | Check | Assertion |
 |---|---|---|---|
 | 18 | No synthesized multi-channel join | `reified_handle_cross_block_merge_no_conflict` (`reified_merge.rs:515`) and its control `reified_handle_cross_block_merge_join_handle_conflicts` (`reified_merge.rs:571`), step `reified-merge` | Handle calls on disjoint collections merge like contract calls. A join of the handle with a descriptor channel makes every pair of calls conflict. |
-| 19 | Namespaced channels never mergeable | `reified_namespaced_channels_never_mergeable` (`reified_queue.rs:1751`), step `reified-queue` | A tuple channel with a mergeable tag routes to the space inside a `use` block, and only the control channel outside is mergeable. No channel with the tag `0xE0` is mergeable. |
+| 19 | Namespaced channels never mergeable | `reified_namespaced_channels_never_mergeable` (`reified_queue.rs:1883`), step `reified-queue` | A tuple channel with a mergeable tag routes to the space inside a `use` block, and only the control channel outside is mergeable. No channel with the tag `0xE0` is mergeable. |
 
 The checklist checker printed `consensus-checklist (milestone p4): ITEMS=22 CHECKS=118 PASS=112 FAIL=0 SCHEDULED=1 RETIRED=5` (`target/verification/reified-rspaces/p4/fx-c/gate-consensus-checklist-p4.log`).
 The scheduled check is the P7 sweep test of item 20.
@@ -1792,11 +1820,11 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:3527` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
-| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:3578` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
-| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:3643` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
-| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3402` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
-| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3014` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
+| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4525` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
+| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4576` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
+| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4641` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
+| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3419` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
+| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3021` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
 | `scan_meter_maps_amounts_to_the_branch_dimensions` | `reified/costs.rs:335` | A reservation charges VerificationOperations, VerificationBytes, and SearchStateBytes, and no other dimension. |
 | `scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension` | `reified/costs.rs:359` | The exact credit suffices, and one unit less in any dimension rejects. |
 | `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:388` | A reserved copy charges the triple of the copy walk of the branch (Q59). |
@@ -1833,11 +1861,129 @@ Outside native execution, a host runtime runs the job unchanged.
 | `reified_native_play_rejects_a_space_deploy_before_any_space_work` | `reified_native_fail_closed.rs:280` | A native play of a factory call fails with the code, and no channel of a space enters the hot store (Q67). |
 | `reified_native_replay_reproduces_the_rejection_of_play` | `reified_native_fail_closed.rs:290` | The native replay environment replays the play journal: the same error, a complete journal, the phlo usage of play, and equal authority events and byte observations (Q67). |
 | `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:309` | A program without spaces plays and replays natively without an error, with a complete journal and equal usage (Q67). |
-| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:440` | A host runtime runs space jobs when its budget runs no native deploy. |
+| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:441` | A host runtime runs space jobs when its budget runs no native deploy. |
 
 **The hazard without the rule.** A run of the suite with the guard of `ReifiedRuntime::host` removed (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows it.
 Native play then ran the space operation without an error, and native replay failed with `native replay has incomplete operations`.
 That is the divergence that the proposer's self-certification turned into a quarantine before the decision.
+
+### 11.12 Re-entry of decision 43
+
+[Decision 43](decision-register.md#decision-43) makes a re-issued persistent operation keep the order of its first round.
+The element re-enters at its place.
+It is at the head of its side when that side is empty or its order precedes the head.
+Otherwise it rests behind the head and fires nothing.
+`operation_ord` (`spaces/generic.rs:809-821`) checks the kept order against the counter.
+`GenericSpace::at_head` (`spaces/generic.rs:625-650`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:63-72`) compares two orders.
+
+`HeadOnlyDisciplines.v` adds the 10 headlines of Table 49, with no axiom.
+The module defines the elements in flight $`F`$ and the re-entry plans.
+It also defines the well-formedness $`\mathrm{wf}'`$ of a collection with its elements in flight, and the shadow form of INV:
+
+```math
+\mathrm{SHADOW}(R, W, F) \iff \mathrm{INV}(R, W) \;\lor\; \exists f \in F.\ \mathit{ord}(f) < \mathit{ord}\bigl(\mathrm{head}(X_f)\bigr)
+```
+
+Here $`X_f`$ is the side of the element $`f`$.
+The module compiles in 6 s, prints `Closed under the global context` for all 19 headlines, and `rocqchk` reports `Axioms <none>`.
+
+*Table 49. The headlines of decision 43 in HeadOnlyDisciplines.v.*
+
+| Id | Headline | Claim |
+|---|---|---|
+| Q68 | `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2292`) | A re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place. |
+| Q69 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2323`) | A re-issued persistent element keeps the order of its first round, and its round bumps the counter by one and keeps $`\mathrm{wf}'`$. |
+| Q70 | `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2662`) | Every fresh operation and every re-entry keeps $`\mathrm{wf}'`$ and SHADOW. |
+| Q71 | `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2731`) | SHADOW with no element in flight is INV, and every run of rounds keeps SHADOW and has INV whenever no element is in flight. |
+| Q72 | `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2896`) | Over runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays. |
+| Q73 | `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:2971`) | A re-entry behind an older head rests at its place and fires nothing, and a fire meets the head of the other side. |
+| Q74 | `queue_reentry_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:3039`) | A re-entry stages at most `FIRE_ROUND_CAP` fires, and a re-issue carries the first order exactly for a persistent element. |
+| Q75 | `queue_reentry_permutation_invariant` (`HeadOnlyDisciplines.v:3099`) | A re-entry depends on the entries of the collection, not on their list order. |
+| Q76 | `fresh_ord_reissue_loses_first_round_place` (`HeadOnlyDisciplines.v:3205`) | Negative control C0: with a fresh order, a re-issued persistent element rests behind a younger record. |
+| Q77 | `nonpersistent_first_ord_reentry_breaks_quiescent_inv` (`HeadOnlyDisciplines.v:3258`) | Negative control C1: an element that is not persistent and keeps its order leaves a pending match with nothing in flight. |
+
+Two proof strategies failed, and the module header records them.
+An `injection` or `inversion` on an equation of `Some (offer_loop ...)` ran out of memory, so the proofs use the lemmas `some_injective` and `triple_injective` instead.
+A lemma that unfolds SHADOW over the concrete loop never finished its `Qed`, so the lemmas `offer_end_shadow` and `receive_end_shadow` take the outcome as a variable.
+
+*Table 50. The Rocq mutants of decision 43.*
+
+| Id | What the mutant changes | Must fail in |
+|---|---|---|
+| `ho-reentry-fresh-ord` | A re-issued persistent operation takes the order of its bump. | `queue_reissue_keeps_ord` |
+| `ho-reentry-ignores-head` | A re-entered element is at the head whatever the order of the head. | `reenter_offer_shadow`, `queue_reentry_preserves_shadow_inv` |
+| `ho-nonpersistent-keeps-ord` | A re-issued element that is not persistent keeps its first order. | `queue_quiescent_inv` |
+
+`HeadOnlyDiscipline.tla` models the re-entry with `Reissues = TRUE`, and Table 33 lists its invariants.
+The gate run of decision 43 printed `reified-rspaces tla: PASS=135 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d43/tla-gate.log`).
+
+*Table 51. The TLA+ checks of decision 43.*
+
+| Check | Configuration | Result |
+|---|---|---|
+| Safe | `MC_HeadOnlyDiscipline_Reissue.cfg`, `MaxOps=6` | 3,473,357 states, depth 7, no violation of the eight invariants or of `HeadIndInv` |
+| Unsafe C0 | `ReissueFreshOrdUnsafe.cfg` | Refutes exactly `IntroducedOnce`, and the complement explores 3,524,808 states |
+| Unsafe re-entry | `ReentryAtHeadUnsafe.cfg`, `MaxOps=7` | Refutes exactly `FifoOrder`, and the complement explores 44,207,717 states |
+| Unsafe C1 | `NonPersistentFirstOrdUnsafe.cfg` | Refutes exactly `QuiescentNoPendingMatch`, and the complement explores 3,486,737 states |
+| Apalache BASE | `MC_HeadOnlyDiscipline_Reissue_IndBase_Apalache.cfg`, `MaxOps=7` | `NoError` |
+| Apalache STEP | `MC_HeadOnlyDiscipline_Reissue_IndStep_Apalache.cfg`, `MaxOps=7` | `NoError` |
+
+Four claims of the design changed in the model, and the header of the module records each reason.
+`ShadowedNoPendingMatch` holds only while an element is in flight, so it does not repeat `QuiescentNoPendingMatch`.
+`ReissueKeepsOrd` states the carried order and `IntroducedOnce` states the rounds, so one control cannot break both.
+`FifoOrder` states the fire order of each side, and `LeaveOrder` keeps the leave order.
+The control of the re-entry fires out of order only when the other side holds at most one entry, so it breaks no other invariant.
+
+Table 52 gives the tests of decision 43.
+The properties run 64 cases each with the seed of section [11.6](#116-property-based-tests), and `prop_queue_persistent_reissue_charged_once` runs 16 cases on a runtime.
+
+*Table 52. The tests of decision 43.*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:1856` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
+| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:1913` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
+| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:2028` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:2069` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
+| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:2100` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
+| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:2140` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
+| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:2185` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
+| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:2215` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
+| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:2249` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
+| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:2338` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
+| `space_queue_reissue_persistent_send` | `reified_queue.rs:1042` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1113` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
+| `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1162` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
+| `space_queue_divergent_pair_exhausts_phlo` | `reified_queue.rs:1269` | A divergent pair repeats one produce identity and one COMM, and the counter bumps of its rounds spend the phlo. |
+| `prop_queue_loop_bounded` | `reified_p4_props.rs:3310` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
+| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3778` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
+| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3825` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
+| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3867` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
+| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3927` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
+| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4090` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
+| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4171` | Two list orders of one collection give the same re-entry: outcomes, events, entries, and host work (Q75). |
+| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4268` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
+| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4361` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
+
+Each property must fail when the rule that it checks is broken.
+The script `.reified-rspaces-work/d43/run_mutants.py` applies five mutants to `spaces/generic.rs`, runs the unit tests of the agent and the P4 properties, and restores the file.
+Each mutant made at least one of its expected tests fail (`target/verification/reified-rspaces/d43/mutants-2.log` and `mutants-3.log`).
+
+*Table 53. The Rust mutants of decision 43.*
+
+| Mutant | What it breaks | Tests that fail |
+|---|---|---|
+| `fresh-ord-reissue` | A persistent re-issue carries no order (C0). | `prop_queue_reissue_keeps_first_round_ord`, `prop_queue_loop_bounded`, `prop_queue_persistent_reissue_charged_once`, `prop_fresh_ord_reissue_loses_first_round_place`, and 8 unit tests |
+| `reentry-joins-the-tail` | A re-entry ignores its kept order and joins the tail. | `prop_queue_shadow_invariant_with_inflight`, `prop_fresh_ord_reissue_loses_first_round_place`, and 5 unit tests |
+| `reentry-ignores-head` | A re-entry fires from the head even behind an older head. | `prop_queue_reentry_head_blocks`, `space_queue_reissue_stores_behind_an_older_reentry` |
+| `reentry-head-by-list-position` | A re-entry compares its order with the first entry of the list. | `prop_queue_reentry_permutation_invariant` |
+| `nonpersistent-keeps-ord` | A re-issue that is not persistent keeps its order (C1). | `prop_queue_nonpersistent_reissue_fresh_ord`, `space_queue_nonpersistent_reissue_takes_a_fresh_ord` |
+
+**Charges.** A re-issued persistent element stages one record in every round.
+So the accounting registers its introduction once in each deploy, as the host does for a persistent produce that it produces again.
+Each round pays its counter bump.
+A divergent pair also repeats one COMM identity, so each later round pays only its bump.
+The pair still ends when the phlo runs out.
 
 ## References
 

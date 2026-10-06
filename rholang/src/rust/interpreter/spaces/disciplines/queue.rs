@@ -3,7 +3,8 @@
 //! A queue is head-only on both sides. The head of the records and the head of the waiting
 //! continuations are the entries with the least `ord`, and only the two heads interact. A head
 //! that does not match blocks the entries behind it. An incoming element joins the tail of its
-//! side, so it interacts only when its side is empty.
+//! side, so it interacts only when its side is empty. A re-issued persistent element keeps its
+//! first-round `ord` and re-enters at its place: ahead of every younger entry (decision 43).
 //!
 //! The order comes from the `ord` of the envelopes, never from the list order of the store: the
 //! hot store inserts at the front, and a restart can load a list in another order. Two entries
@@ -57,6 +58,18 @@ impl Discipline for QueueDiscipline {
 
     /// An incoming element joins the tail, so it is the head only of an empty side.
     fn reaches_head(&self, _side: Side, queued: usize) -> bool { queued == 0 }
+
+    /// The least order interacts first, on both sides.
+    fn precedes(
+        &self,
+        _side: Side,
+        ord: i64,
+        head: i64,
+        meter: &ScanMeter,
+    ) -> Result<bool, SpaceError> {
+        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+        Ok(ord < head)
+    }
 }
 
 // The best entry of a scan so far, with its bytes once a tie-break has encoded them.

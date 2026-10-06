@@ -261,6 +261,7 @@ impl ReducerCore {
                     data,
                     persistent,
                     authority,
+                    reissued_ord: None,
                 })),
                 Some(params) => Err(space_params_error(params)),
             },
@@ -338,6 +339,7 @@ impl ReducerCore {
                     guard,
                     authority,
                     introduction_authority,
+                    reissued_ord: None,
                 }),
                 None,
             )),
@@ -2637,6 +2639,7 @@ mod tests {
                 data: datum(vec![int(6)]),
                 persistent: true,
                 authority: authority(),
+                reissued_ord: Some(0),
             }),
             cause: ReissueCause::DivergentPair,
         };

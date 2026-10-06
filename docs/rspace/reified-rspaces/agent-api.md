@@ -90,7 +90,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:595-635`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:597-637`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -227,7 +227,7 @@ The name routes to the space by itself (rule R3), so a send or a receive on it r
 **`config`.** The reply is the map that the config record holds, with the six keys of the [specification](specification.md#11-spaces).
 For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil`.
 
-**`produce`.** The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:349-386`).
+**`produce`.** The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:349-387`).
 The key of `ch` names the collection by rule HM-1 of the specification, also when `ch` is a name of another space.
 The record gets the elements of the list `msg` as its payload, and the random state and the cost authority of the call.
 The method dispatches the fires of the operation, and it replies `Nil`.
@@ -242,7 +242,7 @@ A dispatch ends the participant that makes it, so the reply cannot follow the fi
 So the reply and the fired bodies are parallel processes, as in the equivalent Rholang program.
 
 **`consume`.** The method accepts only the matchers of user agents, which P8 adds ([decision 34](decision-register.md#decision-34), item A9).
-It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:390-429`).
+It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:391-430`).
 A call that passes every check aborts with `AgentSpacesUnavailable` until P8.
 
 ## 6. Replies
@@ -296,7 +296,7 @@ The values of the detail keys have these meanings:
 - `"param"` is the unknown key exactly as the call gave it.
 - `"index"` is the position of the first foreign matcher in `pairs`, from 0.
 
-*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:349-429`).*
+*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:349-430`).*
 
 | `"argument"` | Method | Trigger |
 |---|---|---|

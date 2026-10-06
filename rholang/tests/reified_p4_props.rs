@@ -66,6 +66,10 @@ use proptest::prelude::*;
 use proptest::sample::select;
 use proptest::test_runner::{RngSeed, TestCaseError, TestRunner};
 use reified_strategies::{arb_ground_par, arb_par, gint, gstring, list, tuple};
+use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+use rholang::rust::interpreter::accounting::byte_accounting::{
+    consume_introduction_identity, produce_introduction_identity,
+};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig};
 use rholang::rust::interpreter::env::Env;
@@ -88,6 +92,7 @@ use rholang::rust::interpreter::reified::system_channels::{
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::spaces::agent::{
     run_op, ConsumeOp, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
+    SpaceReissue,
 };
 use rholang::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use rholang::rust::interpreter::spaces::errors::{
@@ -2754,6 +2759,7 @@ impl AgentRig {
                 },
                 persistent: persist,
                 authority: CostAuthority::default(),
+                reissued_ord: None,
             }),
             QueueOp::Consume {
                 pat,
@@ -2774,6 +2780,7 @@ impl AgentRig {
                 guard: guard.map(gbool),
                 authority: CostAuthority::default(),
                 introduction_authority: CostAuthority::default(),
+                reissued_ord: None,
             }),
         }
     }
@@ -3297,7 +3304,8 @@ async fn queue_head_blocks_case(
 /// `queue_loop_bounded_or_reissues`: a plan fires at most `FIRE_ROUND_CAP` times and at most
 /// once for each entry of the other side. A plan that stops at the cap fired exactly
 /// `FIRE_ROUND_CAP` times. A divergent re-issue (A10) needs a persistent partner and a
-/// surviving incoming side.
+/// surviving incoming side. A re-issue carries the order of the first round exactly when the
+/// operation is persistent (decision 43).
 #[test]
 fn prop_queue_loop_bounded() {
     check(pure_config(), arb_loop_case(), |case| {
@@ -3343,10 +3351,19 @@ async fn queue_loop_bounded_case(case: (QueueState, QueueOp)) -> Result<(), Test
     if fired.len() > FIRE_ROUND_CAP - 1 {
         prop_assert!(outcome.reissue.is_some());
     }
+    if let Some(reissue) = &outcome.reissue {
+        let persistent = match op {
+            QueueOp::Produce { persist, .. } | QueueOp::Consume { persist, .. } => persist,
+        };
+        prop_assert_eq!(
+            kept_place(reissue).map(|(_, ord)| ord),
+            persistent.then_some(state.next_ord())
+        );
+    }
     Ok(())
 }
 
-/// `queue_ord_fresh`: the ord of an operation is the value of the collection counter, above
+/// `queue_ord_fresh`: the ord of a fresh operation is the value of the collection counter, above
 /// the ord of every entry. The operation advances the counter by one and keeps the
 /// collection well formed. The first operation takes the ord 0, opens the counter at 1 and
 /// advances the space counter.
@@ -3504,6 +3521,987 @@ async fn legacy_scan_breaks_head_blocks_case(
         fired_partners(&op, &outcome)
     );
     prop_assert_eq!(rig.view().await, stored_or_parked(&state, &op));
+    Ok(())
+}
+
+// ─── Re-entries (decision 43) ────────────────────────────────────────────────────────────────
+
+/// The side and the kept order of a persistent element in flight. An element that is not
+/// persistent keeps no order: it re-enters as a fresh operation (decision 43).
+fn kept_place(reissue: &SpaceReissue) -> Option<(Side, i64)> {
+    match &reissue.op {
+        SpaceOp::Produce(op) => op.reissued_ord.map(|ord| (Side::Data, ord)),
+        SpaceOp::Consume(op) => op.reissued_ord.map(|ord| (Side::Waiters, ord)),
+    }
+}
+
+/// `SHADOW(R, W, F)`: when the head waiter matches the head record, a persistent element in
+/// flight precedes the head of its side.
+fn shadowed(state: &QueueState, flight: &[SpaceReissue]) -> bool {
+    match (state.head_record(), state.head_waiter()) {
+        (Some(record), Some(waiter)) if waiter.fits(record.value) => flight
+            .iter()
+            .filter_map(kept_place)
+            .any(|(side, ord)| match side {
+                Side::Data => ord < record.ord,
+                Side::Waiters => ord < waiter.ord,
+            }),
+        _ => true,
+    }
+}
+
+/// `wf'`: the collection is well formed, and the kept orders of the persistent elements in
+/// flight are distinct, below the counter, and distinct from the orders of the stored entries.
+fn well_formed_in_flight(state: &QueueState, flight: &[SpaceReissue]) -> bool {
+    let stored: BTreeSet<i64> = state
+        .records
+        .iter()
+        .map(|record| record.ord)
+        .chain(state.waiters.iter().map(|waiter| waiter.ord))
+        .collect();
+    let kept: Vec<i64> = flight
+        .iter()
+        .filter_map(kept_place)
+        .map(|(_, ord)| ord)
+        .collect();
+    let distinct: BTreeSet<i64> = kept.iter().copied().collect();
+    state.well_formed()
+        && distinct.len() == kept.len()
+        && kept.iter().all(|ord| {
+            !stored.contains(ord)
+                && state
+                    .counter
+                    .is_some_and(|counter| (0..counter).contains(ord))
+        })
+}
+
+/// A collection whose waiter side is long: `peeks` peek waiters, then `plain` plain waiters,
+/// then one waiter of the value `literal`. Every waiter but the last takes every value, so a
+/// persistent send reaches the cap when `peeks + plain` is at least `FIRE_ROUND_CAP`.
+fn capped_waiters(peeks: usize, plain: usize, literal: i64) -> QueueState {
+    let mut waiters: Vec<WaiterSpec> = (0..peeks + plain)
+        .map(|index| WaiterSpec {
+            ord: i64::try_from(index).expect("few entries"),
+            pat: Pat::Any,
+            persist: false,
+            peek: index < peeks,
+            guard: None,
+        })
+        .collect();
+    waiters.push(WaiterSpec {
+        ord: i64::try_from(peeks + plain).expect("few entries"),
+        pat: Pat::Lit(literal),
+        persist: false,
+        peek: false,
+        guard: None,
+    });
+    QueueState {
+        counter: Some(i64::try_from(waiters.len()).expect("few entries")),
+        records: Vec::new(),
+        waiters,
+    }
+}
+
+/// A collection for a run with re-entries: a small collection without a pending match, a long
+/// waiter side, or a long record side. On the long sides a persistent operation reaches the cap.
+fn arb_reentry_state() -> BoxedStrategy<QueueState> {
+    let cap = FIRE_ROUND_CAP;
+    prop_oneof![
+        1 => arb_queue_state(5).prop_map(QueueState::with_no_pending_match),
+        2 => (0usize..3, cap - 2..cap + 4, 0i64..4)
+            .prop_map(|(peeks, plain, literal)| capped_waiters(peeks, plain, literal)),
+        2 => (cap - 2..cap + 4).prop_map(|records| long_state(records, 0)),
+    ]
+    .boxed()
+}
+
+/// One step of a run with re-entries: a fresh operation, or the re-entry of the element in
+/// flight with this index, modulo the number of elements in flight.
+#[derive(Clone, Copy, Debug)]
+enum RunStep {
+    Fresh(QueueOp),
+    Reenter(usize),
+}
+
+fn arb_run_step() -> BoxedStrategy<RunStep> {
+    prop_oneof![
+        3 => arb_queue_op().prop_map(RunStep::Fresh),
+        1 => (0i64..4).prop_map(|value| RunStep::Fresh(QueueOp::Produce { value, persist: true })),
+        1 => Just(RunStep::Fresh(QueueOp::Consume {
+            pat: Pat::Any,
+            persist: true,
+            peek: false,
+            guard: None,
+        })),
+        3 => (0usize..4).prop_map(RunStep::Reenter),
+    ]
+    .boxed()
+}
+
+/// A run: a collection, a persistent operation toward its long side, and the steps after it.
+fn arb_run() -> BoxedStrategy<(QueueState, Vec<RunStep>)> {
+    (arb_reentry_state(), 0i64..4, vec(arb_run_step(), 1..10))
+        .prop_map(|(state, value, mut steps)| {
+            let opening = match (state.waiters.is_empty(), state.records.is_empty()) {
+                (false, _) => QueueOp::Produce {
+                    value,
+                    persist: true,
+                },
+                (true, false) => QueueOp::Consume {
+                    pat: Pat::Any,
+                    persist: true,
+                    peek: false,
+                    guard: None,
+                },
+                (true, true) => QueueOp::Produce {
+                    value,
+                    persist: false,
+                },
+            };
+            steps.insert(0, RunStep::Fresh(opening));
+            (state, steps)
+        })
+        .boxed()
+}
+
+/// The steps that the drain of a run may take after its planned steps. A divergent pair
+/// re-issues in every round, so the drain needs a bound.
+const DRAIN_STEPS: usize = 6;
+
+/// One step of a run as it ran: the operation, its outcome, the order that it took, and the
+/// collection and the elements in flight after it.
+struct RunRecord {
+    /// The operation of the element of the step, as the run first issued it.
+    queue_op: QueueOp,
+    op: SpaceOp,
+    outcome: SpaceOutcome,
+    /// The value of the counter before the step: the order of a fresh operation.
+    bumped: i64,
+    before: QueueState,
+    after: QueueState,
+    flight: Vec<SpaceReissue>,
+    /// The order of each waiter body that the run has issued so far, by its label.
+    labels: BTreeMap<String, i64>,
+}
+
+impl AgentRig {
+    /// Runs one operation, a fresh one or a re-issue.
+    async fn run_space_op(&self, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
+        run_op(&QueueAgent::default(), &self.env, op).await
+    }
+
+    /// Runs `steps`, then lets the elements in flight re-enter, oldest first, for at most
+    /// `DRAIN_STEPS` more steps. A re-entry with no element in flight is skipped.
+    async fn run_with_reentries(&self, steps: &[RunStep]) -> Vec<RunRecord> {
+        let mut flight: Vec<(QueueOp, SpaceReissue)> = Vec::new();
+        let mut records = Vec::with_capacity(steps.len() + DRAIN_STEPS);
+        let mut labels: BTreeMap<String, i64> = BTreeMap::new();
+        let mut before = self.view().await;
+        let planned = steps
+            .iter()
+            .copied()
+            .map(Some)
+            .chain(std::iter::repeat_n(None, DRAIN_STEPS));
+        for (salt, step) in (1u64..).zip(planned) {
+            let (queue_op, op) = match (step, flight.len()) {
+                (Some(RunStep::Fresh(op)), _) => (op, self.space_op(&op, salt)),
+                (Some(RunStep::Reenter(_)), 0) => continue,
+                (Some(RunStep::Reenter(index)), len) => {
+                    let (queue_op, reissue) = flight.remove(index % len);
+                    (queue_op, reissue.op)
+                }
+                (None, 0) => break,
+                (None, _) => {
+                    let (queue_op, reissue) = flight.remove(0);
+                    (queue_op, reissue.op)
+                }
+            };
+            if let SpaceOp::Consume(ConsumeOp {
+                body: ParWithRandom {
+                    body: Some(body), ..
+                },
+                reissued_ord,
+                ..
+            }) = &op
+            {
+                let label = string_of(body).expect("a run body is its label");
+                labels.insert(label.to_string(), reissued_ord.unwrap_or(before.next_ord()));
+            }
+            let outcome = self
+                .run_space_op(op.clone())
+                .await
+                .expect("the operation commits");
+            if let Some(reissue) = &outcome.reissue {
+                flight.push((queue_op, reissue.clone()));
+            }
+            let after = self.view().await;
+            records.push(RunRecord {
+                queue_op,
+                op,
+                outcome,
+                bumped: before.next_ord(),
+                before,
+                after: after.clone(),
+                flight: flight.iter().map(|(_, reissue)| reissue.clone()).collect(),
+                labels: labels.clone(),
+            });
+            before = after;
+        }
+        records
+    }
+}
+
+/// The order that a run step took: the kept order of a re-entry, or the bump value.
+fn step_ord(record: &RunRecord) -> i64 {
+    let kept = match &record.op {
+        SpaceOp::Produce(op) => op.reissued_ord,
+        SpaceOp::Consume(op) => op.reissued_ord,
+    };
+    kept.unwrap_or(record.bumped)
+}
+
+/// True when the operation of a step is persistent.
+fn persistent_op(op: &SpaceOp) -> bool {
+    match op {
+        SpaceOp::Produce(op) => op.persistent,
+        SpaceOp::Consume(op) => op.persistent,
+    }
+}
+
+/// `queue_reissue_keeps_ord` and `ReissueKeepsOrd` (decision 43): over a run with re-entries
+/// between other operations, the re-issue of a persistent operation carries the order of its
+/// first round, and the re-issue of an operation that is not persistent carries none. A
+/// persistent element that ends stored or parked keeps the order of its first round. Every
+/// step, fresh or re-entered, bumps the counter once, and the collection and the elements in
+/// flight stay well formed (`wf'`).
+#[test]
+fn prop_queue_reissue_keeps_first_round_ord() {
+    check(pure_config(), arb_run(), |(state, steps)| {
+        tokio_runtime().block_on(queue_reissue_keeps_first_round_ord_case(state, steps))
+    });
+}
+
+/// One case of `prop_queue_reissue_keeps_first_round_ord`.
+async fn queue_reissue_keeps_first_round_ord_case(
+    state: QueueState,
+    steps: Vec<RunStep>,
+) -> Result<(), TestCaseError> {
+    let rig = AgentRig::of(&state).await;
+    let run = rig.run_with_reentries(&steps).await;
+    for record in &run {
+        let ord = step_ord(record);
+        prop_assert_eq!(record.after.counter, Some(record.bumped + 1));
+        prop_assert!(
+            well_formed_in_flight(&record.after, &record.flight),
+            "{:?} {:?}",
+            record.after,
+            record.flight
+        );
+        let kept = record.outcome.reissue.as_ref().map(kept_place);
+        match (persistent_op(&record.op), kept) {
+            (true, Some(place)) => prop_assert_eq!(place.map(|(_, kept)| kept), Some(ord)),
+            (false, Some(place)) => prop_assert_eq!(place, None),
+            (_, None) => {}
+        }
+        let stays = persistent_op(&record.op) && record.outcome.reissue.is_none();
+        if stays {
+            let stored = match &record.op {
+                SpaceOp::Produce(_) => record.after.records.iter().any(|entry| entry.ord == ord),
+                SpaceOp::Consume(_) => record.after.waiters.iter().any(|entry| entry.ord == ord),
+            };
+            prop_assert!(stored, "the element of order {} is not at its place", ord);
+        }
+    }
+    prop_assert!(run.len() <= steps.len() + DRAIN_STEPS);
+    Ok(())
+}
+
+/// `queue_reentry_preserves_shadow_inv`, `queue_quiescent_inv`, `ShadowedNoPendingMatch` and
+/// `QuiescentNoPendingMatch` (decision 43): from a collection without a pending match, every
+/// step of a run with re-entries keeps `SHADOW`: when the heads match, a persistent element in
+/// flight precedes the head of its side. A step after which no persistent element is in flight
+/// leaves no pending match.
+#[test]
+fn prop_queue_shadow_invariant_with_inflight() {
+    check(pure_config(), arb_run(), |(state, steps)| {
+        tokio_runtime().block_on(queue_shadow_invariant_with_inflight_case(state, steps))
+    });
+}
+
+/// One case of `prop_queue_shadow_invariant_with_inflight`.
+async fn queue_shadow_invariant_with_inflight_case(
+    state: QueueState,
+    steps: Vec<RunStep>,
+) -> Result<(), TestCaseError> {
+    prop_assert!(state.well_formed() && state.no_pending_match());
+    let rig = AgentRig::of(&state).await;
+    for record in rig.run_with_reentries(&steps).await {
+        prop_assert!(
+            shadowed(&record.after, &record.flight),
+            "{:?} left an unshadowed pending match: {:?} {:?}",
+            record.op,
+            record.after,
+            record.flight
+        );
+        if record
+            .flight
+            .iter()
+            .all(|reissue| kept_place(reissue).is_none())
+        {
+            prop_assert!(
+                record.after.no_pending_match(),
+                "{:?} left a pending match with no persistent element in flight: {:?}",
+                record.op,
+                record.after
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `queue_fifo` with re-entries and `FifoOrder` (decision 43): over a run with re-entries, the
+/// records that are not persistent leave in strictly increasing order, each is older than every
+/// record that is not persistent and stays, and each was in the collection at the start or
+/// arrived during the run.
+#[test]
+fn prop_queue_fifo_with_reentries() {
+    check(pure_config(), arb_run(), |(state, steps)| {
+        tokio_runtime().block_on(queue_fifo_with_reentries_case(state, steps))
+    });
+}
+
+/// One case of `prop_queue_fifo_with_reentries`.
+async fn queue_fifo_with_reentries_case(
+    state: QueueState,
+    steps: Vec<RunStep>,
+) -> Result<(), TestCaseError> {
+    let rig = AgentRig::of(&state).await;
+    let start = state.next_ord();
+    let mut removed = Vec::new();
+    for record in rig.run_with_reentries(&steps).await {
+        let SpaceOp::Consume(consume) = &record.op else {
+            continue;
+        };
+        if consume.peek {
+            continue;
+        }
+        for fire in &record.outcome.fires {
+            let [result] = fire.results.as_slice() else {
+                panic!("a queue fire binds one record");
+            };
+            if result.persistent {
+                continue;
+            }
+            let gone = datum_ord(&result.removed_datum).expect("a fired record has an envelope");
+            prop_assert!(
+                record
+                    .after
+                    .records
+                    .iter()
+                    .filter(|kept| !kept.persist)
+                    .all(|kept| gone < kept.ord),
+                "{} left before an older record",
+                gone
+            );
+            prop_assert!(
+                state.records.iter().any(|initial| initial.ord == gone) || gone >= start,
+                "the record {} came from nowhere",
+                gone
+            );
+            removed.push(gone);
+        }
+    }
+    prop_assert!(
+        removed.windows(2).all(|pair| pair[0] < pair[1]),
+        "{:?}",
+        removed
+    );
+    Ok(())
+}
+
+/// The re-issue of a send that is not persistent carries no order (decision 43, the negative
+/// control C1 of `HeadOnlyDisciplines.v`): a send that fires `FIRE_ROUND_CAP` peek waiters
+/// re-issues unchanged, and after any steps between the rounds its re-entry takes the order of
+/// its new bump. A re-entry that stores the datum stores it at that order.
+#[test]
+fn prop_queue_nonpersistent_reissue_fresh_ord() {
+    check(
+        pure_config(),
+        (
+            FIRE_ROUND_CAP..FIRE_ROUND_CAP + 3,
+            0i64..4,
+            0i64..4,
+            vec(arb_queue_op().prop_map(transient), 0..4),
+        ),
+        |(peeks, literal, value, between)| {
+            tokio_runtime().block_on(queue_nonpersistent_reissue_fresh_ord_case(
+                peeks, literal, value, between,
+            ))
+        },
+    );
+}
+
+/// `op` without persistence. The steps between the rounds of
+/// `prop_queue_nonpersistent_reissue_fresh_ord` re-issue nothing, so nothing else is in flight.
+fn transient(op: QueueOp) -> QueueOp {
+    match op {
+        QueueOp::Produce { value, .. } => QueueOp::Produce {
+            value,
+            persist: false,
+        },
+        QueueOp::Consume {
+            pat, peek, guard, ..
+        } => QueueOp::Consume {
+            pat,
+            persist: false,
+            peek,
+            guard,
+        },
+    }
+}
+
+/// One case of `prop_queue_nonpersistent_reissue_fresh_ord`.
+async fn queue_nonpersistent_reissue_fresh_ord_case(
+    peeks: usize,
+    literal: i64,
+    value: i64,
+    between: Vec<QueueOp>,
+) -> Result<(), TestCaseError> {
+    let state = capped_waiters(peeks, 0, literal);
+    let rig = AgentRig::of(&state).await;
+    let send = rig.space_op(
+        &QueueOp::Produce {
+            value,
+            persist: false,
+        },
+        1,
+    );
+    let outcome = rig
+        .run_space_op(send.clone())
+        .await
+        .expect("the send commits");
+    prop_assert_eq!(outcome.fires.len(), FIRE_ROUND_CAP);
+    let reissue = outcome.reissue.expect("the peek waiters reach the cap");
+    prop_assert_eq!(&reissue.op, &send, "the re-issue keeps no order");
+    for (salt, op) in (2u64..).zip(&between) {
+        rig.run(op, salt)
+            .await
+            .expect("a step between the rounds commits");
+    }
+    let before = rig.view().await;
+    let bumped = before.next_ord();
+    rig.run_space_op(reissue.op)
+        .await
+        .expect("the re-entry commits");
+    let after = rig.view().await;
+    prop_assert_eq!(after.counter, Some(bumped + 1));
+    let fresh = RecordSpec {
+        ord: bumped,
+        value,
+        persist: false,
+    };
+    let added: Vec<&RecordSpec> = after
+        .records
+        .iter()
+        .filter(|record| !before.records.contains(record))
+        .collect();
+    prop_assert!(
+        added.iter().all(|record| **record == fresh),
+        "the re-entry stored {:?}, not at the order {} of its bump",
+        added,
+        bumped
+    );
+    prop_assert!(after.well_formed(), "{:?}", after);
+    prop_assert!(
+        after.no_pending_match(),
+        "the re-entry left a pending match with nothing in flight: {:?}",
+        after
+    );
+    Ok(())
+}
+
+/// The collection `state` after the element of `op` was stored or parked at the order `ord`
+/// with no fire, by an operation that bumped the counter once.
+fn placed_at(state: &QueueState, op: &QueueOp, ord: i64) -> QueueState {
+    let mut expected = state.clone();
+    expected.counter = Some(state.next_ord() + 1);
+    match *op {
+        QueueOp::Produce { value, persist } => expected.records.push(RecordSpec {
+            ord,
+            value,
+            persist,
+        }),
+        QueueOp::Consume {
+            pat,
+            persist,
+            peek,
+            guard,
+        } => expected.waiters.push(WaiterSpec {
+            ord,
+            pat,
+            persist,
+            peek,
+            guard,
+        }),
+    }
+    normalized(expected)
+}
+
+/// The fired partners of a run step, as `fired_partners` gives them: a waiter of the initial
+/// collection names its order in its label, and a waiter that the run issued has its order in
+/// `record.labels`.
+fn run_fired_partners(record: &RunRecord) -> Vec<i64> {
+    record
+        .outcome
+        .fires
+        .iter()
+        .map(|fire| match record.queue_op {
+            QueueOp::Produce { .. } => {
+                let label = match &fire.continuation.tagged_cont {
+                    Some(TaggedCont::ParBody(ParWithRandom {
+                        body: Some(body), ..
+                    })) => string_of(body).expect("a waiter body is its label"),
+                    other => panic!("a fired waiter has a body: {other:?}"),
+                };
+                match record.labels.get(label) {
+                    Some(ord) => *ord,
+                    None => label
+                        .strip_prefix("waiter-")
+                        .and_then(|ord| ord.parse().ok())
+                        .expect("a waiter label names its order"),
+                }
+            }
+            QueueOp::Consume { .. } => {
+                let [result] = fire.results.as_slice() else {
+                    panic!("a queue fire binds one record");
+                };
+                datum_ord(&result.removed_datum).expect("a fired record has an envelope")
+            }
+        })
+        .collect()
+}
+
+/// `queue_head_blocks_reentry` and `queue_reentry_loop_bounded_or_reissues` (decision 43): in a
+/// run with re-entries, a re-entry whose own side holds an older head fires nothing and rests at
+/// its kept order behind that head. A re-entry that reaches the head fires first on the head of
+/// the other side. Every step fires at most `FIRE_ROUND_CAP` times and at most once for each
+/// entry of the other side.
+#[test]
+fn prop_queue_reentry_head_blocks() {
+    check(
+        pure_config(),
+        prop_oneof![arb_run(), arb_double_flight_run()],
+        |(state, steps)| tokio_runtime().block_on(queue_reentry_head_blocks_case(state, steps)),
+    );
+}
+
+/// A run in which two persistent sends reach the cap one after the other, so both are in
+/// flight, and then re-enter, the older one first. The last waiter takes the value of the
+/// younger send only. The older send rests at the head of the records, and the younger
+/// re-entry then finds that older record at the head of its side, so it must rest behind it and
+/// fire nothing, although the last waiter takes its value.
+fn arb_double_flight_run() -> BoxedStrategy<(QueueState, Vec<RunStep>)> {
+    (0i64..4, 1i64..4, vec(arb_run_step(), 0..4))
+        .prop_map(|(younger, offset, rest)| {
+            let state = capped_waiters(0, 2 * FIRE_ROUND_CAP, younger);
+            let mut steps = vec![
+                RunStep::Fresh(QueueOp::Produce {
+                    value: younger + offset,
+                    persist: true,
+                }),
+                RunStep::Fresh(QueueOp::Produce {
+                    value: younger,
+                    persist: true,
+                }),
+                RunStep::Reenter(0),
+                RunStep::Reenter(0),
+            ];
+            steps.extend(rest);
+            (state, steps)
+        })
+        .boxed()
+}
+
+/// One case of `prop_queue_reentry_head_blocks`.
+async fn queue_reentry_head_blocks_case(
+    state: QueueState,
+    steps: Vec<RunStep>,
+) -> Result<(), TestCaseError> {
+    let rig = AgentRig::of(&state).await;
+    for record in rig.run_with_reentries(&steps).await {
+        let fired = run_fired_partners(&record);
+        let other = other_side(&record.before, &record.queue_op);
+        prop_assert!(fired.len() <= FIRE_ROUND_CAP);
+        prop_assert!(fired.len() <= other.len());
+        if let Some(first) = fired.first() {
+            prop_assert_eq!(Some(*first), other.first().copied());
+        }
+        let kept = match &record.op {
+            SpaceOp::Produce(op) => op.reissued_ord,
+            SpaceOp::Consume(op) => op.reissued_ord,
+        };
+        let Some(ord) = kept else {
+            continue;
+        };
+        let own_head = match record.queue_op {
+            QueueOp::Produce { .. } => record.before.head_record().map(|head| head.ord),
+            QueueOp::Consume { .. } => record.before.head_waiter().map(|head| head.ord),
+        };
+        if own_head.is_some_and(|head| head < ord) {
+            prop_assert!(
+                record.outcome.fires.is_empty(),
+                "a re-entry behind an older head fired: {:?}",
+                fired
+            );
+            prop_assert_eq!(&record.outcome.reissue, &None);
+            prop_assert_eq!(
+                &record.after,
+                &placed_at(&record.before, &record.queue_op, ord)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `queue_reentry_permutation_invariant` (decision 43): the re-entry of a persistent element
+/// depends on the entries of the collection, not on the list order of the store. Two stores
+/// with the same entries in other list orders stage the same operations, log the same events,
+/// reach the same entries, and charge the same host work.
+#[test]
+fn prop_queue_reentry_permutation_invariant() {
+    check(
+        pure_config(),
+        (arb_queue_state(5), any::<bool>(), 0i64..4, any::<u64>()),
+        |(state, send, value, order_seed)| {
+            tokio_runtime().block_on(queue_reentry_permutation_invariant_case(
+                state, send, value, order_seed,
+            ))
+        },
+    );
+}
+
+/// One case of `prop_queue_reentry_permutation_invariant`. The re-entry keeps the least order
+/// below the counter that no entry holds. A collection with no free order gains one by a larger
+/// counter.
+async fn queue_reentry_permutation_invariant_case(
+    state: QueueState,
+    send: bool,
+    value: i64,
+    order_seed: u64,
+) -> Result<(), TestCaseError> {
+    let mut state = state;
+    let held: BTreeSet<i64> = state
+        .records
+        .iter()
+        .map(|record| record.ord)
+        .chain(state.waiters.iter().map(|waiter| waiter.ord))
+        .collect();
+    let counter = state.next_ord();
+    let kept = match (0..counter).find(|ord| !held.contains(ord)) {
+        Some(ord) => ord,
+        None => {
+            state.counter = Some(counter + 1);
+            counter
+        }
+    };
+    let op = match send {
+        true => QueueOp::Produce {
+            value,
+            persist: true,
+        },
+        false => QueueOp::Consume {
+            pat: Pat::Any,
+            persist: true,
+            peek: false,
+            guard: None,
+        },
+    };
+    let entries = state.records.len() + state.waiters.len();
+    let natural: Vec<usize> = (0..entries).collect();
+    let mut shuffled = natural.clone();
+    let mut draw = order_seed;
+    for index in (1..shuffled.len()).rev() {
+        draw = draw
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let other = usize::try_from(draw >> 33).expect("a small draw") % (index + 1);
+        shuffled.swap(index, other);
+    }
+    let first_work = unlimited_host_work();
+    let second_work = unlimited_host_work();
+    let first = AgentRig::new(&state, &natural, Some(first_work.clone())).await;
+    let second = AgentRig::new(&state, &shuffled, Some(second_work.clone())).await;
+    let reentry = |rig: &AgentRig| match rig.space_op(&op, 1) {
+        SpaceOp::Produce(produce) => SpaceOp::Produce(ProduceOp {
+            reissued_ord: Some(kept),
+            ..produce
+        }),
+        SpaceOp::Consume(consume) => SpaceOp::Consume(ConsumeOp {
+            reissued_ord: Some(kept),
+            ..consume
+        }),
+    };
+    let first_outcome = first.run_space_op(reentry(&first)).await;
+    let second_outcome = second.run_space_op(reentry(&second)).await;
+    prop_assert!(first_outcome.is_ok(), "{:?}", first_outcome);
+    prop_assert_eq!(&first_outcome, &second_outcome);
+    prop_assert_eq!(
+        first.host.take_event_log().await,
+        second.host.take_event_log().await
+    );
+    prop_assert_eq!(first.view().await, second.view().await);
+    prop_assert_eq!(
+        first_work.usages(),
+        second_work.usages(),
+        "the charges do not depend on the list order of the store"
+    );
+    Ok(())
+}
+
+/// `fresh_ord_reissue_loses_first_round_place` (decision 43, the negative control C0 of
+/// `HeadOnlyDisciplines.v`): a persistent waiter of `value` makes a persistent send of `value`
+/// a divergent pair, and a younger datum is stored while the send is in flight. The re-entry
+/// with the first-round order precedes the younger datum and fires the waiter again. The same
+/// re-issue with a fresh order would rest behind the younger datum and fire nothing, so it would
+/// lose the place of its first round.
+#[test]
+fn prop_fresh_ord_reissue_loses_first_round_place() {
+    check(
+        pure_config(),
+        (0i64..4, 1i64..4),
+        |(value, offset)| {
+            tokio_runtime().block_on(fresh_ord_reissue_loses_first_round_place_case(
+                value, offset,
+            ))
+        },
+    );
+}
+
+/// One case of `prop_fresh_ord_reissue_loses_first_round_place`.
+async fn fresh_ord_reissue_loses_first_round_place_case(
+    value: i64,
+    offset: i64,
+) -> Result<(), TestCaseError> {
+    let younger = value + offset;
+    let state = QueueState {
+        counter: Some(1),
+        records: Vec::new(),
+        waiters: vec![WaiterSpec {
+            ord: 0,
+            pat: Pat::Lit(value),
+            persist: true,
+            peek: false,
+            guard: None,
+        }],
+    };
+    let send = QueueOp::Produce {
+        value,
+        persist: true,
+    };
+    let datum = QueueOp::Produce {
+        value: younger,
+        persist: false,
+    };
+    let mut fires = Vec::with_capacity(2);
+    for fresh in [false, true] {
+        let rig = AgentRig::of(&state).await;
+        let first = rig
+            .run_space_op(rig.space_op(&send, 1))
+            .await
+            .expect("the send commits");
+        let reissue = first.reissue.expect("the divergent pair re-issues");
+        prop_assert_eq!(kept_place(&reissue), Some((Side::Data, 1)));
+        rig.run(&datum, 2).await.expect("the younger datum commits");
+        let again = match (fresh, reissue.op) {
+            (true, SpaceOp::Produce(produce)) => SpaceOp::Produce(ProduceOp {
+                reissued_ord: None,
+                ..produce
+            }),
+            (_, op) => op,
+        };
+        let outcome = rig
+            .run_space_op(again)
+            .await
+            .expect("the re-entry commits");
+        let after = rig.view().await;
+        let head = after.head_record().map(|record| (record.ord, record.value));
+        match fresh {
+            false => {
+                prop_assert_eq!(head, Some((2, younger)));
+                prop_assert!(outcome.reissue.is_some(), "the pair stays divergent");
+            }
+            true => {
+                prop_assert_eq!(
+                    head,
+                    Some((2, younger)),
+                    "the fresh send rests behind the younger datum"
+                );
+                prop_assert!(after
+                    .records
+                    .iter()
+                    .any(|record| record.value == value && record.ord == 3));
+                prop_assert_eq!(&outcome.reissue, &None);
+            }
+        }
+        fires.push(outcome.fires.len());
+    }
+    prop_assert_eq!(
+        fires,
+        vec![1, 0],
+        "only the kept order fires the waiter again"
+    );
+    Ok(())
+}
+
+/// `IntroducedOnce` (decision 43): a persistent operation that re-issues stages one record in
+/// every round, so its events on the data channel share one identity, and the deploy has one
+/// introduction row for that identity, as the host has for a persistent produce that it makes
+/// again. The element then rests at the order of its first round.
+#[test]
+fn prop_queue_persistent_reissue_charged_once() {
+    check(
+        runtime_config(),
+        (
+            FIRE_ROUND_CAP - 1..2 * FIRE_ROUND_CAP + 2,
+            any::<bool>(),
+            vec(any::<u8>(), 4),
+        ),
+        |(partners, consume_side, seed)| {
+            tokio_runtime().block_on(queue_persistent_reissue_charged_once_case(
+                partners,
+                consume_side,
+                seed,
+            ))
+        },
+    );
+}
+
+/// One case of `prop_queue_persistent_reissue_charged_once`.
+async fn queue_persistent_reissue_charged_once_case(
+    partners: usize,
+    consume_side: bool,
+    seed: Vec<u8>,
+) -> Result<(), TestCaseError> {
+    let mut node = Node::new().await;
+    let space = node.create_space(&[&seed[..], b"-space"].concat()).await;
+    let names = vec![space_name(
+        space,
+        &format!("charged-once-{}", hex::encode(&seed)),
+    )];
+    let partner_ops: Vec<SlotOp> = (0..partners)
+        .map(|index| match consume_side {
+            false => SlotOp::Receive {
+                slot: 0,
+                pat: Pat::Any,
+                arrow: Arrow::Consume,
+                label: format!("w{index}"),
+            },
+            true => SlotOp::Send {
+                slot: 0,
+                value: 1,
+                persistent: false,
+            },
+        })
+        .collect();
+    let parked = node
+        .deploy(&ops_deploy(
+            &partner_ops,
+            &names,
+            OUT,
+            &[&seed[..], b"-partners"].concat(),
+        ))
+        .await;
+    prop_assert!(
+        parked.result.errors.is_empty(),
+        "{:?}",
+        parked.result.errors
+    );
+    let first = node.queue(space, &names[0]).await.next_ord();
+    let op = match consume_side {
+        false => SlotOp::Send {
+            slot: 0,
+            value: 1,
+            persistent: true,
+        },
+        true => SlotOp::Receive {
+            slot: 0,
+            pat: Pat::Any,
+            arrow: Arrow::Persistent,
+            label: "r".to_string(),
+        },
+    };
+    let deployed = node
+        .deploy(&ops_deploy(
+            std::slice::from_ref(&op),
+            &names,
+            OUT,
+            &[&seed[..], b"-op"].concat(),
+        ))
+        .await;
+    prop_assert!(
+        deployed.result.errors.is_empty(),
+        "{:?}",
+        deployed.result.errors
+    );
+    let key = CollectionKey::of_channel(&names[0]).expect("a name has a key");
+    let data = stable_hash(&gprivate(namespace::data_channel(space, &key)));
+    let (kind, identities): (AuthorityByteEventKind, BTreeSet<[u8; 32]>) = match consume_side {
+        false => (
+            AuthorityByteEventKind::ProduceIntroduction,
+            deployed
+                .log
+                .iter()
+                .filter_map(|event| match event {
+                    Event::IoEvent(IOEvent::Produce(produce)) if produce.channel_hash == data => {
+                        Some(produce_introduction_identity(produce))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        ),
+        true => (
+            AuthorityByteEventKind::ConsumeIntroduction,
+            deployed
+                .log
+                .iter()
+                .filter_map(|event| match event {
+                    Event::IoEvent(IOEvent::Consume(consume))
+                        if consume.channel_hashes == std::slice::from_ref(&data) =>
+                    {
+                        Some(consume_introduction_identity(consume))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        ),
+    };
+    prop_assert_eq!(identities.len(), 1, "every round stages one record");
+    let identity = *identities.first().expect("one identity");
+    let rows = deployed
+        .result
+        .byte_observations
+        .rows
+        .iter()
+        .filter(|row| row.kind == kind && row.event_id == identity)
+        .count();
+    prop_assert_eq!(rows, 1, "one introduction row for the one identity");
+    let after = node.queue(space, &names[0]).await;
+    let rests = match consume_side {
+        false => after
+            .records
+            .iter()
+            .any(|record| record.ord == first && record.persist),
+        true => after
+            .waiters
+            .iter()
+            .any(|waiter| waiter.ord == first && waiter.persist),
+    };
+    prop_assert!(
+        rests,
+        "the element rests at the order {} of its first round: {:?}",
+        first,
+        after
+    );
     Ok(())
 }
 

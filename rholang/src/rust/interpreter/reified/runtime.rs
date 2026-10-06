@@ -284,6 +284,7 @@ mod tests {
             data: datum(par),
             persistent: false,
             authority: CostAuthority::default(),
+            reissued_ord: None,
         })
     }
 

@@ -13,7 +13,8 @@
 //! 3. Check the family of the config (`FamilyUnavailable`) and that `D(sid,k)` holds no join
 //!    other than `[D(sid,k)]` (`Inconsistent`).
 //! 4. Bump the collection counter (`counter::bump`). The value before the bump is the `ord` of the
-//!    operation.
+//!    operation. A re-issued persistent operation keeps the `ord` of its first round instead
+//!    (`operation_ord`, decision 43).
 //! 5. Plan and stage the operation, head-only (decision 11): `offer` for a produce, `receive`
 //!    for a consume.
 //! 6. The job commits the transaction exactly once (`Prepared::commit`). Every operation stages
@@ -24,7 +25,7 @@
 //! The produce plan is the `OFFER` of the substrate design (decision 30):
 //!
 //! ```text
-//! if the datum does not reach the head of the records: stage Store, stop    ▷ FIFO tail
+//! if the datum does not reach the head of the records: stage Store, stop    ▷ its FIFO place
 //! loop:
 //!     W ← the head waiter, or stage Store and stop
 //!     if W does not match the payload, or its guard refuses: stage Store, stop   ▷ W blocks
@@ -42,6 +43,16 @@
 //! and a chain re-issues after `FIRE_ROUND_CAP` rounds (I-21). Each round makes at most two
 //! metered matcher calls, and the bump makes one more.
 //!
+//! A re-issued persistent operation keeps the `ord` of its first round (decision 43), so its
+//! record, its identity and its place stay the same in every round. Each round still bumps the
+//! counter. Other operations can run between two rounds, so the element re-enters at its place
+//! (`GenericSpace::at_head`): at the head when its side is empty or its `ord` precedes the head of
+//! its side (`Discipline::precedes`), and otherwise stored or parked behind the head, with no
+//! fire. A fresh operation and a re-issued datum that is not persistent take the `ord` of their
+//! bump, so they reach the head only of an empty side. While a persistent element is in flight,
+//! the heads can match only when the element precedes the head of its side, and every completed
+//! deploy ends with no element in flight (`HeadOnlyDisciplines.v`, `HeadOnlyDiscipline.tla`).
+//!
 //! The plans read the staged view, so play and replay stage the same operations: the heads
 //! come from the `ord` of the envelopes, never from the list order of the store. Each staged
 //! operation registers the introduction authority of its operation (P4 design B.7). A re-offer
@@ -56,6 +67,7 @@
 //! follows the commit (`AgentReadCoverage.v`).
 
 use std::collections::BTreeSet;
+use std::mem::size_of;
 use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
@@ -159,9 +171,21 @@ pub trait Discipline: Default + Send + Sync + 'static {
         self.head_metered(side, entries, &ScanMeter::new(None))
     }
 
-    /// True when an incoming element of `side` becomes the head of its side, which holds
-    /// `queued` entries.
+    /// True when a fresh element of `side` becomes the head of its side, which holds `queued`
+    /// entries. A re-issued persistent element uses [`Discipline::precedes`] instead.
     fn reaches_head(&self, side: Side, queued: usize) -> bool;
+
+    /// True when an element of `side` with the order `ord` interacts before the head of the side,
+    /// whose order is `head` (decision 43). The two orders differ. A re-issued persistent element
+    /// re-enters at the head exactly when its side is empty or this holds. The comparison is
+    /// reserved on `meter` before it is made.
+    fn precedes(
+        &self,
+        side: Side,
+        ord: i64,
+        head: i64,
+        meter: &ScanMeter,
+    ) -> Result<bool, SpaceError>;
 }
 
 /// The native space agent of the family `S:D`.
@@ -519,6 +543,26 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
         }
     }
 
+    /// The head of the entries of one side: its index in `entries` and its order. The scan
+    /// reserves its buffer and the decode of each envelope (`ord_of`), and it copies nothing.
+    fn scan_head<T: Serialize>(
+        &self,
+        side: Side,
+        entries: &[T],
+        ord_of: fn(&T, &ScanMeter) -> Result<i64, SpaceError>,
+        meter: &ScanMeter,
+    ) -> Result<Option<(usize, i64)>, SpaceError> {
+        let mut ordered = meter.buffer::<Ordered<'_, T>>(entries.len())?;
+        for entry in entries {
+            ordered.push(Ordered {
+                ord: ord_of(entry, meter)?,
+                entry,
+            });
+        }
+        let head = self.discipline.head_metered(side, &ordered, meter)?;
+        Ok(head.and_then(|index| ordered.get(index).map(|entry| (index, entry.ord))))
+    }
+
     /// The head waiting continuation of the collection in the staged view. The scan reserves
     /// its buffer and the decode of each envelope, and only the head is copied.
     fn head_waiter(
@@ -528,17 +572,8 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
         meter: &ScanMeter,
     ) -> Result<Option<ParWaiter>, SpaceError> {
         let waiters = txn.continuations(std::slice::from_ref(data))?;
-        let mut ordered = meter.buffer::<Ordered<'_, ParWaiter>>(waiters.len())?;
-        for waiter in waiters {
-            ordered.push(Ordered {
-                ord: record::continuation_ord_metered(&waiter.continuation, meter)?,
-                entry: waiter,
-            });
-        }
-        let head = self
-            .discipline
-            .head_metered(Side::Waiters, &ordered, meter)?;
-        match head.and_then(|index| waiters.get(index)) {
+        let head = self.scan_head(Side::Waiters, waiters, waiter_ord, meter)?;
+        match head.and_then(|(index, _)| waiters.get(index)) {
             Some(waiter) => Ok(Some(meter.copy(waiter)?)),
             None => Ok(None),
         }
@@ -553,23 +588,73 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
         meter: &ScanMeter,
     ) -> Result<Option<(usize, ParDatum)>, SpaceError> {
         let records = txn.data(data)?;
-        let mut ordered = meter.buffer::<Ordered<'_, ParDatum>>(records.len())?;
-        for datum in records {
-            ordered.push(Ordered {
-                ord: record::datum_ord_metered(&datum.a, meter)?,
-                entry: datum,
-            });
-        }
-        let head = self.discipline.head_metered(Side::Data, &ordered, meter)?;
-        match head.and_then(|index| records.get(index).map(|datum| (index, datum))) {
+        let head = self.scan_head(Side::Data, records, datum_ord, meter)?;
+        match head.and_then(|(index, _)| records.get(index).map(|datum| (index, datum))) {
             Some((index, datum)) => Ok(Some((index, meter.copy(datum)?))),
             None => Ok(None),
         }
     }
 
+    /// The order of the head of `side` of the collection on `data` in the staged view, or
+    /// `None` for an empty side. The scan copies nothing.
+    fn head_ord(
+        &self,
+        txn: &mut ParSpaceTxn,
+        side: Side,
+        data: &Par,
+        meter: &ScanMeter,
+    ) -> Result<Option<i64>, SpaceError> {
+        let head = match side {
+            Side::Data => self.scan_head(side, txn.data(data)?, datum_ord, meter)?,
+            Side::Waiters => self.scan_head(
+                side,
+                txn.continuations(std::slice::from_ref(data))?,
+                waiter_ord,
+                meter,
+            )?,
+        };
+        Ok(head.map(|(_, ord)| ord))
+    }
+
+    /// True when the element of an operation reaches the head of `side` of the collection on
+    /// `data`. A fresh element (`reissued` is `None`) joins the tail, so it reaches the head only
+    /// of an empty side. A re-issued persistent element with the first-round order `reissued`
+    /// re-enters at its place (decision 43): at the head when its side is empty or its order
+    /// precedes the order of the head. An element in flight is stored nowhere, so a stored entry
+    /// with its order is `Inconsistent`. Each comparison is reserved before it is made.
+    fn at_head(
+        &self,
+        txn: &mut ParSpaceTxn,
+        side: Side,
+        data: &Par,
+        reissued: Option<i64>,
+        meter: &ScanMeter,
+    ) -> Result<bool, SpaceError> {
+        let Some(ord) = reissued else {
+            let queued = match side {
+                Side::Data => txn.data(data)?.len(),
+                Side::Waiters => txn.continuations(std::slice::from_ref(data))?.len(),
+            };
+            return Ok(self.discipline.reaches_head(side, queued));
+        };
+        let Some(head) = self.head_ord(txn, side, data, meter)? else {
+            return Ok(true);
+        };
+        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+        match ord == head {
+            true => Err(SpaceError::Inconsistent(
+                "a re-issued element shares its order with a stored entry",
+            )),
+            false => self.discipline.precedes(side, ord, head, meter),
+        }
+    }
+
     /// The produce plan: stages the store or the fires of the datum of `op` with the order `ord`,
-    /// and returns the re-issue. A fire that ends the loop moves the record and its source into
-    /// the staged produce, and a re-issue moves `op`, so only a re-offer copies them.
+    /// and returns the re-issue. The datum fires only from the head of the records
+    /// ([`GenericSpace::at_head`]), and otherwise it is stored at its place. A re-issue of a
+    /// persistent datum carries `ord` (decision 43). A fire that ends the loop moves the record
+    /// and its source into the staged produce, and a re-issue moves `op`, so only a re-offer
+    /// copies them.
     fn offer(
         &self,
         txn: &mut ParSpaceTxn,
@@ -579,8 +664,7 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
     ) -> Result<Option<SpaceReissue>, SpaceError> {
         let meter = plan.meter();
         let record = record::wrap_datum_metered(ord, &op.data, meter)?;
-        let queued = txn.data(plan.data)?.len();
-        if !self.discipline.reaches_head(Side::Data, queued) {
+        if !self.at_head(txn, Side::Data, plan.data, op.reissued_ord, meter)? {
             plan.store(txn, record, op.persistent)?;
             return Ok(None);
         }
@@ -625,7 +709,10 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
                     let removed = meter.copy(&record)?;
                     plan.fire_offer(txn, fire, record, removed, source)?;
                     return Ok(Some(SpaceReissue {
-                        op: SpaceOp::Produce(op),
+                        op: SpaceOp::Produce(ProduceOp {
+                            reissued_ord: op.persistent.then_some(ord),
+                            ..op
+                        }),
                         cause,
                     }));
                 }
@@ -634,9 +721,11 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
     }
 
     /// The consume plan: stages the park or the fires of the continuation of `op` with the
-    /// order `ord`, and returns the re-issue. A fire that ends the loop moves the parked
-    /// continuation and the peek set into the staged consume, and a re-issue moves `op`, so only
-    /// a re-fire copies them.
+    /// order `ord`, and returns the re-issue. The continuation fires only from the head of the
+    /// waiters ([`GenericSpace::at_head`]), and otherwise it is parked at its place. A re-issue
+    /// of a persistent continuation carries `ord` (decision 43). A fire that ends the loop moves
+    /// the parked continuation and the peek set into the staged consume, and a re-issue moves
+    /// `op`, so only a re-fire copies them.
     fn receive(
         &self,
         txn: &mut ParSpaceTxn,
@@ -653,8 +742,7 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
             meter,
         )?;
         let peeks = peek_set(op.peek, meter)?;
-        let queued = txn.continuations(std::slice::from_ref(plan.data))?.len();
-        if !self.discipline.reaches_head(Side::Waiters, queued) {
+        if !self.at_head(txn, Side::Waiters, plan.data, op.reissued_ord, meter)? {
             plan.park(txn, &op, continuation, peeks)?;
             return Ok(None);
         }
@@ -691,12 +779,44 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
                 FireStep::Reissue(cause) => {
                     plan.fire_receive(txn, &op, fire, continuation, peeks)?;
                     return Ok(Some(SpaceReissue {
-                        op: SpaceOp::Consume(op),
+                        op: SpaceOp::Consume(ConsumeOp {
+                            reissued_ord: op.persistent.then_some(ord),
+                            ..op
+                        }),
                         cause,
                     }));
                 }
             }
         }
+    }
+}
+
+/// The order of a record in the staged view, with the decode of its envelope reserved.
+fn datum_ord(datum: &ParDatum, meter: &ScanMeter) -> Result<i64, SpaceError> {
+    record::datum_ord_metered(&datum.a, meter)
+}
+
+/// The order of a waiting continuation in the staged view, with the decode of its envelope
+/// reserved.
+fn waiter_ord(waiter: &ParWaiter, meter: &ScanMeter) -> Result<i64, SpaceError> {
+    record::continuation_ord_metered(&waiter.continuation, meter)
+}
+
+/// The order of an operation whose bump returned `bumped` (decision 43): the first-round order
+/// `reissued` of a re-issued persistent operation, and `bumped` for every other operation. A
+/// bump value is never taken twice, so a first-round order lies in `0..bumped`, and any other
+/// value is `Inconsistent`. The two comparisons are reserved first.
+fn operation_ord(reissued: Option<i64>, bumped: i64, meter: &ScanMeter) -> Result<i64, SpaceError> {
+    let Some(ord) = reissued else {
+        return Ok(bumped);
+    };
+    meter.compare(size_of::<i64>(), size_of::<i64>())?;
+    meter.compare(size_of::<i64>(), size_of::<i64>())?;
+    match (0..bumped).contains(&ord) {
+        true => Ok(ord),
+        false => Err(SpaceError::Inconsistent(
+            "a re-issued order is not an order of the counter",
+        )),
     }
 }
 
@@ -836,7 +956,8 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         };
         plan.staged
             .extend(bump.staged.iter().copied().map(Staged::Counter));
-        let reissue = self.offer(&mut txn, &mut plan, op, bump.ord)?;
+        let ord = operation_ord(op.reissued_ord, bump.ord, meter)?;
+        let reissue = self.offer(&mut txn, &mut plan, op, ord)?;
         let staged = plan.staged;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
@@ -870,7 +991,8 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         };
         plan.staged
             .extend(bump.staged.iter().copied().map(Staged::Counter));
-        let reissue = self.receive(&mut txn, &mut plan, op, bump.ord)?;
+        let ord = operation_ord(op.reissued_ord, bump.ord, meter)?;
+        let reissue = self.receive(&mut txn, &mut plan, op, ord)?;
         let staged = plan.staged;
         prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
@@ -1161,6 +1283,7 @@ mod tests {
             },
             persistent,
             authority: CostAuthority::default(),
+            reissued_ord: None,
         }
     }
 
@@ -1201,6 +1324,7 @@ mod tests {
             guard: None,
             authority: CostAuthority::default(),
             introduction_authority: CostAuthority::default(),
+            reissued_ord: None,
         }
     }
 
@@ -1255,6 +1379,9 @@ mod tests {
     fn delivery(name: &str, value: i64) -> (String, Vec<Par>) {
         (name.to_string(), vec![int(value)])
     }
+
+    /// The fire of the waiter `name` whose pattern is a literal, so it binds no value.
+    fn literal_delivery(name: &str) -> (String, Vec<Par>) { (name.to_string(), Vec::new()) }
 
     /// The body name and the bound values of each fire.
     fn fired(outcome: &SpaceOutcome) -> Vec<(String, Vec<Par>)> {
@@ -1735,7 +1862,7 @@ mod tests {
         assert_eq!(
             outcome.reissue,
             Some(SpaceReissue {
-                op: SpaceOp::Produce(send_forever(9)),
+                op: reissued_send(send_forever(9), 1),
                 cause: ReissueCause::DivergentPair,
             })
         );
@@ -1749,8 +1876,12 @@ mod tests {
         let again = run(&env, reissue.op).await.expect("the re-issue commits");
         assert_eq!(fired(&again), vec![delivery("r", 9)]);
         assert_eq!(
-            again.reissue.map(|reissue| reissue.cause),
-            Some(ReissueCause::DivergentPair)
+            again.reissue,
+            Some(SpaceReissue {
+                op: reissued_send(send_forever(9), 1),
+                cause: ReissueCause::DivergentPair,
+            }),
+            "every round keeps the order of the first round"
         );
         assert_eq!(counter(&space, &channels().counter()).await, vec![3]);
 
@@ -1764,7 +1895,10 @@ mod tests {
         assert_eq!(
             outcome.reissue,
             Some(SpaceReissue {
-                op: SpaceOp::Consume(receive_forever("s")),
+                op: SpaceOp::Consume(ConsumeOp {
+                    reissued_ord: Some(1),
+                    ..receive_forever("s")
+                }),
                 cause: ReissueCause::DivergentPair,
             })
         );
@@ -1789,16 +1923,16 @@ mod tests {
             .map(|index| delivery(&format!("w{index}"), 1))
             .collect();
         assert_eq!(fired(&outcome), expected);
+        let last = i64::try_from(FIRE_ROUND_CAP).expect("a small cap");
         assert_eq!(
             outcome.reissue,
             Some(SpaceReissue {
-                op: SpaceOp::Produce(send_forever(1)),
+                op: reissued_send(send_forever(1), last + 1),
                 cause: ReissueCause::RoundCap,
             })
         );
         assert_eq!(space.take_event_log().await.len(), 3 + 2 * FIRE_ROUND_CAP);
         assert!(records(&space).await.is_empty());
-        let last = i64::try_from(FIRE_ROUND_CAP).expect("a small cap");
         assert_eq!(waiters(&space).await, vec![waiter(
             last,
             &format!("w{FIRE_ROUND_CAP}"),
@@ -1816,7 +1950,11 @@ mod tests {
             1
         )]);
         assert_eq!(rest.reissue, None);
-        assert_eq!(records(&space).await, vec![(last + 2, vec![int(1)], true)]);
+        assert_eq!(
+            records(&space).await,
+            vec![(last + 1, vec![int(1)], true)],
+            "the persistent record keeps the order of its first round"
+        );
 
         let Fixture { space, env } = fixture().await;
         for value in 0..=last {
@@ -1837,11 +1975,426 @@ mod tests {
         assert_eq!(fired(&rest), vec![delivery("r", last)]);
         assert!(records(&space).await.is_empty());
         assert_eq!(waiters(&space).await, vec![waiter(
-            last + 2,
+            last + 1,
             "r",
             true,
             false
         )]);
+    }
+
+    /// Parks `count` plain waiters `w{first}` .. on the collection. Each takes every value.
+    async fn park_plain(env: &SpaceEnv, first: usize, count: usize) {
+        for index in first..first + count {
+            consume(env, receive(&format!("w{index}"), any())).await;
+        }
+    }
+
+    /// Parks `count` peek waiters `p0` .. on the collection. Each takes every value.
+    async fn park_peeks(env: &SpaceEnv, count: usize) {
+        for index in 0..count {
+            consume(env, ConsumeOp {
+                peek: true,
+                ..receive(&format!("p{index}"), any())
+            })
+            .await;
+        }
+    }
+
+    /// `FIRE_ROUND_CAP` as an order.
+    fn cap() -> i64 { i64::try_from(FIRE_ROUND_CAP).expect("a small cap") }
+
+    /// The re-issue of the persistent send `op` with the first-round order `ord` (decision 43).
+    fn reissued_send(op: ProduceOp, ord: i64) -> SpaceOp {
+        SpaceOp::Produce(ProduceOp {
+            reissued_ord: Some(ord),
+            ..op
+        })
+    }
+
+    /// The produce events of a log on the data channel of the collection.
+    fn data_produces(log: &[Event]) -> Vec<Produce> {
+        let data = stable_hash_provider::hash(channels().data());
+        log.iter()
+            .filter_map(|event| match event {
+                Event::IoEvent(IOEvent::Produce(produce)) if produce.channel_hash == data => {
+                    Some(produce.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn space_queue_reissue_keeps_the_first_round_ord_and_identity() {
+        let Fixture { space, env } = fixture().await;
+        park_plain(&env, 0, FIRE_ROUND_CAP + 1).await;
+        let first = cap() + 1;
+        space.take_event_log().await;
+        let outcome = produce(&env, send_forever(1)).await;
+        assert_eq!(
+            outcome.reissue,
+            Some(SpaceReissue {
+                op: reissued_send(send_forever(1), first),
+                cause: ReissueCause::RoundCap,
+            })
+        );
+        let round_one = data_produces(&space.take_event_log().await);
+        assert_eq!(round_one.len(), FIRE_ROUND_CAP);
+        let rest = run(&env, outcome.reissue.expect("a re-issue").op)
+            .await
+            .expect("the re-issue commits");
+        assert_eq!(fired(&rest), vec![delivery(
+            &format!("w{FIRE_ROUND_CAP}"),
+            1
+        )]);
+        assert_eq!(rest.reissue, None);
+        let round_two = data_produces(&space.take_event_log().await);
+        assert_eq!(round_two.len(), 2, "the fire and the store");
+        assert!(
+            round_one
+                .iter()
+                .chain(&round_two)
+                .all(|produce| *produce == round_one[0]),
+            "every round stages the same record, so the same identity"
+        );
+        assert_eq!(records(&space).await, vec![(first, vec![int(1)], true)]);
+        assert_eq!(
+            counter(&space, &channels().counter()).await,
+            vec![first + 2],
+            "each round bumps the counter"
+        );
+    }
+
+    #[tokio::test]
+    async fn space_queue_reissue_reenters_ahead_of_younger_records() {
+        let Fixture { space, env } = fixture().await;
+        park_plain(&env, 0, FIRE_ROUND_CAP).await;
+        consume(&env, receive("one", exactly(1))).await;
+        let first = cap() + 1;
+        let outcome = produce(&env, send_forever(1)).await;
+        assert_eq!(outcome.fires.len(), FIRE_ROUND_CAP);
+        let reissue = outcome.reissue.expect("the cap re-issues the send");
+        // A younger datum arrives between the rounds. The head waiter takes only 1, so the datum
+        // is stored while the send is in flight.
+        assert_eq!(produce(&env, send(7)).await, SpaceOutcome::default());
+        assert_eq!(records(&space).await, vec![(
+            first + 1,
+            vec![int(7)],
+            false
+        )]);
+        let rest = run(&env, reissue.op).await.expect("the re-issue commits");
+        assert_eq!(
+            fired(&rest),
+            vec![literal_delivery("one")],
+            "the send re-enters at its place, ahead of 7"
+        );
+        assert_eq!(rest.reissue, None);
+        assert_eq!(records(&space).await, vec![
+            (first, vec![int(1)], true),
+            (first + 1, vec![int(7)], false)
+        ]);
+        assert!(waiters(&space).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn space_queue_reissue_stores_behind_an_older_reentry() {
+        let Fixture { space, env } = fixture().await;
+        park_plain(&env, 0, 2 * FIRE_ROUND_CAP).await;
+        consume(&env, receive("two", exactly(2))).await;
+        let (older_ord, younger_ord) = (2 * cap() + 1, 2 * cap() + 2);
+        let older = produce(&env, send_forever(1))
+            .await
+            .reissue
+            .expect("the first send re-issues");
+        let younger = produce(&env, send_forever(2))
+            .await
+            .reissue
+            .expect("the second send re-issues");
+        assert_eq!(older.op, reissued_send(send_forever(1), older_ord));
+        assert_eq!(younger.op, reissued_send(send_forever(2), younger_ord));
+        // The older send re-enters first. The head waiter takes only 2, so the older send is
+        // stored at the head. The younger send then finds an older record at the head, so it
+        // is stored at its place behind that record and fires nothing, although the head
+        // waiter takes 2.
+        let stored = run(&env, older.op)
+            .await
+            .expect("the older re-entry commits");
+        assert_eq!(stored, SpaceOutcome::default());
+        let behind = run(&env, younger.op)
+            .await
+            .expect("the younger re-entry commits");
+        assert_eq!(behind, SpaceOutcome::default());
+        assert_eq!(records(&space).await, vec![
+            (older_ord, vec![int(1)], true),
+            (younger_ord, vec![int(2)], true)
+        ]);
+        assert_eq!(waiters(&space).await, vec![waiter(
+            2 * cap(),
+            "two",
+            false,
+            false
+        )]);
+    }
+
+    #[tokio::test]
+    async fn space_queue_shadowed_pair_resolves_at_reentry() {
+        let Fixture { space, env } = fixture().await;
+        park_peeks(&env, FIRE_ROUND_CAP).await;
+        consume(&env, receive("one", exactly(1))).await;
+        let first = cap() + 1;
+        let outcome = produce(&env, send_forever(1)).await;
+        assert_eq!(outcome.fires.len(), FIRE_ROUND_CAP);
+        let reissue = outcome.reissue.expect("the peek waiters reach the cap");
+        produce(&env, send(2)).await;
+        for index in 0..FIRE_ROUND_CAP {
+            consume(&env, receive(&format!("z{index}"), any())).await;
+        }
+        // Round 2 re-enters ahead of 2. It fires the head waiter and 63 waiters behind it, and
+        // it reaches the cap again.
+        let outcome = run(&env, reissue.op).await.expect("round 2 commits");
+        assert_eq!(outcome.fires.len(), FIRE_ROUND_CAP);
+        assert_eq!(fired(&outcome)[0], literal_delivery("one"));
+        let reissue = outcome.reissue.expect("round 2 reaches the cap");
+        assert_eq!(reissue.op, reissued_send(send_forever(1), first));
+        // The heads 2 and z63 match. The send in flight precedes the head record, so it shadows
+        // the pair.
+        let last = format!("z{}", FIRE_ROUND_CAP - 1);
+        assert_eq!(records(&space).await, vec![(
+            first + 1,
+            vec![int(2)],
+            false
+        )]);
+        assert_eq!(waiters(&space).await, vec![waiter(
+            first + 1 + cap(),
+            &last,
+            false,
+            false
+        )]);
+        // Round 3 re-enters ahead of 2 again, fires z63, and stores the send at its place.
+        let outcome = run(&env, reissue.op).await.expect("round 3 commits");
+        assert_eq!(fired(&outcome), vec![delivery(&last, 1)]);
+        assert_eq!(outcome.reissue, None);
+        assert_eq!(records(&space).await, vec![
+            (first, vec![int(1)], true),
+            (first + 1, vec![int(2)], false)
+        ]);
+        assert!(waiters(&space).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn space_queue_nonpersistent_reissue_takes_a_fresh_ord() {
+        let Fixture { space, env } = fixture().await;
+        park_peeks(&env, FIRE_ROUND_CAP).await;
+        consume(&env, receive("one", exactly(1))).await;
+        let outcome = produce(&env, send(1)).await;
+        assert_eq!(outcome.fires.len(), FIRE_ROUND_CAP);
+        let reissue = outcome.reissue.expect("the peek waiters reach the cap");
+        assert_eq!(
+            reissue.op,
+            SpaceOp::Produce(send(1)),
+            "a datum that is not persistent keeps no order"
+        );
+        produce(&env, send(2)).await;
+        consume(&env, receive("z", any())).await;
+        // The re-issued datum takes the order of its new bump, so it joins the tail behind 2. A
+        // datum that kept its first order would fire the head waiter and leave the matching
+        // heads 2 and z with nothing in flight.
+        let rest = run(&env, reissue.op).await.expect("the re-issue commits");
+        assert_eq!(rest, SpaceOutcome::default());
+        assert_eq!(records(&space).await, vec![
+            (cap() + 2, vec![int(2)], false),
+            (cap() + 4, vec![int(1)], false)
+        ]);
+        assert_eq!(waiters(&space).await, vec![
+            waiter(cap(), "one", false, false),
+            waiter(cap() + 3, "z", false, false)
+        ]);
+    }
+
+    #[tokio::test]
+    async fn space_queue_reissued_receive_keeps_its_first_round_ord() {
+        let Fixture { space, env } = fixture().await;
+        for value in 0..cap() {
+            produce(&env, send(value)).await;
+        }
+        produce(&env, send(100)).await;
+        let first = cap() + 1;
+        let outcome = consume(&env, receive_forever("r")).await;
+        assert_eq!(outcome.fires.len(), FIRE_ROUND_CAP);
+        let reissue = outcome.reissue.expect("the drain reaches the cap");
+        assert_eq!(
+            reissue.op,
+            SpaceOp::Consume(ConsumeOp {
+                reissued_ord: Some(first),
+                ..receive_forever("r")
+            })
+        );
+        // A younger waiter parks behind the record 100 while the receive is in flight.
+        consume(&env, receive("young", exactly(7))).await;
+        let rest = run(&env, reissue.op).await.expect("the re-issue commits");
+        assert_eq!(
+            fired(&rest),
+            vec![delivery("r", 100)],
+            "the receive re-enters ahead of the younger waiter"
+        );
+        assert_eq!(rest.reissue, None);
+        assert!(records(&space).await.is_empty());
+        assert_eq!(waiters(&space).await, vec![
+            waiter(first, "r", true, false),
+            waiter(first + 1, "young", false, false)
+        ]);
+    }
+
+    #[tokio::test]
+    async fn space_queue_reentry_rejects_an_inconsistent_order() {
+        let Fixture { space, env } = fixture().await;
+        produce(&env, send(5)).await;
+        for ord in [-1, 2, i64::MAX] {
+            assert_eq!(
+                run(&env, reissued_send(send_forever(1), ord)).await,
+                Err(SpaceError::Inconsistent(
+                    "a re-issued order is not an order of the counter"
+                )),
+                "the order {ord}"
+            );
+        }
+        assert_eq!(
+            run(&env, reissued_send(send_forever(1), 0)).await,
+            Err(SpaceError::Inconsistent(
+                "a re-issued element shares its order with a stored entry"
+            ))
+        );
+        assert_eq!(
+            records(&space).await,
+            vec![(0, vec![int(5)], false)],
+            "a failed operation changes nothing"
+        );
+        assert_eq!(counter(&space, &channels().counter()).await, vec![1]);
+    }
+
+    /// Runs `op`, then runs its re-issues while `rounds` allows, and returns every outcome.
+    async fn run_rounds(
+        env: &SpaceEnv,
+        op: SpaceOp,
+        rounds: usize,
+    ) -> Result<Vec<SpaceOutcome>, SpaceError> {
+        let mut outcomes = Vec::with_capacity(rounds);
+        let mut next = Some(op);
+        for _ in 0..rounds {
+            let Some(op) = next.take() else {
+                break;
+            };
+            let outcome = run(env, op).await?;
+            next = outcome.reissue.as_ref().map(|reissue| reissue.op.clone());
+            outcomes.push(outcome);
+        }
+        Ok(outcomes)
+    }
+
+    /// A script of re-entries: a divergent pair for three rounds, and a capped send that
+    /// re-enters ahead of a younger record.
+    async fn run_reentry_script(env: &SpaceEnv) -> Result<Vec<SpaceOutcome>, SpaceError> {
+        let divergent = string("divergent");
+        let capped = string("capped");
+        let mut outcomes = Vec::new();
+        outcomes.push(
+            run(
+                env,
+                SpaceOp::Consume(ConsumeOp {
+                    persistent: true,
+                    ..receive_on(&divergent, "s", any())
+                }),
+            )
+            .await?,
+        );
+        outcomes.extend(run_rounds(env, SpaceOp::Produce(send_on(&divergent, 8, true)), 3).await?);
+        for index in 0..FIRE_ROUND_CAP {
+            outcomes.push(
+                run(
+                    env,
+                    SpaceOp::Consume(receive_on(&capped, &format!("w{index}"), any())),
+                )
+                .await?,
+            );
+        }
+        outcomes.push(
+            run(
+                env,
+                SpaceOp::Consume(receive_on(&capped, "one", exactly(1))),
+            )
+            .await?,
+        );
+        let first = run(env, SpaceOp::Produce(send_on(&capped, 1, true))).await?;
+        let reissue = first.reissue.clone().ok_or(SpaceError::Inconsistent(
+            "the capped send does not re-issue",
+        ))?;
+        outcomes.push(first);
+        outcomes.push(run(env, SpaceOp::Produce(send_on(&capped, 7, false))).await?);
+        outcomes.push(run(env, reissue.op).await?);
+        Ok(outcomes)
+    }
+
+    #[tokio::test]
+    async fn space_queue_replay_reproduces_the_reentries() {
+        let (play, replay) = play_and_replay().await;
+        let play_env = env_over(play.clone(), &budget());
+        create(&play_env, creation(config())).await;
+        let start = play
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint after the creation")
+            .root;
+        let played = run_reentry_script(&play_env)
+            .await
+            .expect("the script plays");
+        let divergent: Vec<_> = played[1..4]
+            .iter()
+            .map(|outcome| outcome.reissue.as_ref().map(|reissue| reissue.cause))
+            .collect();
+        assert_eq!(divergent, vec![Some(ReissueCause::DivergentPair); 3]);
+        assert_eq!(fired(played.last().expect("the re-entry")), vec![
+            literal_delivery("one")
+        ]);
+        let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+        let divergent_comms: Vec<&COMM> = log
+            .iter()
+            .filter_map(|event| match event {
+                Event::Comm(comm)
+                    if comm.consume.channel_hashes
+                        == vec![stable_hash_provider::hash(
+                            channels_of(&string("divergent")).data(),
+                        )] =>
+                {
+                    Some(comm)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(divergent_comms.len(), 3);
+        assert!(
+            divergent_comms
+                .iter()
+                .all(|comm| *comm == divergent_comms[0]),
+            "the rounds of a divergent pair repeat one COMM"
+        );
+
+        replay
+            .rig_and_reset(start, log)
+            .await
+            .expect("the replay rigs the play log");
+        let replay_env = env_over(replay.clone(), &budget());
+        let replayed = run_reentry_script(&replay_env)
+            .await
+            .expect("the script replays");
+        assert_eq!(replayed, played);
+        replay
+            .check_replay_data()
+            .await
+            .expect("every recorded COMM is paired, the repeated ones included");
+        assert_eq!(
+            replay.create_checkpoint().await.expect("a checkpoint").root,
+            root
+        );
     }
 
     #[tokio::test]

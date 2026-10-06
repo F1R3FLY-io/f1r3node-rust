@@ -64,6 +64,16 @@ prepay the decode of its continuation, an operation that does not prepay the
 buffer of its outcome, an outcome that reserves after the commit, and a scan
 that copies every entry instead of the head only.
 
+Decision 43 (HeadOnlyDisciplines.v) has three controls. Each reverts one part
+of the rule that a re-issued persistent operation keeps its first-round ord:
+  ho-reentry-fresh-ord        the re-issue takes the ord of its bump:
+                              queue_reissue_keeps_ord breaks
+  ho-reentry-ignores-head     a re-entered element is at the head whatever
+                              the ord of the head: reenter_offer_shadow, and
+                              so the SHADOW headline, breaks
+  ho-nonpersistent-keeps-ord  a re-issued non-persistent element keeps its
+                              ord (the scope rule): queue_quiescent_inv breaks
+
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
   * A control has one mutation, or a tuple of mutations that the harness
@@ -420,6 +430,22 @@ CONTROLS = (
      "  Definition bump_next (c : option nat) : option nat := Some (S (bump_ord c)).",
      "  Definition bump_next (c : option nat) : option nat := Some (bump_ord c).",
      ("bump_ord_next", "queue_ord_fresh")),
+    # ── Decision 43: HeadOnlyDisciplines.v (re-issued persistent operations) ─
+    ("ho-reentry-fresh-ord", "HeadOnlyDisciplines",
+     "a re-issued persistent operation takes the ord of its bump, not its first-round ord",
+     "    | Some o => if o <? bump then Some o else None",
+     "    | Some o => if o <? bump then Some bump else None",
+     ("queue_reissue_keeps_ord",)),
+    ("ho-reentry-ignores-head", "HeadOnlyDisciplines",
+     "a re-entered element is at the head whatever the ord of the head (QD-9)",
+     "    | Some h => if o =? h then None else Some (ord_precedes o h)",
+     "    | Some h => if o =? h then None else Some true",
+     ("reenter_offer_shadow", "queue_reentry_preserves_shadow_inv")),
+    ("ho-nonpersistent-keeps-ord", "HeadOnlyDisciplines",
+     "a re-issued non-persistent element keeps its first-round ord (the scope rule)",
+     "    if flight_pers x then Some (flight_ord x) else None.",
+     "    Some (flight_ord x).",
+     ("queue_quiescent_inv",)),
     # ── P4: SpaceRefs.v (C.1, C.2, A23) ──────────────────────────────────
     ("sr-handle-ignores-write-flag", "SpaceRefs",
      "a handle under a bundle without the write flag is a native space",
