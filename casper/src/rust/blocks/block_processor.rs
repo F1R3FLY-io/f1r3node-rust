@@ -254,6 +254,8 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// Admission cap on the shared in-flight block set. Must not exceed the
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
+/// Pipeline width: blocks the block processor validates at the same time.
+pub const MAX_PARALLEL_BLOCKS: usize = 2;
 
 /// The node warns when its oldest in-flight marker is older than this. The
 /// marker is kept: an old marker means a block that is still queued or still

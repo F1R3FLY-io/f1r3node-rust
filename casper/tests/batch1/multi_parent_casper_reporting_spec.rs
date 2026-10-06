@@ -165,7 +165,7 @@ async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
 }
 
 #[tokio::test]
-async fn reporting_waits_for_consensus_replay() {
+async fn reporting_replay_runs_while_a_consensus_replay_runs() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -200,15 +200,15 @@ async fn reporting_waits_for_consensus_replay() {
         replay_lock,
         ExternalServices::noop(),
     );
-    let report_task = tokio::spawn(async move { reporter.trace(&signed_block).await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!report_task.is_finished());
-    drop(consensus_permit);
-    tokio::time::timeout(Duration::from_secs(30), report_task)
+    let replay = tokio::time::timeout(Duration::from_secs(30), reporter.trace(&signed_block))
         .await
-        .expect("Reporting replay did not resume")
-        .expect("Reporting task failed")
+        .expect("Reporting replay waited for the running consensus replay")
         .expect("Reporting replay failed");
+    assert_eq!(
+        replay.post_state_hash,
+        signed_block.body.state.post_state_hash.to_vec()
+    );
+    drop(consensus_permit);
 }
 
 #[tokio::test]

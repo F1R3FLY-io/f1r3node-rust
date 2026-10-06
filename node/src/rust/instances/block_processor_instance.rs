@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING, MAX_PARALLEL_BLOCKS,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -19,8 +19,6 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::mpsc;
 
-/// Pipeline width; also the bound on concurrent consensus replays.
-const MAX_PARALLEL_BLOCKS: usize = 2;
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 
 struct ActiveBlockProcessingGuard;
