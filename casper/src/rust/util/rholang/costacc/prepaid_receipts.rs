@@ -230,6 +230,29 @@ fn decode_receipt_data(
     Ok(Some(bytes))
 }
 
+/// D-C4 (D-S5, DR-98): the metered read of a settlement channel. The read
+/// never fills the store (`get_data_uncached_with_reader`), so its charge
+/// depends on the residency of the channel and on the shard population.
+///
+/// Residency invariant (RI): at every call, the data map of the runtime holds
+/// exactly the install channels and the channels that the settlement wrote,
+/// by recorded removal or produce, since the last reset or checkpoint of the
+/// runtime. The install channels are the same on the play and replay
+/// runtimes. Premise P_join: no join group contains a receipt channel or a
+/// supply channel, so a settlement produce fetches no other channel's data.
+/// Under RI the charge is a function of the root, the channel, and the
+/// earlier writes (`NativeSharedReads.cache_state_independent_charge`), so
+/// the producer, its self-replay, and every validator charge each read the
+/// same.
+///
+/// Callers: the mergeable reads (`runtime.rs`, also from
+/// `runtime_manager.rs`), births (`births.rs`), retained records
+/// (`retained_records.rs`), supply inventories (`consumption.rs`,
+/// `stack_pops.rs`, `supply.rs`), and receipts (`read_prepaid_receipt_metered`).
+/// Three of these reads observe earlier writes: the stack removals of
+/// `stack_pops.rs` and the receipts of a bucket that a birth shares with a
+/// pop. A read of only the history would be stale there, so the read always
+/// probes the store first.
 pub(crate) async fn read_live_data_metered(
     runtime: &RuntimeOps,
     channel: &Par,

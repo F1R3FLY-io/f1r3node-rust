@@ -1109,6 +1109,118 @@ fn every_data_view_cut_rejects_without_filling_the_cache() {
     }
 }
 
+fn uncached_data(
+    store: &Store,
+    rows: &Rows,
+    reads: &Cell<usize>,
+    meter: &Meter,
+) -> Result<Vec<Datum<String>>, RSpaceError> {
+    store.get_data_uncached_with_reader(
+        &String::new(),
+        &|| {
+            reads.set(reads.get() + 1);
+            native_backing::reserve_copy_and_cleanup(&rows.data, meter)?;
+            Ok(rows.data.clone())
+        },
+        meter,
+    )
+}
+
+fn totals(meter: &Meter) -> (usize, usize, usize, usize) {
+    (meter.calls.get(), meter.operations.get(), meter.scanned.get(), meter.backing.get())
+}
+
+/// D-C4 (D-S5, DR-98; `NativeSharedReads.uncached_cold_read_equals_read`): a
+/// cold uncached data read returns the history values within its prepaid
+/// backing and stores nothing, so a second read is charged the same. Every
+/// reservation cut rejects without changing the store, and a retry succeeds.
+/// A warm read copies the resident entry with the charges of the legacy warm
+/// read and does not read the history.
+#[test]
+fn uncached_data_read_covers_allocations_and_rejects_without_mutation() {
+    let rows = Rows::new();
+    let cold = installed();
+    let before = cold.snapshot();
+    let reads = Cell::new(0);
+    let first = Meter::new(usize::MAX);
+    let (result, allocated) = measure_allocations(|| uncached_data(&cold, &rows, &reads, &first));
+    assert_eq!(result.expect("cold uncached read"), rows.data);
+    assert!(
+        allocated <= first.backing.get(),
+        "allocated={allocated}, paid={}",
+        first.backing.get()
+    );
+    let second = Meter::new(usize::MAX);
+    assert_eq!(uncached_data(&cold, &rows, &reads, &second).expect("second cold read"), rows.data);
+    assert_eq!(reads.get(), 2, "each cold read decodes the history");
+    assert_eq!(totals(&second), totals(&first), "the first read changed the charge");
+    let after = cold.snapshot();
+    assert!(after.data_flat().is_empty(), "a cold uncached read fills the store");
+    assert_eq!(after.continuations_flat(), before.continuations_flat());
+    assert_eq!(after.joins_flat(), before.joins_flat());
+    assert_eq!(after.installed_continuations_flat(), before.installed_continuations_flat());
+    assert_eq!(after.installed_joins_flat(), before.installed_joins_flat());
+
+    for cut in 0..first.calls.get() {
+        let cut_store = installed();
+        let before = cut_store.snapshot();
+        let limited = Meter::new(cut);
+        let (result, allocated) =
+            measure_allocations(|| uncached_data(&cut_store, &rows, &Cell::new(0), &limited));
+        assert_eq!(result, Err(RSpaceError::HostWorkRejected), "cut {cut}");
+        assert!(
+            allocated <= limited.backing.get(),
+            "cut {cut}, allocated={allocated}, paid={}",
+            limited.backing.get()
+        );
+        let after = cut_store.snapshot();
+        assert_eq!(after.data_flat(), before.data_flat(), "cut {cut}");
+        assert_eq!(after.continuations_flat(), before.continuations_flat(), "cut {cut}");
+        assert_eq!(after.joins_flat(), before.joins_flat(), "cut {cut}");
+        assert_eq!(
+            uncached_data(&cut_store, &rows, &Cell::new(0), &Meter::new(usize::MAX)),
+            Ok(rows.data.clone()),
+            "retry after cut {cut}"
+        );
+    }
+
+    let added = Datum {
+        a: "written".to_owned(),
+        persist: false,
+        source: Produce::default(),
+    };
+    let warm = |read_uncached: bool| {
+        let store = store();
+        owned_data(&store, &rows.data, &Meter::new(usize::MAX));
+        store.put_datum(&String::new(), added.clone());
+        let resident = store.snapshot().data_flat();
+        let reads = Cell::new(0);
+        let meter = Meter::new(usize::MAX);
+        let (result, allocated) = measure_allocations(|| {
+            if read_uncached {
+                uncached_data(&store, &rows, &reads, &meter)
+            } else {
+                store.get_data_with_reader(
+                    &String::new(),
+                    &|| {
+                        reads.set(reads.get() + 1);
+                        Ok(rows.data.clone())
+                    },
+                    &meter,
+                )
+            }
+        });
+        let values = result.expect("warm read");
+        assert_eq!(values.len(), rows.data.len() + 1);
+        assert_eq!(values[0], added);
+        assert_eq!(reads.get(), 0, "a warm read reads the history");
+        assert!(allocated <= meter.backing.get());
+        assert_eq!(store.snapshot().data_flat(), resident, "a warm read changed the store");
+        (values, totals(&meter))
+    };
+    assert_eq!(warm(true), warm(false), "warm uncached and legacy reads differ");
+}
+
 fn charge(reserve: impl FnOnce(&Meter) -> Result<(), RSpaceError>) -> (usize, usize, usize) {
     let meter = Meter::new(usize::MAX);
     reserve(&meter).expect("charge");

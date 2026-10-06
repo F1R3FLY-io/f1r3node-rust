@@ -176,7 +176,14 @@ where
             .as_slice()
             .try_into()
             .map_err(|_| RSpaceError::HostWorkRejected)?;
-        self.get_store().get_data_with_reader(
+        // Changed by D-C4 (D-S5, DR-98): the metered read no longer fills the
+        // store. The cold fill inserted the decoded values with
+        // native_insert_new, whose charges read the whole shard, and grew the
+        // shard that every later lookup charges. A read now copies an entry
+        // only for an installed channel or a channel that the runtime wrote
+        // since its last reset or checkpoint.
+        // self.get_store().get_data_with_reader(
+        self.get_store().get_data_uncached_with_reader(
             channel,
             &|| {
                 let projection = hash(channel, &|operations, scanned, backing| {

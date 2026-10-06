@@ -7460,6 +7460,181 @@ this change on 2026-10-06, with the provisional caps.
 **Cross-refs.** DR-95, DR-96 (parts 2 to 4). Leaf
 `ofp-2-cap-d-c3-dirty-export`.
 
+## DR-98 — Metered settlement reads without the cold fill
+
+**Status.** Implemented for Phase D item D-C4 of epic 8946 (D-S5 of the
+Phase D plan) on 2026-10-06.
+
+**Context.** The settlement reads of a block (`read_live_data_metered`)
+run on play and replay runtimes under the replay host-work budget. They
+read through `get_data_with_reader`, whose cold path filled the store with
+`native_insert_new`. The insert charges read the whole shard, and every
+fill grew the shard that later lookups charge. The sampled attribution of
+the gateway funding probe put about 26 MB of VerificationBytes and 3 MB of
+SearchStateBytes of each validator replay in these fills.
+
+The arbiter of the Phase D plan accepted the change only with one of two
+conditions, because a warm read and a cold read are charged differently:
+
+- Route 1: prove that every caller reads on a freshly reset runtime.
+- Route 2: charge the cold bound whatever the cache state is.
+
+Neither route holds alone.
+
+- Route 1 is false for three production reads. The stack re-read of
+  `stack_pops.rs` follows its own removals, and the receipt reads of
+  `stack_pops.rs` read a bucket that a birth can share with a pop.
+- Route 2 alone is unsound. A resident value can be larger than the history
+  value, because a tail lands on the supply channel of the remaining head.
+  The store probe also cannot be independent of the shard population: the
+  persistent hash map compares the sought key with every colliding key.
+
+**Decision.**
+
+1. `native_data_uncached` (`hot_store/native.rs`) reads without the fill.
+   - A resident entry is copied as before (`native_get`).
+   - Otherwise the read decodes the history values, prepays their release
+     (`reserve_cleanup`), and returns them without an insert.
+2. `HotStore::get_data_uncached_with_reader` exposes it. `get_data_metered`
+   of the play space (`ispace_impl.rs`) and of the replay space
+   (`replay_rspace.rs`) use it. The history closures do not change.
+3. The probe of the store, with the legacy lookup charge, stays. Without
+   fills, the keys of a shard are agreed state, so the probe charge is
+   deterministic.
+4. Residency invariant (RI): at every settlement read, the data map holds
+   exactly the install channels and the channels that the settlement wrote
+   since the last reset or checkpoint of the runtime.
+   - The install channels are the same on play and replay runtimes, because
+     both are built by the same `create_runtime`.
+   - A read inserts nothing, and removals and produces touch only their own
+     channel.
+   - Premise P_join: no join group contains a prepaid receipt channel or a
+     supply channel, so a settlement produce fetches no other channel's
+     data. Receipt channels carry a system authority token that user code
+     cannot hold. Supply channels are unforgeable names keyed by a content
+     hash, which user code cannot name. A settlement test asserts the
+     premise after removals and tail releases.
+5. `read_live_data_metered` documents RI, the premise, and its callers.
+6. `get_data_with_reader` and `native_data` stay for the tests and oracles.
+7. The replaced lines stay as comments with the reason.
+
+```text
+⟨uncached read⟩(store, c) ≡
+  probe(store, c)                          -- charged lookup, as before
+  if store[c] = Some(v) then reserve_copy_and_cleanup(v); return copy(v)
+  else let h = decode(history[root][c])    -- charged decode
+       reserve_cleanup(h); return h        -- no insert
+```
+
+**Soundness.**
+
+- Every reservation comes before its work, and the release of the returned
+  values is prepaid. A rejected reservation leaves the store unchanged,
+  because the read changes nothing.
+- The read is never stale. A resident entry holds the written value. An
+  absent key means the history value at the store's root, and a fill only
+  ever stored that value.
+- The charge of a read depends on the earlier writes and not on the earlier
+  reads. Under RI it is a function of the root, the channel, the install
+  channels, and the written values. So the producer, its self-replay, and
+  every validator charge each settlement read the same.
+- The settlement reads are sequential, so the charge is independent of the
+  schedule.
+
+**Behavior changes.**
+
+- A settlement read no longer fills the store. A repeated cold read decodes
+  the history again. The measurement below shows no regression from it.
+- The legacy cold path returned `HostWorkRejected` when a writer inserted the
+  channel between its probe and its insert. The uncached read returns the
+  value that it read. The settlement reads are sequential with their own
+  writes, so the outcome does not change.
+
+**Verification.** `NativeSharedReads.v` proves without axioms:
+
+- `fill_unobservable` and `uncached_cold_read_equals_read`: a fill stores the
+  history value, so no later read observes it, and the read without the
+  fill returns what the filling read returns.
+- `uncached_reads_leave_writes_only`: without fills, the store after a
+  trace depends only on the writes of the trace.
+- `cache_state_independent_charge`: the charge of a read (probe, plus a copy
+  or a cold read) depends on the earlier writes and not on the earlier
+  reads.
+- Negative control `filling_reads_change_later_charge`: with the fill, an
+  earlier read changes the charge of a later read.
+- Negative control `history_only_read_is_stale_after_write`: a read that
+  skips the store returns the history value after a write, so the probe
+  cannot be dropped.
+
+Tests:
+
+- `metered_play_read_returns_history_values_without_fill` (play and replay
+  spaces): a cold metered read returns the history values, leaves no entry,
+  and a second read is charged the same. A resident entry is returned, and
+  the store does not change.
+- `checkpoint_root_unchanged_by_uncached_read`: metered reads export no
+  change and keep the root, also after a write. The legacy read exports its
+  fills, with the same root.
+- `uncached_data_read_covers_allocations_and_rejects_without_mutation`:
+  allocations stay within the reserved backing. Every reservation cut
+  rejects without a change, and a retry succeeds. A warm read is charged as
+  the legacy warm read and does not read the history.
+- `read_live_data_metered_charge_independent_of_cache_state` (casper): 300
+  receipts share the 256 store shards. Every read on the play and on the
+  replay runtime is charged as an isolated read after a reset, also when it
+  is repeated. After the same write on both runtimes, the two runtimes
+  charge every read the same.
+- `complete_consumption_removes_receipts_and_new_tails_create_buckets` now
+  also asserts premise P_join.
+
+Negative control: with the cold fill restored for one build
+(`native_data` instead of `native_data_uncached`), the three rspace tests
+and the casper test fail at the intended assertions ("a metered read filled
+the store", "a metered read exported a change", "an earlier read changed
+the charge").
+
+**Measurement.** The gateway funding probe and the prepaid birth-and-draw
+test (`offered_retained_birth_funds_later_prepaid_draw_across_validators`)
+ran with the provisional caps on 2026-10-06. Arm A is commit `d5f9f21fe`,
+and arm B adds this change. Arm A has four samples, and arm B has two. The
+first two arm B samples reused the arm A binary, because the copied sources
+kept their old timestamps. They count as arm A samples.
+
+| Gateway block budget | Dimension | A mean | B mean | Change |
+|----------------------|-----------|-------:|-------:|-------:|
+| Validator replay | VerificationBytes | 1,741,520,005 | 1,715,360,726 | −26,159,278 (−1.5 %) |
+| Validator replay | SearchStateBytes | 189,741,972 | 186,452,912 | −3,289,060 (−1.7 %) |
+| Validator replay | VerificationOperations | 62,195,298 | 61,849,708 | −345,590 |
+| Producer self-replay | VerificationBytes | 1,754,635,827 | 1,728,446,950 | −26,188,877 |
+| Producer execution | VerificationBytes | 186,035,000 | 163,336,250 | −22,698,750 |
+
+- The plan predicted about −26 MB of VerificationBytes and −3 MB of
+  SearchStateBytes in validator replay, and about the same in producer
+  execution.
+- The arm A samples span 1,735.8 to 1,748.8 MB of VerificationBytes, and the
+  arm B samples span 1,711.6 to 1,719.2 MB. The ranges do not overlap.
+- Against the original caps, the validator replay goes from 6.49 to 6.39
+  times the VerificationBytes cap, and from 1.41 to 1.39 times the
+  SearchStateBytes cap.
+- The residual disagreement between the validator replays of the gateway
+  block (20 to 129 KB) is present in both arms. It belongs to item D-C5.
+
+The prepaid test was the main risk, because its settlement reads repeat
+and now decode again. Every budget went down instead:
+
+| Prepaid test budget | Dimension | A mean | B mean |
+|---------------------|-----------|-------:|-------:|
+| Birth block, validator replay | VerificationBytes | 40,437,497 | 24,231,914 |
+| Birth block, validator replay | SearchStateBytes | 7,239,741 | 5,088,258 |
+| Draw block, validator replay | VerificationBytes | 41,034,797 | 24,770,062 |
+| Draw block, validator replay | SearchStateBytes | 10,549,932 | 8,354,804 |
+| Draw block, validator replay | VerificationOperations | 9,286,118 | 9,030,630 |
+
+The validators of the prepaid test agree exactly in both arms.
+
+**Cross-refs.** DR-82, DR-95, DR-96, DR-97. Leaf
+`ofp-2-cap-d-c4-uncached-play-read`.
+
 ## DR-99 — A node that joins after genesis adopts the genesis resource policy
 
 **Status.** Implemented for bug 9954 of epic 8946 on 2026-10-06.

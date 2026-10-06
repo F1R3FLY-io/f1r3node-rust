@@ -254,6 +254,19 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     where
         C: CloneBacking,
         A: CloneBacking;
+    /// D-C4 (D-S5, DR-98): the metered data read that never fills the store.
+    /// A resident entry is copied as `get_data_with_reader` copies it.
+    /// Otherwise the values that `read` decodes from the history are returned
+    /// after their release is prepaid, and nothing is stored.
+    fn get_data_uncached_with_reader(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking;
     /// A copy-free view of the cached data of `channel` (C2, DR-82).
     fn get_data_view_with_reader(
         &self,
@@ -635,6 +648,19 @@ where
         A: CloneBacking,
     {
         self.native_data(channel, read, meter)
+    }
+
+    fn get_data_uncached_with_reader(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking,
+    {
+        self.native_data_uncached(channel, read, meter)
     }
 
     fn get_data_view_with_reader(

@@ -338,6 +338,29 @@ async fn complete_consumption_removes_receipts_and_new_tails_create_buckets() {
         .apply_prepaid_stack_pops(&stacks[..2], &draws[..2], LIMITS)
         .await
         .is_err());
+    // D-C4 (DR-98) premise P_join: after removals and tail releases, no join
+    // group contains a supply channel or a receipt channel, so a settlement
+    // produce fetches no other channel's data.
+    for head in 1..=3u8 {
+        let channel = supply::supply_channel(&Sig::Ground(vec![head]));
+        assert!(native
+            .runtime
+            .reducer
+            .space
+            .get_joins(channel)
+            .await
+            .is_empty());
+    }
+    for stack in &stacks {
+        let channel = receipt_channel(&PrepaidReceiptBucket::key_for_source(&stack.source_hash));
+        assert!(native
+            .runtime
+            .reducer
+            .space
+            .get_joins(channel)
+            .await
+            .is_empty());
+    }
 }
 
 #[tokio::test]

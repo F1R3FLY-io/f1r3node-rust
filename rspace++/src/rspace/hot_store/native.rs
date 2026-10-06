@@ -1126,6 +1126,32 @@ where
         Ok(values)
     }
 
+    /// D-C4 (D-S5, DR-98): `native_data` without the cold fill. A warm read
+    /// copies the resident entry exactly as `native_data` does. A cold read
+    /// prepays the release of the decoded history values and returns them
+    /// without `native_insert_new`: no write lock, no whole-shard copy
+    /// charge, and the shard population that later lookups charge stays
+    /// unchanged. An entry is resident only for an installed channel or a
+    /// channel that the runtime wrote since its last reset or checkpoint, so
+    /// a read never observes an earlier read.
+    pub(super) fn native_data_uncached(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking,
+    {
+        if let Some(values) = self.data.native_get(channel, meter)? {
+            return Ok(values);
+        }
+        let values = read()?;
+        native_backing::reserve_cleanup(&values, meter)?;
+        Ok(values)
+    }
+
     /// C2 (DR-82): a copy-free view of the cached data of `channel`. A warm
     /// read takes an O(1) snapshot of the shard. A cold read prepays the
     /// release of the decoded data, moves them into the cache, and takes the
