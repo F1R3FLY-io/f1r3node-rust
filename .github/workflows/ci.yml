@@ -370,7 +370,13 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         shell: bash -euo pipefail {0}
         run: |
-          git fetch --quiet --no-tags --unshallow --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          unshallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
+          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
+          if [ "$count" -gt 250 ]; then
+            echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
+          fi
           exempt="$RUNNER_TEMP/exempt-authors.txt"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
             --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"

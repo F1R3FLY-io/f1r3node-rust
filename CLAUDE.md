@@ -188,7 +188,8 @@ Both settings take effect at the next session start.
 - Keep commit messages clean and professional
 - Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
 - An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
-- The `.githooks/commit-msg` hook and the CI `Lint` job enforce this rule and reject `Claude-Session` trailers. A pull request cannot ratify its own identities.
+- The CI `Lint` job checks every commit author and co-author. A pull request cannot ratify its own identities.
+- The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
 - An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance.
 - Turn off the co-author attribution setting in your Claude Code `settings.json`.
 

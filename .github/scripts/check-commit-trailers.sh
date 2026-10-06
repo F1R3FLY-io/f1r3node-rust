@@ -13,7 +13,8 @@ set -euo pipefail
 # not identities, and they publish assistant session links.
 #
 #   message FILE
-#       one message, ratified from the local HEAD history (commit-msg hook)
+#       one message (commit-msg hook): co-authors are checked against the
+#       local HEAD history; CI decides author ratification
 #   range RANGE --ratified-from REV [--repo DIR] [--exempt-authors FILE]
 #       every commit in a range, ratified from REV history (CI)
 #
@@ -22,12 +23,17 @@ set -euo pipefail
 # attributes to the pull request author: an outside contributor's own
 # commits pass, and maintainer review decides their acceptance. Co-authors
 # of those commits are still checked.
+#
+# The script runs under bash 3.2 (the macOS system bash), because the
+# commit-msg hook runs on contributor machines.
 
 REPO=.
 RATIFIED_FROM=""
+EXEMPT_FILE=""
 FORBIDDEN='^claude-session:'
-declare -A RATIFIED=()
-declare -A EXEMPT=()
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+RATIFIED="$WORK/ratified"
 CHECK_IDENTITIES=0
 
 fail() {
@@ -35,25 +41,22 @@ fail() {
 	exit 2
 }
 
+lower() {
+	tr '[:upper:]' '[:lower:]'
+}
+
 load_ratified() {
-	local email
-	while IFS= read -r email; do
-		[ -n "$email" ] && RATIFIED[${email,,}]=1
-	done < <(git -C "$REPO" log "$1" --format=%ae)
+	git -C "$REPO" log "$1" --format=%ae | lower | sort -u >"$RATIFIED"
 	CHECK_IDENTITIES=1
 }
 
-load_exempt() {
-	local sha
-	[ -f "$1" ] || fail "missing exempt-author file: $1"
-	while IFS= read -r sha; do
-		[[ "$sha" =~ ^[0-9a-f]{40}$ ]] && EXEMPT[$sha]=1
-	done <"$1"
-	return 0
+is_exempt() {
+	[ -n "$EXEMPT_FILE" ] && grep -Fxq "$1" "$EXEMPT_FILE"
 }
 
-# Prints one problem per line for a message and its author identity.
-# Git strips comment lines from a message before it records the commit.
+# Prints one problem per line for a message and its author identity. An
+# empty author skips the author check. Git strips comment lines from a
+# message before it records the commit.
 problems() {
 	local text="$1" author="$2" ident email
 	text="$(grep -v '^#' <<<"$text" || true)"
@@ -62,8 +65,8 @@ problems() {
 	while IFS= read -r ident; do
 		[ -n "$ident" ] || continue
 		email="${ident##*<}"
-		email="${email%%>*}"
-		[ -n "${RATIFIED[${email,,}]+set}" ] || printf 'unratified identity: %s\n' "$ident"
+		email="$(printf %s "${email%%>*}" | lower)"
+		grep -Fxq -- "$email" "$RATIFIED" || printf 'unratified identity: %s\n' "$ident"
 	done < <(
 		printf '%s\n' "$author"
 		grep -i -E '^co-authored-by:' <<<"$text" | sed -E 's/^[^:]*:[[:space:]]*//' || true
@@ -76,17 +79,15 @@ report() {
 }
 
 check_message() {
-	local file="$1" author found
+	local file="$1" found
 	[ -f "$file" ] || fail "missing message file: $file"
-	author=""
 	if git -C "$REPO" rev-parse --verify --quiet HEAD >/dev/null; then
 		load_ratified HEAD
-		author="$(git -C "$REPO" var GIT_AUTHOR_IDENT | sed -E 's/>.*/>/')"
 	fi
-	found="$(problems "$(cat "$file")" "$author")"
+	found="$(problems "$(cat "$file")" "")"
 	[ -z "$found" ] && return 0
 	report "The commit message" "$found"
-	printf 'Remove forbidden trailers. Identities are ratified when a maintainer merges a pull request that one of them authored.\n' >&2
+	printf 'Remove forbidden trailers. A co-author is ratified when a maintainer merges a pull request that they authored.\n' >&2
 	return 1
 }
 
@@ -99,7 +100,9 @@ check_range() {
 	commits="$(git -C "$REPO" rev-list "$range")" || fail "cannot list commits in $range"
 	for sha in $commits; do
 		author="$(git -C "$REPO" log -1 --format='%an <%ae>' "$sha")"
-		[ -z "${EXEMPT[$sha]+set}" ] || author=""
+		if is_exempt "$sha"; then
+			author=""
+		fi
 		found="$(problems "$(git -C "$REPO" log -1 --format=%B "$sha")" "$author")"
 		[ -z "$found" ] && continue
 		report "Commit $(git -C "$REPO" rev-parse --short "$sha")" "$found"
@@ -125,7 +128,12 @@ while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--ratified-from) [ "$#" -ge 2 ] || usage; RATIFIED_FROM="$2"; shift 2 ;;
 	--repo) [ "$#" -ge 2 ] || usage; REPO="$2"; shift 2 ;;
-	--exempt-authors) [ "$#" -ge 2 ] || usage; load_exempt "$2"; shift 2 ;;
+	--exempt-authors)
+		[ "$#" -ge 2 ] || usage
+		[ -f "$2" ] || fail "missing exempt-author file: $2"
+		EXEMPT_FILE="$2"
+		shift 2
+		;;
 	*) usage ;;
 	esac
 done

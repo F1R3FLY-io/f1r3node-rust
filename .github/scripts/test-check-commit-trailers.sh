@@ -53,9 +53,25 @@ expect_failure 'trailer in another letter case' in_repo "$TOOL" message "$TMP/ca
 expect_failure 'session link trailer' in_repo "$TOOL" message "$TMP/session.txt"
 in_repo "$TOOL" message "$TMP/comment.txt"
 in_repo "$TOOL" message "$TMP/subject.txt"
-expect_failure 'unratified commit author' \
-	env GIT_AUTHOR_NAME='Stranger' GIT_AUTHOR_EMAIL='stranger@example.com' bash -c 'cd "$1" && "$2" message "$3"' _ "$REPO" "$TOOL" "$TMP/clean.txt"
-grep -q 'Stranger' "$TMP/err"
+# The local hook checks co-authors only: a first-time contributor has no
+# merged commit yet, and CI decides author ratification.
+env GIT_AUTHOR_NAME='Stranger' GIT_AUTHOR_EMAIL='stranger@example.com' \
+	bash -c 'cd "$1" && "$2" message "$3"' _ "$REPO" "$TOOL" "$TMP/clean.txt"
+expect_failure 'first-time contributor with an unratified co-author' \
+	env GIT_AUTHOR_NAME='Stranger' GIT_AUTHOR_EMAIL='stranger@example.com' \
+	bash -c 'cd "$1" && "$2" message "$3"' _ "$REPO" "$TOOL" "$TMP/unratified-coauthor.txt"
+
+# The checker must run under bash 3.2, the macOS system bash, because the
+# commit-msg hook runs on contributor machines.
+if [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]; then
+	(cd "$REPO" && /bin/bash "$TOOL" message "$TMP/ratified-coauthor.txt")
+	expect_failure 'bash 3 with an unratified co-author' \
+		bash -c 'cd "$1" && /bin/bash "$2" message "$3"' _ "$REPO" "$TOOL" "$TMP/unratified-coauthor.txt"
+fi
+if grep -q -E 'declare -A|,,\}|\^\^\}' "$TOOL"; then
+	printf 'the checker must avoid bash 4 features (associative arrays, case expansion)\n' >&2
+	exit 1
+fi
 
 # The first commit of a new repository has no history to ratify from, so
 # only the Claude-Session rule applies.
