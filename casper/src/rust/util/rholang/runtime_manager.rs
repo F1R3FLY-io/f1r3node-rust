@@ -147,8 +147,8 @@ impl ExploratoryDeployConfig {
 }
 
 /// One permit per concurrent replay source: each block-pipeline slot, the
-/// proposer's merge-scope recompute and one report replay. No holder acquires
-/// a second permit while it holds one, so the bound cannot deadlock.
+/// proposer's merge-scope recompute and one report replay; the cold-start routes
+/// are extra. No holder takes a second permit, so the bound cannot deadlock.
 const REPLAY_LOCK_PERMITS: usize = MAX_PARALLEL_BLOCKS + 2;
 const REPORTING_REPLAY_WAIT_WARN: Duration = Duration::from_secs(30);
 
@@ -218,6 +218,7 @@ impl ReplayLock {
     pub async fn acquire_reporting(&self) -> Result<ReplayPermit, tokio::sync::TryAcquireError> {
         let started = tokio::time::Instant::now();
         let mut warned = false;
+        let mut deferred = false;
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -229,13 +230,18 @@ impl ReplayLock {
                         if !self.consensus_waiting() {
                             return Ok(permit);
                         }
+                        drop(permit);
+                        continue;
                     }
                     Err(tokio::sync::TryAcquireError::NoPermits) => {}
                     Err(error) => return Err(error),
                 }
             }
-            metrics::counter!(BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .increment(1);
+            if !deferred {
+                deferred = true;
+                metrics::counter!(BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .increment(1);
+            }
             if warned {
                 changed.await;
             } else if tokio::time::timeout_at(started + REPORTING_REPLAY_WAIT_WARN, changed)
