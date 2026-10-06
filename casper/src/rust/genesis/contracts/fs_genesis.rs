@@ -1838,4 +1838,361 @@ mod tests {
              CMODE_CONSENSUS_STR was renamed without updating .rho match arms."
         );
     }
+    // `rholang::interpreter::rho_source::tests` (M-14 resolution, 2026-08-11).
+
+    /// A-1 / RH-1 helper: a single name bound in a lib's outer
+    /// `new` clause.  `is_urn_binding` is true iff the name is
+    /// immediately followed by `(` in the source (i.e., it's a
+    /// URN-taking registry binding like `rl(\`rho:registry:lookup\`)`).
+    #[derive(Debug, Clone)]
+    struct OuterNewName {
+        ident: String,
+        is_urn_binding: bool,
+    }
+
+    /// A-1 / RH-1 helper: parse the outermost `new ... in {` clause
+    /// of a lib source and extract the names it binds.  Comment-
+    /// and string-aware scanner mirroring `rho_source::lib_body`'s
+    /// state machine so the name list matches what `lib_body`
+    /// actually strips.  Returns `Err(reason)` if the source
+    /// doesn't contain a well-formed outer `new ... in {` — the
+    /// caller should treat that as an infrastructure bug.
+    fn extract_outer_new_names(src: &str) -> Result<Vec<OuterNewName>, String> {
+        let bytes = src.as_bytes();
+        let n = bytes.len();
+        let mut i = 0usize;
+
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut in_string = false;
+        let mut in_uri = false;
+
+        // Locate the outermost `new ` keyword at top-level scope.
+        let mut new_pos: Option<usize> = None;
+        while i < n {
+            let c = bytes[i];
+            if in_line_comment {
+                if c == b'\n' {
+                    in_line_comment = false;
+                }
+                i += 1;
+                continue;
+            }
+            if in_block_comment {
+                if c == b'*' && i + 1 < n && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+            if in_string {
+                if c == b'\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            if in_uri {
+                if c == b'`' {
+                    in_uri = false;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if c == b'`' {
+                in_uri = true;
+                i += 1;
+                continue;
+            }
+            // `new` followed by any whitespace (space, newline, tab)
+            // — libs use `new Foo, ...` on one line, but the composer
+            // wraps as `new\n  Foo, ...` so accept both.  Column
+            // anchoring: `new` must sit at start-of-buffer OR be
+            // preceded by whitespace, so we don't false-match against
+            // identifiers like `renew`.
+            if c == b'n'
+                && i + 3 < n
+                && &bytes[i..i + 3] == b"new"
+                && bytes[i + 3].is_ascii_whitespace()
+                && (i == 0 || bytes[i - 1].is_ascii_whitespace())
+            {
+                new_pos = Some(i + 3);
+                break;
+            }
+            i += 1;
+        }
+        let name_start = new_pos.ok_or_else(|| "no top-level `new ` keyword found".to_string())?;
+
+        // Scan forward to the matching ` in {` — same scanner state
+        // machine as above, but this time collecting the substring.
+        let mut clause = String::new();
+        let mut i = name_start;
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut in_string = false;
+        let mut in_uri = false;
+        let mut end_pos: Option<usize> = None;
+        while i < n {
+            let c = bytes[i];
+            if in_line_comment {
+                if c == b'\n' {
+                    in_line_comment = false;
+                    clause.push('\n');
+                }
+                i += 1;
+                continue;
+            }
+            if in_block_comment {
+                if c == b'*' && i + 1 < n && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+            if in_string {
+                if c == b'\\' && i + 1 < n {
+                    clause.push(c as char);
+                    clause.push(bytes[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    in_string = false;
+                }
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            if in_uri {
+                if c == b'`' {
+                    in_uri = false;
+                }
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = true;
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            if c == b'`' {
+                in_uri = true;
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            // `<ws>in<ws>{` — the end of the outer new clause.
+            // Whitespace on either side may be a space, newline, or
+            // tab.  Libs use single-line `in {` (space-separated);
+            // the composer wraps as `\nin {\n` (newline before);
+            // both must terminate the scan.
+            if c.is_ascii_whitespace()
+                && i + 4 < n
+                && bytes[i + 1] == b'i'
+                && bytes[i + 2] == b'n'
+                && bytes[i + 3].is_ascii_whitespace()
+                && bytes.get(i + 4) == Some(&b'{')
+            {
+                end_pos = Some(i);
+                break;
+            }
+            clause.push(c as char);
+            i += 1;
+        }
+        end_pos.ok_or_else(|| "no ` in {` terminator found for outer `new`".to_string())?;
+
+        // Parse the clause: split on commas AT TOP LEVEL (i.e.,
+        // outside parentheses / backticks — string / comment handling
+        // already stripped above).  Each token is either a bare
+        // identifier `foo` or a URN binding `foo(` ... `)`.
+        let mut names: Vec<OuterNewName> = Vec::new();
+        let mut depth: i32 = 0;
+        let mut cur = String::new();
+        for c in clause.chars() {
+            if c == '(' {
+                depth += 1;
+                cur.push(c);
+                continue;
+            }
+            if c == ')' {
+                depth -= 1;
+                cur.push(c);
+                continue;
+            }
+            if c == ',' && depth == 0 {
+                if let Some(name) = parse_new_clause_token(&cur) {
+                    names.push(name);
+                }
+                cur.clear();
+                continue;
+            }
+            cur.push(c);
+        }
+        if let Some(name) = parse_new_clause_token(&cur) {
+            names.push(name);
+        }
+        Ok(names)
+    }
+
+    /// A-1 / RH-1 helper: turn one comma-separated clause token
+    /// into an `OuterNewName`.  Returns `None` for tokens that
+    /// don't start with an identifier character (e.g., pure
+    /// whitespace after a trailing comma).
+    fn parse_new_clause_token(raw: &str) -> Option<OuterNewName> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let ident_end = trimmed
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(trimmed.len());
+        if ident_end == 0 {
+            return None;
+        }
+        let ident = trimmed[..ident_end].to_string();
+        let is_urn_binding = trimmed[ident_end..].trim_start().starts_with('(');
+        Some(OuterNewName {
+            ident,
+            is_urn_binding,
+        })
+    }
+
+    // ---------------------------------------------------------------
+    // A-1 / RH-1 parser unit tests (post-review addendum, 2026-09-03).
+    //
+    // `extract_outer_new_names` is a 150-line comment/string/URI-aware
+    // state machine.  Without these pins, a regression that broke the
+    // scanner into returning an empty name list (e.g., failing to
+    // match `new`, or accepting `renew` as `new`) would silently pass
+    // the `every_lib_outer_new_module_cell_is_bound_in_composed_outer_new`
+    // drift check — no names to check → no misses to report → false-
+    // green.  These pins exercise every scanner branch so a regression
+    // fails HERE rather than silently disarming the drift check.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_outer_new_names_parses_single_line_clause() {
+        let src = "new Foo, bar, baz in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["Foo", "bar", "baz"]);
+        assert!(names.iter().all(|n| !n.is_urn_binding));
+    }
+
+    #[test]
+    fn extract_outer_new_names_parses_multi_line_clause() {
+        // File.rho / composed FsGenesis shape: `new` on one line,
+        // names on subsequent lines, ` in {` terminator on its own
+        // line.  A regression to strict single-line parsing would
+        // return an empty list for these libs.
+        let src = "new File, fdP, stateP,\n  cmodeP, Dir\nin {\n  Nil\n}";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["File", "fdP", "stateP", "cmodeP", "Dir"]);
+    }
+
+    #[test]
+    fn extract_outer_new_names_flags_urn_bindings() {
+        // `rl(`rho:registry:lookup`)` binds `rl` as a URN-taking
+        // cap.  The scanner must recognize the parenthesis form and
+        // flag it so the drift check can skip lib-local registry
+        // caps.
+        let src = "new rl(`rho:registry:lookup`), foo in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0].ident, "rl");
+        assert!(
+            names[0].is_urn_binding,
+            "rl(...) must be flagged as URN binding"
+        );
+        assert_eq!(names[1].ident, "foo");
+        assert!(!names[1].is_urn_binding);
+    }
+
+    #[test]
+    fn extract_outer_new_names_ignores_comment_content() {
+        // A comment inside the `new` clause listing a fake name must
+        // not pollute the extracted list.  This is the primary
+        // vector for false-positives / negatives that could disarm
+        // the drift check (a lib author might write a `// TODO: add
+        // fakeName` inside the clause).
+        let src = "new Real,\n  // fakeName, otherFake,\n  Actual in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["Real", "Actual"]);
+    }
+
+    #[test]
+    fn extract_outer_new_names_ignores_block_comment_content() {
+        let src = "new Real,\n  /* block\n     comment, with, names */\n  Actual in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["Real", "Actual"]);
+    }
+
+    #[test]
+    fn extract_outer_new_names_does_not_match_renew_or_newxyz() {
+        // `new` at start of a word only — the identifier `renew` or
+        // `newValue` must not trip the scanner.  Precondition: `new`
+        // must be preceded by whitespace (or be at buffer start) AND
+        // followed by whitespace.
+        let src = "// renew and newer are not `new`\nlet x = newValue in { new Real in { Nil } }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(
+            idents,
+            vec!["Real"],
+            "scanner must find the real `new` keyword only"
+        );
+    }
+
+    #[test]
+    fn extract_outer_new_names_rejects_source_with_no_new_keyword() {
+        let src = "// just a comment, no new clause here\ncontract foo(x) = { Nil }";
+        assert!(extract_outer_new_names(src).is_err());
+    }
+
+    #[test]
+    fn extract_outer_new_names_rejects_source_with_no_in_terminator() {
+        // `new Foo` without ` in {` should Err (malformed source).
+        // A silently-succeeding empty return here would mask the
+        // drift check.
+        let src = "new Foo, bar";
+        assert!(extract_outer_new_names(src).is_err());
+    }
 }
