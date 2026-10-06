@@ -1546,4 +1546,41 @@ mod tests {
         let b = compose_fs_genesis_source("deadbeef", "feedface", &bundle, Some(100));
         assert_eq!(a, b);
     }
+
+    /// LOAD-BEARING: byte-anchor the composed FsGenesis source
+    /// against unintentional edits.  Pins against a specific
+    /// deterministic input (empty bundle, zero pk/sig, no cadence)
+    /// so the resulting hash reflects the composed source structure
+    /// alone — any unintended edit to fs_genesis.rs, the embedded
+    /// .rho files, FS_NATIVE_URN_SUFFIXES, format_bundle_for_rholang,
+    /// or FS_NONCE flips this hash.
+    ///
+    /// On intentional edit (Genesis hard fork): rerun
+    ///   cargo test -p casper --lib -- --nocapture \
+    ///     compose_fs_genesis_source_golden_hex
+    /// to surface the new hash, update the EXPECTED constant below,
+    /// and treat the change as a coordinated validator upgrade.
+    ///
+    /// On unintentional diff: `git diff` on fs_genesis.rs or the
+    /// casper/src/main/resources/*.rho files should surface the
+    /// offending edit.
+    #[test]
+    fn compose_fs_genesis_source_golden_hex() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        let h = Blake2b256::hash(src.into_bytes());
+        let hex: String = h.iter().fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
+        // Byte-identity with fileio canonical as of slice 5.16 port.
+        const EXPECTED: &str = "79859563b508d3a04812c2c8fb62c76fe6ddd3bcbcdc66f98d99d8836d21103e";
+        assert_eq!(
+            hex, EXPECTED,
+            "compose_fs_genesis_source() hash changed.  If intentional \
+             (a Genesis hard fork), rerun with --nocapture and update \
+             EXPECTED; else find and revert the source edit."
+        );
+        println!("compose_fs_genesis_source hash = {hex}");
+    }
 }
