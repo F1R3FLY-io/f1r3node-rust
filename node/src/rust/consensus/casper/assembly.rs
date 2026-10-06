@@ -32,8 +32,8 @@ use super::api_compat::PreparedApplication;
 use super::{CasperConsensusAdapter, CasperLoop, NativeTask};
 use crate::rust::configuration::NodeConf;
 use crate::rust::consensus::casper::api::servers::APIServers;
+use crate::rust::consensus::casper::manifest::ManifestGuard;
 use crate::rust::consensus::casper::web::reporting_routes::ReportingRoutes;
-use crate::rust::consensus::manifest::ManifestGuard;
 use crate::rust::runtime::setup::PreparedNode;
 
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;

@@ -4,6 +4,7 @@ mod application;
 pub mod api_compat;
 pub(crate) mod assembly;
 mod ingress;
+mod manifest;
 pub mod instances;
 
 use std::future::Future;
@@ -36,7 +37,7 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
-use super::manifest::ManifestGuard;
+use self::manifest::ManifestGuard;
 use crate::rust::consensus::casper::instances::block_processor_instance::BlockProcessorInstance;
 use crate::rust::consensus::casper::instances::heartbeat_proposer::HeartbeatProposer;
 use crate::rust::consensus::casper::instances::proposer_instance::ProposerInstance;
