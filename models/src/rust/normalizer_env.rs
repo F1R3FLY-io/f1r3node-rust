@@ -6,7 +6,7 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 
 use super::casper::protocol::casper_message::DeployData;
-use super::deploy_parameters::{validate_parameters, ParameterError};
+use super::deploy_parameters::{parameters_to_par, ParameterError};
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{GDeployId, GDeployerId, GUnforgeable, Par};
 
@@ -52,7 +52,7 @@ pub fn with_deployer_id(deployer_pk: &PublicKey) -> HashMap<String, Par> {
 pub fn normalizer_env_from_deploy(
     deploy: &Signed<DeployData>,
 ) -> Result<HashMap<String, Par>, ParameterError> {
-    validate_parameters(&deploy.data.parameters)?;
+    let parameter_values = parameters_to_par(&deploy.data.parameters)?;
     let mut env = HashMap::new();
 
     let deploy_id_par = Par::default().with_unforgeables(vec![GUnforgeable {
@@ -85,11 +85,8 @@ pub fn normalizer_env_from_deploy(
         deployer_id_par,
     );
 
-    for parameter in &deploy.data.parameters {
-        env.insert(
-            format!("rho:deploy:param:{}", parameter.name),
-            parameter.value.to_par(),
-        );
+    for (parameter, value) in deploy.data.parameters.iter().zip(parameter_values) {
+        env.insert(format!("rho:deploy:param:{}", parameter.name), value);
     }
     Ok(env)
 }

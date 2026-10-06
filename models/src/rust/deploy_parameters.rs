@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -108,11 +108,24 @@ impl Budget {
 }
 
 pub fn validate_parameters(parameters: &[DeployParameter]) -> Result<(), ParameterError> {
+    prepare_parameters::<false>(parameters).map(|_| ())
+}
+
+pub(crate) fn parameters_to_par(
+    parameters: &[DeployParameter],
+) -> Result<Vec<Par>, ParameterError> {
+    prepare_parameters::<true>(parameters)
+}
+
+fn prepare_parameters<const BUILD_PAR: bool>(
+    parameters: &[DeployParameter],
+) -> Result<Vec<Par>, ParameterError> {
     if parameters.len() > MAX_PARAMETERS {
         return Err(ParameterError::TooManyParameters);
     }
     let mut names = HashSet::new();
     let mut budget = Budget::default();
+    let mut pars = Vec::new();
     for parameter in parameters {
         if parameter.name.is_empty()
             || parameter.name.len() > MAX_PARAMETER_NAME_BYTES
@@ -130,9 +143,12 @@ pub fn validate_parameters(parameters: &[DeployParameter]) -> Result<(), Paramet
             return Err(ParameterError::DuplicateName);
         }
         budget.add_bytes(parameter.name.len())?;
-        parameter.value.validate(1, &mut budget)?;
+        let par = parameter.value.prepare::<BUILD_PAR>(1, &mut budget)?;
+        if BUILD_PAR {
+            pars.push(par);
+        }
     }
-    Ok(())
+    Ok(pars)
 }
 
 pub fn deserialize_parameters<'de, D>(deserializer: D) -> Result<Vec<DeployParameter>, D::Error>
@@ -177,29 +193,85 @@ impl DeployParameter {
 }
 
 impl RholangValue {
-    fn validate(&self, depth: usize, budget: &mut Budget) -> Result<(), ParameterError> {
+    fn prepare<const BUILD_PAR: bool>(
+        &self,
+        depth: usize,
+        budget: &mut Budget,
+    ) -> Result<Par, ParameterError> {
         budget.enter(depth)?;
         match self {
             Self::String(value) | Self::Uri(value) => budget.add_bytes(value.len())?,
             Self::Bytes(value) => budget.add_bytes(value.len())?,
             Self::Tuple(values) | Self::List(values) | Self::Set(values) => {
+                let mut pars = Vec::new();
                 for value in values {
-                    value.validate(depth + 1, budget)?;
+                    let par = value.prepare::<BUILD_PAR>(depth + 1, budget)?;
+                    if BUILD_PAR {
+                        pars.push(par);
+                    }
                 }
+                return Ok(if BUILD_PAR {
+                    self.sequence_to_par(pars)
+                } else {
+                    Par::default()
+                });
             }
             Self::Map(entries) => {
                 let mut keys = HashSet::new();
+                let mut pairs = HashMap::new();
                 for entry in entries {
-                    entry.key.validate(depth + 1, budget)?;
-                    entry.value.validate(depth + 1, budget)?;
-                    if !keys.insert(entry.key.to_par()) {
+                    let key = entry.key.prepare::<true>(depth + 1, budget)?;
+                    let value = entry.value.prepare::<BUILD_PAR>(depth + 1, budget)?;
+                    let duplicate = if BUILD_PAR {
+                        pairs.insert(key, value).is_some()
+                    } else {
+                        !keys.insert(key)
+                    };
+                    if duplicate {
                         return Err(ParameterError::DuplicateMapKey);
                     }
                 }
+                return Ok(if BUILD_PAR {
+                    Self::map_to_par(pairs.into_iter().collect())
+                } else {
+                    Par::default()
+                });
             }
             Self::Bool(_) | Self::Int(_) | Self::Nil => {}
         }
-        Ok(())
+        Ok(if BUILD_PAR {
+            self.to_par()
+        } else {
+            Par::default()
+        })
+    }
+
+    fn sequence_to_par(&self, ps: Vec<Par>) -> Par {
+        let expr_instance = match self {
+            Self::Tuple(_) => ExprInstance::ETupleBody(ETuple {
+                ps,
+                ..Default::default()
+            }),
+            Self::List(_) => ExprInstance::EListBody(EList {
+                ps,
+                ..Default::default()
+            }),
+            Self::Set(_) => ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+                ParSet::create_from_vec(ps),
+            )),
+            _ => unreachable!(),
+        };
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(expr_instance),
+        }])
+    }
+
+    fn map_to_par(pairs: Vec<(Par, Par)>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+                ParMap::create_from_vec(pairs),
+            ))),
+        }])
     }
 
     pub fn to_par(&self) -> Par {
@@ -210,24 +282,16 @@ impl RholangValue {
             Self::Bytes(value) => ExprInstance::GByteArray(value.clone()),
             Self::Uri(value) => ExprInstance::GUri(value.clone()),
             Self::Nil => return Par::default(),
-            Self::Tuple(values) => ExprInstance::ETupleBody(ETuple {
-                ps: values.iter().map(Self::to_par).collect(),
-                ..Default::default()
-            }),
-            Self::List(values) => ExprInstance::EListBody(EList {
-                ps: values.iter().map(Self::to_par).collect(),
-                ..Default::default()
-            }),
-            Self::Set(values) => ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(values.iter().map(Self::to_par).collect()),
-            )),
+            Self::Tuple(values) | Self::List(values) | Self::Set(values) => {
+                return self.sequence_to_par(values.iter().map(Self::to_par).collect());
+            }
             Self::Map(entries) => {
-                ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(ParMap::create_from_vec(
+                return Self::map_to_par(
                     entries
                         .iter()
                         .map(|entry| (entry.key.to_par(), entry.value.to_par()))
                         .collect(),
-                )))
+                );
             }
         };
         Par::default().with_exprs(vec![Expr {
@@ -333,6 +397,12 @@ mod tests {
             name: "input".into(),
             value,
         }
+    }
+
+    fn check_parameters(parameters: &[DeployParameter]) -> Result<(), ParameterError> {
+        let result = validate_parameters(parameters);
+        assert_eq!(parameters_to_par(parameters).map(|_| ()), result);
+        result
     }
 
     fn deploy(parameters: Vec<DeployParameter>) -> DeployData {
@@ -496,9 +566,83 @@ mod tests {
             },
         ]));
         assert_eq!(
-            validate_parameters(&[duplicate]),
+            check_parameters(&[duplicate]),
             Err(ParameterError::DuplicateMapKey)
         );
+    }
+
+    #[test]
+    fn deploy_parameters_prepare_nested_maps_in_parameter_order() {
+        let entries = vec![
+            DeployMapEntry {
+                key: RholangValue::Set(vec![RholangValue::Int(2), RholangValue::Int(1)]),
+                value: RholangValue::Nil,
+            },
+            DeployMapEntry {
+                key: RholangValue::Int(3),
+                value: RholangValue::Tuple(vec![RholangValue::Bool(true)]),
+            },
+        ];
+        let forward = RholangValue::Map(entries.clone());
+        let reverse = RholangValue::Map(entries.into_iter().rev().collect());
+        let mut values = values();
+        values.push(RholangValue::Map(vec![DeployMapEntry {
+            key: forward.clone(),
+            value: RholangValue::List(vec![reverse.clone()]),
+        }]));
+        let parameters: Vec<_> = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| DeployParameter {
+                name: format!("input{index}"),
+                value,
+            })
+            .collect();
+        assert!(check_parameters(&parameters).is_ok());
+        let prepared = parameters_to_par(&parameters).unwrap();
+        assert_eq!(prepared.len(), parameters.len());
+        for (par, parameter) in prepared.iter().zip(&parameters) {
+            assert_eq!(
+                par.encode_to_vec(),
+                parameter.value.to_par().encode_to_vec()
+            );
+        }
+        let signed = Signed::create(
+            deploy(parameters.clone()),
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        let env = normalizer_env_from_deploy(&signed).unwrap();
+        for (par, parameter) in prepared.iter().zip(&parameters) {
+            assert_eq!(&env[&format!("rho:deploy:param:{}", parameter.name)], par);
+        }
+        let duplicate = RholangValue::Map(vec![
+            DeployMapEntry {
+                key: forward,
+                value: RholangValue::Nil,
+            },
+            DeployMapEntry {
+                key: reverse,
+                value: RholangValue::Nil,
+            },
+        ]);
+        for value in [
+            duplicate.clone(),
+            RholangValue::Map(vec![DeployMapEntry {
+                key: duplicate.clone(),
+                value: RholangValue::Nil,
+            }]),
+            RholangValue::Map(vec![DeployMapEntry {
+                key: RholangValue::Nil,
+                value: duplicate,
+            }]),
+        ] {
+            assert_eq!(
+                check_parameters(&[parameter(value)]),
+                Err(ParameterError::DuplicateMapKey)
+            );
+        }
     }
 
     #[test]
@@ -513,25 +657,25 @@ mod tests {
             "x".repeat(257),
         ] {
             assert_eq!(
-                validate_parameters(&[DeployParameter {
+                check_parameters(&[DeployParameter {
                     name,
                     value: RholangValue::Nil
                 }]),
                 Err(ParameterError::InvalidName)
             );
         }
-        assert!(validate_parameters(&[DeployParameter {
+        assert!(check_parameters(&[DeployParameter {
             name: "_A0".into(),
             value: RholangValue::Nil
         }])
         .is_ok());
         let value = parameter(RholangValue::Nil);
         assert_eq!(
-            validate_parameters(&[value.clone(), value.clone()]),
+            check_parameters(&[value.clone(), value.clone()]),
             Err(ParameterError::DuplicateName)
         );
         assert_eq!(
-            validate_parameters(&vec![value; MAX_PARAMETERS + 1]),
+            check_parameters(&vec![value; MAX_PARAMETERS + 1]),
             Err(ParameterError::TooManyParameters)
         );
     }
@@ -542,10 +686,10 @@ mod tests {
         for _ in 1..MAX_PARAMETER_DEPTH {
             value = RholangValue::List(vec![value]);
         }
-        assert!(validate_parameters(&[parameter(value.clone())]).is_ok());
+        assert!(check_parameters(&[parameter(value.clone())]).is_ok());
         let too_deep = parameter(RholangValue::List(vec![value]));
         assert_eq!(
-            validate_parameters(&[too_deep.clone()]),
+            check_parameters(&[too_deep.clone()]),
             Err(ParameterError::TooDeep)
         );
         assert_eq!(
@@ -553,19 +697,69 @@ mod tests {
             Err(ParameterError::TooDeep)
         );
         assert_eq!(
-            validate_parameters(&[parameter(RholangValue::List(vec![
+            check_parameters(&[parameter(RholangValue::List(vec![
                 RholangValue::Nil;
                 MAX_PARAMETER_NODES
             ]))]),
             Err(ParameterError::TooManyValues)
         );
         assert_eq!(
-            validate_parameters(&[parameter(RholangValue::Bytes(vec![0; MAX_PARAMETER_BYTES]))]),
+            check_parameters(&[parameter(RholangValue::Bytes(vec![0; MAX_PARAMETER_BYTES]))]),
             Err(ParameterError::TooLarge)
         );
         let half = RholangValue::String("x".repeat(MAX_PARAMETER_BYTES / 2));
         assert_eq!(
-            validate_parameters(&[parameter(RholangValue::Tuple(vec![half.clone(), half]))]),
+            check_parameters(&[parameter(RholangValue::Tuple(vec![half.clone(), half]))]),
+            Err(ParameterError::TooLarge)
+        );
+        let at_node_limit = parameter(RholangValue::List(vec![
+            RholangValue::Nil;
+            MAX_PARAMETER_NODES - 1
+        ]));
+        assert!(check_parameters(&[at_node_limit.clone()]).is_ok());
+        assert_eq!(
+            check_parameters(&[at_node_limit, DeployParameter {
+                name: "extra".into(),
+                value: RholangValue::Nil,
+            },]),
+            Err(ParameterError::TooManyValues)
+        );
+        let at_byte_limit = parameter(RholangValue::Bytes(vec![
+            0;
+            MAX_PARAMETER_BYTES
+                - "input".len()
+                - 8
+        ]));
+        assert!(check_parameters(&[at_byte_limit.clone()]).is_ok());
+        assert_eq!(
+            check_parameters(&[at_byte_limit, DeployParameter {
+                name: "extra".into(),
+                value: RholangValue::Nil,
+            },]),
+            Err(ParameterError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn deploy_parameters_preserve_map_validation_error_order() {
+        let entry = DeployMapEntry {
+            key: RholangValue::Nil,
+            value: RholangValue::Nil,
+        };
+        let oversized = DeployMapEntry {
+            key: RholangValue::Nil,
+            value: RholangValue::Bytes(vec![0; MAX_PARAMETER_BYTES]),
+        };
+        assert_eq!(
+            check_parameters(&[parameter(RholangValue::Map(vec![
+                entry.clone(),
+                entry.clone(),
+                oversized.clone(),
+            ]))]),
+            Err(ParameterError::DuplicateMapKey)
+        );
+        assert_eq!(
+            check_parameters(&[parameter(RholangValue::Map(vec![entry, oversized]))]),
             Err(ParameterError::TooLarge)
         );
     }
