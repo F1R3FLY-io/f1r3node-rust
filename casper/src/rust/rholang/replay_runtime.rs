@@ -116,40 +116,16 @@ impl ReplayRuntimeOps {
             .await;
 
         // Slice 31: toggle the replay reducer's fs-native URN filter
-        // off for the duration of the genesis-blessed deploy batch
-        // so joining / replaying validators can bind the raw fs_*
-        // primitives into FsGenesis's new-scope — same shape as
-        // slice 5.33's play-side toggle.  Each validator has its
-        // own `DebruijnInterpreter` with its own `Arc<AtomicBool>`
-        // defaulting to true; without this toggle, a joining
-        // validator would reject the replayed fs_generator deploy
-        // and fail to join the shard.
-        //
-        // Guard is Drop-based so the filter restores on every
-        // return path (success, ?, panic unwind).  Only toggled
-        // when is_genesis = true; non-genesis replay (block N > 0)
-        // leaves the filter at its default (reject fs native URNs
-        // from user deploys during replay just as during play).
+        // off for genesis replay (is_genesis = true) so joining /
+        // replaying validators can bind the raw fs_* primitives into
+        // FsGenesis's new-scope.  Non-genesis replay leaves the
+        // default-true filter in force.  See
+        // `casper::rholang::runtime::FsNativeFilterGuard` for the
+        // RAII shape — Drop restores on every return path.
         let _guard = if is_genesis {
-            struct FilterGuard {
-                flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-                prev: bool,
-            }
-            impl Drop for FilterGuard {
-                fn drop(&mut self) {
-                    self.flag
-                        .store(self.prev, std::sync::atomic::Ordering::Release);
-                }
-            }
-            let flag = self
-                .runtime_ops
-                .runtime
-                .reducer
-                .filter_fs_native_urns
-                .clone();
-            let prev = flag.load(std::sync::atomic::Ordering::Acquire);
-            flag.store(false, std::sync::atomic::Ordering::Release);
-            Some(FilterGuard { flag, prev })
+            Some(super::runtime::FsNativeFilterGuard::disable(
+                &self.runtime_ops.runtime.reducer,
+            ))
         } else {
             None
         };

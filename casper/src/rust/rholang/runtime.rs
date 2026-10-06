@@ -87,6 +87,44 @@ impl RuntimeOps {
     pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
 }
 
+/// RAII guard that temporarily disables the reducer's fs-native URN
+/// filter and restores it on every return path (success, `?`, panic
+/// unwind).  Used by `play_deploys_for_genesis` + `replay_compute_state
+/// (is_genesis = true)` to let FsGenesis bind the raw fs_* primitives
+/// into its outer new-scope while keeping state-execution deploys
+/// gated.
+///
+/// Memory ordering: Acquire-load the prior value + Release-store the
+/// new value; Drop stores back with Release.  Pairs with the
+/// filter-check Acquire in `reduce.rs::eval_new`.
+///
+/// Owns a cloned `Arc<AtomicBool>` so it doesn't hold a borrow across
+/// the mutable `self.runtime` borrows used elsewhere in the enclosing
+/// function (e.g., `create_checkpoint`).
+pub struct FsNativeFilterGuard {
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    prev: bool,
+}
+
+impl FsNativeFilterGuard {
+    /// Clone the reducer's filter Arc, read its current value under
+    /// Acquire, then store `false` under Release.  Caller holds the
+    /// returned guard; Drop restores the prior value.
+    pub fn disable(reducer: &rholang::rust::interpreter::reduce::DebruijnInterpreter) -> Self {
+        let flag = reducer.filter_fs_native_urns.clone();
+        let prev = flag.load(std::sync::atomic::Ordering::Acquire);
+        flag.store(false, std::sync::atomic::Ordering::Release);
+        Self { flag, prev }
+    }
+}
+
+impl Drop for FsNativeFilterGuard {
+    fn drop(&mut self) {
+        self.flag
+            .store(self.prev, std::sync::atomic::Ordering::Release);
+    }
+}
+
 #[allow(type_alias_bounds)]
 pub type SysEvalResult<S: SystemDeployTrait> =
     (Either<SystemDeployUserError, S::Result>, EvaluateResult);
@@ -370,33 +408,10 @@ impl RuntimeOps {
 
         // Slice 31: toggle the reducer's fs-native URN filter off
         // for the duration of the genesis-blessed batch so FsGenesis
-        // can bind the raw fsRead/fsWrite/... primitives.  Restored
-        // to the default (block user deploys) on every return path,
-        // including the ? on process_deploy_with_mergeable_data,
-        // via a Drop-based guard — a panic or early return in a
-        // single deploy must not leave the filter permanently
-        // disabled on this runtime.
-        //
-        // The guard owns a cloned Arc to the AtomicBool so it does
-        // not keep an immutable borrow of self.runtime across the
-        // mutable borrow in create_checkpoint below.
-        struct FilterGuard {
-            flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-            prev: bool,
-        }
-        impl Drop for FilterGuard {
-            fn drop(&mut self) {
-                self.flag
-                    .store(self.prev, std::sync::atomic::Ordering::Release);
-            }
-        }
-        let filter_flag = self.runtime.reducer.filter_fs_native_urns.clone();
-        let prev = filter_flag.load(std::sync::atomic::Ordering::Acquire);
-        filter_flag.store(false, std::sync::atomic::Ordering::Release);
-        let _guard = FilterGuard {
-            flag: filter_flag,
-            prev,
-        };
+        // can bind the raw fsRead/fsWrite/... primitives.  Guard is
+        // Drop-based (see FsNativeFilterGuard) so the filter restores
+        // on every return path including ? and panic unwind.
+        let _guard = FsNativeFilterGuard::disable(&self.runtime.reducer);
 
         let mut res = Vec::with_capacity(terms.len());
         for deploy in terms {
