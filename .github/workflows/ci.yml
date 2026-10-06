@@ -345,6 +345,24 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
 
+      - name: Verify commit trailer check
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-check-commit-trailers.sh
+
+      # Co-authored-by trailers with an @anthropic.com address list an AI
+      # account in the GitHub contributors graph (CLAUDE.md "Commit
+      # Messages"). Only the pull request's own commits are checked; the
+      # fetch takes commit objects only, without trees or blobs.
+      - name: Reject AI co-author trailers in pull request commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          git fetch --quiet --no-tags --unshallow --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}"
+
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-pre-push-hook.sh

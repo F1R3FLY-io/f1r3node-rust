@@ -186,6 +186,9 @@ Both settings take effect at the next session start.
 - Do NOT include Claude Code attribution footer or emoji
 - Do NOT include Co-Authored-By lines
 - Keep commit messages clean and professional
+- A `Co-authored-by` trailer with an `@anthropic.com` address makes GitHub list an AI account in the contributors graph.
+- The `.githooks/commit-msg` hook and the CI `Lint` job reject these trailers and `Claude-Session` trailers. Human co-authors stay allowed.
+- Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
 ### Branch Strategy
 - `master` is the default branch and release line. Maintainers promote `dev` to `master`.

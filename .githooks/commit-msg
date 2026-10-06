@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# commit-msg hook - Reject AI co-author and assistant session trailers
+#
+# A Co-authored-by trailer with an @anthropic.com address makes GitHub list
+# an AI account in the contributors graph. CLAUDE.md "Commit Messages"
+# forbids these trailers; CI rejects them on pull requests.
+#
+
+set -euo pipefail
+
+checker="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.github/scripts/check-commit-trailers.sh"
+[ -x "$checker" ] || checker="$(git rev-parse --show-toplevel)/.github/scripts/check-commit-trailers.sh"
+exec "$checker" message "$1"
