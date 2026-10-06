@@ -1648,4 +1648,97 @@ mod tests {
             FS_NATIVE_URN_SUFFIXES.len()
         );
     }
+
+    /// Pin arities on `FS_HANDLERS` entries against a hardcoded
+    /// URN → arity golden table.  A slice that bumps a handler's
+    /// `const ARITY` without updating callers (or vice-versa)
+    /// creates a silent-hang class — the Rholang dispatch pattern
+    /// doesn't match the handler arity and the reply channel is
+    /// never fired (the H-P7-8-E2E bug class).
+    ///
+    /// The golden table captures the authoritative arity for every
+    /// trait-migrated handler (27 of 28 URN suffixes).
+    /// `fs_remove_dir` is trait-exempt and NOT in `FS_HANDLERS` on
+    /// dev yet — its arity will be pinned in the follow-up slice
+    /// that registers the explicit `fs_native_def` call site.
+    #[test]
+    fn fs_native_def_arities_match_golden_table() {
+        use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
+
+        // Golden table: URN suffix → (arity, rationale).  Every
+        // arity change here IS a cross-source change and usually
+        // a hard fork of caller code.
+        let golden: &[(&str, usize)] = &[
+            ("open", 5),               // (root, rel, mode, cmode, ack)
+            ("close", 2),              // (fd, ack)
+            ("read", 3),               // (fd, n, ack)
+            ("readAt", 4),             // (fd, off, n, ack)
+            ("write", 3),              // (fd, bytes, ack)
+            ("writeAt", 4),            // (fd, off, bytes, ack)
+            ("seek", 4),               // (fd, whence, off, ack)
+            ("tell", 2),               // (fd, ack)
+            ("size", 2),               // (fd, ack)
+            ("flush", 2),              // (fd, ack)
+            ("stat", 4),               // (root, rel, cmode, ack)
+            ("exists", 4),             // (root, rel, cmode, ack)
+            ("truncate", 3),           // (fd, n, ack)
+            ("chmod", 5),              // (root, rel, mode, cmode, ack)
+            ("chown", 6),              // (root, rel, owner, group, cmode, ack)
+            ("removeFile", 4),         // (root, rel, cmode, ack)
+            ("rename", 6),             // (from_root, from_rel, to_root, to_rel, cmode, ack)
+            ("copyFile", 6),           // (from_root, from_rel, to_root, to_rel, cmode, ack)
+            ("entries", 4),            // (root, rel, cmode, ack)
+            ("entriesStreamOpen", 4),  // (root, rel, cmode, ack)
+            ("entriesStreamNext", 2),  // (streamFd, ack) — cmode captured at open
+            ("entriesStreamClose", 2), // (streamFd, ack)
+            ("quarantine", 3),         // (root, rel, ack)
+            // Range-lock natives (fd-based).  S4.7 follow-up
+            // (2026-09-11 hardening) added `holder` at slot 1 of
+            // releaseLock.
+            ("lockRange", 8), // (fd, offset, length, mode, holder, cmode, wait, ack)
+            ("lockSequential", 5), // (fd, holder, cmode, wait, ack)
+            ("releaseLock", 3), // (lockId, holder, ack)
+            ("releaseAllForHolder", 2), // (holder, ack)
+        ];
+
+        // Every FS_HANDLERS entry must have a golden-table row with
+        // a matching arity.
+        for entry in FS_HANDLERS.iter() {
+            let expected = golden
+                .iter()
+                .find(|(s, _)| *s == entry.urn_suffix)
+                .map(|(_, a)| *a)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "FS_HANDLERS entry `{}` (URN suffix `{}`) has \
+                         no matching row in this golden table.  Add it \
+                         if a new handler was registered, or remove the \
+                         FS_HANDLERS entry if the handler was retired.",
+                        entry.name, entry.urn_suffix
+                    )
+                });
+            assert_eq!(
+                entry.arity, expected,
+                "arity drift for `{FS_NATIVE_URN_PREFIX}{}` — golden \
+                 table says {expected} but `<FsHandler>::ARITY` on the \
+                 trait impl for `{}` is {}.  If intentional, update this \
+                 golden table AND the ARITY constant AND every caller.  A \
+                 silent mismatch produces the H-P7-8-E2E hang class.",
+                entry.urn_suffix, entry.name, entry.arity
+            );
+        }
+
+        // Reverse direction: every golden-table row must correspond
+        // to an FS_HANDLERS entry (except `removeDir` which is
+        // trait-exempt — not in the golden table either).
+        let known: std::collections::HashSet<&str> =
+            FS_HANDLERS.iter().map(|e| e.urn_suffix).collect();
+        for (suffix, _) in golden {
+            assert!(
+                known.contains(suffix),
+                "golden table has row for `{suffix}` but no FS_HANDLERS \
+                 entry — either register the handler or remove the row."
+            );
+        }
+    }
 }
