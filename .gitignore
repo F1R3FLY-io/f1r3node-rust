@@ -132,3 +132,4 @@ docs/discoveries/*.md
 graphify-out/
 /graphify-out
 docs/work-logs/*.md
+docs/handoffs/
