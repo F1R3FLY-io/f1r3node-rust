@@ -122,6 +122,9 @@ use models::rhoapi::{Expr, Par};
 use models::rust::utils::{new_etuple_par, new_gint_par};
 use prost::Message;
 use rholang::rust::interpreter::registry::registry::Registry;
+use rholang::rust::interpreter::rho_source::lib_body;
+
+use super::embedded_rho;
 
 /// Static-provisioning bundle-entry kind.  Matches slice 23's
 /// `EntryKind` shape but redefined here to avoid a `node → casper`
@@ -809,6 +812,263 @@ pub fn buffer_versioned_uri(pk: &PublicKey) -> String {
     format!("rho:serve:1.0.0:{pk_hex}:buffer:1.0.0")
 }
 
+/// Compose the full FsGenesis Rholang source.
+///
+/// Wraps every library body inside a shared `new` scope that also
+/// binds the native URNs to the names the library bodies capture
+/// lexically (`fsRead`, `fsWrite`, etc.) and the registry-insertion
+/// URN needed for publication.
+///
+/// `pk_hex` and `sig_hex` MUST be lowercase ASCII hex strings; the
+/// debug-asserts below prevent a future refactor from passing
+/// untrusted bytes through the `format!` boundary.
+pub fn compose_fs_genesis_source(
+    pk_hex: &str,
+    sig_hex: &str,
+    bundle: &[BundleEntry],
+    consensus_fs_snapshot_cadence: Option<u64>,
+) -> String {
+    // H-25-2 slice-25 review fix: promoted from debug_assert! to
+    // assert! so release builds also reject non-hex input.  Genesis
+    // runs once at boot; the constant-time hex check is negligible.
+    assert!(
+        pk_hex.chars().all(|c| c.is_ascii_hexdigit()),
+        "pk_hex must be ASCII hex"
+    );
+    assert!(
+        sig_hex.chars().all(|c| c.is_ascii_hexdigit()),
+        "sig_hex must be ASCII hex"
+    );
+    let bundle_rho = format_bundle_for_rholang(bundle);
+    // CRIT-2 fix (2026-08-06): embed cadence as a Rholang literal
+    // in the FsGenesis deploy term so it is consensus-observable via
+    // the deploy hash.  Pre-fix, `Genesis.consensus_fs_snapshot_cadence`
+    // was hashed into the Genesis struct but the value never flowed
+    // into an on-wire artifact — `BlockApproverProtocol::validate_
+    // candidate` does a byte-for-byte deploy-term comparison, and since
+    // cadence didn't affect any deploy term, a leader with cadence=100
+    // and a validator with cadence=50 both passed validation while
+    // silently writing snapshots at different block heights (the
+    // FIPS review CRIT-2 finding).  Post-fix, cadence is a literal
+    // in the composed source; deploy-term diff fires on mismatch.
+    //
+    // `None` → literal `Nil` (no cadence).  `Some(n)` → literal
+    // integer.  Bound to a private name and immediately consumed
+    // so the commitment leaves no live message on any user-reachable
+    // channel — the sole purpose is to make cadence appear in the
+    // deploy term's serialized bytes.
+    let cadence_literal = match consensus_fs_snapshot_cadence {
+        None => "Nil".to_string(),
+        Some(n) => n.to_string(),
+    };
+
+    let file_body = lib_body(embedded_rho::FILE);
+    let dir_body = lib_body(embedded_rho::DIR);
+    let stream_body = lib_body(embedded_rho::STREAM);
+    let buffer_body = lib_body(embedded_rho::BUFFER);
+    let stdin_body = lib_body(embedded_rho::STDIN);
+    let stdout_body = lib_body(embedded_rho::STDOUT);
+    let fs_body = lib_body(embedded_rho::FS);
+
+    let nonce = FS_NONCE;
+
+    format!(
+        r#"
+new
+  File, fdP, stateP, cmodeP, Dir, rootP,
+  Stream, paramsP, gatherN, foldLoop, forEachLoop, foldChunksLoop,
+  Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
+  gatherChunks, drainChunks, allocInnersLoop, parkInnersLoop,
+  clearInnersLoop, closeInnersLoop,
+  // M-13 (A1-F-10, 2026-09-04) writeByte helpers.  Buffer.rho's own
+  // outer `new` binds these; `lib_body` strips that outer scope
+  // when pasting Buffer's body into the composed source, so the
+  // composed outer scope must re-bind them here or the pasted
+  // `contract hexDigit(...)` binds `hexDigit` as a ContextFree
+  // name and the downstream `hexDigit!(...)` call collides.  The
+  // comment in the M-13 anchor claimed these were added at
+  // composition time; that commit landed the Buffer-side binding
+  // and the anchor comment but the composed-scope re-binding did
+  // not.  Fix (2026-09-08): re-bind at the composed outer scope.
+  hexDigit, intToOneByte,
+  Stdin, stdinFdP, stdinStateP,
+  Stdout, stdoutFdP, stdoutStateP,
+  Fs, fsBundleP,
+  fsStdinFdP, fsStdoutFdP, fsStderrFdP,
+  // Ambient-authority off-switch (2026-09-03).  Module-level cell
+  // shared across every Fs instance; flipped by Fs.revoke().
+  // Initialized to `false` at composition time by the module body.
+  // See Fs.rho's top-of-file docstring + FIP §Revocation.
+  fsRevokedP,
+  openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
+  // parseRwxToBits + parseRwxLoop retired 2026-09-04 (mode-consistency
+  // migration — chmod now takes Int mode-bits matching stat.mode).
+  writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
+  readLinesIntoLoop, drainToNextLF,
+  codepointLen, concatStringsLoop, scanLineForLF,
+  // Phase 8 slice 8a — LockToken agent + per-instance state key.
+  // See File.rho's module-level `new` docstring for the design
+  // rationale; must be bound at THIS outer scope because File.rho
+  // gets its own top-level `new` stripped by `lib_body` at
+  // composition time.
+  LockToken, lockStateP,
+  // Phase 8 slice 8c — auto-acquire helpers for options-map-taking
+  // method variants (spec §1181).  Encapsulate the acquire →
+  // inner-action → release dance so per-method variants avoid
+  // duplicating ~50 lines of Rholang wraps each.  Defined at the
+  // end of File.rho; bound here for the same reason as LockToken
+  // (File.rho's top-level `new` is stripped by lib_body).
+  withSequentialLock, withRangeLock,
+  // Phase 8 slice 8d — hand-off helpers for stream-lifetime-locked
+  // method variants (chars, bytes, lines, bytesAt).  Acquire the
+  // lock and hand the LockId to the caller via lockOut; the caller's
+  // stream constructor stores it in the existing lockCell so release
+  // fires from stream termination as today.
+  acquireRangeForStream, acquireSequentialForStream,
+  // RH-2 (2026-09-04) stream-lifetime release-once helper — every
+  // stream producer's termination path invokes this to fire
+  // fsReleaseLock exactly once regardless of how many termination
+  // paths race.  See File.rho's `contract releaseSeqLockOnce` for
+  // the invariant.
+  releaseSeqLockOnce,
+  // Phase 8 slice 8d-2 — companion loop for writeLines arity-2 that
+  // threads the options map (with wait:true) to each internal writeLine
+  // arity-2 call.  Same shape as writeLinesLoop but arity 5 not 4.
+  writeLinesLoopWithOptions,
+  fsOpen(`rho:io:fs:native:1.0.0/open`),
+  fsClose(`rho:io:fs:native:1.0.0/close`),
+  fsRead(`rho:io:fs:native:1.0.0/read`),
+  fsReadAt(`rho:io:fs:native:1.0.0/readAt`),
+  fsWrite(`rho:io:fs:native:1.0.0/write`),
+  fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+  fsSeek(`rho:io:fs:native:1.0.0/seek`),
+  fsTell(`rho:io:fs:native:1.0.0/tell`),
+  fsSize(`rho:io:fs:native:1.0.0/size`),
+  fsFlush(`rho:io:fs:native:1.0.0/flush`),
+  fsStat(`rho:io:fs:native:1.0.0/stat`),
+  fsExists(`rho:io:fs:native:1.0.0/exists`),
+  fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+  fsChmod(`rho:io:fs:native:1.0.0/chmod`),
+  fsChown(`rho:io:fs:native:1.0.0/chown`),
+  fsRemoveFile(`rho:io:fs:native:1.0.0/removeFile`),
+  fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`),
+  fsRename(`rho:io:fs:native:1.0.0/rename`),
+  fsCopyFile(`rho:io:fs:native:1.0.0/copyFile`),
+  fsEntries(`rho:io:fs:native:1.0.0/entries`),
+  fsEntriesStreamOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
+  fsEntriesStreamNext(`rho:io:fs:native:1.0.0/entriesStreamNext`),
+  fsEntriesStreamClose(`rho:io:fs:native:1.0.0/entriesStreamClose`),
+  fsQuarantine(`rho:io:fs:native:1.0.0/quarantine`),
+  fsLockRange(`rho:io:fs:native:1.0.0/lockRange`),
+  fsLockSequential(`rho:io:fs:native:1.0.0/lockSequential`),
+  fsReleaseLock(`rho:io:fs:native:1.0.0/releaseLock`),
+  fsReleaseAllForHolder(`rho:io:fs:native:1.0.0/releaseAllForHolder`),
+  rs(`rho:registry:insertSigned:secp256k1`),
+  uriOut,
+  // PB-B-3 (2026-08-24): Versioned Registry publication.  `v1Api`
+  // is VersionedRegistry.rho's internal API channel; we bind it
+  // directly (rather than going through `rho:registry:1.0.0` +
+  // `getReg`) because we already have URN-binding scope at outer
+  // `new`.  `insertVersion("serve", "fs", "1.0.0", fs, *ret)`
+  // stores `fs` in the store under
+  // `(FS_GENERATOR_PUB_KEY_HEX, "fs")["1.0.0"]`, resolvable via
+  // `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:fs:1.0.0`.  Same
+  // `fs` Par as insertSigned publishes at `rho:id:<hash>`, so
+  // both URIs resolve to the same underlying cap.  `insertVerRet`
+  // is drained (`for(_ <- insertVerRet)`) to enforce a happens-
+  // before edge between the mutator and any subsequent lookup in
+  // the same deploy; genesis is the sole registrant under this
+  // pk_hex/proj pair by construction so it cannot collide.
+  v1Api(`rho:registry:v1:internal`), insertVerRet, allocInsertVerRet
+in {{
+  {file_body}
+  |
+  {dir_body}
+  |
+  {stream_body}
+  |
+  {buffer_body}
+  |
+  {stdin_body}
+  |
+  {stdout_body}
+  |
+  {fs_body}
+  |
+  // CRIT-2 fix (2026-08-06): snapshot-cadence commitment.  Binds
+  // cadence to a fresh unforgeable name and immediately consumes
+  // it (peek + drop) so the term serializes deterministically as
+  // a function of cadence but leaves no user-reachable state.  The
+  // sole purpose is byte-diff detection at
+  // `BlockApproverProtocol::validate_candidate` — a leader with
+  // cadence=100 and a validator with cadence=50 now produce
+  // different fs_generator deploy terms, so validation fails loudly
+  // instead of silently proceeding with divergent snapshot behavior.
+  new snapshotCadenceCommitmentP in {{
+    snapshotCadenceCommitmentP!({cadence_literal}) |
+    for (_ <- snapshotCadenceCommitmentP) {{ Nil }}
+  }} |
+  // Slice 25: mint one shared Fs instance (stdio fds 0/1/2, static
+  // bundle populated from operator config+CLI merge) and publish
+  // it at the registry URI derived from FS_GENERATOR_PK.  Per-
+  // principal delegation via powerbox is a candidate follow-up
+  // (see fs_genesis.rs docstring MVP simplifications §1);
+  // shards may keep the shared-Fs shape indefinitely.
+  for (@fs <- Fs!?(0, 1, 2, {bundle_rho})) {{
+    rs!(
+      "{pk_hex}".hexToBytes(),
+      ({nonce}, fs),
+      "{sig_hex}".hexToBytes(),
+      *uriOut
+    ) |
+    // PB-B-3: also publish under the Versioned Registry so the
+    // spec-canonical `rho:serve:1.0.0:<pk_hex>:fs:1.*` lookup shape
+    // resolves.  Runs in parallel with the insertSigned call above;
+    // both target the same `fs` Par, so leader/follower state is
+    // deterministic regardless of which insert commits first.
+    // Drain insertVerRet so the deploy's tuplespace effects fully
+    // commit (the mutator's produce is what actually stores the
+    // entry; the reply on insertVerRet is `true` on success).
+    // Store the fs cap under the versioned-registry map.  Callers
+    // resolve via `rho:serve:1.0.0:<pk_hex>:fs:1.0.0`.  The
+    // `for(@_ <- insertVerRet)` await sequences the mutator's
+    // commit to complete BEFORE the deploy exits — a dropped
+    // await lets fs_generator terminate while the store update
+    // is still in-flight, so subsequent deploys see a partially-
+    // committed store and lookupVersion returns Nil.  E2E
+    // resolution pinned by
+    // `fs_cap_is_resolvable_via_versioned_registry_uri` in
+    // `casper/tests/genesis/contracts/fileio_fs_spec.rs`.
+    v1Api!("insertVersion", "serve", "fs", "1.0.0", fs, *insertVerRet) |
+    for (@_ <- insertVerRet) {{ Nil }}
+  }} |
+  // PB-B-5 (2026-09-02): mint one shared Allocator instance and
+  // publish it at `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:buffer:1.0.0`
+  // so user deploys can obtain Buffer / Rows caps.  Same delegation
+  // shape as the fs cap above (single shared instance per node via
+  // insertVersion under the serve namespace).  Per-principal
+  // delegation is a candidate powerbox slice (would mirror PB-B-3 →
+  // PB-B-5 authenticated-caller discipline) but is not scheduled —
+  // post-PB-M-1 narrowing left shard-specific delegation shapes as
+  // optional add-ons rather than core FIP substrate.
+  //
+  // No `insertSigned` counterpart — legacy `rho:id:<hash>` publication
+  // was a compatibility affordance for the Fs cap; Allocator ships
+  // fresh so callers use the serve-URN form exclusively.
+  //
+  // Runs in parallel with the Fs mint/publish block above; both
+  // Allocator!?() and Fs!?(...) are independent no-arg / arg-list
+  // constructors on module-scope agents already lexically in the
+  // outer `new` binding, so no ordering constraint between them.
+  for (@alloc <- Allocator!?()) {{
+    v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc, *allocInsertVerRet) |
+    for (@_ <- allocInsertVerRet) {{ Nil }}
+  }}
+}}
+"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1219,5 +1479,71 @@ mod tests {
         let sk = PrivateKey::from_bytes(&hex::decode(FS_GENERATOR_PK).expect("hex decode"));
         let pk_hex = hex::encode(Secp256k1.to_public(&sk).bytes);
         assert_eq!(uri, format!("rho:serve:1.0.0:{pk_hex}:buffer:1.0.0"));
+    }
+
+    /// Smoke test for the composer.  Produces a non-empty source
+    /// without panicking on an empty bundle.
+    #[test]
+    fn compose_fs_genesis_source_empty_bundle_builds() {
+        let src = compose_fs_genesis_source("deadbeef", "feedface", &[], None);
+        assert!(!src.is_empty());
+        // Top-level `new` scope with the expected binders is present.
+        assert!(src.contains("new\n  File"));
+    }
+
+    /// Cadence=None embeds the Rholang literal `Nil` as the
+    /// consensus-observable commitment (CRIT-2 fix).
+    #[test]
+    fn compose_fs_genesis_source_cadence_none_embeds_nil() {
+        let src = compose_fs_genesis_source("deadbeef", "feedface", &[], None);
+        // The cadence commitment path binds a literal and
+        // immediately consumes it on a private channel.  Look for
+        // the Nil-literal shape in the source.
+        assert!(
+            src.contains("Nil"),
+            "cadence=None must embed `Nil` in the composed source"
+        );
+    }
+
+    /// Cadence=Some(n) embeds n as an integer literal.
+    #[test]
+    fn compose_fs_genesis_source_cadence_some_embeds_integer() {
+        let src = compose_fs_genesis_source("deadbeef", "feedface", &[], Some(123456));
+        assert!(
+            src.contains("123456"),
+            "cadence=Some(n) must embed n as a Rholang integer literal"
+        );
+    }
+
+    /// pk_hex / sig_hex guards: non-hex input panics (defense in
+    /// depth against a future refactor passing untrusted bytes
+    /// through the `format!` boundary).
+    #[test]
+    #[should_panic(expected = "pk_hex must be ASCII hex")]
+    fn compose_fs_genesis_source_rejects_non_hex_pk() {
+        let _ = compose_fs_genesis_source("not-hex!", "feedface", &[], None);
+    }
+
+    #[test]
+    #[should_panic(expected = "sig_hex must be ASCII hex")]
+    fn compose_fs_genesis_source_rejects_non_hex_sig() {
+        let _ = compose_fs_genesis_source("deadbeef", "zzzz", &[], None);
+    }
+
+    /// Determinism: the same inputs produce the same output every
+    /// call (required for genesis-hash stability).
+    #[test]
+    fn compose_fs_genesis_source_is_deterministic() {
+        let bundle = vec![BundleEntry::try_new(
+            "logical".into(),
+            PathBuf::from("/host/path/file"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        )
+        .expect("try_new")];
+        let a = compose_fs_genesis_source("deadbeef", "feedface", &bundle, Some(100));
+        let b = compose_fs_genesis_source("deadbeef", "feedface", &bundle, Some(100));
+        assert_eq!(a, b);
     }
 }
