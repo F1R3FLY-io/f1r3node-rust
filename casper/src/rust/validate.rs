@@ -33,7 +33,7 @@
 //! path.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -62,11 +62,14 @@ use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     CASPER_METRICS_SOURCE, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC,
-    REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC,
-    REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
-    REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC,
+    REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC, REPEAT_DEPLOY_ANCESTOR_SCAN_TIME_METRIC,
+    REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC, REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC,
+    REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC, REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC,
+    REPEAT_DEPLOY_CARRIER_PROBES_TIME_METRIC, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC,
     REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC,
-    REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC,
+    REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC, REPEAT_DEPLOY_CARRIER_WATERMARK_TIME_METRIC,
+    REPEAT_DEPLOY_PARENTS_TIME_METRIC, REPEAT_DEPLOY_REJECTED_SIGS_TIME_METRIC,
+    REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC,
 };
 use crate::rust::slashing_authorization::{
     epoch_for_block_number, received_slash_deploy_authorized, slash_target_key,
@@ -636,7 +639,11 @@ impl Validate {
         let block_metadata = BlockMetadata::from_block(block, false, None, None);
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
-        let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
+        let parents_start = Instant::now();
+        let parents_result = proto_util::get_parents_metadata(&s.dag, &block_metadata);
+        metrics::histogram!(REPEAT_DEPLOY_PARENTS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(parents_start.elapsed().as_secs_f64());
+        let init_parents = match parents_result {
             Ok(parents) => parents,
             Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };
@@ -652,7 +659,11 @@ impl Validate {
         // evaluate the same predicate on the same inputs.
         let mut exempt: HashSet<Bytes> = HashSet::new();
         if let Some(ctx) = floor_ctx {
-            let rejected = match ctx.rejected_sigs(block_store, earliest_block_number) {
+            let rejected_start = Instant::now();
+            let rejected_result = ctx.rejected_sigs(block_store, earliest_block_number);
+            metrics::histogram!(REPEAT_DEPLOY_REJECTED_SIGS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(rejected_start.elapsed().as_secs_f64());
+            let rejected = match rejected_result {
                 Ok(sigs) => sigs,
                 Err(e) => return Either::Left(BlockError::from_validation_error(e)),
             };
@@ -661,7 +672,12 @@ impl Validate {
                 if !rejected.contains(sig) {
                     continue;
                 }
-                match ctx.retry_gate_open(&s.dag, block_store, earliest_block_number, sig) {
+                let retry_start = Instant::now();
+                let retry_result =
+                    ctx.retry_gate_open(&s.dag, block_store, earliest_block_number, sig);
+                metrics::histogram!(REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(retry_start.elapsed().as_secs_f64());
+                match retry_result {
                     Ok(true) => {
                         exempt.insert(sig.clone());
                     }
@@ -715,7 +731,11 @@ impl Validate {
             REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC,
             "source" => CASPER_METRICS_SOURCE
         );
-        let deploy_key_set: HashSet<Vec<u8>> = match s.dag.carrier_index_watermark() {
+        let watermark_start = Instant::now();
+        let watermark_result = s.dag.carrier_index_watermark();
+        metrics::histogram!(REPEAT_DEPLOY_CARRIER_WATERMARK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(watermark_start.elapsed().as_secs_f64());
+        let deploy_key_set: HashSet<Vec<u8>> = match watermark_result {
             Ok(Some(w)) if w <= earliest_block_number.max(0) => {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
@@ -731,6 +751,7 @@ impl Validate {
                     REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
                     "source" => CASPER_METRICS_SOURCE
                 );
+                let probes_start = Instant::now();
                 let mut probe_failed = false;
                 let scan_set: HashSet<Vec<u8>> = deploy_key_set
                     .into_iter()
@@ -762,6 +783,8 @@ impl Validate {
                         }
                     })
                     .collect();
+                metrics::histogram!(REPEAT_DEPLOY_CARRIER_PROBES_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(probes_start.elapsed().as_secs_f64());
                 scan_set
             }
             Ok(_) => {
@@ -798,7 +821,8 @@ impl Validate {
             REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC,
             "source" => CASPER_METRICS_SOURCE
         );
-        let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
+        let scan_start = Instant::now();
+        let scan_result = dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
                 ancestor_metadata_visits.increment(1);
@@ -815,7 +839,10 @@ impl Validate {
                     .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
                     .map_err(CasperError::from)
             },
-        ) {
+        );
+        metrics::histogram!(REPEAT_DEPLOY_ANCESTOR_SCAN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(scan_start.elapsed().as_secs_f64());
+        let maybe_duplicated_block_metadata = match scan_result {
             Ok(found) => found,
             Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };

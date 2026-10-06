@@ -1,0 +1,5 @@
+-Q theories NodeAuthority
+theories/AuthorityObserver.v
+theories/AuthorityWork.v
+theories/DisplayProjection.v
+theories/MainTheorem.v

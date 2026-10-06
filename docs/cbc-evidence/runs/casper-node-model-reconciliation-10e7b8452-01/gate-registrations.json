@@ -1,0 +1,135 @@
+{
+  "kind": "node-claim-gate-registration-view",
+  "status": "pending",
+  "checkout_base": "10e7b8452824e12a1fe2743dca7989b79fce2133",
+  "working_tree": true,
+  "artifact": {
+    "path": "scripts/ci/check-tla-invariants.sh",
+    "sha256": "8792c24441dd961a3b58dbd20a36281cadf52eae396e4de450597b99c5d65551"
+  },
+  "claim_digests": {
+    "docs/claims/casper-node-observation.md": "3fc9de43df482f5c0ad240583dc7b4f12523e0881443348e9026dfc1539afe28",
+    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
+  },
+  "models": [
+    {
+      "module": "MC_ObserverSession",
+      "configuration": "MC_ObserverSession.cfg",
+      "expected_exit": 0,
+      "invariant": null
+    },
+    {
+      "module": "MC_ObserverSession_challenge_unsafe",
+      "configuration": "MC_ObserverSession_challenge_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "FreshChallenge"
+    },
+    {
+      "module": "MC_ObserverSession_identity_unsafe",
+      "configuration": "MC_ObserverSession_identity_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundIdentity"
+    },
+    {
+      "module": "MC_ObserverSession_frame_unsafe",
+      "configuration": "MC_ObserverSession_frame_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundFrame"
+    },
+    {
+      "module": "MC_ObserverSession_deadline_unsafe",
+      "configuration": "MC_ObserverSession_deadline_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundDeadline"
+    },
+    {
+      "module": "MC_ObserverSession_repeat_unsafe",
+      "configuration": "MC_ObserverSession_repeat_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "OneRequest"
+    },
+    {
+      "module": "MC_ObserverSession_budget_unsafe",
+      "configuration": "MC_ObserverSession_budget_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "SessionBudget"
+    },
+    {
+      "module": "MC_BoundedCapture",
+      "configuration": "MC_BoundedCapture.cfg",
+      "expected_exit": 0,
+      "invariant": null
+    },
+    {
+      "module": "MC_BoundedCapture_admission_unsafe",
+      "configuration": "MC_BoundedCapture_admission_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "ValidAdmission"
+    },
+    {
+      "module": "MC_BoundedCapture_deadline_unsafe",
+      "configuration": "MC_BoundedCapture_deadline_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundLockWait"
+    },
+    {
+      "module": "MC_BoundedCapture_order_unsafe",
+      "configuration": "MC_BoundedCapture_order_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "GuardOrder"
+    },
+    {
+      "module": "MC_BoundedCapture_open_unsafe",
+      "configuration": "MC_BoundedCapture_open_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "OpenIdentity"
+    },
+    {
+      "module": "MC_BoundedCapture_validation_unsafe",
+      "configuration": "MC_BoundedCapture_validation_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "ValidatedIdentity"
+    },
+    {
+      "module": "MC_BoundedCapture_generation_unsafe",
+      "configuration": "MC_BoundedCapture_generation_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "GenerationStable"
+    },
+    {
+      "module": "MC_BoundedCapture_incomplete_unsafe",
+      "configuration": "MC_BoundedCapture_incomplete_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "CompleteRows"
+    },
+    {
+      "module": "MC_BoundedCapture_bytes_unsafe",
+      "configuration": "MC_BoundedCapture_bytes_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundBytes"
+    },
+    {
+      "module": "MC_BoundedCapture_release_unsafe",
+      "configuration": "MC_BoundedCapture_release_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "Detached"
+    },
+    {
+      "module": "MC_BoundedCapture_write_unsafe",
+      "configuration": "MC_BoundedCapture_write_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "ReadOnly"
+    },
+    {
+      "module": "MC_ObserverSession_freshness_pre_fix",
+      "configuration": "MC_ObserverSession_freshness_pre_fix.cfg",
+      "expected_exit": 12,
+      "invariant": "FreshChallenges"
+    }
+  ],
+  "positive_cases": 2,
+  "negative_cases": 17,
+  "harness_primary_record": "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+  "harness_record_modified": false,
+  "policy": "Node evidence stays in this package. The harness primary record contains no node claim digests."
+}

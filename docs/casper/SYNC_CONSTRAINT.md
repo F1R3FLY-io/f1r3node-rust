@@ -127,6 +127,13 @@ Where:
 - `sendersWeight` = sum of stakes of validators who have produced new blocks since last proposal
 - `otherValidatorsWeight` = total stake of all validators except the proposer
 
+`validatorWeightMap` carries the same participation exclusion the clique oracle
+applies: a validator that bonded after genesis and has not yet produced a block
+is left out, since its stake can never appear in `sendersWeight` and would
+otherwise hold the ratio below any positive threshold. This check is local to
+the proposer and is not re-verified by peers, so it reads this node's own latest
+messages.
+
 **Special Case**: If `otherValidatorsWeight == 0` (only one validator in the network), the value is set to 1.0 to allow the solo validator to propose.
 
 #### 6. Check Against Threshold (Lines 87-90)
