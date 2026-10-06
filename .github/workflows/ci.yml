@@ -58,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      checks: read
       contents: read
       pull-requests: read
     if: >-
@@ -86,6 +87,9 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         shell: bash -euo pipefail {0}
         run: |
           target="$REQUESTED_TARGET_SHA"
@@ -129,6 +133,37 @@ jobs:
               exit 1
             }
           fi
+          # A merge group may reuse the heavy result of its top pull request.
+          # The group must name one pull request, the pull request head must
+          # contain the group base, the two trees must be equal, and the latest
+          # amd64 and arm64 Integration checks on that head must be successes,
+          # not skips. Any other result, including an API error, runs the heavy
+          # pipeline. The push to dev after the merge still runs it.
+          heavy_result_reusable() {
+            local number pull_head relationship group_tree head_tree runs passed
+            [[ "$MERGE_GROUP_HEAD_REF" =~ ^refs/heads/gh-readonly-queue/[^/]+/pr-([1-9][0-9]*)-[0-9a-f]{40}$ ]] || return 1
+            number="${BASH_REMATCH[1]}"
+            [[ "$MERGE_GROUP_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            pull_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}" --jq '.head.sha')" || return 1
+            [[ "$pull_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+            relationship="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${MERGE_GROUP_BASE_SHA}...${pull_head}" --jq '.status')" || return 1
+            [ "$relationship" = ahead ] || [ "$relationship" = identical ] || return 1
+            group_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${MERGE_GROUP_HEAD_SHA}" --jq '.tree.sha')" || return 1
+            head_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${pull_head}" --jq '.tree.sha')" || return 1
+            [[ "$group_tree" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [ "$group_tree" = "$head_tree" ] || return 1
+            runs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${pull_head}/check-runs?filter=all&per_page=100" \
+              --jq '.check_runs[]
+                | select(.app.slug == "github-actions")
+                | select(.name == "Integration Tests (amd64)" or .name == "Integration Tests (arm64)")
+                | [.name, (.started_at // ""), (.conclusion // "pending")] | @tsv')" || return 1
+            passed="$(printf '%s\n' "$runs" | sort -t "$(printf '\t')" -k1,1 -k2,2 |
+              awk -F '\t' 'NF == 3 { last[$1] = $3 } END { n = 0; for (k in last) if (last[k] == "success") n++; print n }')"
+            [ "$passed" = 2 ] || return 1
+            printf '%s %s\n' "$number" "$pull_head"
+          }
+
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
           # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
           # GitHub-hosted checks only and reaches the heavy pipeline through the
@@ -136,6 +171,11 @@ jobs:
           run_heavy=false
           if [ "$EVENT_NAME" = merge_group ]; then
             run_heavy=true
+            if reused="$(heavy_result_reusable)"; then
+              run_heavy=false
+              echo "::notice::Merge group tree equals pull request #${reused% *} head ${reused#* }, which passed the heavy pipeline. The heavy pipeline is skipped."
+              echo "Heavy pipeline reused from pull request #${reused% *} at ${reused#* }." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            fi
           elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
             run_heavy=true
           elif [ "$EVENT_NAME" = push ] && {

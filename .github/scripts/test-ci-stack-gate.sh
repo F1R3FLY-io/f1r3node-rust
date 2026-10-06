@@ -13,16 +13,29 @@ ruby -ryaml -e '
 ' "$ROOT/.github/workflows/ci.yml" "$TMP/gate.sh"
 
 mkdir -p "$TMP/bin"
-cat >"$TMP/bin/gh" <<'SH'
+cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
+filter=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  [ "${args[i]}" = --jq ] && filter="${args[i + 1]}"
+done
+emit() {
+  if [ -n "$filter" ]; then jq -r "$filter" <<<"$1"; else printf '%s\n' "$1"; fi
+}
 case "$*" in
+  *"${FAKE_FAIL_ON:-no-failure}"*) printf 'simulated API failure: %s\n' "$*" >&2; exit 1 ;;
+  *"/check-runs"*) emit "$FAKE_CHECK_RUNS" ;;
+  *"git/commits/${FAKE_GROUP_HEAD:-none}"*) emit "{\"tree\": {\"sha\": \"$FAKE_GROUP_TREE\"}}" ;;
+  *"git/commits/"*) emit "{\"tree\": {\"sha\": \"$FAKE_HEAD_TREE\"}}" ;;
+  *"pulls/648"*) emit "{\"head\": {\"sha\": \"$FAKE_PULL_HEAD\"}}" ;;
   *"pulls/311"*) cat "$FAKE_PULL" ;;
   *"commits/"*) cat "$FAKE_COMMIT" ;;
   *"compare/"*) printf '%s\n' "${FAKE_RELATIONSHIP:-ahead}" ;;
   *"pulls"*) printf '%s\n' "$FAKE_CHILDREN" ;;
   *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
 esac
-SH
+FAKE
 chmod +x "$TMP/bin/gh"
 
 SHA=1111111111111111111111111111111111111111
@@ -55,6 +68,15 @@ run_case() {
     PR_HEAD_REF="$head_ref" \
     PR_HEAD_REPOSITORY="$head_repo" \
     PR_HAS_HEAVY_LABEL="${PR_HAS_HEAVY_LABEL:-false}" \
+    MERGE_GROUP_HEAD_REF="${MERGE_GROUP_HEAD_REF:-}" \
+    MERGE_GROUP_HEAD_SHA="${MERGE_GROUP_HEAD_SHA:-}" \
+    MERGE_GROUP_BASE_SHA="${MERGE_GROUP_BASE_SHA:-}" \
+    FAKE_FAIL_ON="${FAKE_FAIL_ON:-no-failure}" \
+    FAKE_CHECK_RUNS="${FAKE_CHECK_RUNS:-}" \
+    FAKE_GROUP_HEAD="${MERGE_GROUP_HEAD_SHA:-none}" \
+    FAKE_GROUP_TREE="${FAKE_GROUP_TREE:-}" \
+    FAKE_HEAD_TREE="${FAKE_HEAD_TREE:-}" \
+    FAKE_PULL_HEAD="${FAKE_PULL_HEAD:-}" \
     FAKE_CHILDREN="$children" \
     FAKE_PULL="$fake_pull" \
     FAKE_COMMIT="$TMP/commit.json" \
@@ -106,5 +128,48 @@ if run_case missing-target workflow_dispatch refs/heads/master '' '' '' '[]' '' 
   echo 'top pull request without an exact target passed' >&2
   exit 1
 fi
+
+GROUP_HEAD=6666666666666666666666666666666666666666
+GROUP_BASE=7777777777777777777777777777777777777777
+PULL_HEAD=8888888888888888888888888888888888888888
+TREE=9999999999999999999999999999999999999999
+OTHER_TREE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+check_runs() {
+  jq -n --arg amd64 "$1" --arg arm64 "$2" '{check_runs: [
+    {name: "Integration Tests (amd64)", app: {slug: "github-actions"}, started_at: "2026-10-06T01:00:00Z", conclusion: "skipped"},
+    {name: "Integration Tests (arm64)", app: {slug: "github-actions"}, started_at: "2026-10-06T01:00:00Z", conclusion: "skipped"},
+    {name: "Integration Tests (amd64)", app: {slug: "github-actions"}, started_at: "2026-10-06T02:00:00Z", conclusion: $amd64},
+    {name: "Integration Tests (arm64)", app: {slug: "github-actions"}, started_at: "2026-10-06T02:00:00Z", conclusion: $arm64},
+    {name: "Integration Tests (amd64)", app: {slug: "another-app"}, started_at: "2026-10-06T03:00:00Z", conclusion: "failure"}
+  ]}'
+}
+merge_group_case() {
+  local label="$1" expected="$2"
+  MERGE_GROUP_HEAD_REF="${REF:-refs/heads/gh-readonly-queue/dev/pr-648-$GROUP_BASE}" \
+    MERGE_GROUP_HEAD_SHA="$GROUP_HEAD" \
+    MERGE_GROUP_BASE_SHA="$GROUP_BASE" \
+    FAKE_PULL_HEAD="$PULL_HEAD" \
+    FAKE_GROUP_TREE="$TREE" \
+    FAKE_HEAD_TREE="${HEAD_TREE:-$TREE}" \
+    FAKE_CHECK_RUNS="${RUNS:-$(check_runs success success)}" \
+    FAKE_FAIL_ON="${FAIL_ON:-no-failure}" \
+    run_case "$label" merge_group refs/heads/gh-readonly-queue/dev/pr-648 '' '' '' '[]' '' '' "$expected" \
+    "$TMP/pull.json" "${RELATIONSHIP:-ahead}"
+}
+
+merge_group_case reuse-tested-head false
+RELATIONSHIP=identical merge_group_case reuse-identical-base false
+HEAD_TREE="$OTHER_TREE" merge_group_case tree-differs true
+RELATIONSHIP=behind merge_group_case base-not-contained true
+RELATIONSHIP=diverged merge_group_case base-diverged true
+RUNS="$(check_runs skipped skipped)" merge_group_case heavy-skipped true
+RUNS="$(check_runs success failure)" merge_group_case arm64-failed true
+RUNS="$(check_runs success "")" merge_group_case arm64-pending true
+RUNS='{"check_runs": []}' merge_group_case no-checks true
+REF=refs/heads/gh-readonly-queue/dev/pr-648-abc merge_group_case malformed-ref true
+REF=refs/heads/feature/pr-648 merge_group_case foreign-ref true
+FAIL_ON=pulls/648 merge_group_case pull-api-error true
+FAIL_ON=check-runs merge_group_case checks-api-error true
+FAIL_ON=git/commits merge_group_case tree-api-error true
 
 printf 'CI stack gate tests passed\n'
