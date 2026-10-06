@@ -41,9 +41,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
-    BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
-    REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
-    RUNTIME_SPAWN_REPLAY_CALLS_METRIC, RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
+    BLOCK_INDEX_CACHE_SIZE_METRIC, BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC,
+    BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC, BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC,
+    CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC, REPLAY_CACHE_ENTRIES_METRIC,
+    REPLAY_CACHE_RETAINED_BYTES_METRIC, RUNTIME_SPAWN_REPLAY_CALLS_METRIC,
+    RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -223,7 +225,7 @@ pub struct RuntimeManager {
     pub replay_space: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     pub history_repo: RhoHistoryRepository,
     pub mergeable_store: MergeableStore,
-    pub mergeable_tags: std::sync::Arc<
+    pub(crate) mergeable_tags: std::sync::Arc<
         std::collections::HashMap<Par, rspace_plus_plus::rspace::merger::merging_logic::MergeType>,
     >,
     // TODO: make proper storage for block indices - OLD
@@ -474,7 +476,7 @@ impl RuntimeManager {
         }
     }
 
-    pub async fn spawn_runtime(&self) -> RhoRuntimeImpl {
+    pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
         let runtime = rho_runtime::create_rho_runtime(
@@ -484,14 +486,14 @@ impl RuntimeManager {
             &mut Vec::new(),
             self.external_services.clone(),
         )
-        .await;
+        .await?;
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
-        runtime
+        Ok(runtime)
     }
 
-    pub async fn spawn_replay_runtime(&self) -> RhoRuntimeImpl {
+    pub async fn spawn_replay_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_replay_space = self
             .replay_space
@@ -505,13 +507,13 @@ impl RuntimeManager {
             &mut Vec::new(),
             self.external_services.clone(),
         )
-        .await;
+        .await?;
         metrics::counter!(RUNTIME_SPAWN_REPLAY_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
-        runtime
+        Ok(runtime)
     }
 
     pub async fn compute_state(
@@ -523,7 +525,7 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         // Block data used for mergeable key
@@ -620,7 +622,7 @@ impl RuntimeManager {
         }
 
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_spawn_runtime", rss_kb);
         }
@@ -724,7 +726,7 @@ impl RuntimeManager {
         block_time: i64,
         block_number: i64,
     ) -> Result<(StateHash, StateHash, Vec<ProcessedDeploy>), CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         let (pre_state, state_hash, processed) = runtime_ops
@@ -792,7 +794,7 @@ impl RuntimeManager {
                     tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
 
                     // Rig the replay runtime with cached event log
-                    let replay_runtime = self.spawn_replay_runtime().await;
+                    let replay_runtime = self.spawn_replay_runtime().await?;
                     let rspace_events: Vec<_> = entry
                         .event_log
                         .iter()
@@ -811,17 +813,19 @@ impl RuntimeManager {
         }
 
         // Step 2: Full replay (cache miss)
-        let _replay_permit = self
-            .replay_lock
-            .acquire_consensus()
-            .await
+        let lock_start = std::time::Instant::now();
+        let replay_permit = self.replay_lock.acquire_consensus().await;
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(lock_start.elapsed().as_secs_f64());
+        let _replay_permit = replay_permit
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let replay_runtime = self.spawn_replay_runtime().await;
+        let replay_runtime = self.spawn_replay_runtime().await?;
         let runtime_ops = RuntimeOps::new(replay_runtime);
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
-        let (state_hash, mergeable_chs) = replay_runtime_ops
+        let execute_start = std::time::Instant::now();
+        let replay_result = replay_runtime_ops
             .replay_compute_state(
                 start_hash,
                 terms,
@@ -830,7 +834,10 @@ impl RuntimeManager {
                 Some(invalid_blocks),
                 is_genesis,
             )
-            .await?;
+            .await;
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(execute_start.elapsed().as_secs_f64());
+        let (state_hash, mergeable_chs) = replay_result?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
@@ -842,14 +849,17 @@ impl RuntimeManager {
         // unhelpful "task panicked" log; the typed Result lets the
         // caller decide how to react (likely abort the proposal, not
         // the whole node).
-        self.save_mergeable_channels(
+        let save_start = std::time::Instant::now();
+        let save_result = self.save_mergeable_channels(
             state_hash.clone(),
             sender.bytes,
             seq_num,
             mergeable_chs,
             &pre_state_hash,
-        )
-        .map_err(|e| {
+        );
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(save_start.elapsed().as_secs_f64());
+        save_result.map_err(|e| {
             CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
         })?;
 
@@ -861,7 +871,7 @@ impl RuntimeManager {
         start: &StateHash,
         deploy: &Signed<DeployData>,
     ) -> Result<Vec<Par>, CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.capture_results(start, deploy).await?;
         Ok(computed)
@@ -876,7 +886,7 @@ impl RuntimeManager {
             return Ok(cached.clone());
         }
 
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.get_active_validators(start_hash).await?;
 
@@ -901,7 +911,7 @@ impl RuntimeManager {
         &self,
         start_hash: &StateHash,
     ) -> Result<Option<i64>, CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
             .get_fault_tolerance_threshold_ppm(start_hash)
@@ -916,7 +926,7 @@ impl RuntimeManager {
         &self,
         start_hash: &StateHash,
     ) -> Result<Option<(i32, i64, i64)>, CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops.get_consensus_parameters(start_hash).await
     }
@@ -927,7 +937,7 @@ impl RuntimeManager {
             return Ok(cached.clone());
         }
 
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
 
@@ -948,7 +958,7 @@ impl RuntimeManager {
         hash: &StateHash,
         deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
             .play_exploratory_deploy_with_phlo_limit(
@@ -961,7 +971,7 @@ impl RuntimeManager {
     }
 
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {
-        let mut runtime = self.spawn_runtime().await;
+        let mut runtime = self.spawn_runtime().await?;
 
         runtime
             .reset(&Blake2b256Hash::from_bytes_prost(&hash))
@@ -977,7 +987,7 @@ impl RuntimeManager {
         hash: StateHash,
         channels: Vec<Par>,
     ) -> Result<Vec<(Vec<BindPattern>, Par)>, CasperError> {
-        let mut runtime = self.spawn_runtime().await;
+        let mut runtime = self.spawn_runtime().await?;
 
         runtime
             .reset(&Blake2b256Hash::from_bytes_prost(&hash))

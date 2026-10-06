@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "local-integration-test-fix-verified",
+  "ci_status": "not-rerun",
+  "failed_run_id": 35677113121,
+  "failed_job_id": 106588410307,
+  "node_revision": "b465313a2d490d24b6f2e55447bd81efc0912e10",
+  "suite_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283",
+  "artifact": {
+    "id": 10674441904,
+    "sha256": "0065b27cf52353723b2b5806c0627dda64013228d7e33c86fdfa67ae7375d720"
+  },
+  "diagnosis": "All eight nodes wrote Finalized after about 137 seconds. The resolver stopped polling after its 135-second timeout. Finalized floor heights advanced during the wait.",
+  "change": "The PoS mutation resolver now includes both inclusion and finalization time budgets. The default limit is 225 seconds per deploy and attempt.",
+  "repository": "F1R3FLY-io/system-integration",
+  "local_destination_revision": "962effd17708192627bd249362761c0ccb1fd5fa",
+  "source_digests": {
+    "integration-tests/test/tests/custom/test_validator_lifecycle.py": "704f3561310e1719e5de361316c321a45e6d6f949a723ce19b01a7cdb94e11a8",
+    "unit-tests/test_validator_lifecycle_settlement.py": "eef01b84db36752d373d133cd5c3ba120019fad547c0c7ecb4bdbeacb6ec8921",
+    "unit-tests/fixtures/validator-lifecycle-settlement.json": "b9c9e3737e85302ee15469bc9c03f7a9cf30c376ab0b2f6f7869f52bb23d54f9"
+  },
+  "validation": {
+    "before": {
+      "failed": 3,
+      "passed": 5
+    },
+    "after": {
+      "passed": 39
+    },
+    "scope": "Recorded timing replay and targeted unit tests. No live node test rerun.",
+    "ruff_check": "passed",
+    "ruff_format": "passed",
+    "diff_check": "passed",
+    "retained_checks": [
+      "scaled settlement deadlines",
+      "unresolved deploy failure",
+      "terminal failure",
+      "cross-node disagreement",
+      "concurrent submission",
+      "expiration-only resubmission",
+      "bounded attempt count"
+    ]
+  },
+  "logs": {
+    "target/task-017-12-integration-fix-20260922/regression-before.txt": "6a396296d293b832e7ef163f71d5c913df7db8390e95c6aadc21dce255e35536",
+    "target/task-017-12-integration-fix-20260922/regression-after.txt": "8b41333c8dbf18b4d30641a10697ce8178e5146843f8591f91823e34fa801b83"
+  },
+  "publication": {
+    "committed": false,
+    "pushed": false,
+    "suite_pin_updated": false
+  },
+  "baseline_started": false
+}

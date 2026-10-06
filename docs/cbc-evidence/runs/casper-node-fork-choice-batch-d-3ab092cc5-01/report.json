@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "claim_ids": [
+    "CLAIM-CASPER-NODE-OBSERVATION-004"
+  ],
+  "scope": "batch-d-verification-01",
+  "status": "blocked",
+  "blocked_on": [
+    "named maintainer review of every Batch D applicability decision",
+    "named maintainer acceptance of the claim",
+    "construction evidence for D1 to D6, D8 to D11, and D13 to D15",
+    "tests for the failure rows missing_body_coverage and score_overflow"
+  ],
+  "execution_base": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
+  "working_tree": false,
+  "execution_source": "git archive export of the execution base in a separate directory with its own cargo target directory",
+  "previous_cycle": null,
+  "created_at": "2026-09-30T17:49:48+00:00",
+  "proposed_reviewer": "jltatbeach",
+  "claim_acceptance": false,
+  "specifications": {
+    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940",
+    "docs/plans/casper-node-observation-batch-d.md": "e586ef824bd81ff48681d397b7bb909f885fa4da15a014baf818328e5ff021b7",
+    "docs/casper/theory/fork-choice/fork-choice-specification.md": "acd0c1e96604b3e9077cd6f1bf367781fe9581d90563cab40290faf43a2bf4ed"
+  },
+  "source_inventory": [
+    {
+      "path": "casper/src/rust/soak_observer.rs",
+      "sha256": "fe7f2873fc0d6c1e2c8ee9a704598273fa79bd892045c85586d8d77dd54ccdca",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/soak_observer/evaluation.rs",
+      "sha256": "147c804f53b34b2811fba6a80b6eb9610606e089825248c8bb86c9a113be79ea",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/soak_observer/fork_choice.rs",
+      "sha256": "a06eba79338b7c6b6eb38b73aedcc4e1b5fa25d750b09ff45ab9a1593d4a9d5c",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/estimator.rs",
+      "sha256": "361ef52fe2a7bb7e9751ddfc378ad950f90934ccff15513b647a31b587d656af",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/util/dag_operations.rs",
+      "sha256": "975c9ac9ece91347720696708350eb33e61cba27b6628284043fca8a5f54651b",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/util/proto_util.rs",
+      "sha256": "f14bcb5f9d6f751685c9285b4b3b3cbab213a8d1ffbb8ac56380b5805a7065e7",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/finality/floor.rs",
+      "sha256": "7117333be2da372587e4f8327f8085281e5ea9bf4dbab16180e83e1139280f64",
+      "mandatory": true
+    },
+    {
+      "path": "shared/src/rust/dag/observation_work.rs",
+      "sha256": "2e8f5771e80d14f8b2a371f9e21e479f9bf3a13ee0ec1583bd47c15fad994812",
+      "mandatory": true
+    },
+    {
+      "path": "node/src/rust/soak_observer.rs",
+      "sha256": "7067d54f444b0f689984ad77ab34efa5c81113443c12e0e820a66d562edd8e98",
+      "mandatory": true
+    },
+    {
+      "path": "node/tests/soak_observer.rs",
+      "sha256": "e70f2f90d0d2a8a42e02082322c8a1432c585c61dca8eb58f3243a84248290cc",
+      "mandatory": true
+    },
+    {
+      "path": "casper/tests/soak_observer.rs",
+      "sha256": "8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/PairedForkChoice.tla",
+      "sha256": "7e29de074c760b09c245a74d53b5e21e641c90f655cc7c38c74f3c2f6a4a6223",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice.tla",
+      "sha256": "5bb80ef366f1cdec7a0d16a69ccd402b66fe6423c705706c281efe1ff5fb455e",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice.cfg",
+      "sha256": "a20795e6d1d0fcc90afc016514e9989f8e5cbf458b3cf6acc45580a4816cc149",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_digest_unsafe.tla",
+      "sha256": "0511995b58c4d770e5ecd9932f19ea8502af74d8cd1a8ad56e7eba067674559e",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_digest_unsafe.cfg",
+      "sha256": "4bd571ce46efbf31624a238e8b92a57e42947d70f270ab76b534a22a9fea9704",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_floor_unsafe.tla",
+      "sha256": "3659d38b5cd9a85e5b5522d350f069430be4fb5c2567f49bbf5cff48be69ece5",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_floor_unsafe.cfg",
+      "sha256": "7950b94d8614da48ee7fec9a87070ef7015b3188990a60d166156d331b30bea1",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_absent_unsafe.tla",
+      "sha256": "b9d85a70f548c3012d287a52f71c5eb3fad83f1f8e61b14a2149a4c9a2392096",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_absent_unsafe.cfg",
+      "sha256": "35c777286a9edd728d313d68ae19ad41fdba950e262910537d3a6a75193bad8d",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_compare_unsafe.tla",
+      "sha256": "ad37bac91fb64cd40e13fcd9c73b40e4ec09db07b490b392df93990f4e403c6f",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_compare_unsafe.cfg",
+      "sha256": "92fcfaae3940024c3deb7f6c77c7567092a9a03d1ccbd000109c7a01f254d446",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_budget_unsafe.tla",
+      "sha256": "616d140b1f22bd1a05fc9b714a883dce7bf149288fdd5e5528ef145d15c08c4d",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_budget_unsafe.cfg",
+      "sha256": "ced143c993bac021bdf80b6e5383d28834f7d7617cb596028808056009d9e7b0",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/README.md",
+      "sha256": "73a969dcbd908fc69769f8c54cb2572a1310df4ccd3e6cb820417b7521d9fd1b",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/verification-plan.json",
+      "sha256": "cc0995fad1f025fed13ebc103c39a14ac9eb904f8b89c04160312486f906c96f",
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/bindings.json",
+      "sha256": "4ade939bc06cb1195c7537539c91930f18c90ab5889e024c0d8ef543fe6756d9",
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/check-tla-invariants.sh",
+      "sha256": "ca116baad47417a16dc7ad4f60cacf18cdb54fb5e7916bbb174965459632a3ed",
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/test-check-tla-invariants.sh",
+      "sha256": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
+      "mandatory": true
+    }
+  ],
+  "refutation": {
+    "tool": "TLC from tla2tools.jar, 2 workers, host macOS aarch64",
+    "model": "formal/tlaplus/node_observation/MC_PairedForkChoice",
+    "distinct_states": 203,
+    "result": "no error",
+    "invariants": [
+      "TypeOK",
+      "OneCapture",
+      "HeadNotFloor",
+      "NoFabricatedHead",
+      "CompareSameInput",
+      "SharedBudget"
+    ],
+    "negative_controls": [
+      {
+        "config": "MC_PairedForkChoice_digest_unsafe",
+        "violated": "OneCapture",
+        "distinct_states": 21
+      },
+      {
+        "config": "MC_PairedForkChoice_floor_unsafe",
+        "violated": "HeadNotFloor",
+        "distinct_states": 17
+      },
+      {
+        "config": "MC_PairedForkChoice_absent_unsafe",
+        "violated": "NoFabricatedHead",
+        "distinct_states": 17
+      },
+      {
+        "config": "MC_PairedForkChoice_compare_unsafe",
+        "violated": "CompareSameInput",
+        "distinct_states": 113
+      },
+      {
+        "config": "MC_PairedForkChoice_budget_unsafe",
+        "violated": "SharedBudget",
+        "distinct_states": 29
+      }
+    ],
+    "formal_gate": {
+      "default_tier": "31 configurations clean, 83 negative controls violated their expected invariants",
+      "soak_pr_tier": "16 configurations clean, 83 negative controls violated their expected invariants",
+      "self_test": "PASS"
+    },
+    "limits": "The model does not contain the fork-choice rules, the DAG, or the weights. It states the value states, the capture binding, and the shared budget."
+  },
+  "construction": {
+    "project": null,
+    "pending": [
+      "D1",
+      "D2",
+      "D3",
+      "D4",
+      "D5",
+      "D6",
+      "D8",
+      "D9",
+      "D10",
+      "D11",
+      "D13",
+      "D14",
+      "D15"
+    ],
+    "bounded_by_design_proposed": [
+      "D7",
+      "D12",
+      "D16"
+    ],
+    "inherited": {
+      "D1": "capture theorems of claim 002",
+      "D11": "budget theorems of NodeAuthority through the shared meter"
+    },
+    "complete": false
+  },
+  "binding": {
+    "bindings_manifest": {
+      "path": "formal/tlaplus/node_observation/bindings.json",
+      "sha256": "4ade939bc06cb1195c7537539c91930f18c90ab5889e024c0d8ef543fe6756d9",
+      "properties_mapped": 16,
+      "tests_mapped": 30
+    },
+    "rust_toolchain": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+    "native_tests": {
+      "casper_soak_observer_suite": {
+        "command": "cargo nextest run --locked --release -p casper --test soak_observer",
+        "passed": 39,
+        "failed": 0
+      },
+      "casper_estimator_and_floor_unit_tests": {
+        "command": "cargo nextest run --locked --release -p casper -E 'binary(casper) & (test(/estimator/) | test(/floor/))'",
+        "passed": 57,
+        "failed": 0
+      },
+      "casper_mod_suites": {
+        "command": "cargo nextest run --locked --release -p casper -E 'binary(mod) & (test(/estimator/) | test(/fork_choice/) | test(/floor/))'",
+        "passed": 66,
+        "failed": 0
+      }
+    },
+    "clippy_exit": 0,
+    "clippy_command": "cargo clippy --locked --release -p casper -p node -p shared --all-targets -- -D warnings",
+    "node_binding_driver": {
+      "script": "scripts/ci/check-node-observation-bindings.sh",
+      "environment": "Linux container rust:bookworm, aarch64, debug profile",
+      "exit": 0,
+      "inputs_hashed": 72,
+      "node_soak_observer_tests": {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 1
+      },
+      "node_library_tests": {
+        "passed": 259,
+        "failed": 0
+      },
+      "raw_executables_sha256": [
+        "1ecca5d45b0af919de97eb6ee244ce3774c04e4ca517f45dbee37339b50bec03",
+        "cc382b6e4fceda5359567f9f5b76f6fb45f142c1a1a9af6eaf743158a592fc32"
+      ],
+      "executed_sha256": [
+        "1ecca5d45b0af919de97eb6ee244ce3774c04e4ca517f45dbee37339b50bec03",
+        "de411c54bcb328c3bab813496b6c36fe02bebc5219e0587d7f032d17fb239d81"
+      ]
+    }
+  },
+  "applicability_review": "formal/tlaplus/node_observation/README.md#batch-d-applicability-review",
+  "findings": [
+    "The production estimator credits the main parent of a block at the common ancestor height. The reference stops at the ancestor. Heads agree, score_count differs by 1 on 2 of 12 random DAGs.",
+    "The floor derivation work depends on the message order. The bounded evaluation passes the messages in validator order.",
+    "The raw debug node test executable is 571 MB and fails the observer self-check. CI strips it before the run.",
+    "A production error in the bounded evaluation gives the failed state with an error class. The Failed variant of Value had no constructor before Batch D."
+  ],
+  "strict_audit": {
+    "tool": "cbc.sh discharge --strict --files <claim 004 inventory>",
+    "exit": 4,
+    "items": 29,
+    "pending": 29,
+    "note": "Exit 4 is the expected result while the claim acceptance is pending. Every record of the inventory is pending."
+  }
+}
