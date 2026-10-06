@@ -19,6 +19,9 @@
 //     helpers (truncate, path_mutation_single, path_mutation_two)
 //     — mutation handlers' pre_syscall + journal hooks.  Added by
 //     slice 4.23.
+//   - `RemoveKind` + `target_dev_inode_at` + `unlink_leaf_via_dirfd`
+//     — unlink primitives for fs_remove_file (and fs_remove_dir
+//     when it lands).  Added by slice 4.28.
 //
 // Yet to land (listed roughly in handler-migration order):
 //
@@ -35,6 +38,7 @@
 pub mod ack_hash;
 pub mod journal;
 pub mod read_impl;
+pub mod unlink;
 
 pub use ack_hash::ack_channel_hash;
 pub use journal::{
@@ -42,3 +46,4 @@ pub use journal::{
     journal_path_mutation_two_via_table, journal_truncate_via_table,
 };
 pub use read_impl::read_impl_via_table;
+pub use unlink::{target_dev_inode_at, unlink_leaf_via_dirfd, RemoveKind};

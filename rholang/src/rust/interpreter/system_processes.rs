@@ -352,6 +352,24 @@ impl FixedChannels {
     /// Verifying mutation; constant cost.  First path-mutation
     /// handler on dev (slice 4.25).
     pub fn fs_chmod() -> Par { byte_name(59) }
+
+    /// `rho:io:fs:native:1.0.0/rename` — two-endpoint path rename
+    /// via `safe_descend_verified` × 2 + `renameat`.  Verifying
+    /// mutation; cross-device moves surface as FSERR_CROSS_DEVICE.
+    /// First two-endpoint mutation handler on dev (slice 4.26).
+    pub fn fs_rename() -> Par { byte_name(55) }
+
+    /// `rho:io:fs:native:1.0.0/chown` — path-based chown via
+    /// `safe_descend_verified` + `fchownat` (AT_SYMLINK_NOFOLLOW).
+    /// NON-verifying mutation; Consensus caps rejected at
+    /// parse_content (NSS mapping host-local).  Added by slice 4.27.
+    pub fn fs_chown() -> Par { byte_name(60) }
+
+    /// `rho:io:fs:native:1.0.0/removeFile` — path-based unlink via
+    /// `safe_descend_verified` + `unlinkat` under the LockRegistry
+    /// unlink gate.  Verifying mutation; Consensus + locked
+    /// returns `FSERR_BUSY`.  Added by slice 4.28.
+    pub fn fs_remove_file() -> Par { byte_name(57) }
 }
 
 pub struct BodyRefs;
@@ -435,6 +453,15 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/chmod` body-ref (slice 4.25).
     pub const FS_CHMOD: i64 = 59;
+
+    /// `rho:io:fs:native:1.0.0/rename` body-ref (slice 4.26).
+    pub const FS_RENAME: i64 = 55;
+
+    /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
+    pub const FS_CHOWN: i64 = 60;
+
+    /// `rho:io:fs:native:1.0.0/removeFile` body-ref (slice 4.28).
+    pub const FS_REMOVE_FILE: i64 = 57;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
