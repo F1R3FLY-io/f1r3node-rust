@@ -461,10 +461,17 @@ async fn casper_runtime_reports_failed_genesis_initialization() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casper_adapter_owns_observer_preparation_and_shutdown() {
+    use std::os::unix::fs::PermissionsExt;
+
     use tokio::io::AsyncReadExt;
 
     let directory = tempfile::tempdir().unwrap();
     let observer_directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(
+        observer_directory.path(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
     let socket = observer_directory.path().join("observer.sock");
     let (mut conf, _) = config(directory.path());
     conf.standalone = false;
