@@ -39,6 +39,9 @@ The packet bridge preserves the peer identity, packet kind, and payload bytes. O
 The manifest schema contains protocol, version, network, shard, and genesis identity. Casper validates existing LMDB stores before opening writable resources.
 Casper records the manifest before it reports readiness.
 
+The Casper adapter also owns the optional soak observer. The observer binds during preparation and stops before store shutdown.
+Dropping a prepared adapter releases its observer socket. The host does not receive the native observer controller.
+
 ## Build selection
 
 The node enables the `cbc-casper` Cargo feature by default. The configuration selector remains `consensus.protocol = "cbc-casper"`.
@@ -73,3 +76,4 @@ cargo test --locked --release -p node --lib \
 
 The Casper acceptance test uses HTTP routes and a loopback gRPC server. It covers deploys, proposals, finality, native packet delivery, shutdown, and store recovery.
 Additional tests cover initialization failure and store identity rejection. These focused checks do not replace the full network acceptance suite.
+The observer lifecycle test checks socket cleanup after preparation cancellation and runtime shutdown.

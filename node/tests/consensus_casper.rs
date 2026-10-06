@@ -458,6 +458,61 @@ async fn casper_runtime_reports_failed_genesis_initialization() {
     assert!(!directory.path().join("consensus-manifest.json").exists());
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn casper_adapter_owns_observer_preparation_and_shutdown() {
+    use tokio::io::AsyncReadExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let observer_directory = tempfile::tempdir().unwrap();
+    let socket = observer_directory.path().join("observer.sock");
+    let (mut conf, _) = config(directory.path());
+    conf.standalone = false;
+    conf.soak_observer = Some(node::rust::configuration::model::SoakObserverConfig {
+        directory: observer_directory.path().to_path_buf(),
+        source_revision: "a".repeat(40),
+        approved_request_sha256: "b".repeat(64),
+        peer_pid: std::process::id(),
+        peer_start_ticks: node::rust::soak_observer::process_start_ticks(std::process::id())
+            .unwrap(),
+        session_timeout_ms: 500,
+        max_sessions: 128,
+    });
+    let prepared = prepare(conf.clone()).await.unwrap();
+    assert!(socket.exists());
+    drop(prepared.consensus);
+    prepared.application.close().await;
+    drop(prepared.packet_handler);
+    assert!(!socket.exists());
+
+    let prepared = prepare(conf).await.unwrap();
+    let handle = prepared.consensus.handle();
+    let runtime = prepared.consensus.start();
+    let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let hello_length = tokio::time::timeout(Duration::from_secs(5), stream.read_u32())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(hello_length > 0 && hello_length < 1024 * 1024);
+    let mut hello = vec![0; hello_length as usize];
+    stream.read_exact(&mut hello).await.unwrap();
+    assert!(serde_json::from_slice::<serde_json::Value>(&hello).is_ok());
+    tokio::time::timeout(Duration::from_secs(5), runtime.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    prepared.application.close().await;
+    assert_eq!(handle.status().phase, Phase::Stopped);
+    assert!(!socket.exists());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), stream.read(&mut [0]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn incompatible_manifest_is_rejected_before_store_creation() {
     let directory = tempfile::tempdir().unwrap();
