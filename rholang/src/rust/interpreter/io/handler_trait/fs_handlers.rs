@@ -163,7 +163,7 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 /// finished), count reaches 27 — fs_remove_dir trait-exempt
 /// (see `handler_trait::fs_handler` module docstring).
 ///
-/// Current: 16 handlers migrated.
+/// Current: 18 handlers migrated.
 ///
 /// Wave 4 slice progression:
 ///   - 4.10: 0 (empty registry infrastructure).
@@ -183,7 +183,17 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.26: +1 (`fs_rename`, FIRST TWO-ENDPOINT MUTATION).  Count = 14.
 ///   - 4.27: +1 (`fs_chown`, NON-VERIFYING MUTATION).  Count = 15.
 ///   - 4.28: +1 (`fs_remove_file`, FIRST LOCK-GATED MUTATION).  Count = 16.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 16;
+///   - 4.29: +1 (`fs_entries_stream_open`).  Count = 17.
+///   - 4.30: +1 (`fs_entries_stream_next`, FIRST POST_REPLY_SUPPLEMENT).  Count = 18.
+///   - 4.31: +1 (`fs_entries`, OBSERVATION 9/9).  Count = 19.
+///   - 4.32: +1 (`fs_open`, LIFECYCLE 3/3).  Count = 20.
+///   - 4.33: +1 (`fs_copy_file`).  Count = 21.
+///   - 4.34: +1 (`fs_lock_range`, FIRST LOCK).  Count = 22.
+///   - 4.35: +1 (`fs_lock_sequential`).  Count = 23.
+///   - 4.36: +1 (`fs_release_lock`).  Count = 24.
+///   - 4.37: +1 (`fs_release_all_for_holder`, LOCK 4/4).  Count = 25.
+///   - 4.38: +1 (`fs_write`, FIRST LENGTH-PARAMETERIZED MUTATION).  Count = 26.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 26;
 
 #[cfg(test)]
 mod tests {
@@ -239,22 +249,32 @@ mod tests {
         /// the migration-complete target (27 handlers, fs_remove_dir
         /// trait-exempt).
         const EXPECTED_REGISTERED_HANDLER_NAMES: &[&str] = &[
-            "fs_quarantine",           // slice 4.12
-            "fs_close",                // slice 4.13
-            "fs_flush",                // slice 4.14
-            "fs_tell",                 // slice 4.15
-            "fs_seek",                 // slice 4.16 (first verifying)
-            "fs_size",                 // slice 4.17
-            "fs_exists",               // slice 4.18
-            "fs_stat",                 // slice 4.19
-            "fs_read",                 // slice 4.20 (first length-parameterized)
-            "fs_read_at",              // slice 4.21
-            "fs_entries_stream_close", // slice 4.22 (first stream)
-            "fs_truncate",             // slice 4.24 (first mutation)
-            "fs_chmod",                // slice 4.25 (first path-mutation)
-            "fs_rename",               // slice 4.26 (first two-endpoint mutation)
-            "fs_chown",                // slice 4.27 (non-verifying mutation)
-            "fs_remove_file",          // slice 4.28 (first lock-gated mutation)
+            "fs_quarantine",             // slice 4.12
+            "fs_close",                  // slice 4.13
+            "fs_flush",                  // slice 4.14
+            "fs_tell",                   // slice 4.15
+            "fs_seek",                   // slice 4.16 (first verifying)
+            "fs_size",                   // slice 4.17
+            "fs_exists",                 // slice 4.18
+            "fs_stat",                   // slice 4.19
+            "fs_read",                   // slice 4.20 (first length-parameterized)
+            "fs_read_at",                // slice 4.21
+            "fs_entries_stream_close",   // slice 4.22 (first stream)
+            "fs_truncate",               // slice 4.24 (first mutation)
+            "fs_chmod",                  // slice 4.25 (first path-mutation)
+            "fs_rename",                 // slice 4.26 (first two-endpoint mutation)
+            "fs_chown",                  // slice 4.27 (non-verifying mutation)
+            "fs_remove_file",            // slice 4.28 (first lock-gated mutation)
+            "fs_entries_stream_open",    // slice 4.29
+            "fs_entries_stream_next",    // slice 4.30 (first post_reply_supplement)
+            "fs_entries",                // slice 4.31 (observation 9/9)
+            "fs_open",                   // slice 4.32 (lifecycle 3/3)
+            "fs_copy_file",              // slice 4.33
+            "fs_lock_range",             // slice 4.34 (first lock)
+            "fs_lock_sequential",        // slice 4.35
+            "fs_release_lock",           // slice 4.36
+            "fs_release_all_for_holder", // slice 4.37 (lock 4/4)
+            "fs_write",                  // slice 4.38 (first length-parameterized mutation)
         ];
 
         assert_eq!(
