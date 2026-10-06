@@ -2363,4 +2363,77 @@ mod tests {
              list in compose_fs_genesis_source."
         );
     }
+
+    /// Byte-anchor compose_fs_genesis_source output with a non-
+    /// empty bundle that exercises every (BundleEntryKind ×
+    /// BundleConsensusMode) product cell:
+    ///
+    ///   - Oracular File:  "cfg"       → /etc/rnode/cfg
+    ///   - Oracular Dir:   "logs/"     → /var/log/rnode
+    ///   - Consensus File: "state.bin" → /@bundle/consensus/state.bin
+    ///   - Consensus Dir:  "shared/"   → /@bundle/consensus/shared
+    ///
+    /// Complements the empty-bundle golden-hex pin (slice 5.16),
+    /// which exercises the composed scaffolding but not the
+    /// bundle-emitter Shape-A splits.  A regression in
+    /// format_bundle_for_rholang's per-cell branch (e.g., a tuple
+    /// field reorder, a cmode string change, a Shape-A root
+    /// derivation flaw) flips THIS hash while leaving the empty-
+    /// bundle golden hex alone.
+    #[test]
+    fn compose_fs_genesis_source_golden_hex_with_non_empty_bundle() {
+        let bundle = [
+            BundleEntry {
+                logical_name: "cfg".into(),
+                canon_path: PathBuf::from("/etc/rnode/cfg"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "logs/".into(),
+                canon_path: PathBuf::from("/var/log/rnode"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "state.bin".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/state.bin"),
+                kind: BundleEntryKind::File,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "shared/".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/shared"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+        ];
+        let src = compose_fs_genesis_source("00", "00", &bundle, None);
+        let h = Blake2b256::hash(src.into_bytes());
+        let hex: String = h.iter().fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
+        // Byte-identity with fileio canonical as of slice 5.26 port.
+        // Regenerate via
+        //   cargo test -p casper --lib -- --nocapture \
+        //     compose_fs_genesis_source_golden_hex_with_non_empty_bundle
+        // ONLY when intentionally hard-forking the Genesis composition
+        // OR the bundle format (both are hard-fork surfaces).
+        const EXPECTED: &str = "a6005130b0ce4db99e83de7341fa823e7e00baeab2ea79b121d1a579a7d8a4b5";
+        assert_eq!(
+            hex, EXPECTED,
+            "compose_fs_genesis_source() hash for non-empty bundle changed. \
+             Either a Genesis hard fork OR a bundle-format drift \
+             (format_bundle_for_rholang tuple field reorder, cmode string \
+             change, Shape-A root derivation flaw).  If intentional, rerun \
+             with --nocapture and update EXPECTED."
+        );
+        println!("compose_fs_genesis_source (non-empty bundle) hash = {hex}");
+    }
 }
