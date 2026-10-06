@@ -83,10 +83,11 @@ user_story: null
 issues: [24]
 blocked_by: []
 created_at: 2026-10-03
-updated_at: 2026-10-03
+updated_at: 2026-10-05
 claimed_by: claude-session-aa467dea
 claimed_at: 2026-10-03T21:10:00Z
 branch: fix/issue-24
+follow_on_branch: "fix/issue-24-root-cause-fix (draft PR #620). Since 2026-10-05 its base is chore/finish-TASK-020-4-log-growth (PR #622), so that one soak tests both PRs. The Slashing suite and the heavy CI suite do not run on PR #620 until PR #622 merges and the base returns to dev."
 pr_base_branch: dev
 origin: "The weekend-60h soak 37090117438 on master fce422a7d stopped after about 8 hours. Eight passive iterations failed first, then the disk guardian stopped all nodes in iteration 26 at 3,683 MB free against a 4,096 MB floor. The verdict was regress, with finalization p95 50.7 s against a baseline of 40.9 s plus 20 percent. Issue #24 records the same sustained-phase finalization failure since 2026-09."
 execution_contract:
@@ -101,6 +102,8 @@ evidence:
   new_run: 37153082817
   new_run_target: f93b72699565e45097b37a99b0413cef16bacd00
   issue_comments: ["2026-09-16 nightly soak evidence for 2026-09-12 to 2026-09-15", "2026-09-25 submit-to-finalization breakdown on dev 6d6d4fed6"]
+  baseline_run: "37224478325 on master 95be0d450, cancelled by the user on 2026-10-05 in segment 3. Segment 2 had 19 failures in 91 iterations, all test_load 'N deploy(s) not finalized within 45s'."
+  fix_run: "37343966570, daily-24h, dispatched on 2026-10-05 for fix/issue-24-root-cause-fix at 0a0713663 (dev b5cbb51d1, PR #622 at 82fe22a0a, and PR #620)."
 tasks:
   - id: TASK-021-1
     title: "Attribute the failure of soak 37090117438 with the existing evidence"
@@ -147,6 +150,7 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
+    candidate_fix: "0ef0966c6 on fix/issue-24-root-cause-fix (PR #620): reset() validates the root with a read and no longer writes current-root, the roots lock is released before the history lock, and record_root writes in one LMDB transaction. 2cd9790f9 removes the unused validate_and_set_current_root path. The code review of 2026-10-05 found no correctness defect. After a restart, history opens at the last checkpointed root, not at the last reset root. Soak 37343966570 tests the candidate. The acceptance items still apply: the maintainer chooses the fix, and the TASK-021-8 findings do not yet show that the roots lock is the root cause."
     acceptance:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
       - "The maintainer chooses the fix before implementation."
@@ -185,9 +189,84 @@ tasks:
       - "A later epic decides which parts move into the Rust casper-soak runtime."
   - id: TASK-021-8
     title: "Measure history repository lock hold times by call site"
-    status: pending
+    status: in_progress
     claimed_by: null
     blocked_by: []
+    implementation_status: "Implemented in 05c78088e on fix/issue-24-root-cause-fix. The call-site counters are in the ISSUE24_METRICS records through scripts/bench/extend-issue24-metrics.sh. Acceptance items 3 and 4 wait for soak 37343966570."
+    findings_2026_10_05:
+      source: "Baseline soak 37224478325 (master 95be0d450, without the call-site counters): 98 test_load sessions, 76 passed and 22 failed. The analysis used the aggregate lock counters of master in the ISSUE24_METRICS records of validators 1 to 3."
+      results:
+        - "The unfinalized deploys are in the sustained phase (482 deploys in 17 sessions) and in the high phase (26 deploys in 8 sessions). The failures spread evenly over the run."
+        - "The failures are a latency tail, not a discrete stall. In the sustained phase the finalization p95 median is 46.9 s for passing sessions and 58.7 s for failing sessions, against the 45 s gate. The LFB rate median is 20.6 blocks per minute for passing sessions and 17.9 for failing sessions."
+        - "The roots lock wait is high in every sustained phase: a median of 7.1 s for passing and 9.1 s for failing sessions, for each validator, over about 2,900 calls. Other phases stay below 15 ms."
+        - "No validator metric separates failing from passing sessions well. The AUC is 0.62 for the roots lock wait, 0.67 for the checkpoint time, 0.66 for the replay runtime lock wait, and at most 0.70 for any metric."
+        - "test_load judges finalization on validator1 only. The boot and readonly nodes lag the validators by 12 to 20 blocks at drain and use about three times the memory of a validator, but the harness collects no ISSUE24_METRICS records for them."
+      interpretation: "The roots lock contention is a constant cost of the sustained phase, not the trigger of a failure. The reset fix can still move the latency tail below the gate if the lock is on the critical path."
+      baseline_metric_auc: "Sustained phase, validators 1 to 3, mean of the three. AUC is the probability that a failing session has the higher value. Roots lock wait 0.62, roots lock calls 0.61, current-history lock wait 0.62, checkpoint roots lock wait mean 0.57, checkpoint time mean 0.65, root commit time 0.59, replay reset time 0.53, replay runtime lock wait 0.65, replay user deploys time 0.64, apply trie actions time 0.61, blocks replayed 0.62. Test side: inclusion p95 0.70, finalization p95 0.69, LFB rate 0.31."
+    soak_decision_metrics:
+      run: "37343966570. Compare the sustained phase with baseline run 37224478325. Medians are for passing and failing sessions, for each validator unless stated."
+      metrics:
+        - role: outcome
+          measure: "test_load failure rate (sessions summary: 'N deploy(s) not finalized within 45s')"
+          baseline: "22 of 98 sessions (22 percent)"
+          expected_if_root_cause: "At most 5 failures in about 100 sessions"
+          reasoning: "This is the gate of issue #24. At the baseline rate, 100 sessions give about 22 failures, so 5 or fewer is a real change and not chance."
+        - role: outcome
+          measure: "Sustained finalization p95 (log line 'Phase sustained: ... finalization p95')"
+          baseline: "Median 46.9 s for passing and 58.7 s for failing sessions, gate 45 s"
+          expected_if_root_cause: "The median of all sessions falls clearly below 45 s"
+          reasoning: "The failures are the tail of this distribution. The gate is marginal, so the pass count alone can change by chance. The distribution shows a real shift."
+        - role: outcome
+          measure: "Sustained LFB rate in blocks per minute (same log line)"
+          baseline: "Median 20.6 for passing and 17.9 for failing sessions"
+          expected_if_root_cause: "Higher than the baseline median"
+          reasoning: "The rate measures finalization throughput directly. Slow sessions finalize fewer blocks per minute."
+        - role: mechanism
+          measure: "history_repository_roots_repository_lock_wait_ns (aggregate, present in both runs)"
+          baseline: "7.1 s for passing and 9.1 s for failing sessions, over about 2,900 calls"
+          expected_if_root_cause: "Close to 0, below 0.1 s"
+          reasoning: "This shows whether the fix removed the contention. The local probe reduced the checkpoint roots wait from 295 ms to 0.19 ms."
+        - role: mechanism
+          measure: "history_repository_roots_repository_reset_hold_ns divided by _reset_calls, and _checkpoint_wait_ns"
+          baseline: "Not measured in the baseline. The local probe gave 4.5 ms of hold time for each reset before the fix."
+          expected_if_root_cause: "A few microseconds of hold time for each reset, and a checkpoint wait close to 0"
+          reasoning: "These call-site counters answer TASK-021-8 acceptance items 3 and 4. They show which call site held the lock."
+        - role: mechanism
+          measure: "history_roots_store_writes against _record_root_calls plus _checkpoint_calls"
+          baseline: "Not measured. Before the fix, each reset also wrote current-root."
+          expected_if_root_cause: "Writes equal record_root calls plus checkpoint calls, with no writes from reset"
+          reasoning: "This proves that reset makes no durable write. The roots and history stores share one LMDB environment with a single writer."
+        - role: next_candidate
+          measure: "history_checkpoint_time mean"
+          baseline: "79 ms for passing and 116 ms for failing sessions, AUC 0.65"
+          expected_if_root_cause: "Lower, because reset no longer competes for the LMDB writer"
+          reasoning: "This is the next suspect if the outcome does not change. It is the strongest node-side separator in the baseline."
+        - role: next_candidate
+          measure: "block_replay_runtime_lock_wait_time mean"
+          baseline: "140 ms for passing and 215 ms for failing sessions, AUC 0.65"
+          expected_if_root_cause: "Lower or unchanged"
+          reasoning: "The runtime lock serializes replay. If this stays high while the roots wait falls, replay serialization is the next cause to examine."
+        - role: control
+          measure: "history_repository_current_history_lock_wait_ns (aggregate)"
+          baseline: "12 ms for passing and 13 ms for failing sessions"
+          expected_if_root_cause: "About the same"
+          reasoning: "The fix does not change this lock. A large change points to a different effect or a different workload."
+        - role: control
+          measure: "Blocks replayed (block_replay_phase_reset_time samples) and roots lock calls"
+          baseline: "233 and 238 blocks, about 2,900 calls"
+          expected_if_root_cause: "Within 10 percent of the baseline"
+          reasoning: "The comparison is valid only for the same workload. A lighter workload can pass without any fix."
+      decision_rules:
+        - "Root cause confirmed: the roots lock wait falls close to 0, the controls stay within 10 percent, and the failure rate and the sustained finalization p95 both fall as expected."
+        - "Mechanism works but is not on the critical path: the roots lock wait falls close to 0, but the finalization p95 and the LFB rate stay inside the baseline spread. Examine the checkpoint time and the replay runtime lock wait next."
+        - "Fix not effective: the roots lock wait does not fall. Use the call-site counters to find the call site that holds the lock."
+      confounders:
+        - "The soak runs dev at b5cbb51d1, not master 95be0d450. dev adds the rholang file I/O handlers of PRs #613 to #617, which deploys of test_load do not use."
+        - "The soak includes the PR #622 log guardian. It runs on the host and adds a Docker probe every 15 seconds, but no node code."
+        - "The harness collects no ISSUE24_METRICS records for the boot and readonly nodes, so their lag stays unexplained."
+        - "PR #523 (issue-468) merged to dev at 6ae47b00c on 2026-10-05, after soak 37343966570 started. It prevents in-flight marker leaks in the block processor and evicts stale markers. A leaked marker can hold a block back from processing, so this change can affect finalization latency by itself. Soak 37343966570 tests b5cbb51d1 and does not include it. A soak of fix/issue-24-root-cause-fix at f66861983 or later includes it."
+        - "PR #480 (issue-18) merged to dev at 8940ca90d on 2026-10-05 (23:51Z). It excludes silent bonded validators from the clique oracle finality weight and the synchrony weight (casper/src/rust/safety/clique_oracle.rs, synchrony_constraint_checker.rs). This changes the finality rule that test_load measures, so it can change the finalization latency and the failure rate by itself. Every dev soak from 1c787b752 includes it."
+        - "Rule for the next soak: compare it with this soak only for the metrics that PR #523 and PR #480 cannot change. These are the roots and checkpoint lock counters and the checkpoint time. Read the failure rate and the finalization p95 as the combined effect of all changes in the tested SHA."
     origin: "In soak 37153082817, history_repository_roots_repository_lock_wait_ns reached 2 to 21 seconds for each validator in test_deploy_throughput_and_finalization, and no other test exceeded 1 second. The checkpoint's own roots lock wait stayed near zero. The metrics record wait times only, so they cannot show which call site holds the lock. The candidate cause is reset() in rspace++/src/rspace/history/history_repository_impl.rs, which holds the roots lock while it waits for the current-history lock."
     files:
       - rspace++/src/rspace/history/history_repository_impl.rs
