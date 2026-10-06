@@ -28,7 +28,10 @@ impl NodeDiscovery for StubNodeDiscovery {
     fn remove_peer(&self, _peer: &PeerNode) -> Result<(), comm::rust::errors::CommError> { Ok(()) }
 }
 
-fn services(is_node_read_only: bool) -> (WebApiImpl, DeployGrpcServiceV1Impl) {
+fn services(
+    has_validator_key: bool,
+    is_node_read_only: bool,
+) -> (WebApiImpl, DeployGrpcServiceV1Impl) {
     let local = PeerNode::new(
         NodeIdentifier::new("0a0b0c0d00000000000000000000000000000000")
             .expect("valid test node ID"),
@@ -70,6 +73,7 @@ fn services(is_node_read_only: bool) -> (WebApiImpl, DeployGrpcServiceV1Impl) {
         "F1R3".to_string(),
         "F1R3".to_string(),
         8,
+        has_validator_key,
         is_node_read_only,
         block_report_api.clone(),
         models::rhoapi::Par::default(),
@@ -92,6 +96,7 @@ fn services(is_node_read_only: bool) -> (WebApiImpl, DeployGrpcServiceV1Impl) {
         "F1R3".to_string(),
         "F1R3".to_string(),
         8,
+        has_validator_key,
         is_node_read_only,
         engine_cell,
         block_report_api,
@@ -109,17 +114,19 @@ fn services(is_node_read_only: bool) -> (WebApiImpl, DeployGrpcServiceV1Impl) {
 
 #[tokio::test]
 async fn status_reports_validator_identity_without_autopropose() {
-    for (is_node_read_only, expected_validator) in [(false, true), (true, false)] {
-        let (web, grpc) = services(is_node_read_only);
+    for (has_validator_key, is_node_read_only) in
+        [(true, false), (false, true), (false, false), (true, true)]
+    {
+        let (web, grpc) = services(has_validator_key, is_node_read_only);
         let web_status = web.status().await.unwrap();
-        assert_eq!(web_status.is_validator, expected_validator);
+        assert_eq!(web_status.is_validator, has_validator_key);
         assert_eq!(web_status.is_read_only, is_node_read_only);
 
         let grpc_response = grpc.status(tonic::Request::new(())).await.unwrap();
         let Some(Message::Status(grpc_status)) = grpc_response.into_inner().message else {
             panic!("expected status response");
         };
-        assert_eq!(grpc_status.is_validator, expected_validator);
+        assert_eq!(grpc_status.is_validator, has_validator_key);
         assert_eq!(grpc_status.is_read_only, is_node_read_only);
     }
 }
