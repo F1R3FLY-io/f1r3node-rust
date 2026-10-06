@@ -311,6 +311,27 @@ async fn dynamic_tasks_are_supervised_and_drained() {
 }
 
 #[tokio::test]
+async fn stopped_scopes_reject_tasks_from_retained_spawners() {
+    for abort in [false, true] {
+        let scope = Arc::new(consensus_runtime::TaskScope::default());
+        let retained = scope.clone();
+        if abort {
+            scope.abort();
+        } else {
+            scope.shutdown().await;
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropFlag(dropped.clone());
+        retained.spawn("late child", async move {
+            let _guard = guard;
+            std::future::pending().await
+        });
+        assert!(dropped.load(Ordering::SeqCst));
+        scope.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn full_packet_queue_does_not_block_shutdown() {
     let builder = builder(Capabilities::NONE);
     let handle = builder.handle();

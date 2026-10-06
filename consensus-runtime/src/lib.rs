@@ -377,14 +377,20 @@ impl TaskGroup {
     pub async fn shutdown(&mut self) { self.tasks.shutdown().await; }
 }
 pub struct TaskScope {
-    tasks: std::sync::Mutex<JoinSet<(String, Result<(), ConsensusError>)>>,
+    state: std::sync::Mutex<TaskScopeState>,
     changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct TaskScopeState {
+    tasks: JoinSet<(String, Result<(), ConsensusError>)>,
+    closed: bool,
 }
 
 impl Default for TaskScope {
     fn default() -> Self {
         Self {
-            tasks: std::sync::Mutex::new(JoinSet::new()),
+            state: std::sync::Mutex::new(TaskScopeState::default()),
             changed: tokio::sync::Notify::new(),
         }
     }
@@ -397,10 +403,11 @@ impl TaskScope {
         task: impl Future<Output = Result<(), ConsensusError>> + Send + 'static,
     ) {
         let name = name.into();
-        self.tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .spawn(async move { (name, task.await) });
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.closed {
+            return;
+        }
+        state.tasks.spawn(async move { (name, task.await) });
         self.changed.notify_one();
     }
 
@@ -409,7 +416,7 @@ impl TaskScope {
             tokio::select! {
                 _ = self.changed.notified() => {},
                 outcome = futures::future::poll_fn(|cx| {
-                    match self.tasks.lock().unwrap_or_else(|e| e.into_inner()).poll_join_next(cx) {
+                    match self.state.lock().unwrap_or_else(|e| e.into_inner()).tasks.poll_join_next(cx) {
                         std::task::Poll::Ready(None) => std::task::Poll::Pending,
                         outcome => outcome,
                     }
@@ -424,14 +431,17 @@ impl TaskScope {
     }
 
     pub async fn shutdown(&self) {
-        let mut tasks = std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut tasks = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.closed = true;
+            std::mem::take(&mut state.tasks)
+        };
         tasks.shutdown().await;
     }
 
     pub fn abort(&self) {
-        self.tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .abort_all();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        state.tasks.abort_all();
     }
 }
