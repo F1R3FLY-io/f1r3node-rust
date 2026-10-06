@@ -41,6 +41,16 @@ impl Drop for ReportQueueMetricGuard {
 
 fn report_cache_key(block_hash: &BlockHash) -> ByteString { block_hash.to_vec() }
 
+/// How a caller waits for the single report permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportPermit {
+    /// Best-effort enrichment of a read. Refuse at once rather than hold the
+    /// read behind another replay.
+    RejectIfHeld,
+    /// Explicit report requests and pre-caching. Queue until the permit frees.
+    Wait,
+}
+
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
 pub enum BlockReportError {
@@ -52,6 +62,8 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
+    #[error("Block reporter is busy; retry later")]
+    Busy,
     #[error("Failed to trace block: {0}")]
     ReplayFailed(String),
     #[error(
@@ -171,15 +183,28 @@ impl BlockReportAPI {
         force_replay: bool,
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+        permit_policy: ReportPermit,
     ) -> ApiErr<BlockEventInfo> {
-        let queue_guard = ReportQueueMetricGuard::new();
-        let permit = self
-            .block_report_semaphore
-            .acquire()
-            .await
-            .map_err(|error| BlockReportError::SemaphoreError(error.to_string()))?;
-        drop(queue_guard);
-        let _permit = permit;
+        let _permit = match permit_policy {
+            ReportPermit::RejectIfHeld => match self.block_report_semaphore.try_acquire() {
+                Ok(permit) => permit,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    metrics::counter!("block_report.busy", "source" => "casper").increment(1);
+                    return Err(BlockReportError::Busy);
+                }
+                Err(error) => return Err(BlockReportError::SemaphoreError(error.to_string())),
+            },
+            ReportPermit::Wait => {
+                let queue_guard = ReportQueueMetricGuard::new();
+                let permit = self
+                    .block_report_semaphore
+                    .acquire()
+                    .await
+                    .map_err(|error| BlockReportError::SemaphoreError(error.to_string()))?;
+                drop(queue_guard);
+                permit
+            }
+        };
 
         self.block_report_inner(force_replay, block, casper).await
     }
@@ -224,18 +249,28 @@ impl BlockReportAPI {
         hash: BlockHash,
         force_replay: bool,
     ) -> ApiErr<BlockEventInfo> {
-        self.block_report_with_permit(hash, force_replay).await
+        self.block_report_with_permit(hash, force_replay, ReportPermit::Wait)
+            .await
+    }
+
+    /// Get the block report for enriching a read: the cached report, else a
+    /// replay only when no other replay holds the permit, else `Busy` at once.
+    pub async fn block_report_if_idle(&self, hash: BlockHash) -> ApiErr<BlockEventInfo> {
+        self.block_report_with_permit(hash, false, ReportPermit::RejectIfHeld)
+            .await
     }
 
     /// Generate and cache a report for background pre-caching.
     pub async fn prewarm_block_report(&self, hash: BlockHash) -> ApiErr<BlockEventInfo> {
-        self.block_report_with_permit(hash, false).await
+        self.block_report_with_permit(hash, false, ReportPermit::Wait)
+            .await
     }
 
     async fn block_report_with_permit(
         &self,
         hash: BlockHash,
         force_replay: bool,
+        permit_policy: ReportPermit,
     ) -> ApiErr<BlockEventInfo> {
         let eng = self.engine_cell.get().await;
         let casper = eng
@@ -263,7 +298,7 @@ impl BlockReportAPI {
             }
         }
 
-        self.block_report_within_lock(force_replay, &block, &casper)
+        self.block_report_within_lock(force_replay, &block, &casper, permit_policy)
             .await
     }
 
