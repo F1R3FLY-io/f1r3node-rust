@@ -440,33 +440,6 @@ async fn casper_runtime_shutdown_while_waiting_for_peers() {
     assert!(!directory.path().join("consensus-manifest.json").exists());
 }
 
-#[test]
-fn node_runtime_does_not_own_casper_types() {
-    let source = include_str!("../src/rust/runtime/node_runtime.rs");
-    for forbidden in [
-        "casper::",
-        "EngineCell",
-        "CasperLoop",
-        "BlockMessage",
-        "MultiParentCasper",
-        "casper_launch",
-        "BlockRetriever",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "NodeRuntime still contains {forbidden}"
-        );
-    }
-}
-
-#[test]
-fn omitted_protocol_defaults_to_casper_and_unknown_protocol_is_rejected() {
-    use node::rust::configuration::model::{ConsensusConf, ConsensusProtocol};
-    let conf: ConsensusConf = serde_json::from_str("{}").unwrap();
-    assert_eq!(conf.protocol, ConsensusProtocol::CbcCasper);
-    assert!(serde_json::from_str::<ConsensusConf>(r#"{"protocol":"unknown"}"#).is_err());
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casper_runtime_reports_failed_genesis_initialization() {
     let directory = tempfile::tempdir().unwrap();

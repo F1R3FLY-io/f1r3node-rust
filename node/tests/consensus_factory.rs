@@ -39,3 +39,11 @@ async fn unavailable_protocol_fails_before_creating_node_files() {
     assert!(error.downcast_ref::<UnavailableProtocol>().is_some());
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn omitted_protocol_defaults_to_casper_and_unknown_protocol_is_rejected() {
+    use node::rust::configuration::model::{ConsensusConf, ConsensusProtocol};
+    let conf: ConsensusConf = serde_json::from_str("{}").unwrap();
+    assert_eq!(conf.protocol, ConsensusProtocol::CbcCasper);
+    assert!(serde_json::from_str::<ConsensusConf>(r#"{"protocol":"unknown"}"#).is_err());
+}
