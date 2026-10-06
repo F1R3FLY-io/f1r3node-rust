@@ -40,9 +40,9 @@ With a node log budget enabled, the guardian also samples the container json-fil
 | --- | --- | --- |
 | Bounded models, six registered standalone models, and sixty-one controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
 | Consumer storage budget | `MC_SoakStorageBudget` invariant `WithinBudget`, with `deploy_storage/MC_DeployStorageBound` for the deploy cap | Proven in the model. Block and history caps are assumptions until the node enforces them. The log caps are enforced: see the next row |
-| Node log caps (TASK-020-4) | The guardian checks `SOAK_CONTAINER_LOG_BUDGET_MB` (default 400) and `SOAK_NODE_LOG_BUDGET_MB` (default 2560) against the EPIC-020 source caps. The ten `log-*` scenarios of `scripts/bench/test-soak-disk-admission.sh` are the evidence. They cover the budgets, the refusal, the sudo fallback, disabled budgets, the range check, and a writer at its descriptor limit | Green locally. The breach and refusal scenarios fail against the driver without the log guardian |
+| Node log caps (TASK-020-4) | The guardian checks `SOAK_CONTAINER_LOG_BUDGET_MB` (default 400) and `SOAK_NODE_LOG_BUDGET_MB` (default 2560) against the EPIC-020 source caps. The twelve `log-*` scenarios of `scripts/bench/test-soak-disk-admission.sh` are the evidence. They cover the budgets, the refusal, the sudo fallback, disabled budgets, the range check, the descriptor limit, stopped containers, and unreadable rotated logs | Green locally. The breach and refusal scenarios fail against the driver without the log guardian |
 | Conditional no-overrun theorem | `MC_SoakDiskGuardian` invariant `NoOverrun` under `FloorCoversReaction` and `BoundTermination` | Proven in the model. The rate premise awaits the timeline measurement, and the termination premise awaits D2 |
-| Container regressions, 52 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally. CI runs the same command |
+| Container regressions, 54 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally. CI runs the same command |
 | Host driver regression, band scenario | `scripts/bench/test-run-merge-recovery-soak.sh` | Green locally and in CI |
 
 ## Pending obligations
