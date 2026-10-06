@@ -1069,7 +1069,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     };
     Ok(PreparedNode {
         consensus: builder.build(Box::new(adapter)),
-        packet_handler: Arc::new(super::ingress::ConsensusPacketHandler(handle)),
+        packet_handler: Arc::new(super::super::ingress::ConsensusPacketHandler(handle)),
         application: Box::new(PreparedApplication {
             api_servers,
             reporting_routes,

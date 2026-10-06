@@ -22,6 +22,6 @@ impl PacketHandler for ConsensusPacketHandler {
                 payload: packet.content.to_vec(),
             })
             .await
-            .map_err(|error| CommError::CasperError(error.to_string()))
+            .map_err(|error| CommError::ProtocolException(error.to_string()))
     }
 }

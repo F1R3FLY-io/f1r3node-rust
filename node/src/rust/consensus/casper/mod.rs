@@ -3,7 +3,6 @@ pub mod web;
 mod application;
 pub mod api_compat;
 pub(crate) mod assembly;
-mod ingress;
 mod manifest;
 pub mod instances;
 
