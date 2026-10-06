@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-control-trace-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-control-trace-20260917-01.external.tar.gz",
+   "sha256": "40f8167b6b875a002ef37cb13955d4819161d9b60804e2271bebf53fe13cda5a",
+   "bytes": 81283,
+   "members": 119,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

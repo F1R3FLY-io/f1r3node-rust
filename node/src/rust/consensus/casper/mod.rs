@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::block_processor::{BlockProcessor, BlockQueueItem, InFlightBlocks};
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
-use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::casper::Casper;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::errors::CasperError;
@@ -29,8 +29,7 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use consensus_api::{AdapterContext, ConsensusAdapter, ConsensusCommand, ConsensusError, ObjectId};
 use consensus_runtime::TaskGroup;
 use futures::future::BoxFuture;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::casper::protocol::casper_message::DeployData;
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -47,12 +46,12 @@ type ProposerQueueEntry = (
     oneshot::Sender<ProposerResult>,
     u8,
 );
-type BlockQueueEntry = (Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage);
 type CasperLoop =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync>;
 type NativeTask = BoxFuture<'static, Result<(), CasperError>>;
 
 pub(crate) struct CasperConsensusAdapter<T: TransportLayer + Send + Sync + 'static> {
+    observer: Option<crate::rust::soak_observer::Observer>,
     launch: Arc<dyn CasperLaunch + Send + Sync>,
     native_tasks: Arc<consensus_runtime::TaskScope>,
     task_spawner: casper::rust::background_tasks::BackgroundTaskSpawner,
@@ -68,9 +67,9 @@ pub(crate) struct CasperConsensusAdapter<T: TransportLayer + Send + Sync + 'stat
     proposer_capacity: usize,
     proposer_state: Option<Arc<RwLock<ProposerState>>>,
     block_processor: BlockProcessor<T>,
-    block_state: Arc<dashmap::DashSet<BlockHash>>,
-    block_tx: mpsc::Sender<BlockQueueEntry>,
-    block_rx: mpsc::Receiver<BlockQueueEntry>,
+    block_state: Arc<InFlightBlocks>,
+    block_tx: mpsc::Sender<BlockQueueItem>,
+    block_rx: mpsc::Receiver<BlockQueueItem>,
     propose: Option<Arc<ProposeFunction>>,
     validator: Option<casper::rust::validator_identity::ValidatorIdentity>,
     heartbeat_conf: casper::rust::casper_conf::HeartbeatConf,
@@ -114,6 +113,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
 {
     async fn run(self: Box<Self>, mut context: AdapterContext) -> Result<(), ConsensusError> {
         let Self {
+            observer,
             launch,
             native_tasks,
             task_spawner,
@@ -152,6 +152,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             tasks: native_tasks.clone(),
             ready: ready.clone(),
         };
+        let observer = observer.map(|observer| observer.spawn());
         tokio::select! {
             result = launch.launch() => result.map_err(native_error)?,
             _ = context.control.cancelled() => return Ok(()),
@@ -352,6 +353,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             stop_workers.send_replace(true);
             while !workers.is_empty() {
                 workers.join_next().await?;
+            }
+            if let Some(observer) = observer {
+                observer.stop().await;
             }
             store_manager.shutdown().await.map_err(native_error)?;
             Ok::<(), ConsensusError>(())

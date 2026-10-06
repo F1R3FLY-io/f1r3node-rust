@@ -734,6 +734,14 @@ impl Sortable<Expr> for ExprSortMatcher {
                     ]),
                 },
 
+                ExprInstance::GFloat32(bits) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::FLOAT32 as i64,
+                        *bits as i64,
+                    ]),
+                },
+
                 ExprInstance::GBigInt(bytes) => ScoredTerm {
                     term: e.clone(),
                     score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![
@@ -754,6 +762,45 @@ impl Sortable<Expr> for ExprSortMatcher {
                     score: Tree::<ScoreAtom>::create_node_from_i32(Score::FIXED_POINT, vec![
                         Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
                         Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
+                    ]),
+                },
+
+                ExprInstance::GUint64(u) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::UINT64, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(u.to_be_bytes().to_vec()),
+                    ]),
+                },
+
+                ExprInstance::GInt32(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::INT32 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint32(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT32 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint16(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT16 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint8(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT8 as i64,
+                        *x as i64,
                     ]),
                 },
             },

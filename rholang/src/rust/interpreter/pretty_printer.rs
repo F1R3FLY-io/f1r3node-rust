@@ -498,6 +498,11 @@ impl PrettyPrinter {
 
                 ExprInstance::GBool(b) => Ok(b.to_string()),
                 ExprInstance::GInt(i) => Ok(i.to_string()),
+                ExprInstance::GUint64(u) => Ok(format!("{}u64", u)),
+                ExprInstance::GInt32(u) => Ok(format!("{}i32", u)),
+                ExprInstance::GUint32(u) => Ok(format!("{}u32", u)),
+                ExprInstance::GUint16(u) => Ok(format!("{}u16", u)),
+                ExprInstance::GUint8(u) => Ok(format!("{}u8", u)),
                 ExprInstance::GString(s) => Ok(format!("\"{}\"", s)),
                 ExprInstance::GUri(u) => Ok(format!("`{}`", u)),
                 ExprInstance::EMethodBody(method) => {
@@ -528,6 +533,14 @@ impl PrettyPrinter {
                         Ok(format!("{:.1}f64", f))
                     } else {
                         Ok(format!("{}f64", f))
+                    }
+                }
+                ExprInstance::GFloat32(bits) => {
+                    let f = f32::from_bits(*bits);
+                    if f == f.floor() && f.is_finite() {
+                        Ok(format!("{:.1}f32", f))
+                    } else {
+                        Ok(format!("{}f32", f))
                     }
                 }
                 ExprInstance::GBigInt(bytes) => {
@@ -1547,8 +1560,25 @@ mod tests {
                 print_expr(ExprInstance::GDouble(2.5f64.to_bits())),
                 "2.5f64"
             );
+            assert_eq!(
+                print_expr(ExprInstance::GFloat32(2.0f32.to_bits())),
+                "2.0f32"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::GFloat32(0.1f32.to_bits())),
+                "0.1f32"
+            );
             assert_eq!(print_expr(ExprInstance::GBigInt(vec![0x00, 0xFF])), "255n");
             assert_eq!(print_expr(ExprInstance::GBigInt(vec![])), "0n");
+            assert_eq!(print_expr(ExprInstance::GUint64(5)), "5u64");
+            assert_eq!(print_expr(ExprInstance::GInt32(-5)), "-5i32");
+            assert_eq!(print_expr(ExprInstance::GUint32(5)), "5u32");
+            assert_eq!(print_expr(ExprInstance::GUint16(65535)), "65535u16");
+            assert_eq!(print_expr(ExprInstance::GUint8(255)), "255u8");
+            assert_eq!(
+                print_expr(ExprInstance::GUint64(u64::MAX)),
+                "18446744073709551615u64"
+            );
             assert_eq!(
                 print_expr(ExprInstance::GBigRat(GBigRational {
                     numerator: vec![1],

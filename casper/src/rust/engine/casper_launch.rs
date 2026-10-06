@@ -14,7 +14,6 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
@@ -67,9 +66,8 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     casper_shard_conf: CasperShardConf,
 
     // Explicit parameters from Scala (in same order as Scala signature)
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
     conf: CasperConf,
     background_tasks: Option<crate::rust::background_tasks::BackgroundTaskSpawner>,
@@ -84,7 +82,9 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
 }
 
-use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
+use crate::rust::blocks::block_processor::{
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+};
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     pub fn with_background_tasks(
@@ -141,11 +141,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         // Explicit parameters (matching Scala signature order)
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
         conf: CasperConf,
         trim_state: bool,
@@ -268,11 +265,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             casper_buffer_storage: &CasperBufferKeyValueStorage,
             block_store: &KeyValueBlockStore,
             block_retriever: &BlockRetriever<T>,
-            blocks_in_processing: &Arc<DashSet<BlockHash>>,
-            block_processing_queue_tx: &mpsc::Sender<(
-                Arc<dyn MultiParentCasper + Send + Sync>,
-                BlockMessage,
-            )>,
+            blocks_in_processing: &Arc<InFlightBlocks>,
+            block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
         ) -> Result<(), CasperError> {
             let pendants = casper_buffer_storage.get_pendants();
 
@@ -347,29 +341,30 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
 
                     // Send block to processing queue for validation and addition to DAG
                     let block_hash = block.block_hash.clone();
-                    if !blocks_in_processing.insert(block_hash.clone()) {
-                        tracing::debug!(
-                            "Skipping pendant {} enqueue because it is already queued/in-processing",
-                            PrettyPrinter::build_string_bytes(&block_hash)
-                        );
-                        continue;
-                    }
-                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
-                    if blocks_in_processing.len() > max_in_flight {
-                        blocks_in_processing.remove(&block_hash);
-                        block_retriever.note_local_backpressure_drop(&block_hash, "launch-pendant");
-                        tracing::warn!(
-                            "Skipping pendant {} enqueue because in-flight block cap {} is reached",
-                            PrettyPrinter::build_string_bytes(&block_hash),
-                            max_in_flight
-                        );
-                        continue;
-                    }
+                    let guard = match mark_in_flight(blocks_in_processing, block_hash.clone()) {
+                        InFlightMark::Marked(guard) => guard,
+                        InFlightMark::AlreadyInFlight => {
+                            tracing::debug!(
+                                "Skipping pendant {} enqueue because it is already queued/in-processing",
+                                PrettyPrinter::build_string_bytes(&block_hash)
+                            );
+                            continue;
+                        }
+                        InFlightMark::CapReached => {
+                            block_retriever
+                                .note_local_backpressure_drop(&block_hash, "launch-pendant");
+                            tracing::warn!(
+                                "Skipping pendant {} enqueue because in-flight block cap {} is reached",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                MAX_BLOCKS_IN_PROCESSING
+                            );
+                            continue;
+                        }
+                    };
                     block_processing_queue_tx
-                        .send((casper.clone(), block))
+                        .send((casper.clone(), block, guard))
                         .await
                         .map_err(|e| {
-                            blocks_in_processing.remove(&block_hash);
                             CasperError::Other(format!("Failed to send block to queue: {}", e))
                         })?;
                     // Acknowledge only after successful enqueue so dropped blocks do not

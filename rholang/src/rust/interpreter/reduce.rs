@@ -127,8 +127,8 @@ pub struct DebruijnInterpreter {
     pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
-    pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
-    pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    pub(crate) merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+    pub(crate) mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
@@ -858,6 +858,10 @@ impl DebruijnInterpreter {
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
 
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
+
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
         // (b) tuple channels with a head that ISN'T in the tag registry
@@ -1373,12 +1377,17 @@ impl DebruijnInterpreter {
                 } else {
                     match self.urn_map.get(&urn) {
                         Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag" {
+                            if urn == "rho:system:bitmaskMergeableTag"
+                                && tracing::enabled!(
+                                    target: "f1r3fly.merge.tag_check.validation",
+                                    tracing::Level::DEBUG
+                                )
+                            {
                                 use prost::Message;
                                 let bytes = p.encode_to_vec();
                                 let hex: String =
                                     bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::info!(
+                                tracing::debug!(
                                     target: "f1r3fly.merge.tag_check.validation",
                                     "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
                                     hex,
@@ -1499,6 +1508,41 @@ impl DebruijnInterpreter {
                     })
                 }
 
+                (ExprInstance::GUint64(u1), ExprInstance::GUint64(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GInt32(u1), ExprInstance::GInt32(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint32(u1), ExprInstance::GUint32(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint16(u1), ExprInstance::GUint16(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint8(u1), ExprInstance::GUint8(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
                     self.cost.charge(comparison_cost())?;
                     Ok(Expr {
@@ -1510,6 +1554,24 @@ impl DebruijnInterpreter {
                     self.cost.charge(comparison_cost())?;
                     let f1 = f64::from_bits(d1);
                     let f2 = f64::from_bits(d2);
+                    if f1.is_nan() || f2.is_nan() {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(false)),
+                        })
+                    } else {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(relopi(
+                                f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                                0,
+                            ))),
+                        })
+                    }
+                }
+
+                (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    let f1 = f32::from_bits(d1);
+                    let f2 = f32::from_bits(d2);
                     if f1.is_nan() || f2.is_nan() {
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::GBool(false)),
@@ -1574,6 +1636,26 @@ impl DebruijnInterpreter {
                     expr_instance: Some(ExprInstance::GInt(*x)),
                 }),
 
+                ExprInstance::GUint64(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint64(*x)),
+                }),
+
+                ExprInstance::GInt32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt32(*x)),
+                }),
+
+                ExprInstance::GUint32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint32(*x)),
+                }),
+
+                ExprInstance::GUint16(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint16(*x)),
+                }),
+
+                ExprInstance::GUint8(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint8(*x)),
+                }),
+
                 ExprInstance::GString(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GString(x.clone())),
                 }),
@@ -1588,6 +1670,10 @@ impl DebruijnInterpreter {
 
                 ExprInstance::GDouble(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
+                }),
+
+                ExprInstance::GFloat32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(*x)),
                 }),
 
                 ExprInstance::GBigInt(x) => Ok(Expr {
@@ -1622,10 +1708,26 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(result)),
                             })
                         }
+                        ExprInstance::GInt32(i) => {
+                            let result = i.checked_neg().ok_or_else(|| {
+                                InterpreterError::ReduceError(
+                                    "Arithmetic overflow in negation".to_string(),
+                                )
+                            })?;
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GInt32(result)),
+                            })
+                        }
                         ExprInstance::GDouble(bits) => {
                             let f = f64::from_bits(bits);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
+                            })
+                        }
+                        ExprInstance::GFloat32(bits) => {
+                            let f = f32::from_bits(bits);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32((-f).to_bits())),
                             })
                         }
                         ExprInstance::GBigInt(bytes) => {
@@ -1664,6 +1766,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(multiplication_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Mul, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(multiplication_cost())?;
@@ -1682,6 +1793,13 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(multiplication_cost())?;
+                            let result = f32::from_bits(d1) * f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -1738,6 +1856,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(division_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Div, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(division_cost())?;
@@ -1760,6 +1887,13 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) / f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(division_cost())?;
+                            let result = f32::from_bits(d1) / f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -1827,6 +1961,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(modulo_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Mod, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(modulo_cost())?;
@@ -1844,7 +1987,8 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
+                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
                             ))
@@ -1924,6 +2068,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(sum_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Add, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(sum_cost())?;
@@ -1937,6 +2090,14 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) + f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(sum_cost())?;
+                            let result = f32::from_bits(d1) + f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -1991,7 +2152,13 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
+                        | (ExprInstance::GInt32(_), other)
+                        | (ExprInstance::GUint32(_), other)
+                        | (ExprInstance::GUint16(_), other)
+                        | (ExprInstance::GUint8(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2013,6 +2180,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(subtraction_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Sub, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(subtraction_cost())?;
@@ -2026,6 +2202,14 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) - f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(subtraction_cost())?;
+                            let result = f32::from_bits(d1) - f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -2102,7 +2286,13 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
+                        | (ExprInstance::GInt32(_), other)
+                        | (ExprInstance::GUint32(_), other)
+                        | (ExprInstance::GUint16(_), other)
+                        | (ExprInstance::GUint8(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -7148,7 +7338,13 @@ fn get_type(expr_instance: ExprInstance) -> String {
     match expr_instance {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
+        ExprInstance::GUint64(_) => String::from("uint64"),
+        ExprInstance::GInt32(_) => String::from("int32"),
+        ExprInstance::GUint32(_) => String::from("uint32"),
+        ExprInstance::GUint16(_) => String::from("uint16"),
+        ExprInstance::GUint8(_) => String::from("uint8"),
         ExprInstance::GDouble(_) => String::from("float"),
+        ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),
         ExprInstance::GFixedPoint(_) => String::from("fixedpoint"),
@@ -7185,6 +7381,119 @@ fn get_type(expr_instance: ExprInstance) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SizedIntOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+impl SizedIntOp {
+    fn name(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "addition",
+            SizedIntOp::Sub => "subtraction",
+            SizedIntOp::Mul => "multiplication",
+            SizedIntOp::Div => "division",
+            SizedIntOp::Mod => "modulo",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "+",
+            SizedIntOp::Sub => "-",
+            SizedIntOp::Mul => "*",
+            SizedIntOp::Div => "/",
+            SizedIntOp::Mod => "%",
+        }
+    }
+}
+
+fn is_sized_int_pair(lhs: &ExprInstance, rhs: &ExprInstance) -> bool {
+    matches!(
+        (lhs, rhs),
+        (ExprInstance::GUint64(_), ExprInstance::GUint64(_))
+            | (ExprInstance::GInt32(_), ExprInstance::GInt32(_))
+            | (ExprInstance::GUint32(_), ExprInstance::GUint32(_))
+            | (ExprInstance::GUint16(_), ExprInstance::GUint16(_))
+            | (ExprInstance::GUint8(_), ExprInstance::GUint8(_))
+    )
+}
+
+macro_rules! sized_int_op {
+    ($t:ty, $suffix:literal, $op:expr, $lhs:expr, $rhs:expr) => {{
+        let out_of_range = |v: String| {
+            InterpreterError::ReduceError(format!("Value {} is out of range for {}", v, $suffix))
+        };
+        let a = <$t>::try_from($lhs).map_err(|_| out_of_range($lhs.to_string()))?;
+        let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
+        let overflow = || {
+            InterpreterError::ReduceError(format!(
+                "Arithmetic overflow in {}: {}{} {} {}{}",
+                $op.name(),
+                a,
+                $suffix,
+                $op.symbol(),
+                b,
+                $suffix
+            ))
+        };
+        let result: $t = match $op {
+            SizedIntOp::Add => a.wrapping_add(b),
+            SizedIntOp::Sub => a.wrapping_sub(b),
+            SizedIntOp::Mul => a.checked_mul(b).ok_or_else(overflow)?,
+            SizedIntOp::Div => {
+                if b == 0 {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                a.checked_div(b).ok_or_else(overflow)?
+            }
+            SizedIntOp::Mod => {
+                if b == 0 {
+                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                }
+                a.checked_rem(b).ok_or_else(overflow)?
+            }
+        };
+        result.into()
+    }};
+}
+
+fn eval_sized_int_op(
+    op: SizedIntOp,
+    lhs: &ExprInstance,
+    rhs: &ExprInstance,
+) -> Result<ExprInstance, InterpreterError> {
+    Ok(match (lhs, rhs) {
+        (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => {
+            ExprInstance::GUint64(sized_int_op!(u64, "u64", op, *a, *b))
+        }
+        (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => {
+            ExprInstance::GInt32(sized_int_op!(i32, "i32", op, *a, *b))
+        }
+        (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => {
+            ExprInstance::GUint32(sized_int_op!(u32, "u32", op, *a, *b))
+        }
+        (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => {
+            ExprInstance::GUint16(sized_int_op!(u16, "u16", op, *a, *b))
+        }
+        (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => {
+            ExprInstance::GUint8(sized_int_op!(u8, "u8", op, *a, *b))
+        }
+        _ => {
+            return Err(InterpreterError::BugFoundError(
+                "eval_sized_int_op called on operands that are not a sized integer pair"
+                    .to_string(),
+            ))
+        }
+    })
+}
+
 fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
     match inf_instance {
         UnfInstance::GPrivateBody(_) => String::from("PrivateBody"),
@@ -7197,6 +7506,7 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 fn par_contains_nan_double(par: &Par) -> bool {
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(ExprInstance::GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
@@ -7433,7 +7743,15 @@ fn describe_par_type(par: &Par) -> String {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
             Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GUint64(_)) => "UInt64".to_string(),
+            Some(ExprInstance::GInt32(_)) => "Int32".to_string(),
+            Some(ExprInstance::GUint32(_)) => "UInt32".to_string(),
+            Some(ExprInstance::GUint16(_)) => "UInt16".to_string(),
+            Some(ExprInstance::GUint8(_)) => "UInt8".to_string(),
+            Some(ExprInstance::GDouble(_)) => "Float".to_string(),
             Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GBigRat(_)) => "BigRat".to_string(),
+            Some(ExprInstance::GFixedPoint(_)) => "FixedPoint".to_string(),
             Some(ExprInstance::GString(_)) => "String".to_string(),
             Some(ExprInstance::GUri(_)) => "Uri".to_string(),
             Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),
@@ -7446,5 +7764,73 @@ fn describe_par_type(par: &Par) -> String {
         }
     } else {
         "non-boolean process".to_string()
+    }
+}
+
+#[cfg(test)]
+mod is_mergeable_channel_tests {
+    use models::rhoapi::{ETuple, Expr};
+    use models::rust::utils::new_gstring_par;
+
+    use super::*;
+    use crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name;
+    use crate::rust::interpreter::test_utils::resources::with_runtime;
+
+    fn tuple(ps: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps,
+                locally_free: vec![],
+                connective_used: false,
+            })),
+        }])
+    }
+
+    async fn merge_type(chan: Par) -> Option<MergeType> {
+        with_runtime("is-mergeable-channel-", |runtime| async move {
+            runtime.reducer.is_mergeable_channel(&chan)
+        })
+        .await
+    }
+
+    fn other() -> Par { new_gstring_par("x".to_string(), vec![], false) }
+
+    #[tokio::test]
+    async fn a_channel_that_is_not_a_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(bitmask_or_mergeable_tag_name()).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_empty_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_with_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_without_a_tag_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![other()])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_tuple_whose_head_is_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name(), other()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_after_the_head_is_not_matched() {
+        assert_eq!(
+            merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
+            None
+        );
     }
 }

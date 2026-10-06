@@ -228,8 +228,7 @@ impl NodeRuntime {
             event_bus,
         );
 
-        // Wrap with error handling
-        handle_unrecoverable_errors(program).await
+        program.await
     }
 
     /// Node program - orchestrates all concurrent tasks
@@ -586,6 +585,10 @@ async fn node_discovery_loop(
 ) -> eyre::Result<()> {
     use tokio::time::sleep;
 
+    let mut failures = comm::rust::rp::connect::ConnectFailureTracker::new(
+        node_conf.peers_discovery.heartbeat_failure_threshold,
+    )?;
+
     loop {
         tracing::debug!("nodeDiscoveryLoop: Starting iteration");
 
@@ -616,7 +619,15 @@ async fn node_discovery_loop(
         };
 
         // Use find_and_connect with trait object
-        match connect::find_and_connect(&connections, node_discovery.as_ref(), connect_fn).await {
+        match connect::find_and_connect(
+            &connections,
+            node_discovery.as_ref(),
+            connect_fn,
+            rp_conf.bootstrap.as_ref(),
+            &mut failures,
+        )
+        .await
+        {
             Ok(new_connections) => {
                 if !new_connections.is_empty() {
                     info!("Connected to {} new peer(s)", new_connections.len());
@@ -878,8 +889,6 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
 
     // Create NodeRuntime instance
     let runtime = NodeRuntime::new(node_conf, id);
-
-    // Run the main node program with error handling
     handle_unrecoverable_errors(runtime.main()).await
 }
 

@@ -5,12 +5,16 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use casper::rust::blocks::block_processor::{
+    BlockQueueItem, InFlightBlocks, IN_FLIGHT_MARKER_MAX_WARN_AGE,
+};
 use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
     BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
@@ -22,8 +26,7 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
 use consensus_api::{Capabilities, ProtocolDescriptor};
 use consensus_runtime::{RuntimeBuilder, RuntimeConfig};
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, trace, warn};
@@ -73,6 +76,8 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         &conf.casper.shard_name,
     )
     .map_err(|e| CasperError::Other(e.to_string()))?;
+    let observer = crate::rust::soak_observer::Observer::bind(&conf)
+        .map_err(|error| CasperError::Other(error.to_string()))?;
     let mut capabilities = Capabilities::FINALIZED_PROGRESS;
     if conf.casper.validator_private_key.is_some() {
         capabilities = capabilities
@@ -247,13 +252,13 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
 
         rho_runtime::create_runtime_from_kv_store(
             eval_stores,
-            Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
+            casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
             false,
             &mut Vec::new(),
             Arc::new(Box::new(Matcher)),
             external_services.clone(),
         )
-        .await
+        .await?
     };
 
     // Runtime manager (play and replay runtimes)
@@ -274,7 +279,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
-            Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             external_services.clone(),
             {
                 let exploratory = ExploratoryDeployConfig::resolve(
@@ -330,16 +335,20 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     let engine_cell = {
         use casper::rust::engine::engine_cell::EngineCell;
 
-        EngineCell::init()
+        match observer
+            .as_ref()
+            .and_then(|observer| observer.authority_handle())
+        {
+            Some(controller) => EngineCell::observed(controller),
+            None => EngineCell::init(),
+        }
     };
 
     // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
     // to consumer (BlockProcessorInstance)
     let block_processor_queue_max_pending = block_processor_queue_max_pending();
     let (block_processor_queue_tx, block_processor_queue_rx) =
-        mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(
-            block_processor_queue_max_pending,
-        );
+        mpsc::channel::<BlockQueueItem>(block_processor_queue_max_pending);
 
     // Queue depth is where memory pressure moves when parallel drain is
     // bounded, so it must be observable alongside block-processing.active.
@@ -351,6 +360,8 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     )
     .set(0.0);
     let block_processor_queue_watch = block_processor_queue_tx.downgrade();
+    let block_processor_state_ref = Arc::new(InFlightBlocks::new());
+    let block_processor_state_watch = Arc::downgrade(&block_processor_state_ref);
     background.push((
         "queue metrics",
         Box::pin(async move {
@@ -367,13 +378,20 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                     "source" => BLOCK_PROCESSOR_METRICS_SOURCE
                 )
                 .set(pending as f64);
+                if let Some(in_flight) = block_processor_state_watch.upgrade() {
+                    metrics::gauge!(BLOCK_PROCESSING_IN_FLIGHT_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(in_flight.len() as f64);
+                    let oldest = in_flight.oldest(std::time::Instant::now());
+                    metrics::gauge!(BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(oldest.as_ref().map_or(0.0, |(_, age)| age.as_secs_f64()));
+                    if let Some((hash, age)) = oldest {
+                        if age > IN_FLIGHT_MARKER_MAX_WARN_AGE {
+                            warn!(block = %PrettyPrinter::build_string_bytes(&hash), age_secs = age.as_secs(), in_flight = in_flight.len(), "in-flight block marker is older than the warning age");
+                        }
+                    }
+                }
             }
             Ok(())
         }),
     ));
-
-    // Block processing state - set of items currently in processing
-    let block_processor_state_ref = Arc::new(dashmap::DashSet::<BlockHash>::new());
 
     // Read RPConf once for use in multiple places
     let rp_conf = rp_conf_cell
@@ -1033,6 +1051,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         loops.push(("mergeable GC", gc));
     }
     let adapter = CasperConsensusAdapter {
+        observer,
         launch: casper_launch,
         native_tasks,
         task_spawner,

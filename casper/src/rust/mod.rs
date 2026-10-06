@@ -59,3 +59,5 @@ pub type ProposeFunction = dyn Fn(
     + Send
     + Sync;
 pub mod background_tasks;
+
+pub mod soak_observer;

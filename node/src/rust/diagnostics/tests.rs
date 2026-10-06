@@ -91,6 +91,7 @@ mod tests {
     fn create_test_node_conf() -> NodeConf {
         NodeConf {
             consensus: Default::default(),
+            soak_observer: None,
             standalone: false,
             autopropose: false,
             protocol_server: ProtocolServer {
