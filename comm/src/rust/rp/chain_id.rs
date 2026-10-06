@@ -128,15 +128,15 @@ impl ChainIdCell {
     /// 2. The peer names a different chain. Reject, whatever the message is.
     ///    This is the relaunch case: a node of the previous chain names the
     ///    previous genesis.
-    /// 3. The peer names no chain. Accept a `Pull` always, so joining nodes,
-    ///    observers and older builds keep working. Accept a `Push` only while
-    ///    `require_chain_id` is off, which is the mixed-version window.
+    /// 3. The peer names no chain. Accept a `Pull`, so a joining node, which
+    ///    does not know its genesis yet, can still ask for data. Reject a
+    ///    `Push`: a node that holds chain data knows its chain, so one that
+    ///    pushes chain data without naming it is either broken or hostile.
     pub fn check(
         &self,
         peer: &str,
         peer_chain_id: &[u8],
         type_id: Option<&str>,
-        require_chain_id: bool,
     ) -> Result<(), CommError> {
         let Some(local) = self.inner.get() else {
             return Ok(());
@@ -159,11 +159,10 @@ impl ChainIdCell {
 
         match classify(type_id) {
             MessageClass::Pull => Ok(()),
-            MessageClass::Push if !require_chain_id => Ok(()),
             MessageClass::Push => Err(wrong_chain_id(
                 peer.to_string(),
                 format!(
-                    "peer named no chain and `require-chain-id` is set, so its {} was refused",
+                    "peer named no chain, so its {} was refused",
                     type_id.unwrap_or("control message"),
                 ),
             )),
