@@ -111,8 +111,23 @@ impl Genesis {
             shard_id,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
+        // File I/O FIP MVP: shared-Fs model with empty static bundle +
+        // no snapshot cadence.  Config-driven bundle / cadence
+        // threading (fs_bundle / consensus_fs_snapshot_cadence on
+        // the Genesis struct) is a follow-up slice; the MVP posture
+        // is "the Fs cap exists at genesis but openFile / openDir
+        // return FSERR_UNSUPPORTED for every logical name — stdio
+        // methods work".  See fs_genesis module docstring.
+        //
+        // Safe to invoke now: slices 5.31-5.35 landed the fs-native
+        // URN registration behind a reducer-level filter (default
+        // true = reject user deploys) with per-play / per-replay
+        // toggles around genesis.  FsGenesis's composed source binds
+        // the raw fs_* primitives via the toggled-off filter; user
+        // deploys attempting the same get a ReduceError.
+        let fs_generator = standard_deploys::fs_generator(shard_id, &[], None);
 
-        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(versioned_registry);
         all_deploys.push(list_ops);
@@ -126,6 +141,7 @@ impl Genesis {
         all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
+        all_deploys.push(fs_generator);
 
         all_deploys
     }
