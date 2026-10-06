@@ -179,8 +179,8 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(i)) => {
-                // Sort data before serializing for deterministic hashing regardless of
-                // insertion order
+                // Sort data before serializing for deterministic hashing
+                // regardless of insertion order
                 let mut sorted_data = i.data.clone();
                 sorted_data.sort();
                 let data =
@@ -199,8 +199,8 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(i)) => {
-                // Sort continuations before serializing for deterministic hashing regardless of
-                // insertion order
+                // Sort continuations before serializing for deterministic
+                // hashing regardless of insertion order
                 let mut sorted_continuations = i.continuations.clone();
                 sorted_continuations.sort();
                 let data = bincode::serialize(&sorted_continuations)
@@ -222,8 +222,8 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(i)) => {
-                // Sort joins before serializing for deterministic hashing regardless of
-                // insertion order
+                // Sort joins before serializing for deterministic hashing
+                // regardless of insertion order
                 let mut sorted_joins = i.joins.clone();
                 sorted_joins.sort();
                 let data =
@@ -396,8 +396,8 @@ where
                 .expect("History Repository Impl: Failed to put if absent");
         };
 
-        // store everything related to history (history data, new root and populate
-        // cache for new root)
+        // store everything related to history (history data, new root and
+        // populate cache for new root)
         let new_history = {
             let history_lock = self
                 .current_history

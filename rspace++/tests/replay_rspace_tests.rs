@@ -808,8 +808,8 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         results
     }
 
-    // function that takes one argument and always returns the last argument as a
-    // result
+    // function that takes one argument and always returns the last argument as
+    // a result
     fn kp<A, B: Clone>(x: B) -> impl Fn(A) -> B { move |_| x.clone() }
 
     fn datum_creator(i: i32) -> String { format!("datum{}", i) }

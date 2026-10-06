@@ -57,16 +57,18 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
         .iter()
         .map(|(consume_channels, channel_change)| {
             // Use hash_from_hashes to match EXEC path's hash_from_vec behavior:
-            // The EXEC path uses hash_from_vec(&channels) which serializes each channel,
-            // hashes each, sorts, concatenates, and hashes again.
-            // Since consume_channels here is already Vec<Blake2b256Hash>, we use
-            // hash_from_hashes which sorts, concatenates, and hashes - matching
+            // The EXEC path uses hash_from_vec(&channels) which serializes each
+            // channel, hashes each, sorts, concatenates, and hashes
+            // again. Since consume_channels here is already
+            // Vec<Blake2b256Hash>, we use hash_from_hashes which
+            // sorts, concatenates, and hashes - matching
             // the EXEC behavior.
             let history_pointer = stable_hash_provider::hash_from_hashes(consume_channels);
             let init = base_reader.get_continuations_proj_binary(&history_pointer)?;
 
             let new_val = {
-                // Use multiset diff: remove each item in 'removed' exactly once from 'init'
+                // Use multiset diff: remove each item in 'removed' exactly once
+                // from 'init'
                 let mut result = StateChange::multiset_diff(&init, &channel_change.removed);
                 result.extend(channel_change.added.clone());
                 result
@@ -78,7 +80,8 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                         .to_string(),
                 ))
             } else if init.is_empty() {
-                // No konts were in base state and some are added - insert konts and add join.
+                // No konts were in base state and some are added - insert konts
+                // and add join.
                 Ok(ConsumeAndJoinActions {
                     consume_action: HotStoreTrieAction::TrieInsertAction(
                         TrieInsertAction::TrieInsertBinaryConsume(TrieInsertBinaryConsume {
@@ -89,7 +92,8 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                     join_action: Some(JoinActionKind::AddJoin(consume_channels.clone())),
                 })
             } else if new_val.is_empty() {
-                // All konts present in base are removed - remove consume, remove join.
+                // All konts present in base are removed - remove consume,
+                // remove join.
                 Ok(ConsumeAndJoinActions {
                     consume_action: HotStoreTrieAction::TrieDeleteAction(
                         TrieDeleteAction::TrieDeleteConsume(TrieDeleteConsume {
@@ -99,8 +103,8 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                     join_action: Some(JoinActionKind::RemoveJoin(consume_channels.clone())),
                 })
             } else {
-                // Konts were updated but consume is present in base state - update konts, no
-                // joins.
+                // Konts were updated but consume is present in base state -
+                // update konts, no joins.
                 Ok(ConsumeAndJoinActions {
                     consume_action: HotStoreTrieAction::TrieInsertAction(
                         TrieInsertAction::TrieInsertBinaryConsume(TrieInsertBinaryConsume {
@@ -244,7 +248,8 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
     let init = init_value(history_pointer)?;
 
     let new_val = {
-        // Use multiset diff: remove each item in 'removed' exactly once from 'init'
+        // Use multiset diff: remove each item in 'removed' exactly once from
+        // 'init'
         let mut result = StateChange::multiset_diff(&init, &changes.removed);
         result.extend(changes.added.clone());
         result

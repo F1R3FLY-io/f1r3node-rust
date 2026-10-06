@@ -1364,10 +1364,10 @@ async fn doing_persistent_consume_and_producing_multiple_times_should_work() {
 
     let r3_results = run_produce_k(r3.clone().unwrap());
 
-    // The below is commented out and replaced because the rust side does not allow
-    // for modification of continuation in the history_store and have it reflect the
-    // the hot_store. This would require the continuation to be wrapped in a
-    // Arc<Mutex<>> which is not needed
+    // The below is commented out and replaced because the rust side does not
+    // allow for modification of continuation in the history_store and have
+    // it reflect the the hot_store. This would require the continuation to
+    // be wrapped in a Arc<Mutex<>> which is not needed
 
     // assert!(check_same_elements(
     //     r3_results,
@@ -1920,11 +1920,12 @@ async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
         }
     })
     .len();
-    // ★ NON-VACUITY FOR THE STORE-EFFECT CHECK BELOW. The exact count is not the
-    // claim (a `consume` writes both the waiting continuation and the channel's
-    // joins); the claim is that a well-formed consume through this path DOES write,
-    // so "no new inserts" after the refusal is a statement about the refusal rather
-    // than about a store nothing ever reaches.
+    // ★ NON-VACUITY FOR THE STORE-EFFECT CHECK BELOW. The exact count is not
+    // the claim (a `consume` writes both the waiting continuation and the
+    // channel's joins); the claim is that a well-formed consume through
+    // this path DOES write, so "no new inserts" after the refusal is a
+    // statement about the refusal rather than about a store nothing ever
+    // reaches.
     assert!(
         inserts_after_control > 0,
         "★ the control consume wrote NOTHING to the hot store, which would make the 'no new \
@@ -1958,9 +1959,9 @@ async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
         ),
     }
 
-    // ★★ The store-effect checks the `#[should_panic]` form left as dead code. A
-    // refusal that had already written would be WORSE than the abort it replaced,
-    // because the abort at least wrote nothing.
+    // ★★ The store-effect checks the `#[should_panic]` form left as dead code.
+    // A refusal that had already written would be WORSE than the abort it
+    // replaced, because the abort at least wrote nothing.
     let inserts_after_refusal = filter_enum_variants(rspace.get_store().changes(), |e| {
         if let HotStoreAction::Insert(i) = e {
             Some(i)

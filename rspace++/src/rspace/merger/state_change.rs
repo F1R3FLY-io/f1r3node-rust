@@ -86,7 +86,8 @@ impl PartialEq for StateChange {
             let key = entry.key();
             let value = entry.value();
 
-            // Find matching key in other.consume_channels_to_join_serialized_map
+            // Find matching key in
+            // other.consume_channels_to_join_serialized_map
             let found = other
                 .consume_channels_to_join_serialized_map
                 .iter()
@@ -281,15 +282,16 @@ impl StateChange {
     {
         let datums_diff = DashMap::new();
         let cont_diff = DashMap::new();
-        // Since event log only contains hashes of channels, so to know which join
-        // stored corresponds to channels, this index have to be maintained
+        // Since event log only contains hashes of channels, so to know which
+        // join stored corresponds to channels, this index have to be
+        // maintained
         let joins_map = DashMap::new();
 
         let produces_affected = produces_affected(event_log_index);
 
         // Deduplicate by channel hash before processing
-        // Without this, if multiple Produces have the same channel_hash, we'd compute
-        // changes multiple times
+        // Without this, if multiple Produces have the same channel_hash, we'd
+        // compute changes multiple times
         let unique_produce_channels: HashSet<Blake2b256Hash> = produces_affected
             .0
             .iter()
@@ -308,7 +310,8 @@ impl StateChange {
         let channels_of_consumes_affected: Vec<Vec<Blake2b256Hash>> =
             unique_consume_channels.into_iter().collect();
 
-        // Process produces in parallel - each unique channel is processed exactly once
+        // Process produces in parallel - each unique channel is processed
+        // exactly once
         unique_produce_channels
             .par_iter()
             .try_for_each(|history_pointer| {
@@ -318,14 +321,15 @@ impl StateChange {
                     |h| post_state_reader.get_data_proj_binary(h),
                 )?;
 
-                // Since each channel is processed exactly once, we can just insert directly
+                // Since each channel is processed exactly once, we can just
+                // insert directly
                 datums_diff.insert(history_pointer.clone(), change);
 
                 Ok::<(), HistoryError>(())
             })?;
 
-        // Process consumes in parallel - each unique consume channels set is processed
-        // exactly once
+        // Process consumes in parallel - each unique consume channels set is
+        // processed exactly once
         channels_of_consumes_affected
             .par_iter()
             .try_for_each(|consume_channels| {
@@ -338,8 +342,8 @@ impl StateChange {
                     |h| post_state_reader.get_continuations_proj_binary(h),
                 )?;
 
-                // Since each consume channels set is processed exactly once, we can just insert
-                // directly
+                // Since each consume channels set is processed exactly once, we
+                // can just insert directly
                 cont_diff.insert(consume_channels, change);
 
                 Ok::<(), HistoryError>(())
@@ -360,26 +364,33 @@ impl StateChange {
                         .iter()
                         .map(|item| stable_hash_provider::hash(item))
                         .collect::<Vec<_>>();
-                    // sorting is required because channels of a consume in event log and
-                    // channels of a join in history might not be
-                    // ordered the same way
+                    // sorting is required because channels of a consume in
+                    // event log and channels of a join in
+                    // history might not be ordered the same
+                    // way
                     consume_channels.sort();
                     join_channels.sort();
                     *consume_channels == join_channels
                 });
 
-                // A consume can be "affected" by the event-log set algebra yet have ZERO net
-                // tuple-space effect (created-and-resolved within the block, or a peek /
-                // immediate match leaving no residue), in which case neither pre nor post
-                // state holds a join for it. Such a no-op consume carries no join change:
-                // the `cont_diff.retain(...)` below drops it from the continuation diff, and
-                // `state_change_merger` consults this join map ONLY for consumes that have a
-                // (non-no-op) continuation change. So skip it rather than `.expect()`-
-                // panicking — the panic was a craftable validator-crash on attacker-
-                // influenceable input, and it fired during eager per-branch indexing.
-                // A genuine surviving/destroyed consume always has its join written in
-                // lockstep with its continuation, so it cannot reach pre==post==empty; were
-                // one ever to, the downstream merger degrades to a deterministic
+                // A consume can be "affected" by the event-log set algebra yet
+                // have ZERO net tuple-space effect
+                // (created-and-resolved within the block, or a peek /
+                // immediate match leaving no residue), in which case neither
+                // pre nor post state holds a join for it. Such
+                // a no-op consume carries no join change:
+                // the `cont_diff.retain(...)` below drops it from the
+                // continuation diff, and `state_change_merger`
+                // consults this join map ONLY for consumes that have a
+                // (non-no-op) continuation change. So skip it rather than
+                // `.expect()`- panicking — the panic was a
+                // craftable validator-crash on attacker-
+                // influenceable input, and it fired during eager per-branch
+                // indexing. A genuine surviving/destroyed
+                // consume always has its join written in
+                // lockstep with its continuation, so it cannot reach
+                // pre==post==empty; were one ever to, the
+                // downstream merger degrades to a deterministic
                 // `HistoryError::MergeError` rather than a silent wrong state.
                 match join_opt {
                     Some(join) => {
@@ -454,8 +465,8 @@ impl StateChange {
         // multiset)
         let added = Self::multiset_diff(&end, &start);
 
-        // deleted = startValue diff endValue (items in start that aren't in end,
-        // multiset)
+        // deleted = startValue diff endValue (items in start that aren't in
+        // end, multiset)
         let deleted = Self::multiset_diff(&start, &end);
 
         Ok(ChannelChange {
@@ -490,7 +501,8 @@ impl StateChange {
             }
         }
 
-        // Combine continuation changes via ChannelChange::combine (multiset union)
+        // Combine continuation changes via ChannelChange::combine (multiset
+        // union)
         for (key, value) in other.cont_changes {
             match cont_changes.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {

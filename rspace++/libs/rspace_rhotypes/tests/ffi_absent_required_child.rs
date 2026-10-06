@@ -131,9 +131,9 @@ fn f1_control_a_well_formed_pair_returns_through_the_ffi() {
          is not attributable to the absent child — it would be attributable to calling the entry \
          point at all."
     );
-    // The FFI leaks its result buffer by design (`Box::leak`); the host frees it
-    // through `deallocate_memory`. Nothing is asserted about the contents here —
-    // F1 exists to show the call SHAPE is sound.
+    // The FFI leaks its result buffer by design (`Box::leak`); the host frees
+    // it through `deallocate_memory`. Nothing is asserted about the
+    // contents here — F1 exists to show the call SHAPE is sound.
     println!("  F1 control: the well-formed pair matched through the real FFI symbol");
 }
 

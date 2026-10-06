@@ -40,7 +40,8 @@ impl PartialOrd for EventLogIndex {
 
 impl Ord for EventLogIndex {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // numberChannelsData is BTreeMap<Blake2b256Hash, i64>, already sorted by key
+        // numberChannelsData is BTreeMap<Blake2b256Hash, i64>, already sorted
+        // by key
         let a_entries: Vec<_> = self.number_channels_data.iter().collect();
         let b_entries: Vec<_> = other.number_channels_data.iter().collect();
 
@@ -49,8 +50,8 @@ impl Ord for EventLogIndex {
             return len_cmp;
         }
 
-        // Compare entries lexicographically: first by key (Blake2b256Hash), then by
-        // value (i64)
+        // Compare entries lexicographically: first by key (Blake2b256Hash),
+        // then by value (i64)
         for ((ak, av), (bk, bv)) in a_entries.iter().zip(b_entries.iter()) {
             let key_cmp = ak.cmp(bk);
             if key_cmp != std::cmp::Ordering::Equal {
@@ -91,7 +92,8 @@ impl EventLogIndex {
         produce_touch_pre_state_join: impl Fn(&Produce) -> bool,
         mergeable_chs: NumberChannelsDiff,
     ) -> Self {
-        // Use Arc<Mutex<>> for thread-safe collections that will be updated in parallel
+        // Use Arc<Mutex<>> for thread-safe collections that will be updated in
+        // parallel
         let produces_linear = Arc::new(Mutex::new(HashSet::new()));
         let produces_persistent = Arc::new(Mutex::new(HashSet::new()));
         let produces_consumed = Arc::new(Mutex::new(HashSet::new()));
@@ -108,7 +110,8 @@ impl EventLogIndex {
         let mut all_consumes: Vec<Consume> = Vec::new();
         let mut all_comms: Vec<(Consume, Vec<Produce>, bool)> = Vec::new(); // (consume, produces, has_peeks)
 
-        // First, gather all events to avoid locking overhead in the parallel section
+        // First, gather all events to avoid locking overhead in the parallel
+        // section
         for event in &event_log {
             match event {
                 Event::IoEvent(IOEvent::Produce(p)) => {
@@ -184,7 +187,8 @@ impl EventLogIndex {
                 }
             });
 
-        // Helper function to safely unwrap Arc<Mutex<HashSet<T>>> with minimal cloning
+        // Helper function to safely unwrap Arc<Mutex<HashSet<T>>> with minimal
+        // cloning
         fn unwrap_arc_mutex<T>(arc_mutex: Arc<Mutex<HashSet<T>>>) -> HashableSet<T>
         where T: Eq + std::hash::Hash + Clone {
             // Try to get exclusive ownership of the Arc
@@ -197,8 +201,9 @@ impl EventLogIndex {
                 Err(arc) => {
                     let mut result = HashSet::new();
                     if let Ok(guard) = arc.lock() {
-                        // Insert each item individually - still requires cloning elements
-                        // but avoids cloning the entire collection structure
+                        // Insert each item individually - still requires
+                        // cloning elements but avoids
+                        // cloning the entire collection structure
                         for item in guard.iter() {
                             result.insert(item.clone());
                         }
@@ -526,7 +531,8 @@ mod tests {
             .map(|d| empty_with_bitmask_channels(BTreeMap::from([(ch.clone(), *d)])))
             .collect();
 
-        // Monotonicity: each successive combine never clears a previously-set bit.
+        // Monotonicity: each successive combine never clears a previously-set
+        // bit.
         let mut acc = EventLogIndex::empty();
         let mut prev_val: u64 = 0;
         for index in &indices {
@@ -546,7 +552,8 @@ mod tests {
         // After all 16 diffs, every low bit must be set.
         assert_eq!(prev_val, 0xFFFF, "all 16 bits must be present after combining 16 diffs");
 
-        // Reordering should produce the same final value (commutativity at scale).
+        // Reordering should produce the same final value (commutativity at
+        // scale).
         let mut reversed = indices.clone();
         reversed.reverse();
         let folded_reverse = reversed

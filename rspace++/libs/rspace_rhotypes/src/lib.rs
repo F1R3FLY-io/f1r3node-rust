@@ -77,18 +77,19 @@ pub extern "C" fn space_new(path: *const c_char) -> *mut Space {
 
             // println!("\nhistory store: {:?}",
             // store.history.lock().unwrap().to_map().unwrap()); println!("\
-            // nroots store: {:?}", store.roots.lock().unwrap().to_map().unwrap());
+            // nroots store: {:?}",
+            // store.roots.lock().unwrap().to_map().unwrap());
             // roots_store.print_store();
             // println!("\ncold store: {:?}",
             // store.cold.lock().unwrap().to_map().unwrap().len()); cold_store.
             // print_store();
 
             // let store =
-            //     get_or_create_rspace_store(&format!("{}/rspace++_{}/", data_dir,
-            // unique_id), 1 * GB)         .expect("Error getting RSpaceStore:
-            // "); let store =
-            // get_or_create_rspace_store(&format!("{}/rspace++/", data_dir), 1 * GB)
-            //     .expect("Error getting RSpaceStore: ");
+            //     get_or_create_rspace_store(&format!("{}/rspace++_{}/",
+            // data_dir, unique_id), 1 * GB)         .expect("Error
+            // getting RSpaceStore: "); let store =
+            // get_or_create_rspace_store(&format!("{}/rspace++/", data_dir), 1
+            // * GB)     .expect("Error getting RSpaceStore: ");
 
             RSpace::create(store, Arc::new(Box::new(Matcher)))
         })
@@ -2416,10 +2417,12 @@ pub extern "C" fn hash_channels(
 
 #[no_mangle]
 pub extern "C" fn deallocate_memory(ptr: *mut u8, len: usize) {
-    // SAFETY: The caller must guarantee that `ptr` is a valid pointer to a memory
-    // block allocated by Rust, and that `len` is the correct size of the block.
+    // SAFETY: The caller must guarantee that `ptr` is a valid pointer to a
+    // memory block allocated by Rust, and that `len` is the correct size of
+    // the block.
     unsafe {
-        // Convert the raw pointer back to a Box to allow Rust to deallocate the memory.
+        // Convert the raw pointer back to a Box to allow Rust to deallocate the
+        // memory.
         let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len));
         // The Box goes out of scope here, and Rust automatically deallocates
         // the memory.

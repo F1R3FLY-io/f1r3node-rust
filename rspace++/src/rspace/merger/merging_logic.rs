@@ -200,16 +200,16 @@ pub fn conflict_reason(a: &EventLogIndex, b: &EventLogIndex) -> Option<String> {
 /// Channels conflicting between a pair of event logs.
 pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256Hash> {
     // Check #1
-    // If the same produce or consume is destroyed in COMM in both branches, this
-    // might be a race. All events created in event logs are unique, this match
-    // can be identified by comparing case classes.
+    // If the same produce or consume is destroyed in COMM in both branches,
+    // this might be a race. All events created in event logs are unique,
+    // this match can be identified by comparing case classes.
     //
     // Produce is considered destroyed in COMM if it is not persistent and been
     // consumed without peek. Consume is considered destroyed in COMM when it is
     // not persistent.
     //
-    // If produces/consumes are mergeable in both indices, they are not considered
-    // as conflicts.
+    // If produces/consumes are mergeable in both indices, they are not
+    // considered as conflicts.
     let races_for_same_io_event = {
         let shared_consumes: HashableSet<Consume> = HashableSet(
             a.consumes_produced
@@ -264,11 +264,11 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
     };
 
     // Check #2
-    // Events that are created inside branch and has not been destroyed in branch's
-    // COMMs can lead to potential COMM during merge.
+    // Events that are created inside branch and has not been destroyed in
+    // branch's COMMs can lead to potential COMM during merge.
     let potential_comms = {
-        // TODO analyze joins to make less conflicts. Now plain channel intersection
-        // treated as a conflict - OLD
+        // TODO analyze joins to make less conflicts. Now plain channel
+        // intersection treated as a conflict - OLD
         fn match_found(consume: &Consume, produce: &Produce) -> bool {
             consume.channel_hashes.contains(&produce.channel_hash)
         }
@@ -293,9 +293,9 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
         result
     };
 
-    // Now we don't analyze joins and declare conflicting cases when produce touch
-    // join because applying produces from both event logs might trigger
-    // continuation of some join, so COMM event
+    // Now we don't analyze joins and declare conflicting cases when produce
+    // touch join because applying produces from both event logs might
+    // trigger continuation of some join, so COMM event
     let produce_touch_base_join = {
         let mut result = HashSet::new();
         for produce in a
@@ -775,8 +775,8 @@ where
 
     for (idx, e) in event_logs.iter().enumerate() {
         // produces source: produces_created_and_not_destroyed minus mergeable.
-        // produces_created_and_not_destroyed = (linear − consumed ∪ persistent) −
-        // copied_by_peek.
+        // produces_created_and_not_destroyed = (linear − consumed ∪ persistent)
+        // − copied_by_peek.
         let copied = &e.produces_copied_by_peek.0;
         let mergeable = &e.produces_mergeable.0;
         for p in &e.produces_linear.0 {
@@ -1585,8 +1585,8 @@ mod tests {
         let combined = combine_produces_copied_by_peek(&x, &y);
 
         // p1 is created in y, so it shouldn't be in the result
-        // p2 is copied by peek in both but not created in either, so it should be in
-        // the result
+        // p2 is copied by peek in both but not created in either, so it should
+        // be in the result
         assert_eq!(combined.0.len(), 1);
         assert!(combined.0.contains(&p2));
         assert!(!combined.0.contains(&p1));
@@ -1636,7 +1636,8 @@ mod tests {
 
     #[test]
     fn compute_rejection_options_deterministic_regardless_of_iteration() {
-        // Create a conflict map where multiple rejection options have equal cost
+        // Create a conflict map where multiple rejection options have equal
+        // cost
         let mut conflict_map: HashMap<i32, HashableSet<i32>> = HashMap::new();
         conflict_map.insert(1, HashableSet(HashSet::from_iter(vec![2, 3])));
         conflict_map.insert(2, HashableSet(HashSet::from_iter(vec![1, 3])));

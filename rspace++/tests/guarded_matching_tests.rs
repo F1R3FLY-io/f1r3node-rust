@@ -307,7 +307,10 @@ async fn publication_refusal_preserves_matched_and_unmatched_play_and_replay() {
             .expect("authorized play produce");
         assert_eq!(play_result.is_some(), matched);
         let expected = space.create_soft_checkpoint().await;
-        space.revert_to_soft_checkpoint(expected.clone()).await.expect("restore play observation");
+        space
+            .revert_to_soft_checkpoint(expected.clone())
+            .await
+            .expect("restore play observation");
         let trace = space.create_checkpoint().await.expect("trace checkpoint");
         let expected_root = trace.root;
         replay
@@ -350,12 +353,22 @@ async fn publication_refusal_preserves_matched_and_unmatched_play_and_replay() {
         assert_eq!(replay_result.is_some(), matched);
         let replayed = replay.create_soft_checkpoint().await;
         assert_eq!(expected.produce_counter, replayed.produce_counter);
-        replay.revert_to_soft_checkpoint(replayed).await.expect("restore replay observation");
+        replay
+            .revert_to_soft_checkpoint(replayed)
+            .await
+            .expect("restore replay observation");
         replay
             .check_replay_data()
             .await
             .expect("all replay bindings consumed");
-        assert_eq!(expected_root, replay.create_checkpoint().await.expect("replay checkpoint").root);
+        assert_eq!(
+            expected_root,
+            replay
+                .create_checkpoint()
+                .await
+                .expect("replay checkpoint")
+                .root
+        );
         assert_eq!(authority.calls.load(Ordering::SeqCst), 4);
     }
 }
@@ -723,8 +736,8 @@ async fn a_guard_no_resting_datum_satisfies_leaves_everything_resting() {
 async fn the_produce_path_backtracks_across_a_join() {
     let (space, _replay, _matcher) = fixture().await;
 
-    // `for(@bid <- bid; @ask <- ask) where bid, ask <= 50` — with 50 as the budget,
-    // only the 10 can pair with an ask of 20.
+    // `for(@bid <- bid; @ask <- ask) where bid, ask <= 50` — with 50 as the
+    // budget, only the 10 can pair with an ask of 20.
     let fired = space
         .consume(
             vec!["bid".to_string(), "ask".to_string()],
@@ -945,10 +958,10 @@ async fn a_produce_completing_a_same_channel_join_removes_both() {
 async fn play_and_replay_agree_on_a_guarded_selection() {
     let (space, replay_space, _matcher) = fixture().await;
 
-    // Canonical order: 88, 42, 68, 77, 44, 91 — so the first spatial pick (88) is
-    // INADMISSIBLE and the selection is reached only by backtracking. Pinned
-    // below so a change to the ordering bytes cannot quietly turn this into a
-    // test of the easy case.
+    // Canonical order: 88, 42, 68, 77, 44, 91 — so the first spatial pick (88)
+    // is INADMISSIBLE and the selection is reached only by backtracking.
+    // Pinned below so a change to the ordering bytes cannot quietly turn
+    // this into a test of the easy case.
     const OFFERS: [&str; 6] = ["91", "42", "77", "44", "68", "88"];
     assert_eq!(
         canonical_position("offer", &OFFERS, "88"),
@@ -1026,9 +1039,9 @@ async fn play_and_replay_agree_on_a_guarded_selection() {
 async fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel() {
     let (space, replay_space, _matcher) = fixture().await;
 
-    // Canonical order: 8 then 3 — DESCENDING, so the spatial-first assignment `(8,
-    // 3)` is the one the guard refuses and the admissible assignment is the
-    // permuted `(3, 8)`.
+    // Canonical order: 8 then 3 — DESCENDING, so the spatial-first assignment
+    // `(8, 3)` is the one the guard refuses and the admissible assignment
+    // is the permuted `(3, 8)`.
     const BOOK: [&str; 2] = ["3", "8"];
     assert_eq!(
         canonical_position("book", &BOOK, "8"),
@@ -1389,9 +1402,9 @@ async fn the_guarded_selection_is_stable_across_repetitions() {
     );
     assert!(first == "42" || first == "44", "and it must be one of the ADMISSIBLE offers: {first}");
 
-    // …and it is the FIRST admissible candidate in the canonical order — the same
-    // selection rule an unguarded receive follows, with "admissible" widened
-    // from spatial to spatial+guard.
+    // …and it is the FIRST admissible candidate in the canonical order — the
+    // same selection rule an unguarded receive follows, with "admissible"
+    // widened from spatial to spatial+guard.
     let admissible_first =
         canonical_position("offer", &OFFERS, "42").min(canonical_position("offer", &OFFERS, "44"));
     assert!(

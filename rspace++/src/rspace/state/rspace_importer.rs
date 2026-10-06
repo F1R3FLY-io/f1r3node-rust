@@ -113,8 +113,8 @@ impl RSpaceImporterInstance {
             get_and_validate_history_items().into_iter().collect();
 
         let get_node_function = get_node(trie_map);
-        // Traverse trie and extract nodes / the same as in export. Nodes must match
-        // hashed keys.
+        // Traverse trie and extract nodes / the same as in export. Nodes must
+        // match hashed keys.
         let nodes = RSpaceExporterInstance::traverse_history(
             start_path,
             skip,
@@ -130,8 +130,8 @@ impl RSpaceImporterInstance {
             .collect();
         let data_keys: Vec<Blake2b256Hash> = leafs.into_iter().map(|leaf| leaf.hash).collect();
 
-        // Validate keys / cryptographic proof that store chunk is not corrupted or
-        // modified.
+        // Validate keys / cryptographic proof that store chunk is not corrupted
+        // or modified.
         let history_item_keys: Vec<Blake2b256Hash> =
             history_items.into_iter().map(|item| item.0).collect();
         // println!("\nhistory_item_keys: {:?}", history_item_keys);

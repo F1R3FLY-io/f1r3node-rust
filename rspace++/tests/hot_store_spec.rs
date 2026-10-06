@@ -1129,8 +1129,9 @@ fn the_recorded_hot_store_case_is_what_the_corpus_recorded() {
         decode_escapes(recorded_text),
         "the reconstructed bindings do not denote the recorded counterexample"
     );
-    // The lengths of the RAW renderings are reported when they differ, so a pure
-    // escaping-policy divergence stays visible rather than being silently absorbed.
+    // The lengths of the RAW renderings are reported when they differ, so a
+    // pure escaping-policy divergence stays visible rather than being
+    // silently absorbed.
     if rebuilt != recorded_text {
         eprintln!(
             "note: the reconstruction denotes the same characters but renders differently ({} \

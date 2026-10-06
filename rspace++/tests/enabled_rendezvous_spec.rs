@@ -313,7 +313,8 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
         );
 
         // The consume above fired, so re-stage the same state without firing: a
-        // second space that gets the data and the continuation planted directly.
+        // second space that gets the data and the continuation planted
+        // directly.
         let staged = play_space().await;
         rest_data(&staged, "offer", &REJECTED_FIRST).await;
         let store = staged.get_store();
@@ -337,7 +338,8 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
             .map(|candidate| as_int(&candidate.datum.a))
             .collect();
 
-        // ── the selector arm: a THIRD space holding the same data, receiving ──
+        // ── the selector arm: a THIRD space holding the same data, receiving
+        // ──
         let selecting = play_space().await;
         rest_data(&selecting, "offer", &REJECTED_FIRST).await;
         let taken = selecting

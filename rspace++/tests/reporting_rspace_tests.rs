@@ -67,8 +67,8 @@ fn build_reporting_rspace()
 
 #[tokio::test]
 async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
-    // Verifies that during replay the logger intercepts a COMM event and persists
-    // a ReportingComm entry into the reporting buffer.
+    // Verifies that during replay the logger intercepts a COMM event and
+    // persists a ReportingComm entry into the reporting buffer.
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
 
@@ -185,8 +185,9 @@ async fn reporting_rspace_should_capture_produce_event_only() {
 
 #[tokio::test]
 async fn reporting_rspace_should_capture_peeks_in_comm_event() {
-    // Verifies that peek semantics are preserved: when a COMM is formed with peeks,
-    // the resulting ReportingComm.consume.peeks contains the peeked indices.
+    // Verifies that peek semantics are preserved: when a COMM is formed with
+    // peeks, the resulting ReportingComm.consume.peeks contains the peeked
+    // indices.
     let (space, reporting) = build_reporting_rspace();
     let empty_point = space.create_checkpoint().await.unwrap();
 

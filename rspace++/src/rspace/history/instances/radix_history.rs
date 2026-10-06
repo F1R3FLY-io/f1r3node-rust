@@ -69,8 +69,9 @@ impl History for RadixHistory {
             Some(new_root_node) => {
                 let node_hash_bytes = self.imple.save_node(new_root_node.clone());
                 let root_hash = Blake2b256Hash::from_bytes(node_hash_bytes);
-                // Avoid cloning RadixTreeImpl caches into each checkpointed history instance.
-                // A fresh tree backed by the same store preserves correctness and reduces
+                // Avoid cloning RadixTreeImpl caches into each checkpointed
+                // history instance. A fresh tree backed by the
+                // same store preserves correctness and reduces
                 // allocator pressure from DashMap clone paths.
                 let new_imple = RadixTreeImpl::new(self.store.clone());
                 let new_history = RadixHistory {

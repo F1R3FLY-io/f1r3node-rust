@@ -109,8 +109,8 @@ pub fn encode(node: &Node) -> ByteVector {
 
     let buf = vec![0u8; calc_size]; //Allocation memory
 
-    // Leaf second byte: Leaf identifier (most significant bit = 0) and prefixSize
-    // (lower 7 bits = size)
+    // Leaf second byte: Leaf identifier (most significant bit = 0) and
+    // prefixSize (lower 7 bits = size)
     fn encode_leaf_second_byte(prefix_size: usize) -> u8 {
         (prefix_size & 0x7F) as u8 // (size & 01111111b)
     }
@@ -166,8 +166,9 @@ pub fn encode(node: &Node) -> ByteVector {
                 Item::NodePtr { prefix, ptr } => {
                     // Fill first byte - item index
                     arr[pos0] = idx_item as u8;
-                    // Fill second byte - NodePtr identifier (most significant bit = 1) and
-                    // prefixSize (lower 7 bits = size)
+                    // Fill second byte - NodePtr identifier (most significant
+                    // bit = 1) and prefixSize (lower 7 bits
+                    // = size)
                     let pos_second_byte = pos0 + 1;
                     let prefix_size = prefix.len();
                     arr[pos_second_byte] = encode_node_ptr_second_byte(prefix_size);
@@ -205,7 +206,8 @@ pub fn decode(bv: ByteVector) -> Node {
 
     // If first bit 0 - return true, otherwise false.
     fn is_leaf(second_byte: u8) -> bool { (second_byte & 0x80) == 0x00 }
-    // Decode each non-empty item in-place to avoid cloning the whole node per step.
+    // Decode each non-empty item in-place to avoid cloning the whole node per
+    // step.
     let mut node = empty_node();
     let mut pos0 = 0;
     while pos0 < max_size {
@@ -472,8 +474,8 @@ pub fn sequential_export(
      * @param node Node to look for
      * @param lastIdxOpt Last found index (if this node was not searched -
      * [[None]]) @param settings ExportDataSettings from outer scope
-     * @return [[Some]](idxItem, [[Item]]) if item found, [[None]] if non-empty
-     * item not found
+     * @return [[Some]](idxItem, [[Item]]) if item found, [[None]] if
+     * non-empty item not found
      */
     fn find_next_non_empty_item(
         node: Node,
@@ -674,7 +676,8 @@ pub fn sequential_export(
     );
 
     /*
-     * Export one element (Node or Leaf) and recursively move to the next step.
+     * Export one element (Node or Leaf) and recursively move to the next
+     * step.
      */
     let export_step: Box<
         dyn Fn(
@@ -1187,7 +1190,8 @@ impl RadixTreeImpl {
             match non_empty_items.len() {
                 0 => Item::EmptyItem, // All items are empty.
                 1 => {
-                    // Only one item is not empty - merge child and parent nodes.
+                    // Only one item is not empty - merge child and parent
+                    // nodes.
                     let idx_item = node
                         .iter()
                         .position(|item| *item == non_empty_items[0])
@@ -1302,8 +1306,9 @@ impl RadixTreeImpl {
                         })) // Update Leaf.
                     }
                 } else {
-                    // Create child node, insert existing and new leaf in this node.
-                    // Intentionally not recursive for speed up.
+                    // Create child node, insert existing and new leaf in this
+                    // node. Intentionally not recursive for
+                    // speed up.
                     let (comm_prefix, ins_prefix_rest, leaf_prefix_rest) =
                         common_prefix(ins_prefix, leaf_prefix);
 
@@ -1342,7 +1347,8 @@ impl RadixTreeImpl {
                 if ptr_prefix_rest.is_empty() {
                     insert_new_node_to_child(ptr, comm_prefix, ins_prefix_rest) // Add new node to existing child node.
                 } else {
-                    // Create child node, insert existing Ptr and new leaf in this node.
+                    // Create child node, insert existing Ptr and new leaf in
+                    // this node.
                     let mut new_node = empty_node();
                     let (ptr_prefix_rest_head, ptr_prefix_rest_tail) =
                         ptr_prefix_rest.split_first().unwrap();
@@ -1441,8 +1447,8 @@ impl RadixTreeImpl {
         actions: Vec<HistoryAction>,
     ) -> Result<Option<Node>, RadixTreeError> {
         // If we have 1 action in group.
-        // We can't parallel next and we should use sequential traversing with help
-        // update() or delete().
+        // We can't parallel next and we should use sequential traversing with
+        // help update() or delete().
         let process_one_action: Box<
             dyn Fn(HistoryAction, Item, i32) -> Result<(i32, Option<Item>), RadixTreeError>
                 + Send
@@ -1508,14 +1514,16 @@ impl RadixTreeImpl {
                 + Send
                 + Sync,
         > = Box::new(|actions: Vec<HistoryAction>, item_idx: i32| {
-            // println!("\nactions in process_non_empty_actions: {:?}", actions);
-            // println!("item_idx in process_non_empty_actions: {:?}", item_idx);
+            // println!("\nactions in process_non_empty_actions: {:?}",
+            // actions); println!("item_idx in
+            // process_non_empty_actions: {:?}", item_idx);
             // println!("\ncurr_node: {:?}", curr_node);
 
             let created_node =
                 self.construct_node_from_item(curr_node.get(item_idx as usize).unwrap())?;
 
-            // println!("\ncreated_node in process_non_empty_actions: {:?}", created_node);
+            // println!("\ncreated_node in process_non_empty_actions: {:?}",
+            // created_node);
 
             let new_actions = trim_keys(actions);
             let new_node_opt = self.make_actions(created_node.as_ref(), new_actions)?;
@@ -1660,7 +1668,8 @@ impl RadixTreeImpl {
                     let prefix_str = format!("{:02X?}", full_prefix);
                     output.push_str(&format!("NodePtr at {}: ", prefix_str));
 
-                    // Retrieve the serialized child node using the store's get method
+                    // Retrieve the serialized child node using the store's get
+                    // method
                     let serialized_child_nodes = self.store.get(&vec![ptr.clone()])?;
                     if let Some(serialized_child_node) = serialized_child_nodes.first() {
                         if let Some(child_node_bytes) = serialized_child_node {

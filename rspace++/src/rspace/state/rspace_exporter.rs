@@ -36,7 +36,8 @@ impl RSpaceExporterInstance {
                 None // Start from root
             } else {
                 // Max prefix length = 127 bytes.
-                // Prefix coded 5 Blake256 elements (0 - size, 1..4 - value of prefix).
+                // Prefix coded 5 Blake256 elements (0 - size, 1..4 - value of
+                // prefix).
                 assert!(prefix_vec.len() >= 5, "RSpace Exporter: Invalid path during export");
 
                 let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) =

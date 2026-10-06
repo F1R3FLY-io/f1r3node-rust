@@ -47,7 +47,8 @@ pub fn get_or_open_env(
         if let Some(arc) = weak.upgrade() {
             return Ok(arc);
         }
-        // Last consumer dropped — evict the dead Weak and fall through to reopen.
+        // Last consumer dropped — evict the dead Weak and fall through to
+        // reopen.
         cache_lock.remove(dir_path);
     }
 
@@ -59,8 +60,8 @@ pub fn get_or_open_env(
     // SAFETY: heed::EnvOpenOptions::open is unsafe because LMDB mmaps the
     // data file. Callers must guarantee that:
     //   1. No other process modifies the file while this Env is alive.
-    //   2. The path is on a local filesystem (LMDB does not support NFS or similar
-    //      networked storage without explicit configuration).
+    //   2. The path is on a local filesystem (LMDB does not support NFS or
+    //      similar networked storage without explicit configuration).
     //   3. The same Env is not opened more than once in this process.
     // We uphold (3) via ENV_CACHE: this call only runs after a cache miss
     // under the cache mutex, so no concurrent open of the same path is
