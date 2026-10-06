@@ -163,7 +163,7 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 /// finished), count reaches 27 — fs_remove_dir trait-exempt
 /// (see `handler_trait::fs_handler` module docstring).
 ///
-/// Current: 13 handlers migrated.
+/// Current: 16 handlers migrated.
 ///
 /// Wave 4 slice progression:
 ///   - 4.10: 0 (empty registry infrastructure).
@@ -180,7 +180,10 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.22: +1 (`fs_entries_stream_close`, FIRST STREAM).  Count = 11.
 ///   - 4.24: +1 (`fs_truncate`, FIRST MUTATION).  Count = 12.
 ///   - 4.25: +1 (`fs_chmod`, FIRST PATH-MUTATION).  Count = 13.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 13;
+///   - 4.26: +1 (`fs_rename`, FIRST TWO-ENDPOINT MUTATION).  Count = 14.
+///   - 4.27: +1 (`fs_chown`, NON-VERIFYING MUTATION).  Count = 15.
+///   - 4.28: +1 (`fs_remove_file`, FIRST LOCK-GATED MUTATION).  Count = 16.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 16;
 
 #[cfg(test)]
 mod tests {
@@ -249,6 +252,9 @@ mod tests {
             "fs_entries_stream_close", // slice 4.22 (first stream)
             "fs_truncate",             // slice 4.24 (first mutation)
             "fs_chmod",                // slice 4.25 (first path-mutation)
+            "fs_rename",               // slice 4.26 (first two-endpoint mutation)
+            "fs_chown",                // slice 4.27 (non-verifying mutation)
+            "fs_remove_file",          // slice 4.28 (first lock-gated mutation)
         ];
 
         assert_eq!(

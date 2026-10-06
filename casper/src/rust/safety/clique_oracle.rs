@@ -219,6 +219,39 @@ impl CliqueOracle {
         Ok(result)
     }
 
+    /// Drops validators that bonded after genesis and have not produced a block in
+    /// the witnessing view (#18). Their latest message is still the genesis
+    /// placeholder, so they cannot agree with anything, and counting their stake
+    /// can stop finalization. Genesis validators always count, so that a minority
+    /// can never finalize alone on a young DAG.
+    ///
+    /// Only a height-zero block from another sender is the placeholder: a
+    /// validator's own height-zero block is participation. A latest message this
+    /// node does not hold also counts; `receive_shipped_genesis` stores genesis and
+    /// inserts it `Approved`, so only its genesis-refusal path reaches that branch,
+    /// where counting the newcomer stalls finalization rather than diverging.
+    pub(crate) fn participating_weight_map(
+        weight_map: WeightMap,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+    ) -> Result<WeightMap, KvStoreError> {
+        let mut participating = WeightMap::with_capacity(weight_map.len());
+        for (validator, weight) in weight_map {
+            let counts = match latest_messages.get(&validator) {
+                Some(latest) if dag.block_number_map.get(latest) == Some(&0) => {
+                    dag.lookup(latest)?.is_none_or(|block| {
+                        block.sender == validator || block.weight_map.contains_key(&validator)
+                    })
+                }
+                _ => true,
+            };
+            if counts {
+                participating.insert(validator, weight);
+            }
+        }
+        Ok(participating)
+    }
+
     /// If two validators will never have disagreement on target message
     ///
     /// Prerequisite for this is that latest messages from a and b both are in main chain with target message
@@ -710,9 +743,10 @@ impl CliqueOracle {
                 early_return: Some("target_not_held"),
             });
         }
-        let full_weight_map =
+        let committee =
             CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;
-        meter.charge(WorkKind::Oracle, full_weight_map.len() as u64, 0)?;
+        meter.charge(WorkKind::Oracle, committee.len() as u64, 0)?;
+        let full_weight_map = Self::participating_weight_map(committee, dag, latest_messages)?;
         let total_stake = full_weight_map.values().sum::<i64>();
         // Zero (or negative) total stake cannot witness anything — mirrors the
         // ft_witnessed guard that returns MIN instead of asserting a positive total.
@@ -818,8 +852,9 @@ impl CliqueOracle {
 
         if dag.contains(target_msg) {
             tracing::debug!("Calculating fault tolerance for {:?}.", target_msg);
-            let full_weight_map =
+            let committee =
                 CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;
+            let full_weight_map = Self::participating_weight_map(committee, dag, latest_messages)?;
             // A weight map with no positive stake cannot witness anything.
             // `compute_output` asserts a positive total; a block whose metadata
             // carries zero-stake bonds must yield MIN, not panic — this path
